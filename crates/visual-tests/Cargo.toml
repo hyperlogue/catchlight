@@ -1,0 +1,26 @@
+[package]
+name = "visual-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Visual regression tests for catchlight: render seeded matrix of param/camera configs and diff against baselines."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "visual-tests"
+path = "src/bin/visual-tests.rs"
+
+[dependencies]
+catchlight-core = { workspace = true }
+catchlight-wgpu = { workspace = true }
+wgpu = { workspace = true }
+glam = { workspace = true }
+image = { workspace = true }
+anyhow = { workspace = true }
+pollster = { workspace = true }
+
+[lints]
+workspace = true

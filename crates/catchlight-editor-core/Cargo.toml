@@ -1,0 +1,19 @@
+[package]
+name = "catchlight-editor-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Editable puppet model for the catchlight editor: a stable-id EditModel that flattens to .clp"
+
+[dependencies]
+catchlight-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+image = { workspace = true }
+thiserror = { workspace = true }
+slotmap = "1"
+spade = "2.15.1"
+
+[lints]
+workspace = true

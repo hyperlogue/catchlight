@@ -1,0 +1,35 @@
+[package]
+name = "catchlight-bevy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bevy integration for catchlight: components, systems, and a render-graph node"
+
+[dependencies]
+catchlight-core = { workspace = true }
+catchlight-wgpu = { workspace = true }
+glam = { workspace = true }
+wgpu = { workspace = true }
+tracing = { workspace = true }
+
+bevy = { version = "0.19", default-features = false, features = [
+  "bevy_asset",
+  "bevy_core_pipeline",
+  "bevy_render",
+  "bevy_window",
+  "bevy_winit",
+  "x11",
+] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+
+# Example-only: the bevy_puppets stress test uses FrameTimeDiagnosticsPlugin /
+# LogDiagnosticsPlugin and bevy_log's info!() macro. Listing bevy here with
+# the extra features unifies cargo features so the example has what it needs
+# without growing the library's runtime deps.
+[dev-dependencies]
+bevy = { version = "0.19", default-features = false, features = ["bevy_log"] }
+wgpu-profiler = { workspace = true }
+
+[lints]
+workspace = true

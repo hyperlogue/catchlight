@@ -1,0 +1,16 @@
+[package]
+name = "catchlight-editor-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wire types for the catchlight editor: transport-agnostic request/reply/event over newline-delimited JSON"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

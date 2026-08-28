@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/catchlight-core",
+    "crates/catchlight-editor-core",
+    "crates/catchlight-editor-protocol",
+    "crates/catchlight-editor-server",
+    "crates/catchlight-editor-cli",
+    "crates/catchlight-editor",
+    "crates/catchlight-wgpu",
+    "crates/visual-tests",
+    "crates/xtask",
+    "crates/catchlight-bevy",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hovo/catchlight"
+
+[workspace.dependencies]
+# Internal crates
+catchlight-core = { path = "crates/catchlight-core" }
+catchlight-editor-core = { path = "crates/catchlight-editor-core" }
+catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol" }
+catchlight-editor-server = { path = "crates/catchlight-editor-server" }
+catchlight-wgpu = { path = "crates/catchlight-wgpu" }
+catchlight-bevy = { path = "crates/catchlight-bevy" }
+
+# Data structures
+indextree = "4.7"
+
+# Math
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+
+# Rendering
+wgpu = "29"
+
+# Image processing
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "tga",
+] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-chrome = "0.7"
+wgpu-profiler = "0.27"
+
+# Windowing
+winit = "0.30"
+pollster = "0.3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# Size-optimized profile for a future wasm bundle. Kept separate so the
+# default `release` profile stays untouched.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "thin"
+codegen-units = 1

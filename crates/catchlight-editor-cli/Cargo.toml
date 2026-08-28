@@ -1,0 +1,17 @@
+[package]
+name = "catchlight-editor-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thin client for the catchlight editor server: drives an editing session over the Unix socket"
+
+[dependencies]
+catchlight-editor-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[lints]
+workspace = true
