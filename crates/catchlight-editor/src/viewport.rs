@@ -341,18 +341,22 @@ mod tests {
     /// The full GUI render path (pose → tick → render): posing a param must
     /// change the rendered pixels, and returning to rest must restore them.
     #[test]
-    #[ignore = "needs the reference rig at example_models/reference/"]
     fn posed_param_changes_rendered_pixels() {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../example_models/reference/reference.clp"
+            "/../../tests/models/welded_seam.clp"
         ))
         .unwrap();
         let editor = catchlight_editor_server::Editor::new();
-        let session = editor.open_bytes("reference", &bytes).unwrap();
+        let session = editor.open_bytes("welded_seam", &bytes).unwrap();
         let rs = render_state();
         let mut viewport = ViewportRenderer::new(&rs, 512, 512);
-        let camera = EditorCamera::default();
+        // welded_seam spans 300x240 world units, so the GUI's default 2000-unit
+        // camera height would render it as a speck; frame it instead.
+        let camera = EditorCamera {
+            center: Vec2::ZERO,
+            height: 600.0,
+        };
 
         let mut shot = |rev: u64, pose: &[(String, Vec2)]| -> Vec<u8> {
             editor
@@ -378,9 +382,9 @@ mod tests {
         };
 
         let rest = shot(1, &[]);
-        let posed = shot(1, &[("Body - Yaw".into(), Vec2::new(1.0, 0.0))]);
-        assert_ne!(rest, posed, "posing Body - Yaw must change the render");
-        let back = shot(1, &[("Body - Yaw".into(), Vec2::new(0.0, 0.0))]);
+        let posed = shot(1, &[("pull".into(), Vec2::new(1.0, 0.0))]);
+        assert_ne!(rest, posed, "posing pull must change the render");
+        let back = shot(1, &[("pull".into(), Vec2::new(0.0, 0.0))]);
         if let Ok(dir) = std::env::var("VIEWPORT_TEST_DUMP") {
             for (name, img) in [("rest", &rest), ("posed", &posed), ("back", &back)] {
                 image::save_buffer(

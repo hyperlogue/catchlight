@@ -18,15 +18,16 @@ fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
 }
 
 #[test]
-#[ignore = "needs the reference rig at example_models/reference/"]
 fn recorded_binding_moves_the_rebuilt_puppet() {
+    // Any rig will do: the test authors its own node, param and binding, and
+    // only needs a document to open.
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../example_models/reference/reference.clp"
+        "/../../tests/models/welded_seam.clp"
     ))
-    .expect("reference.clp");
+    .expect("welded_seam.clp");
     let ed = Editor::new();
-    let session = ed.open_bytes("reference", &bytes).expect("open");
+    let session = ed.open_bytes("welded_seam", &bytes).expect("open");
 
     let root = match body(&ed, 1, Command::NodeTree { session }) {
         ResponseBody::Tree { root } => root.node,
