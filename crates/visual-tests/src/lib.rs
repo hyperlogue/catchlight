@@ -33,7 +33,7 @@ pub fn repo_root() -> PathBuf {
 }
 
 pub fn baselines_root(repo_root: &Path) -> PathBuf {
-    repo_root.join("baselines").join("visual-tests")
+    repo_root.join("tests").join("baselines")
 }
 
 pub fn failures_root(repo_root: &Path) -> PathBuf {
