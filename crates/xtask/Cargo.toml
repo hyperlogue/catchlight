@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 catchlight-core = { path = "../catchlight-core" }
+image = { workspace = true }
 
 [lints]
 workspace = true
