@@ -1,4 +1,3 @@
-
 //! Regression: posing a param on the editor's flattened puppet must move it
 //! exactly like the viewport does (set value by name, then tick).
 

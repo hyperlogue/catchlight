@@ -528,8 +528,7 @@ impl Param {
                             let cells: [[&[Vec2]; 4]; 4] = std::array::from_fn(|k| {
                                 std::array::from_fn(|j| dm.cell(cx[j], cy[k]))
                             });
-                            let Some(out) =
-                                stack.param_buf_mut(DeformSource::Param(self.id), val)
+                            let Some(out) = stack.param_buf_mut(DeformSource::Param(self.id), val)
                             else {
                                 continue;
                             };
@@ -553,8 +552,7 @@ impl Param {
                                 (true, false) => dm.cell(x0, y1),
                                 (false, false) => dm.cell(x1, y1),
                             };
-                            let Some(out) =
-                                stack.param_buf_mut(DeformSource::Param(self.id), val)
+                            let Some(out) = stack.param_buf_mut(DeformSource::Param(self.id), val)
                             else {
                                 continue;
                             };
@@ -563,8 +561,7 @@ impl Param {
                         InterpolateMode::Stepped => {
                             let (sx, sy) = binding.stepped_cell(x0, x1, y0, y1, fx, fy);
                             let src = dm.cell(sx, sy);
-                            let Some(out) =
-                                stack.param_buf_mut(DeformSource::Param(self.id), val)
+                            let Some(out) = stack.param_buf_mut(DeformSource::Param(self.id), val)
                             else {
                                 continue;
                             };
@@ -575,8 +572,7 @@ impl Param {
                             let b = dm.cell(x1, y0);
                             let c = dm.cell(x0, y1);
                             let d = dm.cell(x1, y1);
-                            let Some(out) =
-                                stack.param_buf_mut(DeformSource::Param(self.id), val)
+                            let Some(out) = stack.param_buf_mut(DeformSource::Param(self.id), val)
                             else {
                                 continue;
                             };

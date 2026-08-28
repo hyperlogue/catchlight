@@ -26,11 +26,8 @@ pub fn load_puppet(path: &Path, texture_halvings: u32) -> Result<(Puppet, Vec<(u
     let format = ModelFormat::from_path(path)
         .with_context(|| format!("unrecognized model extension: {}", path.display()))?;
     let puppet = load_model(&bytes, format, texture_halvings)?;
-    let defaults: Vec<(u32, glam::Vec2)> = puppet
-        .params()
-        .iter()
-        .map(|p| (p.id, p.defaults))
-        .collect();
+    let defaults: Vec<(u32, glam::Vec2)> =
+        puppet.params().iter().map(|p| (p.id, p.defaults)).collect();
     Ok((puppet, defaults))
 }
 

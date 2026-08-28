@@ -1,4 +1,3 @@
-
 //! The catchlight editor server.
 //!
 //! [`Editor`] holds many [`Session`]s (one puppet each), sharing one warm

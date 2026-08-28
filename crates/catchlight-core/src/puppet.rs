@@ -1186,10 +1186,7 @@ impl Puppet {
             // Direct field access keeps the borrows disjoint from `anim`
             // (a `&self.animations`); a `&mut self` setter can't be called
             // here. Generation bumps are deferred to after the loop.
-            let idx = self
-                .param_id_to_index
-                .get(&lane.param_id)
-                .copied();
+            let idx = self.param_id_to_index.get(&lane.param_id).copied();
             // Fall back to the param's own defaults, matching what
             // `apply_params_where` uses for an unwritten slot. Falling back to
             // ZERO instead would let a lane on one axis silently snap the
@@ -1200,10 +1197,7 @@ impl Puppet {
                 .unwrap_or(glam::Vec2::ZERO);
             let current = match idx {
                 Some(i) => self.param_values.get(i).copied().flatten(),
-                None => self
-                    .param_values_overflow
-                    .get(&lane.param_id)
-                    .copied(),
+                None => self.param_values_overflow.get(&lane.param_id).copied(),
             }
             .unwrap_or(defaults);
             let next = match lane.axis {
@@ -1218,8 +1212,7 @@ impl Puppet {
                         }
                     }
                     None => {
-                        self.param_values_overflow
-                            .insert(lane.param_id, next);
+                        self.param_values_overflow.insert(lane.param_id, next);
                     }
                 }
                 changed_uuids.push(lane.param_id);

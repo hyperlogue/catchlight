@@ -1,4 +1,3 @@
-
 //! The editable puppet model for the catchlight editor.
 //!
 //! [`EditModel`] mirrors a `.clp` document but keys nodes, params and textures

@@ -390,7 +390,6 @@ fn decode_structure(version: u16, bytes: &[u8]) -> Result<ClpDocument, ClpError>
     cbor_from_slice(bytes)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
