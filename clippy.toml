@@ -1,3 +1,11 @@
+# `unwrap_used` / `expect_used` / `panic` are denied workspace-wide
+# (`Cargo.toml`, `[workspace.lints.clippy]`); these re-allow all three in
+# tests. Clippy scopes that to `#[test]` fns only, so a helper at the top
+# level of a `tests/` file still trips the deny. Those files open with
+# `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`
+# (`crates/catchlight-wgpu/tests/clear_fallback.rs:1`). A file whose unwraps
+# all sit inside `#[test]` fns needs no allow
+# (`crates/visual-tests/tests/regression.rs`).
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true

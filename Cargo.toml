@@ -33,10 +33,14 @@ catchlight-bevy = { path = "crates/catchlight-bevy", version = "0.1.0" }
 # Data structures
 indextree = "4.7"
 
-# Math
+# Math. Pinned to bevy's glam, not the crates.io latest.
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 
-# Rendering
+# Rendering. Held at bevy's wgpu: catchlight-bevy hands bevy's render world a
+# Device/Queue built by catchlight-wgpu, so the whole tree must resolve to a
+# single wgpu -- if it splits, the failure is a type mismatch between two
+# identically named `wgpu::Device`s at the plugin boundary. See
+# `crates/catchlight-bevy/src/lib.rs`.
 wgpu = "29"
 
 # Image processing
@@ -64,6 +68,9 @@ wgpu-profiler = "0.27"
 winit = "0.30"
 pollster = "0.3"
 
+# There is no unsafe anywhere, and the discipline that keeps it that way is
+# derived `bytemuck::Pod` for every GPU-uploaded struct and no hand-written
+# `Send`/`Sync`. Code that wants unsafe needs a different design, not an allow.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

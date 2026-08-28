@@ -1,3 +1,13 @@
+//! Mesh groups: vertex-level warps applied to a subtree.
+//!
+//! **Mesh-group descent stops at a nested MG.** `descendant_drawables`
+//! recurses through Parts and Composites, collects Parts and nested MGs, and
+//! halts at each nested MG; the outer warp reaches the inner MG's children
+//! transitively through the pre-order propagation pass. Binding them directly
+//! would apply the warp twice. Same reasoning for `translate_children_targets`,
+//! which shifts only non-Drawable descendants. A Composite with
+//! `propagate_mesh_group = false` halts both walks.
+
 use glam::swizzles::Vec4Swizzles;
 use glam::{Affine2, Mat2, Mat4, Vec2, Vec4};
 

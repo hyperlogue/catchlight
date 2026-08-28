@@ -1,3 +1,68 @@
+//! Draws a `RenderList` into a caller-supplied command encoder.
+//!
+//! `renderer.rs` is one ~5.7k-line file on purpose. Every
+//! `queue.write_buffer` and every buffer allocation is visible in one place,
+//! which is how the aliasing bugs below were caught — twice. It gets split
+//! once targeted renderer tests cover the invariants, not before.
+//!
+//! - **`write_buffer` batches at submit start.** Two writes to the same
+//!   buffer offset inside one frame both land before the submit, and the
+//!   later one wins for *every* draw that reads that range — silently, and
+//!   for the wrong parts. So each buffer offset is written exactly once per
+//!   frame. Per-part instance and uniform data is staged in CPU-side buffers
+//!   and flushed as a single `write_buffer` at frame end
+//!   (`flush_instance_writes`, `flush_part_uniform_writes`, both called from
+//!   `render_list_ext`).
+//! - **Cursor allocation, never a bare offset 0.** Take instance slots with
+//!   `reserve_instances(count)` and uniform slots with `write_part_uniform(..)`;
+//!   both hand out offsets from a monotonic per-frame cursor. A helper that
+//!   writes offset 0 itself reintroduces the aliasing above.
+//! - **One submit per frame.** `render_list` / `render_list_ext` record into
+//!   the *caller's* encoder and submit nothing; the caller's submit is the
+//!   frame's only one. The only `queue.submit` inside the renderer is
+//!   `generate_mips`, at texture-upload time.
+//! - **Never grow a GPU buffer mid-frame.** `begin_frame_instances` and
+//!   `begin_frame_uniforms` size the frame up front, before any pass is
+//!   recorded. A realloc after that strands already-recorded passes on the
+//!   freed buffer.
+//! - **One camera slot per view.** `reserve_camera` writes each
+//!   `render_list`'s view-proj into its own slot of a `CAMERA_RING_SLOTS`-deep
+//!   ring and binds it as a dynamic offset, so views sharing a submit can't
+//!   alias. `begin_camera_submit` resets the count at the *external*
+//!   submission boundary — do not call it between `render_list` calls that
+//!   will be submitted together.
+//! - **Masking blends need matching color and alpha factors.** A mode whose
+//!   color component masks via `DstAlpha` or `Zero` (`ClipToLower`,
+//!   `SliceFromLower`, and likewise `Multiply` / `ColorDodge`) must use the
+//!   same factors on alpha. Alpha falling through to OVER writes α=1 where
+//!   color is 0, producing opaque-black halos — invisible at identity pose,
+//!   visible once a deform shrinks the mask. Pinned by
+//!   `masking_blend_modes_have_matching_color_and_alpha_factors`.
+//! - **Multi-puppet resource sharing.** `StencilTarget`, `CompositePool` and
+//!   `FramebufferSnapshotPool` are caller-owned and passed into
+//!   `render_list_ext`, so several puppets in one frame share them. Each
+//!   puppet still gets its own `WgpuRenderer` (mesh ids from different puppets
+//!   would collide in `mesh_buffers`) — see
+//!   `crates/catchlight-bevy/src/prepare.rs` (`HashMap<RendererKey,
+//!   WgpuRenderer>` beside one `FormatResources`) and
+//!   `crates/visual-tests/src/harness.rs`, which serializes every render
+//!   through one mutex for the same reason.
+//! - **The stencil path has a WebGL fallback.** When `Pipelines::has_stencil`
+//!   is false (Chromium swiftshader WebGL2 fails `Depth24PlusStencil8`),
+//!   mask/masked draws sample `StencilTarget::mask_alpha_view` instead of
+//!   stencil-testing. A masking change has to hold on both paths.
+//! - **`base_instance` is native-only.** Part draws select an instance with a
+//!   non-zero `first_instance` on Vulkan/DX12/Metal and re-slice vertex buffer
+//!   1 per draw on GL/WebGL2 and the adapter-less constructors
+//!   (`emit_part_draw`).
+//!
+//! Most of these are invisible to pixels, so they are pinned directly: the
+//! renderer keeps per-frame lifecycle counters (queue writes and buffer
+//! reallocs per buffer, slots reserved vs written) and `debug_assert!`s that
+//! every staged write starts at or above a monotonic watermark. Targeted
+//! per-invariant tests live in `crates/catchlight-wgpu/tests/`;
+//! `crates/visual-tests` covers the ones that do reach pixels.
+
 use catchlight_core::{BlendMode, MeshId, NodeId, PuppetTexture, TextureId};
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -856,6 +921,8 @@ fn srgb_to_linear_vec3(c: glam::Vec3) -> glam::Vec3 {
 
 /// Every puppet texture uploads as premultiplied linear encoded in sRGB
 /// bytes, so the sampler's decode hands shaders premultiplied linear.
+/// CPU-side tints go through `srgb_to_linear_vec3` before upload; all
+/// fragment math is linear.
 pub const PUPPET_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Fill mips 1.. by successively halving the level above on the GPU.

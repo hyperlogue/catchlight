@@ -1,3 +1,19 @@
+//! Visual regression harness: render a curated matrix of param/camera configs
+//! and diff each render against a committed baseline PNG.
+//!
+//! Cases are hand-authored in [`config`] (`default_models` × `curated_configs`
+//! × `camera_presets`, named `<model>__<label>__cam_<preset>`; a test asserts
+//! the names are unique, because two configs sharing a name would silently
+//! share one baseline PNG). `cargo test -p visual-tests` renders each config
+//! and diffs it against `tests/baselines/<model>/<config>.png` under the
+//! thresholds in `Thresholds::default`; failures land as
+//! expected/actual/diff/summary under `tmp/visual-test-failures/<config>/`.
+//!
+//! To **update baselines** after an intended change, run
+//! `cargo run -p visual-tests --release -- update` (add `--filter SUBSTR` to
+//! narrow, or `list` to see the matrix) and commit the PNGs. `update_all` is
+//! the only writer; the regression test never calls it.
+
 pub mod config;
 mod diff;
 pub mod harness;

@@ -4,6 +4,16 @@
 //! as code here plus the encoded `.clp` checked into the repo. Regenerating is
 //! only needed when a fixture's shape changes; the visual baselines under
 //! `tests/baselines/` are rendered from the committed bytes.
+//!
+//! Regenerate one with `cargo xtask gen-fixture <name>`.
+//! `committed_fixtures_still_match_their_generators` pins each committed
+//! file's *structure* (never byte equality) to its generator here, so drift
+//! names itself. `cargo xtask` also has `import <model.inx|.inp>
+//! [-o <model.clp>]`.
+//!
+//! The synthetic `.inx` fixtures are built instead by
+//! `scripts/build_minimal_inx.py`, a `uv` inline-script (`uv` and `python3`
+//! are in the dev shell).
 
 use anyhow::{anyhow, Context, Result};
 use std::io::Cursor;

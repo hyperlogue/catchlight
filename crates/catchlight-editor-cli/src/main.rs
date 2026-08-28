@@ -3,7 +3,7 @@
 //! Each invocation builds one [`Command`], connects to the canonical socket
 //! exposed by an editor or standalone server, sends it, and prints the reply.
 //! The "current session" is remembered in a small local file so most commands
-//! need no `--session`.
+//! need no `--session`. Unix-only by design.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

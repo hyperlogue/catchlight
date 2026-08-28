@@ -1,5 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+//! winit viewer for a `.clp` rig — the interactive way to look at one.
+//!
+//! `--control` (or the `C` key) opens the egui panel of per-param sliders and
+//! stops animation playback.
+
 use catchlight_core::{load_model, GlobalTransforms, ModelFormat, Param};
 use catchlight_wgpu::{
     collect_drawables, create_orthographic_camera_at, create_surface_context, SurfaceContext,
