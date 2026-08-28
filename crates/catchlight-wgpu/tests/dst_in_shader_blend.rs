@@ -81,11 +81,7 @@ fn make_puppet(blend: BlendMode, src_rgba: [u8; 4]) -> Puppet {
     puppet
 }
 
-async fn render_blend(
-    blend: BlendMode,
-    bg_rgba_u8: [u8; 4],
-    src_rgba_u8: [u8; 4],
-) -> Vec<u8> {
+async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4]) -> Vec<u8> {
     render_puppet(&make_puppet(blend, src_rgba_u8), bg_rgba_u8).await
 }
 

@@ -1,4 +1,3 @@
-
 //! Bevy integration for catchlight.
 //!
 //! Adds `CatchlightPlugin` which plugs a puppet renderer into Bevy's

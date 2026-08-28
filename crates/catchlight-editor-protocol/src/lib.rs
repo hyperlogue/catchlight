@@ -1,4 +1,3 @@
-
 //! Wire types for the catchlight editor.
 //!
 //! A client sends a [`Request`] (one JSON object per line); the server answers

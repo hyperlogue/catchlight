@@ -1,4 +1,3 @@
-
 use visual_tests::{generate_configs, run_one, RunOutcome, SharedHarness};
 
 #[test]
