@@ -173,22 +173,16 @@ pub async fn create_surface_context(
 /// to init EGL and panics headless. `create_headless_context_ext` takes its
 /// backend set from the caller, but everything below applies to it too.
 ///
-/// On a box with no GPU, point the Vulkan loader at mesa's CPU ICD
-/// (lavapipe). `nix/shell.nix` exports the path as `CATCHLIGHT_LAVAPIPE_ICD`
-/// but deliberately does **not** set `VK_ICD_FILENAMES`, which would force
-/// lavapipe over a real driver for everyone in the shell. Set it per-command:
+/// `HighPerformance` so that when the Vulkan loader sees both a real driver
+/// and a CPU one, the hardware adapter wins; a CPU adapter (mesa's lavapipe)
+/// is only the fallback on a box with no GPU. In the nix dev shell mesa is a
+/// build input and its `share/` is on `XDG_DATA_DIRS`, which is where the
+/// loader looks for ICDs, so lavapipe is found with no `VK_ICD_FILENAMES` and
+/// plain `cargo test --workspace` works headless.
 ///
-/// ```text
-/// VK_ICD_FILENAMES=$CATCHLIGHT_LAVAPIPE_ICD cargo test --workspace
-/// ```
-///
-/// Without it, `request_adapter` fails and every GPU test panics with
-///
-/// ```text
-/// NotFound { active_backends: Backends(0x0), ... }
-/// ```
-///
-/// `vulkaninfo --summary` shows which ICD the loader actually picked.
+/// If the loader finds no ICD at all, `request_adapter` fails and every GPU
+/// test panics with `NotFound { active_backends: Backends(0x0), .. }`;
+/// `vulkaninfo --summary` shows what the loader actually sees.
 pub async fn create_headless_context(
 ) -> Result<(wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -201,7 +195,7 @@ pub async fn create_headless_context(
 
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         })

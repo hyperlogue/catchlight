@@ -54,23 +54,24 @@ sure all potential changes can be verified in a tight feedback loop.
 
 # Build, test, lint
 
-CI (`.github/workflows/ci.yml`) runs each of these through `nix develop -c`, so
-the local commands are the CI commands:
+CI (`.github/workflows/ci.yml`) runs the first four of these through
+`nix develop -c`, so the local commands are the CI commands; the test suite is
+local-only for now:
 
 ```
 cargo deny check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
-VK_ICD_FILENAMES=$CATCHLIGHT_LAVAPIPE_ICD cargo test --workspace
 cargo build -p catchlight-core -p catchlight-wgpu --target wasm32-unknown-unknown
+cargo test --workspace
 ```
 
 The wasm job builds no bundle — it exists to keep the core and the renderer
 compiling for the browser.
 
-- On a box with no GPU, `VK_ICD_FILENAMES=$CATCHLIGHT_LAVAPIPE_ICD` points the
-  Vulkan loader at mesa's CPU ICD; without it every GPU test panics. Details on
-  `create_headless_context` in `crates/catchlight-wgpu/src/lib.rs`.
+- GPU tests fall back to mesa's CPU Vulkan driver (lavapipe), which the dev
+  shell puts on the loader's search path; see `create_headless_context` in
+  `crates/catchlight-wgpu/src/lib.rs`.
 - `tests/models/**.clp` and `tests/baselines/**.png` are Git LFS objects
   (`.gitattributes`). Without them fetched, the render suites fail loading their
   fixtures.
