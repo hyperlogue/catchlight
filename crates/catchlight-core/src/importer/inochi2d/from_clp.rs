@@ -604,19 +604,132 @@ mod tests {
         assert_eq!(direct.data, rebuilt.data);
     }
 
+    /// Name of a [`BindingValues`] variant, so a mismatch names the target
+    /// instead of dumping two matrices.
+    fn binding_kind_name(v: &BindingValues) -> &'static str {
+        use BindingValues as V;
+        match v {
+            V::ZSort(_) => "zSort",
+            V::TransformTX(_) => "transform.t.x",
+            V::TransformTY(_) => "transform.t.y",
+            V::TransformSX(_) => "transform.s.x",
+            V::TransformSY(_) => "transform.s.y",
+            V::TransformRX(_) => "transform.r.x",
+            V::TransformRY(_) => "transform.r.y",
+            V::TransformRZ(_) => "transform.r.z",
+            V::Deform(_) => "deform",
+            V::Opacity(_) => "opacity",
+            V::TintR(_) => "tint.r",
+            V::TintG(_) => "tint.g",
+            V::TintB(_) => "tint.b",
+            V::ScreenTintR(_) => "screenTint.r",
+            V::ScreenTintG(_) => "screenTint.g",
+            V::ScreenTintB(_) => "screenTint.b",
+            V::OutputScaleX(_) => "outputScale.x",
+            V::OutputScaleY(_) => "outputScale.y",
+        }
+    }
+
+    /// The dense grid behind every non-deform binding kind.
+    fn scalar_matrix(v: &BindingValues) -> Option<&Matrix<f32>> {
+        use BindingValues as V;
+        match v {
+            V::Deform(_) => None,
+            V::ZSort(m)
+            | V::TransformTX(m)
+            | V::TransformTY(m)
+            | V::TransformSX(m)
+            | V::TransformSY(m)
+            | V::TransformRX(m)
+            | V::TransformRY(m)
+            | V::TransformRZ(m)
+            | V::Opacity(m)
+            | V::TintR(m)
+            | V::TintG(m)
+            | V::TintB(m)
+            | V::ScreenTintR(m)
+            | V::ScreenTintG(m)
+            | V::ScreenTintB(m)
+            | V::OutputScaleX(m)
+            | V::OutputScaleY(m) => Some(m),
+        }
+    }
+
+    /// Element-wise compare that reports the first differing index. A whole-
+    /// slice `assert_eq!` on a rig-sized mesh buries the one bad element in
+    /// thousands of good ones.
+    fn assert_slices_match<T: PartialEq + std::fmt::Debug>(a: &[T], b: &[T], what: &str) {
+        assert_eq!(a.len(), b.len(), "{what} length");
+        if let Some(i) = a.iter().zip(b).position(|(x, y)| x != y) {
+            assert_eq!(a[i], b[i], "{what} at index {i}");
+        }
+    }
+
+    fn assert_transforms_match(a: &Transform, b: &Transform, what: &str) {
+        assert_eq!(a.translation, b.translation, "{what} translation");
+        assert_eq!(a.rotation, b.rotation, "{what} rotation");
+        assert_eq!(a.scale, b.scale, "{what} scale");
+    }
+
+    fn assert_meshes_match(a: &Mesh, b: &Mesh, what: &str) {
+        assert_slices_match(&a.vertices, &b.vertices, &format!("{what} verts"));
+        assert_slices_match(&a.uvs, &b.uvs, &format!("{what} uvs"));
+        assert_eq!(a.origin, b.origin, "{what} origin");
+        // By value, not by variant: the two paths pick U16 vs U32 storage
+        // independently, but the triangle list itself must match.
+        assert_slices_match(
+            &a.indices.iter_u32().collect::<Vec<_>>(),
+            &b.indices.iter_u32().collect::<Vec<_>>(),
+            &format!("{what} indices"),
+        );
+    }
+
+    fn assert_binding_values_match(a: &BindingValues, b: &BindingValues, what: &str) {
+        assert_eq!(
+            binding_kind_name(a),
+            binding_kind_name(b),
+            "{what} binding target"
+        );
+        match (a, b) {
+            (BindingValues::Deform(da), BindingValues::Deform(db)) => {
+                assert_eq!(
+                    (da.width, da.height),
+                    (db.width, db.height),
+                    "{what} deform grid"
+                );
+                assert_eq!(da.vert_count, db.vert_count, "{what} deform vert count");
+                assert_slices_match(
+                    da.offsets(),
+                    db.offsets(),
+                    &format!("{what} deform offsets"),
+                );
+            }
+            // The kind names matched above, so anything else is a matching
+            // pair of scalar-grid kinds.
+            _ => {
+                if let (Some(ma), Some(mb)) = (scalar_matrix(a), scalar_matrix(b)) {
+                    assert_eq!((ma.width, ma.height), (mb.width, mb.height), "{what} grid");
+                    assert_slices_match(&ma.data, &mb.data, &format!("{what} values"));
+                }
+            }
+        }
+    }
+
     /// `.inx → Puppet` and `.inx → .clp → Puppet` must build the same runtime
     /// puppet. Both insert nodes in the same DFS pre-order, so `iter()` (slot
-    /// order) aligns them node-for-node. The single intentional divergence is
-    /// Composite `propagate_mesh_group` (the inx path hardcodes `true`; the
-    /// `.clp` build honors the authored value), asserted separately below.
-    #[test]
-    #[ignore = "needs the reference rig at example_models/reference/"]
-    fn reference_clp_build_matches_inx_puppet() {
-        let model = load_reference();
-        let inx_puppet = super::super::from_inx_model(&model).unwrap();
-        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
-        let clp_puppet = from_clp(&clp, 0).unwrap();
-
+    /// order) aligns them node-for-node, and `NodeId` is the slot index, so
+    /// binding targets compare directly too.
+    ///
+    /// The single intentional divergence is Composite `propagate_mesh_group`
+    /// (the inx path hardcodes `true`; the `.clp` build honors the authored
+    /// value), which is asserted separately and deliberately left out here.
+    /// Param *ids* also differ by construction — `.clp` has no uuids, so the
+    /// build synthesizes `id = array index` — so params are matched by order.
+    ///
+    /// Shared by [`reference_clp_build_matches_inx_puppet`] and
+    /// [`synthetic_rig_reflects_identically_on_both_paths`] so the rig-gated
+    /// test and the always-on one cannot check different things.
+    fn assert_puppets_match(inx_puppet: &Puppet, clp_puppet: &Puppet) {
         assert_eq!(inx_puppet.len(), clp_puppet.len(), "node count");
         assert_eq!(
             inx_puppet.textures().len(),
@@ -632,25 +745,16 @@ mod tests {
             assert_eq!(a.name, b.name, "node {id} name");
             assert_eq!(a.enabled, b.enabled, "node {id} enabled");
             assert_eq!(a.base_z_order, b.base_z_order, "node {id} zsort");
-            assert_eq!(
-                a.base_transform.translation, b.base_transform.translation,
-                "node {id} translation"
+            assert_transforms_match(
+                &a.base_transform,
+                &b.base_transform,
+                &format!("node {id} transform"),
             );
+            assert_eq!(kind_name(&a.kind), kind_name(&b.kind), "node {id} kind");
             match (&a.kind, &b.kind) {
-                (NodeKind::Empty, NodeKind::Empty) => {}
                 (NodeKind::Part(pa), NodeKind::Part(pb)) => {
                     assert_eq!(pa.albedo_texture, pb.albedo_texture, "node {id} albedo");
-                    assert_eq!(
-                        pa.mesh.vertices.len(),
-                        pb.mesh.vertices.len(),
-                        "node {id} verts"
-                    );
-                    assert_eq!(
-                        pa.mesh.indices.len(),
-                        pb.mesh.indices.len(),
-                        "node {id} indices"
-                    );
-                    assert_eq!(pa.mesh.uvs, pb.mesh.uvs, "node {id} crop-rewritten uvs");
+                    assert_meshes_match(&pa.mesh, &pb.mesh, &format!("node {id} mesh"));
                     assert_eq!(pa.blend_mode, pb.blend_mode, "node {id} blend");
                     assert_eq!(pa.masks.len(), pb.masks.len(), "node {id} masks");
                     assert_eq!(pa.opacity, pb.opacity, "node {id} opacity");
@@ -666,11 +770,7 @@ mod tests {
                         ma.translate_children, mb.translate_children,
                         "node {id} mg tc"
                     );
-                    assert_eq!(
-                        ma.mesh.vertices.len(),
-                        mb.mesh.vertices.len(),
-                        "node {id} mg verts"
-                    );
+                    assert_meshes_match(&ma.mesh, &mb.mesh, &format!("node {id} mg mesh"));
                 }
                 (NodeKind::SimplePhysics(sa), NodeKind::SimplePhysics(sb)) => {
                     assert_eq!(sa.model, sb.model, "node {id} phys model");
@@ -683,11 +783,9 @@ mod tests {
                         sb.gravity
                     );
                 }
-                (x, y) => panic!(
-                    "node {id} kind mismatch: {} vs {}",
-                    kind_name(x),
-                    kind_name(y)
-                ),
+                // Empty/Empty, and any kind pair the name assert above
+                // already rejected.
+                _ => {}
             }
         }
 
@@ -696,11 +794,346 @@ mod tests {
             clp_puppet.params().len(),
             "param count"
         );
-        let inx_bindings: usize = inx_puppet.params().iter().map(|p| p.bindings.len()).sum();
-        let clp_bindings: usize = clp_puppet.params().iter().map(|p| p.bindings.len()).sum();
+        for (pa, pb) in inx_puppet.params().iter().zip(clp_puppet.params()) {
+            assert_eq!(pa.name, pb.name, "param name");
+            let name = &pa.name;
+            assert_eq!(pa.is_vec2, pb.is_vec2, "param {name} is_vec2");
+            assert_eq!(pa.min, pb.min, "param {name} min");
+            assert_eq!(pa.max, pb.max, "param {name} max");
+            assert_eq!(pa.defaults, pb.defaults, "param {name} defaults");
+            assert_eq!(pa.axis_points_x, pb.axis_points_x, "param {name} axis x");
+            assert_eq!(pa.axis_points_y, pb.axis_points_y, "param {name} axis y");
+            assert_eq!(
+                pa.bindings.len(),
+                pb.bindings.len(),
+                "param {name} binding count (after the all-zero filter)"
+            );
+            for (i, (ba, bb)) in pa.bindings.iter().zip(&pb.bindings).enumerate() {
+                let what = format!(
+                    "param {name} binding {i} ({})",
+                    binding_kind_name(&ba.values)
+                );
+                assert_eq!(ba.node, bb.node, "{what} target node");
+                assert_eq!(
+                    ba.interpolate_mode, bb.interpolate_mode,
+                    "{what} interpolate mode"
+                );
+                assert_binding_values_match(&ba.values, &bb.values, &what);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs the reference rig at example_models/reference/"]
+    fn reference_clp_build_matches_inx_puppet() {
+        let model = load_reference();
+        let inx_puppet = super::super::from_inx_model(&model).unwrap();
+        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
+        let clp_puppet = from_clp(&clp, 0).unwrap();
+        assert_puppets_match(&inx_puppet, &clp_puppet);
+    }
+
+    /// A rig authored in inochi2d's frame — Y-down, lower `zsort` in front —
+    /// touching every field the two import paths must reflect, plus controls
+    /// on fields they must leave alone. Values are asymmetric and non-zero so
+    /// a *missing* negation and a *doubled* one both change the result.
+    ///
+    /// No textures: an empty table means the alpha crop rewrites no UVs, so
+    /// the authored UVs stay comparable against the literals below.
+    fn reflection_fixture() -> InxModel {
+        InxModel {
+            payload: json!({
+                "nodes": {
+                    "uuid": 1,
+                    "name": "root",
+                    "type": "Node",
+                    "zsort": 0.0,
+                    "transform": {
+                        "trans": [0.0, 0.0, 0.0],
+                        "rot": [0.0, 0.0, 0.0],
+                        "scale": [1.0, 1.0]
+                    },
+                    "children": [
+                        {
+                            "uuid": 2,
+                            // Lower source zsort => nearer the viewer in the
+                            // source convention, so this must come out with
+                            // the *higher* base_z_order.
+                            "zsort": 1.0,
+                            "name": "front",
+                            "type": "Part",
+                            "transform": {
+                                // x and z must survive; y must flip.
+                                "trans": [7.0, 10.0, 3.0],
+                                // rot x and z flip; rot y must survive.
+                                "rot": [0.25, 0.5, 0.75],
+                                "scale": [2.0, 3.0]
+                            },
+                            "textures": [0],
+                            "mesh": {
+                                "verts": [1.0, 2.0, -4.0, 6.0, 8.0, -3.0],
+                                "uvs": [0.0, 0.0, 1.0, 0.25, 0.5, 1.0],
+                                "indices": [0, 1, 2],
+                                "origin": [1.5, 2.5]
+                            },
+                            "children": []
+                        },
+                        {
+                            "uuid": 3,
+                            "zsort": 5.0,
+                            "name": "back",
+                            "type": "Part",
+                            "transform": {
+                                "trans": [-2.0, -12.0, 0.0],
+                                "rot": [-1.5, 2.0, -0.5],
+                                "scale": [1.0, 1.0]
+                            },
+                            "textures": [0],
+                            "mesh": {
+                                "verts": [0.0, 0.0, 4.0, -9.0, -7.0, 11.0],
+                                "uvs": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+                                "indices": [0, 1, 2],
+                                "origin": [0.0, -6.0]
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                "param": [{
+                    "uuid": 100,
+                    "name": "reflect",
+                    "is_vec2": false,
+                    "min": [0.0, 0.0],
+                    "max": [1.0, 1.0],
+                    "defaults": [0.0, 0.0],
+                    // 2 x-axis points, 1 y-axis point: `values` is [x][y], so
+                    // each binding is a 2-long outer array of 1-long columns.
+                    "axis_points": [[0.0, 1.0], [0.0]],
+                    "bindings": [
+                        // --- reflected targets ---
+                        {"node": 2, "param_name": "deform", "values": [
+                            [[[3.0, 5.0], [-1.0, 2.0], [0.0, 7.0]]],
+                            [[[2.0, -4.0], [6.0, 1.0], [-8.0, 0.0]]]
+                        ]},
+                        {"node": 2, "param_name": "transform.t.y", "values": [[10.0], [-20.0]]},
+                        {"node": 2, "param_name": "transform.r.x", "values": [[0.25], [-0.5]]},
+                        {"node": 3, "param_name": "transform.r.z", "values": [[1.5], [-2.5]]},
+                        {"node": 3, "param_name": "zSort", "values": [[-3.0], [4.0]]},
+                        // --- controls: must come through untouched ---
+                        {"node": 3, "param_name": "transform.t.x", "values": [[11.0], [-22.0]]},
+                        {"node": 3, "param_name": "transform.r.y", "values": [[0.75], [-1.25]]},
+                        {"node": 3, "param_name": "transform.s.y", "values": [[2.0], [0.5]]},
+                        {"node": 3, "param_name": "opacity", "values": [[0.25], [0.75]]}
+                    ]
+                }]
+            }),
+            textures: Vec::new(),
+            vendors: Vec::new(),
+        }
+    }
+
+    fn node_named<'a>(puppet: &'a Puppet, name: &str) -> &'a Node {
+        puppet
+            .iter()
+            .find(|(_, n)| n.name == name)
+            .map(|(_, n)| n)
+            .expect("node present")
+    }
+
+    fn part_mesh<'a>(puppet: &'a Puppet, name: &str) -> &'a Mesh {
+        match &node_named(puppet, name).kind {
+            NodeKind::Part(p) => &p.mesh,
+            other => {
+                assert_eq!(kind_name(other), "Part", "node {name} kind");
+                unreachable!()
+            }
+        }
+    }
+
+    /// The dense values of the binding at `index`, checking its target kind
+    /// first so a dropped binding fails on the name rather than on a silently
+    /// shifted index.
+    fn scalar_binding(param: &Param, index: usize, kind: &str) -> Vec<f32> {
+        assert!(
+            index < param.bindings.len(),
+            "no binding at index {index} (wanted {kind})"
+        );
+        let values = &param.bindings[index].values;
+        assert_eq!(binding_kind_name(values), kind, "binding {index} target");
+        scalar_matrix(values)
+            .map(|m| m.data.clone())
+            .unwrap_or_default()
+    }
+
+    /// The always-on half of the reflection guard: with no reference rig in
+    /// the tree, this is what keeps `convert.rs` (inx → Puppet) and
+    /// `to_clp.rs` (inx → .clp → Puppet) negating the *same* set of fields.
+    ///
+    /// Agreement alone is not enough — both paths could forget the same
+    /// negation — so the absolute assertions below pin the authored → runtime
+    /// values, and every reflected field is paired with a non-reflected
+    /// control that must survive unchanged.
+    #[test]
+    fn synthetic_rig_reflects_identically_on_both_paths() {
+        let model = reflection_fixture();
+        let inx_puppet = super::super::from_inx_model(&model).unwrap();
+        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
+        let clp_puppet = from_clp(&clp, 0).unwrap();
+
+        // 1. The two paths agree, field for field.
+        assert_puppets_match(&inx_puppet, &clp_puppet);
+
+        // 2. ...and they agree on the *right* answer. Checked on the inx
+        //    puppet; step 1 has already pinned the clp one to it.
+        let front = node_named(&inx_puppet, "front");
+        let back = node_named(&inx_puppet, "back");
+
+        // zsort: source lower-is-front becomes catchlight higher-is-front.
+        assert_eq!(front.base_z_order, -1.0, "front zsort");
+        assert_eq!(back.base_z_order, -5.0, "back zsort");
+        assert!(
+            front.base_z_order > back.base_z_order,
+            "the node authored nearer the viewer must sort in front"
+        );
+
+        // Transform: translation y flips (x, z do not); rotation x and z flip
+        // (rotation y and scale do not).
         assert_eq!(
-            inx_bindings, clp_bindings,
-            "total bindings after the all-zero filter"
+            front.base_transform.translation,
+            Vec3::new(7.0, -10.0, 3.0),
+            "front translation"
+        );
+        assert_eq!(
+            front.base_transform.rotation,
+            Vec3::new(-0.25, 0.5, -0.75),
+            "front rotation"
+        );
+        assert_eq!(
+            front.base_transform.scale,
+            Vec2::new(2.0, 3.0),
+            "front scale"
+        );
+        assert_eq!(
+            back.base_transform.translation,
+            Vec3::new(-2.0, 12.0, 0.0),
+            "back translation"
+        );
+        assert_eq!(
+            back.base_transform.rotation,
+            Vec3::new(1.5, 2.0, 0.5),
+            "back rotation"
+        );
+
+        // Mesh: vertex and origin y flip, uvs are texture space and do not.
+        let front_mesh = part_mesh(&inx_puppet, "front");
+        assert_eq!(
+            front_mesh.vertices,
+            vec![
+                Vec2::new(1.0, -2.0),
+                Vec2::new(-4.0, -6.0),
+                Vec2::new(8.0, 3.0)
+            ],
+            "front mesh verts"
+        );
+        assert_eq!(
+            front_mesh.uvs,
+            vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(1.0, 0.25),
+                Vec2::new(0.5, 1.0)
+            ],
+            "front mesh uvs (texture space, never reflected)"
+        );
+        assert_eq!(front_mesh.origin, Vec2::new(1.5, -2.5), "front mesh origin");
+        assert_eq!(
+            part_mesh(&inx_puppet, "back").origin,
+            Vec2::new(0.0, 6.0),
+            "back mesh origin"
+        );
+
+        // Bindings, in authored order.
+        assert_eq!(inx_puppet.params().len(), 1, "param count");
+        let param = &inx_puppet.params()[0];
+        assert_eq!(param.bindings.len(), 9, "binding count");
+
+        assert_eq!(
+            binding_kind_name(&param.bindings[0].values),
+            "deform",
+            "binding 0 target"
+        );
+        let BindingValues::Deform(deform) = &param.bindings[0].values else {
+            unreachable!()
+        };
+        assert_eq!(
+            deform.offsets(),
+            &[
+                Vec2::new(3.0, -5.0),
+                Vec2::new(-1.0, -2.0),
+                Vec2::new(0.0, -7.0),
+                Vec2::new(2.0, 4.0),
+                Vec2::new(6.0, -1.0),
+                Vec2::new(-8.0, 0.0),
+            ],
+            "deform offsets: x survives, y flips"
+        );
+
+        // Reflected scalar targets.
+        assert_eq!(
+            scalar_binding(param, 1, "transform.t.y"),
+            vec![-10.0, 20.0],
+            "transform.t.y binding"
+        );
+        assert_eq!(
+            scalar_binding(param, 2, "transform.r.x"),
+            vec![-0.25, 0.5],
+            "transform.r.x binding"
+        );
+        assert_eq!(
+            scalar_binding(param, 3, "transform.r.z"),
+            vec![-1.5, 2.5],
+            "transform.r.z binding"
+        );
+        assert_eq!(
+            scalar_binding(param, 4, "zSort"),
+            vec![3.0, -4.0],
+            "zSort binding"
+        );
+
+        // Controls: over-negation shows up here.
+        assert_eq!(
+            scalar_binding(param, 5, "transform.t.x"),
+            vec![11.0, -22.0],
+            "transform.t.x binding (control)"
+        );
+        assert_eq!(
+            scalar_binding(param, 6, "transform.r.y"),
+            vec![0.75, -1.25],
+            "transform.r.y binding (control)"
+        );
+        assert_eq!(
+            scalar_binding(param, 7, "transform.s.y"),
+            vec![2.0, 0.5],
+            "transform.s.y binding (control)"
+        );
+        assert_eq!(
+            scalar_binding(param, 8, "opacity"),
+            vec![0.25, 0.75],
+            "opacity binding (control)"
+        );
+
+        // The .clp intermediate itself, so a drift that cancels out across
+        // to_clp + from_clp still shows up.
+        assert_eq!(clp.doc.nodes[1].zsort, -1.0, "clp front zsort");
+        assert_eq!(clp.doc.nodes[2].zsort, -5.0, "clp back zsort");
+        assert_eq!(
+            clp.doc.nodes[1].transform.translation,
+            [7.0, -10.0, 3.0],
+            "clp front translation"
+        );
+        assert_eq!(
+            clp.doc.nodes[1].transform.rotation,
+            [-0.25, 0.5, -0.75],
+            "clp front rotation"
         );
     }
 
