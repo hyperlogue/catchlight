@@ -1,9 +1,15 @@
 use crate::config::{default_models, Config, ModelSpec, Thresholds};
 use crate::diff::{diff_images, Metrics};
-use crate::render::{load_puppet, render_one_to_rgba, CachedPuppet, RenderContext};
+use crate::render::{
+    camera_matrix, load_puppet, prepare_puppet, render_one_to_rgba, CachedPuppet, RenderContext,
+    CLEAR_COLOR,
+};
 use crate::{baseline_path, baselines_root, failures_root, repo_root};
 use anyhow::{anyhow, Context, Result};
-use catchlight_wgpu::{create_headless_context, Pipelines, WgpuRenderer};
+use catchlight_wgpu::{
+    create_headless_context, read_texture_to_rgba, CompositePool, FramebufferSnapshotPool,
+    Pipelines, StencilTarget, WgpuRenderer,
+};
 use image::RgbaImage;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,13 +24,20 @@ pub struct SharedHarness {
     inner: Mutex<HarnessInner>,
 }
 
+/// Color format of every render target here, matching the `Pipelines` the
+/// harness builds.
+const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
 struct HarnessInner {
     pipelines: Arc<Pipelines>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Per-model render context (each carries its own renderer so
+    /// Render context per puppet *instance* (each carries its own renderer so
     /// `MeshId`s from different puppets don't collide in
-    /// `WgpuRenderer.mesh_buffers`). Populated lazily on first use.
+    /// `WgpuRenderer.mesh_buffers`, and so two instances of one model in a
+    /// single frame don't overwrite each other's instance buffer). Keyed by
+    /// model stem for the single-puppet path, and by stem + frame position
+    /// for multi-puppet frames. Populated lazily on first use.
     contexts: HashMap<String, ContextSlot>,
     models: HashMap<String, ModelSpec>,
     thresholds: Thresholds,
@@ -46,8 +59,7 @@ impl SharedHarness {
     pub fn with_models(models: Vec<ModelSpec>) -> Result<Self> {
         let (device, queue) = pollster::block_on(create_headless_context())
             .map_err(|e| anyhow!("create_headless_context: {e}"))?;
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let pipelines = Arc::new(Pipelines::new(&device, format));
+        let pipelines = Arc::new(Pipelines::new(&device, TARGET_FORMAT));
         let mut models_map = HashMap::new();
         for m in models {
             models_map.insert(m.stem.clone(), m);
@@ -83,8 +95,8 @@ impl SharedHarness {
 }
 
 impl HarnessInner {
-    fn ensure_slot(&mut self, model_stem: &str) -> Result<&mut ContextSlot> {
-        if !self.contexts.contains_key(model_stem) {
+    fn ensure_slot(&mut self, slot_key: &str, model_stem: &str) -> Result<&mut ContextSlot> {
+        if !self.contexts.contains_key(slot_key) {
             let spec = self
                 .models
                 .get(model_stem)
@@ -106,17 +118,106 @@ impl HarnessInner {
                 uploaded: false,
             };
             self.contexts
-                .insert(model_stem.to_string(), ContextSlot { spec, ctx, cached });
+                .insert(slot_key.to_string(), ContextSlot { spec, ctx, cached });
         }
         self.contexts
-            .get_mut(model_stem)
-            .ok_or_else(|| anyhow!("slot disappeared for '{model_stem}'"))
+            .get_mut(slot_key)
+            .ok_or_else(|| anyhow!("slot disappeared for '{slot_key}'"))
     }
 
     fn render_pixels(&mut self, config: &Config) -> Result<(Vec<u8>, u32, u32)> {
-        let slot = self.ensure_slot(&config.model_stem)?;
+        if !config.frame_puppets.is_empty() {
+            return self.render_pixels_multi(config);
+        }
+        let slot = self.ensure_slot(&config.model_stem, &config.model_stem)?;
         let pixels = render_one_to_rgba(&mut slot.ctx, &mut slot.cached, config)?;
         Ok((pixels, slot.spec.width, slot.spec.height))
+    }
+
+    /// Draw every puppet of a multi-puppet config into one frame, the way an
+    /// app with several puppets on screen does: one encoder and one color
+    /// target, and one caller-owned `StencilTarget` / `CompositePool` /
+    /// `FramebufferSnapshotPool` passed to every `render_list_ext` call.
+    /// Only the first call clears; the rest load what the previous ones drew.
+    ///
+    /// The frame resources are built here rather than borrowed from a
+    /// puppet's own `RenderContext` precisely because they are shared: the
+    /// pools are recycled from puppet to puppet, so a stale mask or a
+    /// composite slot handed out twice would bleed across puppets, and the
+    /// baseline is what catches that.
+    fn render_pixels_multi(&mut self, config: &Config) -> Result<(Vec<u8>, u32, u32)> {
+        let first = config
+            .frame_puppets
+            .first()
+            .ok_or_else(|| anyhow!("{}: no frame puppets", config.name))?;
+        let (width, height) = {
+            let spec = self
+                .models
+                .get(&first.model_stem)
+                .ok_or_else(|| anyhow!("unknown model '{}'", first.model_stem))?;
+            (spec.width, spec.height)
+        };
+
+        let stencil =
+            StencilTarget::new_for_pipelines(&self.pipelines, &self.device, width, height);
+        let mut composites = CompositePool::new(width, height);
+        let mut snapshots = FramebufferSnapshotPool::new(width, height);
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("multi-puppet-frame-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TARGET_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let camera = camera_matrix(width, height, &config.camera);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("multi-puppet-frame-encoder"),
+            });
+
+        for (i, puppet) in config.frame_puppets.iter().enumerate() {
+            let world = glam::Mat4::from_translation(glam::Vec3::new(puppet.x, puppet.y, 0.0));
+            let key = format!("{}#{i}", puppet.model_stem);
+            let slot = self.ensure_slot(&key, &puppet.model_stem)?;
+            let render_list = prepare_puppet(&mut slot.ctx, &mut slot.cached, &[], world)?;
+            slot.ctx.renderer.begin_camera_submit();
+            slot.ctx.renderer.update_camera(camera);
+            slot.ctx
+                .renderer
+                .render_list_ext(
+                    &render_list,
+                    &mut encoder,
+                    &view,
+                    &stencil,
+                    &mut composites,
+                    Some(&target),
+                    Some(&mut snapshots),
+                    width,
+                    height,
+                    (i == 0).then_some(CLEAR_COLOR),
+                )
+                .map_err(|error| anyhow!("render {} puppet {i}: {error}", config.name))?;
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let pixels = pollster::block_on(read_texture_to_rgba(
+            &self.device,
+            &self.queue,
+            &target,
+            width,
+            height,
+        ))
+        .map_err(|error| anyhow!("read {}: {error}", config.name))?;
+        Ok((pixels, width, height))
     }
 }
 

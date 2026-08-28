@@ -4,7 +4,7 @@ pub mod harness;
 pub mod render;
 
 pub use config::{
-    build_matrix, default_models, Camera, Config, ModelSpec, ParamSetting, Thresholds,
+    build_matrix, default_models, Camera, Config, FramePuppet, ModelSpec, ParamSetting, Thresholds,
 };
 pub use diff::Metrics;
 pub use harness::{list_configs, run_one, update_all, RunOutcome, SharedHarness};
