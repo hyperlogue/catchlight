@@ -1,6 +1,5 @@
 pub(crate) mod alpha_crop;
 pub use alpha_crop::TexturePrepCache;
-pub(crate) mod atlas;
 pub(crate) mod convert;
 pub(crate) mod error;
 pub(crate) mod from_clp;
@@ -27,9 +26,8 @@ pub fn parse_inp(bytes: &[u8]) -> Result<Puppet, ImportError> {
     from_inx_model(&model)
 }
 
-/// Import a puppet, cropping each texture to its opaque bounding box (the
-/// default [`alpha_crop`] strategy). For the page-atlasing strategy — fewer
-/// textures, looser crops — use [`from_inx_model_atlased`].
+/// Import a puppet, cropping each texture to its opaque bounding box (see
+/// [`alpha_crop`]).
 pub fn from_inx_model(model: &InxModel) -> Result<Puppet, ImportError> {
     from_inx_model_downsampled(model, 0)
 }
@@ -55,27 +53,4 @@ pub fn from_inx_model_downsampled(
     texture_halvings: u32,
 ) -> Result<Puppet, ImportError> {
     convert::schema_to_puppet(&model.payload, model.textures.clone(), texture_halvings)
-}
-
-/// Import using the page-atlasing texture strategy ([`atlas`]) instead of the
-/// default per-texture opaque crop ([`alpha_crop`]): packs each texture's
-/// mesh-referenced UV region into shared pages so z-adjacent parts share one
-/// bound texture. Fewer textures, but a looser crop (more VRAM) — preferable
-/// only for high puppet-count scenes where texture-bind churn dominates.
-pub fn from_inx_model_atlased(model: &InxModel) -> Result<Puppet, ImportError> {
-    from_inx_model_atlased_downsampled(model, 0)
-}
-
-/// [`from_inx_model_atlased`] with the same per-texture halving as
-/// [`from_inx_model_downsampled`].
-pub fn from_inx_model_atlased_downsampled(
-    model: &InxModel,
-    texture_halvings: u32,
-) -> Result<Puppet, ImportError> {
-    convert::schema_to_puppet_with(
-        &model.payload,
-        model.textures.clone(),
-        texture_halvings,
-        convert::TextureStrategy::Atlas,
-    )
 }

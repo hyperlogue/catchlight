@@ -1,24 +1,20 @@
-//! Import-time per-texture alpha cropping: the default texture strategy (vs
-//! [`super::atlas`]). Crops each texture to the bounding box of its opaque
-//! texels (plus a transparent mip skirt) and keeps it as its own table entry —
-//! no page packing. Texture ids stay 1:1 with the source table, so only part
-//! UVs are rewritten, never albedo slots.
+//! Import-time per-texture alpha cropping: the importer's texture strategy.
+//! Crops each texture to the bounding box of its opaque texels (plus a
+//! transparent mip skirt) and keeps it as its own table entry. Texture ids
+//! stay 1:1 with the source table, so only part UVs are rewritten, never
+//! albedo slots.
 //!
-//! Why this exists alongside the atlas: the atlas crops to the *mesh-referenced
-//! UV* bbox, which on inochi2d rigs is dominated by transparent texels the
-//! mesh's vertices straddle but never show (on the reference rig the atlas pages end up only
-//! ~12% opaque). The opaque bbox is ~4x tighter, so this trades the atlas's
-//! texture-bind coalescing (one bound texture per shared page) for a much
-//! smaller upload.
+//! Why the *opaque* bbox and not the mesh-referenced *UV* bbox: on inochi2d
+//! rigs the UV bbox is dominated by transparent texels the mesh's vertices
+//! straddle but never show (on the reference rig it comes out ~12% opaque).
+//! The opaque bbox is ~4x tighter — reference rig ~158 MB -> ~56 MB.
 //!
-//! Sampling stays correct for the same reasons the atlas's does: premultiplied
-//! storage + a transparent ClampToBorder make taps past the opaque region read
-//! transparent, and the MARGIN skirt reproduces the source texture's mip
-//! neighborhood so box-filtered levels 0..=4 match. Because each crop is its
-//! own texture (its own mip chain), there is no cross-crop straddling to guard
-//! against — the page-packing alignment machinery the atlas needs falls away.
+//! Sampling stays correct because premultiplied storage plus a transparent
+//! ClampToBorder make taps past the opaque region read transparent, and the
+//! [`MARGIN`] skirt reproduces the source texture's mip neighborhood so
+//! box-filtered levels 0..=4 match. Each crop is its own texture with its own
+//! mip chain, so no mip footprint can straddle into another crop's texels.
 
-use super::atlas::{align_down, align_up, blit, decode_halved};
 use super::error::ImportError;
 use crate::components::{NodeId, NodeKind, PuppetTexture};
 use crate::formats::ModelTexture;
@@ -28,12 +24,15 @@ use std::sync::Arc;
 
 /// Transparent skirt around the opaque bbox, in texels. The renderer
 /// box-filters each texture's own mip chain, so the skirt only has to feed the
-/// boundary mip box: 16 = 2^4 covers mip levels 0..=4 (the atlas's alignment
-/// guarantee), and anything the box reaches past it is the transparent
-/// `ClampToBorder` — the same transparent the source had beyond its opaque
-/// content. Half the atlas's 32, which must rim the *UV* bbox where real
-/// content can sit just outside the crop.
+/// boundary mip box: 16 = 2^4 covers mip levels 0..=4 ([`ALIGN`]), and
+/// anything the box reaches past it is the transparent `ClampToBorder` — the
+/// same transparent the source had beyond its opaque content.
 const MARGIN: i64 = 16;
+
+/// Crop origins and sizes are multiples of 2^4, so the box-filter footprints
+/// of mip levels 0..=4 tile inside the crop instead of straddling its edge —
+/// each level is computed from exactly the texels the source's own mip used.
+const ALIGN: i64 = 16;
 
 #[derive(Clone, Copy)]
 struct Plan {
@@ -232,8 +231,8 @@ fn prep_one(
 }
 
 /// Bounding box of the opaque (alpha>0) texels, expanded by [`MARGIN`] and
-/// snapped to the atlas's alignment so the box-filter footprints of mip levels
-/// 0..=4 match the source's. `None` when the texture is fully transparent.
+/// snapped to [`ALIGN`] so the box-filter footprints of mip levels 0..=4
+/// match the source's. `None` when the texture is fully transparent.
 fn alpha_crop_rect(tex: &PuppetTexture) -> Option<(i64, i64, u32, u32)> {
     let (w, h) = (tex.width as usize, tex.height as usize);
     let (mut minx, mut miny, mut maxx, mut maxy) = (usize::MAX, usize::MAX, 0usize, 0usize);
@@ -273,6 +272,58 @@ fn crop(tex: &PuppetTexture, x: i64, y: i64, w: u32, h: u32) -> PuppetTexture {
     }
 }
 
+fn align_down(v: i64) -> i64 {
+    v.div_euclid(ALIGN) * ALIGN
+}
+
+fn align_up(v: i64) -> i64 {
+    (v + ALIGN - 1).div_euclid(ALIGN) * ALIGN
+}
+
+fn decode_halved(tex: &ModelTexture, halvings: u32) -> Result<PuppetTexture, ImportError> {
+    let mut decoded = tex
+        .decode()
+        .map_err(|e| ImportError::TextureDecode(e.to_string()))?;
+    for _ in 0..halvings {
+        decoded = decoded.halved();
+    }
+    Ok(decoded)
+}
+
+/// Copy the crop rect `(src[0], src[1], size[0], size[1])` of `tex` to `dst`
+/// in `out` (row stride `out_w`), leaving out-of-source texels at the
+/// destination's transparent zero-fill (the ClampToBorder equivalent).
+fn blit(
+    out: &mut [u8],
+    out_w: u32,
+    tex: &PuppetTexture,
+    dst: [u32; 2],
+    src: [i64; 2],
+    size: [u32; 2],
+) {
+    let [dst_x, dst_y] = dst;
+    let [src_x, src_y] = src;
+    let [w, h] = size;
+    let (tw, th) = (tex.width as i64, tex.height as i64);
+    for row in 0..h as i64 {
+        let sy = src_y + row;
+        if sy < 0 || sy >= th {
+            continue;
+        }
+        let cx0 = src_x.max(0);
+        let cx1 = (src_x + w as i64).min(tw);
+        if cx0 >= cx1 {
+            continue;
+        }
+        let src_off = ((sy * tw + cx0) * 4) as usize;
+        let src_len = ((cx1 - cx0) * 4) as usize;
+        let dst_row = dst_y as i64 + row;
+        let dst_col = dst_x as i64 + (cx0 - src_x);
+        let dst_off = ((dst_row * out_w as i64 + dst_col) * 4) as usize;
+        out[dst_off..dst_off + src_len].copy_from_slice(&tex.rgba[src_off..src_off + src_len]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +352,45 @@ mod tests {
             height: h,
             rgba: rgba.into(),
         }
+    }
+
+    #[test]
+    fn align_helpers_round_toward_multiples_of_16() {
+        assert_eq!(align_down(-1), -16);
+        assert_eq!(align_down(0), 0);
+        assert_eq!(align_down(31), 16);
+        assert_eq!(align_up(1), 16);
+        assert_eq!(align_up(-1), 0);
+        assert_eq!(align_up(16), 16);
+    }
+
+    #[test]
+    fn blit_clips_to_source_and_preserves_bytes() {
+        // 4x4 source with row-major distinct bytes; crop extends 16 texels
+        // beyond every edge (negative origin) — out-of-source texels must
+        // stay zero, in-source bytes must land shifted by the offset.
+        const OUT: u32 = 128;
+        let mut rgba = vec![0u8; 4 * 4 * 4];
+        for (i, b) in rgba.iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        let source = PuppetTexture {
+            width: 4,
+            height: 4,
+            rgba: rgba.clone().into(),
+        };
+        let mut out = vec![0u8; (OUT * OUT * 4) as usize];
+        blit(&mut out, OUT, &source, [32, 48], [-16, -16], [48, 48]);
+        for y in 0..4i64 {
+            for x in 0..4i64 {
+                let src = ((y * 4 + x) * 4) as usize;
+                let dst = (((48 + 16 + y) * OUT as i64 + 32 + 16 + x) * 4) as usize;
+                assert_eq!(&out[dst..dst + 4], &rgba[src..src + 4]);
+            }
+        }
+        // A texel in the transparent rim.
+        let rim = ((48 * OUT as i64 + 32) * 4) as usize;
+        assert_eq!(&out[rim..rim + 4], &[0, 0, 0, 0]);
     }
 
     #[test]
