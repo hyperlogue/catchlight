@@ -1,0 +1,853 @@
+//! `.clp → Puppet` build: load the editable format into a runtime [`Puppet`]
+//! (the editor/preview path, and the structural inverse of [`super::to_clp`]).
+//!
+//! The flat arena makes this a linear fill — walk `nodes` in topological order
+//! and [`Puppet::insert_child`] each under its already-inserted parent — then
+//! reuse the inx path's mesh-group bake ([`bake_mesh_groups`]) and texture crop
+//! ([`crop_textures`]) so the result is the same `Puppet` an `.inx` load builds.
+//!
+//! `.clp` carries no uuids, but the runtime is uuid-keyed (masks resolve a node
+//! by uuid, params/physics by uuid), so the build synthesizes `uuid = arena
+//! index`: node index → node uuid, param index → param uuid. The two are
+//! independent namespaces in `Puppet`, so the overlap is harmless. The one
+//! authored-vs-runtime transform redone here is the global g-scale fold into
+//! each SimplePhysics node's gravity (the `.clp` stores it authored/unscaled).
+
+use glam::{Vec2, Vec3};
+
+use crate::components::{
+    CompositeData, MaskBinding, Mesh, MeshGroupData, MeshIndices, Node, NodeId, NodeKind, PartData,
+    TextureId, Transform,
+};
+use crate::deform::DeformStack;
+use crate::formats::clp::{
+    ClpBindingValues, ClpCells, ClpComposite, ClpFile, ClpIndices, ClpMask, ClpMesh, ClpMeshGroup,
+    ClpNode, ClpNodeKind, ClpParam, ClpPart, ClpSimplePhysics, ClpTexture, ClpTransform, ClpWeld,
+    TextureAlpha, TextureEncoding,
+};
+use crate::formats::{ModelTexture, TextureFormat};
+use crate::load_budget::{charge_clp_structure, LoadBudget};
+use crate::meshgroup::MeshGroupBindings;
+use crate::params::{Binding, BindingValues, DeformMatrix, Matrix, Param};
+use crate::physics::SimplePhysicsData;
+use crate::puppet::Puppet;
+
+use super::convert::{bake_mesh_groups, binding_is_all_zero};
+use super::error::ImportError;
+
+/// Build a runtime [`Puppet`] from a decoded [`ClpFile`], downsampling each
+/// texture by `texture_halvings` power-of-two steps (0 = full resolution).
+pub fn from_clp(file: &ClpFile, texture_halvings: u32) -> Result<Puppet, ImportError> {
+    from_clp_with_budget(file, texture_halvings, &mut LoadBudget::default())
+}
+
+pub fn from_clp_with_budget(
+    file: &ClpFile,
+    texture_halvings: u32,
+    budget: &mut LoadBudget,
+) -> Result<Puppet, ImportError> {
+    from_clp_impl(file, texture_halvings, None, budget)
+}
+
+/// [`from_clp`] with a texture-prep memo: the editor rebuilds the puppet on
+/// every document edit, and re-decoding megabytes of unchanged PNGs per edit
+/// is what would otherwise dominate that rebuild.
+pub fn from_clp_cached(
+    file: &ClpFile,
+    texture_halvings: u32,
+    cache: &mut super::alpha_crop::TexturePrepCache,
+) -> Result<Puppet, ImportError> {
+    from_clp_impl(
+        file,
+        texture_halvings,
+        Some(cache),
+        &mut LoadBudget::default(),
+    )
+}
+
+fn from_clp_impl(
+    file: &ClpFile,
+    texture_halvings: u32,
+    cache: Option<&mut super::alpha_crop::TexturePrepCache>,
+    budget: &mut LoadBudget,
+) -> Result<Puppet, ImportError> {
+    charge_clp_structure(file, budget)?;
+    let doc = &file.doc;
+    let model_textures = build_model_textures(&file.textures)?;
+    for texture in &model_textures {
+        let (width, height) = texture
+            .dimensions()
+            .map_err(|error| ImportError::TextureDecode(error.to_string()))?;
+        budget.check_texture_dimensions(width, height)?;
+    }
+    // The .clp stores authored, unscaled physics; the runtime integrator wants
+    // gravity pre-folded with the puppet-level pixelsPerMeter × gravity, exactly
+    // as the inx path folds it (convert.rs).
+    let g_scale = doc.physics.pixels_per_meter * doc.physics.gravity;
+
+    let mut puppet = Puppet::new();
+    // arena index → runtime NodeId. Topological order (`parent < self`)
+    // guarantees a node's parent is already present, so this is a linear fill.
+    let mut node_ids: Vec<NodeId> = Vec::with_capacity(doc.nodes.len());
+    for (i, clp_node) in doc.nodes.iter().enumerate() {
+        let parent = match clp_node.parent {
+            None => puppet.root(),
+            Some(p) => *node_ids.get(p as usize).ok_or_else(|| {
+                ImportError::MalformedPayload(format!(
+                    "node {i} parent index {p} is not a preceding node"
+                ))
+            })?,
+        };
+        let node = build_node(clp_node, g_scale)?;
+        node_ids.push(puppet.insert_child(parent, node, Some(i as u32)));
+    }
+
+    bake_mesh_groups(&mut puppet);
+
+    let puppet_textures = super::alpha_crop::crop_textures_cached(
+        &mut puppet,
+        &model_textures,
+        texture_halvings,
+        cache,
+    )?;
+    puppet.set_textures(puppet_textures);
+
+    let params = doc
+        .params
+        .iter()
+        .enumerate()
+        .map(|(j, p)| build_param(j as u32, p, &node_ids, &doc.nodes))
+        .collect::<Result<Vec<_>, ImportError>>()?;
+    puppet.set_params(params);
+
+    puppet.set_welds(build_welds(&doc.welds, &node_ids, &doc.nodes)?);
+
+    Ok(puppet)
+}
+
+/// Welds validate hard: `.clp` is machine-written, so a bad weld means the
+/// writer is broken — reject the file rather than render a silently
+/// half-welded puppet.
+fn build_welds(
+    welds: &[ClpWeld],
+    node_ids: &[NodeId],
+    nodes: &[ClpNode],
+) -> Result<Vec<crate::weld::Weld>, ImportError> {
+    let bad = |msg: String| ImportError::MalformedPayload(msg);
+    let part_vert_count = |idx: u32| -> Result<usize, ImportError> {
+        match nodes.get(idx as usize).map(|n| &n.kind) {
+            Some(ClpNodeKind::Part(p)) => Ok(p.mesh.verts.len() / 2),
+            Some(_) => Err(bad(format!("weld endpoint {idx} is not a Part"))),
+            None => Err(bad(format!("weld endpoint {idx} is not a node"))),
+        }
+    };
+
+    let mut seen_pairs: Vec<(u32, u32)> = Vec::with_capacity(welds.len());
+    let mut out = Vec::with_capacity(welds.len());
+    for (i, w) in welds.iter().enumerate() {
+        if w.a == w.b {
+            return Err(bad(format!("weld {i} welds node {} to itself", w.a)));
+        }
+        let key = (w.a.min(w.b), w.a.max(w.b));
+        if seen_pairs.contains(&key) {
+            return Err(bad(format!(
+                "weld {i} duplicates the pair {{{}, {}}}",
+                key.0, key.1
+            )));
+        }
+        seen_pairs.push(key);
+        let a_verts = part_vert_count(w.a)?;
+        let b_verts = part_vert_count(w.b)?;
+        let mut pairs = Vec::with_capacity(w.pairs.len());
+        for p in &w.pairs {
+            if p.a_vert as usize >= a_verts || p.b_vert as usize >= b_verts {
+                return Err(bad(format!(
+                    "weld {i} pair ({}, {}) out of range ({a_verts} / {b_verts} verts)",
+                    p.a_vert, p.b_vert
+                )));
+            }
+            if !p.weight.is_finite() || !(0.0..=1.0).contains(&p.weight) {
+                return Err(bad(format!(
+                    "weld {i} pair ({}, {}) weight {} outside [0, 1]",
+                    p.a_vert, p.b_vert, p.weight
+                )));
+            }
+            pairs.push(crate::weld::WeldPair {
+                a_vert: p.a_vert,
+                b_vert: p.b_vert,
+                weight: p.weight,
+            });
+        }
+        out.push(crate::weld::Weld {
+            a: node_ids[w.a as usize],
+            b: node_ids[w.b as usize],
+            pairs,
+        });
+    }
+    Ok(out)
+}
+
+fn build_node(clp: &ClpNode, g_scale: f32) -> Result<Node, ImportError> {
+    let transform = build_transform(&clp.transform);
+    let kind = build_node_kind(clp, &transform, g_scale)?;
+    Ok(Node {
+        name: clp.name.clone(),
+        enabled: clp.enabled,
+        base_transform: transform,
+        base_z_order: clp.zsort,
+        transform,
+        z_order: clp.zsort,
+        lock_to_root: clp.lock_to_root,
+        kind,
+    })
+}
+
+fn build_transform(t: &ClpTransform) -> Transform {
+    Transform {
+        translation: Vec3::from_array(t.translation),
+        rotation: Vec3::from_array(t.rotation),
+        scale: Vec2::from_array(t.scale),
+    }
+}
+
+fn build_node_kind(
+    clp: &ClpNode,
+    transform: &Transform,
+    g_scale: f32,
+) -> Result<NodeKind, ImportError> {
+    Ok(match &clp.kind {
+        ClpNodeKind::Empty => NodeKind::Empty,
+        ClpNodeKind::Part(p) => NodeKind::Part(Box::new(build_part(p)?)),
+        ClpNodeKind::Composite(c) => NodeKind::Composite(Box::new(build_composite(c))),
+        ClpNodeKind::MeshGroup(m) => NodeKind::MeshGroup(Box::new(build_mesh_group(m)?)),
+        ClpNodeKind::SimplePhysics(s) => {
+            NodeKind::SimplePhysics(Box::new(build_simple_physics(s, transform, g_scale)))
+        }
+    })
+}
+
+fn build_part(p: &ClpPart) -> Result<PartData, ImportError> {
+    let mesh = build_mesh(&p.mesh)?;
+    let deform_stack = DeformStack::new(mesh.vertices.len());
+    let tint = Vec3::from_array(p.tint);
+    let screen_tint = Vec3::from_array(p.screen_tint);
+    Ok(PartData {
+        mesh,
+        albedo_texture: TextureId(p.albedo),
+        opacity: p.opacity,
+        base_opacity: p.opacity,
+        tint,
+        base_tint: tint,
+        screen_tint,
+        base_screen_tint: screen_tint,
+        blend_mode: p.blend_mode,
+        masks: build_masks(&p.masks),
+        mask_threshold: p.mask_threshold,
+        deform_stack,
+    })
+}
+
+fn build_composite(c: &ClpComposite) -> CompositeData {
+    let tint = Vec3::from_array(c.tint);
+    let screen_tint = Vec3::from_array(c.screen_tint);
+    CompositeData {
+        opacity: c.opacity,
+        base_opacity: c.opacity,
+        tint,
+        base_tint: tint,
+        screen_tint,
+        base_screen_tint: screen_tint,
+        blend_mode: c.blend_mode,
+        masks: build_masks(&c.masks),
+        propagate_mesh_group: c.propagate_meshgroup,
+        mask_threshold: c.mask_threshold,
+    }
+}
+
+fn build_mesh_group(m: &ClpMeshGroup) -> Result<MeshGroupData, ImportError> {
+    let mesh = build_mesh(&m.mesh)?;
+    let deform_stack = DeformStack::new(mesh.vertices.len());
+    let tint = Vec3::from_array(m.tint);
+    let screen_tint = Vec3::from_array(m.screen_tint);
+    Ok(MeshGroupData {
+        mesh,
+        opacity: m.opacity,
+        base_opacity: m.opacity,
+        tint,
+        base_tint: tint,
+        screen_tint,
+        base_screen_tint: screen_tint,
+        blend_mode: m.blend_mode,
+        dynamic: m.dynamic,
+        translate_children: m.translate_children,
+        deform_stack,
+        // Filled by bake_mesh_groups, like the inx path.
+        bindings: MeshGroupBindings::default(),
+        bitmap: None,
+    })
+}
+
+fn build_simple_physics(
+    s: &ClpSimplePhysics,
+    transform: &Transform,
+    g_scale: f32,
+) -> SimplePhysicsData {
+    let anchor = Vec2::new(transform.translation.x, transform.translation.y);
+    SimplePhysicsData {
+        model: s.model,
+        map_mode: s.map_mode,
+        local_only: s.local_only,
+        target_param_id: s.target_param,
+        gravity: s.gravity * g_scale,
+        length: s.length,
+        frequency: s.frequency,
+        angle_damping: s.angle_damping,
+        length_damping: s.length_damping,
+        output_scale: Vec2::from_array(s.output_scale),
+        offset_output_scale: Vec2::ONE,
+        bob: anchor + Vec2::new(0.0, s.length),
+        spring_vel: Vec2::ZERO,
+        d_angle: 0.0,
+        anchor,
+        anchor_initialized: false,
+    }
+}
+
+fn build_masks(masks: &[ClpMask]) -> Vec<MaskBinding> {
+    masks
+        .iter()
+        .map(|m| MaskBinding {
+            source_uuid: m.source,
+            mode: m.mode,
+        })
+        .collect()
+}
+
+/// Rebuild a runtime [`Mesh`], re-establishing the invariant the deform/runtime
+/// loops rely on (every index in range, uvs 1:1 with vertices) — the same
+/// validation `convert.rs` does on the inx path.
+fn build_mesh(m: &ClpMesh) -> Result<Mesh, ImportError> {
+    let vertices: Vec<Vec2> = m
+        .verts
+        .chunks_exact(2)
+        .map(|c| Vec2::new(c[0], c[1]))
+        .collect();
+    let uvs: Vec<Vec2> = m
+        .uvs
+        .chunks_exact(2)
+        .map(|c| Vec2::new(c[0], c[1]))
+        .collect();
+    if !uvs.is_empty() && uvs.len() != vertices.len() {
+        return Err(ImportError::MalformedPayload(format!(
+            "mesh has {} vertices but {} uvs",
+            vertices.len(),
+            uvs.len()
+        )));
+    }
+    let indices = match &m.indices {
+        ClpIndices::U16(v) => MeshIndices::U16(v.clone()),
+        ClpIndices::U32(v) => MeshIndices::U32(v.clone()),
+    };
+    if let Some(bad) = indices.iter_u32().find(|&i| i as usize >= vertices.len()) {
+        return Err(ImportError::MalformedPayload(format!(
+            "mesh triangle index {bad} out of range for {} vertices",
+            vertices.len()
+        )));
+    }
+    Ok(Mesh::new(
+        vertices,
+        uvs,
+        indices,
+        Vec2::from_array(m.origin),
+    ))
+}
+
+fn build_param(
+    id: u32,
+    p: &ClpParam,
+    node_ids: &[NodeId],
+    nodes: &[ClpNode],
+) -> Result<Param, ImportError> {
+    let width = p.axis_points_x.len().max(1);
+    let height = p.axis_points_y.len().max(1);
+    let bindings = p
+        .bindings
+        .iter()
+        .filter_map(|b| {
+            let node = *node_ids.get(b.node as usize)?;
+            Some(
+                build_binding_values(
+                    &b.values,
+                    nodes.get(b.node as usize),
+                    width,
+                    height,
+                    &p.axis_points_x,
+                    &p.axis_points_y,
+                )
+                .map(|values| Binding::new(node, b.interpolate_mode, values)),
+            )
+        })
+        .collect::<Result<Vec<_>, crate::deform::DeformShapeError>>()?
+        .into_iter()
+        // The same load-time sanitization the inx path applies: a binding that
+        // contributes nothing regardless of param value never reaches the runtime.
+        .filter(|b| !binding_is_all_zero(&b.values))
+        .collect();
+    Ok(Param {
+        id,
+        name: p.name.clone(),
+        is_vec2: p.is_vec2,
+        min: Vec2::from_array(p.min),
+        max: Vec2::from_array(p.max),
+        defaults: Vec2::from_array(p.defaults),
+        axis_points_x: p.axis_points_x.clone(),
+        axis_points_y: p.axis_points_y.clone(),
+        bindings,
+    })
+}
+
+/// Derive the dense evaluation grid from the stored authored cells — the
+/// loader half of the single-layer keypoint model (see [`crate::fill`]).
+fn build_binding_values(
+    v: &ClpBindingValues,
+    node: Option<&ClpNode>,
+    width: usize,
+    height: usize,
+    axis_x: &[f32],
+    axis_y: &[f32],
+) -> Result<BindingValues, crate::deform::DeformShapeError> {
+    let scalar = |c: &ClpCells<f32>, identity: f32| -> Matrix<f32> {
+        let authored: Vec<((u32, u32), f32)> =
+            c.cells.iter().map(|c| ((c.x, c.y), c.value)).collect();
+        Matrix {
+            width,
+            height,
+            data: crate::fill::derive_dense(width, height, axis_x, axis_y, &authored, &identity),
+        }
+    };
+    use ClpBindingValues as V;
+    Ok(match v {
+        V::Deform(c) => {
+            BindingValues::Deform(build_deform_matrix(c, node, width, height, axis_x, axis_y)?)
+        }
+        V::ZSort(c) => BindingValues::ZSort(scalar(c, 0.0)),
+        V::TransformTX(c) => BindingValues::TransformTX(scalar(c, 0.0)),
+        V::TransformTY(c) => BindingValues::TransformTY(scalar(c, 0.0)),
+        V::TransformSX(c) => BindingValues::TransformSX(scalar(c, 1.0)),
+        V::TransformSY(c) => BindingValues::TransformSY(scalar(c, 1.0)),
+        V::TransformRX(c) => BindingValues::TransformRX(scalar(c, 0.0)),
+        V::TransformRY(c) => BindingValues::TransformRY(scalar(c, 0.0)),
+        V::TransformRZ(c) => BindingValues::TransformRZ(scalar(c, 0.0)),
+        V::Opacity(c) => BindingValues::Opacity(scalar(c, 1.0)),
+        V::TintR(c) => BindingValues::TintR(scalar(c, 1.0)),
+        V::TintG(c) => BindingValues::TintG(scalar(c, 1.0)),
+        V::TintB(c) => BindingValues::TintB(scalar(c, 1.0)),
+        V::ScreenTintR(c) => BindingValues::ScreenTintR(scalar(c, 0.0)),
+        V::ScreenTintG(c) => BindingValues::ScreenTintG(scalar(c, 0.0)),
+        V::ScreenTintB(c) => BindingValues::ScreenTintB(scalar(c, 0.0)),
+        V::OutputScaleX(c) => BindingValues::OutputScaleX(scalar(c, 1.0)),
+        V::OutputScaleY(c) => BindingValues::OutputScaleY(scalar(c, 1.0)),
+    })
+}
+
+/// Deform cells are stored flat as `[x, y, x, y, …]`; the fill derives the
+/// unauthored cells, then `from_cells` packs the dense grid into the runtime's
+/// uniform-stride [`DeformMatrix`]. An empty authored set derives all-zero
+/// offsets sized to the node's mesh.
+fn build_deform_matrix(
+    c: &ClpCells<Vec<f32>>,
+    node: Option<&ClpNode>,
+    width: usize,
+    height: usize,
+    axis_x: &[f32],
+    axis_y: &[f32],
+) -> Result<DeformMatrix, crate::deform::DeformShapeError> {
+    let vlen = c
+        .cells
+        .iter()
+        .map(|cell| cell.value.len())
+        .max()
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| node_mesh_flat_len(node));
+    let identity = vec![0.0f32; vlen];
+    let authored: Vec<((u32, u32), Vec<f32>)> = c
+        .cells
+        .iter()
+        .map(|cell| ((cell.x, cell.y), cell.value.clone()))
+        .collect();
+    let dense = crate::fill::derive_dense(width, height, axis_x, axis_y, &authored, &identity);
+    let cells: Vec<Vec<Vec2>> = dense
+        .iter()
+        .map(|cell| {
+            cell.chunks_exact(2)
+                .map(|c| Vec2::new(c[0], c[1]))
+                .collect()
+        })
+        .collect();
+    DeformMatrix::from_cells(width, height, cells)
+}
+
+fn node_mesh_flat_len(node: Option<&ClpNode>) -> usize {
+    match node.map(|n| &n.kind) {
+        Some(ClpNodeKind::Part(p)) => p.mesh.verts.len(),
+        Some(ClpNodeKind::MeshGroup(mg)) => mg.mesh.verts.len(),
+        _ => 0,
+    }
+}
+
+fn build_model_textures(textures: &[ClpTexture]) -> Result<Vec<ModelTexture>, ImportError> {
+    textures
+        .iter()
+        .map(|t| {
+            // crop_textures decodes via ModelTexture::decode; the `premultiplied`
+            // flag tells it whether to unwind inochi2d's premultiply-in-sRGB
+            // (inx-sourced) or take the bytes as straight-alpha (editor-authored).
+            Ok(ModelTexture {
+                format: match t.encoding {
+                    TextureEncoding::Png => TextureFormat::Png,
+                    TextureEncoding::Tga => TextureFormat::Tga,
+                },
+                data: t.data.clone().into(),
+                premultiplied: t.alpha == TextureAlpha::PremultipliedSrgb,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::formats::InxModel;
+    use serde_json::json;
+
+    /// The full-rig reference model. No such rig ships in the tree yet, so
+    /// every test that needs one is `#[ignore]`d; drop a rig at this path and
+    /// remove the attributes to re-enable them.
+    fn load_reference() -> InxModel {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../example_models/reference/reference.inx"
+        );
+        let bytes = std::fs::read(path).expect("read reference.inx");
+        InxModel::parse(std::io::Cursor::new(bytes.as_slice())).expect("parse reference.inx")
+    }
+
+    fn kind_name(k: &NodeKind) -> &'static str {
+        match k {
+            NodeKind::Empty => "Empty",
+            NodeKind::Part(_) => "Part",
+            NodeKind::Composite(_) => "Composite",
+            NodeKind::MeshGroup(_) => "MeshGroup",
+            NodeKind::SimplePhysics(_) => "SimplePhysics",
+        }
+    }
+
+    #[test]
+    fn inx_and_clp_paths_reflect_z_order_identically() {
+        let model = InxModel {
+            payload: json!({
+                "nodes": {
+                    "uuid": 1,
+                    "name": "root",
+                    "type": "Node",
+                    "zsort": 2.5,
+                    "children": []
+                },
+                "param": [{
+                    "uuid": 10,
+                    "name": "depth",
+                    "is_vec2": false,
+                    "min": [0.0, 0.0],
+                    "max": [1.0, 1.0],
+                    "defaults": [0.0, 0.0],
+                    "axis_points": [[0.0, 1.0], [0.0]],
+                    "bindings": [{
+                        "node": 1,
+                        "param_name": "zSort",
+                        "values": [[-3.0], [4.0]]
+                    }]
+                }]
+            }),
+            textures: Vec::new(),
+            vendors: Vec::new(),
+        };
+
+        let direct = super::super::from_inx_model(&model).unwrap();
+        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
+        let rebuilt = from_clp(&clp, 0).unwrap();
+
+        assert_eq!(clp.doc.nodes[0].zsort, -2.5);
+        assert_eq!(
+            direct
+                .iter()
+                .map(|(_, node)| node.base_z_order)
+                .collect::<Vec<_>>(),
+            rebuilt
+                .iter()
+                .map(|(_, node)| node.base_z_order)
+                .collect::<Vec<_>>()
+        );
+        let direct_values = &direct.params()[0].bindings[0].values;
+        let rebuilt_values = &rebuilt.params()[0].bindings[0].values;
+        let (BindingValues::ZSort(direct), BindingValues::ZSort(rebuilt)) =
+            (direct_values, rebuilt_values)
+        else {
+            panic!("expected ZSort bindings");
+        };
+        assert_eq!(direct.data, vec![3.0, -4.0]);
+        assert_eq!(direct.data, rebuilt.data);
+    }
+
+    /// `.inx → Puppet` and `.inx → .clp → Puppet` must build the same runtime
+    /// puppet. Both insert nodes in the same DFS pre-order, so `iter()` (slot
+    /// order) aligns them node-for-node. The single intentional divergence is
+    /// Composite `propagate_mesh_group` (the inx path hardcodes `true`; the
+    /// `.clp` build honors the authored value), asserted separately below.
+    #[test]
+    #[ignore = "needs the reference rig at example_models/reference/"]
+    fn reference_clp_build_matches_inx_puppet() {
+        let model = load_reference();
+        let inx_puppet = super::super::from_inx_model(&model).unwrap();
+        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
+        let clp_puppet = from_clp(&clp, 0).unwrap();
+
+        assert_eq!(inx_puppet.len(), clp_puppet.len(), "node count");
+        assert_eq!(
+            inx_puppet.textures().len(),
+            clp_puppet.textures().len(),
+            "texture count"
+        );
+        for (a, b) in inx_puppet.textures().iter().zip(clp_puppet.textures()) {
+            assert_eq!((a.width, a.height), (b.width, b.height), "texture dims");
+        }
+
+        for ((id, a), (_, b)) in inx_puppet.iter().zip(clp_puppet.iter()) {
+            let id = id.0;
+            assert_eq!(a.name, b.name, "node {id} name");
+            assert_eq!(a.enabled, b.enabled, "node {id} enabled");
+            assert_eq!(a.base_z_order, b.base_z_order, "node {id} zsort");
+            assert_eq!(
+                a.base_transform.translation, b.base_transform.translation,
+                "node {id} translation"
+            );
+            match (&a.kind, &b.kind) {
+                (NodeKind::Empty, NodeKind::Empty) => {}
+                (NodeKind::Part(pa), NodeKind::Part(pb)) => {
+                    assert_eq!(pa.albedo_texture, pb.albedo_texture, "node {id} albedo");
+                    assert_eq!(
+                        pa.mesh.vertices.len(),
+                        pb.mesh.vertices.len(),
+                        "node {id} verts"
+                    );
+                    assert_eq!(
+                        pa.mesh.indices.len(),
+                        pb.mesh.indices.len(),
+                        "node {id} indices"
+                    );
+                    assert_eq!(pa.mesh.uvs, pb.mesh.uvs, "node {id} crop-rewritten uvs");
+                    assert_eq!(pa.blend_mode, pb.blend_mode, "node {id} blend");
+                    assert_eq!(pa.masks.len(), pb.masks.len(), "node {id} masks");
+                    assert_eq!(pa.opacity, pb.opacity, "node {id} opacity");
+                }
+                (NodeKind::Composite(ca), NodeKind::Composite(cb)) => {
+                    assert_eq!(ca.blend_mode, cb.blend_mode, "node {id} composite blend");
+                    assert_eq!(ca.opacity, cb.opacity, "node {id} composite opacity");
+                    assert_eq!(ca.masks.len(), cb.masks.len(), "node {id} composite masks");
+                }
+                (NodeKind::MeshGroup(ma), NodeKind::MeshGroup(mb)) => {
+                    assert_eq!(ma.dynamic, mb.dynamic, "node {id} mg dynamic");
+                    assert_eq!(
+                        ma.translate_children, mb.translate_children,
+                        "node {id} mg tc"
+                    );
+                    assert_eq!(
+                        ma.mesh.vertices.len(),
+                        mb.mesh.vertices.len(),
+                        "node {id} mg verts"
+                    );
+                }
+                (NodeKind::SimplePhysics(sa), NodeKind::SimplePhysics(sb)) => {
+                    assert_eq!(sa.model, sb.model, "node {id} phys model");
+                    assert_eq!(sa.map_mode, sb.map_mode, "node {id} phys map_mode");
+                    assert_eq!(sa.length, sb.length, "node {id} phys length");
+                    assert!(
+                        (sa.gravity - sb.gravity).abs() < 1e-3,
+                        "node {id} phys gravity (g-scale fold): {} vs {}",
+                        sa.gravity,
+                        sb.gravity
+                    );
+                }
+                (x, y) => panic!(
+                    "node {id} kind mismatch: {} vs {}",
+                    kind_name(x),
+                    kind_name(y)
+                ),
+            }
+        }
+
+        assert_eq!(
+            inx_puppet.params().len(),
+            clp_puppet.params().len(),
+            "param count"
+        );
+        let inx_bindings: usize = inx_puppet.params().iter().map(|p| p.bindings.len()).sum();
+        let clp_bindings: usize = clp_puppet.params().iter().map(|p| p.bindings.len()).sum();
+        assert_eq!(
+            inx_bindings, clp_bindings,
+            "total bindings after the all-zero filter"
+        );
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png)
+            .expect("encode png");
+        out.into_inner()
+    }
+
+    fn triangle_part() -> ClpNode {
+        ClpNode {
+            parent: Some(0),
+            name: "part".into(),
+            enabled: true,
+            zsort: 0.0,
+            transform: ClpTransform::default(),
+            lock_to_root: false,
+            kind: ClpNodeKind::Part(ClpPart {
+                mesh: ClpMesh {
+                    verts: vec![0.0, 0.0, 10.0, 0.0, 5.0, 10.0],
+                    uvs: vec![0.0, 0.0, 1.0, 0.0, 0.5, 1.0],
+                    indices: ClpIndices::U16(vec![0, 1, 2]),
+                    origin: [0.0, 0.0],
+                },
+                albedo: 0,
+                opacity: 1.0,
+                blend_mode: crate::components::BlendMode::Normal,
+                tint: [1.0, 1.0, 1.0],
+                screen_tint: [0.0, 0.0, 0.0],
+                masks: Vec::new(),
+                mask_threshold: 0.5,
+            }),
+        }
+    }
+
+    fn two_part_file(welds: Vec<crate::formats::clp::ClpWeld>) -> ClpFile {
+        let root = ClpNode {
+            parent: None,
+            name: "root".into(),
+            enabled: true,
+            zsort: 0.0,
+            transform: ClpTransform::default(),
+            lock_to_root: false,
+            kind: ClpNodeKind::Empty,
+        };
+        ClpFile {
+            version: crate::formats::clp::FORMAT_VERSION,
+            doc: crate::formats::clp::ClpDocument {
+                physics: Default::default(),
+                nodes: vec![root, triangle_part(), triangle_part()],
+                params: Vec::new(),
+                welds,
+            },
+            textures: vec![ClpTexture {
+                encoding: TextureEncoding::Png,
+                alpha: TextureAlpha::Straight,
+                data: tiny_png(),
+            }],
+        }
+    }
+
+    fn weld(a: u32, b: u32, a_vert: u32, b_vert: u32, weight: f32) -> crate::formats::clp::ClpWeld {
+        crate::formats::clp::ClpWeld {
+            a,
+            b,
+            pairs: vec![crate::formats::clp::ClpWeldPair {
+                a_vert,
+                b_vert,
+                weight,
+            }],
+        }
+    }
+
+    #[test]
+    fn valid_welds_load_and_resolve_to_node_ids() {
+        let file = two_part_file(vec![weld(1, 2, 0, 1, 0.25)]);
+        let puppet = from_clp(&file, 0).unwrap();
+        assert_eq!(puppet.welds().len(), 1);
+        let w = &puppet.welds()[0];
+        assert_ne!(w.a, w.b);
+        assert!(matches!(
+            puppet.get(w.a).map(|n| &n.kind),
+            Some(NodeKind::Part(_))
+        ));
+        assert_eq!(w.pairs.len(), 1);
+        assert_eq!(w.pairs[0].weight, 0.25);
+    }
+
+    #[test]
+    fn aggregate_mesh_budget_is_checked_before_runtime_construction() {
+        let file = two_part_file(Vec::new());
+        let mut budget = LoadBudget::new(crate::load_budget::LoadLimits {
+            vertices: 5,
+            ..crate::load_budget::LoadLimits::default()
+        });
+
+        let err = match from_clp_with_budget(&file, 0, &mut budget) {
+            Err(error) => error,
+            Ok(_) => panic!("expected the aggregate vertex budget to reject the file"),
+        };
+
+        assert!(matches!(
+            err,
+            ImportError::LoadLimit(crate::load_budget::LoadLimitError {
+                resource: "vertices",
+                got: 6,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_welds_are_a_hard_error() {
+        let cases: Vec<(&str, Vec<crate::formats::clp::ClpWeld>)> = vec![
+            ("self weld", vec![weld(1, 1, 0, 0, 0.5)]),
+            ("dangling node", vec![weld(1, 9, 0, 0, 0.5)]),
+            ("non-Part endpoint", vec![weld(0, 1, 0, 0, 0.5)]),
+            ("a_vert out of range", vec![weld(1, 2, 3, 0, 0.5)]),
+            ("b_vert out of range", vec![weld(1, 2, 0, 3, 0.5)]),
+            ("weight above 1", vec![weld(1, 2, 0, 0, 1.5)]),
+            ("weight NaN", vec![weld(1, 2, 0, 0, f32::NAN)]),
+            (
+                "duplicate unordered pair",
+                vec![weld(1, 2, 0, 0, 0.5), weld(2, 1, 1, 1, 0.5)],
+            ),
+        ];
+        for (name, welds) in cases {
+            let file = two_part_file(welds);
+            match from_clp(&file, 0) {
+                Err(ImportError::MalformedPayload(_)) => {}
+                Err(other) => panic!("{name}: expected MalformedPayload, got {other:?}"),
+                Ok(_) => panic!("{name}: expected MalformedPayload, got a puppet"),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs the reference rig at example_models/reference/"]
+    fn build_honors_authored_propagate_meshgroup() {
+        let model = load_reference();
+        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
+        let clp_puppet = from_clp(&clp, 0).unwrap();
+        // The rig's root "Puppet Body" composite authors
+        // propagate_mesh_group=false; the build must carry that through (the
+        // inx path would force true).
+        assert!(
+            clp_puppet.iter().any(|(_, n)| matches!(
+                &n.kind,
+                NodeKind::Composite(c) if !c.propagate_mesh_group
+            )),
+            "an authored propagate_mesh_group=false composite must survive the build"
+        );
+    }
+}

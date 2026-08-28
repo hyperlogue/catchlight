@@ -1,0 +1,30 @@
+[package]
+name = "catchlight-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core library for catchlight 2.5D character animation"
+
+[dependencies]
+indextree = { workspace = true }
+glam = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+bytemuck = "1.25.2"
+image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
+smallvec = { version = "1.15", features = ["union"] }
+ciborium = "0.2.2"
+serde_bytes = "0.11.19"
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.12.0"

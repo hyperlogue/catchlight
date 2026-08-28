@@ -1,0 +1,33 @@
+[package]
+name = "catchlight-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "wgpu rendering backend for catchlight"
+
+[dependencies]
+catchlight-core = { workspace = true }
+wgpu = { workspace = true }
+glam = { workspace = true }
+image.workspace = true
+thiserror = { workspace = true }
+tracing = { workspace = true }
+wgpu-profiler = { workspace = true }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+futures = "0.3.31"
+smallvec = { version = "1.15", features = ["union"] }
+pollster.workspace = true
+
+[dev-dependencies]
+winit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ciborium = "0.2.2"
+serde_bytes = "0.11.19"
+egui = "0.34.3"
+egui-winit = "0.34.3"
+egui-wgpu = "0.34.3"
+
+[lints]
+workspace = true

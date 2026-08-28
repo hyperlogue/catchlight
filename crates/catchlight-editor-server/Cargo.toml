@@ -1,0 +1,29 @@
+[package]
+name = "catchlight-editor-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Multi-session editor server for catchlight: holds EditModels + a warm headless renderer, driven in-process or over a Unix socket"
+
+[dependencies]
+catchlight-editor-core = { workspace = true }
+catchlight-editor-protocol = { workspace = true }
+catchlight-core = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# The headless preview renderer is native-only; the wasm build keeps just the
+# document/session core (the browser GUI renders on its own device).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+catchlight-wgpu = { workspace = true }
+glam = { workspace = true }
+wgpu = { workspace = true }
+anyhow = { workspace = true }
+pollster = { workspace = true }
+
+[lints]
+workspace = true
