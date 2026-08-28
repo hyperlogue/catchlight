@@ -1,13 +1,22 @@
-use crate::config::Config;
+use crate::config::{Camera, Config, ParamSetting};
 use anyhow::{Context, Result};
 use catchlight_core::{load_model, ModelFormat, Puppet};
-use catchlight_wgpu::{collect_drawables, create_orthographic_camera_at};
+use catchlight_wgpu::{collect_drawables, create_orthographic_camera_at, RenderList};
 use std::path::Path;
 
 pub use catchlight_wgpu::RenderContext;
 
 const SUBSTEP_SECONDS: f32 = 0.01;
 const SETTLE_STEPS: u32 = 500;
+
+/// Opaque white, so a dropped or wrongly-blended pixel reads as a difference
+/// rather than blending into the background.
+pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
 
 pub struct CachedPuppet {
     pub puppet: Puppet,
@@ -31,54 +40,61 @@ pub fn load_puppet(path: &Path, texture_halvings: u32) -> Result<(Puppet, Vec<(u
     Ok((puppet, defaults))
 }
 
-pub fn render_one_to_rgba(
+/// Restore `cached` to its pristine pose, apply `params`, settle the physics,
+/// upload the resulting deforms, and collect the frame's drawables —
+/// everything a render needs except the render pass itself. `world` is the
+/// puppet's root transform: identity for a lone puppet, a translation when
+/// several share one frame.
+pub fn prepare_puppet(
     ctx: &mut RenderContext,
     cached: &mut CachedPuppet,
-    config: &Config,
-) -> Result<Vec<u8>> {
+    params: &[ParamSetting],
+    world: glam::Mat4,
+) -> Result<RenderList> {
     if !cached.uploaded {
         ctx.renderer.upload_puppet(&cached.puppet)?;
         cached.uploaded = true;
     }
     cached.puppet.clone_from(&cached.pristine);
-    let params: Vec<(&str, glam::Vec2)> = config
-        .params
-        .iter()
-        .map(|p| (p.name.as_str(), glam::Vec2::new(p.x, p.y)))
-        .collect();
     cached.puppet.reset_dynamic_state();
     cached.puppet.reset_deforms();
     for &(uuid, value) in &cached.param_defaults {
         cached.puppet.set_param_value(uuid, value);
     }
-    for &(name, value) in &params {
-        if !cached.puppet.set_param_value_by_name(name, value) {
+    for p in params {
+        let name = p.name.as_str();
+        if !cached
+            .puppet
+            .set_param_value_by_name(name, glam::Vec2::new(p.x, p.y))
+        {
             anyhow::bail!("visual test parameter '{name}' not found");
         }
     }
     for _ in 0..SETTLE_STEPS {
         cached
             .puppet
-            .tick(&mut ctx.transforms, glam::Mat4::IDENTITY, SUBSTEP_SECONDS);
+            .tick(&mut ctx.transforms, world, SUBSTEP_SECONDS);
     }
     ctx.renderer.sync_deforms(&cached.puppet);
-    let aspect = ctx.width as f32 / ctx.height as f32;
-    let camera_height = ctx.height as f32 / config.camera.zoom.max(1e-3);
-    let camera = create_orthographic_camera_at(
-        camera_height,
-        aspect,
-        glam::Vec2::new(config.camera.x, config.camera.y),
-    );
-    ctx.renderer.update_camera(camera);
+    Ok(collect_drawables(&cached.puppet, &ctx.transforms))
+}
 
-    let render_list = collect_drawables(&cached.puppet, &ctx.transforms);
-    let clear = Some(wgpu::Color {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a: 1.0,
-    });
-    ctx.render(&render_list, clear)
+/// The view-projection `camera` describes for a `width` x `height` viewport.
+pub fn camera_matrix(width: u32, height: u32, camera: &Camera) -> glam::Mat4 {
+    let aspect = width as f32 / height as f32;
+    let camera_height = height as f32 / camera.zoom.max(1e-3);
+    create_orthographic_camera_at(camera_height, aspect, glam::Vec2::new(camera.x, camera.y))
+}
+
+pub fn render_one_to_rgba(
+    ctx: &mut RenderContext,
+    cached: &mut CachedPuppet,
+    config: &Config,
+) -> Result<Vec<u8>> {
+    let render_list = prepare_puppet(ctx, cached, &config.params, glam::Mat4::IDENTITY)?;
+    let camera = camera_matrix(ctx.width, ctx.height, &config.camera);
+    ctx.renderer.update_camera(camera);
+    ctx.render(&render_list, Some(CLEAR_COLOR))
         .map_err(|error| anyhow::anyhow!("render visual test: {error}"))?;
     ctx.read_rgba()
         .map_err(|error| anyhow::anyhow!("read visual test: {error}"))
