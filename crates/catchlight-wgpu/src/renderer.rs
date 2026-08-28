@@ -87,6 +87,77 @@ pub struct RenderStats {
     pub composite_slots_used: u32,
 }
 
+/// Resource-lifecycle counters for the current frame, reset at every
+/// `render_list` entry and readable afterwards via
+/// [`WgpuRenderer::frame_stats`]. Plain integers bumped unconditionally —
+/// no allocation, no timing — so tests can pin the buffer invariants that
+/// pixels cannot see: one queue write per buffer per frame, no growth
+/// after the frame is sized, and one write per reserved slot.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FrameStats {
+    /// `queue.submit` calls the renderer itself issued since the frame
+    /// started. The frame path records into the caller's encoder and
+    /// submits nothing, so this reads 0 after `render_list`: the caller's
+    /// submit is the frame's only one. Non-zero only when an upload that
+    /// submits (texture mip generation) ran inside the frame.
+    pub queue_submits: u32,
+    /// `queue.write_buffer` calls made this frame, all buffers.
+    pub queue_writes: u32,
+    /// `queue.write_buffer` calls targeting `instance_buffer`. At most 1:
+    /// per-part instance data is staged and flushed once at frame end,
+    /// because `write_buffer` batches at submit start and a second write
+    /// to a live offset would win for every draw that reads it.
+    pub instance_buffer_writes: u32,
+    /// `queue.write_buffer` calls targeting `part_uniform_buffer`. At most
+    /// 1, for the same reason as `instance_buffer_writes`.
+    pub part_uniform_buffer_writes: u32,
+    /// `queue.write_buffer` calls targeting `camera_buffer` — one per
+    /// `render_list`, into that view's own ring slot.
+    pub camera_buffer_writes: u32,
+    /// `queue.write_buffer` calls targeting the deform atlas. Deforms
+    /// upload from `sync_deforms`, outside the frame, so this reads 0.
+    pub deform_buffer_writes: u32,
+    /// Times `instance_buffer` was recreated this frame. Only
+    /// `begin_frame_instances` may do this, so: 1 on the first frame that
+    /// outgrows the current capacity, 0 on every later frame of that size.
+    pub instance_buffer_reallocs: u32,
+    /// Times `part_uniform_buffer` was recreated this frame. Same
+    /// discipline as `instance_buffer_reallocs`.
+    pub part_uniform_buffer_reallocs: u32,
+    /// Times the deform atlas was recreated this frame. Deform sizing
+    /// happens at mesh-upload time, so this reads 0 within a frame.
+    pub deform_buffer_reallocs: u32,
+    /// Buffer recreations that happened after the frame's sizing phase
+    /// closed. **Always 0**: growing mid-frame strands already-recorded
+    /// passes on the freed buffer.
+    pub late_buffer_reallocs: u32,
+    /// Instance slots `begin_frame_instances` sized the frame for.
+    pub instance_slots_budgeted: u32,
+    /// Instance slots handed out by `reserve_instances` this frame; never
+    /// above `instance_slots_budgeted`.
+    pub instance_slots_reserved: u32,
+    /// Instance slots actually written. Equals `instance_slots_reserved`
+    /// when every reserved slot is filled exactly once.
+    pub instance_slots_written: u32,
+    /// Bytes staged into `instance_buffer` this frame.
+    pub instance_bytes_written: u64,
+    /// Part-uniform slots `begin_frame_uniforms` sized the frame for.
+    pub part_uniform_slots_budgeted: u32,
+    /// `write_part_uniform` calls this frame — one per slot consumed,
+    /// never above `part_uniform_slots_budgeted`.
+    pub part_uniform_writes: u32,
+}
+
+/// Which renderer-owned GPU buffer a `FrameStats` write / realloc tally
+/// belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderBuffer {
+    Instance,
+    PartUniform,
+    Camera,
+    Deform,
+}
+
 fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
     match mode {
         // Premultiplied alpha: src already has RGB * A, so use One for src factor
@@ -1494,6 +1565,21 @@ pub struct WgpuRenderer {
     camera_slots_used: u32,
     camera_offset: u32,
     current_stats: RenderStats,
+    // Per-frame resource-lifecycle counters, reset alongside
+    // `current_stats` at render_list entry. See `FrameStats`.
+    frame_stats: FrameStats,
+    // Set once `begin_frame_uniforms` has closed the frame's sizing
+    // phase. Any buffer recreation after that strands already-recorded
+    // passes on the freed buffer, so it counts into
+    // `FrameStats::late_buffer_reallocs` and trips a debug assertion.
+    frame_sizing_closed: bool,
+    // High-water mark of the bytes staged into instance_buffer /
+    // part_uniform_buffer this frame. Both offset cursors are monotonic,
+    // so a write landing below its watermark is a second write to an
+    // offset earlier draws already read — the aliasing hazard that
+    // `write_buffer`'s submit-start batching makes silent.
+    instance_write_watermark: u64,
+    part_uniform_write_watermark: u64,
     /// Set when the device exposes `Features::TIMESTAMP_QUERY`. When
     /// absent (WebGL2 / WebGPU surfaces without the feature) the
     /// profiler is `None` and the render path falls back to CPU-only
@@ -1811,6 +1897,10 @@ impl WgpuRenderer {
             camera_slots_used: 0,
             camera_offset: 0,
             current_stats: RenderStats::default(),
+            frame_stats: FrameStats::default(),
+            frame_sizing_closed: false,
+            instance_write_watermark: 0,
+            part_uniform_write_watermark: 0,
             gpu_profiler,
             deform_uploaded: DenseMap::new(),
             deform_still_active: DenseMap::new(),
@@ -1824,13 +1914,53 @@ impl WgpuRenderer {
         }
     }
 
+    /// Resource-lifecycle counters for the frame in progress. Reset at
+    /// each `render_list` entry, so read it after the call returns.
+    pub fn frame_stats(&self) -> FrameStats {
+        self.frame_stats
+    }
+
+    /// Tally one `queue.write_buffer` against the buffer it targets.
+    fn note_queue_write(&mut self, buffer: RenderBuffer) {
+        self.frame_stats.queue_writes += 1;
+        match buffer {
+            RenderBuffer::Instance => self.frame_stats.instance_buffer_writes += 1,
+            RenderBuffer::PartUniform => self.frame_stats.part_uniform_buffer_writes += 1,
+            RenderBuffer::Camera => self.frame_stats.camera_buffer_writes += 1,
+            RenderBuffer::Deform => self.frame_stats.deform_buffer_writes += 1,
+        }
+    }
+
+    /// Tally one buffer recreation. Growth is only legal while the frame
+    /// is being sized: once `begin_frame_uniforms` has closed the sizing
+    /// phase, passes are recording against the buffers that exist, and a
+    /// new allocation would strand them on the freed one.
+    fn note_realloc(&mut self, buffer: RenderBuffer) {
+        match buffer {
+            RenderBuffer::Instance => self.frame_stats.instance_buffer_reallocs += 1,
+            RenderBuffer::PartUniform => self.frame_stats.part_uniform_buffer_reallocs += 1,
+            RenderBuffer::Deform => self.frame_stats.deform_buffer_reallocs += 1,
+            RenderBuffer::Camera => {}
+        }
+        if self.frame_sizing_closed {
+            self.frame_stats.late_buffer_reallocs += 1;
+            debug_assert!(
+                false,
+                "{buffer:?} buffer grew after the frame was sized — passes already \
+                 recorded this frame still point at the freed buffer",
+            );
+        }
+    }
+
     /// Size instance_buffer for the whole frame and reset the cursor.
     /// Callers must pass the total instance count needed by every draw
     /// in the frame — growing mid-frame would leave already-recorded
     /// passes pointing at the old buffer while later writes land in the
     /// new one.
     fn begin_frame_instances(&mut self, total_instances: usize) {
+        self.frame_stats.instance_slots_budgeted = total_instances as u32;
         if total_instances > self.instance_buffer_capacity {
+            self.note_realloc(RenderBuffer::Instance);
             self.instance_buffer_capacity = (total_instances * 2).max(512);
             self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Instance Buffer"),
@@ -1841,6 +1971,7 @@ impl WgpuRenderer {
         }
         self.instance_cursor = 0;
         self.instance_staging_len = 0;
+        self.instance_write_watermark = 0;
         self.batch_instance_writes = true;
     }
 
@@ -1849,6 +1980,7 @@ impl WgpuRenderer {
         if needed <= self.deform_buffer_capacity {
             return;
         }
+        self.note_realloc(RenderBuffer::Deform);
         self.deform_buffer_capacity = needed.next_power_of_two();
         self.deform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Deform Buffer Atlas"),
@@ -1857,6 +1989,7 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
         if !self.deform_upload_mirror.is_empty() {
+            self.note_queue_write(RenderBuffer::Deform);
             self.queue
                 .write_buffer(&self.deform_buffer, 0, &self.deform_upload_mirror);
         }
@@ -1888,6 +2021,7 @@ impl WgpuRenderer {
         let stride = std::mem::size_of::<InstanceRaw>() as u64;
         let offset = self.instance_cursor;
         self.instance_cursor += count as u64 * stride;
+        self.frame_stats.instance_slots_reserved += count as u32;
         debug_assert!(
             self.instance_cursor <= (self.instance_buffer_capacity as u64) * stride,
             "instance_buffer overrun — begin_frame_instances undersized: cursor={} cap={}",
@@ -1938,7 +2072,21 @@ impl WgpuRenderer {
         if instances.is_empty() {
             return;
         }
-        let bytes = bytemuck::cast_slice(instances);
+        let bytes: &[u8] = bytemuck::cast_slice(instances);
+        // Offsets come from the monotonic `reserve_instances` cursor, so a
+        // write starting below the watermark overlaps one already made
+        // this frame. Both land before the frame's single submit, where
+        // write_buffer batching makes the later one win for every draw
+        // that reads the range — silently, and for the wrong parts.
+        debug_assert!(
+            offset >= self.instance_write_watermark,
+            "instance_buffer offset {offset} rewrites bytes already staged this frame \
+             (watermark {}); every draw reading that range would see the later write",
+            self.instance_write_watermark,
+        );
+        self.instance_write_watermark = offset + bytes.len() as u64;
+        self.frame_stats.instance_slots_written += instances.len() as u32;
+        self.frame_stats.instance_bytes_written += bytes.len() as u64;
         if self.batch_instance_writes {
             let start = offset as usize;
             let end = start + bytes.len();
@@ -1948,6 +2096,7 @@ impl WgpuRenderer {
             self.instance_staging[start..end].copy_from_slice(bytes);
             self.instance_staging_len = self.instance_staging_len.max(end);
         } else {
+            self.note_queue_write(RenderBuffer::Instance);
             self.queue
                 .write_buffer(&self.instance_buffer, offset, bytes);
         }
@@ -1955,6 +2104,7 @@ impl WgpuRenderer {
 
     fn flush_instance_writes(&mut self) {
         if self.batch_instance_writes && self.instance_staging_len > 0 {
+            self.note_queue_write(RenderBuffer::Instance);
             self.queue.write_buffer(
                 &self.instance_buffer,
                 0,
@@ -1969,7 +2119,9 @@ impl WgpuRenderer {
     /// cursor. Mid-frame growth would strand already-recorded draws on
     /// the old buffer, so sizing must happen up front.
     fn begin_frame_uniforms(&mut self, count: u32) {
+        self.frame_stats.part_uniform_slots_budgeted = count;
         if count > self.part_uniform_capacity {
+            self.note_realloc(RenderBuffer::PartUniform);
             self.part_uniform_capacity = count.max(256).next_power_of_two();
             self.part_uniform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Part Uniform Buffer"),
@@ -1995,11 +2147,16 @@ impl WgpuRenderer {
         }
         self.part_uniform_cursor = 0;
         self.part_uniform_staging_len = 0;
+        self.part_uniform_write_watermark = 0;
         self.batch_part_uniform_writes = true;
+        // Both frame buffers are now sized; every pass recorded from here
+        // on binds them, so nothing may reallocate until the next frame.
+        self.frame_sizing_closed = true;
     }
 
     fn flush_part_uniform_writes(&mut self) {
         if self.batch_part_uniform_writes && self.part_uniform_staging_len > 0 {
+            self.note_queue_write(RenderBuffer::PartUniform);
             self.queue.write_buffer(
                 &self.part_uniform_buffer,
                 0,
@@ -2028,6 +2185,17 @@ impl WgpuRenderer {
         let uniform = PartUniform::new(opacity, tint_linear, screen_tint_linear, mask_threshold);
         let offset = self.part_uniform_cursor;
         let bytes = bytemuck::bytes_of(&uniform);
+        // Same aliasing hazard as `write_instances`: the cursor below is
+        // monotonic, so a slot at or under the watermark is one an
+        // earlier draw this frame already bound as a dynamic offset.
+        debug_assert!(
+            offset >= self.part_uniform_write_watermark,
+            "part_uniform slot at offset {offset} rewritten this frame (watermark {}); \
+             every draw binding that slot would see the later write",
+            self.part_uniform_write_watermark,
+        );
+        self.part_uniform_write_watermark = offset + self.shared.part_uniform_stride;
+        self.frame_stats.part_uniform_writes += 1;
         if self.batch_part_uniform_writes {
             let start = offset as usize;
             let end = start + bytes.len();
@@ -2037,6 +2205,7 @@ impl WgpuRenderer {
             self.part_uniform_staging[start..end].copy_from_slice(bytes);
             self.part_uniform_staging_len = self.part_uniform_staging_len.max(end);
         } else {
+            self.note_queue_write(RenderBuffer::PartUniform);
             self.queue
                 .write_buffer(&self.part_uniform_buffer, offset, bytes);
         }
@@ -2067,6 +2236,7 @@ impl WgpuRenderer {
         let camera_uniform = CameraUniform {
             view_proj: self.camera_view_proj.to_cols_array_2d(),
         };
+        self.note_queue_write(RenderBuffer::Camera);
         self.queue.write_buffer(
             &self.camera_buffer,
             offset,
@@ -2281,6 +2451,7 @@ impl WgpuRenderer {
                     run = Some((run_start, run_end.max(end)));
                 }
                 Some((run_start, run_end)) => {
+                    self.note_queue_write(RenderBuffer::Deform);
                     self.queue.write_buffer(
                         &self.deform_buffer,
                         run_start,
@@ -2293,6 +2464,7 @@ impl WgpuRenderer {
             }
         }
         if let Some((run_start, run_end)) = run {
+            self.note_queue_write(RenderBuffer::Deform);
             self.queue.write_buffer(
                 &self.deform_buffer,
                 run_start,
@@ -2436,6 +2608,7 @@ impl WgpuRenderer {
         let deform_start = deform_offset as usize;
         let deform_end = deform_start + deform_size as usize;
         self.deform_upload_mirror[deform_start..deform_end].fill(0);
+        self.note_queue_write(RenderBuffer::Deform);
         self.queue.write_buffer(
             &self.deform_buffer,
             deform_offset,
@@ -2503,6 +2676,11 @@ impl WgpuRenderer {
             &self.shared,
             &format!("Texture {}", texture_id.0),
         )?;
+        // Mip generation for a freshly created texture submits its own
+        // command buffer. Harmless where uploads belong (between frames),
+        // but tallied so a frame that ends up doing texture work reports a
+        // non-zero submit count instead of silently splitting in two.
+        self.frame_stats.queue_submits += 1;
         texture.source = Some(TextureSource {
             rgba: tex.rgba.clone(),
             width: tex.width,
@@ -4094,6 +4272,11 @@ impl WgpuRenderer {
         height: u32,
         clear_color: Option<wgpu::Color>,
     ) -> RendererResult<RenderStats> {
+        // Frame boundary for the resource-lifecycle counters: the camera
+        // slot write below is this frame's first queue write, so the
+        // reset has to precede it.
+        self.frame_stats = FrameStats::default();
+        self.frame_sizing_closed = false;
         self.reserve_camera()?;
         let result = self.render_list_ext_inner(
             render_list,
@@ -4109,6 +4292,8 @@ impl WgpuRenderer {
         );
         self.flush_instance_writes();
         self.flush_part_uniform_writes();
+        // Frame over: uploads between frames may size buffers again.
+        self.frame_sizing_closed = false;
         result
     }
 
