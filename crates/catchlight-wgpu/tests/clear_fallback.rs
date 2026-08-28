@@ -86,7 +86,7 @@ fn empty_render_list_still_clears_the_target() {
             .expect("readback")
     });
 
-    for px in pixels.chunks_exact(4) {
-        assert_eq!(px, [255, 0, 0, 255], "expected red clear, got {px:?}");
+    for px in pixels.as_chunks::<4>().0 {
+        assert_eq!(px, &[255, 0, 0, 255], "expected red clear, got {px:?}");
     }
 }

@@ -201,7 +201,7 @@ fn premultiply_srgb_lut() -> &'static [u8; 65536] {
 pub fn premultiplied_srgb_to_premultiplied_linear_inplace(rgba: &mut [u8]) {
     debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
     let lut = premultiply_srgb_lut();
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3] as usize;
         if a == 0 {
             px[0] = 0;
@@ -225,7 +225,7 @@ pub fn premultiplied_srgb_to_premultiplied_linear_inplace(rgba: &mut [u8]) {
 /// division. Pixels with α=0 are left as `(0, 0, 0, 0)`.
 pub fn unpremultiply_srgb_inplace(rgba: &mut [u8]) {
     debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a == 0 {
             px[0] = 0;
@@ -255,7 +255,7 @@ pub fn unpremultiply_srgb_inplace(rgba: &mut [u8]) {
 pub fn premultiply_linear_into_srgb_inplace(rgba: &mut [u8]) {
     debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
     let decode = crate::components::srgb_decode_table();
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a == 0 {
             px[0] = 0;
@@ -575,8 +575,10 @@ mod tests {
         premultiplied_srgb_to_premultiplied_linear_inplace(&mut fused);
 
         for (i, (f, t)) in fused
-            .chunks_exact(4)
-            .zip(two_pass.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(two_pass.as_chunks::<4>().0)
             .enumerate()
         {
             assert_eq!(f, t, "channel {} alpha {}", i % 256, i / 256);

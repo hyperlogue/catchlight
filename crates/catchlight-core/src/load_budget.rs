@@ -313,7 +313,7 @@ fn clp_mesh_group_bitmap_cells(mesh: &crate::formats::clp::ClpMesh) -> u64 {
     let mut min = glam::Vec2::splat(f32::MAX);
     let mut max = glam::Vec2::splat(f32::MIN);
     let origin = glam::Vec2::from_array(mesh.origin);
-    for pair in mesh.verts.chunks_exact(2) {
+    for pair in mesh.verts.as_chunks::<2>().0 {
         let point = glam::Vec2::new(pair[0], pair[1]) - origin;
         min = min.min(point);
         max = max.max(point);

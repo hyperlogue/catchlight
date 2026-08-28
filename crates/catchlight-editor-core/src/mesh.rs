@@ -48,7 +48,7 @@ impl WorkingMesh {
         };
         let mut tris = |ix: &mut dyn Iterator<Item = u32>| {
             let v: Vec<u32> = ix.collect();
-            for t in v.chunks_exact(3) {
+            for t in v.as_chunks::<3>().0 {
                 push_edge(t[0], t[1]);
                 push_edge(t[1], t[2]);
                 push_edge(t[2], t[0]);
@@ -779,10 +779,17 @@ fn point_segment_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 pub fn refit_deform_offsets(old: &ClpMesh, new_verts: &[f32], old_offsets: &[f32]) -> Vec<f32> {
     let old_tris: Vec<[u32; 3]> = match &old.indices {
         ClpIndices::U16(v) => v
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
             .collect(),
-        ClpIndices::U32(v) => v.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect(),
+        ClpIndices::U32(v) => v
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| [t[0], t[1], t[2]])
+            .collect(),
     };
     let old_pos = |i: u32| -> [f32; 2] {
         [
@@ -806,7 +813,7 @@ pub fn refit_deform_offsets(old: &ClpMesh, new_verts: &[f32], old_offsets: &[f32
         exact.insert((q[0].to_bits(), q[1].to_bits()), i);
     }
     let mut out = Vec::with_capacity(new_verts.len());
-    for p in new_verts.chunks_exact(2) {
+    for p in new_verts.as_chunks::<2>().0 {
         let p = [p[0], p[1]];
         if let Some(&i) = exact.get(&(p[0].to_bits(), p[1].to_bits())) {
             out.extend_from_slice(&old_off(i));

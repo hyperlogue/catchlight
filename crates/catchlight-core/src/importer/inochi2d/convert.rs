@@ -441,12 +441,16 @@ fn reflect_transform_y(t: &mut Transform) {
 fn convert_mesh(m: &SchemaMesh) -> Result<Mesh, ImportError> {
     let mut vertices: Vec<Vec2> = m
         .verts
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| Vec2::new(c[0], c[1]))
         .collect();
     let uvs: Vec<Vec2> = m
         .uvs
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| Vec2::new(c[0], c[1]))
         .collect();
     if !uvs.is_empty() && uvs.len() != vertices.len() {
