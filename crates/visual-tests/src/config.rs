@@ -126,9 +126,9 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
             texture_halvings: 0,
         },
         // Two grid Parts with a welded seam, per-vertex weights 1 / 0.5 / 0
-        // left-to-right (scripts/build_welded_seam_clp.py). The `pull` param
-        // deform-shifts the top part; the seam must stay closed with each
-        // weight regime visible.
+        // left-to-right (`cargo xtask gen-fixture welded_seam`). The `pull`
+        // param deform-shifts the top part; the seam must stay closed with
+        // each weight regime visible.
         ModelSpec {
             stem: "welded_seam".into(),
             path: repro.join("welded_seam.clp"),
