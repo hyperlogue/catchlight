@@ -178,6 +178,9 @@ fn load_deeply_nested_tree_does_not_overflow() {
     let root = puppet.root();
     super::convert::test_support::load_subtree(&value, root, &mut puppet).expect("load_subtree");
     assert_eq!(puppet.len(), DEPTH + 2);
+    // `serde_json::Value`'s Drop is recursive, so dropping a 5_000-deep
+    // value overflows the stack. Leaking it here is deliberate: the test
+    // is about `load_subtree`, not about teardown.
     std::mem::forget(value);
 }
 
