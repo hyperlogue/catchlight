@@ -48,38 +48,10 @@ pub(crate) mod test_support {
     }
 }
 
-/// How the decoded textures are reduced and laid out for upload.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum TextureStrategy {
-    /// Pack each texture's mesh-referenced UV bbox into shared atlas pages
-    /// (see [`super::atlas`]). Fewer textures, but the UV bbox keeps far more
-    /// transparent texels than the opaque content needs — worth it only when
-    /// many puppets render at once and texture-bind churn dominates.
-    Atlas,
-    /// Crop each texture to its opaque bounding box, one table entry per
-    /// source texture (see [`super::alpha_crop`]). The default: a much tighter
-    /// crop (reference rig ~158 MB -> ~56 MB) at the cost of more textures.
-    AlphaCrop,
-}
-
 pub(super) fn schema_to_puppet(
     payload: &serde_json::Value,
     textures: Vec<ModelTexture>,
     texture_halvings: u32,
-) -> Result<Puppet, ImportError> {
-    schema_to_puppet_with(
-        payload,
-        textures,
-        texture_halvings,
-        TextureStrategy::AlphaCrop,
-    )
-}
-
-pub(crate) fn schema_to_puppet_with(
-    payload: &serde_json::Value,
-    textures: Vec<ModelTexture>,
-    texture_halvings: u32,
-    texture_strategy: TextureStrategy,
 ) -> Result<Puppet, ImportError> {
     let root_obj = payload
         .as_object()
@@ -115,17 +87,11 @@ pub(crate) fn schema_to_puppet_with(
     // Decode textures into the canonical straight-alpha sRGB
     // `PuppetTexture` representation (inochi2d's premultiply-in-sRGB
     // convention is unwound during decode so every consumer downstream
-    // sees the same bytes), then reduce them per the chosen strategy and
-    // rewrite part UVs. Runs after the node walk because both strategies
-    // need every part's mesh UVs and albedo slot.
-    let puppet_textures = match texture_strategy {
-        TextureStrategy::Atlas => {
-            super::atlas::atlas_textures(&mut puppet, &textures, texture_halvings)?
-        }
-        TextureStrategy::AlphaCrop => {
-            super::alpha_crop::crop_textures(&mut puppet, &textures, texture_halvings)?
-        }
-    };
+    // sees the same bytes), then crop each to its opaque bounding box and
+    // rewrite part UVs. Runs after the node walk because the crop needs
+    // every part's mesh UVs and albedo slot.
+    let puppet_textures =
+        super::alpha_crop::crop_textures(&mut puppet, &textures, texture_halvings)?;
     puppet.set_textures(puppet_textures);
 
     if let Some(params_value) = root_obj.get("param") {

@@ -136,7 +136,7 @@ impl ModelTexture {
     /// mixes `(rgb·α, α)` with `(0, 0)` and the resulting gradient is
     /// already premultiplied.
     /// Width/height from the image header alone — no pixel decode. Lets
-    /// the importer plan atlas packing for all textures before paying
+    /// the importer plan every texture crop before paying
     /// for any full decode.
     pub fn dimensions(&self) -> Result<(u32, u32), image::ImageError> {
         let mut reader = image::ImageReader::new(std::io::Cursor::new(&self.data[..]));
