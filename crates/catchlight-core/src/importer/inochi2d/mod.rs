@@ -1,3 +1,40 @@
+//! Import invariants (`.inx` → catchlight).
+//!
+//! There are **two independent reflection paths** and they must stay in step:
+//!
+//! - `convert.rs` — `.inx` → `Puppet` (the legacy direct load).
+//! - `to_clp.rs` — `.inx` → `.clp` (what `cargo xtask import` runs).
+//!
+//! `.inx` is authored **Y-down with lower `zsort` in front**; catchlight is
+//! **Y-up with higher z in front**. Both paths must negate exactly the same
+//! set:
+//!
+//! - transform translation Y, rotation X, rotation Z (`reflect_transform_y`)
+//! - mesh vertex Y and mesh origin Y (`reflect_mesh_y` / the loop in
+//!   `convert_mesh`); UVs are texture space and stay as authored
+//! - `zsort` (`reflect_z`, which maps `0.0` to `0.0`, not `-0.0`)
+//! - the Y-bearing binding outputs: `TransformTY`, `TransformRX`,
+//!   `TransformRZ`, `Deform` offsets' Y, and `ZSort` (`reflect_binding_outputs`)
+//!
+//! Rotation Y and scale are **not** reflected, and neither are the non-Y
+//! transform components.
+//!
+//! **Change one path, change the other.**
+//! `synthetic_rig_reflects_identically_on_both_paths` (`from_clp.rs`) guards
+//! this on every checkout: it runs a hand-authored rig through both paths,
+//! asserts they agree field for field, *and* asserts the absolute
+//! authored→runtime values with a non-reflected control beside every reflected
+//! field — agreement alone would pass if both paths forgot the same negation.
+//! The synthetic INX must therefore be authored in the **source** convention
+//! (Y-down, lower-zsort-in-front). `reference_clp_build_matches_inx_puppet`
+//! runs the same comparison over the full private rig, and is `#[ignore]`d
+//! unless that rig is present.
+//!
+//! **Texture strategy is `alpha_crop.rs` and nothing else.** It crops each
+//! texture to the aligned bounding box of its *opaque* texels plus a 16-texel
+//! transparent mip skirt, keeping texture ids 1:1 with the source table so only
+//! part UVs are rewritten. `atlas.rs` is gone.
+
 pub(crate) mod alpha_crop;
 pub use alpha_crop::TexturePrepCache;
 pub(crate) mod convert;

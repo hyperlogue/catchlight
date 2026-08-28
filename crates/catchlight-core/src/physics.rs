@@ -1,3 +1,18 @@
+//! SimplePhysics drivers: pendulums that write their state into params.
+//!
+//! **Physics integrates in substeps sized by the driver, and damping is
+//! per-second.** `SimplePhysicsData::tick` clamps `dt` to `PHYSICS_MAX_DT` and
+//! splits it by `max_substep()`, derived from `RK4_STABILITY_LIMIT *
+//! RK4_STEP_SAFETY` and capped at `PHYSICS_MAX_SUBSTEPS`. `angle_damping` is a
+//! fraction shed per **second** (`(1 - d).powf(dt)`), so the material a rig
+//! describes does not change with frame rate or substep count. Applying
+//! damping per step would make 60 Hz and 144 Hz render different hair.
+//!
+//! **Physics drivers work in a Y-down frame.** `Puppet::physics_anchor` flips
+//! Y going in and `write_physics_param_outputs` conjugates `world_inverse` by
+//! the same flip coming out, matching the reference pendulum's
+//! gravity-toward-+Y convention.
+
 use crate::{Mat4, Vec2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

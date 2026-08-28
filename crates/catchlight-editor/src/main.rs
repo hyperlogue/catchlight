@@ -1,6 +1,6 @@
-//! Native entry: embed the editor server in-process and start the Unix socket
-//! on a background thread, so a CLI / agent can attach to and co-drive the
-//! open puppet.
+//! Native entry: embed the editor server in-process — the GUI calls
+//! `Editor::handle` directly — and start the Unix socket on a background
+//! thread, so a CLI / agent can attach to and co-drive the open puppet.
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {

@@ -1,3 +1,24 @@
+//! The `Puppet`: node tree, params, deforms, and the per-frame pipeline.
+//!
+//! **The per-frame pipeline is `Puppet::tick`**, not a bare
+//! `compute_transforms`. Semantically it is: fold animations → pose the
+//! physics anchors and step the drivers → apply params → compute transforms →
+//! apply `translateChildren` mesh-group filters and recompute → propagate
+//! mesh-group deforms → apply welds → combine deforms. **The code is an
+//! optimized form of those semantics**, generation-cached in three places, and
+//! that caching is where a bug hides: the anchor pre-pass is skipped unless
+//! `param_generation` moved (`last_anchor_pose_generation`), the whole fold is
+//! skipped when neither params nor the pre-pass touched anything
+//! (`last_tick_folded_param_generation`), and the third transform walk runs
+//! only when `apply_translate_children_filter` actually shifted something. A
+//! pre-pass that ran forces the final apply, because it reset opacity/tint and
+//! deactivated every deform stack.
+//!
+//! **`settle_physics` before the first render.** It iterates to the fixed
+//! point of "anchor → param value → transforms → anchor" so a freshly loaded
+//! rig renders settled instead of swinging into place, and it leaves the
+//! puppet *unposed* — `tick` is what folds a renderable pose.
+
 use std::collections::{HashMap, HashSet};
 
 use glam::Mat4;

@@ -1,3 +1,12 @@
+//! 2D parameters and the bindings they drive.
+//!
+//! **Param ids vs node ids.** `Param.id` and `AnimationLane { param_id, axis }`
+//! (the latter in `crate::animation`) are the param namespace. The **node**
+//! namespace is still spelled `uuid` (`Puppet::uuid_to_node`, `node_for_uuid`,
+//! `insert_child(.., uuid: Option<u32>)`) and is a plain `u32` inherited from
+//! inochi2d — not a UUID. Several param write paths (`set_param_value`,
+//! `param_value`) also still name their argument `uuid`; it is a `Param.id`.
+
 use crate::components::{NodeId, NodeKind};
 use crate::deform::{DeformShapeError, DeformSource};
 use glam::Vec2;

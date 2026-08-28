@@ -12,6 +12,11 @@ pub fn create_orthographic_camera(camera_height: f32, aspect: f32) -> glam::Mat4
     create_orthographic_camera_at(camera_height, aspect, glam::Vec2::ZERO)
 }
 
+/// Orthographic view-projection framing `camera_height` world units around
+/// `center`.
+///
+/// **The camera holds no axis flip.** This is a textbook Y-up ortho;
+/// catchlight world space is Y-up end to end.
 pub fn create_orthographic_camera_at(
     camera_height: f32,
     aspect: f32,
@@ -160,11 +165,32 @@ pub async fn create_surface_context(
     ))
 }
 
+/// Device and queue for headless rendering (tests, the visual baselines, the
+/// editor server's warm renderer).
+///
+/// Requests `Backends::PRIMARY` — deliberately not `all()`, because the
+/// `webgl` feature unifies `wgc/gles` across the workspace and GL then tries
+/// to init EGL and panics headless. `create_headless_context_ext` takes its
+/// backend set from the caller, but everything below applies to it too.
+///
+/// On a box with no GPU, point the Vulkan loader at mesa's CPU ICD
+/// (lavapipe). `nix/shell.nix` exports the path as `CATCHLIGHT_LAVAPIPE_ICD`
+/// but deliberately does **not** set `VK_ICD_FILENAMES`, which would force
+/// lavapipe over a real driver for everyone in the shell. Set it per-command:
+///
+/// ```text
+/// VK_ICD_FILENAMES=$CATCHLIGHT_LAVAPIPE_ICD cargo test --workspace
+/// ```
+///
+/// Without it, `request_adapter` fails and every GPU test panics with
+///
+/// ```text
+/// NotFound { active_backends: Backends(0x0), ... }
+/// ```
+///
+/// `vulkaninfo --summary` shows which ICD the loader actually picked.
 pub async fn create_headless_context(
 ) -> Result<(wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
-    // Use PRIMARY to avoid the GL backend — enabling the `webgl` feature
-    // (from the wasm crate) unifies `wgc/gles` across the workspace, which
-    // makes `Backends::all()` try to init EGL on headless Linux and panic.
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
         flags: Default::default(),

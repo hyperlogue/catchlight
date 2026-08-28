@@ -1,5 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+//! Print a rig's render list and write a PNG of it.
+//!
+//! It runs the full `settle_physics` + `tick` pipeline on purpose: with a bare
+//! `compute_transforms` the output stays byte-identical through a regression
+//! in params, mesh groups or welds, so it is the hash-stability check.
+
 use catchlight_core::{load_model, ModelFormat};
 use catchlight_wgpu::{
     collect_drawables, create_orthographic_camera, DrawableInfo, RenderContext, RenderList,

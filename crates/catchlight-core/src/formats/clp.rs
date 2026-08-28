@@ -11,14 +11,18 @@
 //! identity. The file is a compacted snapshot (nodes in topological order,
 //! `parent < self`), so the positional indices are stable for the file's
 //! lifetime — handle-stability under live editing is the in-memory arena's job,
-//! not the file's.
+//! not the file's. Stable ids live in memory, never in the file:
+//! `catchlight-editor-core`'s `EditModel` assigns indices only at the file edge
+//! (`crates/catchlight-editor-core/src/flatten.rs`).
 //!
 //! The wire mirrors catchlight's *authored* `Puppet` model — no derived caches,
 //! no runtime state, nothing the runtime doesn't model (metadata, groups,
 //! automation, animations, cameras, emissive/bump, …). CBOR maps keyed by field
 //! name give additive evolution: a future field returns as `#[serde(default)]`
 //! and old/new readers interoperate. **Never** add `deny_unknown_fields`; a
-//! breaking change bumps [`FORMAT_VERSION`].
+//! breaking change bumps [`FORMAT_VERSION`], which is **0** today and the only
+//! version `decode_structure` accepts. There is no migration path and no code
+//! that reads an older one.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
