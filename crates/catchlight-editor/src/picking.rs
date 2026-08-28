@@ -76,10 +76,14 @@ fn part_contains(p: &PartData, m: &glam::Mat4, world: Vec2) -> bool {
     };
     match &p.mesh.indices {
         MeshIndices::U16(ix) => ix
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .any(|t| tri_hit(t[0] as usize, t[1] as usize, t[2] as usize)),
         MeshIndices::U32(ix) => ix
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .any(|t| tri_hit(t[0] as usize, t[1] as usize, t[2] as usize)),
     }
 }

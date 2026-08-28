@@ -329,12 +329,16 @@ fn build_masks(masks: &[ClpMask]) -> Vec<MaskBinding> {
 fn build_mesh(m: &ClpMesh) -> Result<Mesh, ImportError> {
     let vertices: Vec<Vec2> = m
         .verts
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| Vec2::new(c[0], c[1]))
         .collect();
     let uvs: Vec<Vec2> = m
         .uvs
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| Vec2::new(c[0], c[1]))
         .collect();
     if !uvs.is_empty() && uvs.len() != vertices.len() {
@@ -479,7 +483,9 @@ fn build_deform_matrix(
     let cells: Vec<Vec<Vec2>> = dense
         .iter()
         .map(|cell| {
-            cell.chunks_exact(2)
+            cell.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| Vec2::new(c[0], c[1]))
                 .collect()
         })
