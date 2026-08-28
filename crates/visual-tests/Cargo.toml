@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Visual regression tests for catchlight: render seeded matrix of param/camera configs and diff against baselines."
+publish = false
 
 [lib]
 path = "src/lib.rs"

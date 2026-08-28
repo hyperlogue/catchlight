@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# Every job runs its cargo through `nix develop -c`, so the toolchain, the
+# linker and the runtime libraries are exactly the ones `nix/shell.nix` pins
+# for local development. Linux only: catchlight-editor-cli talks over a Unix
+# socket, so there is nothing to gain from a Windows or macOS runner yet.
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - run: nix develop -c cargo deny check
+
+  lint:
+    name: clippy + rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: nix develop -c cargo clippy --workspace --all-targets -- -D warnings
+      - name: rustfmt
+        run: nix develop -c cargo fmt --all --check
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      # The `.clp` puppets and `.png` baselines the render tests compare
+      # against are LFS objects; without them the visual suites fail to load
+      # their fixtures.
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: Swatinem/rust-cache@v2
+      # The runner has no GPU, so point the Vulkan loader at mesa's CPU ICD
+      # (lavapipe). `CATCHLIGHT_LAVAPIPE_ICD` is set inside the dev shell, so
+      # the assignment has to happen there, not in a GitHub `env:` block.
+      # Without it wgpu enumerates nothing and the suites fail with
+      # `NotFound { active_backends: Backends(0x0) }`.
+      - name: cargo test
+        run: |
+          # shellcheck disable=SC2016 # the single quotes are the point: the
+          # variable has to expand inside the dev shell, not on the runner.
+          nix develop -c sh -c 'VK_ICD_FILENAMES=$CATCHLIGHT_LAVAPIPE_ICD cargo test --workspace'
+
+  wasm:
+    name: wasm32 build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: Swatinem/rust-cache@v2
+      # The editor has to run in a browser, so the core and the wgpu backend
+      # must keep compiling for wasm32 even though nothing here links them
+      # into a bundle yet.
+      - run: nix develop -c cargo build -p catchlight-core -p catchlight-wgpu --target wasm32-unknown-unknown

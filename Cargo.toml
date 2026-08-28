@@ -20,13 +20,15 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/hovo/catchlight"
 
 [workspace.dependencies]
-# Internal crates
-catchlight-core = { path = "crates/catchlight-core" }
-catchlight-editor-core = { path = "crates/catchlight-editor-core" }
-catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol" }
-catchlight-editor-server = { path = "crates/catchlight-editor-server" }
-catchlight-wgpu = { path = "crates/catchlight-wgpu" }
-catchlight-bevy = { path = "crates/catchlight-bevy" }
+# Internal crates. The `version` is not redundant with `path`: publishing to
+# crates.io requires it, and without it these read as `*` requirements, which
+# `cargo deny check bans` rejects. Keep it in step with `workspace.package`.
+catchlight-core = { path = "crates/catchlight-core", version = "0.1.0" }
+catchlight-editor-core = { path = "crates/catchlight-editor-core", version = "0.1.0" }
+catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol", version = "0.1.0" }
+catchlight-editor-server = { path = "crates/catchlight-editor-server", version = "0.1.0" }
+catchlight-wgpu = { path = "crates/catchlight-wgpu", version = "0.1.0" }
+catchlight-bevy = { path = "crates/catchlight-bevy", version = "0.1.0" }
 
 # Data structures
 indextree = "4.7"

@@ -1,0 +1,80 @@
+# cargo-deny configuration. Run `cargo deny check` (it is in the nix dev
+# shell, and CI runs it on every push and pull request).
+
+[graph]
+# `targets` is deliberately left unset: with no filter every target triple is
+# in scope, so the platform-specific dependencies catchlight ships against
+# (windows-sys, objc2, wayland, the wasm shims) get checked too, not just the
+# host's. Same reasoning for `all-features` -- a license or advisory problem
+# behind an off-by-default feature is still one a downstream user can reach.
+all-features = true
+
+[advisories]
+# Anything not listed here is denied: a RUSTSEC advisory or a yanked release
+# fails the check. Add an entry only with the RUSTSEC id and a reason.
+yanked = "deny"
+ignore = [
+    # quick-xml DoS pair, fixed only in 0.41 -- a major bump neither dependent
+    # has taken. Via wayland-scanner (build-time protocol XML) and
+    # accesskit -> atspi -> zbus_xml (D-Bus introspection); no untrusted input.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41 via wayland-scanner and accesskit/zbus_xml; no untrusted XML" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41 via wayland-scanner and accesskit/zbus_xml; no untrusted XML" },
+    # ttf-parser unmaintained, no patched version exists. Via winit's
+    # sctk-adwaita -> ab_glyph -> owned_ttf_parser, for Wayland window
+    # decoration titles only.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, no fix released; via sctk-adwaita -> ab_glyph -> owned_ttf_parser" },
+]
+
+[licenses]
+# catchlight ships as `MIT OR Apache-2.0`, so every dependency has to be
+# usable under a permissive license. Each entry below is here because some
+# crate in the tree can only be satisfied by it -- keep it that way and delete
+# entries that stop being needed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # arrayref
+    "BSD-2-Clause",
+    # tiny-skia, tiny-skia-path, pp-rs
+    "BSD-3-Clause",
+    # libloading
+    "ISC",
+    # foldhash, slotmap, typewit, const_panic, tracing-oslog
+    "Zlib",
+    # the icu4x crates (via idna/url) and unicode-ident
+    "Unicode-3.0",
+    # encase, encase_derive, encase_derive_impl
+    "MIT-0",
+    # hexf-parse
+    "CC0-1.0",
+    # clipboard-win, error-code
+    "BSL-1.0",
+    # epaint_default_fonts embeds Hack and Ubuntu Light. Its expression is
+    # `(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0`, so both font
+    # licenses are required, not alternatives. Both permit redistribution of
+    # the font files; neither reaches the surrounding code.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Held at `warn` on purpose. glam is pinned to bevy's 0.32 and wgpu is held at
+# 29 across bevy_render, catchlight-wgpu, eframe and wgpu-profiler, so the
+# duplicates this reports are decisions already made -- failing on them would
+# just mean permanently skipping them here instead.
+multiple-versions = "warn"
+wildcards = "deny"
+# A bare `{ path = ... }` dependency reads as a `*` requirement.
+# `allow-wildcard-paths` forgives that only for crates cargo-deny considers
+# private, so it covers xtask and visual-tests (`publish = false`) but not the
+# publishable `catchlight-*` crates -- those carry an explicit `version` in
+# `[workspace.dependencies]` instead. Keep both habits and this stays quiet.
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
