@@ -5,15 +5,16 @@ use catchlight_core::GlobalTransforms;
 use catchlight_editor_server::Editor;
 
 #[test]
-#[ignore = "needs the reference rig at example_models/reference/"]
 fn posing_a_param_changes_the_ticked_state() {
+    // `welded_seam`'s one param (`pull`) drives a deform, so posing it has to
+    // show up in the ticked state.
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../example_models/reference/reference.clp"
+        "/../../tests/models/welded_seam.clp"
     ))
-    .expect("reference.clp");
+    .expect("welded_seam.clp");
     let ed = Editor::new();
-    let session = ed.open_bytes("reference", &bytes).expect("open");
+    let session = ed.open_bytes("welded_seam", &bytes).expect("open");
 
     let moved = ed
         .with_puppet(session, |puppet| {
