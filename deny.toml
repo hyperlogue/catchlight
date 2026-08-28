@@ -59,17 +59,12 @@ allow = [
 confidence-threshold = 0.8
 
 [bans]
-# Held at `warn` on purpose. glam is pinned to bevy's 0.32 and wgpu is held at
-# 29 across bevy_render, catchlight-wgpu, eframe and wgpu-profiler, so the
-# duplicates this reports are decisions already made -- failing on them would
-# just mean permanently skipping them here instead.
+# warn, not deny: the glam and wgpu duplicates are pinned to bevy's versions on
+# purpose.
 multiple-versions = "warn"
 wildcards = "deny"
-# A bare `{ path = ... }` dependency reads as a `*` requirement.
-# `allow-wildcard-paths` forgives that only for crates cargo-deny considers
-# private, so it covers xtask and visual-tests (`publish = false`) but not the
-# publishable `catchlight-*` crates -- those carry an explicit `version` in
-# `[workspace.dependencies]` instead. Keep both habits and this stays quiet.
+# Internal path deps carry an explicit `version` so they are not wildcards;
+# `allow-wildcard-paths` only forgives the `publish = false` crates.
 allow-wildcard-paths = true
 highlight = "all"
 
