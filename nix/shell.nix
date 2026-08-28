@@ -38,6 +38,7 @@ in
         git-lfs
 
         rust-analyzer
+        cargo-deny
         cargo-edit
         cargo-watch
 
@@ -55,5 +56,12 @@ in
 
     env = lib.optionalAttrs stdenv.hostPlatform.isLinux {
       LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
+
+      # Path to mesa's CPU Vulkan ICD (lavapipe). Export it as
+      # `VK_ICD_FILENAMES` to run the headless GPU tests on a box with no real
+      # GPU — that is what CI does. It is deliberately *not* set as
+      # `VK_ICD_FILENAMES` here: doing so would force lavapipe over a real
+      # driver for everyone working in the shell.
+      CATCHLIGHT_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
     };
   }
