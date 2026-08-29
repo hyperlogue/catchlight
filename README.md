@@ -1,7 +1,7 @@
 # Catchlight
 
 Catchlight is a software stack for 2.5D character animation. It simulates
-3D movement through deforming 2D layers.
+3D movement through deforming 2D parts.
 
 ## Acknowledgement
 
