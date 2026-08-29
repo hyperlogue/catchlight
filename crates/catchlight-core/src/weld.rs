@@ -53,7 +53,7 @@ fn side(transforms: &GlobalTransforms, id: NodeIdx) -> Option<Side> {
 
 /// Solve every weld, accumulating per-vertex pulls into each Part's
 /// `DeformSource::Weld` slot. Runs after `propagate_mesh_group_deforms`
-/// (welds must see mesh-group warps) and before `combine_deforms` (which
+/// (welds must see mesh-group deforms) and before `combine_deforms` (which
 /// folds the slot into the rendered deform).
 ///
 /// Records solve sequentially in list order, each reading deforms that

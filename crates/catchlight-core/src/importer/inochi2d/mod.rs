@@ -21,15 +21,15 @@
 //! transform components.
 //!
 //! **Change one path, change the other.**
-//! `synthetic_rig_reflects_identically_on_both_paths` (`from_clp.rs`) guards
-//! this on every checkout: it runs a hand-authored rig through both paths,
+//! `synthetic_model_reflects_identically_on_both_paths` (`from_clp.rs`) guards
+//! this on every checkout: it runs a hand-authored model through both paths,
 //! asserts they agree field for field, *and* asserts the absolute
 //! authored→runtime values with a non-reflected control beside every reflected
 //! field — agreement alone would pass if both paths forgot the same negation.
 //! The synthetic INX must therefore be authored in the **source** convention
 //! (Y-down, lower-zsort-in-front). `reference_clp_build_matches_inx_puppet`
-//! runs the same comparison over the full private rig, and is `#[ignore]`d
-//! unless that rig is present.
+//! runs the same comparison over the full private model, and is `#[ignore]`d
+//! unless that model is present.
 //!
 //! **Texture strategy is `alpha_crop.rs` and nothing else.** It crops each
 //! texture to the aligned bounding box of its *opaque* texels plus a 16-texel
@@ -78,7 +78,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<Puppet, ImportError> {
 /// shrinks and a full-resolution transient becomes the tab's permanent
 /// footprint.
 ///
-/// Picking the count: inochi2d rigs are authored at ~1 texture px per world
+/// Picking the count: inochi2d models are authored at ~1 texture px per world
 /// unit, so the on-screen sampling rate equals the camera zoom (device px
 /// per world unit). A deployment whose maximum zoom stays at or below
 /// `0.5^k` loses nothing at `k` halvings — the sampler never read the

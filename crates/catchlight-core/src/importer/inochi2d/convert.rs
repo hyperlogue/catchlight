@@ -522,7 +522,7 @@ fn convert_params_from_json(vals: &[serde_json::Value], puppet: &Puppet) -> Vec<
         })
         .collect();
     // nijigenerate can split one logical param into two entries sharing a
-    // uuid (the reference rig's palms: transform bindings in one entry, deform in the
+    // uuid (the reference model's palms: transform bindings in one entry, deform in the
     // other). The reference keeps a value per Parameter object and
     // resolves uuid references first-match, so a later duplicate is never
     // driven and forever evaluates at its own defaults. Renumbering it to

@@ -4,7 +4,7 @@
 //! per-second.** `SimplePhysicsData::tick` clamps `dt` to `PHYSICS_MAX_DT` and
 //! splits it by `max_substep()`, derived from `RK4_STABILITY_LIMIT *
 //! RK4_STEP_SAFETY` and capped at `PHYSICS_MAX_SUBSTEPS`. `angle_damping` is a
-//! fraction shed per **second** (`(1 - d).powf(dt)`), so the material a rig
+//! fraction shed per **second** (`(1 - d).powf(dt)`), so the material a model
 //! describes does not change with frame rate or substep count. Applying
 //! damping per step would make 60 Hz and 144 Hz render different hair.
 //!
@@ -76,7 +76,7 @@ impl VerletPendulum {
     }
 
     /// `angle_damping` is the fraction of velocity shed per **second**, so
-    /// the material a rig describes is independent of how the caller
+    /// the material a model describes is independent of how the caller
     /// chops up time. Applying it once per call instead would make a
     /// 60 Hz display and a 144 Hz display render different hair, and
     /// would make any substepping scheme silently change the look.
@@ -177,7 +177,7 @@ const RK4_STABILITY_LIMIT: f32 = 2.78;
 const RK4_STEP_SAFETY: f32 = 0.4;
 
 /// Ceiling on substeps per `tick`, bounding the work a single call can ask
-/// for however stiff the driver is. Every rig that reaches the accuracy
+/// for however stiff the driver is. Every model that reaches the accuracy
 /// target at a real frame's `dt` stays far below it.
 const PHYSICS_MAX_SUBSTEPS: u32 = 1024;
 
@@ -361,7 +361,7 @@ impl SimplePhysicsData {
     }
 
     /// Largest substep that holds `|lambda| * h` at the accuracy target.
-    /// Sizing it from the driver's own stiffness is what lets a soft rig
+    /// Sizing it from the driver's own stiffness is what lets a soft model
     /// take one step per frame while a stiff one takes as many as its
     /// frequency demands; any single constant serves one of them badly.
     fn max_substep(&self) -> f32 {
@@ -378,7 +378,7 @@ impl SimplePhysicsData {
     /// Capped because the count scales with the driver's own stiffness: an
     /// absurd `frequency` against a clamped 10s frame asks for tens of
     /// millions of steps, which would hang rather than merely look wrong.
-    /// Past the cap a rig integrates too coarsely for its stiffness, and
+    /// Past the cap a model integrates too coarsely for its stiffness, and
     /// far enough past it the step leaves RK4's stability bound entirely —
     /// which `tick` checks for and answers by settling instead.
     fn substep_count(&self, dt: f32) -> u32 {
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn absurd_stiffness_stays_bounded_instead_of_hanging() {
         // Substep count scales with stiffness, so without a ceiling this
-        // rig asks for ~5e7 RK4 steps in one call and the frame never
+        // model asks for ~5e7 RK4 steps in one call and the frame never
         // returns. Deriving the step from the system is only safe if the
         // derivation cannot run away.
         let mut d = spring_base();
@@ -881,11 +881,11 @@ mod tests {
         let uncapped = (PHYSICS_MAX_DT / d.max_substep()).ceil();
         assert!(
             uncapped > 1.0e7,
-            "test rig isn't stiff enough to exercise the cap: {uncapped}",
+            "test model isn't stiff enough to exercise the cap: {uncapped}",
         );
         assert_eq!(d.substep_count(PHYSICS_MAX_DT), PHYSICS_MAX_SUBSTEPS);
 
-        // A real frame of a realistically stiff rig stays well under it.
+        // A real frame of a realistically stiff model stays well under it.
         d.frequency = 30.0;
         assert!(d.substep_count(1.0 / 60.0) < 8);
     }
@@ -895,7 +895,7 @@ mod tests {
         // Between "needs more steps than the cap" and "so stiff the first
         // step overflows" sits a band where the capped step is outside RK4's
         // stability bound: the bob saturates at a huge finite value rather
-        // than staying put, and drags on the rig for many frames after. A
+        // than staying put, and drags on the model for many frames after. A
         // 60 Hz spring on a 10s catch-up frame is in it.
         let mut d = spring_base();
         d.frequency = 60.0;
@@ -904,7 +904,7 @@ mod tests {
         assert!(
             d.max_eigenvalue() * (PHYSICS_MAX_DT / PHYSICS_MAX_SUBSTEPS as f32)
                 > RK4_STABILITY_LIMIT,
-            "test rig is not in the unstable band",
+            "test model is not in the unstable band",
         );
 
         d.tick(Vec2::ZERO, PHYSICS_MAX_DT);
@@ -927,8 +927,8 @@ mod tests {
 
     #[test]
     fn stiff_spring_substeps_finer_than_a_soft_one() {
-        // The whole point of deriving the substep: a 30 Hz cloth rig must
-        // take more steps per frame than a 1 Hz hair rig, where a fixed
+        // The whole point of deriving the substep: a 30 Hz cloth model must
+        // take more steps per frame than a 1 Hz hair model, where a fixed
         // constant necessarily over- or under-serves one of them.
         let soft = spring_base();
         let mut stiff = spring_base();
@@ -939,7 +939,7 @@ mod tests {
             stiff.max_substep(),
             soft.max_substep(),
         );
-        // A soft rig fits a 60 fps frame in one step.
+        // A soft model fits a 60 fps frame in one step.
         assert!(soft.max_substep() > 1.0 / 60.0);
     }
 }
