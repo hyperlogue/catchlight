@@ -26,7 +26,7 @@ use crate::formats::clp::{
 };
 use crate::formats::{InxModel, TextureFormat};
 use crate::params::InterpolateMode;
-use crate::physics::{PhysicsModel, PhysicsParamMapMode};
+use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
 use super::error::ImportError;
 use super::schema::{
@@ -309,7 +309,7 @@ fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> Cl
         model: s
             .model_type
             .as_deref()
-            .and_then(PhysicsModel::from_str)
+            .and_then(PendulumKind::from_str)
             .unwrap_or_default(),
         map_mode: s
             .map_mode

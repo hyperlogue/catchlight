@@ -12,7 +12,7 @@
 //! Regenerate after an intentional physics change:
 //!   UPDATE_PHYSICS_BASELINE=1 cargo test -p catchlight-core --test physics_trajectory
 
-use catchlight_core::physics::{PhysicsModel, PhysicsParamMapMode, SimplePhysicsData};
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode, SimplePhysicsData};
 use catchlight_core::{GlobalTransforms, Node, NodeKind, Puppet, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ fn run_scenario(data: SimplePhysicsData) -> Vec<[f32; 2]> {
 /// world anchor).
 fn rigid_perturbed() -> SimplePhysicsData {
     SimplePhysicsData {
-        model: PhysicsModel::RigidPendulum,
+        model: PendulumKind::RigidPendulum,
         map_mode: PhysicsParamMapMode::AngleLength,
         target_param_id: Some(TARGET_UUID),
         gravity: 981.0,
@@ -76,7 +76,7 @@ fn rigid_perturbed() -> SimplePhysicsData {
 /// part of the fingerprint, not just the integrator.
 fn spring_stretched() -> SimplePhysicsData {
     SimplePhysicsData {
-        model: PhysicsModel::SpringPendulum,
+        model: PendulumKind::SpringPendulum,
         map_mode: PhysicsParamMapMode::XY,
         target_param_id: Some(TARGET_UUID),
         gravity: 981.0,
@@ -99,7 +99,7 @@ fn spring_stretched() -> SimplePhysicsData {
 /// substep rewrote — has no trajectory gate at all.
 fn spring_stiff() -> SimplePhysicsData {
     SimplePhysicsData {
-        model: PhysicsModel::SpringPendulum,
+        model: PendulumKind::SpringPendulum,
         map_mode: PhysicsParamMapMode::XY,
         target_param_id: Some(TARGET_UUID),
         gravity: 981.0,

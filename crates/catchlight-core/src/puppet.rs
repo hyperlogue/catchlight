@@ -3034,14 +3034,14 @@ mod tests {
         // suppressing pendulum response by ~25-30x. Physics now runs in
         // puppet-local coords; the host's root should leave output
         // identical.
-        use crate::physics::{PhysicsModel, PhysicsParamMapMode, SimplePhysicsData};
+        use crate::physics::{PendulumKind, PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
         fn build() -> (Puppet, u32) {
             let mut puppet = Puppet::new();
             let target_uuid = 77;
             let data = SimplePhysicsData {
-                model: PhysicsModel::SpringPendulum,
+                model: PendulumKind::SpringPendulum,
                 map_mode: PhysicsParamMapMode::XY,
                 gravity: 9.8 * 100.0,
                 length: 100.0,

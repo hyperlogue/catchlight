@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clp::{ClpIndices, ClpMesh, TextureAlpha, TextureEncoding};
-use catchlight_core::physics::{PhysicsModel, PhysicsParamMapMode};
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Vec2;
 use catchlight_core::{from_clp_cached, Puppet, TexturePrepCache};
@@ -712,7 +712,7 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let parsed_model = model
                     .as_deref()
-                    .map(|m| parse_physics_model(m).ok_or(EditorError::BadTarget(m.to_string())))
+                    .map(|m| parse_pendulum_kind(m).ok_or(EditorError::BadTarget(m.to_string())))
                     .transpose()?;
                 let parsed_map = map_mode
                     .as_deref()
@@ -1142,7 +1142,7 @@ impl Editor {
                 angle_damping,
                 length_damping,
             } => self.edit_session(session, |s| {
-                let phys_model = parse_physics_model(&model)
+                let phys_model = parse_pendulum_kind(&model)
                     .ok_or_else(|| EditorError::BadTarget(model.clone()))?;
                 let target = match target_param {
                     Some(p) => {
@@ -1545,10 +1545,10 @@ fn set_opacity(kind: &mut EditNodeKind, op: f32) {
 
 /// Accepts both the protocol's lowercase names (rigid | spring) and the
 /// serde/CamelCase forms, so PhysicsAdd and PhysicsSet agree.
-fn parse_physics_model(s: &str) -> Option<PhysicsModel> {
+fn parse_pendulum_kind(s: &str) -> Option<PendulumKind> {
     match s.to_ascii_lowercase().as_str() {
-        "rigid" | "rigidpendulum" | "pendulum" => Some(PhysicsModel::RigidPendulum),
-        "spring" | "springpendulum" => Some(PhysicsModel::SpringPendulum),
+        "rigid" | "rigidpendulum" | "pendulum" => Some(PendulumKind::RigidPendulum),
+        "spring" | "springpendulum" => Some(PendulumKind::SpringPendulum),
         _ => None,
     }
 }

@@ -30,7 +30,7 @@ use thiserror::Error;
 use super::container::{self, ContainerError, Section};
 use crate::components::{BlendMode, MaskMode};
 use crate::params::InterpolateMode;
-use crate::physics::{PhysicsModel, PhysicsParamMapMode};
+use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
 /// Larger cumulative `z_order` values render in front.
@@ -194,7 +194,7 @@ pub struct ClpMeshGroup {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClpSimplePhysics {
-    pub model: PhysicsModel,
+    pub model: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
     /// Driven param index, or `None`.
