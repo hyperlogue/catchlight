@@ -14,12 +14,15 @@ use crate::params::InterpolateMode;
 
 use super::*;
 
-/// Finite, strictly ordered box. 1D params leave Y at `[0, 0]`.
-pub fn param_range_is_valid(is_vec2: bool, min: [f32; 2], max: [f32; 2]) -> bool {
-    min.iter().chain(max.iter()).all(|v| v.is_finite())
-        && min[0] < max[0]
-        && (!is_vec2 || min[1] < max[1])
+/// A finite, strictly increasing range. A collapsed or inverted one cannot map
+/// a pose onto the normalized key positions.
+pub fn param_range_is_valid(min: f32, max: f32) -> bool {
+    min.is_finite() && max.is_finite() && min < max
 }
+
+/// The second axis of a one-param binding: one position, so the grid is a row
+/// and `derive_dense` treats it as 1-D.
+const SINGLE_POSITION: [f32; 1] = [0.0];
 
 /// A binding target whose value matrix is a single `f32` per cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,19 +53,78 @@ pub enum BindingTarget {
     Scalar(ScalarTarget),
 }
 
-/// What a binding is: one param's control over one property of one node. Two
-/// bindings with the same key are the same binding.
+/// The one or two params a binding's grid spans. Two params are jointly
+/// authored — "head left *and* up" is its own shape, not left plus up — so the
+/// grid is the product of their key positions and the pair belongs to the
+/// binding, not to either param.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BindingParams {
+    /// One param. The grid is a row: every cell's `y` is 0.
+    One(ParamId),
+    /// Two params, x then y. The grid is `x`'s key positions by `y`'s.
+    Two(ParamId, ParamId),
+}
+
+impl BindingParams {
+    /// The param along the grid's x axis.
+    pub fn x(&self) -> &ParamId {
+        match self {
+            Self::One(p) | Self::Two(p, _) => p,
+        }
+    }
+
+    /// The param along the grid's y axis, if the binding spans two.
+    pub fn y(&self) -> Option<&ParamId> {
+        match self {
+            Self::One(_) => None,
+            Self::Two(_, p) => Some(p),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ParamId> {
+        std::iter::once(self.x()).chain(self.y())
+    }
+
+    /// Which grid axis `param` drives, if it is one of the binding's.
+    pub fn axis_of(&self, param: &ParamId) -> Option<u8> {
+        if self.x() == param {
+            Some(0)
+        } else if self.y() == Some(param) {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    pub fn contains(&self, param: &ParamId) -> bool {
+        self.axis_of(param).is_some()
+    }
+}
+
+/// What a binding is: one or two params' control over one property of one
+/// node. Two bindings with the same key are the same binding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BindingKey {
-    pub param: ParamId,
+    pub params: BindingParams,
     pub node: NodeId,
     pub target: BindingTarget,
 }
 
 impl BindingKey {
+    /// One param drives `target` on `node`.
     pub fn new(param: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
-            param,
+            params: BindingParams::One(param),
+            node,
+            target,
+        }
+    }
+
+    /// Two params jointly drive `target` on `node`; `x` runs along the grid's
+    /// first axis and `y` along its second.
+    pub fn pair(x: ParamId, y: ParamId, node: NodeId, target: BindingTarget) -> Self {
+        Self {
+            params: BindingParams::Two(x, y),
             node,
             target,
         }
@@ -303,7 +365,7 @@ fn normed(v: f32, min: f32, max: f32) -> f32 {
     }
 }
 
-fn nearest_axis_index(points: &[f32], v: f32) -> u32 {
+fn nearest_key_index(points: &[f32], v: f32) -> u32 {
     let mut best = 0usize;
     let mut best_d = f32::INFINITY;
     for (i, &p) in points.iter().enumerate() {
@@ -317,13 +379,34 @@ fn nearest_axis_index(points: &[f32], v: f32) -> u32 {
 }
 
 impl Model {
-    /// Key grid (width, height) of a param; each is at least 1.
-    pub fn param_grid(&self, param: &ParamId) -> Result<(u32, u32), ModelError> {
+    /// How many key positions a param has; at least 1.
+    pub fn key_count(&self, param: &ParamId) -> Result<u32, ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
-        Ok((
-            p.axis_points_x.len().max(1) as u32,
-            p.axis_points_y.len().max(1) as u32,
-        ))
+        Ok(p.key_positions.len().max(1) as u32)
+    }
+
+    /// A binding's cell grid: the product of its params' key positions. A
+    /// one-param binding is one row high.
+    pub fn binding_grid(&self, key: &BindingKey) -> Result<(u32, u32), ModelError> {
+        let w = self.key_count(key.params.x())?;
+        let h = match key.params.y() {
+            Some(p) => self.key_count(p)?,
+            None => 1,
+        };
+        Ok((w, h))
+    }
+
+    /// The key positions along each of a binding's axes.
+    pub(super) fn binding_axes(&self, key: &BindingKey) -> Result<(&[f32], &[f32]), ModelError> {
+        let x = &self
+            .param(key.params.x())
+            .ok_or(ModelError::UnknownParam)?
+            .key_positions;
+        let y = match key.params.y() {
+            Some(p) => &self.param(p).ok_or(ModelError::UnknownParam)?.key_positions,
+            None => &SINGLE_POSITION[..],
+        };
+        Ok((x, y))
     }
 
     /// Every binding in the model, in creation order.
@@ -331,12 +414,15 @@ impl Model {
         self.bindings.iter()
     }
 
-    /// The bindings one param drives, in creation order.
+    /// The bindings one param drives, in creation order. A two-param binding
+    /// appears for each of its params.
     pub fn bindings_of_param<'a>(
         &'a self,
         param: &'a ParamId,
     ) -> impl Iterator<Item = &'a ModelBinding> + 'a {
-        self.bindings.iter().filter(move |b| &b.key.param == param)
+        self.bindings
+            .iter()
+            .filter(move |b| b.key.params.contains(param))
     }
 
     /// The bindings that drive one node, in creation order.
@@ -358,21 +444,30 @@ impl Model {
             .ok_or(ModelError::UnknownBinding)
     }
 
-    fn check_cell(&self, param: &ParamId, cell: [u32; 2]) -> Result<(), ModelError> {
-        let (w, h) = self.param_grid(param)?;
+    fn check_cell(&self, key: &BindingKey, cell: [u32; 2]) -> Result<(), ModelError> {
+        let (w, h) = self.binding_grid(key)?;
         if cell[0] >= w || cell[1] >= h {
             return Err(ModelError::CellOutOfRange);
         }
         Ok(())
     }
 
-    /// The grid cell holding the param's rest pose: nearest keypoint to
-    /// `defaults`, mapped into the normalized space the axis points live in.
-    fn rest_cell(&self, param: &ParamId) -> Result<[u32; 2], ModelError> {
-        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
+    /// The grid cell holding a binding's rest pose: the key position nearest
+    /// each param's default, in the normalized space key positions live in.
+    fn rest_cell(&self, key: &BindingKey) -> Result<[u32; 2], ModelError> {
+        let rest = |param: &ParamId| -> Result<u32, ModelError> {
+            let p = self.param(param).ok_or(ModelError::UnknownParam)?;
+            Ok(nearest_key_index(
+                &p.key_positions,
+                normed(p.default, p.min, p.max),
+            ))
+        };
         Ok([
-            nearest_axis_index(&p.axis_points_x, normed(p.defaults[0], p.min[0], p.max[0])),
-            nearest_axis_index(&p.axis_points_y, normed(p.defaults[1], p.min[1], p.max[1])),
+            rest(key.params.x())?,
+            match key.params.y() {
+                Some(p) => rest(p)?,
+                None => 0,
+            },
         ])
     }
 
@@ -399,7 +494,7 @@ impl Model {
         if !was_unauthored {
             return Ok(());
         }
-        let rest = self.rest_cell(&key.param)?;
+        let rest = self.rest_cell(key)?;
         if rest != authored {
             self.write_identity_at(key, rest)?;
         }
@@ -409,8 +504,13 @@ impl Model {
     /// Ensure `key`'s binding exists, creating an everywhere-unset one if it
     /// does not (an unset binding contributes nothing). A deform binding needs
     /// a meshed node; a colour binding needs a drawable one, because a mesh
-    /// group is never drawn and has no colour to fold into.
+    /// group is never drawn and has no colour to fold into; and a two-param
+    /// binding needs two different params, or its grid would be a param
+    /// crossed with itself.
     pub fn add_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
+        if key.params.y() == Some(key.params.x()) {
+            return Err(ModelError::SelfPairedBinding);
+        }
         let kind = self
             .node(&key.node)
             .map(|n| &n.kind)
@@ -429,7 +529,7 @@ impl Model {
                 t.wrap(ClpCells::default())
             }
         };
-        self.param_grid(&key.param)?;
+        self.binding_grid(key)?;
         if self.binding(key).is_some() {
             return Ok(());
         }
@@ -453,7 +553,7 @@ impl Model {
         key.target.scalar()?;
         // Validate before creating anything — a failed key write must not
         // leave a phantom binding behind.
-        self.check_cell(&key.param, cell)?;
+        self.check_cell(key, cell)?;
         let was_unauthored = self.binding_is_unauthored(key);
         self.add_binding(key)?;
         let binding = self.binding_mut(key)?;
@@ -470,7 +570,7 @@ impl Model {
         key: &BindingKey,
         cell: [u32; 2],
     ) -> Result<(), ModelError> {
-        self.check_cell(&key.param, cell)?;
+        self.check_cell(key, cell)?;
         let binding = self.binding_mut(key)?;
         let [x, y] = cell;
         match binding.values.make_mut() {
@@ -491,7 +591,7 @@ impl Model {
         key: &BindingKey,
         cell: [u32; 2],
     ) -> Result<(), ModelError> {
-        self.check_cell(&key.param, cell)?;
+        self.check_cell(key, cell)?;
         self.write_identity_at(key, cell)
     }
 
@@ -562,17 +662,17 @@ impl Model {
     /// the derived fill — the single implementation every reader shares.
     pub fn scalar_value_at(&self, key: &BindingKey, cell: [u32; 2]) -> Result<f32, ModelError> {
         let target = key.target.scalar()?;
-        self.check_cell(&key.param, cell)?;
-        let (w, h) = self.param_grid(&key.param)?;
-        let p = self.param(&key.param).ok_or(ModelError::UnknownParam)?;
+        self.check_cell(key, cell)?;
+        let (w, h) = self.binding_grid(key)?;
+        let (axis_x, axis_y) = self.binding_axes(key)?;
         let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
         let cells = scalar_cells(&binding.values).unwrap_or(&[]);
         Ok(derived_at(
             cells,
             w,
             h,
-            &p.axis_points_x,
-            &p.axis_points_y,
+            axis_x,
+            axis_y,
             cell,
             &target.identity(),
         ))
@@ -589,23 +689,15 @@ impl Model {
         if key.target != BindingTarget::Deform {
             return Err(ModelError::WrongTarget);
         }
-        self.check_cell(&key.param, cell)?;
-        let (w, h) = self.param_grid(&key.param)?;
+        self.check_cell(key, cell)?;
+        let (w, h) = self.binding_grid(key)?;
+        let (axis_x, axis_y) = self.binding_axes(key)?;
         let identity = vec![0.0f32; self.deform_len(&key.node)];
-        let p = self.param(&key.param).ok_or(ModelError::UnknownParam)?;
         let cells = self
             .binding(key)
             .and_then(|b| deform_cells(&b.values))
             .unwrap_or(&[]);
-        Ok(derived_at(
-            cells,
-            w,
-            h,
-            &p.axis_points_x,
-            &p.axis_points_y,
-            cell,
-            &identity,
-        ))
+        Ok(derived_at(cells, w, h, axis_x, axis_y, cell, &identity))
     }
 
     /// Copy the (derived-or-authored) value at `from` and author it at `to`.
@@ -615,7 +707,7 @@ impl Model {
         from: [u32; 2],
         to: [u32; 2],
     ) -> Result<(), ModelError> {
-        self.check_cell(&key.param, to)?;
+        self.check_cell(key, to)?;
         let was_unauthored = self.binding_is_unauthored(key);
         match key.target {
             BindingTarget::Deform => {
@@ -655,7 +747,7 @@ impl Model {
         if expected == 0 || offsets.len() != expected {
             return Err(ModelError::NotMeshed);
         }
-        self.check_cell(&key.param, cell)?;
+        self.check_cell(key, cell)?;
         let was_unauthored = self.binding_is_unauthored(key);
         self.add_binding(key)?;
         let binding = self.binding_mut(key)?;
@@ -712,32 +804,25 @@ impl Model {
         Ok(())
     }
 
-    pub fn set_param_defaults(
-        &mut self,
-        param: &ParamId,
-        defaults: [f32; 2],
-    ) -> Result<(), ModelError> {
-        self.param_mut(param)?.defaults = defaults;
+    pub fn set_param_default(&mut self, param: &ParamId, default: f32) -> Result<(), ModelError> {
+        self.param_mut(param)?.default = default;
         self.bump();
         Ok(())
     }
 
-    /// Change the param's range, rescaling every axis point proportionally so
-    /// keypoints keep their relative positions (authored cells are index-keyed
-    /// and don't move).
+    /// Change the param's range. Key positions are normalized, so they keep
+    /// their relative places and authored cells (which are index-keyed) don't
+    /// move.
     pub fn set_param_range(
         &mut self,
         param: &ParamId,
-        min: [f32; 2],
-        max: [f32; 2],
+        min: f32,
+        max: f32,
     ) -> Result<(), ModelError> {
-        let p = self.param_mut(param)?;
-        // A collapsed or inverted range can't map poses onto the normalized
-        // axis. The Y axis of a 1D param legitimately stays [0, 0]. Axis
-        // points are normalized, so the keypoints themselves don't move.
-        if !param_range_is_valid(p.is_vec2, min, max) {
+        if !param_range_is_valid(min, max) {
             return Err(ModelError::CellOutOfRange);
         }
+        let p = self.param_mut(param)?;
         p.min = min;
         p.max = max;
         self.bump();
@@ -748,47 +833,25 @@ impl Model {
         self.params.get_mut(param).ok_or(ModelError::UnknownParam)
     }
 
-    /// Axis 0 is x; axis 1 is y and only exists on vec2 params.
-    fn check_axis(&self, param: &ParamId, axis: u8) -> Result<(), ModelError> {
+    /// Insert a key position at normalized `value` (strictly inside (0, 1),
+    /// distinct from existing ones). Authored cells at or past the insertion
+    /// index shift over; no new cells are authored — the new column/row
+    /// derives.
+    pub fn key_insert(&mut self, param: &ParamId, value: f32) -> Result<usize, ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
-        if axis > 1 || (axis == 1 && !p.is_vec2) {
-            return Err(ModelError::IndexOutOfRange);
-        }
-        Ok(())
-    }
-
-    /// Insert an axis point at normalized `value` (strictly inside (0, 1),
-    /// distinct from existing points). Authored cells at or past the
-    /// insertion index shift over; no new cells are authored — the new
-    /// column/row derives.
-    pub fn axis_insert(
-        &mut self,
-        param: &ParamId,
-        axis: u8,
-        value: f32,
-    ) -> Result<usize, ModelError> {
-        self.check_axis(param, axis)?;
-        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
-        let points = if axis == 0 {
-            &p.axis_points_x
-        } else {
-            &p.axis_points_y
-        };
-        if points.iter().any(|&v| (v - value).abs() <= f32::EPSILON) {
+        if p.key_positions
+            .iter()
+            .any(|&v| (v - value).abs() <= f32::EPSILON)
+        {
             return Err(ModelError::CellOutOfRange);
         }
         if !(value > 0.0 && value < 1.0) {
             return Err(ModelError::CellOutOfRange);
         }
-        let idx = points.iter().take_while(|&&v| v < value).count();
+        let idx = p.key_positions.iter().take_while(|&&v| v < value).count();
 
-        let p = self.param_mut(param)?;
-        if axis == 0 {
-            p.axis_points_x.insert(idx, value);
-        } else {
-            p.axis_points_y.insert(idx, value);
-        }
-        self.shift_cells(param, axis, |coord| {
+        self.param_mut(param)?.key_positions.insert(idx, value);
+        self.map_cells(param, |coord| {
             if coord >= idx as u32 {
                 coord + 1
             } else {
@@ -799,33 +862,17 @@ impl Model {
         Ok(idx)
     }
 
-    /// Remove an interior axis point; its authored cells are dropped and the
+    /// Remove an interior key position; its authored cells are dropped and the
     /// rest shift back.
-    pub fn axis_delete(
-        &mut self,
-        param: &ParamId,
-        axis: u8,
-        index: usize,
-    ) -> Result<(), ModelError> {
-        self.check_axis(param, axis)?;
+    pub fn key_delete(&mut self, param: &ParamId, index: usize) -> Result<(), ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
-        let len = if axis == 0 {
-            p.axis_points_x.len()
-        } else {
-            p.axis_points_y.len()
-        };
-        if index == 0 || index + 1 >= len {
-            // Endpoints define the range; they can't be removed.
+        if index == 0 || index + 1 >= p.key_positions.len() {
+            // The ends define the range; they can't be removed.
             return Err(ModelError::IndexOutOfRange);
         }
-        let p = self.param_mut(param)?;
-        if axis == 0 {
-            p.axis_points_x.remove(index);
-        } else {
-            p.axis_points_y.remove(index);
-        }
-        self.drop_cells_at(param, axis, index as u32);
-        self.shift_cells(param, axis, |coord| {
+        self.param_mut(param)?.key_positions.remove(index);
+        self.drop_cells_at(param, index as u32);
+        self.map_cells(param, |coord| {
             if coord > index as u32 {
                 coord - 1
             } else {
@@ -836,46 +883,33 @@ impl Model {
         Ok(())
     }
 
-    /// Mirror a param along an axis: axis-point positions reflect within the
-    /// normalized range and every binding cell moves to the mirrored index.
-    /// Values are untouched (compose with `invert_binding` for negating
-    /// semantics).
-    pub fn param_flip(&mut self, param: &ParamId, axis: u8) -> Result<(), ModelError> {
-        self.check_axis(param, axis)?;
-        let p = self.param_mut(param)?;
-        let points = if axis == 0 {
-            &mut p.axis_points_x
-        } else {
-            &mut p.axis_points_y
-        };
+    /// Mirror a param: its key positions reflect within the normalized range
+    /// and every binding cell moves to the mirrored index. Values are
+    /// untouched (compose with `invert_binding` for negating semantics).
+    pub fn param_flip(&mut self, param: &ParamId) -> Result<(), ModelError> {
+        let points = &mut self.param_mut(param)?.key_positions;
         for v in points.iter_mut() {
             *v = 1.0 - *v;
         }
         points.reverse();
         let len = points.len() as u32;
-        self.shift_cells(param, axis, move |coord| {
+        self.map_cells(param, move |coord| {
             len.saturating_sub(1).saturating_sub(coord)
         });
         self.bump();
         Ok(())
     }
 
-    /// Move an interior axis point to normalized `value`; it must stay
-    /// strictly between neighbors. Cells are index-keyed and stay authored.
-    pub fn axis_move(
+    /// Move an interior key position to normalized `value`; it must stay
+    /// strictly between its neighbours. Cells are index-keyed and stay
+    /// authored.
+    pub fn key_move(
         &mut self,
         param: &ParamId,
-        axis: u8,
         index: usize,
         value: f32,
     ) -> Result<(), ModelError> {
-        self.check_axis(param, axis)?;
-        let p = self.param_mut(param)?;
-        let points = if axis == 0 {
-            &mut p.axis_points_x
-        } else {
-            &mut p.axis_points_y
-        };
+        let points = &mut self.param_mut(param)?.key_positions;
         if index == 0 || index + 1 >= points.len() {
             return Err(ModelError::IndexOutOfRange);
         }
@@ -887,8 +921,13 @@ impl Model {
         Ok(())
     }
 
-    fn shift_cells(&mut self, param: &ParamId, axis: u8, f: impl Fn(u32) -> u32) {
-        for b in self.bindings.iter_mut().filter(|b| &b.key.param == param) {
+    /// Rewrite the cell coordinates `param` drives, on whichever axis it
+    /// occupies in each binding that names it.
+    fn map_cells(&mut self, param: &ParamId, f: impl Fn(u32) -> u32) {
+        for b in &mut self.bindings {
+            let Some(axis) = b.key.params.axis_of(param) else {
+                continue;
+            };
             let cells: &mut dyn CellCoords = match b.values.make_mut() {
                 ClpBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
@@ -900,8 +939,11 @@ impl Model {
         }
     }
 
-    fn drop_cells_at(&mut self, param: &ParamId, axis: u8, coord: u32) {
-        for b in self.bindings.iter_mut().filter(|b| &b.key.param == param) {
+    fn drop_cells_at(&mut self, param: &ParamId, coord: u32) {
+        for b in &mut self.bindings {
+            let Some(axis) = b.key.params.axis_of(param) else {
+                continue;
+            };
             let cells: &mut dyn CellCoords = match b.values.make_mut() {
                 ClpBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
@@ -976,12 +1018,12 @@ mod tests {
 
     #[test]
     fn param_range_rejects_inverted_collapsed_and_nan() {
-        assert!(param_range_is_valid(false, [0.0, 0.0], [1.0, 0.0]));
-        assert!(param_range_is_valid(true, [-1.0, -1.0], [1.0, 1.0]));
-        assert!(!param_range_is_valid(false, [1.0, 0.0], [0.0, 0.0]));
-        assert!(!param_range_is_valid(false, [0.0, 0.0], [0.0, 0.0]));
-        assert!(!param_range_is_valid(true, [0.0, 1.0], [1.0, 0.0]));
-        assert!(!param_range_is_valid(false, [f32::NAN, 0.0], [1.0, 0.0]));
+        assert!(param_range_is_valid(0.0, 1.0));
+        assert!(param_range_is_valid(-1.0, 1.0));
+        assert!(!param_range_is_valid(1.0, 0.0));
+        assert!(!param_range_is_valid(0.0, 0.0));
+        assert!(!param_range_is_valid(f32::NAN, 1.0));
+        assert!(!param_range_is_valid(0.0, f32::INFINITY));
     }
 
     /// A model with one group, one quad part and one 3-keypoint param.
@@ -1019,12 +1061,10 @@ mod tests {
             .add_param(
                 ModelParam {
                     name: Name::truncated("x"),
-                    is_vec2: false,
-                    min: [-1.0, 0.0],
-                    max: [1.0, 0.0],
-                    defaults: [0.0, 0.0],
-                    axis_points_x: vec![0.0, 0.5, 1.0],
-                    axis_points_y: vec![0.0],
+                    min: -1.0,
+                    max: 1.0,
+                    default: 0.0,
+                    key_positions: vec![0.0, 0.5, 1.0],
                 },
                 &mut hex,
             )
@@ -1166,34 +1206,33 @@ mod tests {
         r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
 
         // insert between 0.5 and 1.0 → index 2; the authored cell at 2 shifts to 3.
-        let idx = r.m.axis_insert(&r.param, 0, 0.75).unwrap();
+        let idx = r.m.key_insert(&r.param, 0.75).unwrap();
         assert_eq!(idx, 2);
         assert_eq!(
-            r.m.param(&r.param).unwrap().axis_points_x,
+            r.m.param(&r.param).unwrap().key_positions,
             vec![0.0, 0.5, 0.75, 1.0]
         );
         let xs: Vec<u32> = cells_of(&r.m, &key).into_iter().map(|c| c.0).collect();
         assert_eq!(xs, vec![0, 1, 3]);
 
         // endpoints can't be deleted; duplicates and out-of-range inserts rejected.
-        assert!(r.m.axis_delete(&r.param, 0, 0).is_err());
-        assert!(r.m.axis_insert(&r.param, 0, 0.5).is_err());
-        assert!(r.m.axis_insert(&r.param, 0, 2.0).is_err());
+        assert!(r.m.key_delete(&r.param, 0).is_err());
+        assert!(r.m.key_insert(&r.param, 0.5).is_err());
+        assert!(r.m.key_insert(&r.param, 2.0).is_err());
 
-        // move the inserted point (must stay between neighbors).
-        r.m.axis_move(&r.param, 0, 2, 0.6).unwrap();
-        assert!(r.m.axis_move(&r.param, 0, 2, 0.4).is_err());
+        // move the inserted position (must stay between neighbours).
+        r.m.key_move(&r.param, 2, 0.6).unwrap();
+        assert!(r.m.key_move(&r.param, 2, 0.4).is_err());
 
         // deleting it keeps the shifted cells consistent.
-        r.m.axis_delete(&r.param, 0, 2).unwrap();
+        r.m.key_delete(&r.param, 2).unwrap();
         let xs: Vec<u32> = cells_of(&r.m, &key).into_iter().map(|c| c.0).collect();
         assert_eq!(xs, vec![0, 1, 2]);
 
         // a range change leaves the normalized key positions alone.
-        r.m.set_param_range(&r.param, [0.0, 0.0], [4.0, 0.0])
-            .unwrap();
+        r.m.set_param_range(&r.param, 0.0, 4.0).unwrap();
         assert_eq!(
-            r.m.param(&r.param).unwrap().axis_points_x,
+            r.m.param(&r.param).unwrap().key_positions,
             vec![0.0, 0.5, 1.0]
         );
     }
@@ -1201,15 +1240,15 @@ mod tests {
     #[test]
     fn param_flip_mirrors_key_positions_and_cells() {
         let mut r = rig();
-        r.m.axis_move(&r.param, 0, 1, 0.75).unwrap();
+        r.m.key_move(&r.param, 1, 0.75).unwrap();
         let key = r.tx(&r.group.clone());
         r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
         r.m.set_binding_key(&key, [1, 0], 10.0).unwrap();
 
-        r.m.param_flip(&r.param, 0).unwrap();
+        r.m.param_flip(&r.param).unwrap();
         // 0, 0.75, 1 reflect to 1, 0.25, 0, then reverse to stay ascending.
         assert_eq!(
-            r.m.param(&r.param).unwrap().axis_points_x,
+            r.m.param(&r.param).unwrap().key_positions,
             vec![0.0, 0.25, 1.0]
         );
         // cell 0 -> 2, cell 1 -> 1; values untouched.

@@ -29,6 +29,10 @@
 //!   `.clp`, which stores no Ids, gets `node-<arena index>` for the rest.
 //! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
 //!   free to repeat, and never a key.
+//! - **Every param is a scalar.** Joint control over two params is a property
+//!   of the binding — a [`BindingKey`] names one or two params and its grid is
+//!   the product of their key positions — so a pose is a plain map
+//!   `ParamId -> f32` and nothing else carries a second dimension.
 //! - **Sibling order is document state.** It is the draw order for equal z
 //!   order, so [`Model::reorder`] is an edit, not view state.
 //! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
@@ -37,21 +41,24 @@
 //!   sit behind `Arc` and are edited through `Arc::make_mut`, so cloning a
 //!   Model for undo is a shallow copy of small structs plus refcount bumps.
 //!   Measured by `bench::clone_and_edit_a_five_hundred_node_model` (release,
-//!   `--ignored`): a 500-node, 500-binding, 3.0 MiB model clones in **55 µs**
-//!   and clones-then-authors-one-deform-cell in **57 µs**. Undo pushes one
-//!   snapshot per edit, so that is the whole per-edit cost of the history.
+//!   `--ignored`): a 500-node, 500-binding, 3.1 MiB model clones in **~50 µs**
+//!   and clones-then-authors-one-deform-cell in **~62 µs** — the difference is
+//!   the one 3x3x128-float grid `Arc::make_mut` has to copy out. Undo pushes
+//!   one snapshot per edit, so that is the whole per-edit cost of the history.
 //!
 //! Pure and wasm-safe: no GPU, no async, no filesystem.
 
 mod binding;
 mod check;
+mod eval;
 mod flatten;
 
 pub use binding::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
-    BindingTarget, ScalarTarget,
+    BindingParams, BindingTarget, ScalarTarget,
 };
 pub use check::CheckWarning;
+pub use eval::Pose;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -112,6 +119,18 @@ pub enum ModelError {
     NotPhysics,
     #[error("a colour binding cannot target a mesh group, which is never drawn")]
     ColorOnMeshGroup,
+    #[error("a two-param binding needs two different params")]
+    SelfPairedBinding,
+    #[error(
+        "the two-param binding on node {node} ({target}) cannot be written to .clp v0: its \
+         params are not an adjacent `<name>.x` / `<name>.y` pair"
+    )]
+    UnpairableBinding { node: String, target: &'static str },
+    #[error(
+        "physics node {0} drives two params that are not an adjacent `<name>.x` / `<name>.y` \
+         pair, which .clp v0 cannot express"
+    )]
+    UnpairablePhysicsTarget(String),
     #[error("binding target does not match the operation")]
     WrongTarget,
     #[error("index out of range")]
@@ -401,7 +420,7 @@ pub struct ModelPhysics {
     pub angle_damping: f32,
     pub length_damping: f32,
     pub output_scale: [f32; 2],
-    target_param: Option<ParamId>,
+    target_params: [Option<ParamId>; 2],
 }
 
 impl ModelPhysics {
@@ -417,28 +436,51 @@ impl ModelPhysics {
             angle_damping: 0.5,
             length_damping: 0.5,
             output_scale: [1.0, 1.0],
-            target_param: None,
+            target_params: [None, None],
         }
     }
 
-    /// The param the pendulum's swing is written into, if any.
-    pub fn target_param(&self) -> Option<&ParamId> {
-        self.target_param.as_ref()
+    /// The two params the pendulum's swing is written into, in the order the
+    /// map mode produces them. Either may be unset — a pendulum aimed at one
+    /// param writes only the first.
+    pub fn target_params(&self) -> &[Option<ParamId>; 2] {
+        &self.target_params
+    }
+
+    /// Whether the pendulum writes `param`.
+    pub fn drives(&self, param: &ParamId) -> bool {
+        self.target_params.iter().flatten().any(|p| p == param)
     }
 }
 
+/// A named scalar the author exposes for posing. Joint control over two
+/// params is a property of the *binding*, not of the param: see
+/// [`BindingParams`].
 #[derive(Debug, Clone)]
 pub struct ModelParam {
     pub name: Name,
-    pub is_vec2: bool,
-    pub min: [f32; 2],
-    pub max: [f32; 2],
-    /// Rest pose, in param-value space (unlike the key positions).
-    pub defaults: [f32; 2],
-    /// Key positions, normalized 0..1 across `[min, max]` — the same
-    /// convention `.clp` stores and the runtime interpolates in.
-    pub axis_points_x: Vec<f32>,
-    pub axis_points_y: Vec<f32>,
+    pub min: f32,
+    pub max: f32,
+    /// Rest value, in param-value space (unlike the key positions).
+    pub default: f32,
+    /// The values along the param at which a binding may hold authored cells,
+    /// normalized 0..1 across `[min, max]` — the same convention `.clp` stores
+    /// and the runtime interpolates in.
+    pub key_positions: Vec<f32>,
+}
+
+impl ModelParam {
+    /// A param over `[min, max]` resting at `default`, with a key position at
+    /// each end.
+    pub fn new(name: Name, min: f32, max: f32, default: f32) -> Self {
+        Self {
+            name,
+            min,
+            max,
+            default,
+            key_positions: vec![0.0, 1.0],
+        }
+    }
 }
 
 /// One param's control over one property of one node. Bindings live on the
@@ -455,8 +497,9 @@ impl ModelBinding {
         &self.key
     }
 
-    pub fn param(&self) -> &ParamId {
-        &self.key.param
+    /// The one or two params that drive it.
+    pub fn params(&self) -> &BindingParams {
+        &self.key.params
     }
 
     pub fn node(&self) -> &NodeId {
@@ -854,7 +897,11 @@ impl Model {
             .iter()
             .filter_map(|b| {
                 map.get(&b.key.node).map(|node| ModelBinding {
-                    key: BindingKey::new(b.key.param.clone(), node.clone(), b.key.target),
+                    key: BindingKey {
+                        params: b.key.params.clone(),
+                        node: node.clone(),
+                        target: b.key.target,
+                    },
                     interpolate_mode: b.interpolate_mode,
                     values: b.values.clone(),
                 })
@@ -955,14 +1002,28 @@ impl Model {
             }
         }
         for b in &mut self.bindings {
-            if &b.key.param == old {
-                b.key.param = new.clone();
+            match &mut b.key.params {
+                BindingParams::One(p) => {
+                    if p == old {
+                        *p = new.clone();
+                    }
+                }
+                BindingParams::Two(x, y) => {
+                    if x == old {
+                        *x = new.clone();
+                    }
+                    if y == old {
+                        *y = new.clone();
+                    }
+                }
             }
         }
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::SimplePhysics(ph) = &mut node.kind {
-                if ph.target_param.as_ref() == Some(old) {
-                    ph.target_param = Some(new.clone());
+                for t in &mut ph.target_params {
+                    if t.as_ref() == Some(old) {
+                        *t = Some(new.clone());
+                    }
                 }
             }
         }
@@ -1026,17 +1087,22 @@ impl Model {
         Ok(())
     }
 
-    /// Aim a simple physics node at a param, or at nothing.
-    pub fn set_physics_target(
+    /// Aim a simple physics node at up to two params — the pendulum writes
+    /// one value into each — or at nothing.
+    pub fn set_physics_targets(
         &mut self,
         id: &NodeId,
-        param: Option<ParamId>,
+        targets: [Option<ParamId>; 2],
     ) -> Result<(), ModelError> {
-        if param.as_ref().is_some_and(|p| !self.params.contains_key(p)) {
+        if targets
+            .iter()
+            .flatten()
+            .any(|p| !self.params.contains_key(p))
+        {
             return Err(ModelError::UnknownParam);
         }
         match self.nodes.get_mut(id).map(|n| &mut n.kind) {
-            Some(ModelNodeKind::SimplePhysics(ph)) => ph.target_param = param,
+            Some(ModelNodeKind::SimplePhysics(ph)) => ph.target_params = targets,
             Some(_) => return Err(ModelError::NotPhysics),
             None => return Err(ModelError::UnknownNode),
         }
@@ -1192,17 +1258,20 @@ impl Model {
         Ok(())
     }
 
-    /// Remove a param, its bindings, and any physics node that drove it.
+    /// Remove a param, every binding that named it (a two-param binding loses
+    /// half its grid, so it goes too), and any physics node that drove it.
     pub fn delete_param(&mut self, id: &ParamId) -> Result<(), ModelError> {
         if self.params.remove(id).is_none() {
             return Err(ModelError::UnknownParam);
         }
         self.param_order.retain(|p| p != id);
-        self.bindings.retain(|b| &b.key.param != id);
+        self.bindings.retain(|b| !b.key.params.contains(id));
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::SimplePhysics(ph) = &mut node.kind {
-                if ph.target_param.as_ref() == Some(id) {
-                    ph.target_param = None;
+                for t in &mut ph.target_params {
+                    if t.as_ref() == Some(id) {
+                        *t = None;
+                    }
                 }
             }
         }
@@ -1355,13 +1424,7 @@ impl Model {
                 .saturating_add(param.name.as_str().len())
                 .saturating_add(
                     param
-                        .axis_points_x
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<f32>()),
-                )
-                .saturating_add(
-                    param
-                        .axis_points_y
+                        .key_positions
                         .capacity()
                         .saturating_mul(std::mem::size_of::<f32>()),
                 );
@@ -1413,9 +1476,10 @@ impl Model {
         }
         if let ModelNodeKind::SimplePhysics(ph) = &node.kind {
             if ph
-                .target_param
-                .as_ref()
-                .is_some_and(|p| !self.params.contains_key(p))
+                .target_params
+                .iter()
+                .flatten()
+                .any(|p| !self.params.contains_key(p))
             {
                 return Err(ModelError::UnknownParam);
             }
@@ -1584,12 +1648,10 @@ mod tests {
             .add_param(
                 ModelParam {
                     name: Name::truncated("p"),
-                    is_vec2: false,
-                    min: [-1.0, 0.0],
-                    max: [1.0, 0.0],
-                    defaults: [0.0, 0.0],
-                    axis_points_x: vec![0.0, 0.5, 1.0],
-                    axis_points_y: vec![0.0],
+                    min: -1.0,
+                    max: 1.0,
+                    default: 0.0,
+                    key_positions: vec![0.0, 0.5, 1.0],
                 },
                 &mut hex,
             )
@@ -1718,7 +1780,7 @@ mod tests {
                 "set_physics_target",
                 Box::new(|r| {
                     r.model
-                        .set_physics_target(&r.physics, Some(r.param.clone()))
+                        .set_physics_targets(&r.physics, [Some(r.param.clone()), None])
                         .unwrap()
                 }),
             ),
@@ -1909,34 +1971,30 @@ mod tests {
                 }),
             ),
             (
-                "set_param_defaults",
-                Box::new(|r| r.model.set_param_defaults(&r.param, [0.5, 0.0]).unwrap()),
+                "set_param_default",
+                Box::new(|r| r.model.set_param_default(&r.param, 0.5).unwrap()),
             ),
             (
                 "set_param_range",
+                Box::new(|r| r.model.set_param_range(&r.param, 0.0, 2.0).unwrap()),
+            ),
+            (
+                "key_insert",
                 Box::new(|r| {
-                    r.model
-                        .set_param_range(&r.param, [0.0, 0.0], [2.0, 0.0])
-                        .unwrap()
+                    r.model.key_insert(&r.param, 0.25).unwrap();
                 }),
             ),
             (
-                "axis_insert",
-                Box::new(|r| {
-                    r.model.axis_insert(&r.param, 0, 0.25).unwrap();
-                }),
+                "key_delete",
+                Box::new(|r| r.model.key_delete(&r.param, 1).unwrap()),
             ),
             (
-                "axis_delete",
-                Box::new(|r| r.model.axis_delete(&r.param, 0, 1).unwrap()),
-            ),
-            (
-                "axis_move",
-                Box::new(|r| r.model.axis_move(&r.param, 0, 1, 0.6).unwrap()),
+                "key_move",
+                Box::new(|r| r.model.key_move(&r.param, 1, 0.6).unwrap()),
             ),
             (
                 "param_flip",
-                Box::new(|r| r.model.param_flip(&r.param, 0).unwrap()),
+                Box::new(|r| r.model.param_flip(&r.param).unwrap()),
             ),
         ];
 
@@ -1987,7 +2045,7 @@ mod tests {
             .unwrap();
         r.model.set_part_albedo(&part, Some(tex.clone())).unwrap();
         r.model
-            .set_physics_target(&physics, Some(param.clone()))
+            .set_physics_targets(&physics, [Some(param.clone()), None])
             .unwrap();
         r.model
             .set_welds(vec![ModelWeld::new(part.clone(), other, Vec::new())])
@@ -2023,7 +2081,10 @@ mod tests {
         let new_param = ParamId::new("head-turn").unwrap();
         r.model.rename_param_id(&param, new_param.clone()).unwrap();
         assert_eq!(r.model.param_ids(), std::slice::from_ref(&new_param));
-        assert_eq!(r.model.bindings().next().unwrap().param(), &new_param);
+        assert_eq!(
+            r.model.bindings().next().unwrap().params(),
+            &BindingParams::One(new_param.clone())
+        );
         assert_eq!(
             physics_target(&r.model, &physics),
             Some(new_param),
@@ -2315,7 +2376,8 @@ mod tests {
             Err(ModelError::NotAPart)
         ));
         assert!(matches!(
-            r.model.set_physics_target(&r.physics, Some(orphan_param)),
+            r.model
+                .set_physics_targets(&r.physics, [Some(orphan_param), None]),
             Err(ModelError::UnknownParam)
         ));
         assert!(matches!(
@@ -2343,7 +2405,7 @@ mod tests {
 
     fn physics_target(m: &Model, node: &NodeId) -> Option<ParamId> {
         match &m.node(node)?.kind {
-            ModelNodeKind::SimplePhysics(ph) => ph.target_param().cloned(),
+            ModelNodeKind::SimplePhysics(ph) => ph.target_params()[0].clone(),
             _ => None,
         }
     }
@@ -2377,15 +2439,7 @@ mod tests {
     }
 
     pub(super) fn param(name: &str) -> ModelParam {
-        ModelParam {
-            name: Name::truncated(name),
-            is_vec2: false,
-            min: [0.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-        }
+        ModelParam::new(Name::truncated(name), 0.0, 1.0, 0.0)
     }
 }
 
@@ -2442,26 +2496,27 @@ mod tests_support {
     use crate::id::SeededHex;
 
     /// A model with `nodes` parts, each carrying a `verts`-vertex mesh and a
-    /// deform binding whose `keys` x `keys` grid is fully authored.
+    /// two-param deform binding whose `keys` x `keys` grid is fully authored.
     pub(super) fn dense_model(nodes: usize, verts: usize, keys: usize) -> (Model, BindingKey) {
         let positions: Vec<f32> = (0..keys).map(|i| i as f32 / (keys - 1) as f32).collect();
         let mut hex = SeededHex::new(11);
         let mut model = Model::new();
         let root = model.root().clone();
-        let param = model
-            .add_param(
-                ModelParam {
-                    name: Name::truncated("sweep"),
-                    is_vec2: true,
-                    min: [-1.0, -1.0],
-                    max: [1.0, 1.0],
-                    defaults: [0.0, 0.0],
-                    axis_points_x: positions.clone(),
-                    axis_points_y: positions,
-                },
-                &mut hex,
-            )
-            .unwrap();
+        let mut param = |name: &str, model: &mut Model| {
+            model
+                .add_param(
+                    ModelParam {
+                        name: Name::truncated(name),
+                        min: -1.0,
+                        max: 1.0,
+                        default: 0.0,
+                        key_positions: positions.clone(),
+                    },
+                    &mut hex,
+                )
+                .unwrap()
+        };
+        let (param_x, param_y) = (param("sweep.x", &mut model), param("sweep.y", &mut model));
         let mesh = ClpMesh {
             verts: (0..verts * 2).map(|i| i as f32).collect(),
             uvs: vec![0.0; verts * 2],
@@ -2480,7 +2535,12 @@ mod tests_support {
                     &mut hex,
                 )
                 .unwrap();
-            let key = BindingKey::new(param.clone(), node, BindingTarget::Deform);
+            let key = BindingKey::pair(
+                param_x.clone(),
+                param_y.clone(),
+                node,
+                BindingTarget::Deform,
+            );
             for y in 0..keys as u32 {
                 for x in 0..keys as u32 {
                     model

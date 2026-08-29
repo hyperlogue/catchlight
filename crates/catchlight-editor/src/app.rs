@@ -1470,6 +1470,9 @@ impl App {
                 .iter()
                 .map(|(name, v)| (name.clone(), Vec2::new(v[0], v[1])))
                 .collect();
+            // The puppet is built from a flattened `.clp`, which re-pairs
+            // `<n>.x` / `<n>.y` into one 2-D param (cl-32i.14 removes both).
+            let pose = self.editor.fold_pose(session, &pose).unwrap_or(pose);
             let editor = self.editor.clone();
             let camera = self.camera;
             let previews = self.previews.clone();
@@ -2474,7 +2477,7 @@ fn build_inspector_data(model: &Model, refs: &mut RefMap, node: NodeRef) -> Opti
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
-            target_param: ph.target_param().cloned().map(|p| refs.param(&p)),
+            target_param: ph.target_params()[0].clone().map(|p| refs.param(&p)),
             gravity: ph.gravity,
             length: ph.length,
             frequency: ph.frequency,
