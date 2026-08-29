@@ -27,9 +27,9 @@ use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Vec2;
 use catchlight_core::{
-    from_clp_cached, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup, ModelNode,
-    ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, NodeKey, ParamKey, Puppet,
-    ScalarTarget, TexKey, TexturePrepCache,
+    from_clp_cached, BindingKey, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup,
+    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, NodeKey, ParamKey,
+    Puppet, ScalarTarget, TexKey, TexturePrepCache,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_editor_core::{Manifest, ModelManifestExt as _, TextureData};
@@ -601,16 +601,22 @@ impl Editor {
                 node,
                 patch,
             } => self.edit_session(session, |s| {
+                let id = NodeKey::from_ffi(node.0);
                 if let Some(tref) = patch.texture {
-                    if s.model.texture(TexKey::from_ffi(tref.0)).is_none() {
+                    let tex = TexKey::from_ffi(tref.0);
+                    if s.model.texture(tex).is_none() {
                         return Err(EditorError::NoTexture(tref));
                     }
+                    if matches!(
+                        s.model.node(id).map(|n| &n.kind),
+                        Some(ModelNodeKind::Part(_))
+                    ) {
+                        s.model.set_part_albedo(id, Some(tex))?;
+                    }
                 }
-                let n = s
-                    .model
-                    .node_mut(NodeKey::from_ffi(node.0))
-                    .ok_or(EditorError::NoNode(node))?;
-                apply_patch(n, &patch)?;
+                s.model
+                    .update_node(id, |n| apply_patch(n, &patch))
+                    .map_err(|_| EditorError::NoNode(node))??;
                 s.touch();
                 Ok(ResponseBody::Node { node })
             }),
@@ -729,43 +735,45 @@ impl Editor {
                     }
                     (false, None) => None,
                 };
-                let n = s
-                    .model
-                    .node_mut(NodeKey::from_ffi(node.0))
-                    .ok_or(EditorError::NoNode(node))?;
-                let ModelNodeKind::SimplePhysics(ph) = &mut n.kind else {
-                    return Err(EditorError::BadTarget("not a physics node".into()));
-                };
-                if let Some(m) = parsed_kind {
-                    ph.kind = m;
-                }
-                if let Some(m) = parsed_map {
-                    ph.map_mode = m;
-                }
-                if let Some(v) = local_only {
-                    ph.local_only = v;
-                }
+                let id = NodeKey::from_ffi(node.0);
                 if let Some(t) = target {
-                    ph.target_param = t;
+                    s.model.set_physics_target(id, t)?;
                 }
-                if let Some(v) = gravity {
-                    ph.gravity = v;
-                }
-                if let Some(v) = length {
-                    ph.length = v;
-                }
-                if let Some(v) = frequency {
-                    ph.frequency = v;
-                }
-                if let Some(v) = angle_damping {
-                    ph.angle_damping = v;
-                }
-                if let Some(v) = length_damping {
-                    ph.length_damping = v;
-                }
-                if let Some(v) = output_scale {
-                    ph.output_scale = v;
-                }
+                s.model
+                    .update_node(id, |n| {
+                        let ModelNodeKind::SimplePhysics(ph) = &mut n.kind else {
+                            return Err(EditorError::BadTarget("not a physics node".into()));
+                        };
+                        if let Some(m) = parsed_kind {
+                            ph.kind = m;
+                        }
+                        if let Some(m) = parsed_map {
+                            ph.map_mode = m;
+                        }
+                        if let Some(v) = local_only {
+                            ph.local_only = v;
+                        }
+                        if let Some(v) = gravity {
+                            ph.gravity = v;
+                        }
+                        if let Some(v) = length {
+                            ph.length = v;
+                        }
+                        if let Some(v) = frequency {
+                            ph.frequency = v;
+                        }
+                        if let Some(v) = angle_damping {
+                            ph.angle_damping = v;
+                        }
+                        if let Some(v) = length_damping {
+                            ph.length_damping = v;
+                        }
+                        if let Some(v) = output_scale {
+                            ph.output_scale = v;
+                        }
+                        Ok(())
+                    })
+                    .map_err(|_| EditorError::NoNode(node))??;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -774,12 +782,14 @@ impl Editor {
                 gravity,
                 pixels_per_meter,
             } => self.edit_session(session, |s| {
+                let mut physics = *s.model.physics();
                 if let Some(g) = gravity {
-                    s.model.physics.gravity = g;
+                    physics.gravity = g;
                 }
                 if let Some(ppm) = pixels_per_meter {
-                    s.model.physics.pixels_per_meter = ppm;
+                    physics.pixels_per_meter = ppm;
                 }
+                s.model.set_physics(physics);
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -851,7 +861,6 @@ impl Editor {
                     defaults,
                     axis_points_x,
                     axis_points_y,
-                    bindings: Vec::new(),
                 });
                 s.touch();
                 Ok(ResponseBody::Param {
@@ -951,14 +960,12 @@ impl Editor {
                     })
                     .collect::<Result<_, _>>()?;
                 for (t, value) in parsed {
-                    s.model.set_binding_key(
+                    let key = BindingKey::new(
                         ParamKey::from_ffi(param.0),
                         NodeKey::from_ffi(node.0),
-                        t,
-                        cell[0],
-                        cell[1],
-                        value,
-                    )?;
+                        BindingTarget::Scalar(t),
+                    );
+                    s.model.set_binding_key(&key, cell, value)?;
                 }
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -971,13 +978,8 @@ impl Editor {
                 cell,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.unset_binding_key(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                    cell[0],
-                    cell[1],
-                )?;
+                s.model
+                    .unset_binding_key(&binding_key(param, node, t), cell)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -989,13 +991,8 @@ impl Editor {
                 cell,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.reset_binding_key(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                    cell[0],
-                    cell[1],
-                )?;
+                s.model
+                    .reset_binding_key(&binding_key(param, node, t), cell)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1006,11 +1003,7 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.delete_binding(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                )?;
+                s.model.delete_binding(&binding_key(param, node, t))?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1023,12 +1016,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 let m = parse_interpolate_mode(&mode)?;
-                s.model.set_binding_interpolate(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                    m,
-                )?;
+                s.model
+                    .set_binding_interpolate(&binding_key(param, node, t), m)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1039,11 +1028,7 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.invert_binding(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                )?;
+                s.model.invert_binding(&binding_key(param, node, t))?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1056,13 +1041,8 @@ impl Editor {
                 to,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.copy_binding_key(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                    from,
-                    to,
-                )?;
+                s.model
+                    .copy_binding_key(&binding_key(param, node, t), from, to)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1074,8 +1054,7 @@ impl Editor {
                 offsets,
             } => self.edit_session(session, |s| {
                 s.model.set_deform_vertices(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
+                    &binding_key(param, node, BindingTarget::Deform),
                     cell,
                     offsets,
                 )?;
@@ -1116,10 +1095,11 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::MeshCopy { session, from, to } => self.edit_session(session, |s| {
-                let mesh = match s.model.node(NodeKey::from_ffi(from.0)).map(|n| &n.kind) {
-                    Some(ModelNodeKind::Part(p)) => p.mesh.to_clp(),
-                    Some(ModelNodeKind::MeshGroup(mg)) => mg.mesh.to_clp(),
-                    Some(_) => return Err(EditorError::BadTarget("not a meshed node".into())),
+                let mesh = match s.model.node_mesh(NodeKey::from_ffi(from.0)) {
+                    Some(mesh) => mesh.clone(),
+                    None if s.model.node(NodeKey::from_ffi(from.0)).is_some() => {
+                        return Err(EditorError::BadTarget("not a meshed node".into()))
+                    }
                     None => return Err(EditorError::NoNode(from)),
                 };
                 s.model.set_mesh_with_refit(NodeKey::from_ffi(to.0), mesh)?;
@@ -1160,23 +1140,28 @@ impl Editor {
                     }
                     None => None,
                 };
-                let phys = ModelPhysics {
-                    kind: phys_kind,
-                    map_mode: PhysicsParamMapMode::default(),
-                    local_only: false,
-                    target_param: target,
-                    gravity: gravity.unwrap_or(9.8),
-                    length: length.unwrap_or(100.0),
-                    frequency: frequency.unwrap_or(1.0),
-                    angle_damping: angle_damping.unwrap_or(0.5),
-                    length_damping: length_damping.unwrap_or(0.5),
-                    output_scale: [1.0, 1.0],
-                };
+                let mut phys = ModelPhysics::new(phys_kind);
+                if let Some(v) = gravity {
+                    phys.gravity = v;
+                }
+                if let Some(v) = length {
+                    phys.length = v;
+                }
+                if let Some(v) = frequency {
+                    phys.frequency = v;
+                }
+                if let Some(v) = angle_damping {
+                    phys.angle_damping = v;
+                }
+                if let Some(v) = length_damping {
+                    phys.length_damping = v;
+                }
                 let node = ModelNode::new(
                     name.unwrap_or_else(|| "Physics".into()),
                     ModelNodeKind::SimplePhysics(phys),
                 );
                 let id = s.model.add_node(NodeKey::from_ffi(parent.0), node)?;
+                s.model.set_physics_target(id, target)?;
                 s.touch();
                 Ok(ResponseBody::Node {
                     node: NodeRef(id.to_ffi()),
@@ -1192,8 +1177,7 @@ impl Editor {
                 scale,
             } => self.edit_session(session, |s| {
                 s.model.set_deform_from_transform(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
+                    &binding_key(param, node, BindingTarget::Deform),
                     cell,
                     translate.unwrap_or([0.0, 0.0]),
                     rotate.unwrap_or(0.0),
@@ -1209,11 +1193,8 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.add_scalar_binding(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                )?;
+                s.model
+                    .add_binding(&binding_key(param, node, BindingTarget::Scalar(t)))?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1227,11 +1208,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 s.model.set_binding_key(
-                    ParamKey::from_ffi(param.0),
-                    NodeKey::from_ffi(node.0),
-                    t,
-                    cell[0],
-                    cell[1],
+                    &binding_key(param, node, BindingTarget::Scalar(t)),
+                    cell,
                     value,
                 )?;
                 s.touch();
@@ -1352,6 +1330,16 @@ use transport::{
     MAX_SOCKET_CONNECTIONS,
 };
 
+/// Protocol handles name a param and a node; the model addresses a binding by
+/// those two plus the property it drives.
+fn binding_key(param: ParamRef, node: NodeRef, target: BindingTarget) -> BindingKey {
+    BindingKey::new(
+        ParamKey::from_ffi(param.0),
+        NodeKey::from_ffi(node.0),
+        target,
+    )
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -1360,7 +1348,7 @@ fn build_tree(model: &Model, id: NodeKey) -> TreeNode {
     let (name, kind, z_order, enabled, children) = match model.node(id) {
         Some(n) => (
             n.name.clone(),
-            node_kind_str(&n.kind).to_string(),
+            n.kind.name().to_string(),
             n.z_order,
             n.enabled,
             n.children().to_vec(),
@@ -1403,20 +1391,10 @@ fn param_infos(model: &Model) -> Vec<ParamInfo> {
                 axis: [w, h],
                 axis_points_x: p.axis_points_x.clone(),
                 axis_points_y: p.axis_points_y.clone(),
-                bindings: p.bindings.len() as u32,
+                bindings: model.bindings_of_param(pid).count() as u32,
             })
         })
         .collect()
-}
-
-fn node_kind_str(kind: &ModelNodeKind) -> &'static str {
-    match kind {
-        ModelNodeKind::Group => "group",
-        ModelNodeKind::Part(_) => "part",
-        ModelNodeKind::Composite(_) => "composite",
-        ModelNodeKind::MeshGroup(_) => "mesh_group",
-        ModelNodeKind::SimplePhysics(_) => "physics",
-    }
 }
 
 fn default_name(kind: NodeKindArg) -> String {
@@ -1432,30 +1410,9 @@ fn default_name(kind: NodeKindArg) -> String {
 fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
     match kind {
         NodeKindArg::Group => ModelNodeKind::Group,
-        NodeKindArg::Part => ModelNodeKind::Part(ModelPart {
-            mesh: ClpMesh::default().into(),
-            albedo: None,
-            opacity: 1.0,
-            blend_mode: BlendMode::Normal,
-            tint: [1.0; 3],
-            screen_tint: [0.0; 3],
-            masks: Vec::new(),
-            mask_threshold: 0.5,
-        }),
-        NodeKindArg::Composite => ModelNodeKind::Composite(ModelComposite {
-            opacity: 1.0,
-            blend_mode: BlendMode::Normal,
-            tint: [1.0; 3],
-            screen_tint: [0.0; 3],
-            masks: Vec::new(),
-            mask_threshold: 0.5,
-            propagate_meshgroup: false,
-        }),
-        NodeKindArg::MeshGroup => ModelNodeKind::MeshGroup(ModelMeshGroup {
-            mesh: ClpMesh::default().into(),
-            dynamic: false,
-            translate_children: false,
-        }),
+        NodeKindArg::Part => ModelNodeKind::Part(ModelPart::new(ClpMesh::default())),
+        NodeKindArg::Composite => ModelNodeKind::Composite(ModelComposite::new()),
+        NodeKindArg::MeshGroup => ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClpMesh::default())),
     }
 }
 
@@ -1489,11 +1446,6 @@ fn apply_patch(n: &mut ModelNode, patch: &NodePatch) -> Result<(), EditorError> 
     }
     if let Some(op) = patch.opacity {
         set_opacity(&mut n.kind, op);
-    }
-    if let Some(tref) = patch.texture {
-        if let ModelNodeKind::Part(p) = &mut n.kind {
-            p.albedo = Some(TexKey::from_ffi(tref.0));
-        }
     }
     if let Some(mode) = blend {
         match &mut n.kind {
@@ -1770,7 +1722,8 @@ mod tests {
         let mut session = Session::new(Model::new(), "history".into(), None);
         for name in ["first", "second", "third"] {
             let mut model = Model::new();
-            model.node_mut(model.root()).unwrap().name = name.into();
+            let root = model.root();
+            model.update_node(root, |n| n.name = name.into()).unwrap();
             let entry = HistoryEntry::new(model);
             session.history_bytes = session.history_bytes.saturating_add(entry.bytes);
             session.undo.push(entry);

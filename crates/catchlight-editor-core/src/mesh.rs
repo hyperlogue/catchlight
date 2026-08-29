@@ -11,10 +11,10 @@
 //! [`Model::set_mesh_with_refit`] re-fits existing deform bindings onto the
 //! new topology (triangle-affine interpolation over the old rest mesh).
 
-use catchlight_core::formats::clp::{ClpBindingValues, ClpIndices, ClpMesh};
+use catchlight_core::formats::clp::{ClpIndices, ClpMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
-use catchlight_core::{Model, ModelError, ModelNodeKind, NodeKey};
+use catchlight_core::{Model, ModelError, NodeKey};
 
 /// Minimum distance between distinct vertices; closer placements are rejected
 /// (coincident points would merge in the triangulation and corrupt indexing).
@@ -878,52 +878,19 @@ fn clamp_bary(b: [f32; 3]) -> [f32; 3] {
 /// Mesh authoring over a [`Model`]. An extension trait because the Model is
 /// defined in `catchlight-core` while the mesh tools live here.
 pub trait ModelMeshExt {
-    /// Replace a Part/MeshGroup mesh and re-fit every deform binding that
-    /// drives the node onto the new topology — one undoable step. The mesh is
-    /// validated first: a malformed one would poison every later puppet build.
+    /// Replace a meshed node's mesh and re-fit every deform binding that drives
+    /// the node onto the new topology — one undoable step. The offsets are
+    /// carried over by triangle-affine interpolation across the old rest mesh;
+    /// [`Model::set_node_mesh_with`] validates the mesh and moves the cells and
+    /// the mesh together.
     fn set_mesh_with_refit(&mut self, node: NodeKey, mesh: ClpMesh) -> Result<(), ModelError>;
 }
 
 impl ModelMeshExt for Model {
     fn set_mesh_with_refit(&mut self, node: NodeKey, mesh: ClpMesh) -> Result<(), ModelError> {
-        let vcount = mesh.verts.len() / 2;
-        let max_index = match &mesh.indices {
-            ClpIndices::U16(v) => v.iter().map(|&i| i as usize).max(),
-            ClpIndices::U32(v) => v.iter().map(|&i| i as usize).max(),
-        };
-        if !mesh.verts.len().is_multiple_of(2)
-            || mesh.uvs.len() != mesh.verts.len()
-            || max_index.is_some_and(|m| m >= vcount)
-        {
-            return Err(ModelError::IndexOutOfRange);
-        }
-        let old = match self.node(node).map(|n| &n.kind) {
-            Some(ModelNodeKind::Part(p)) => p.mesh.clone(),
-            Some(ModelNodeKind::MeshGroup(mg)) => mg.mesh.clone(),
-            Some(_) => return Err(ModelError::NotAPart),
-            None => return Err(ModelError::UnknownNode),
-        };
-        for pid in self.param_ids().to_vec() {
-            let Some(p) = self.param_mut(pid) else {
-                continue;
-            };
-            for b in &mut p.bindings {
-                if b.node != node {
-                    continue;
-                }
-                if let ClpBindingValues::Deform(cells) = &mut *b.values {
-                    for cell in &mut cells.cells {
-                        cell.value = refit_deform_offsets(&old, &mesh.verts, &cell.value);
-                    }
-                }
-            }
-        }
-        match self.node_mut(node).map(|n| &mut n.kind) {
-            Some(ModelNodeKind::Part(p)) => p.mesh = mesh.into(),
-            Some(ModelNodeKind::MeshGroup(mg)) => mg.mesh = mesh.into(),
-            _ => return Err(ModelError::NotAPart),
-        }
-        Ok(())
+        self.set_node_mesh_with(node, mesh, |old, new, offsets| {
+            refit_deform_offsets(old, &new.verts, offsets)
+        })
     }
 }
 
@@ -1069,27 +1036,16 @@ mod tests {
 
     #[test]
     fn set_mesh_with_refit_updates_bindings_in_one_step() {
-        use catchlight_core::components::BlendMode;
-        use catchlight_core::{ModelNode, ModelParam, ModelPart, ParamKey};
+        use catchlight_core::{
+            BindingKey, BindingTarget, ModelNode, ModelNodeKind, ModelParam, ModelPart,
+        };
 
         let mut m = Model::new();
         let root = m.root();
         let part = m
             .add_node(
                 root,
-                ModelNode::new(
-                    "p",
-                    ModelNodeKind::Part(ModelPart {
-                        mesh: quad().into(),
-                        albedo: None,
-                        opacity: 1.0,
-                        blend_mode: BlendMode::Normal,
-                        tint: [1.0; 3],
-                        screen_tint: [0.0; 3],
-                        masks: Vec::new(),
-                        mask_threshold: 0.5,
-                    }),
-                ),
+                ModelNode::new("p", ModelNodeKind::Part(ModelPart::new(quad()))),
             )
             .unwrap();
         let param = m.add_param(ModelParam {
@@ -1100,9 +1056,9 @@ mod tests {
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-            bindings: Vec::new(),
         });
-        m.set_deform_from_transform(param, part, [1, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
+        let key = BindingKey::new(param, part, BindingTarget::Deform);
+        m.set_deform_from_transform(&key, [1, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
             .unwrap();
 
         // New topology: the same quad plus a center vertex.
@@ -1112,16 +1068,10 @@ mod tests {
         new_mesh.indices = ClpIndices::U16(vec![0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4]);
         m.set_mesh_with_refit(part, new_mesh).unwrap();
 
-        let b = m
-            .binding(part_param(&m), part, catchlight_core::BindingTarget::Deform)
-            .unwrap();
-        let cells = catchlight_core::deform_cells(&b.values).unwrap();
+        let b = m.binding(&key).unwrap();
+        let cells = catchlight_core::deform_cells(b.values()).unwrap();
         assert_eq!(cells[0].value.len(), 10);
         // Old corners keep the uniform offset; the new center interpolates it.
         assert!((cells[1].value[8] - 10.0).abs() < 1e-4);
-
-        fn part_param(m: &Model) -> ParamKey {
-            m.param_ids()[0]
-        }
     }
 }

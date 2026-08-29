@@ -3,11 +3,13 @@
 //! Most are cosmetic; the exception is a colour binding on a mesh group, which
 //! flattens to a file `catchlight_core` then refuses to load (a mesh group is
 //! never drawn, so it has no colour for the binding to fold into).
+//! [`Model::add_binding`] refuses to author one, so only a file written by an
+//! older tool can still carry it.
 
 use crate::formats::clp::{ClpBindingValues, ClpIndices};
 
 use super::*;
-use crate::model::binding::{target_of, BindingTarget};
+use crate::model::binding::BindingTarget;
 
 #[derive(Debug, Clone)]
 pub struct CheckWarning {
@@ -26,29 +28,30 @@ impl Model {
             let Some(n) = self.node(id) else { continue };
             match &n.kind {
                 ModelNodeKind::Part(p) => {
-                    if p.albedo.is_none() {
+                    if p.albedo().is_none() {
                         out.push(warn(
                             id,
                             format!("part {:?} has no texture (the renderer culls it)", n.name),
                         ));
                     }
-                    let verts = p.mesh.verts.len() / 2;
-                    if p.mesh.uvs.len() / 2 != verts {
+                    let mesh = p.mesh();
+                    let verts = mesh.verts.len() / 2;
+                    if mesh.uvs.len() / 2 != verts {
                         out.push(warn(
                             id,
                             format!(
                                 "part {:?} has {} vertices but {} uvs",
                                 n.name,
                                 verts,
-                                p.mesh.uvs.len() / 2
+                                mesh.uvs.len() / 2
                             ),
                         ));
                     }
-                    let tris = match &p.mesh.indices {
+                    let tris = match &mesh.indices {
                         ClpIndices::U16(v) => v.len() / 3,
                         ClpIndices::U32(v) => v.len() / 3,
                     };
-                    if tris == 0 && p.albedo.is_some() {
+                    if tris == 0 && p.albedo().is_some() {
                         out.push(warn(
                             id,
                             format!(
@@ -58,7 +61,7 @@ impl Model {
                         ));
                     }
                 }
-                ModelNodeKind::SimplePhysics(ph) if ph.target_param.is_none() => {
+                ModelNodeKind::SimplePhysics(ph) if ph.target_param().is_none() => {
                     out.push(warn(
                         id,
                         format!("physics node {:?} drives no target param", n.name),
@@ -68,39 +71,39 @@ impl Model {
             }
         }
 
-        for &pid in self.param_ids() {
-            let Some(p) = self.param(pid) else { continue };
+        for b in self.bindings() {
+            let Some(p) = self.param(b.param()) else {
+                continue;
+            };
             let w = p.axis_points_x.len().max(1) as u32;
             let h = p.axis_points_y.len().max(1) as u32;
-            for b in &p.bindings {
-                if let BindingTarget::Scalar(t) = target_of(&b.values) {
-                    if t.is_color()
-                        && matches!(
-                            self.node(b.node).map(|n| &n.kind),
-                            Some(ModelNodeKind::MeshGroup(_))
-                        )
-                    {
-                        out.push(CheckWarning {
-                            node: Some(b.node),
-                            message: format!(
-                                "param {:?}: {} binding targets a mesh group, which has no \
-                                 colour (the runtime refuses to load this model)",
-                                p.name,
-                                t.name()
-                            ),
-                        });
-                    }
-                }
-                let stray = cells_outside(&b.values, w, h);
-                if stray > 0 {
+            if let BindingTarget::Scalar(t) = b.target() {
+                if t.is_color()
+                    && matches!(
+                        self.node(b.node()).map(|n| &n.kind),
+                        Some(ModelNodeKind::MeshGroup(_))
+                    )
+                {
                     out.push(CheckWarning {
-                        node: Some(b.node),
+                        node: Some(b.node()),
                         message: format!(
-                            "param {:?}: {} authored cell(s) outside the {}x{} axis grid",
-                            p.name, stray, w, h
+                            "param {:?}: {} binding targets a mesh group, which has no \
+                             colour (the runtime refuses to load this model)",
+                            p.name,
+                            t.name()
                         ),
                     });
                 }
+            }
+            let stray = cells_outside(b.values(), w, h);
+            if stray > 0 {
+                out.push(CheckWarning {
+                    node: Some(b.node()),
+                    message: format!(
+                        "param {:?}: {} authored cell(s) outside the {}x{} axis grid",
+                        p.name, stray, w, h
+                    ),
+                });
             }
         }
         out
@@ -132,9 +135,9 @@ mod tests {
     use crate::model::binding::ScalarTarget;
     use crate::model::*;
 
-    /// The editor can hold a colour binding on a mesh group — a `.clp` written
-    /// by an older tool opens fine — but the runtime will not load the model
-    /// back, so `check` has to say so.
+    /// The editor refuses to author a colour binding on a mesh group, but a
+    /// `.clp` written by an older tool can carry one — and the runtime will not
+    /// load that model back, so `check` has to say so.
     #[test]
     fn check_flags_a_color_binding_on_a_mesh_group() {
         let mut m = Model::new();
@@ -144,11 +147,7 @@ mod tests {
                 root,
                 ModelNode::new(
                     "lattice",
-                    ModelNodeKind::MeshGroup(ModelMeshGroup {
-                        mesh: ClpMesh::default().into(),
-                        dynamic: false,
-                        translate_children: true,
-                    }),
+                    ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClpMesh::default())),
                 ),
             )
             .unwrap();
@@ -160,24 +159,52 @@ mod tests {
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-            bindings: Vec::new(),
         });
 
-        m.add_scalar_binding(param, group, ScalarTarget::Tx)
-            .unwrap();
+        m.add_binding(&BindingKey::new(
+            param,
+            group,
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        ))
+        .unwrap();
         assert!(!m
             .check()
             .iter()
             .any(|w| w.message.contains("has no colour")));
 
-        m.add_scalar_binding(param, group, ScalarTarget::Opacity)
-            .unwrap();
+        // Authoring one is refused outright...
+        assert!(matches!(
+            m.add_binding(&BindingKey::new(
+                param,
+                group,
+                BindingTarget::Scalar(ScalarTarget::Opacity)
+            )),
+            Err(ModelError::ColorOnMeshGroup)
+        ));
+
+        // ...so only a file can bring one in. Round-trip through `.clp` with
+        // the opacity binding spliced into the param's binding list.
+        let mut file = m.flatten().unwrap();
+        let group_index = file
+            .doc
+            .nodes
+            .iter()
+            .position(|n| n.name == "lattice")
+            .expect("the mesh group is in the arena") as u32;
+        file.doc.params[0]
+            .bindings
+            .push(crate::formats::clp::ClpBinding {
+                node: group_index,
+                interpolate_mode: crate::params::InterpolateMode::Linear,
+                values: crate::formats::clp::ClpBindingValues::Opacity(Default::default()),
+            });
+        let m = Model::from_clp_file(&file).unwrap();
+
         let warnings = m.check();
         let w = warnings
             .iter()
             .find(|w| w.message.contains("has no colour"))
             .expect("a colour binding on a mesh group is flagged");
-        assert_eq!(w.node, Some(group));
         assert!(w.message.contains("opacity"), "{}", w.message);
     }
 }

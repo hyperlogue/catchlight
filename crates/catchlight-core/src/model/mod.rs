@@ -7,10 +7,19 @@
 //!
 //! Invariants this module enforces:
 //!
+//! - **Nothing mutates a Model except its own methods.** Every field is
+//!   private and every mutating method bumps [`Model::generation`], so a
+//!   derived object (a puppet, a render cache) can hold the last generation it
+//!   baked against and rebake when it moved. A mutation path that forgets to
+//!   bump is the bug class `generation_bumps_on_every_mutating_method` exists
+//!   to catch.
 //! - **The tree is always valid.** One root, no cycles, no dangling
 //!   cross-reference: deleting a node also drops every mask and binding that
 //!   pointed into the removed subtree, and deleting a param or texture nulls
-//!   out whatever referenced it. That is what makes [`Model::flatten`] total.
+//!   out whatever referenced it. Cross-references (a part's albedo, a mask's
+//!   source, a physics target, a weld's ends) are private and only reachable
+//!   through methods that check them, which is what makes [`Model::flatten`]
+//!   total.
 //! - **Keys are stable, indices are not.** Nodes, params and textures are
 //!   addressed by slotmap keys ([`NodeKey`], [`ParamKey`], [`TexKey`]) that
 //!   survive insert, reparent and delete. Array indices exist only at the file
@@ -21,7 +30,8 @@
 //! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
 //!   bytes verbatim; decoding is the render cache's job.
 //! - **Heavy leaves are shared.** Meshes, binding cell grids and texture bytes
-//!   sit behind `Arc`, so cloning a Model for undo is shallow.
+//!   sit behind `Arc` and are edited through `Arc::make_mut`, so cloning a
+//!   Model for undo is a shallow copy of small structs plus refcount bumps.
 //!
 //! Pure and wasm-safe: no GPU, no async, no filesystem.
 
@@ -30,13 +40,13 @@ mod check;
 mod flatten;
 
 pub use binding::{
-    deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingTarget,
-    ScalarTarget,
+    deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
+    BindingTarget, ScalarTarget,
 };
 pub use check::CheckWarning;
 
 use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::sync::Arc;
 
 use slotmap::{new_key_type, SlotMap};
@@ -74,14 +84,24 @@ pub enum ModelError {
     UnknownBinding,
     #[error("node is not a part")]
     NotAPart,
+    #[error("node carries no mesh")]
+    NotMeshed,
     #[error("node cannot have masks")]
     NotMaskable,
     #[error("a node cannot mask itself")]
     SelfMask,
+    #[error("node is not a simple physics node")]
+    NotPhysics,
+    #[error("a colour binding cannot target a mesh group, which is never drawn")]
+    ColorOnMeshGroup,
+    #[error("binding target does not match the operation")]
+    WrongTarget,
     #[error("index out of range")]
     IndexOutOfRange,
     #[error("constraint edges may not cross")]
     ConstraintCross,
+    #[error("mesh is malformed: {0}")]
+    MalformedMesh(&'static str),
     #[error(".clp codec: {0}")]
     Clp(#[from] crate::formats::clp::ClpError),
     #[error(transparent)]
@@ -121,27 +141,53 @@ pub struct ModelTexture {
     pub data: Arc<Vec<u8>>,
 }
 
-/// The editable puppet: a tree of nodes by stable id, ordered params and
-/// textures, and authored physics. The tree is always valid (single root, no
-/// cycles, no dangling cross-references), so [`Model::flatten`] is total.
+/// The authored model: a tree of nodes by stable key, ordered params and
+/// textures, the bindings params drive nodes through, and authored physics.
+/// The tree is always valid (single root, no cycles, no dangling
+/// cross-references), so [`Model::flatten`] is total.
 #[derive(Debug, Clone)]
 pub struct Model {
-    pub physics: ClpPhysics,
-    pub welds: Vec<ModelWeld>,
-    pub(crate) nodes: SlotMap<NodeKey, ModelNode>,
-    pub(crate) root: NodeKey,
-    pub(crate) params: SlotMap<ParamKey, ModelParam>,
-    pub(crate) param_order: Vec<ParamKey>,
-    pub(crate) textures: SlotMap<TexKey, ModelTexture>,
-    pub(crate) texture_order: Vec<TexKey>,
+    generation: u64,
+    physics: ClpPhysics,
+    welds: Vec<ModelWeld>,
+    nodes: SlotMap<NodeKey, ModelNode>,
+    root: NodeKey,
+    params: SlotMap<ParamKey, ModelParam>,
+    param_order: Vec<ParamKey>,
+    textures: SlotMap<TexKey, ModelTexture>,
+    texture_order: Vec<TexKey>,
+    bindings: Vec<ModelBinding>,
 }
 
-/// A welded Part pair (`ClpWeld` with stable node ids).
+/// A welded part pair: two parts whose vertex pairs are pulled together after
+/// every other deformation.
 #[derive(Debug, Clone)]
 pub struct ModelWeld {
-    pub a: NodeKey,
-    pub b: NodeKey,
-    pub pairs: Arc<Vec<clp::ClpWeldPair>>,
+    a: NodeKey,
+    b: NodeKey,
+    pairs: Arc<Vec<clp::ClpWeldPair>>,
+}
+
+impl ModelWeld {
+    pub fn new(a: NodeKey, b: NodeKey, pairs: Vec<clp::ClpWeldPair>) -> Self {
+        Self {
+            a,
+            b,
+            pairs: Arc::new(pairs),
+        }
+    }
+
+    pub fn a(&self) -> NodeKey {
+        self.a
+    }
+
+    pub fn b(&self) -> NodeKey {
+        self.b
+    }
+
+    pub fn pairs(&self) -> &[clp::ClpWeldPair] {
+        &self.pairs
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -152,8 +198,8 @@ pub struct ModelNode {
     pub transform: ClpTransform,
     pub lock_to_root: bool,
     pub kind: ModelNodeKind,
-    pub(crate) parent: Option<NodeKey>,
-    pub(crate) children: Vec<NodeKey>,
+    parent: Option<NodeKey>,
+    children: Vec<NodeKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +211,21 @@ pub enum ModelNodeKind {
     SimplePhysics(ModelPhysics),
 }
 
+impl ModelNodeKind {
+    /// The wire/UI name of the kind.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Group => "group",
+            Self::Part(_) => "part",
+            Self::Composite(_) => "composite",
+            Self::MeshGroup(_) => "mesh_group",
+            Self::SimplePhysics(_) => "physics",
+        }
+    }
+}
+
+/// A mesh behind an `Arc`: cloning a Model shares it, and the first edit
+/// through [`Model`] copies it out.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelMesh(Arc<ClpMesh>);
 
@@ -188,27 +249,34 @@ impl Deref for ModelMesh {
     }
 }
 
-impl DerefMut for ModelMesh {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(&mut self.0)
-    }
-}
-
 /// A mesh group deforms what is beneath it and is never drawn, so it has no
 /// colour to edit: no opacity, blend mode, tint or screen tint.
 #[derive(Debug, Clone)]
 pub struct ModelMeshGroup {
-    pub mesh: ModelMesh,
     pub dynamic: bool,
     pub translate_children: bool,
+    mesh: ModelMesh,
 }
 
 impl ModelMeshGroup {
+    /// A mesh group over `mesh`: static, leaving meshless descendants in place.
+    pub fn new(mesh: impl Into<ModelMesh>) -> Self {
+        Self {
+            dynamic: false,
+            translate_children: false,
+            mesh: mesh.into(),
+        }
+    }
+
+    pub fn mesh(&self) -> &ClpMesh {
+        &self.mesh
+    }
+
     pub fn from_clp(group: &ClpMeshGroup) -> Self {
         Self {
-            mesh: group.mesh.clone().into(),
             dynamic: group.dynamic,
             translate_children: group.translate_children,
+            mesh: group.mesh.clone().into(),
         }
     }
 
@@ -223,15 +291,43 @@ impl ModelMeshGroup {
 
 #[derive(Debug, Clone)]
 pub struct ModelPart {
-    pub mesh: ModelMesh,
-    /// Albedo texture, or `None` for an unmapped part (the renderer culls it).
-    pub albedo: Option<TexKey>,
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub tint: [f32; 3],
     pub screen_tint: [f32; 3],
-    pub masks: Vec<ModelMask>,
     pub mask_threshold: f32,
+    mesh: ModelMesh,
+    /// Albedo texture, or `None` for an unmapped part (the renderer culls it).
+    albedo: Option<TexKey>,
+    masks: Vec<ModelMask>,
+}
+
+impl ModelPart {
+    /// An opaque, unmasked, untextured part drawing `mesh`.
+    pub fn new(mesh: impl Into<ModelMesh>) -> Self {
+        Self {
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            tint: [1.0; 3],
+            screen_tint: [0.0; 3],
+            mask_threshold: 0.5,
+            mesh: mesh.into(),
+            albedo: None,
+            masks: Vec::new(),
+        }
+    }
+
+    pub fn mesh(&self) -> &ClpMesh {
+        &self.mesh
+    }
+
+    pub fn albedo(&self) -> Option<TexKey> {
+        self.albedo
+    }
+
+    pub fn masks(&self) -> &[ModelMask] {
+        &self.masks
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -240,15 +336,53 @@ pub struct ModelComposite {
     pub blend_mode: BlendMode,
     pub tint: [f32; 3],
     pub screen_tint: [f32; 3],
-    pub masks: Vec<ModelMask>,
     pub mask_threshold: f32,
     pub propagate_meshgroup: bool,
+    masks: Vec<ModelMask>,
 }
 
+impl ModelComposite {
+    /// An opaque, unmasked composite that a mesh group above it does not reach.
+    pub fn new() -> Self {
+        Self {
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            tint: [1.0; 3],
+            screen_tint: [0.0; 3],
+            mask_threshold: 0.5,
+            propagate_meshgroup: false,
+            masks: Vec::new(),
+        }
+    }
+
+    pub fn masks(&self) -> &[ModelMask] {
+        &self.masks
+    }
+}
+
+impl Default for ModelComposite {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One drawable's clipping rule: whose shape clips it, and whether what that
+/// shape covers is kept or cut away. Only [`Model::mask_add`] builds one, so a
+/// mask's source is always a live part.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelMask {
-    pub source: NodeKey,
-    pub mode: MaskMode,
+    source: NodeKey,
+    mode: MaskMode,
+}
+
+impl ModelMask {
+    pub fn source(&self) -> NodeKey {
+        self.source
+    }
+
+    pub fn mode(&self) -> MaskMode {
+        self.mode
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -256,13 +390,36 @@ pub struct ModelPhysics {
     pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
-    pub target_param: Option<ParamKey>,
     pub gravity: f32,
     pub length: f32,
     pub frequency: f32,
     pub angle_damping: f32,
     pub length_damping: f32,
     pub output_scale: [f32; 2],
+    target_param: Option<ParamKey>,
+}
+
+impl ModelPhysics {
+    /// A pendulum at the reference defaults, driving no param yet.
+    pub fn new(kind: PendulumKind) -> Self {
+        Self {
+            kind,
+            map_mode: PhysicsParamMapMode::default(),
+            local_only: false,
+            gravity: 9.8,
+            length: 100.0,
+            frequency: 1.0,
+            angle_damping: 0.5,
+            length_damping: 0.5,
+            output_scale: [1.0, 1.0],
+            target_param: None,
+        }
+    }
+
+    /// The param the pendulum's swing is written into, if any.
+    pub fn target_param(&self) -> Option<ParamKey> {
+        self.target_param
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -277,22 +434,57 @@ pub struct ModelParam {
     /// convention `.clp` stores and the runtime interpolates in.
     pub axis_points_x: Vec<f32>,
     pub axis_points_y: Vec<f32>,
-    pub bindings: Vec<ModelBinding>,
 }
 
+/// One param's control over one property of one node. Bindings live on the
+/// model, not on the param, and are addressed by their [`BindingKey`].
 #[derive(Debug, Clone)]
 pub struct ModelBinding {
-    pub node: NodeKey,
-    pub interpolate_mode: InterpolateMode,
-    pub values: ModelBindingValues,
+    key: BindingKey,
+    interpolate_mode: InterpolateMode,
+    values: ModelBindingValues,
 }
 
+impl ModelBinding {
+    pub fn key(&self) -> &BindingKey {
+        &self.key
+    }
+
+    pub fn param(&self) -> ParamKey {
+        self.key.param
+    }
+
+    pub fn node(&self) -> NodeKey {
+        self.key.node
+    }
+
+    pub fn target(&self) -> BindingTarget {
+        self.key.target
+    }
+
+    pub fn interpolate_mode(&self) -> InterpolateMode {
+        self.interpolate_mode
+    }
+
+    pub fn values(&self) -> &ClpBindingValues {
+        &self.values
+    }
+}
+
+/// A binding's authored cell grid behind an `Arc`, shared by every snapshot
+/// until one of them edits it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelBindingValues(Arc<ClpBindingValues>);
 
 impl ModelBindingValues {
     pub fn to_clp(&self) -> ClpBindingValues {
         (*self.0).clone()
+    }
+
+    /// Copy-on-write access, `pub(crate)` so every cell rewrite goes through a
+    /// [`Model`] method that can bump the generation.
+    pub(crate) fn make_mut(&mut self) -> &mut ClpBindingValues {
+        Arc::make_mut(&mut self.0)
     }
 }
 
@@ -307,12 +499,6 @@ impl Deref for ModelBindingValues {
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl DerefMut for ModelBindingValues {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(&mut self.0)
     }
 }
 
@@ -342,14 +528,48 @@ impl ModelNode {
     pub fn children(&self) -> &[NodeKey] {
         &self.children
     }
+
+    /// The node's mesh, for the two kinds that carry one.
+    pub fn mesh(&self) -> Option<&ClpMesh> {
+        match &self.kind {
+            ModelNodeKind::Part(p) => Some(p.mesh()),
+            ModelNodeKind::MeshGroup(mg) => Some(mg.mesh()),
+            _ => None,
+        }
+    }
+
+    fn masks(&self) -> Option<&[ModelMask]> {
+        match &self.kind {
+            ModelNodeKind::Part(p) => Some(&p.masks),
+            ModelNodeKind::Composite(c) => Some(&c.masks),
+            _ => None,
+        }
+    }
+
+    fn masks_mut(&mut self) -> Option<&mut Vec<ModelMask>> {
+        match &mut self.kind {
+            ModelNodeKind::Part(p) => Some(&mut p.masks),
+            ModelNodeKind::Composite(c) => Some(&mut c.masks),
+            _ => None,
+        }
+    }
+
+    fn mesh_mut(&mut self) -> Option<&mut ModelMesh> {
+        match &mut self.kind {
+            ModelNodeKind::Part(p) => Some(&mut p.mesh),
+            ModelNodeKind::MeshGroup(mg) => Some(&mut mg.mesh),
+            _ => None,
+        }
+    }
 }
 
 impl Model {
-    /// A new puppet with a single `Group` root named "Root".
+    /// A new model with a single `Group` root named "Root".
     pub fn new() -> Self {
         let mut nodes = SlotMap::with_key();
         let root = nodes.insert(ModelNode::new("Root", ModelNodeKind::Group));
         Self {
+            generation: 0,
             physics: ClpPhysics::default(),
             welds: Vec::new(),
             nodes,
@@ -358,8 +578,25 @@ impl Model {
             param_order: Vec::new(),
             textures: SlotMap::with_key(),
             texture_order: Vec::new(),
+            bindings: Vec::new(),
         }
     }
+
+    /// Bumped by every mutating method. A puppet or a render cache remembers
+    /// the generation it baked against and rebakes when this moved; nothing
+    /// reads the number itself.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The one place a mutation is recorded. Every `&mut self` method calls it
+    /// on success — and only on success, so a rejected edit leaves derived
+    /// objects alone.
+    fn bump(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    // ---- tree ----
 
     pub fn root(&self) -> NodeKey {
         self.root
@@ -369,139 +606,23 @@ impl Model {
         self.nodes.get(id)
     }
 
-    pub fn node_mut(&mut self, id: NodeKey) -> Option<&mut ModelNode> {
-        self.nodes.get_mut(id)
-    }
-
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    pub fn param_ids(&self) -> &[ParamKey] {
-        &self.param_order
-    }
-
-    pub fn param(&self, id: ParamKey) -> Option<&ModelParam> {
-        self.params.get(id)
-    }
-
-    pub fn param_mut(&mut self, id: ParamKey) -> Option<&mut ModelParam> {
-        self.params.get_mut(id)
-    }
-
-    pub fn texture_ids(&self) -> &[TexKey] {
-        &self.texture_order
-    }
-
-    pub fn texture(&self, id: TexKey) -> Option<&ModelTexture> {
-        self.textures.get(id)
-    }
-
-    pub fn estimated_size_bytes(&self) -> usize {
-        let mut bytes = std::mem::size_of::<Self>()
-            .saturating_add(
-                self.nodes
-                    .len()
-                    .saturating_mul(std::mem::size_of::<ModelNode>()),
-            )
-            .saturating_add(
-                self.params
-                    .len()
-                    .saturating_mul(std::mem::size_of::<ModelParam>()),
-            )
-            .saturating_add(
-                self.textures
-                    .len()
-                    .saturating_mul(std::mem::size_of::<ModelTexture>()),
-            )
-            .saturating_add(
-                self.param_order
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<ParamKey>()),
-            )
-            .saturating_add(
-                self.texture_order
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<TexKey>()),
-            )
-            .saturating_add(
-                self.welds
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<ModelWeld>()),
-            );
-        for weld in &self.welds {
-            bytes = bytes.saturating_add(
-                weld.pairs
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<clp::ClpWeldPair>()),
-            );
-        }
-        for node in self.nodes.values() {
-            bytes = bytes.saturating_add(node.name.capacity()).saturating_add(
-                node.children
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<NodeKey>()),
-            );
-            match &node.kind {
-                ModelNodeKind::Part(part) => {
-                    bytes = bytes.saturating_add(mesh_size(&part.mesh)).saturating_add(
-                        part.masks
-                            .capacity()
-                            .saturating_mul(std::mem::size_of::<ModelMask>()),
-                    );
-                }
-                ModelNodeKind::Composite(composite) => {
-                    bytes = bytes.saturating_add(
-                        composite
-                            .masks
-                            .capacity()
-                            .saturating_mul(std::mem::size_of::<ModelMask>()),
-                    );
-                }
-                ModelNodeKind::MeshGroup(group) => {
-                    bytes = bytes.saturating_add(mesh_size(&group.mesh));
-                }
-                ModelNodeKind::Group | ModelNodeKind::SimplePhysics(_) => {}
-            }
-        }
-        for param in self.params.values() {
-            bytes = bytes
-                .saturating_add(param.name.capacity())
-                .saturating_add(
-                    param
-                        .axis_points_x
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<f32>()),
-                )
-                .saturating_add(
-                    param
-                        .axis_points_y
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<f32>()),
-                )
-                .saturating_add(
-                    param
-                        .bindings
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<ModelBinding>()),
-                );
-            for binding in &param.bindings {
-                bytes = bytes.saturating_add(binding_values_size(&binding.values));
-            }
-        }
-        for texture in self.textures.values() {
-            bytes = bytes.saturating_add(texture.data.capacity());
-        }
-        bytes
-    }
-
-    /// The node's editable mesh, for the two kinds that carry one.
-    pub fn node_mesh(&self, id: NodeKey) -> Option<&ClpMesh> {
-        match self.node(id).map(|n| &n.kind)? {
-            ModelNodeKind::Part(p) => Some(&p.mesh),
-            ModelNodeKind::MeshGroup(mg) => Some(&mg.mesh),
-            _ => None,
-        }
+    /// Edit one node's own properties: name, transform, z order, enabled,
+    /// lock-to-root and the plain values on its kind. Cross-references (the
+    /// albedo, masks, the physics target) and the mesh have their own methods,
+    /// because they have to be checked against the rest of the model.
+    pub fn update_node<R>(
+        &mut self,
+        id: NodeKey,
+        f: impl FnOnce(&mut ModelNode) -> R,
+    ) -> Result<R, ModelError> {
+        let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
+        let out = f(node);
+        self.bump();
+        Ok(out)
     }
 
     /// Nodes in topological pre-order from the root, each parent before its
@@ -531,12 +652,15 @@ impl Model {
         if !self.nodes.contains_key(parent) {
             return Err(ModelError::UnknownNode);
         }
+        // A node cloned out of another model carries that model's keys.
+        self.check_node_refs(&node)?;
         node.parent = Some(parent);
         node.children.clear();
         let id = self.nodes.insert(node);
         if let Some(p) = self.nodes.get_mut(parent) {
             p.children.push(id);
         }
+        self.bump();
         Ok(id)
     }
 
@@ -560,17 +684,14 @@ impl Model {
             self.nodes.remove(*r);
         }
         for node in self.nodes.values_mut() {
-            match &mut node.kind {
-                ModelNodeKind::Part(p) => p.masks.retain(|m| !removed_set.contains(&m.source)),
-                ModelNodeKind::Composite(c) => c.masks.retain(|m| !removed_set.contains(&m.source)),
-                _ => {}
+            if let Some(masks) = node.masks_mut() {
+                masks.retain(|m| !removed_set.contains(&m.source));
             }
         }
-        for param in self.params.values_mut() {
-            param.bindings.retain(|b| !removed_set.contains(&b.node));
-        }
+        self.bindings.retain(|b| !removed_set.contains(&b.key.node));
         self.welds
             .retain(|w| !removed_set.contains(&w.a) && !removed_set.contains(&w.b));
+        self.bump();
         Ok(())
     }
 
@@ -598,6 +719,7 @@ impl Model {
         if let Some(n) = self.nodes.get_mut(id) {
             n.parent = Some(new_parent);
         }
+        self.bump();
         Ok(())
     }
 
@@ -622,6 +744,7 @@ impl Model {
         p.children.remove(cur);
         let index = index.min(p.children.len());
         p.children.insert(index, id);
+        self.bump();
         Ok(())
     }
 
@@ -661,41 +784,37 @@ impl Model {
             if old == id {
                 copy.name = format!("{} copy", copy.name);
             }
-            let new_id = self.add_node(new_parent, copy)?;
+            copy.parent = Some(new_parent);
+            copy.children.clear();
+            let new_id = self.nodes.insert(copy);
+            if let Some(p) = self.nodes.get_mut(new_parent) {
+                p.children.push(new_id);
+            }
             map.insert(old, new_id);
         }
 
         for &new_id in map.values() {
-            if let Some(node) = self.nodes.get_mut(new_id) {
-                let masks = match &mut node.kind {
-                    ModelNodeKind::Part(p) => Some(&mut p.masks),
-                    ModelNodeKind::Composite(c) => Some(&mut c.masks),
-                    _ => None,
-                };
-                if let Some(masks) = masks {
-                    for m in masks.iter_mut() {
-                        if let Some(&mapped) = map.get(&m.source) {
-                            m.source = mapped;
-                        }
+            if let Some(masks) = self.nodes.get_mut(new_id).and_then(ModelNode::masks_mut) {
+                for m in masks.iter_mut() {
+                    if let Some(&mapped) = map.get(&m.source) {
+                        m.source = mapped;
                     }
                 }
             }
         }
 
-        for param in self.params.values_mut() {
-            let copied: Vec<ModelBinding> = param
-                .bindings
-                .iter()
-                .filter_map(|b| {
-                    map.get(&b.node).map(|&new_node| ModelBinding {
-                        node: new_node,
-                        interpolate_mode: b.interpolate_mode,
-                        values: b.values.clone(),
-                    })
+        let copied: Vec<ModelBinding> = self
+            .bindings
+            .iter()
+            .filter_map(|b| {
+                map.get(&b.key.node).map(|&node| ModelBinding {
+                    key: BindingKey { node, ..b.key },
+                    interpolate_mode: b.interpolate_mode,
+                    values: b.values.clone(),
                 })
-                .collect();
-            param.bindings.extend(copied);
-        }
+            })
+            .collect();
+        self.bindings.extend(copied);
 
         let new_root = *map.get(&id).ok_or(ModelError::UnknownNode)?;
         let pos = self
@@ -703,20 +822,112 @@ impl Model {
             .get(parent)
             .and_then(|p| p.children.iter().position(|&c| c == id))
             .ok_or(ModelError::UnknownNode)?;
+        // reorder bumps the generation for the whole duplicate.
         self.reorder(new_root, pos + 1)?;
         Ok(new_root)
     }
 
-    fn masks_mut(&mut self, id: NodeKey) -> Result<&mut Vec<ModelMask>, ModelError> {
+    // ---- node cross-references ----
+
+    /// Point a part at a texture, or unmap it (the renderer culls an unmapped
+    /// part).
+    pub fn set_part_albedo(
+        &mut self,
+        id: NodeKey,
+        albedo: Option<TexKey>,
+    ) -> Result<(), ModelError> {
+        if let Some(t) = albedo {
+            if !self.textures.contains_key(t) {
+                return Err(ModelError::UnknownTexture);
+            }
+        }
         match self.nodes.get_mut(id).map(|n| &mut n.kind) {
-            Some(ModelNodeKind::Part(p)) => Ok(&mut p.masks),
-            Some(ModelNodeKind::Composite(c)) => Ok(&mut c.masks),
-            Some(_) => Err(ModelError::NotMaskable),
+            Some(ModelNodeKind::Part(p)) => p.albedo = albedo,
+            Some(_) => return Err(ModelError::NotAPart),
+            None => return Err(ModelError::UnknownNode),
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Aim a simple physics node at a param, or at nothing.
+    pub fn set_physics_target(
+        &mut self,
+        id: NodeKey,
+        param: Option<ParamKey>,
+    ) -> Result<(), ModelError> {
+        if let Some(p) = param {
+            if !self.params.contains_key(p) {
+                return Err(ModelError::UnknownParam);
+            }
+        }
+        match self.nodes.get_mut(id).map(|n| &mut n.kind) {
+            Some(ModelNodeKind::SimplePhysics(ph)) => ph.target_param = param,
+            Some(_) => return Err(ModelError::NotPhysics),
+            None => return Err(ModelError::UnknownNode),
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Replace a meshed node's mesh, mapping every authored deform cell on it
+    /// through `refit(old_mesh, new_mesh, offsets)`. The mesh and the cells
+    /// that are sized to it move in one step, so no reader ever sees offsets
+    /// fitted to a mesh that is gone.
+    pub fn set_node_mesh_with(
+        &mut self,
+        id: NodeKey,
+        mesh: ClpMesh,
+        mut refit: impl FnMut(&ClpMesh, &ClpMesh, &[f32]) -> Vec<f32>,
+    ) -> Result<(), ModelError> {
+        validate_mesh(&mesh)?;
+        let old = match self.nodes.get(id).and_then(ModelNode::mesh) {
+            Some(m) => m.clone(),
+            None => {
+                return Err(if self.nodes.contains_key(id) {
+                    ModelError::NotMeshed
+                } else {
+                    ModelError::UnknownNode
+                })
+            }
+        };
+        for b in &mut self.bindings {
+            if b.key.node != id {
+                continue;
+            }
+            if let ClpBindingValues::Deform(cells) = b.values.make_mut() {
+                for cell in &mut cells.cells {
+                    cell.value = refit(&old, &mesh, &cell.value);
+                }
+            }
+        }
+        if let Some(slot) = self.nodes.get_mut(id).and_then(ModelNode::mesh_mut) {
+            *slot = mesh.into();
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Replace a meshed node's mesh, resizing every authored deform cell on it
+    /// to the new vertex count (new vertices start at zero offset).
+    pub fn set_node_mesh(&mut self, id: NodeKey, mesh: ClpMesh) -> Result<(), ModelError> {
+        self.set_node_mesh_with(id, mesh, |_, new, offsets| {
+            let mut out = offsets.to_vec();
+            out.resize(new.verts.len(), 0.0);
+            out
+        })
+    }
+
+    // ---- masks ----
+
+    fn masks_mut(&mut self, id: NodeKey) -> Result<&mut Vec<ModelMask>, ModelError> {
+        match self.nodes.get_mut(id) {
+            Some(n) => n.masks_mut().ok_or(ModelError::NotMaskable),
             None => Err(ModelError::UnknownNode),
         }
     }
 
-    /// Append a mask source. Sources must be Parts (the renderer rasterizes a
+    /// Append a mask source. Sources must be parts (the renderer rasterizes a
     /// source's own mesh + texture into the mask).
     pub fn mask_add(
         &mut self,
@@ -733,6 +944,7 @@ impl Model {
             None => return Err(ModelError::UnknownNode),
         }
         self.masks_mut(id)?.push(ModelMask { source, mode });
+        self.bump();
         Ok(())
     }
 
@@ -745,6 +957,7 @@ impl Model {
         let masks = self.masks_mut(id)?;
         let m = masks.get_mut(index).ok_or(ModelError::IndexOutOfRange)?;
         m.mode = mode;
+        self.bump();
         Ok(())
     }
 
@@ -758,6 +971,7 @@ impl Model {
         let m = masks.remove(index);
         let to = to.min(masks.len());
         masks.insert(to, m);
+        self.bump();
         Ok(())
     }
 
@@ -767,21 +981,34 @@ impl Model {
             return Err(ModelError::IndexOutOfRange);
         }
         masks.remove(index);
+        self.bump();
         Ok(())
+    }
+
+    // ---- params ----
+
+    pub fn param_ids(&self) -> &[ParamKey] {
+        &self.param_order
+    }
+
+    pub fn param(&self, id: ParamKey) -> Option<&ModelParam> {
+        self.params.get(id)
     }
 
     pub fn add_param(&mut self, param: ModelParam) -> ParamKey {
         let id = self.params.insert(param);
         self.param_order.push(id);
+        self.bump();
         id
     }
 
-    /// Remove a param and null out any physics node that drove it.
+    /// Remove a param, its bindings, and any physics node that drove it.
     pub fn delete_param(&mut self, id: ParamKey) -> Result<(), ModelError> {
         if self.params.remove(id).is_none() {
             return Err(ModelError::UnknownParam);
         }
         self.param_order.retain(|&p| p != id);
+        self.bindings.retain(|b| b.key.param != id);
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::SimplePhysics(ph) = &mut node.kind {
                 if ph.target_param == Some(id) {
@@ -789,12 +1016,24 @@ impl Model {
                 }
             }
         }
+        self.bump();
         Ok(())
+    }
+
+    // ---- textures ----
+
+    pub fn texture_ids(&self) -> &[TexKey] {
+        &self.texture_order
+    }
+
+    pub fn texture(&self, id: TexKey) -> Option<&ModelTexture> {
+        self.textures.get(id)
     }
 
     pub fn add_texture(&mut self, texture: ModelTexture) -> TexKey {
         let id = self.textures.insert(texture);
         self.texture_order.push(id);
+        self.bump();
         id
     }
 
@@ -808,6 +1047,153 @@ impl Model {
             if let ModelNodeKind::Part(p) = &mut node.kind {
                 if p.albedo == Some(id) {
                     p.albedo = None;
+                }
+            }
+        }
+        self.bump();
+        Ok(())
+    }
+
+    // ---- physics and welds ----
+
+    pub fn physics(&self) -> &ClpPhysics {
+        &self.physics
+    }
+
+    pub fn set_physics(&mut self, physics: ClpPhysics) {
+        self.physics = physics;
+        self.bump();
+    }
+
+    pub fn welds(&self) -> &[ModelWeld] {
+        &self.welds
+    }
+
+    /// Replace the weld list. Every end must name a live node.
+    pub fn set_welds(&mut self, welds: Vec<ModelWeld>) -> Result<(), ModelError> {
+        if welds
+            .iter()
+            .any(|w| !self.nodes.contains_key(w.a) || !self.nodes.contains_key(w.b))
+        {
+            return Err(ModelError::UnknownNode);
+        }
+        self.welds = welds;
+        self.bump();
+        Ok(())
+    }
+
+    // ---- accounting ----
+
+    pub fn estimated_size_bytes(&self) -> usize {
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(
+                self.nodes
+                    .len()
+                    .saturating_mul(std::mem::size_of::<ModelNode>()),
+            )
+            .saturating_add(
+                self.params
+                    .len()
+                    .saturating_mul(std::mem::size_of::<ModelParam>()),
+            )
+            .saturating_add(
+                self.textures
+                    .len()
+                    .saturating_mul(std::mem::size_of::<ModelTexture>()),
+            )
+            .saturating_add(
+                self.param_order
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<ParamKey>()),
+            )
+            .saturating_add(
+                self.texture_order
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<TexKey>()),
+            )
+            .saturating_add(
+                self.welds
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<ModelWeld>()),
+            )
+            .saturating_add(
+                self.bindings
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<ModelBinding>()),
+            );
+        for weld in &self.welds {
+            bytes = bytes.saturating_add(
+                weld.pairs
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<clp::ClpWeldPair>()),
+            );
+        }
+        for node in self.nodes.values() {
+            bytes = bytes.saturating_add(node.name.capacity()).saturating_add(
+                node.children
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NodeKey>()),
+            );
+            if let Some(mesh) = node.mesh() {
+                bytes = bytes.saturating_add(mesh_size(mesh));
+            }
+            if let Some(masks) = node.masks() {
+                bytes = bytes
+                    .saturating_add(masks.len().saturating_mul(std::mem::size_of::<ModelMask>()));
+            }
+        }
+        for param in self.params.values() {
+            bytes = bytes
+                .saturating_add(param.name.capacity())
+                .saturating_add(
+                    param
+                        .axis_points_x
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<f32>()),
+                )
+                .saturating_add(
+                    param
+                        .axis_points_y
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<f32>()),
+                );
+        }
+        for binding in &self.bindings {
+            bytes = bytes.saturating_add(binding_values_size(&binding.values));
+        }
+        for texture in self.textures.values() {
+            bytes = bytes.saturating_add(texture.data.capacity());
+        }
+        bytes
+    }
+
+    /// The node's mesh, for the two kinds that carry one.
+    pub fn node_mesh(&self, id: NodeKey) -> Option<&ClpMesh> {
+        self.node(id)?.mesh()
+    }
+
+    /// Every cross-reference a node about to join the model carries has to
+    /// name something this model actually has.
+    fn check_node_refs(&self, node: &ModelNode) -> Result<(), ModelError> {
+        if let ModelNodeKind::Part(p) = &node.kind {
+            if p.albedo.is_some_and(|t| !self.textures.contains_key(t)) {
+                return Err(ModelError::UnknownTexture);
+            }
+        }
+        if let ModelNodeKind::SimplePhysics(ph) = &node.kind {
+            if ph
+                .target_param
+                .is_some_and(|p| !self.params.contains_key(p))
+            {
+                return Err(ModelError::UnknownParam);
+            }
+        }
+        if let Some(masks) = node.masks() {
+            for m in masks {
+                match self.nodes.get(m.source).map(|n| &n.kind) {
+                    Some(ModelNodeKind::Part(_)) => {}
+                    Some(_) => return Err(ModelError::NotAPart),
+                    None => return Err(ModelError::UnknownNode),
                 }
             }
         }
@@ -836,6 +1222,29 @@ impl Model {
         }
         false
     }
+}
+
+/// Vertices come in pairs, uvs match them, and every index names a vertex.
+fn validate_mesh(mesh: &ClpMesh) -> Result<(), ModelError> {
+    if !mesh.verts.len().is_multiple_of(2) {
+        return Err(ModelError::MalformedMesh(
+            "vertex array is not [x, y] pairs",
+        ));
+    }
+    if !mesh.uvs.is_empty() && mesh.uvs.len() != mesh.verts.len() {
+        return Err(ModelError::MalformedMesh(
+            "uv count does not match vertices",
+        ));
+    }
+    let vcount = mesh.verts.len() / 2;
+    let max_index = match &mesh.indices {
+        clp::ClpIndices::U16(v) => v.iter().map(|&i| i as usize).max(),
+        clp::ClpIndices::U32(v) => v.iter().map(|&i| i as usize).max(),
+    };
+    if max_index.is_some_and(|m| m >= vcount) {
+        return Err(ModelError::MalformedMesh("index names a missing vertex"));
+    }
+    Ok(())
 }
 
 fn mesh_size(mesh: &ClpMesh) -> usize {
@@ -900,6 +1309,376 @@ impl Default for Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::clp::{ClpIndices, ClpWeldPair};
+
+    fn quad() -> ClpMesh {
+        ClpMesh {
+            verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
+            uvs: vec![0.0; 8],
+            indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            origin: [0.0, 0.0],
+        }
+    }
+
+    fn part_kind() -> ModelNodeKind {
+        ModelNodeKind::Part(ModelPart::new(quad()))
+    }
+
+    /// One model carrying every kind of thing a mutating method can reach.
+    struct Rig {
+        model: Model,
+        root: NodeKey,
+        part: NodeKey,
+        other: NodeKey,
+        composite: NodeKey,
+        physics: NodeKey,
+        param: ParamKey,
+        tex: TexKey,
+    }
+
+    fn rig() -> Rig {
+        let mut model = Model::new();
+        let root = model.root();
+        let tex = model.add_texture(ModelTexture {
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: Arc::new(vec![0x89, b'P', b'N', b'G']),
+        });
+        let part = model
+            .add_node(root, ModelNode::new("part", part_kind()))
+            .unwrap();
+        let other = model
+            .add_node(root, ModelNode::new("other", part_kind()))
+            .unwrap();
+        let composite = model
+            .add_node(
+                root,
+                ModelNode::new("composite", ModelNodeKind::Composite(ModelComposite::new())),
+            )
+            .unwrap();
+        let physics = model
+            .add_node(
+                root,
+                ModelNode::new(
+                    "physics",
+                    ModelNodeKind::SimplePhysics(ModelPhysics::new(PendulumKind::RigidPendulum)),
+                ),
+            )
+            .unwrap();
+        let param = model.add_param(ModelParam {
+            name: "p".into(),
+            is_vec2: false,
+            min: [-1.0, 0.0],
+            max: [1.0, 0.0],
+            defaults: [0.0, 0.0],
+            axis_points_x: vec![0.0, 0.5, 1.0],
+            axis_points_y: vec![0.0],
+        });
+        model.mask_add(composite, part, MaskMode::Mask).unwrap();
+        Rig {
+            model,
+            root,
+            part,
+            other,
+            composite,
+            physics,
+            param,
+            tex,
+        }
+    }
+
+    fn scalar_key(r: &Rig) -> BindingKey {
+        BindingKey::new(r.param, r.part, BindingTarget::Scalar(ScalarTarget::Tx))
+    }
+
+    fn deform_key(r: &Rig) -> BindingKey {
+        BindingKey::new(r.param, r.part, BindingTarget::Deform)
+    }
+
+    /// Every derived object (puppet, render cache) rebakes off `generation`, so
+    /// a mutating method that forgets to bump it is a stale-cache bug that no
+    /// other test would see. This list is the API surface: a new mutating
+    /// method belongs in it.
+    #[test]
+    fn generation_bumps_on_every_mutating_method() {
+        #[allow(clippy::type_complexity)]
+        let edits: Vec<(&str, Box<dyn Fn(&mut Rig)>)> = vec![
+            (
+                "update_node",
+                Box::new(|r| {
+                    r.model.update_node(r.part, |n| n.z_order = 3.0).unwrap();
+                }),
+            ),
+            (
+                "add_node",
+                Box::new(|r| {
+                    r.model
+                        .add_node(r.root, ModelNode::new("new", ModelNodeKind::Group))
+                        .unwrap();
+                }),
+            ),
+            (
+                "delete_node",
+                Box::new(|r| r.model.delete_node(r.other).unwrap()),
+            ),
+            (
+                "reparent",
+                Box::new(|r| r.model.reparent(r.part, r.composite).unwrap()),
+            ),
+            ("reorder", Box::new(|r| r.model.reorder(r.part, 0).unwrap())),
+            (
+                "duplicate_subtree",
+                Box::new(|r| {
+                    r.model.duplicate_subtree(r.part).unwrap();
+                }),
+            ),
+            (
+                "set_part_albedo",
+                Box::new(|r| r.model.set_part_albedo(r.part, Some(r.tex)).unwrap()),
+            ),
+            (
+                "set_physics_target",
+                Box::new(|r| {
+                    r.model
+                        .set_physics_target(r.physics, Some(r.param))
+                        .unwrap()
+                }),
+            ),
+            (
+                "set_node_mesh",
+                Box::new(|r| r.model.set_node_mesh(r.part, quad()).unwrap()),
+            ),
+            (
+                "set_node_mesh_with",
+                Box::new(|r| {
+                    r.model
+                        .set_node_mesh_with(r.part, quad(), |_, _, v| v.to_vec())
+                        .unwrap()
+                }),
+            ),
+            (
+                "mask_add",
+                Box::new(|r| {
+                    r.model
+                        .mask_add(r.composite, r.other, MaskMode::Mask)
+                        .unwrap()
+                }),
+            ),
+            (
+                "mask_set_mode",
+                Box::new(|r| {
+                    r.model
+                        .mask_set_mode(r.composite, 0, MaskMode::DodgeMask)
+                        .unwrap()
+                }),
+            ),
+            (
+                "mask_reorder",
+                Box::new(|r| r.model.mask_reorder(r.composite, 0, 0).unwrap()),
+            ),
+            (
+                "mask_delete",
+                Box::new(|r| r.model.mask_delete(r.composite, 0).unwrap()),
+            ),
+            (
+                "add_param",
+                Box::new(|r| {
+                    r.model.add_param(ModelParam {
+                        name: "q".into(),
+                        is_vec2: false,
+                        min: [0.0, 0.0],
+                        max: [1.0, 0.0],
+                        defaults: [0.0, 0.0],
+                        axis_points_x: vec![0.0, 1.0],
+                        axis_points_y: vec![0.0],
+                    });
+                }),
+            ),
+            (
+                "delete_param",
+                Box::new(|r| r.model.delete_param(r.param).unwrap()),
+            ),
+            (
+                "add_texture",
+                Box::new(|r| {
+                    r.model.add_texture(ModelTexture {
+                        encoding: TextureEncoding::Png,
+                        alpha: TextureAlpha::Straight,
+                        data: Arc::new(Vec::new()),
+                    });
+                }),
+            ),
+            (
+                "delete_texture",
+                Box::new(|r| r.model.delete_texture(r.tex).unwrap()),
+            ),
+            (
+                "set_physics",
+                Box::new(|r| r.model.set_physics(ClpPhysics::default())),
+            ),
+            (
+                "set_welds",
+                Box::new(|r| {
+                    r.model
+                        .set_welds(vec![ModelWeld::new(
+                            r.part,
+                            r.other,
+                            vec![ClpWeldPair {
+                                a_vert: 0,
+                                b_vert: 0,
+                                weight: 1.0,
+                            }],
+                        )])
+                        .unwrap()
+                }),
+            ),
+            (
+                "add_binding",
+                Box::new(|r| r.model.add_binding(&scalar_key(r)).unwrap()),
+            ),
+            (
+                "set_binding_key",
+                Box::new(|r| {
+                    r.model
+                        .set_binding_key(&scalar_key(r), [1, 0], 5.0)
+                        .unwrap()
+                }),
+            ),
+            (
+                "unset_binding_key",
+                Box::new(|r| {
+                    let key = scalar_key(r);
+                    r.model.set_binding_key(&key, [1, 0], 5.0).unwrap();
+                    r.model.unset_binding_key(&key, [1, 0]).unwrap();
+                }),
+            ),
+            (
+                "reset_binding_key",
+                Box::new(|r| {
+                    let key = scalar_key(r);
+                    r.model.add_binding(&key).unwrap();
+                    r.model.reset_binding_key(&key, [1, 0]).unwrap();
+                }),
+            ),
+            (
+                "delete_binding",
+                Box::new(|r| {
+                    let key = scalar_key(r);
+                    r.model.add_binding(&key).unwrap();
+                    r.model.delete_binding(&key).unwrap();
+                }),
+            ),
+            (
+                "set_binding_interpolate",
+                Box::new(|r| {
+                    let key = scalar_key(r);
+                    r.model.add_binding(&key).unwrap();
+                    r.model
+                        .set_binding_interpolate(&key, InterpolateMode::Cubic)
+                        .unwrap();
+                }),
+            ),
+            (
+                "invert_binding",
+                Box::new(|r| {
+                    let key = scalar_key(r);
+                    r.model.set_binding_key(&key, [2, 0], 5.0).unwrap();
+                    r.model.invert_binding(&key).unwrap();
+                }),
+            ),
+            (
+                "copy_binding_key",
+                Box::new(|r| {
+                    let key = scalar_key(r);
+                    r.model.set_binding_key(&key, [0, 0], 5.0).unwrap();
+                    r.model.copy_binding_key(&key, [0, 0], [2, 0]).unwrap();
+                }),
+            ),
+            (
+                "set_deform_vertices",
+                Box::new(|r| {
+                    r.model
+                        .set_deform_vertices(&deform_key(r), [1, 0], vec![1.0; 8])
+                        .unwrap()
+                }),
+            ),
+            (
+                "set_deform_from_transform",
+                Box::new(|r| {
+                    r.model
+                        .set_deform_from_transform(
+                            &deform_key(r),
+                            [1, 0],
+                            [1.0, 0.0],
+                            0.0,
+                            [1.0, 1.0],
+                        )
+                        .unwrap()
+                }),
+            ),
+            (
+                "set_param_name",
+                Box::new(|r| r.model.set_param_name(r.param, "renamed".into()).unwrap()),
+            ),
+            (
+                "set_param_defaults",
+                Box::new(|r| r.model.set_param_defaults(r.param, [0.5, 0.0]).unwrap()),
+            ),
+            (
+                "set_param_range",
+                Box::new(|r| {
+                    r.model
+                        .set_param_range(r.param, [0.0, 0.0], [2.0, 0.0])
+                        .unwrap()
+                }),
+            ),
+            (
+                "axis_insert",
+                Box::new(|r| {
+                    r.model.axis_insert(r.param, 0, 0.25).unwrap();
+                }),
+            ),
+            (
+                "axis_delete",
+                Box::new(|r| r.model.axis_delete(r.param, 0, 1).unwrap()),
+            ),
+            (
+                "axis_move",
+                Box::new(|r| r.model.axis_move(r.param, 0, 1, 0.6).unwrap()),
+            ),
+            (
+                "param_flip",
+                Box::new(|r| r.model.param_flip(r.param, 0).unwrap()),
+            ),
+        ];
+
+        for (name, edit) in edits {
+            let mut r = rig();
+            let before = r.model.generation();
+            edit(&mut r);
+            assert!(
+                r.model.generation() > before,
+                "{name} did not bump the generation",
+            );
+        }
+    }
+
+    /// A rejected edit must leave every derived object alone, so it must not
+    /// move the generation either.
+    #[test]
+    fn a_rejected_edit_leaves_the_generation_alone() {
+        let mut r = rig();
+        let before = r.model.generation();
+        assert!(r.model.delete_node(r.root).is_err());
+        assert!(r.model.reparent(r.root, r.part).is_err());
+        assert!(r.model.mask_add(r.part, r.part, MaskMode::Mask).is_err());
+        assert!(r.model.mask_delete(r.composite, 7).is_err());
+        assert!(r
+            .model
+            .set_binding_key(&scalar_key(&r), [9, 0], 1.0)
+            .is_err());
+        assert_eq!(r.model.generation(), before);
+    }
 
     #[test]
     fn reorder_moves_within_siblings_and_clamps() {
@@ -928,45 +1707,11 @@ mod tests {
         assert!(m.reorder(root, 0).is_err());
     }
 
-    fn part() -> ModelNodeKind {
-        ModelNodeKind::Part(ModelPart {
-            mesh: ClpMesh::default().into(),
-            albedo: None,
-            opacity: 1.0,
-            blend_mode: BlendMode::Normal,
-            tint: [1.0; 3],
-            screen_tint: [0.0; 3],
-            masks: Vec::new(),
-            mask_threshold: 0.5,
-        })
-    }
-
     #[test]
     fn model_snapshots_share_large_payloads_until_mutated() {
         let mut model = Model::new();
         let node = model
-            .add_node(
-                model.root(),
-                ModelNode::new(
-                    "mesh",
-                    ModelNodeKind::Part(ModelPart {
-                        mesh: ClpMesh {
-                            verts: vec![-1.0, 0.0, 1.0, 0.0],
-                            uvs: vec![0.0; 4],
-                            indices: clp::ClpIndices::U16(Vec::new()),
-                            origin: [0.0; 2],
-                        }
-                        .into(),
-                        albedo: None,
-                        opacity: 1.0,
-                        blend_mode: BlendMode::Normal,
-                        tint: [1.0; 3],
-                        screen_tint: [0.0; 3],
-                        masks: Vec::new(),
-                        mask_threshold: 0.5,
-                    }),
-                ),
-            )
+            .add_node(model.root(), ModelNode::new("mesh", part_kind()))
             .unwrap();
         let param = model.add_param(ModelParam {
             name: "deform".into(),
@@ -976,55 +1721,47 @@ mod tests {
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-            bindings: Vec::new(),
         });
+        let key = BindingKey::new(param, node, BindingTarget::Deform);
         model
-            .set_deform_vertices(param, node, [1, 0], vec![1.0; 4])
+            .set_deform_vertices(&key, [1, 0], vec![1.0; 8])
             .unwrap();
 
         let mut edited = model.clone();
-        let original_mesh = match &model.node(node).unwrap().kind {
-            ModelNodeKind::Part(part) => &part.mesh,
+        let mesh_arc = |m: &Model| match &m.node(node).unwrap().kind {
+            ModelNodeKind::Part(part) => part.mesh.0.clone(),
             _ => unreachable!(),
         };
-        let edited_mesh = match &edited.node(node).unwrap().kind {
-            ModelNodeKind::Part(part) => &part.mesh,
-            _ => unreachable!(),
-        };
-        assert!(Arc::ptr_eq(&original_mesh.0, &edited_mesh.0));
-        assert!(Arc::ptr_eq(
-            &model.param(param).unwrap().bindings[0].values.0,
-            &edited.param(param).unwrap().bindings[0].values.0,
-        ));
+        let cells_arc = |m: &Model| m.binding(&key).unwrap().values.0.clone();
+        let original_mesh = mesh_arc(&model);
+        let original_cells = cells_arc(&model);
+        assert!(Arc::ptr_eq(&original_mesh, &mesh_arc(&edited)));
+        assert!(Arc::ptr_eq(&original_cells, &cells_arc(&edited)));
 
-        edited.node_mut(node).unwrap().name = "renamed".into();
-        let edited_mesh = match &edited.node(node).unwrap().kind {
-            ModelNodeKind::Part(part) => &part.mesh,
-            _ => unreachable!(),
-        };
-        assert!(Arc::ptr_eq(&original_mesh.0, &edited_mesh.0));
-
-        if let ModelNodeKind::Part(part) = &mut edited.node_mut(node).unwrap().kind {
-            part.mesh.verts[0] = 7.0;
-        }
+        // An unrelated edit still shares.
         edited
-            .set_deform_vertices(param, node, [1, 0], vec![2.0; 4])
+            .update_node(node, |n| n.name = "renamed".into())
+            .unwrap();
+        assert!(Arc::ptr_eq(&original_mesh, &mesh_arc(&edited)));
+
+        let mut moved = quad();
+        moved.verts[0] = 7.0;
+        edited.set_node_mesh(node, moved).unwrap();
+        edited
+            .set_deform_vertices(&key, [1, 0], vec![2.0; 8])
             .unwrap();
 
-        let edited_mesh = match &edited.node(node).unwrap().kind {
-            ModelNodeKind::Part(part) => &part.mesh,
-            _ => unreachable!(),
-        };
-        assert!(!Arc::ptr_eq(&original_mesh.0, &edited_mesh.0));
-        assert!(!Arc::ptr_eq(
-            &model.param(param).unwrap().bindings[0].values.0,
-            &edited.param(param).unwrap().bindings[0].values.0,
-        ));
-        assert_eq!(original_mesh.verts[0], -1.0);
+        assert!(!Arc::ptr_eq(&original_mesh, &mesh_arc(&edited)));
+        assert!(!Arc::ptr_eq(&original_cells, &cells_arc(&edited)));
+        // The snapshot taken before the edits is byte-identical afterwards.
+        assert_eq!(model.node_mesh(node).unwrap().verts, quad().verts);
         assert_eq!(
-            crate::model::deform_cells(&model.param(param).unwrap().bindings[0].values).unwrap()[0]
-                .value,
-            vec![0.0; 4],
+            deform_cells(model.binding(&key).unwrap().values())
+                .unwrap()
+                .iter()
+                .map(|c| (c.x, c.y, c.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, vec![0.0; 8]), (1, 0, vec![1.0; 8])],
         );
     }
 
@@ -1035,8 +1772,12 @@ mod tests {
         let group = m
             .add_node(root, ModelNode::new("g", ModelNodeKind::Group))
             .unwrap();
-        let mask_src = m.add_node(group, ModelNode::new("mask", part())).unwrap();
-        let masked = m.add_node(group, ModelNode::new("masked", part())).unwrap();
+        let mask_src = m
+            .add_node(group, ModelNode::new("mask", part_kind()))
+            .unwrap();
+        let masked = m
+            .add_node(group, ModelNode::new("masked", part_kind()))
+            .unwrap();
         m.mask_add(masked, mask_src, MaskMode::Mask).unwrap();
 
         let param = m.add_param(ModelParam {
@@ -1047,10 +1788,9 @@ mod tests {
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-            bindings: Vec::new(),
         });
-        m.set_binding_key(param, masked, crate::model::ScalarTarget::Tx, 1, 0, 5.0)
-            .unwrap();
+        let key = BindingKey::new(param, masked, BindingTarget::Scalar(ScalarTarget::Tx));
+        m.set_binding_key(&key, [1, 0], 5.0).unwrap();
 
         let copy = m.duplicate_subtree(group).unwrap();
         // the copy lands right after the original.
@@ -1062,19 +1802,14 @@ mod tests {
         let copy_masked = copy_children[1];
         // internal mask reference points at the copied source, not the original.
         if let ModelNodeKind::Part(p) = &m.node(copy_masked).unwrap().kind {
-            assert_eq!(p.masks.len(), 1);
-            assert_eq!(p.masks[0].source, copy_children[0]);
+            assert_eq!(p.masks().len(), 1);
+            assert_eq!(p.masks()[0].source(), copy_children[0]);
         } else {
             panic!("expected part");
         }
         // the copied node has its own binding.
-        assert_eq!(m.param(param).unwrap().bindings.len(), 2);
-        assert!(m
-            .param(param)
-            .unwrap()
-            .bindings
-            .iter()
-            .any(|b| b.node == copy_masked));
+        assert_eq!(m.bindings_of_param(param).count(), 2);
+        assert!(m.bindings().any(|b| b.node() == copy_masked));
         assert!(m.to_clp_bytes().is_ok());
     }
 
@@ -1082,10 +1817,10 @@ mod tests {
     fn mask_ops_validate_and_reorder() {
         let mut m = Model::new();
         let root = m.root();
-        let a = m.add_node(root, ModelNode::new("a", part())).unwrap();
-        let b = m.add_node(root, ModelNode::new("b", part())).unwrap();
-        let c = m.add_node(root, ModelNode::new("c", part())).unwrap();
-        let target = m.add_node(root, ModelNode::new("t", part())).unwrap();
+        let a = m.add_node(root, ModelNode::new("a", part_kind())).unwrap();
+        let b = m.add_node(root, ModelNode::new("b", part_kind())).unwrap();
+        let c = m.add_node(root, ModelNode::new("c", part_kind())).unwrap();
+        let target = m.add_node(root, ModelNode::new("t", part_kind())).unwrap();
 
         assert!(m.mask_add(target, target, MaskMode::Mask).is_err());
         assert!(m
@@ -1099,13 +1834,67 @@ mod tests {
         m.mask_set_mode(target, 1, MaskMode::DodgeMask).unwrap();
         m.mask_delete(target, 2).unwrap();
         if let ModelNodeKind::Part(p) = &m.node(target).unwrap().kind {
-            assert_eq!(p.masks.len(), 2);
-            assert_eq!(p.masks[0].source, c);
-            assert_eq!(p.masks[1].source, a);
-            assert!(matches!(p.masks[1].mode, MaskMode::DodgeMask));
+            assert_eq!(p.masks().len(), 2);
+            assert_eq!(p.masks()[0].source(), c);
+            assert!(matches!(p.masks()[1].mode(), MaskMode::DodgeMask));
         } else {
             panic!("expected part");
         }
         assert!(m.mask_delete(target, 5).is_err());
+    }
+
+    #[test]
+    fn cross_references_are_checked_before_they_land() {
+        let mut r = rig();
+        // A texture, param and node this model no longer has.
+        let orphan_tex = r.model.add_texture(ModelTexture {
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: Arc::new(Vec::new()),
+        });
+        r.model.delete_texture(orphan_tex).unwrap();
+        assert!(matches!(
+            r.model.set_part_albedo(r.part, Some(orphan_tex)),
+            Err(ModelError::UnknownTexture)
+        ));
+        assert!(matches!(
+            r.model.set_part_albedo(r.composite, Some(r.tex)),
+            Err(ModelError::NotAPart)
+        ));
+        let orphan_param = r.model.add_param(ModelParam {
+            name: "gone".into(),
+            is_vec2: false,
+            min: [0.0, 0.0],
+            max: [1.0, 0.0],
+            defaults: [0.0, 0.0],
+            axis_points_x: vec![0.0, 1.0],
+            axis_points_y: vec![0.0],
+        });
+        r.model.delete_param(orphan_param).unwrap();
+        let orphan_node = r
+            .model
+            .add_node(r.root, ModelNode::new("gone", ModelNodeKind::Group))
+            .unwrap();
+        r.model.delete_node(orphan_node).unwrap();
+        assert!(matches!(
+            r.model.set_physics_target(r.physics, Some(orphan_param)),
+            Err(ModelError::UnknownParam)
+        ));
+        assert!(matches!(
+            r.model
+                .set_welds(vec![ModelWeld::new(r.part, orphan_node, Vec::new())]),
+            Err(ModelError::UnknownNode)
+        ));
+        // A node cloned out of another model cannot smuggle its keys in.
+        let mut foreign = ModelPart::new(quad());
+        foreign.albedo = Some(orphan_tex);
+        assert!(matches!(
+            r.model.add_node(
+                r.root,
+                ModelNode::new("smuggler", ModelNodeKind::Part(foreign))
+            ),
+            Err(ModelError::UnknownTexture)
+        ));
+        assert!(r.model.to_clp_bytes().is_ok());
     }
 }
