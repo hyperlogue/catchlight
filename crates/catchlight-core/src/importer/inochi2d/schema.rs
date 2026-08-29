@@ -153,7 +153,7 @@ pub(super) fn source_binding_is_color(kind: &str) -> bool {
 impl SchemaNode {
     /// A source mesh group's colour maps to nothing — catchlight never draws a
     /// mesh group, so it has no opacity, blend mode, tint or screen tint. Both
-    /// import paths call this so a rig author can see what was dropped.
+    /// import paths call this so the model's author can see what was dropped.
     pub(super) fn log_dropped_mesh_group_color(&self) {
         let opacity = self.opacity.filter(|o| *o != 1.0);
         let blend_mode = self
