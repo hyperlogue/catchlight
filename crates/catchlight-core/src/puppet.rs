@@ -1343,7 +1343,7 @@ impl Puppet {
     }
 
     /// Run the `translateChildren=true` MG filter on each tc=true
-    /// MG's non-Drawable descendants (Origin Nodes, Empty Nodes,
+    /// MG's non-Drawable descendants (Origin Nodes, Group Nodes,
     /// SimplePhysics nodes). Adds the MG's per-vertex warp at each
     /// target's base position into the target's
     /// `transform.translation`. Mark-dirty is performed so the next
@@ -1832,7 +1832,7 @@ mod tests {
         assert!(puppet.iter_deform_nodes().all(|(node_id, _)| node_id != id));
         assert!(puppet.has_simple_physics());
 
-        assert!(puppet.set_node_kind(id, NodeKind::Empty));
+        assert!(puppet.set_node_kind(id, NodeKind::Group));
         assert!(!puppet.has_simple_physics());
     }
 
@@ -1855,7 +1855,7 @@ mod tests {
         assert!(puppet.contribute_param_value(target_uuid, physics, Vec2::ONE, 1.0));
         assert_eq!(puppet.param_value(target_uuid), Some(Vec2::ONE));
 
-        assert!(puppet.set_node_kind(physics, NodeKind::Empty));
+        assert!(puppet.set_node_kind(physics, NodeKind::Group));
 
         assert_eq!(puppet.param_value(target_uuid), Some(Vec2::ZERO));
     }

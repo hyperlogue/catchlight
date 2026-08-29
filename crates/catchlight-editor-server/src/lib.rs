@@ -1359,7 +1359,7 @@ fn build_tree(model: &EditModel, id: NodeId) -> TreeNode {
             n.enabled,
             n.children().to_vec(),
         ),
-        None => (String::new(), "empty".to_string(), 0.0, true, Vec::new()),
+        None => (String::new(), "group".to_string(), 0.0, true, Vec::new()),
     };
     TreeNode {
         node: NodeRef(id.to_ffi()),
@@ -1405,7 +1405,7 @@ fn param_infos(model: &EditModel) -> Vec<ParamInfo> {
 
 fn node_kind_str(kind: &EditNodeKind) -> &'static str {
     match kind {
-        EditNodeKind::Empty => "empty",
+        EditNodeKind::Group => "group",
         EditNodeKind::Part(_) => "part",
         EditNodeKind::Composite(_) => "composite",
         EditNodeKind::MeshGroup(_) => "mesh_group",
@@ -1415,7 +1415,7 @@ fn node_kind_str(kind: &EditNodeKind) -> &'static str {
 
 fn default_name(kind: NodeKindArg) -> String {
     match kind {
-        NodeKindArg::Empty => "Empty",
+        NodeKindArg::Group => "Group",
         NodeKindArg::Part => "Part",
         NodeKindArg::Composite => "Composite",
         NodeKindArg::MeshGroup => "MeshGroup",
@@ -1425,7 +1425,7 @@ fn default_name(kind: NodeKindArg) -> String {
 
 fn make_kind(kind: NodeKindArg) -> EditNodeKind {
     match kind {
-        NodeKindArg::Empty => EditNodeKind::Empty,
+        NodeKindArg::Group => EditNodeKind::Group,
         NodeKindArg::Part => EditNodeKind::Part(EditPart {
             mesh: ClpMesh::default().into(),
             albedo: None,
@@ -1804,7 +1804,7 @@ mod tests {
             Command::NodeAdd {
                 session: s,
                 parent: root,
-                kind: NodeKindArg::Empty,
+                kind: NodeKindArg::Group,
                 name: Some("A".into()),
             },
         ))) {
@@ -1925,7 +1925,7 @@ mod tests {
                 Command::NodeAdd {
                     session: s,
                     parent: root,
-                    kind: NodeKindArg::Empty,
+                    kind: NodeKindArg::Group,
                     name: None,
                 },
             ));
@@ -1966,7 +1966,7 @@ mod tests {
             Command::NodeAdd {
                 session: s,
                 parent: a.root.node,
-                kind: NodeKindArg::Empty,
+                kind: NodeKindArg::Group,
                 name: None,
             },
         ));

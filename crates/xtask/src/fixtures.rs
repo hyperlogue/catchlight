@@ -109,7 +109,7 @@ fn mip_checker() -> (ClpDocument, Vec<ClpTexture>) {
         z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
-        kind: ClpNodeKind::Empty,
+        kind: ClpNodeKind::Group,
     };
     let quads = CHECKER_QUADS.map(|(name, half, x)| ClpNode {
         parent: Some(0),
@@ -241,7 +241,7 @@ fn composite_blit_uniforms() -> (ClpDocument, Vec<ClpTexture>) {
         z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
-        kind: ClpNodeKind::Empty,
+        kind: ClpNodeKind::Group,
     };
     let backdrop = ClpNode {
         parent: Some(0),
@@ -385,7 +385,7 @@ fn welded_seam() -> (ClpDocument, Vec<ClpTexture>) {
         z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
-        kind: ClpNodeKind::Empty,
+        kind: ClpNodeKind::Group,
     };
     let upper = ClpNode {
         parent: Some(0),

@@ -215,8 +215,8 @@ fn convert_node_kind(
         "Composite" => ClpNodeKind::Composite(convert_composite(s, node_index)?),
         "MeshGroup" => ClpNodeKind::MeshGroup(convert_mesh_group(s)),
         "SimplePhysics" => ClpNodeKind::SimplePhysics(convert_simple_physics(s, param_index)),
-        // Node, Camera, and any unmodeled type all become a container Empty.
-        _ => ClpNodeKind::Empty,
+        // Node, Camera, and any unmodeled type all become a container Group.
+        _ => ClpNodeKind::Group,
     })
 }
 

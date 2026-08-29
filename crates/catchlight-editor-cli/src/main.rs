@@ -1053,11 +1053,11 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
 
 fn parse_kind(s: &str) -> Result<NodeKindArg> {
     Ok(match s.to_ascii_lowercase().as_str() {
-        "empty" => NodeKindArg::Empty,
+        "group" => NodeKindArg::Group,
         "part" => NodeKindArg::Part,
         "composite" => NodeKindArg::Composite,
         "meshgroup" | "mesh_group" => NodeKindArg::MeshGroup,
-        other => bail!("unknown node kind {other:?} (empty|part|composite|meshgroup)"),
+        other => bail!("unknown node kind {other:?} (group|part|composite|meshgroup)"),
     })
 }
 

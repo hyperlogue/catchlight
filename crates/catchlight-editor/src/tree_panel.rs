@@ -244,7 +244,7 @@ impl TreePanel<'_> {
         resp.context_menu(|ui| {
             ui.menu_button("Add child", |ui| {
                 for (label, kind) in [
-                    ("Empty", NodeKindArg::Empty),
+                    ("Group", NodeKindArg::Group),
                     ("Part", NodeKindArg::Part),
                     ("Composite", NodeKindArg::Composite),
                     ("MeshGroup", NodeKindArg::MeshGroup),

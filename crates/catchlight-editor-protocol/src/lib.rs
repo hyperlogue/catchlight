@@ -414,7 +414,7 @@ pub enum Command {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKindArg {
-    Empty,
+    Group,
     Part,
     Composite,
     MeshGroup,

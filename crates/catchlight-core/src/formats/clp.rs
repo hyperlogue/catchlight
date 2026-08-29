@@ -145,10 +145,10 @@ fn default_true() -> bool {
 }
 
 /// Mirrors the live [`crate::components::NodeKind`]. Conversion maps any
-/// unmodeled node kind to `Empty` before serialization.
+/// unmodeled node kind to `Group` before serialization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClpNodeKind {
-    Empty,
+    Group,
     Part(ClpPart),
     Composite(ClpComposite),
     MeshGroup(ClpMeshGroup),
@@ -400,7 +400,7 @@ mod tests {
     use ciborium::value::Value;
 
     fn sample() -> (ClpDocument, Vec<ClpTexture>) {
-        // node 0 = root (Empty); node 1 = Part child of 0.
+        // node 0 = root (Group); node 1 = Part child of 0.
         let root = ClpNode {
             parent: None,
             name: "Puppet".into(),
@@ -408,7 +408,7 @@ mod tests {
             z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::Empty,
+            kind: ClpNodeKind::Group,
         };
         let part = ClpNode {
             parent: Some(0),
@@ -563,7 +563,7 @@ mod tests {
         // to their `#[serde(default)]`s.
         let value = Value::Map(vec![(
             Value::Text("kind".into()),
-            Value::Text("Empty".into()),
+            Value::Text("Group".into()),
         )]);
         let node: ClpNode = cbor_from_slice(&cbor_to_vec(&value).unwrap()).unwrap();
         assert_eq!(node.parent, None);

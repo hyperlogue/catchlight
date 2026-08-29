@@ -218,7 +218,7 @@ fn build_node_kind(
     g_scale: f32,
 ) -> Result<NodeKind, ImportError> {
     Ok(match &clp.kind {
-        ClpNodeKind::Empty => NodeKind::Empty,
+        ClpNodeKind::Group => NodeKind::Group,
         ClpNodeKind::Part(p) => NodeKind::Part(Box::new(build_part(p)?)),
         ClpNodeKind::Composite(c) => NodeKind::Composite(Box::new(build_composite(c))),
         ClpNodeKind::MeshGroup(m) => NodeKind::MeshGroup(Box::new(build_mesh_group(m)?)),
@@ -560,7 +560,7 @@ mod tests {
 
     fn kind_name(k: &NodeKind) -> &'static str {
         match k {
-            NodeKind::Empty => "Empty",
+            NodeKind::Group => "Group",
             NodeKind::Part(_) => "Part",
             NodeKind::Composite(_) => "Composite",
             NodeKind::MeshGroup(_) => "MeshGroup",
@@ -803,7 +803,7 @@ mod tests {
                         sb.gravity
                     );
                 }
-                // Empty/Empty, and any kind pair the name assert above
+                // Group/Group, and any kind pair the name assert above
                 // already rejected.
                 _ => {}
             }
@@ -1199,7 +1199,7 @@ mod tests {
             z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::Empty,
+            kind: ClpNodeKind::Group,
         };
         ClpFile {
             version: crate::formats::clp::FORMAT_VERSION,

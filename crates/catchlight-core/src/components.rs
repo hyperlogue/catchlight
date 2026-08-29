@@ -174,14 +174,14 @@ impl Default for Node {
             base_transform: Transform::default(),
             base_z_order: 0.0,
             lock_to_root: false,
-            kind: NodeKind::Empty,
+            kind: NodeKind::Group,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum NodeKind {
-    Empty,
+    Group,
     Part(Box<PartData>),
     Composite(Box<CompositeData>),
     MeshGroup(Box<MeshGroupData>),
@@ -630,7 +630,7 @@ mod tests {
         let node = Node::default();
         assert!(node.name.is_empty());
         assert!(node.enabled);
-        assert!(matches!(node.kind, NodeKind::Empty));
+        assert!(matches!(node.kind, NodeKind::Group));
     }
 
     #[test]
