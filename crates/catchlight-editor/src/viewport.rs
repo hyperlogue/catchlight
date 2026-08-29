@@ -39,7 +39,7 @@ pub(crate) struct NodePreview {
     pub translation: Option<[f32; 3]>,
     pub rotation: Option<[f32; 3]>,
     pub scale: Option<[f32; 2]>,
-    pub zsort: Option<f32>,
+    pub z_order: Option<f32>,
     pub opacity: Option<f32>,
 }
 
@@ -304,7 +304,7 @@ fn apply_previews(puppet: &mut Puppet, previews: &[NodePreview]) {
                 }
             });
         }
-        if let Some(z) = pv.zsort {
+        if let Some(z) = pv.z_order {
             puppet.set_node_z_order(id, z);
         }
         if let Some(op) = pv.opacity {

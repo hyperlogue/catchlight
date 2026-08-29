@@ -6,7 +6,7 @@ use catchlight_core::{BlendMode, GlobalTransforms, MeshIndices, NodeKind, PartDa
 use glam::Vec2;
 
 /// Core node ids of the Parts whose deformed mesh contains `world`,
-/// front-most first (higher cumulative zsort renders in front; ties go to the
+/// front-most first (higher cumulative z order renders in front; ties go to the
 /// later-drawn node).
 pub(crate) fn pick_all(puppet: &Puppet, transforms: &GlobalTransforms, world: Vec2) -> Vec<u32> {
     let mut hits: Vec<(f32, usize, u32)> = Vec::new();
@@ -39,7 +39,7 @@ pub(crate) fn pick_all(puppet: &Puppet, transforms: &GlobalTransforms, world: Ve
         }
     }
     // Descending z = front first; equal z: later visit draws on top, so it wins.
-    // total_cmp, not partial_cmp: a NaN z_order (a degenerate ZSort binding, a
+    // total_cmp, not partial_cmp: a NaN z_order (a degenerate ZOrder binding, a
     // NaN-poisoned physics driver) makes the partial_cmp form non-transitive,
     // which sort_by can detect and panic on.
     hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));

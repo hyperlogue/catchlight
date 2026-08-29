@@ -1351,11 +1351,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn build_tree(model: &EditModel, id: NodeId) -> TreeNode {
-    let (name, kind, zsort, enabled, children) = match model.node(id) {
+    let (name, kind, z_order, enabled, children) = match model.node(id) {
         Some(n) => (
             n.name.clone(),
             node_kind_str(&n.kind).to_string(),
-            n.zsort,
+            n.z_order,
             n.enabled,
             n.children().to_vec(),
         ),
@@ -1365,7 +1365,7 @@ fn build_tree(model: &EditModel, id: NodeId) -> TreeNode {
         node: NodeRef(id.to_ffi()),
         name,
         kind,
-        zsort,
+        z_order,
         enabled,
         children: children.iter().map(|&c| build_tree(model, c)).collect(),
     }
@@ -1476,8 +1476,8 @@ fn apply_patch(n: &mut EditNode, patch: &NodePatch) -> Result<(), EditorError> {
     if let Some(sc) = patch.scale {
         n.transform.scale = sc;
     }
-    if let Some(z) = patch.zsort {
-        n.zsort = z;
+    if let Some(z) = patch.z_order {
+        n.z_order = z;
     }
     if let Some(en) = patch.enabled {
         n.enabled = en;

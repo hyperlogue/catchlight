@@ -103,7 +103,7 @@ pub struct ManifestNode {
     #[serde(default)]
     pub scale: Option<[f32; 2]>,
     #[serde(default)]
-    pub zsort: f32,
+    pub z_order: f32,
     #[serde(default)]
     pub texture: Option<String>,
     #[serde(default)]
@@ -244,7 +244,7 @@ impl EditModel {
                     rotation: mn.rotate.unwrap_or([0.0; 3]),
                     scale: mn.scale.unwrap_or([1.0, 1.0]),
                 };
-                node.zsort = mn.zsort;
+                node.z_order = mn.z_order;
                 let id = m
                     .add_node(parent, node)
                     .map_err(|_| ManifestError::UnknownParent(mn.id.clone(), "<root>".into()))?;
@@ -346,7 +346,7 @@ impl EditModel {
                 translate: Some(n.transform.translation),
                 rotate: Some(n.transform.rotation),
                 scale: Some(n.transform.scale),
-                zsort: n.zsort,
+                z_order: n.z_order,
                 texture,
                 mesh: None,
             });
@@ -610,7 +610,7 @@ mod tests {
                     translate: None,
                     rotate: None,
                     scale: None,
-                    zsort: 0.0,
+                    z_order: 0.0,
                     texture: Some("face".into()),
                     mesh: Some(MeshSpec::Grid { cols: 2, rows: 2 }),
                 },
@@ -622,7 +622,7 @@ mod tests {
                     translate: None,
                     rotate: None,
                     scale: None,
-                    zsort: 0.0,
+                    z_order: 0.0,
                     texture: Some("face".into()),
                     mesh: Some(MeshSpec::Grid { cols: 2, rows: 2 }),
                 },
@@ -663,7 +663,7 @@ mod tests {
                 translate: None,
                 rotate: None,
                 scale: None,
-                zsort: 0.0,
+                z_order: 0.0,
                 texture: Some("face".into()),
                 mesh: Some(MeshSpec::Grid {
                     cols: u32::MAX,
@@ -690,7 +690,7 @@ mod tests {
             "textures": [{"id": "t", "path": "t.png"}],
             "nodes": [
                 {"id": "grp", "kind": "empty"},
-                {"id": "leaf", "parent": "grp", "kind": "part", "texture": "t", "zsort": 2.0}
+                {"id": "leaf", "parent": "grp", "kind": "part", "texture": "t", "z_order": 2.0}
             ],
             "params": [{"name": "p", "min": [0, 0], "max": [1, 0]}]
         }"#;

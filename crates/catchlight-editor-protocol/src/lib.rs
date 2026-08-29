@@ -258,7 +258,7 @@ pub enum Command {
         session: SessionId,
         param: ParamRef,
         node: NodeRef,
-        /// tx|ty|sx|sy|rx|ry|rz|zsort|opacity|tint{r,g,b}|screentint{r,g,b}|outputscale{x,y}
+        /// tx|ty|sx|sy|rx|ry|rz|z_order|opacity|tint{r,g,b}|screentint{r,g,b}|outputscale{x,y}
         target: String,
     },
     BindingKey {
@@ -433,7 +433,7 @@ pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<[f32; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zsort: Option<f32>,
+    pub z_order: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -588,7 +588,7 @@ pub struct TreeNode {
     pub node: NodeRef,
     pub name: String,
     pub kind: String,
-    pub zsort: f32,
+    pub z_order: f32,
     #[serde(default = "yes")]
     pub enabled: bool,
     pub children: Vec<TreeNode>,

@@ -198,7 +198,7 @@ fn convert_node(
         parent,
         name: s.name.clone().unwrap_or_default(),
         enabled: s.enabled.unwrap_or(true),
-        zsort: reflect_z(s.zsort.unwrap_or(0.0)),
+        z_order: reflect_z(s.zsort.unwrap_or(0.0)),
         transform: convert_transform(s.transform.as_ref()),
         lock_to_root: s.lock_to_root.unwrap_or(false),
         kind: convert_node_kind(s, node_index, param_index)?,
@@ -437,7 +437,7 @@ fn convert_binding_values(
     }
     let cells = sparsify(d, is_set, axis_x, axis_y, &identity, close_f32);
     Some(match kind {
-        "zSort" => ClpBindingValues::ZSort(cells),
+        "zSort" => ClpBindingValues::ZOrder(cells),
         "transform.t.x" => ClpBindingValues::TransformTX(cells),
         "transform.t.y" => ClpBindingValues::TransformTY(cells),
         "transform.s.x" => ClpBindingValues::TransformSX(cells),

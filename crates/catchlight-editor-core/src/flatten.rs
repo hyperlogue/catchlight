@@ -49,7 +49,7 @@ impl EditModel {
                 parent,
                 name: n.name.clone(),
                 enabled: n.enabled,
-                zsort: n.zsort,
+                z_order: n.z_order,
                 transform: n.transform,
                 lock_to_root: n.lock_to_root,
                 kind: flatten_kind(&n.kind, &node_index, &tex_index, &param_index)?,
@@ -192,7 +192,7 @@ impl EditModel {
             if let Some(n) = nodes.get_mut(self_id) {
                 n.parent = parent;
                 n.enabled = cn.enabled;
-                n.zsort = cn.zsort;
+                n.z_order = cn.z_order;
                 n.transform = cn.transform;
                 n.lock_to_root = cn.lock_to_root;
                 n.kind = kind;

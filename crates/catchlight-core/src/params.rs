@@ -184,7 +184,7 @@ fn compute_cell_zero(values: &BindingValues) -> Matrix<bool> {
                 })
                 .collect(),
         },
-        BindingValues::ZSort(m)
+        BindingValues::ZOrder(m)
         | BindingValues::TransformTX(m)
         | BindingValues::TransformTY(m)
         | BindingValues::TransformRX(m)
@@ -208,7 +208,7 @@ fn compute_cell_zero(values: &BindingValues) -> Matrix<bool> {
 /// Dimensions must equal (axis_points_x.len(), axis_points_y.len()).
 #[derive(Debug, Clone)]
 pub enum BindingValues {
-    ZSort(Matrix<f32>),
+    ZOrder(Matrix<f32>),
     TransformTX(Matrix<f32>),
     TransformTY(Matrix<f32>),
     TransformSX(Matrix<f32>),
@@ -593,7 +593,7 @@ impl Param {
                         }
                     }
                 }
-                BindingValues::ZSort(m) => {
+                BindingValues::ZOrder(m) => {
                     let Some(node) = puppet.get_mut(binding.node) else {
                         continue;
                     };
@@ -831,7 +831,7 @@ mod tests {
             bindings: vec![Binding::new(
                 id,
                 InterpolateMode::Linear,
-                BindingValues::ZSort(Matrix {
+                BindingValues::ZOrder(Matrix {
                     width: 2,
                     height: 1,
                     data: vec![0.0, 5.0],
@@ -871,7 +871,7 @@ mod tests {
             bindings: vec![Binding::new(
                 id,
                 InterpolateMode::Linear,
-                BindingValues::ZSort(Matrix {
+                BindingValues::ZOrder(Matrix {
                     width: 2,
                     height: 1,
                     data: vec![0.0, 10.0],
@@ -916,7 +916,7 @@ mod tests {
                 bindings: vec![Binding::new(
                     id,
                     mode,
-                    BindingValues::ZSort(Matrix {
+                    BindingValues::ZOrder(Matrix {
                         width: 3,
                         height: 1,
                         data: vec![0.0, 1.0, 0.0],

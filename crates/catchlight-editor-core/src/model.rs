@@ -74,7 +74,7 @@ pub struct EditWeld {
 pub struct EditNode {
     pub name: String,
     pub enabled: bool,
-    pub zsort: f32,
+    pub z_order: f32,
     pub transform: ClpTransform,
     pub lock_to_root: bool,
     pub kind: EditNodeKind,
@@ -253,12 +253,12 @@ impl DerefMut for EditBindingValues {
 }
 
 impl EditNode {
-    /// A node at the identity transform (unit scale), enabled, zsort 0.
+    /// A node at the identity transform (unit scale), enabled, z order 0.
     pub fn new(name: impl Into<String>, kind: EditNodeKind) -> Self {
         Self {
             name: name.into(),
             enabled: true,
-            zsort: 0.0,
+            z_order: 0.0,
             transform: ClpTransform {
                 translation: [0.0; 3],
                 rotation: [0.0; 3],
@@ -534,7 +534,7 @@ impl EditModel {
     }
 
     /// Move `id` to `index` within its parent's children (clamped to the end).
-    /// Sibling order is draw-list order for equal zsort, so this is a document
+    /// Sibling order is draw-list order for equal z order, so this is a document
     /// edit, not view state.
     pub fn reorder(&mut self, id: NodeId, index: usize) -> Result<(), EditError> {
         if id == self.root {
@@ -800,7 +800,7 @@ fn binding_values_size(values: &ClpBindingValues) -> usize {
                         .saturating_mul(std::mem::size_of::<f32>()),
                 )
             })),
-        V::ZSort(cells)
+        V::ZOrder(cells)
         | V::TransformTX(cells)
         | V::TransformTY(cells)
         | V::TransformSX(cells)

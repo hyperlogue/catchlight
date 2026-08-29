@@ -96,7 +96,7 @@ fn cells_outside(values: &ClpBindingValues, w: u32, h: u32) -> usize {
     use ClpBindingValues::*;
     match values {
         Deform(c) => c.cells.iter().filter(|c| c.x >= w || c.y >= h).count(),
-        ZSort(c) | TransformTX(c) | TransformTY(c) | TransformSX(c) | TransformSY(c)
+        ZOrder(c) | TransformTX(c) | TransformTY(c) | TransformSX(c) | TransformSY(c)
         | TransformRX(c) | TransformRY(c) | TransformRZ(c) | Opacity(c) | TintR(c) | TintG(c)
         | TintB(c) | ScreenTintR(c) | ScreenTintG(c) | ScreenTintB(c) | OutputScaleX(c)
         | OutputScaleY(c) => c.cells.iter().filter(|c| c.x >= w || c.y >= h).count(),

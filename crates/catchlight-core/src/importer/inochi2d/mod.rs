@@ -6,15 +6,16 @@
 //! - `to_clp.rs` — `.inx` → `.clp` (what `cargo xtask import` runs).
 //!
 //! `.inx` is authored **Y-down with lower `zsort` in front**; catchlight is
-//! **Y-up with higher z in front**. Both paths must negate exactly the same
-//! set:
+//! **Y-up with higher `z_order` in front**. Both paths must negate exactly
+//! the same set:
 //!
 //! - transform translation Y, rotation X, rotation Z (`reflect_transform_y`)
 //! - mesh vertex Y and mesh origin Y (`reflect_mesh_y` / the loop in
 //!   `convert_mesh`); UVs are texture space and stay as authored
-//! - `zsort` (`reflect_z`, which maps `0.0` to `0.0`, not `-0.0`)
+//! - the source `zsort` into `z_order` (`reflect_z`, which maps `0.0` to
+//!   `0.0`, not `-0.0`)
 //! - the Y-bearing binding outputs: `TransformTY`, `TransformRX`,
-//!   `TransformRZ`, `Deform` offsets' Y, and `ZSort` (`reflect_binding_outputs`)
+//!   `TransformRZ`, `Deform` offsets' Y, and `ZOrder` (`reflect_binding_outputs`)
 //!
 //! Rotation Y and scale are **not** reflected, and neither are the non-Y
 //! transform components.

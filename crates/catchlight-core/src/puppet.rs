@@ -2354,7 +2354,7 @@ mod tests {
                 Binding::new(
                     node_id,
                     InterpolateMode::Linear,
-                    BindingValues::ZSort(m(vec![0.0, 20.0])),
+                    BindingValues::ZOrder(m(vec![0.0, 20.0])),
                 ),
             ],
         };

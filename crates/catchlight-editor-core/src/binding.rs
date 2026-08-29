@@ -28,7 +28,7 @@ pub enum ScalarTarget {
     Rx,
     Ry,
     Rz,
-    ZSort,
+    ZOrder,
     Opacity,
     TintR,
     TintG,
@@ -73,7 +73,7 @@ impl ScalarTarget {
             "rx" | "rotatex" => Self::Rx,
             "ry" | "rotatey" => Self::Ry,
             "rz" | "rotatez" => Self::Rz,
-            "zsort" => Self::ZSort,
+            "z_order" => Self::ZOrder,
             "opacity" => Self::Opacity,
             "tintr" => Self::TintR,
             "tintg" => Self::TintG,
@@ -98,7 +98,7 @@ impl ScalarTarget {
             Self::Rx => "rx",
             Self::Ry => "ry",
             Self::Rz => "rz",
-            Self::ZSort => "zsort",
+            Self::ZOrder => "z_order",
             Self::Opacity => "opacity",
             Self::TintR => "tintr",
             Self::TintG => "tintg",
@@ -137,7 +137,7 @@ impl ScalarTarget {
             Self::Rx => V::TransformRX(c),
             Self::Ry => V::TransformRY(c),
             Self::Rz => V::TransformRZ(c),
-            Self::ZSort => V::ZSort(c),
+            Self::ZOrder => V::ZOrder(c),
             Self::Opacity => V::Opacity(c),
             Self::TintR => V::TintR(c),
             Self::TintG => V::TintG(c),
@@ -162,7 +162,7 @@ pub fn target_of(v: &ClpBindingValues) -> BindingTarget {
         V::TransformRX(_) => ScalarTarget::Rx,
         V::TransformRY(_) => ScalarTarget::Ry,
         V::TransformRZ(_) => ScalarTarget::Rz,
-        V::ZSort(_) => ScalarTarget::ZSort,
+        V::ZOrder(_) => ScalarTarget::ZOrder,
         V::Opacity(_) => ScalarTarget::Opacity,
         V::TintR(_) => ScalarTarget::TintR,
         V::TintG(_) => ScalarTarget::TintG,
@@ -179,7 +179,7 @@ fn scalar_cells_mut(v: &mut ClpBindingValues) -> Option<&mut Vec<ClpCell<f32>>> 
     use ClpBindingValues as V;
     match v {
         V::Deform(_) => None,
-        V::ZSort(c)
+        V::ZOrder(c)
         | V::TransformTX(c)
         | V::TransformTY(c)
         | V::TransformSX(c)
@@ -203,7 +203,7 @@ pub fn scalar_cells(v: &ClpBindingValues) -> Option<&[ClpCell<f32>]> {
     use ClpBindingValues as V;
     match v {
         V::Deform(_) => None,
-        V::ZSort(c)
+        V::ZOrder(c)
         | V::TransformTX(c)
         | V::TransformTY(c)
         | V::TransformSX(c)

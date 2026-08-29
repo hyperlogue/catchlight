@@ -76,7 +76,7 @@ pub struct App {
     /// The viewport rect from the last frame — focus math needs its aspect.
     last_viewport_rect: Option<egui::Rect>,
 
-    /// Recording state: the armed param — edits to TRS/zsort/opacity write
+    /// Recording state: the armed param — edits to TRS/z order/opacity write
     /// binding keys at the closest keypoint instead of node state.
     armed: Option<ParamRef>,
     /// Snap pose drags to keypoints (the controller's default).
@@ -497,8 +497,8 @@ impl App {
                 additive(T::Ry, r[1], pr[1]);
                 additive(T::Rz, r[2], pr[2]);
             }
-            if let Some(z) = patch.zsort {
-                additive(T::ZSort, z, pz);
+            if let Some(z) = patch.z_order {
+                additive(T::ZOrder, z, pz);
             }
         }
 
@@ -538,7 +538,7 @@ impl App {
                 translate: None,
                 rotate: None,
                 scale: None,
-                zsort: None,
+                z_order: None,
                 opacity: None,
                 ..patch.clone()
             };
@@ -2126,7 +2126,7 @@ impl App {
         else {
             return Vec::new();
         };
-        // While armed, TRS/zsort/opacity edit the *posed* values (they record
+        // While armed, TRS/z order/opacity edit the *posed* values (they record
         // to the keypoint), so display the puppet's working state.
         if self.armed.is_some() {
             if let Some(core) = self.core_of_ref(primary) {
@@ -2149,7 +2149,7 @@ impl App {
                     data.translation = t;
                     data.rotation = r;
                     data.scale = s;
-                    data.zsort = z;
+                    data.z_order = z;
                     if let Some(op) = op {
                         match &mut data.kind {
                             InspectorKind::Part { props, .. }
@@ -2161,7 +2161,7 @@ impl App {
             }
             ui.colored_label(
                 egui::Color32::from_rgb(220, 100, 100),
-                "⏺ recording — TRS / zsort / opacity write to the armed keypoint",
+                "⏺ recording — TRS / z order / opacity write to the armed keypoint",
             );
         }
         let parts: Vec<(NodeRef, String)> = snapshot
@@ -2347,7 +2347,7 @@ impl App {
                         translation: patch.translate,
                         rotation: patch.rotate,
                         scale: patch.scale,
-                        zsort: patch.zsort,
+                        z_order: patch.z_order,
                         opacity: patch.opacity,
                     }];
                 }
@@ -2467,7 +2467,7 @@ fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorDat
         name: n.name.clone(),
         enabled: n.enabled,
         lock_to_root: n.lock_to_root,
-        zsort: n.zsort,
+        z_order: n.z_order,
         translation: n.transform.translation,
         rotation: n.transform.rotation,
         scale: n.transform.scale,
