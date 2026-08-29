@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use catchlight_core::formats::clp::TextureEncoding;
 use catchlight_core::Vec2;
-use catchlight_editor_core::{BindingTarget, EditModel, EditNodeKind, NodeId};
+use catchlight_core::{BindingTarget, Model, ModelNodeKind, NodeKey};
 use catchlight_editor_protocol::{
     BindingKeyEntry, Command, NodePatch, NodeRef, ParamInfo, ParamRef, Reply, Request,
     ResponseBody, SessionId, TexRef, TreeNode,
@@ -362,14 +362,14 @@ impl App {
         let info = snap.params.iter().find(|p| p.param == param)?;
         let (w, h) = (info.axis[0] as usize, info.axis[1] as usize);
         let editor = self.editor.clone();
-        let pid = catchlight_editor_core::ParamId::from_ffi(param.0);
+        let pid = catchlight_core::ParamKey::from_ffi(param.0);
         let data = editor
             .with_model(session, |m| {
                 let p = m.param(pid)?;
                 let mut authored_count = vec![0u32; w * h];
                 let mut rows = Vec::new();
                 for b in &p.bindings {
-                    let target = catchlight_editor_core::target_of(&b.values);
+                    let target = catchlight_core::target_of(&b.values);
                     let mut mark = |x: u32, y: u32| {
                         // A stray out-of-grid cell must not wrap into another
                         // row's slot.
@@ -381,13 +381,13 @@ impl App {
                         }
                     };
                     let mut authored_at = false;
-                    if let Some(cells) = catchlight_editor_core::scalar_cells(&b.values) {
+                    if let Some(cells) = catchlight_core::scalar_cells(&b.values) {
                         for c in cells {
                             mark(c.x, c.y);
                             authored_at |= [c.x, c.y] == cell;
                         }
                     }
-                    if let Some(cells) = catchlight_editor_core::deform_cells(&b.values) {
+                    if let Some(cells) = catchlight_core::deform_cells(&b.values) {
                         for c in cells {
                             mark(c.x, c.y);
                             authored_at |= [c.x, c.y] == cell;
@@ -470,9 +470,9 @@ impl App {
         }) else {
             return Vec::new();
         };
-        use catchlight_editor_core::ScalarTarget as T;
-        let pid = catchlight_editor_core::ParamId::from_ffi(param.0);
-        let nid = NodeId::from_ffi(node.0);
+        use catchlight_core::ScalarTarget as T;
+        let pid = catchlight_core::ParamKey::from_ffi(param.0);
+        let nid = NodeKey::from_ffi(node.0);
         let key_at = |t: T| {
             editor
                 .with_model(session, |m| {
@@ -596,12 +596,12 @@ impl App {
         let Some(core) = self.core_of_ref(node) else {
             return;
         };
-        let id = NodeId::from_ffi(node.0);
+        let id = NodeKey::from_ffi(node.0);
         let editor = self.editor.clone();
         let Ok(Some((mesh, tex_bytes))) = editor.with_model(session, |m| {
             let albedo = match m.node(id).map(|n| &n.kind) {
-                Some(EditNodeKind::Part(p)) => p.albedo,
-                Some(EditNodeKind::MeshGroup(_)) => None,
+                Some(ModelNodeKind::Part(p)) => p.albedo,
+                Some(ModelNodeKind::MeshGroup(_)) => None,
                 _ => return None,
             };
             let mesh = m.node_mesh(id)?.clone();
@@ -666,7 +666,7 @@ impl App {
     /// is untouched until Apply).
     fn mesh_copy_into_working(&mut self, src: NodeRef) {
         let Some(session) = self.session else { return };
-        let id = NodeId::from_ffi(src.0);
+        let id = NodeKey::from_ffi(src.0);
         let editor = self.editor.clone();
         let Ok(Some(src_mesh)) = editor.with_model(session, |m| m.node_mesh(id).cloned()) else {
             return;
@@ -828,9 +828,9 @@ impl App {
                 }
                 // Cross-node paste: scalars carry over directly; deforms are
                 // re-fitted from the source mesh onto the target's topology.
-                let pid = catchlight_editor_core::ParamId::from_ffi(param.0);
-                let src_id = NodeId::from_ffi(src_node.0);
-                let dst_id = NodeId::from_ffi(node.0);
+                let pid = catchlight_core::ParamKey::from_ffi(param.0);
+                let src_id = NodeKey::from_ffi(src_node.0);
+                let dst_id = NodeKey::from_ffi(node.0);
                 let editor = self.editor.clone();
                 if target == "deform" {
                     let refit = editor
@@ -1885,8 +1885,8 @@ impl App {
         let Some(node) = self.ref_of_core(core) else {
             return;
         };
-        let pid = catchlight_editor_core::ParamId::from_ffi(param.0);
-        let nid = NodeId::from_ffi(node.0);
+        let pid = catchlight_core::ParamKey::from_ffi(param.0);
+        let nid = NodeKey::from_ffi(node.0);
         let editor = self.editor.clone();
         let base = editor
             .with_model(session, |m| m.deform_value_at(pid, nid, cell).ok())
@@ -2378,7 +2378,7 @@ impl App {
                     session,
                     node: primary,
                     source,
-                    mode: catchlight_editor_core::mask_mode_name(mode).into(),
+                    mode: catchlight_core::mask_mode_name(mode).into(),
                 });
             }
             InspectorAction::MaskSetMode { index, mode } => {
@@ -2386,7 +2386,7 @@ impl App {
                     session,
                     node: primary,
                     index,
-                    mode: catchlight_editor_core::mask_mode_name(mode).into(),
+                    mode: catchlight_core::mask_mode_name(mode).into(),
                 });
             }
             InspectorAction::MaskReorder { index, to } => {
@@ -2404,17 +2404,17 @@ impl App {
                     index,
                 });
             }
-            InspectorAction::EditMesh => self.enter_mesh_edit(),
+            InspectorAction::ModelMesh => self.enter_mesh_edit(),
         }
     }
 }
 
-fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorData> {
-    let id = NodeId::from_ffi(node.0);
+fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
+    let id = NodeKey::from_ffi(node.0);
     let n = model.node(id)?;
     let kind = match &n.kind {
-        EditNodeKind::Group => InspectorKind::Group,
-        EditNodeKind::Part(p) => InspectorKind::Part {
+        ModelNodeKind::Group => InspectorKind::Group,
+        ModelNodeKind::Part(p) => InspectorKind::Part {
             props: DrawableProps {
                 opacity: p.opacity,
                 blend_mode: p.blend_mode,
@@ -2430,7 +2430,7 @@ fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorDat
                 catchlight_core::formats::clp::ClpIndices::U32(v) => v.len() / 3,
             },
         },
-        EditNodeKind::Composite(c) => InspectorKind::Composite {
+        ModelNodeKind::Composite(c) => InspectorKind::Composite {
             props: DrawableProps {
                 opacity: c.opacity,
                 blend_mode: c.blend_mode,
@@ -2441,12 +2441,12 @@ fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorDat
             },
             propagate_meshgroup: c.propagate_meshgroup,
         },
-        EditNodeKind::MeshGroup(mg) => InspectorKind::MeshGroup {
+        ModelNodeKind::MeshGroup(mg) => InspectorKind::MeshGroup {
             dynamic: mg.dynamic,
             translate_children: mg.translate_children,
             vert_count: mg.mesh.verts.len() / 2,
         },
-        EditNodeKind::SimplePhysics(ph) => InspectorKind::Physics {
+        ModelNodeKind::SimplePhysics(ph) => InspectorKind::Physics {
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
@@ -2471,7 +2471,7 @@ fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorDat
     })
 }
 
-fn mask_rows(model: &EditModel, masks: &[catchlight_editor_core::EditMask]) -> Vec<MaskRow> {
+fn mask_rows(model: &Model, masks: &[catchlight_core::ModelMask]) -> Vec<MaskRow> {
     masks
         .iter()
         .map(|m| MaskRow {
