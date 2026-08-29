@@ -1054,15 +1054,7 @@ mod tests {
             .unwrap();
         let param = m
             .add_param(
-                ModelParam {
-                    name: Name::truncated("d"),
-                    is_vec2: false,
-                    min: [0.0, 0.0],
-                    max: [1.0, 0.0],
-                    defaults: [0.0, 0.0],
-                    axis_points_x: vec![0.0, 1.0],
-                    axis_points_y: vec![0.0],
-                },
+                ModelParam::new(Name::truncated("d"), 0.0, 1.0, 0.0),
                 &mut hex,
             )
             .unwrap();

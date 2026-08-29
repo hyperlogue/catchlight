@@ -64,7 +64,9 @@ impl Model {
                         ));
                     }
                 }
-                ModelNodeKind::SimplePhysics(ph) if ph.target_param().is_none() => {
+                ModelNodeKind::SimplePhysics(ph)
+                    if ph.target_params().iter().all(Option::is_none) =>
+                {
                     out.push(warn(
                         id,
                         format!("physics node {:?} drives no target param", n.name.as_str()),
@@ -75,11 +77,12 @@ impl Model {
         }
 
         for b in self.bindings() {
-            let Some(p) = self.param(b.param()) else {
+            let Some(p) = self.param(b.params().x()) else {
                 continue;
             };
-            let w = p.axis_points_x.len().max(1) as u32;
-            let h = p.axis_points_y.len().max(1) as u32;
+            let Ok((w, h)) = self.binding_grid(b.key()) else {
+                continue;
+            };
             if let BindingTarget::Scalar(t) = b.target() {
                 if t.is_color()
                     && matches!(
@@ -161,15 +164,7 @@ mod tests {
             .unwrap();
         let param = m
             .add_param(
-                ModelParam {
-                    name: Name::truncated("shade"),
-                    is_vec2: false,
-                    min: [0.0, 0.0],
-                    max: [1.0, 0.0],
-                    defaults: [0.0, 0.0],
-                    axis_points_x: vec![0.0, 1.0],
-                    axis_points_y: vec![0.0],
-                },
+                ModelParam::new(Name::truncated("shade"), 0.0, 1.0, 0.0),
                 &mut hex,
             )
             .unwrap();

@@ -367,7 +367,9 @@ impl DeformMatrix {
     }
 }
 
-fn bracket(axis: &[f32], t: f32) -> (usize, usize) {
+/// The pair of key-position indices that bracket `t`. Shared with
+/// `crate::model::eval` so a Model and a puppet locate a pose identically.
+pub(crate) fn bracket(axis: &[f32], t: f32) -> (usize, usize) {
     let last = axis.len().saturating_sub(1);
     if last == 0 {
         return (0, 0);
@@ -381,6 +383,17 @@ fn bracket(axis: &[f32], t: f32) -> (usize, usize) {
         (0, 1)
     } else {
         (last - 1, last)
+    }
+}
+
+/// Fractional position of `t` inside `[a, b]`. Returns 0 when a == b, so a
+/// degenerate (single-key-position) axis doesn't NaN. Shared with
+/// `crate::model::eval`.
+pub(crate) fn frac(t: f32, a: f32, b: f32) -> f32 {
+    if (b - a).abs() < 1e-9 {
+        0.0
+    } else {
+        ((t - a) / (b - a)).clamp(0.0, 1.0)
     }
 }
 
@@ -436,16 +449,6 @@ impl Param {
         (normed, (x0, x1), (y0, y1))
     }
 
-    /// Fractional position of `t` inside [a, b]. Returns 0 if
-    /// a == b so a degenerate (single-axis-point) axis doesn't NaN.
-    fn frac(t: f32, a: f32, b: f32) -> f32 {
-        if (b - a).abs() < 1e-9 {
-            0.0
-        } else {
-            ((t - a) / (b - a)).clamp(0.0, 1.0)
-        }
-    }
-
     /// Apply this parameter at `val` to every binding. Pushes Deform
     /// contributions into the target node's DeformStack; non-Deform
     /// binding kinds are parsed but not yet wired through here.
@@ -469,8 +472,8 @@ impl Param {
             return;
         }
         let (normed, (x0, x1), (y0, y1)) = self.locate(val);
-        let fx = Self::frac(normed.x, self.axis_points_x[x0], self.axis_points_x[x1]);
-        let fy = Self::frac(normed.y, self.axis_points_y[y0], self.axis_points_y[y1]);
+        let fx = frac(normed.x, self.axis_points_x[x0], self.axis_points_x[x1]);
+        let fy = frac(normed.y, self.axis_points_y[y0], self.axis_points_y[y1]);
 
         for binding in &self.bindings {
             if !include(&binding.values) {

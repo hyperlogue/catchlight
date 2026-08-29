@@ -1,10 +1,31 @@
-//! The file boundary: Ids in memory <-> array indices on disk.
+//! The file boundary: Ids and scalar params in memory <-> array indices and
+//! 2-D params on disk.
 //!
-//! `.clp` v0 stores no Ids, so a model read from one is given deterministic
-//! ones — `root` for the arena's root and `node-<index>`, `param-<index>`,
-//! `tex-<index>` for the rest. They round-trip nowhere, because the wire has
-//! nothing to round-trip them to; `.clm` (cl-32i.14) stores the real ones and
-//! this whole scheme goes away with it.
+//! **This is a temporary bridge.** `.clp` v0 stores no Ids and its params
+//! carry two axes with the bindings nested underneath, so opening one has to
+//! mint Ids and split every 2-D param, and saving has to put the halves back
+//! together. cl-32i.14 replaces the format with `.clm`, which stores Ids and
+//! scalar params directly, and this whole module collapses to an index remap.
+//!
+//! What the bridge does, in both directions:
+//!
+//! - **Ids.** A model read from `.clp` gets `root` for the arena's root and
+//!   `node-<index>`, `param-<index>`, `tex-<index>` for the rest — the same
+//!   ones every time, so two opens of one file agree about what an addon would
+//!   be naming. They round-trip nowhere, because the wire has nothing to
+//!   round-trip them to.
+//! - **Params.** A 2-D param splits into `<name>.x` and `<name>.y`, adjacent
+//!   in param order, and its bindings become two-param bindings over the pair.
+//!   [`Model::flatten`] puts a pair back together when the names still match,
+//!   they are still adjacent, and every binding and physics target that names
+//!   either names exactly that pair. A two-param binding whose params are not
+//!   such a pair cannot be written to v0 at all: that is
+//!   [`ModelError::UnpairableBinding`], not a panic and not a silent drop.
+//!
+//! Two adjacent 1-D params that happen to be named `<n>.x` and `<n>.y`, with
+//! no binding and no physics target between them, merge into one 2-D param on
+//! save. Nothing distinguishes them from a split pair on the v0 wire; `.clm`
+//! removes the ambiguity along with the split.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,19 +38,99 @@ use crate::{charge_clp_structure, LoadBudget};
 
 use super::*;
 
+/// One `.clp` v0 param slot: either one scalar Model param, or the
+/// `<name>.x` / `<name>.y` pair a 2-D one splits into.
+#[derive(Debug, PartialEq, Eq)]
+enum V0Slot<'a> {
+    One(&'a ParamId),
+    Pair(&'a ParamId, &'a ParamId),
+}
+
+/// How this model's scalar params map onto v0's param table.
+struct V0Params<'a> {
+    slots: Vec<V0Slot<'a>>,
+    /// Every Model param, and the v0 slot it lands in.
+    index: HashMap<&'a ParamId, u32>,
+}
+
+impl<'a> V0Params<'a> {
+    fn index_of(&self, param: &ParamId) -> Option<u32> {
+        self.index.get(param).copied()
+    }
+
+    /// Whether `x` and `y` are exactly one v0 slot's pair, in that order.
+    fn is_pair(&self, x: &ParamId, y: &ParamId) -> bool {
+        self.index_of(x).is_some_and(|i| {
+            matches!(self.slots.get(i as usize), Some(V0Slot::Pair(px, py)) if *px == x && *py == y)
+        })
+    }
+}
+
+/// `<base>` when the two names are `<base>.x` and `<base>.y`.
+fn pair_base<'a>(x: &'a str, y: &str) -> Option<&'a str> {
+    let base = x.strip_suffix(".x")?;
+    if base.is_empty() || y.strip_suffix(".y") != Some(base) {
+        return None;
+    }
+    Some(base)
+}
+
 impl Model {
+    /// The v0 param table this model flattens to.
+    fn v0_params(&self) -> V0Params<'_> {
+        let order = self.param_ids();
+        let mut slots = Vec::with_capacity(order.len());
+        let mut index = HashMap::with_capacity(order.len());
+        let mut i = 0;
+        while i < order.len() {
+            let paired = order.get(i + 1).is_some_and(|next| {
+                let (Some(x), Some(y)) = (self.param(&order[i]), self.param(next)) else {
+                    return false;
+                };
+                pair_base(x.name.as_str(), y.name.as_str()).is_some()
+                    && self.pair_is_exclusive(&order[i], next)
+            });
+            let slot = slots.len() as u32;
+            if paired {
+                index.insert(&order[i], slot);
+                index.insert(&order[i + 1], slot);
+                slots.push(V0Slot::Pair(&order[i], &order[i + 1]));
+                i += 2;
+            } else {
+                index.insert(&order[i], slot);
+                slots.push(V0Slot::One(&order[i]));
+                i += 1;
+            }
+        }
+        V0Params { slots, index }
+    }
+
+    /// Whether nothing names `x` or `y` except as the pair `(x, y)` — the
+    /// condition for merging them back into one 2-D param.
+    fn pair_is_exclusive(&self, x: &ParamId, y: &ParamId) -> bool {
+        let is_the_pair =
+            |params: &BindingParams| matches!(params, BindingParams::Two(a, b) if a == x && b == y);
+        if self.bindings.iter().any(|b| {
+            (b.key.params.contains(x) || b.key.params.contains(y)) && !is_the_pair(&b.key.params)
+        }) {
+            return false;
+        }
+        !self.nodes.values().any(|n| match &n.kind {
+            ModelNodeKind::SimplePhysics(ph) => {
+                (ph.drives(x) || ph.drives(y))
+                    && ph.target_params() != &[Some(x.clone()), Some(y.clone())]
+            }
+            _ => false,
+        })
+    }
+
     /// Snapshot the model into a `.clp` document: walk the tree in topological
-    /// order, assign array indices, and remap every cross-reference. Total for a
-    /// valid model (the only errors are internal-invariant violations).
+    /// order, assign array indices, put split param pairs back together, and
+    /// remap every cross-reference. Total for a valid model except for what v0
+    /// genuinely cannot hold — see the module doc.
     pub fn flatten(&self) -> Result<ClpFile, ModelError> {
         let order = self.nodes_in_order();
         let node_index: HashMap<&NodeId, u32> = order
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (id, i as u32))
-            .collect();
-        let param_index: HashMap<&ParamId, u32> = self
-            .param_ids()
             .iter()
             .enumerate()
             .map(|(i, id)| (id, i as u32))
@@ -40,6 +141,18 @@ impl Model {
             .enumerate()
             .map(|(i, id)| (id, i as u32))
             .collect();
+        let v0 = self.v0_params();
+
+        for b in &self.bindings {
+            if let BindingParams::Two(x, y) = &b.key.params {
+                if !v0.is_pair(x, y) {
+                    return Err(ModelError::UnpairableBinding {
+                        node: b.key.node.to_string(),
+                        target: b.key.target.name(),
+                    });
+                }
+            }
+        }
 
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
@@ -55,31 +168,13 @@ impl Model {
                 z_order: n.z_order,
                 transform: n.transform,
                 lock_to_root: n.lock_to_root,
-                kind: flatten_kind(&n.kind, &node_index, &tex_index, &param_index)?,
+                kind: flatten_kind(id, &n.kind, &node_index, &tex_index, &v0)?,
             });
         }
 
-        let mut params = Vec::with_capacity(self.param_ids().len());
-        for pid in self.param_ids() {
-            let p = self.param(pid).ok_or(ModelError::UnknownParam)?;
-            let mut bindings = Vec::new();
-            for b in self.bindings_of_param(pid) {
-                bindings.push(ClpBinding {
-                    node: *node_index.get(b.node()).ok_or(ModelError::UnknownNode)?,
-                    interpolate_mode: b.interpolate_mode(),
-                    values: b.values.to_clp(),
-                });
-            }
-            params.push(ClpParam {
-                name: p.name.to_string(),
-                is_vec2: p.is_vec2,
-                min: p.min,
-                max: p.max,
-                defaults: p.defaults,
-                axis_points_x: p.axis_points_x.clone(),
-                axis_points_y: p.axis_points_y.clone(),
-                bindings,
-            });
+        let mut params = Vec::with_capacity(v0.slots.len());
+        for slot in &v0.slots {
+            params.push(self.flatten_param(slot, &node_index)?);
         }
 
         let mut textures = Vec::with_capacity(self.texture_ids().len());
@@ -113,15 +208,66 @@ impl Model {
         })
     }
 
+    fn flatten_param(
+        &self,
+        slot: &V0Slot<'_>,
+        node_index: &HashMap<&NodeId, u32>,
+    ) -> Result<ClpParam, ModelError> {
+        let bindings = |params: BindingParams| -> Result<Vec<ClpBinding>, ModelError> {
+            self.bindings
+                .iter()
+                .filter(|b| b.key.params == params)
+                .map(|b| {
+                    Ok(ClpBinding {
+                        node: *node_index.get(b.node()).ok_or(ModelError::UnknownNode)?,
+                        interpolate_mode: b.interpolate_mode(),
+                        values: b.values.to_clp(),
+                    })
+                })
+                .collect()
+        };
+        Ok(match slot {
+            V0Slot::One(id) => {
+                let p = self.param(id).ok_or(ModelError::UnknownParam)?;
+                ClpParam {
+                    name: p.name.to_string(),
+                    is_vec2: false,
+                    min: [p.min, 0.0],
+                    max: [p.max, 0.0],
+                    defaults: [p.default, 0.0],
+                    axis_points_x: p.key_positions.clone(),
+                    axis_points_y: vec![0.0],
+                    bindings: bindings(BindingParams::One((*id).clone()))?,
+                }
+            }
+            V0Slot::Pair(x, y) => {
+                let px = self.param(x).ok_or(ModelError::UnknownParam)?;
+                let py = self.param(y).ok_or(ModelError::UnknownParam)?;
+                let name = pair_base(px.name.as_str(), py.name.as_str())
+                    .ok_or(ModelError::UnknownParam)?;
+                ClpParam {
+                    name: name.to_string(),
+                    is_vec2: true,
+                    min: [px.min, py.min],
+                    max: [px.max, py.max],
+                    defaults: [px.default, py.default],
+                    axis_points_x: px.key_positions.clone(),
+                    axis_points_y: py.key_positions.clone(),
+                    bindings: bindings(BindingParams::Two((*x).clone(), (*y).clone()))?,
+                }
+            }
+        })
+    }
+
     /// `flatten` then encode to `.clp` bytes.
     pub fn to_clp_bytes(&self) -> Result<Vec<u8>, ModelError> {
         let file = self.flatten()?;
         Ok(clp::encode(&file.doc, &file.textures)?)
     }
 
-    /// Rebuild a [`Model`] from a decoded `.clp`, minting an Id per arena slot
-    /// and rewiring every index back to one. Errors on an invalid node arena or
-    /// an out-of-range cross-reference.
+    /// Rebuild a [`Model`] from a decoded `.clp`, minting an Id per arena slot,
+    /// splitting every 2-D param, and rewiring every index back to an Id.
+    /// Errors on an invalid node arena or an out-of-range cross-reference.
     pub fn from_clp_file(file: &ClpFile) -> Result<Model, ModelError> {
         Self::from_clp_file_with_budget(file, &mut LoadBudget::default())
     }
@@ -159,25 +305,55 @@ impl Model {
         }
         let tex_ids = texture_order.clone();
 
+        // A 2-D param becomes `<name>.x` and `<name>.y`, adjacent in order;
+        // `param_slots` remembers what each file slot became so its bindings
+        // and any physics node aimed at it can name the same params.
         let mut params = HashMap::with_capacity(doc.params.len());
         let mut param_order = Vec::with_capacity(doc.params.len());
+        let mut param_slots = Vec::with_capacity(doc.params.len());
         for (i, p) in doc.params.iter().enumerate() {
-            let id = ParamId::from_generated(format!("param-{i}"));
-            params.insert(
-                id.clone(),
-                ModelParam {
-                    name: Name::truncated(&p.name),
-                    is_vec2: p.is_vec2,
-                    min: p.min,
-                    max: p.max,
-                    defaults: p.defaults,
-                    axis_points_x: p.axis_points_x.clone(),
-                    axis_points_y: p.axis_points_y.clone(),
-                },
-            );
-            param_order.push(id);
+            if p.is_vec2 {
+                let x = ParamId::from_generated(format!("param-{i}.x"));
+                let y = ParamId::from_generated(format!("param-{i}.y"));
+                params.insert(
+                    x.clone(),
+                    ModelParam {
+                        name: Name::truncated(format!("{}.x", p.name)),
+                        min: p.min[0],
+                        max: p.max[0],
+                        default: p.defaults[0],
+                        key_positions: p.axis_points_x.clone(),
+                    },
+                );
+                params.insert(
+                    y.clone(),
+                    ModelParam {
+                        name: Name::truncated(format!("{}.y", p.name)),
+                        min: p.min[1],
+                        max: p.max[1],
+                        default: p.defaults[1],
+                        key_positions: p.axis_points_y.clone(),
+                    },
+                );
+                param_order.push(x.clone());
+                param_order.push(y.clone());
+                param_slots.push(BindingParams::Two(x, y));
+            } else {
+                let id = ParamId::from_generated(format!("param-{i}"));
+                params.insert(
+                    id.clone(),
+                    ModelParam {
+                        name: Name::truncated(&p.name),
+                        min: p.min[0],
+                        max: p.max[0],
+                        default: p.defaults[0],
+                        key_positions: p.axis_points_x.clone(),
+                    },
+                );
+                param_order.push(id.clone());
+                param_slots.push(BindingParams::One(id));
+            }
         }
-        let param_ids = param_order.clone();
 
         let node_ids: Vec<NodeId> = (0..doc.nodes.len())
             .map(|i| {
@@ -205,7 +381,7 @@ impl Model {
             node.z_order = cn.z_order;
             node.transform = cn.transform;
             node.lock_to_root = cn.lock_to_root;
-            node.kind = unflatten_kind(&cn.kind, &node_ids, &param_ids, &tex_ids)?;
+            node.kind = unflatten_kind(&cn.kind, &node_ids, &param_slots, &tex_ids)?;
             nodes.insert(node_ids[i].clone(), node);
         }
         // Children in arena order, which is the document's sibling order.
@@ -227,7 +403,11 @@ impl Model {
                     .ok_or(ModelError::UnknownNode)?
                     .clone();
                 bindings.push(ModelBinding {
-                    key: BindingKey::new(param_ids[j].clone(), node, target_of(&b.values)),
+                    key: BindingKey {
+                        params: param_slots[j].clone(),
+                        node,
+                        target: target_of(&b.values),
+                    },
                     interpolate_mode: b.interpolate_mode,
                     values: b.values.clone().into(),
                 });
@@ -269,10 +449,11 @@ impl Model {
 }
 
 fn flatten_kind(
+    id: &NodeId,
     kind: &ModelNodeKind,
     node_index: &HashMap<&NodeId, u32>,
     tex_index: &HashMap<&TexId, u32>,
-    param_index: &HashMap<&ParamId, u32>,
+    v0: &V0Params<'_>,
 ) -> Result<ClpNodeKind, ModelError> {
     Ok(match kind {
         ModelNodeKind::Group => ClpNodeKind::Group,
@@ -303,10 +484,7 @@ fn flatten_kind(
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
-            target_param: match ph.target_param() {
-                Some(p) => Some(*param_index.get(p).ok_or(ModelError::UnknownParam)?),
-                None => None,
-            },
+            target_param: flatten_physics_target(id, ph, v0)?,
             gravity: ph.gravity,
             length: ph.length,
             frequency: ph.frequency,
@@ -315,6 +493,23 @@ fn flatten_kind(
             output_scale: ph.output_scale,
         }),
     })
+}
+
+/// v0 aims a physics node at one param slot, so a pendulum writing two params
+/// only fits if they are one slot's pair.
+fn flatten_physics_target(
+    id: &NodeId,
+    ph: &ModelPhysics,
+    v0: &V0Params<'_>,
+) -> Result<Option<u32>, ModelError> {
+    match ph.target_params() {
+        [None, None] => Ok(None),
+        [Some(x), None] => Ok(Some(v0.index_of(x).ok_or(ModelError::UnknownParam)?)),
+        [Some(x), Some(y)] if v0.is_pair(x, y) => {
+            Ok(Some(v0.index_of(x).ok_or(ModelError::UnknownParam)?))
+        }
+        _ => Err(ModelError::UnpairablePhysicsTarget(id.to_string())),
+    }
 }
 
 fn flatten_masks(
@@ -335,7 +530,7 @@ fn flatten_masks(
 fn unflatten_kind(
     kind: &ClpNodeKind,
     node_ids: &[NodeId],
-    param_ids: &[ParamId],
+    param_slots: &[BindingParams],
     tex_ids: &[TexId],
 ) -> Result<ModelNodeKind, ModelError> {
     Ok(match kind {
@@ -376,14 +571,15 @@ fn unflatten_kind(
             let mut physics = ModelPhysics::new(ph.kind);
             physics.map_mode = ph.map_mode;
             physics.local_only = ph.local_only;
-            physics.target_param = match ph.target_param {
-                Some(i) => Some(
-                    param_ids
-                        .get(i as usize)
-                        .ok_or(ModelError::UnknownParam)?
-                        .clone(),
-                ),
-                None => None,
+            physics.target_params = match ph.target_param {
+                Some(i) => match param_slots
+                    .get(i as usize)
+                    .ok_or(ModelError::UnknownParam)?
+                {
+                    BindingParams::One(p) => [Some(p.clone()), None],
+                    BindingParams::Two(x, y) => [Some(x.clone()), Some(y.clone())],
+                },
+                None => [None, None],
             };
             physics.gravity = ph.gravity;
             physics.length = ph.length;
@@ -464,15 +660,7 @@ mod tests {
         m.mask_add(&part, &mask_src, MaskMode::DodgeMask).unwrap();
         let param = m
             .add_param(
-                ModelParam {
-                    name: Name::truncated("Mouth"),
-                    is_vec2: false,
-                    min: [0.0, 0.0],
-                    max: [1.0, 0.0],
-                    defaults: [0.0, 0.0],
-                    axis_points_x: vec![0.0, 1.0],
-                    axis_points_y: vec![0.0],
-                },
+                ModelParam::new(Name::truncated("Mouth"), 0.0, 1.0, 0.0),
                 &mut hex,
             )
             .unwrap();
@@ -528,6 +716,120 @@ mod tests {
         assert_eq!(a.param_ids()[0].as_str(), "param-0");
         assert_eq!(a.texture_ids()[0].as_str(), "tex-0");
         assert_eq!(a.nodes_in_order(), b.nodes_in_order(), "two opens agree");
+    }
+
+    /// A `.clp` 2-D param is two scalar params plus a two-param binding, and
+    /// saving puts it back byte-for-byte. Losing that would rewrite every
+    /// imported model the first time the editor saved it.
+    #[test]
+    fn a_two_dimensional_param_splits_and_re_pairs() {
+        let mut file = sample().flatten().unwrap();
+        file.doc.params[0].name = "Head".into();
+        file.doc.params[0].is_vec2 = true;
+        file.doc.params[0].min = [-1.0, -2.0];
+        file.doc.params[0].max = [1.0, 2.0];
+        file.doc.params[0].defaults = [0.25, 0.5];
+        file.doc.params[0].axis_points_x = vec![0.0, 0.5, 1.0];
+        file.doc.params[0].axis_points_y = vec![0.0, 1.0];
+
+        let m = Model::from_clp_file(&file).unwrap();
+        let ids = m.param_ids().to_vec();
+        assert_eq!(ids.len(), 2, "one 2-D param becomes two scalars");
+        let (x, y) = (&ids[0], &ids[1]);
+        assert_eq!(m.param(x).unwrap().name.as_str(), "Head.x");
+        assert_eq!(m.param(y).unwrap().name.as_str(), "Head.y");
+        assert_eq!(m.param(x).unwrap().min, -1.0);
+        assert_eq!(m.param(y).unwrap().max, 2.0);
+        assert_eq!(m.param(y).unwrap().default, 0.5);
+        assert_eq!(m.param(x).unwrap().key_positions, vec![0.0, 0.5, 1.0]);
+        assert_eq!(m.param(y).unwrap().key_positions, vec![0.0, 1.0]);
+
+        let binding = m.bindings().next().expect("the binding survived");
+        assert_eq!(
+            binding.params(),
+            &BindingParams::Two(x.clone(), y.clone()),
+            "its binding now names both halves",
+        );
+        assert_eq!(m.binding_grid(binding.key()).unwrap(), (3, 2));
+
+        assert_eq!(m.flatten().unwrap(), file, "and saving puts it back");
+    }
+
+    /// v0 has one param slot per binding, so a pair of params it cannot name
+    /// together has to be refused loudly rather than silently split apart.
+    #[test]
+    fn an_unpairable_two_param_binding_is_a_structured_error() {
+        let mut hex = SeededHex::new(6);
+        let mut m = sample();
+        let part = node_named(&m, "Body");
+        let a = m
+            .add_param(
+                ModelParam::new(Name::truncated("a"), 0.0, 1.0, 0.0),
+                &mut hex,
+            )
+            .unwrap();
+        let b = m
+            .add_param(
+                ModelParam::new(Name::truncated("b"), 0.0, 1.0, 0.0),
+                &mut hex,
+            )
+            .unwrap();
+        let key = BindingKey::pair(
+            a,
+            b,
+            part,
+            BindingTarget::Scalar(crate::model::ScalarTarget::Tx),
+        );
+        m.add_binding(&key).unwrap();
+
+        assert!(matches!(
+            m.flatten(),
+            Err(ModelError::UnpairableBinding { target: "tx", .. })
+        ));
+    }
+
+    /// The physics node has to follow its param through the split, or an
+    /// imported pendulum would come back driving nothing.
+    #[test]
+    fn a_physics_target_follows_the_split_and_the_merge() {
+        let mut file = sample().flatten().unwrap();
+        file.doc.params[0].name = "Head".into();
+        file.doc.params[0].is_vec2 = true;
+        file.doc.params[0].max = [1.0, 1.0];
+        file.doc.params[0].axis_points_y = vec![0.0, 1.0];
+        file.doc.nodes.push(ClpNode {
+            parent: Some(0),
+            name: "Pendulum".into(),
+            enabled: true,
+            z_order: 0.0,
+            transform: Default::default(),
+            lock_to_root: false,
+            kind: ClpNodeKind::SimplePhysics(ClpSimplePhysics {
+                kind: crate::physics::PendulumKind::RigidPendulum,
+                map_mode: Default::default(),
+                local_only: false,
+                target_param: Some(0),
+                gravity: 9.8,
+                length: 100.0,
+                frequency: 1.0,
+                angle_damping: 0.5,
+                length_damping: 0.5,
+                output_scale: [1.0, 1.0],
+            }),
+        });
+
+        let m = Model::from_clp_file(&file).unwrap();
+        let ids = m.param_ids().to_vec();
+        let pendulum = node_named(&m, "Pendulum");
+        match &m.node(&pendulum).unwrap().kind {
+            ModelNodeKind::SimplePhysics(ph) => assert_eq!(
+                ph.target_params(),
+                &[Some(ids[0].clone()), Some(ids[1].clone())],
+                "the pendulum drives both halves",
+            ),
+            _ => panic!("expected a physics node"),
+        }
+        assert_eq!(m.flatten().unwrap(), file);
     }
 
     #[test]

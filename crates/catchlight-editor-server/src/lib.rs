@@ -26,7 +26,6 @@ use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clp::{ClpIndices, ClpMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, TexId};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
-#[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Vec2;
 use catchlight_core::{
     from_clp_cached, BindingKey, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup,
@@ -501,6 +500,16 @@ impl Editor {
         presence
     }
 
+    /// Fold a pose keyed by this session's scalar param names into the 2-D
+    /// names the preview puppet has. See [`fold_pose`].
+    pub fn fold_pose(
+        &self,
+        id: SessionId,
+        pose: &[(String, Vec2)],
+    ) -> Result<Vec<(String, Vec2)>, EditorError> {
+        self.with_model(id, |model, _| fold_pose(model, pose))
+    }
+
     /// Run `f` with the session's built puppet, rebuilding it lazily if the
     /// document changed. The in-process GUI viewport renders it on eframe's own
     /// wgpu device (no readback); the puppet never leaves the session lock.
@@ -822,7 +831,7 @@ impl Editor {
                 };
                 let id = s.node_id(node)?;
                 if let Some(t) = target {
-                    s.model.set_physics_target(&id, t)?;
+                    s.model.set_physics_targets(&id, [t, None])?;
                 }
                 s.model
                     .update_node(&id, |n| {
@@ -921,32 +930,41 @@ impl Editor {
                 axis_x,
                 axis_y,
             } => self.edit_session(session, |s| {
-                if !catchlight_core::param_range_is_valid(vec2, min, max) {
+                if !catchlight_core::param_range_is_valid(min[0], max[0])
+                    || (vec2 && !catchlight_core::param_range_is_valid(min[1], max[1]))
+                {
                     return Err(ModelError::CellOutOfRange.into());
                 }
-                let axis_points_x = if axis_x.is_empty() {
-                    vec![0.0, 1.0]
-                } else {
-                    axis_x
-                };
-                let axis_points_y = if vec2 {
-                    if axis_y.is_empty() {
+                let positions = |given: Vec<f32>| {
+                    if given.is_empty() {
                         vec![0.0, 1.0]
                     } else {
-                        axis_y
+                        given
                     }
+                };
+                // A param is a scalar; the protocol's `vec2` asks for the two
+                // halves a two-param binding would span (cl-32i.13 replaces it).
+                let (name_x, name_y) = if vec2 {
+                    (format!("{name}.x"), format!("{name}.y"))
                 } else {
-                    vec![0.0]
+                    (name, String::new())
                 };
                 let param = s.add_param(ModelParam {
-                    name: Name::truncated(name),
-                    is_vec2: vec2,
-                    min,
-                    max,
-                    defaults,
-                    axis_points_x,
-                    axis_points_y,
+                    name: Name::truncated(name_x),
+                    min: min[0],
+                    max: max[0],
+                    default: defaults[0],
+                    key_positions: positions(axis_x),
                 })?;
+                if vec2 {
+                    s.add_param(ModelParam {
+                        name: Name::truncated(name_y),
+                        min: min[1],
+                        max: max[1],
+                        default: defaults[1],
+                        key_positions: positions(axis_y),
+                    })?;
+                }
                 s.touch();
                 Ok(ResponseBody::Param { param })
             }),
@@ -970,12 +988,12 @@ impl Editor {
                 }
                 if min.is_some() || max.is_some() {
                     let p = s.model.param(&pid).ok_or(ModelError::UnknownParam)?;
-                    let new_min = min.unwrap_or(p.min);
-                    let new_max = max.unwrap_or(p.max);
+                    let new_min = min.map_or(p.min, |m| m[0]);
+                    let new_max = max.map_or(p.max, |m| m[0]);
                     s.model.set_param_range(&pid, new_min, new_max)?;
                 }
                 if let Some(d) = defaults {
-                    s.model.set_param_defaults(&pid, d)?;
+                    s.model.set_param_default(&pid, d[0])?;
                 }
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -993,7 +1011,8 @@ impl Editor {
                 value,
             } => self.edit_session(session, |s| {
                 let param = s.param_id(param)?;
-                s.model.axis_insert(&param, axis, value)?;
+                only_x_axis(axis)?;
+                s.model.key_insert(&param, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1004,7 +1023,8 @@ impl Editor {
                 index,
             } => self.edit_session(session, |s| {
                 let param = s.param_id(param)?;
-                s.model.axis_delete(&param, axis, index as usize)?;
+                only_x_axis(axis)?;
+                s.model.key_delete(&param, index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1016,7 +1036,8 @@ impl Editor {
                 value,
             } => self.edit_session(session, |s| {
                 let param = s.param_id(param)?;
-                s.model.axis_move(&param, axis, index as usize, value)?;
+                only_x_axis(axis)?;
+                s.model.key_move(&param, index as usize, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1026,7 +1047,8 @@ impl Editor {
                 axis,
             } => self.edit_session(session, |s| {
                 let param = s.param_id(param)?;
-                s.model.param_flip(&param, axis)?;
+                only_x_axis(axis)?;
+                s.model.param_flip(&param)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1247,7 +1269,7 @@ impl Editor {
                 let parent = s.node_id(parent)?;
                 let handle = s.add_node(&parent, node)?;
                 let id = s.node_id(handle)?;
-                s.model.set_physics_target(&id, target)?;
+                s.model.set_physics_targets(&id, [target, None])?;
                 s.touch();
                 Ok(ResponseBody::Node { node: handle })
             }),
@@ -1346,6 +1368,7 @@ impl Editor {
             .into_iter()
             .map(|p| (p.name, Vec2::new(p.x, p.y)))
             .collect();
+        let pose = self.fold_pose(session, &pose)?;
 
         let handle = self.session(session)?;
         let (mut puppet, rev) = {
@@ -1412,6 +1435,61 @@ use transport::{
     MAX_SOCKET_CONNECTIONS,
 };
 
+/// v0 bridge (cl-32i.14): the preview puppet is built by flattening the model
+/// to `.clp`, which puts a `<n>.x` / `<n>.y` param pair back together as one
+/// 2-D param named `<n>`. A pose keyed by the model's scalar param names has
+/// to be folded the same way or it would name a param the puppet does not
+/// have. Params that are not half of a pair pass straight through.
+pub fn fold_pose(model: &Model, pose: &[(String, Vec2)]) -> Vec<(String, Vec2)> {
+    let value_of = |name: &str| pose.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
+    let ids = model.param_ids();
+    let mut out = Vec::with_capacity(pose.len());
+    let mut i = 0;
+    while i < ids.len() {
+        let Some(p) = model.param(&ids[i]) else {
+            i += 1;
+            continue;
+        };
+        let partner = ids.get(i + 1).and_then(|id| model.param(id)).filter(|q| {
+            p.name
+                .as_str()
+                .strip_suffix(".x")
+                .is_some_and(|base| !base.is_empty() && q.name.as_str() == format!("{base}.y"))
+        });
+        match partner {
+            Some(q) => {
+                let (x, y) = (value_of(p.name.as_str()), value_of(q.name.as_str()));
+                if x.is_some() || y.is_some() {
+                    let base = p.name.as_str().trim_end_matches(".x").to_string();
+                    out.push((
+                        base,
+                        Vec2::new(x.map_or(p.default, |v| v.x), y.map_or(q.default, |v| v.x)),
+                    ));
+                }
+                i += 2;
+            }
+            None => {
+                if let Some(v) = value_of(p.name.as_str()) {
+                    out.push((p.name.to_string(), v));
+                }
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// A param has one axis; the protocol still names two (cl-32i.13 drops it).
+fn only_x_axis(axis: u8) -> Result<(), EditorError> {
+    if axis == 0 {
+        Ok(())
+    } else {
+        Err(EditorError::BadTarget(
+            "params are scalar: only axis 0 exists".into(),
+        ))
+    }
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -1452,19 +1530,21 @@ pub struct DocSnapshot {
 fn param_infos(model: &Model, refs: &mut RefMap) -> Vec<ParamInfo> {
     let mut out = Vec::with_capacity(model.param_ids().len());
     for pid in model.param_ids() {
-        let (Some(p), Ok((w, h))) = (model.param(pid), model.param_grid(pid)) else {
+        let (Some(p), Ok(keys)) = (model.param(pid), model.key_count(pid)) else {
             continue;
         };
+        // Params are scalars now, so the wire's second axis is always the one
+        // degenerate position; cl-32i.13 drops it from the protocol.
         out.push(ParamInfo {
             param: refs.param(pid),
             name: p.name.to_string(),
-            vec2: p.is_vec2,
-            min: p.min,
-            max: p.max,
-            defaults: p.defaults,
-            axis: [w, h],
-            axis_points_x: p.axis_points_x.clone(),
-            axis_points_y: p.axis_points_y.clone(),
+            vec2: false,
+            min: [p.min, 0.0],
+            max: [p.max, 0.0],
+            defaults: [p.default, 0.0],
+            axis: [keys, 1],
+            axis_points_x: p.key_positions.clone(),
+            axis_points_y: vec![0.0],
             bindings: model.bindings_of_param(pid).count() as u32,
         });
     }

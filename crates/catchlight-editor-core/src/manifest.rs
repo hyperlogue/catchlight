@@ -5,6 +5,10 @@
 //! texture dimensions, not stored vertex-for-vertex. `.clp` is the lossless
 //! form; `to_manifest` preserves structure (tree, transforms, textures, params)
 //! but re-generates meshes on re-import.
+//!
+//! Params in a model are scalars, so a manifest param with `"vec2": true`
+//! imports as the two params `<name>.x` and `<name>.y` — the pair a two-param
+//! binding spans — and `to_manifest` writes every param back as a scalar.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -300,39 +304,52 @@ impl ModelManifestExt for Model {
         }
 
         for mp in &manifest.params {
-            // Axis points are normalized 0..1 across [min, max] (see
-            // ModelParam::axis_points_x), not param-value space.
+            // Key positions are normalized 0..1 across [min, max] (see
+            // ModelParam::key_positions), not param-value space.
             let axis_x = if mp.axis_x.is_empty() {
                 vec![0.0, 1.0]
             } else {
                 mp.axis_x.clone()
             };
-            let axis_y = if mp.vec2 {
-                if mp.axis_y.is_empty() {
-                    vec![0.0, 1.0]
-                } else {
-                    mp.axis_y.clone()
-                }
+            let axis_y = if mp.axis_y.is_empty() {
+                vec![0.0, 1.0]
             } else {
-                vec![0.0]
+                mp.axis_y.clone()
             };
             budget.charge_product(
                 LoadResource::BindingCells,
                 axis_x.len() as u64,
-                axis_y.len() as u64,
+                if mp.vec2 { axis_y.len() as u64 } else { 1 },
             )?;
+            // Params are scalars; a manifest asking for a 2-D one gets the two
+            // halves a binding over the pair would span.
+            let (name_x, name_y) = if mp.vec2 {
+                (format!("{}.x", mp.name), format!("{}.y", mp.name))
+            } else {
+                (mp.name.clone(), String::new())
+            };
             m.add_param(
                 ModelParam {
-                    name: Name::truncated(&mp.name),
-                    is_vec2: mp.vec2,
-                    min: mp.min,
-                    max: mp.max,
-                    defaults: mp.defaults,
-                    axis_points_x: axis_x,
-                    axis_points_y: axis_y,
+                    name: Name::truncated(name_x),
+                    min: mp.min[0],
+                    max: mp.max[0],
+                    default: mp.defaults[0],
+                    key_positions: axis_x,
                 },
                 &mut hex,
             )?;
+            if mp.vec2 {
+                m.add_param(
+                    ModelParam {
+                        name: Name::truncated(name_y),
+                        min: mp.min[1],
+                        max: mp.max[1],
+                        default: mp.defaults[1],
+                        key_positions: axis_y,
+                    },
+                    &mut hex,
+                )?;
+            }
         }
 
         Ok(m)
@@ -398,12 +415,12 @@ impl ModelManifestExt for Model {
             .filter_map(|pid| self.param(pid))
             .map(|p| ManifestParam {
                 name: p.name.to_string(),
-                vec2: p.is_vec2,
-                min: p.min,
-                max: p.max,
-                defaults: p.defaults,
-                axis_x: p.axis_points_x.clone(),
-                axis_y: p.axis_points_y.clone(),
+                vec2: false,
+                min: [p.min, 0.0],
+                max: [p.max, 0.0],
+                defaults: [p.default, 0.0],
+                axis_x: p.key_positions.clone(),
+                axis_y: Vec::new(),
             })
             .collect();
 
