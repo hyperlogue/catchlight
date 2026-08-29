@@ -6,7 +6,7 @@
 //! `NodeSet` when the gesture ends. Discrete controls commit immediately.
 
 use catchlight_core::components::{BlendMode, MaskMode};
-use catchlight_core::physics::{PhysicsModel, PhysicsParamMapMode};
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_editor_protocol::{NodePatch, NodeRef, ParamRef, TexRef};
 use eframe::egui;
 
@@ -53,7 +53,7 @@ pub(crate) enum InspectorKind {
         vert_count: usize,
     },
     Physics {
-        model: PhysicsModel,
+        model: PendulumKind,
         map_mode: PhysicsParamMapMode,
         local_only: bool,
         target_param: Option<ParamRef>,
@@ -357,7 +357,7 @@ fn drawable_props_ui(
 #[allow(clippy::too_many_arguments)]
 fn physics_ui(
     ui: &mut egui::Ui,
-    model: PhysicsModel,
+    model: PendulumKind,
     map_mode: PhysicsParamMapMode,
     local_only: bool,
     target_param: Option<ParamRef>,
@@ -370,15 +370,15 @@ fn physics_ui(
     ctx: &InspectorContext<'_>,
     out: &mut Vec<InspectorAction>,
 ) {
-    let model_name = |m: PhysicsModel| match m {
-        PhysicsModel::RigidPendulum => "Pendulum",
-        PhysicsModel::SpringPendulum => "SpringPendulum",
+    let model_name = |m: PendulumKind| match m {
+        PendulumKind::RigidPendulum => "Pendulum",
+        PendulumKind::SpringPendulum => "SpringPendulum",
     };
     let mut m = model;
     egui::ComboBox::from_label("model")
         .selected_text(model_name(m))
         .show_ui(ui, |ui| {
-            for candidate in [PhysicsModel::RigidPendulum, PhysicsModel::SpringPendulum] {
+            for candidate in [PendulumKind::RigidPendulum, PendulumKind::SpringPendulum] {
                 if ui
                     .selectable_value(&mut m, candidate, model_name(candidate))
                     .clicked()

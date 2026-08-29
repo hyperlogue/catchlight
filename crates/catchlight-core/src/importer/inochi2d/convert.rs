@@ -11,7 +11,7 @@ use crate::{
     load_budget::MAX_PARAM_GRID_CELLS,
     meshgroup::MeshGroupAttachments,
     params::{Binding, BindingValues, DeformMatrix, InterpolateMode, Matrix, Param},
-    physics::{PhysicsModel, PhysicsParamMapMode, SimplePhysicsData},
+    physics::{PendulumKind, PhysicsParamMapMode, SimplePhysicsData},
     puppet::Puppet,
 };
 
@@ -325,11 +325,11 @@ fn convert_simple_physics(
     g_scale: f32,
 ) -> SimplePhysicsData {
     // Inochi2D 0.8.6: missing/unknown model_type and map_mode fall through to
-    // PhysicsModel::default() (Pendulum) / PhysicsParamMapMode::default().
+    // PendulumKind::default() (Pendulum) / PhysicsParamMapMode::default().
     let model = schema
         .model_type
         .as_deref()
-        .and_then(PhysicsModel::from_str)
+        .and_then(PendulumKind::from_str)
         .unwrap_or_default();
     let map_mode = schema
         .map_mode

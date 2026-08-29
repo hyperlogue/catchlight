@@ -16,13 +16,13 @@
 use crate::{Mat4, Vec2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum PhysicsModel {
+pub enum PendulumKind {
     #[default]
     RigidPendulum,
     SpringPendulum,
 }
 
-impl PhysicsModel {
+impl PendulumKind {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -103,7 +103,7 @@ impl VerletPendulum {
 
 #[derive(Debug, Clone)]
 pub struct SimplePhysicsData {
-    pub model: PhysicsModel,
+    pub model: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
     pub target_param_id: Option<u32>,
@@ -143,7 +143,7 @@ pub struct SimplePhysicsData {
 impl Default for SimplePhysicsData {
     fn default() -> Self {
         Self {
-            model: PhysicsModel::RigidPendulum,
+            model: PendulumKind::RigidPendulum,
             map_mode: PhysicsParamMapMode::AngleLength,
             local_only: false,
             target_param_id: None,
@@ -352,8 +352,8 @@ impl SimplePhysicsData {
         };
         let angular = mode(omega_gravity, self.angle_damping);
         match self.model {
-            PhysicsModel::RigidPendulum => angular,
-            PhysicsModel::SpringPendulum => angular.max(mode(
+            PendulumKind::RigidPendulum => angular,
+            PendulumKind::SpringPendulum => angular.max(mode(
                 self.frequency * 2.0 * std::f32::consts::PI,
                 self.length_damping,
             )),
@@ -453,10 +453,10 @@ impl SimplePhysicsData {
 
     fn step(&mut self, anchor_world: Vec2, dt: f32) {
         match self.model {
-            PhysicsModel::RigidPendulum => {
+            PendulumKind::RigidPendulum => {
                 rigid_pendulum_rk4_step(self, anchor_world, dt);
             }
-            PhysicsModel::SpringPendulum => {
+            PendulumKind::SpringPendulum => {
                 spring_rk4_step(
                     &mut self.bob,
                     &mut self.spring_vel,
@@ -760,7 +760,7 @@ mod tests {
         // spring force = -(0,1)*(length - (length - g/k))*k = -(0, g),
         // exactly cancelling gravity.
         SimplePhysicsData {
-            model: PhysicsModel::SpringPendulum,
+            model: PendulumKind::SpringPendulum,
             length: 100.0,
             gravity: 981.0,
             frequency: 1.0,

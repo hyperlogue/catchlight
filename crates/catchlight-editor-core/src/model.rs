@@ -10,7 +10,7 @@ use catchlight_core::formats::clp::{
     TextureEncoding,
 };
 use catchlight_core::params::InterpolateMode;
-use catchlight_core::physics::{PhysicsModel, PhysicsParamMapMode};
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 
 use crate::EditError;
 
@@ -179,7 +179,7 @@ pub struct EditMask {
 
 #[derive(Debug, Clone)]
 pub struct EditPhysics {
-    pub model: PhysicsModel,
+    pub model: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
     pub target_param: Option<ParamId>,
