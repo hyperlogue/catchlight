@@ -2442,10 +2442,6 @@ fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorDat
             propagate_meshgroup: c.propagate_meshgroup,
         },
         EditNodeKind::MeshGroup(mg) => InspectorKind::MeshGroup {
-            opacity: mg.opacity,
-            blend_mode: mg.blend_mode,
-            tint: mg.tint,
-            screen_tint: mg.screen_tint,
             dynamic: mg.dynamic,
             translate_children: mg.translate_children,
             vert_count: mg.mesh.verts.len() / 2,

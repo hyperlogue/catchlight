@@ -28,7 +28,9 @@ use crate::formats::clp::{
 use crate::formats::{ModelTexture, TextureFormat};
 use crate::load_budget::{charge_clp_structure, LoadBudget};
 use crate::meshgroup::MeshGroupBindings;
-use crate::params::{Binding, BindingValues, DeformMatrix, Matrix, Param};
+use crate::params::{
+    Binding, BindingValues, DeformMatrix, Matrix, MeshGroupColorBindingError, Param,
+};
 use crate::physics::SimplePhysicsData;
 use crate::puppet::Puppet;
 
@@ -267,17 +269,8 @@ fn build_composite(c: &ClpComposite) -> CompositeData {
 fn build_mesh_group(m: &ClpMeshGroup) -> Result<MeshGroupData, ImportError> {
     let mesh = build_mesh(&m.mesh)?;
     let deform_stack = DeformStack::new(mesh.vertices.len());
-    let tint = Vec3::from_array(m.tint);
-    let screen_tint = Vec3::from_array(m.screen_tint);
     Ok(MeshGroupData {
         mesh,
-        opacity: m.opacity,
-        base_opacity: m.opacity,
-        tint,
-        base_tint: tint,
-        screen_tint,
-        base_screen_tint: screen_tint,
-        blend_mode: m.blend_mode,
         dynamic: m.dynamic,
         translate_children: m.translate_children,
         deform_stack,
@@ -374,29 +367,39 @@ fn build_param(
 ) -> Result<Param, ImportError> {
     let width = p.axis_points_x.len().max(1);
     let height = p.axis_points_y.len().max(1);
-    let bindings = p
-        .bindings
-        .iter()
-        .filter_map(|b| {
-            let node = *node_ids.get(b.node as usize)?;
-            Some(
-                build_binding_values(
-                    &b.values,
-                    nodes.get(b.node as usize),
-                    width,
-                    height,
-                    &p.axis_points_x,
-                    &p.axis_points_y,
-                )
-                .map(|values| Binding::new(node, b.interpolate_mode, values)),
-            )
-        })
-        .collect::<Result<Vec<_>, crate::deform::DeformShapeError>>()?
-        .into_iter()
+    let mut bindings = Vec::with_capacity(p.bindings.len());
+    for b in &p.bindings {
+        // A binding whose target node doesn't resolve is dropped, as on the
+        // inx path.
+        let Some(&node) = node_ids.get(b.node as usize) else {
+            continue;
+        };
+        let clp_node = nodes.get(b.node as usize);
+        if let Some(target) = color_target(&b.values) {
+            if matches!(clp_node.map(|n| &n.kind), Some(ClpNodeKind::MeshGroup(_))) {
+                return Err(MeshGroupColorBindingError {
+                    param: id,
+                    node: b.node,
+                    target,
+                }
+                .into());
+            }
+        }
+        let values = build_binding_values(
+            &b.values,
+            clp_node,
+            width,
+            height,
+            &p.axis_points_x,
+            &p.axis_points_y,
+        )?;
         // The same load-time sanitization the inx path applies: a binding that
         // contributes nothing regardless of param value never reaches the runtime.
-        .filter(|b| !binding_is_all_zero(&b.values))
-        .collect();
+        if binding_is_all_zero(&values) {
+            continue;
+        }
+        bindings.push(Binding::new(node, b.interpolate_mode, values));
+    }
     Ok(Param {
         id,
         name: p.name.clone(),
@@ -407,6 +410,23 @@ fn build_param(
         axis_points_x: p.axis_points_x.clone(),
         axis_points_y: p.axis_points_y.clone(),
         bindings,
+    })
+}
+
+/// The colour target a binding drives, or `None` for a target that is not a
+/// colour. Named as the source rig names it, so the error reads the way the
+/// author authored it.
+fn color_target(v: &ClpBindingValues) -> Option<&'static str> {
+    use ClpBindingValues as V;
+    Some(match v {
+        V::Opacity(_) => "opacity",
+        V::TintR(_) => "tint.r",
+        V::TintG(_) => "tint.g",
+        V::TintB(_) => "tint.b",
+        V::ScreenTintR(_) => "screen_tint.r",
+        V::ScreenTintG(_) => "screen_tint.g",
+        V::ScreenTintB(_) => "screen_tint.b",
+        _ => return None,
     })
 }
 
@@ -1270,6 +1290,116 @@ mod tests {
                 Ok(_) => panic!("{name}: expected MalformedPayload, got a puppet"),
             }
         }
+    }
+
+    /// A one-mesh-group, one-param file whose single binding aims `values` at
+    /// the mesh group at index 1 — the shape no writer should produce.
+    fn colored_mesh_group_file(values: ClpBindingValues) -> ClpFile {
+        use crate::formats::clp as f;
+        let root = ClpNode {
+            parent: None,
+            name: "root".into(),
+            enabled: true,
+            zsort: 0.0,
+            transform: ClpTransform::default(),
+            lock_to_root: false,
+            kind: ClpNodeKind::Empty,
+        };
+        let mesh_group = ClpNode {
+            parent: Some(0),
+            name: "lattice".into(),
+            enabled: true,
+            zsort: 0.0,
+            transform: ClpTransform::default(),
+            lock_to_root: false,
+            kind: ClpNodeKind::MeshGroup(ClpMeshGroup {
+                mesh: ClpMesh::default(),
+                dynamic: false,
+                translate_children: true,
+            }),
+        };
+        ClpFile {
+            version: f::FORMAT_VERSION,
+            doc: f::ClpDocument {
+                physics: Default::default(),
+                nodes: vec![root, mesh_group],
+                params: vec![f::ClpParam {
+                    name: "shade".into(),
+                    is_vec2: false,
+                    min: [0.0, 0.0],
+                    max: [1.0, 1.0],
+                    defaults: [0.0, 0.0],
+                    axis_points_x: vec![0.0, 1.0],
+                    axis_points_y: vec![0.0],
+                    bindings: vec![f::ClpBinding {
+                        node: 1,
+                        interpolate_mode: crate::params::InterpolateMode::Linear,
+                        values,
+                    }],
+                }],
+                welds: Vec::new(),
+            },
+            textures: Vec::new(),
+        }
+    }
+
+    fn one_cell(value: f32) -> ClpCells<f32> {
+        ClpCells {
+            cells: vec![crate::formats::clp::ClpCell { x: 1, y: 0, value }],
+        }
+    }
+
+    /// A mesh group is never drawn, so it has no colour for an `Opacity` /
+    /// `Tint*` / `ScreenTint*` binding to fold into. Such a file is refused,
+    /// naming the param, the node and the target — dropping the binding
+    /// silently would hide a broken rig.
+    #[test]
+    fn color_binding_on_a_mesh_group_is_refused_at_load() {
+        use ClpBindingValues as V;
+        let cases = [
+            (V::Opacity(one_cell(0.25)), "opacity"),
+            (V::TintR(one_cell(0.5)), "tint.r"),
+            (V::TintG(one_cell(0.5)), "tint.g"),
+            (V::TintB(one_cell(0.5)), "tint.b"),
+            (V::ScreenTintR(one_cell(0.5)), "screen_tint.r"),
+            (V::ScreenTintG(one_cell(0.5)), "screen_tint.g"),
+            (V::ScreenTintB(one_cell(0.5)), "screen_tint.b"),
+        ];
+        for (values, target) in cases {
+            let file = colored_mesh_group_file(values);
+            // Through the encoded bytes, so the refusal covers a file on disk.
+            let bytes = crate::formats::clp::encode(&file.doc, &file.textures).unwrap();
+            let err = match crate::load::load_model(&bytes, crate::load::ModelFormat::Clp, 0) {
+                Err(ImportError::MeshGroupColorBinding(err)) => err,
+                Err(other) => panic!("{target}: expected MeshGroupColorBinding, got {other:?}"),
+                Ok(_) => panic!("{target}: a colour binding on a mesh group must not load"),
+            };
+            assert_eq!(
+                err,
+                MeshGroupColorBindingError {
+                    param: 0,
+                    node: 1,
+                    target,
+                }
+            );
+        }
+    }
+
+    /// The control: the same binding on a node that *is* drawn still loads.
+    #[test]
+    fn color_binding_on_a_part_still_loads() {
+        let mut file = colored_mesh_group_file(ClpBindingValues::Opacity(one_cell(0.25)));
+        file.doc.nodes[1] = triangle_part();
+        file.textures = vec![ClpTexture {
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: tiny_png(),
+        }];
+        let bytes = crate::formats::clp::encode(&file.doc, &file.textures).unwrap();
+        let puppet = crate::load::load_model(&bytes, crate::load::ModelFormat::Clp, 0)
+            .expect("a colour binding on a part loads");
+        assert_eq!(puppet.params().len(), 1);
+        assert_eq!(puppet.params()[0].bindings.len(), 1);
     }
 
     #[test]

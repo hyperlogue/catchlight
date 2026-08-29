@@ -48,10 +48,6 @@ pub(crate) enum InspectorKind {
         propagate_meshgroup: bool,
     },
     MeshGroup {
-        opacity: f32,
-        blend_mode: BlendMode,
-        tint: [f32; 3],
-        screen_tint: [f32; 3],
         dynamic: bool,
         translate_children: bool,
         vert_count: usize,
@@ -215,10 +211,6 @@ pub(crate) fn inspector_ui(
             drawable_props_ui(ui, props, ctx, &mut out);
         }
         InspectorKind::MeshGroup {
-            opacity,
-            blend_mode,
-            tint,
-            screen_tint,
             dynamic,
             translate_children,
             vert_count,
@@ -247,11 +239,7 @@ pub(crate) fn inspector_ui(
                     ..Default::default()
                 }));
             }
-            let mut op = *opacity;
-            single_opacity(ui, &mut op, &mut out);
-            blend_combo(ui, *blend_mode, &mut out);
-            tint_edit(ui, "tint", *tint, false, &mut out);
-            tint_edit(ui, "screen tint", *screen_tint, true, &mut out);
+            // No colour here: a mesh group is never drawn.
         }
         InspectorKind::Physics {
             model,

@@ -181,13 +181,13 @@ pub struct ClpComposite {
     pub propagate_meshgroup: bool,
 }
 
+/// A mesh group deforms what is beneath it and is never drawn, so it stores no
+/// colour. Colour keys written by an older writer decode as unknown fields and
+/// are ignored; a *binding* aiming a colour target at a mesh group is rejected
+/// at load ([`crate::params::MeshGroupColorBindingError`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClpMeshGroup {
     pub mesh: ClpMesh,
-    pub opacity: f32,
-    pub blend_mode: BlendMode,
-    pub tint: [f32; 3],
-    pub screen_tint: [f32; 3],
     pub dynamic: bool,
     pub translate_children: bool,
 }

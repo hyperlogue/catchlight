@@ -6,6 +6,12 @@
 //! `insert_child(.., uuid: Option<u32>)`) and is a plain `u32` inherited from
 //! inochi2d — not a UUID. Several param write paths (`set_param_value`,
 //! `param_value`) also still name their argument `uuid`; it is a `Param.id`.
+//!
+//! **Colour targets only reach drawables.** `Opacity`, `Tint*` and
+//! `ScreenTint*` fold into a part's or a composite's colour. A mesh group is
+//! never drawn and has no colour, so a binding aiming one of those at a mesh
+//! group has nowhere to land: the loader rejects it
+//! ([`MeshGroupColorBindingError`]) instead of silently dropping it.
 
 use crate::components::{NodeIdx, NodeKind};
 use crate::deform::{DeformShapeError, DeformSource};
@@ -220,16 +226,16 @@ pub enum BindingValues {
     /// uniform per-cell stride so the fold walks contiguous memory. See
     /// [`DeformMatrix`].
     Deform(DeformMatrix),
-    /// Multiplicative opacity factor folded into the target node's
-    /// Part / Composite / MeshGroup `opacity` field.
+    /// Multiplicative opacity factor folded into the target Part's or
+    /// Composite's `opacity` field.
     Opacity(Matrix<f32>),
     /// Multiplicative per-channel tint factors (identity 1.0), folded
-    /// into the target node's `tint`.
+    /// into the target Part's or Composite's `tint`.
     TintR(Matrix<f32>),
     TintG(Matrix<f32>),
     TintB(Matrix<f32>),
     /// Additive per-channel screen-tint offsets (identity 0.0), folded
-    /// into the target node's `screen_tint`.
+    /// into the target Part's or Composite's `screen_tint`.
     ScreenTintR(Matrix<f32>),
     ScreenTintG(Matrix<f32>),
     ScreenTintB(Matrix<f32>),
@@ -238,6 +244,21 @@ pub enum BindingValues {
     /// reset to (1,1) each frame in `beginUpdate`).
     OutputScaleX(Matrix<f32>),
     OutputScaleY(Matrix<f32>),
+}
+
+/// A binding aims a colour target (`Opacity`, `Tint*`, `ScreenTint*`) at a
+/// mesh group, which has no colour to fold it into. The loader rejects the
+/// file rather than drop the binding: a rig that keys a mesh group's opacity
+/// is broken in a way its author has to see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("param {param}: {target} binding targets mesh group node {node}, which has no colour")]
+pub struct MeshGroupColorBindingError {
+    /// Index of the offending binding's param in the file's param table.
+    pub param: u32,
+    /// Index of the targeted mesh group in the file's node arena.
+    pub node: u32,
+    /// The binding's colour target: `opacity`, `tint.r`, `screen_tint.b`, ….
+    pub target: &'static str,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -663,7 +684,6 @@ impl Param {
                     match &mut node.kind {
                         NodeKind::Part(p) => p.opacity *= factor,
                         NodeKind::Composite(c) => c.opacity *= factor,
-                        NodeKind::MeshGroup(mg) => mg.opacity *= factor,
                         _ => {}
                     }
                 }
@@ -680,7 +700,6 @@ impl Param {
                     let tint = match &mut node.kind {
                         NodeKind::Part(p) => &mut p.tint,
                         NodeKind::Composite(c) => &mut c.tint,
-                        NodeKind::MeshGroup(mg) => &mut mg.tint,
                         _ => continue,
                     };
                     tint[channel] *= factor;
@@ -700,7 +719,6 @@ impl Param {
                     let screen_tint = match &mut node.kind {
                         NodeKind::Part(p) => &mut p.screen_tint,
                         NodeKind::Composite(c) => &mut c.screen_tint,
-                        NodeKind::MeshGroup(mg) => &mut mg.screen_tint,
                         _ => continue,
                     };
                     screen_tint[channel] += offset;

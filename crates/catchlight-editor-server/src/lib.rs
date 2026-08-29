@@ -1447,10 +1447,6 @@ fn make_kind(kind: NodeKindArg) -> EditNodeKind {
         }),
         NodeKindArg::MeshGroup => EditNodeKind::MeshGroup(EditMeshGroup {
             mesh: ClpMesh::default().into(),
-            opacity: 1.0,
-            blend_mode: BlendMode::Normal,
-            tint: [1.0; 3],
-            screen_tint: [0.0; 3],
             dynamic: false,
             translate_children: false,
         }),
@@ -1497,7 +1493,6 @@ fn apply_patch(n: &mut EditNode, patch: &NodePatch) -> Result<(), EditorError> {
         match &mut n.kind {
             EditNodeKind::Part(p) => p.blend_mode = mode,
             EditNodeKind::Composite(c) => c.blend_mode = mode,
-            EditNodeKind::MeshGroup(mg) => mg.blend_mode = mode,
             _ => {}
         }
     }
@@ -1505,7 +1500,6 @@ fn apply_patch(n: &mut EditNode, patch: &NodePatch) -> Result<(), EditorError> {
         match &mut n.kind {
             EditNodeKind::Part(p) => p.tint = t,
             EditNodeKind::Composite(c) => c.tint = t,
-            EditNodeKind::MeshGroup(mg) => mg.tint = t,
             _ => {}
         }
     }
@@ -1513,7 +1507,6 @@ fn apply_patch(n: &mut EditNode, patch: &NodePatch) -> Result<(), EditorError> {
         match &mut n.kind {
             EditNodeKind::Part(p) => p.screen_tint = t,
             EditNodeKind::Composite(c) => c.screen_tint = t,
-            EditNodeKind::MeshGroup(mg) => mg.screen_tint = t,
             _ => {}
         }
     }
@@ -1546,7 +1539,6 @@ fn set_opacity(kind: &mut EditNodeKind, op: f32) {
     match kind {
         EditNodeKind::Part(p) => p.opacity = op,
         EditNodeKind::Composite(c) => c.opacity = op,
-        EditNodeKind::MeshGroup(mg) => mg.opacity = op,
         _ => {}
     }
 }

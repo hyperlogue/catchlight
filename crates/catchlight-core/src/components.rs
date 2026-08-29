@@ -259,16 +259,13 @@ impl Default for CompositeData {
     }
 }
 
+/// A mesh group is never drawn (`drawable_collector` skips it), so it carries
+/// no colour at all — the fields a drawable has for it are absent here, and a
+/// `.clp` binding that drives colour on a mesh group is rejected at load; see
+/// [`crate::params::MeshGroupColorBindingError`].
 #[derive(Debug, Clone)]
 pub struct MeshGroupData {
     pub mesh: Mesh,
-    pub opacity: f32,
-    pub base_opacity: f32,
-    pub tint: Vec3,
-    pub base_tint: Vec3,
-    pub screen_tint: Vec3,
-    pub base_screen_tint: Vec3,
-    pub blend_mode: BlendMode,
     pub dynamic: bool,
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
@@ -284,13 +281,6 @@ impl Default for MeshGroupData {
     fn default() -> Self {
         Self {
             mesh: Mesh::default(),
-            opacity: 1.0,
-            base_opacity: 1.0,
-            tint: Vec3::ONE,
-            base_tint: Vec3::ONE,
-            screen_tint: Vec3::ZERO,
-            base_screen_tint: Vec3::ZERO,
-            blend_mode: BlendMode::Normal,
             dynamic: false,
             translate_children: true,
             deform_stack: crate::deform::DeformStack::default(),

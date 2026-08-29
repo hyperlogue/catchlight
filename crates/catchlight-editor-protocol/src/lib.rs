@@ -421,7 +421,9 @@ pub enum NodeKindArg {
 }
 
 /// Fields to change on a node; every field is optional (absent = unchanged).
-/// Kind-specific fields are ignored on nodes of another kind.
+/// Kind-specific fields are ignored on nodes of another kind: the colour fields
+/// (`opacity`, `blend_mode`, `tint`, `screen_tint`) reach parts and composites
+/// only, because a mesh group is never drawn and carries no colour.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]

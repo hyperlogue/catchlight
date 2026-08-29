@@ -134,6 +134,53 @@ pub(super) struct SchemaNode {
     pub(super) propagate_meshgroup: Option<bool>,
 }
 
+/// Does this source binding kind (`param_name`) drive colour? Colour lands on
+/// a part or a composite; a mesh group is never drawn, so both import paths
+/// drop such a binding when its target is one.
+pub(super) fn source_binding_is_color(kind: &str) -> bool {
+    matches!(
+        kind,
+        "opacity"
+            | "tint.r"
+            | "tint.g"
+            | "tint.b"
+            | "screenTint.r"
+            | "screenTint.g"
+            | "screenTint.b"
+    )
+}
+
+impl SchemaNode {
+    /// A source mesh group's colour maps to nothing — catchlight never draws a
+    /// mesh group, so it has no opacity, blend mode, tint or screen tint. Both
+    /// import paths call this so a rig author can see what was dropped.
+    pub(super) fn log_dropped_mesh_group_color(&self) {
+        let opacity = self.opacity.filter(|o| *o != 1.0);
+        let blend_mode = self
+            .blend_mode
+            .as_deref()
+            .filter(|b| !b.is_empty() && *b != "Normal");
+        let tint = self.tint.iter().any(|c| *c != 1.0).then_some(&self.tint);
+        let screen_tint = self
+            .screen_tint
+            .iter()
+            .any(|c| *c != 0.0)
+            .then_some(&self.screen_tint);
+        if opacity.is_none() && blend_mode.is_none() && tint.is_none() && screen_tint.is_none() {
+            return;
+        }
+        tracing::debug!(
+            "mesh group {:?}: dropping colour a mesh group cannot carry \
+             (opacity {:?}, blend mode {:?}, tint {:?}, screen tint {:?})",
+            self.name.as_deref().unwrap_or_default(),
+            opacity,
+            blend_mode,
+            tint,
+            screen_tint,
+        );
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct SchemaParam {
     #[serde(default, deserialize_with = "de_lenient")]

@@ -120,13 +120,11 @@ impl DerefMut for EditMesh {
     }
 }
 
+/// A mesh group deforms what is beneath it and is never drawn, so it has no
+/// colour to edit: no opacity, blend mode, tint or screen tint.
 #[derive(Debug, Clone)]
 pub struct EditMeshGroup {
     pub mesh: EditMesh,
-    pub opacity: f32,
-    pub blend_mode: BlendMode,
-    pub tint: [f32; 3],
-    pub screen_tint: [f32; 3],
     pub dynamic: bool,
     pub translate_children: bool,
 }
@@ -135,10 +133,6 @@ impl EditMeshGroup {
     pub fn from_clp(group: &ClpMeshGroup) -> Self {
         Self {
             mesh: group.mesh.clone().into(),
-            opacity: group.opacity,
-            blend_mode: group.blend_mode,
-            tint: group.tint,
-            screen_tint: group.screen_tint,
             dynamic: group.dynamic,
             translate_children: group.translate_children,
         }
@@ -147,10 +141,6 @@ impl EditMeshGroup {
     pub fn to_clp(&self) -> ClpMeshGroup {
         ClpMeshGroup {
             mesh: self.mesh.to_clp(),
-            opacity: self.opacity,
-            blend_mode: self.blend_mode,
-            tint: self.tint,
-            screen_tint: self.screen_tint,
             dynamic: self.dynamic,
             translate_children: self.translate_children,
         }

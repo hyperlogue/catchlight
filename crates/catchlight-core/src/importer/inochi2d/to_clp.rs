@@ -30,8 +30,8 @@ use crate::physics::{PhysicsModel, PhysicsParamMapMode};
 
 use super::error::ImportError;
 use super::schema::{
-    SchemaBinding, SchemaMask, SchemaMesh, SchemaNode, SchemaParam, SchemaPuppetPhysics,
-    SchemaTransform,
+    source_binding_is_color, SchemaBinding, SchemaMask, SchemaMesh, SchemaNode, SchemaParam,
+    SchemaPuppetPhysics, SchemaTransform,
 };
 
 /// Convert a parsed `.inx` model into an editable [`ClpFile`].
@@ -83,7 +83,7 @@ pub fn from_inx_model_to_clp(model: &InxModel) -> Result<ClpFile, ImportError> {
         .collect::<Result<Vec<_>, ImportError>>()?;
     let params = schema_params
         .iter()
-        .map(|p| convert_param(p, &node_index))
+        .map(|p| convert_param(p, &node_index, &nodes))
         .collect();
 
     let textures = model
@@ -213,7 +213,7 @@ fn convert_node_kind(
     Ok(match s.ty.as_deref().unwrap_or("") {
         "Part" => ClpNodeKind::Part(convert_part(s, node_index)?),
         "Composite" => ClpNodeKind::Composite(convert_composite(s, node_index)?),
-        "MeshGroup" => ClpNodeKind::MeshGroup(convert_mesh_group(s)?),
+        "MeshGroup" => ClpNodeKind::MeshGroup(convert_mesh_group(s)),
         "SimplePhysics" => ClpNodeKind::SimplePhysics(convert_simple_physics(s, param_index)),
         // Node, Camera, and any unmodeled type all become a container Empty.
         _ => ClpNodeKind::Empty,
@@ -295,16 +295,13 @@ fn convert_composite(
     })
 }
 
-fn convert_mesh_group(s: &SchemaNode) -> Result<ClpMeshGroup, ImportError> {
-    Ok(ClpMeshGroup {
+fn convert_mesh_group(s: &SchemaNode) -> ClpMeshGroup {
+    s.log_dropped_mesh_group_color();
+    ClpMeshGroup {
         mesh: convert_mesh(s.mesh.as_ref()),
-        opacity: s.opacity.unwrap_or(1.0),
-        blend_mode: blend(s.blend_mode.as_deref())?,
-        tint: vec3_arr(&s.tint, [1.0, 1.0, 1.0]),
-        screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
         dynamic: s.dynamic_deformation.unwrap_or(false),
         translate_children: s.translate_children.unwrap_or(false),
-    })
+    }
 }
 
 fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> ClpSimplePhysics {
@@ -331,7 +328,7 @@ fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> Cl
     }
 }
 
-fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>) -> ClpParam {
+fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>, nodes: &[ClpNode]) -> ClpParam {
     let is_vec2 = p.is_vec2.unwrap_or(false);
     // Resolve inochi2d's axis-point defaults here so the wire holds final axis
     // stops (the same logic the Puppet path applies in convert.rs): absent axes
@@ -355,7 +352,7 @@ fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>) -> ClpParam {
     let bindings = p
         .bindings
         .iter()
-        .filter_map(|b| convert_binding(b, node_index, &axis_x, &axis_y))
+        .filter_map(|b| convert_binding(b, node_index, nodes, &axis_x, &axis_y))
         .collect();
     ClpParam {
         name: p.name.clone().unwrap_or_default(),
@@ -372,19 +369,31 @@ fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>) -> ClpParam {
 fn convert_binding(
     b: &SchemaBinding,
     node_index: &HashMap<u32, u32>,
+    nodes: &[ClpNode],
     axis_x: &[f32],
     axis_y: &[f32],
 ) -> Option<ClpBinding> {
     // Drop bindings whose target node doesn't resolve, as the Puppet path does.
     let node = *node_index.get(&b.node?)?;
     let values_json = b.values.as_ref()?;
-    let values = convert_binding_values(
-        b.param_name.as_deref().unwrap_or(""),
-        values_json,
-        b.is_set.as_deref(),
-        axis_x,
-        axis_y,
-    )?;
+    let kind = b.param_name.as_deref().unwrap_or("");
+    // A mesh group is never drawn and carries no colour, so a colour binding on
+    // one has nowhere to land — and writing it out would produce a `.clp` the
+    // loader rejects. The Puppet path drops the same shape.
+    if source_binding_is_color(kind)
+        && matches!(
+            nodes.get(node as usize).map(|n| &n.kind),
+            Some(ClpNodeKind::MeshGroup(_))
+        )
+    {
+        tracing::debug!(
+            "dropping {:?} binding on mesh group node {}: a mesh group is never drawn",
+            kind,
+            node
+        );
+        return None;
+    }
+    let values = convert_binding_values(kind, values_json, b.is_set.as_deref(), axis_x, axis_y)?;
     Some(ClpBinding {
         node,
         interpolate_mode: interp(b.interpolate_mode.as_deref()),

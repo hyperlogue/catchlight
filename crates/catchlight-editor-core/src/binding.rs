@@ -111,6 +111,22 @@ impl ScalarTarget {
         }
     }
 
+    /// Does this target drive colour? Colour lands on a part or a composite; a
+    /// mesh group is never drawn, so `catchlight_core` refuses to load a model
+    /// whose colour binding targets one (`EditModel::check` flags it).
+    pub fn is_color(self) -> bool {
+        matches!(
+            self,
+            Self::Opacity
+                | Self::TintR
+                | Self::TintG
+                | Self::TintB
+                | Self::ScreenTintR
+                | Self::ScreenTintG
+                | Self::ScreenTintB
+        )
+    }
+
     /// The value a cell holds when the binding has no effect. Multiplicative
     /// targets (scale, opacity, tint, output-scale) rest at 1; additive at 0.
     pub fn identity(self) -> f32 {
