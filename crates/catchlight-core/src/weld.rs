@@ -6,7 +6,7 @@
 use glam::{Affine2, Mat2, Vec2};
 use smallvec::SmallVec;
 
-use crate::components::{NodeId, NodeKind};
+use crate::components::{NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::meshgroup::{affine2_from_mat4, linear_mat2};
 use crate::puppet::{GlobalTransforms, Puppet};
@@ -16,8 +16,8 @@ use crate::puppet::{GlobalTransforms, Puppet};
 /// sides, so there is no mirrored record and no owner.
 #[derive(Debug, Clone)]
 pub struct Weld {
-    pub a: NodeId,
-    pub b: NodeId,
+    pub a: NodeIdx,
+    pub b: NodeIdx,
     pub pairs: Vec<WeldPair>,
 }
 
@@ -38,7 +38,7 @@ struct Side {
     inv_linear: Mat2,
 }
 
-fn side(transforms: &GlobalTransforms, id: NodeId) -> Option<Side> {
+fn side(transforms: &GlobalTransforms, id: NodeIdx) -> Option<Side> {
     let world = affine2_from_mat4(transforms.get(id));
     let linear = linear_mat2(transforms.get(id));
     let det = linear.determinant();
@@ -73,7 +73,7 @@ pub fn apply_welds(puppet: &mut Puppet, transforms: &GlobalTransforms) {
     // Parts whose Weld slot has been zeroed this frame. The slot buffer is
     // pooled across frames, so the first writer must clear last frame's
     // contents before accumulating.
-    let mut touched: SmallVec<[NodeId; 8]> = SmallVec::new();
+    let mut touched: SmallVec<[NodeIdx; 8]> = SmallVec::new();
 
     for weld in &welds {
         apply_one(
@@ -97,7 +97,7 @@ fn apply_one(
     weld: &Weld,
     cur_a: &mut Vec<Vec2>,
     cur_b: &mut Vec<Vec2>,
-    touched: &mut SmallVec<[NodeId; 8]>,
+    touched: &mut SmallVec<[NodeIdx; 8]>,
 ) {
     let (Some(side_a), Some(side_b)) = (side(transforms, weld.a), side(transforms, weld.b)) else {
         return;
@@ -161,7 +161,7 @@ fn apply_one(
 /// earlier record already wrote it this frame — without disturbing the
 /// stack's combined/generation memo. False when the node isn't an enabled
 /// Part.
-fn read_current(puppet: &mut Puppet, id: NodeId, out: &mut Vec<Vec2>) -> bool {
+fn read_current(puppet: &mut Puppet, id: NodeIdx, out: &mut Vec<Vec2>) -> bool {
     let Some(node) = puppet.get_mut(id) else {
         return false;
     };
@@ -175,14 +175,14 @@ fn read_current(puppet: &mut Puppet, id: NodeId, out: &mut Vec<Vec2>) -> bool {
     true
 }
 
-fn part_verts(puppet: &Puppet, id: NodeId) -> Option<&[Vec2]> {
+fn part_verts(puppet: &Puppet, id: NodeIdx) -> Option<&[Vec2]> {
     match puppet.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(p)) => Some(&p.mesh.vertices),
         _ => None,
     }
 }
 
-fn part_origin(puppet: &Puppet, id: NodeId) -> Vec2 {
+fn part_origin(puppet: &Puppet, id: NodeIdx) -> Vec2 {
     match puppet.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(p)) => p.mesh.origin,
         _ => Vec2::ZERO,
@@ -191,11 +191,11 @@ fn part_origin(puppet: &Puppet, id: NodeId) -> Vec2 {
 
 fn write_pulls(
     puppet: &mut Puppet,
-    id: NodeId,
+    id: NodeIdx,
     side: &Side,
     verts: impl Iterator<Item = u32>,
     world_deltas: &[Vec2],
-    touched: &mut SmallVec<[NodeId; 8]>,
+    touched: &mut SmallVec<[NodeIdx; 8]>,
 ) {
     let Some(node) = puppet.get_mut(id) else {
         return;
@@ -225,7 +225,7 @@ mod tests {
     // Two single-triangle Parts sharing the seam edge x∈[0,10] at y=0:
     // part A above (apex +y), part B below (apex -y). Seam pairs:
     // A verts 0,1 ↔ B verts 0,1, coincident at rest.
-    fn two_part_puppet(offset_b: Vec2) -> (Puppet, NodeId, NodeId) {
+    fn two_part_puppet(offset_b: Vec2) -> (Puppet, NodeIdx, NodeIdx) {
         let mut puppet = Puppet::new();
         let a = insert_part(
             &mut puppet,
@@ -248,7 +248,7 @@ mod tests {
         (puppet, a, b)
     }
 
-    fn insert_part(puppet: &mut Puppet, translation: Vec2, verts: &[Vec2]) -> NodeId {
+    fn insert_part(puppet: &mut Puppet, translation: Vec2, verts: &[Vec2]) -> NodeIdx {
         insert_part_origin(puppet, translation, verts, Vec2::ZERO)
     }
 
@@ -257,7 +257,7 @@ mod tests {
         translation: Vec2,
         verts: &[Vec2],
         origin: Vec2,
-    ) -> NodeId {
+    ) -> NodeIdx {
         let mesh = Mesh::new(
             verts.to_vec(),
             vec![Vec2::ZERO; verts.len()],
@@ -287,7 +287,7 @@ mod tests {
         puppet.insert_child(root, node, None)
     }
 
-    fn weld_slot(puppet: &Puppet, id: NodeId) -> Vec<Vec2> {
+    fn weld_slot(puppet: &Puppet, id: NodeIdx) -> Vec<Vec2> {
         let Some(node) = puppet.get(id) else {
             return Vec::new();
         };
@@ -304,7 +304,7 @@ mod tests {
         puppet.combine_deforms();
     }
 
-    fn seam_weld(a: NodeId, b: NodeId, weight: f32) -> Weld {
+    fn seam_weld(a: NodeIdx, b: NodeIdx, weight: f32) -> Weld {
         Weld {
             a,
             b,

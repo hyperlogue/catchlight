@@ -4,7 +4,7 @@ use crate::{
     animation::{Animation, AnimationLane, Keyframe},
     components::{
         BlendMode, CompositeData, MaskBinding, MaskMode, Mesh, MeshGroupData, MeshIndices, Node,
-        NodeId, NodeKind, PartData, TextureId, Transform,
+        NodeIdx, NodeKind, PartData, TextureId, Transform,
     },
     deform::DeformStack,
     formats::ModelTexture,
@@ -41,9 +41,9 @@ pub(crate) mod test_support {
     /// the reference runtime.
     pub(crate) fn load_subtree(
         root: &serde_json::Value,
-        parent: NodeId,
+        parent: NodeIdx,
         puppet: &mut Puppet,
-    ) -> Result<NodeId, ImportError> {
+    ) -> Result<NodeIdx, ImportError> {
         super::load_subtree(root, parent, puppet, DEFAULT_GRAVITY_SCALE)
     }
 }
@@ -127,13 +127,13 @@ fn json_type(v: &serde_json::Value) -> &'static str {
 
 pub(crate) fn load_subtree(
     root: &serde_json::Value,
-    parent: NodeId,
+    parent: NodeIdx,
     puppet: &mut Puppet,
     g_scale: f32,
-) -> Result<NodeId, ImportError> {
+) -> Result<NodeIdx, ImportError> {
     let root_id = parse_and_insert_value(root, parent, puppet, g_scale)?;
 
-    let mut stack: Vec<(&serde_json::Value, NodeId)> = Vec::new();
+    let mut stack: Vec<(&serde_json::Value, NodeIdx)> = Vec::new();
     push_children_rev(root, root_id, &mut stack);
 
     while let Some((value, parent_id)) = stack.pop() {
@@ -145,8 +145,8 @@ pub(crate) fn load_subtree(
 
 fn push_children_rev<'a>(
     value: &'a serde_json::Value,
-    parent: NodeId,
-    stack: &mut Vec<(&'a serde_json::Value, NodeId)>,
+    parent: NodeIdx,
+    stack: &mut Vec<(&'a serde_json::Value, NodeIdx)>,
 ) {
     let Some(children) = value.get("children").and_then(|v| v.as_array()) else {
         return;
@@ -158,10 +158,10 @@ fn push_children_rev<'a>(
 
 fn parse_and_insert_value(
     value: &serde_json::Value,
-    parent: NodeId,
+    parent: NodeIdx,
     puppet: &mut Puppet,
     g_scale: f32,
-) -> Result<NodeId, ImportError> {
+) -> Result<NodeIdx, ImportError> {
     let mut node = parse_node_shallow(value)?;
     node.children = Vec::new();
     insert_node(node, parent, puppet, g_scale)
@@ -192,10 +192,10 @@ fn parse_node_shallow(value: &serde_json::Value) -> Result<SchemaNode, ImportErr
 
 fn insert_node(
     schema: SchemaNode,
-    parent: NodeId,
+    parent: NodeIdx,
     puppet: &mut Puppet,
     g_scale: f32,
-) -> Result<NodeId, ImportError> {
+) -> Result<NodeIdx, ImportError> {
     let uuid = schema.uuid;
     let name = schema.name.clone().unwrap_or_default();
     // Inochi2D 0.8.6: enabled defaults to true when absent.
@@ -488,7 +488,7 @@ fn convert_vec3(src: &[f32], default: Vec3) -> Vec3 {
 }
 
 pub(crate) fn bake_mesh_groups(puppet: &mut Puppet) {
-    let mg_ids: Vec<NodeId> = puppet
+    let mg_ids: Vec<NodeIdx> = puppet
         .iter()
         .filter(|(_, n)| matches!(n.kind, NodeKind::MeshGroup(_)))
         .map(|(id, _)| id)

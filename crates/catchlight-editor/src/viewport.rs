@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use catchlight_core::{GlobalTransforms, NodeId, Puppet, Vec2};
+use catchlight_core::{GlobalTransforms, NodeIdx, Puppet, Vec2};
 use catchlight_wgpu::{
     collect_drawables, create_orthographic_camera_at, CompositePool, DrawableInfo,
     FramebufferSnapshotPool, Pipelines, RenderList, StencilTarget, WgpuRenderer,
@@ -56,7 +56,7 @@ fn retain_isolated(render_list: &mut RenderList, allowed: &HashSet<u32>) {
         children.retain(keep_part);
     }
     loop {
-        let empty: HashSet<NodeId> = render_list
+        let empty: HashSet<NodeIdx> = render_list
             .composite_children
             .iter()
             .filter(|(_, ch)| ch.is_empty())
@@ -272,7 +272,7 @@ impl ViewportRenderer {
 fn apply_deform_preview(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]) {
     use catchlight_core::deform::DeformSource;
     let _ = puppet.update_deform_source(
-        catchlight_core::NodeId(core),
+        catchlight_core::NodeIdx(core),
         DeformSource::Preview,
         |buf| {
             buf.fill(Vec2::ZERO);
@@ -290,7 +290,7 @@ fn apply_deform_preview(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]
 /// `tick` starts from base state every frame, so previews never accumulate.
 fn apply_previews(puppet: &mut Puppet, previews: &[NodePreview]) {
     for pv in previews {
-        let id = catchlight_core::NodeId(pv.core_id);
+        let id = catchlight_core::NodeIdx(pv.core_id);
         if pv.translation.is_some() || pv.rotation.is_some() || pv.scale.is_some() {
             let _ = puppet.update_node_transform(id, |transform| {
                 if let Some(t) = pv.translation {
@@ -419,7 +419,7 @@ mod tests {
     fn dummy_composite(id: u32) -> DrawableInfo {
         use catchlight_core::BlendMode;
         DrawableInfo::Composite {
-            node_id: NodeId(id),
+            node_id: NodeIdx(id),
             z_order: 0.0,
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
@@ -435,12 +435,12 @@ mod tests {
         let mut list = RenderList::default();
         list.root_drawables.push(dummy_composite(1));
         list.composite_children
-            .insert(NodeId(1), vec![dummy_part(2), dummy_part(3)]);
+            .insert(NodeIdx(1), vec![dummy_part(2), dummy_part(3)]);
 
         retain_isolated(&mut list, &HashSet::from([2u32]));
 
         assert_eq!(list.root_drawables.len(), 1, "parent composite must stay");
-        let kids = &list.composite_children[&NodeId(1)];
+        let kids = &list.composite_children[&NodeIdx(1)];
         assert_eq!(kids.len(), 1, "sibling part dropped");
         assert!(matches!(kids[0], DrawableInfo::Part { mesh_id, .. } if mesh_id.0 == 2));
     }
@@ -450,19 +450,19 @@ mod tests {
         let mut list = RenderList::default();
         list.root_drawables.push(dummy_composite(1));
         list.composite_children
-            .insert(NodeId(1), vec![dummy_composite(2)]);
+            .insert(NodeIdx(1), vec![dummy_composite(2)]);
         list.composite_children
-            .insert(NodeId(2), vec![dummy_part(3)]);
+            .insert(NodeIdx(2), vec![dummy_part(3)]);
 
         retain_isolated(&mut list, &HashSet::from([3u32]));
 
         assert_eq!(list.root_drawables.len(), 1);
         assert_eq!(
-            list.composite_children.get(&NodeId(1)).map(Vec::len),
+            list.composite_children.get(&NodeIdx(1)).map(Vec::len),
             Some(1)
         );
         assert_eq!(
-            list.composite_children.get(&NodeId(2)).map(Vec::len),
+            list.composite_children.get(&NodeIdx(2)).map(Vec::len),
             Some(1)
         );
     }
@@ -472,7 +472,7 @@ mod tests {
         let mut list = RenderList::default();
         list.root_drawables.push(dummy_composite(1));
         list.composite_children
-            .insert(NodeId(1), vec![dummy_part(2)]);
+            .insert(NodeIdx(1), vec![dummy_part(2)]);
 
         retain_isolated(&mut list, &HashSet::from([99u32]));
 

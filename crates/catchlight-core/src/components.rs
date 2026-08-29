@@ -2,16 +2,16 @@ use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(pub u32);
+pub struct NodeIdx(pub u32);
 
-impl NodeId {
+impl NodeIdx {
     pub fn new(id: u32) -> Self {
         Self(id)
     }
 }
 
 /// Identifier for a GPU mesh buffer. Currently allocated one-per-Part
-/// from its NodeId, but kept as a distinct newtype so callers can't mix
+/// from its NodeIdx, but kept as a distinct newtype so callers can't mix
 /// mesh_id and texture_id arguments, and so we can swap in a sharing
 /// strategy later without touching the renderer surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

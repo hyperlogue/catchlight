@@ -2,23 +2,23 @@ use indextree::{Arena, NodeEdge, NodeId as TreeNodeId};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::components::NodeId;
+use crate::components::NodeIdx;
 
 #[derive(Debug)]
 pub struct NodeTree {
-    pub root: NodeId,
-    arena: Arena<NodeId>,
-    node_to_tree: HashMap<NodeId, TreeNodeId>,
-    // Dense parent lookup indexed by NodeId slot, maintained by
+    pub root: NodeIdx,
+    arena: Arena<NodeIdx>,
+    node_to_tree: HashMap<NodeIdx, TreeNodeId>,
+    // Dense parent lookup indexed by NodeIdx slot, maintained by
     // add_child (the tree's only mutator). get_parent is hit once per
     // node per transform walk, so it must not pay the node_to_tree
     // hash probe + arena hop.
-    parent: Vec<Option<NodeId>>,
+    parent: Vec<Option<NodeIdx>>,
     // Cached pre-order DFS of all nodes. Invalidated on structural changes
     // (add_child). Populated lazily on the first dfs_order() call. Mutex
     // rather than RefCell so the whole tree is Sync (required by bevy
     // Components).
-    dfs_cache: Mutex<Option<Vec<NodeId>>>,
+    dfs_cache: Mutex<Option<Vec<NodeIdx>>>,
 }
 
 impl Clone for NodeTree {
@@ -36,7 +36,7 @@ impl Clone for NodeTree {
 }
 
 impl NodeTree {
-    pub fn new(root: NodeId) -> Self {
+    pub fn new(root: NodeIdx) -> Self {
         let mut arena = Arena::new();
         let root_tree = arena.new_node(root);
 
@@ -52,7 +52,7 @@ impl NodeTree {
         }
     }
 
-    fn set_parent_slot(&mut self, child: NodeId, parent: NodeId) {
+    fn set_parent_slot(&mut self, child: NodeIdx, parent: NodeIdx) {
         let slot = child.0 as usize;
         if self.parent.len() <= slot {
             self.parent.resize(slot + 1, None);
@@ -60,7 +60,7 @@ impl NodeTree {
         self.parent[slot] = Some(parent);
     }
 
-    pub fn add_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), NodeTreeError> {
+    pub fn add_child(&mut self, parent: NodeIdx, child: NodeIdx) -> Result<(), NodeTreeError> {
         let parent_tree = self
             .node_to_tree
             .get(&parent)
@@ -77,7 +77,7 @@ impl NodeTree {
 
     // Invariant: indextree ids returned by children() all live in self.arena.
     #[allow(clippy::unwrap_used)]
-    pub fn get_children(&self, node: NodeId) -> Vec<NodeId> {
+    pub fn get_children(&self, node: NodeIdx) -> Vec<NodeIdx> {
         if let Some(&tree_node) = self.node_to_tree.get(&node) {
             tree_node
                 .children(&self.arena)
@@ -88,11 +88,11 @@ impl NodeTree {
         }
     }
 
-    pub fn get_parent(&self, node: NodeId) -> Option<NodeId> {
+    pub fn get_parent(&self, node: NodeIdx) -> Option<NodeIdx> {
         self.parent.get(node.0 as usize).copied().flatten()
     }
 
-    pub fn get_all_descendants(&self, node: NodeId) -> Vec<NodeId> {
+    pub fn get_all_descendants(&self, node: NodeIdx) -> Vec<NodeIdx> {
         let Some(&tree_node) = self.node_to_tree.get(&node) else {
             return Vec::new();
         };
@@ -105,9 +105,9 @@ impl NodeTree {
             .collect()
     }
 
-    pub fn get_descendants_until<F>(&self, node: NodeId, stop_condition: F) -> Vec<NodeId>
+    pub fn get_descendants_until<F>(&self, node: NodeIdx, stop_condition: F) -> Vec<NodeIdx>
     where
-        F: Fn(NodeId) -> bool,
+        F: Fn(NodeIdx) -> bool,
     {
         let Some(&tree_node) = self.node_to_tree.get(&node) else {
             return Vec::new();
@@ -143,7 +143,7 @@ impl NodeTree {
 
     pub fn traverse_depth_first<F>(&self, mut visitor: F)
     where
-        F: FnMut(NodeId),
+        F: FnMut(NodeIdx),
     {
         let Some(&root_tree) = self.node_to_tree.get(&self.root) else {
             return;
@@ -161,7 +161,7 @@ impl NodeTree {
     // of the tree and is only ever written whole, so both accessors recover the
     // inner value instead of propagating. Without this a single panicking `f`
     // would wedge every later traversal of this tree.
-    pub fn with_dfs_order<R>(&self, f: impl FnOnce(&[NodeId]) -> R) -> R {
+    pub fn with_dfs_order<R>(&self, f: impl FnOnce(&[NodeIdx]) -> R) -> R {
         let mut guard = self.dfs_cache.lock().unwrap_or_else(|e| e.into_inner());
         let order = guard.get_or_insert_with(|| {
             let mut order = Vec::new();
@@ -175,7 +175,7 @@ impl NodeTree {
 #[derive(Debug, thiserror::Error)]
 pub enum NodeTreeError {
     #[error("Node {0:?} not found in tree")]
-    NodeNotFound(NodeId),
+    NodeNotFound(NodeIdx),
 }
 
 #[cfg(test)]
@@ -184,17 +184,17 @@ mod tests {
 
     #[test]
     fn create_node_tree() {
-        let root = NodeId::new(0);
+        let root = NodeIdx::new(0);
         let tree = NodeTree::new(root);
         assert_eq!(tree.root, root);
     }
 
     #[test]
     fn add_child_to_tree() {
-        let root = NodeId::new(0);
+        let root = NodeIdx::new(0);
         let mut tree = NodeTree::new(root);
 
-        let child = NodeId::new(1);
+        let child = NodeIdx::new(1);
         let result = tree.add_child(root, child);
 
         assert!(result.is_ok());
@@ -206,10 +206,10 @@ mod tests {
 
     #[test]
     fn get_parent_from_tree() {
-        let root = NodeId::new(0);
+        let root = NodeIdx::new(0);
         let mut tree = NodeTree::new(root);
 
-        let child = NodeId::new(1);
+        let child = NodeIdx::new(1);
         tree.add_child(root, child).unwrap();
 
         let parent = tree.get_parent(child);
@@ -218,12 +218,12 @@ mod tests {
 
     #[test]
     fn traverse_tree_depth_first() {
-        let root = NodeId::new(0);
+        let root = NodeIdx::new(0);
         let mut tree = NodeTree::new(root);
 
-        let child1 = NodeId::new(1);
-        let child2 = NodeId::new(2);
-        let grandchild = NodeId::new(3);
+        let child1 = NodeIdx::new(1);
+        let child2 = NodeIdx::new(2);
+        let grandchild = NodeIdx::new(3);
 
         tree.add_child(root, child1).unwrap();
         tree.add_child(root, child2).unwrap();
@@ -243,24 +243,24 @@ mod tests {
 
     #[test]
     fn dfs_order_invalidates_on_add_child() {
-        let root = NodeId::new(0);
+        let root = NodeIdx::new(0);
         let mut tree = NodeTree::new(root);
-        tree.add_child(root, NodeId::new(1)).unwrap();
+        tree.add_child(root, NodeIdx::new(1)).unwrap();
 
         // Prime the cache.
         let first_len = tree.with_dfs_order(|o| o.len());
         assert_eq!(first_len, 2);
 
         // Add a child after priming — cache must reflect the new node.
-        tree.add_child(root, NodeId::new(2)).unwrap();
+        tree.add_child(root, NodeIdx::new(2)).unwrap();
         assert_eq!(tree.with_dfs_order(|o| o.len()), 3);
     }
 
     #[test]
     fn panicking_visitor_does_not_wedge_later_traversals() {
-        let root = NodeId::new(0);
+        let root = NodeIdx::new(0);
         let mut tree = NodeTree::new(root);
-        tree.add_child(root, NodeId::new(1)).unwrap();
+        tree.add_child(root, NodeIdx::new(1)).unwrap();
 
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
@@ -273,7 +273,7 @@ mod tests {
         // The guard was live across the panic, so the mutex is poisoned.
         // Reads and cache invalidation must both still work.
         assert_eq!(tree.with_dfs_order(|o| o.len()), 2);
-        tree.add_child(root, NodeId::new(2)).unwrap();
+        tree.add_child(root, NodeIdx::new(2)).unwrap();
         assert_eq!(tree.with_dfs_order(|o| o.len()), 3);
     }
 }

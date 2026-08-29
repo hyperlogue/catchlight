@@ -16,8 +16,8 @@
 use glam::{Vec2, Vec3};
 
 use crate::components::{
-    CompositeData, MaskBinding, Mesh, MeshGroupData, MeshIndices, Node, NodeId, NodeKind, PartData,
-    TextureId, Transform,
+    CompositeData, MaskBinding, Mesh, MeshGroupData, MeshIndices, Node, NodeIdx, NodeKind,
+    PartData, TextureId, Transform,
 };
 use crate::deform::DeformStack;
 use crate::formats::clp::{
@@ -86,9 +86,9 @@ fn from_clp_impl(
     let g_scale = doc.physics.pixels_per_meter * doc.physics.gravity;
 
     let mut puppet = Puppet::new();
-    // arena index → runtime NodeId. Topological order (`parent < self`)
+    // arena index → runtime NodeIdx. Topological order (`parent < self`)
     // guarantees a node's parent is already present, so this is a linear fill.
-    let mut node_ids: Vec<NodeId> = Vec::with_capacity(doc.nodes.len());
+    let mut node_ids: Vec<NodeIdx> = Vec::with_capacity(doc.nodes.len());
     for (i, clp_node) in doc.nodes.iter().enumerate() {
         let parent = match clp_node.parent {
             None => puppet.root(),
@@ -130,7 +130,7 @@ fn from_clp_impl(
 /// half-welded puppet.
 fn build_welds(
     welds: &[ClpWeld],
-    node_ids: &[NodeId],
+    node_ids: &[NodeIdx],
     nodes: &[ClpNode],
 ) -> Result<Vec<crate::weld::Weld>, ImportError> {
     let bad = |msg: String| ImportError::MalformedPayload(msg);
@@ -369,7 +369,7 @@ fn build_mesh(m: &ClpMesh) -> Result<Mesh, ImportError> {
 fn build_param(
     id: u32,
     p: &ClpParam,
-    node_ids: &[NodeId],
+    node_ids: &[NodeIdx],
     nodes: &[ClpNode],
 ) -> Result<Param, ImportError> {
     let width = p.axis_points_x.len().max(1);
@@ -717,7 +717,7 @@ mod tests {
 
     /// `.inx → Puppet` and `.inx → .clp → Puppet` must build the same runtime
     /// puppet. Both insert nodes in the same DFS pre-order, so `iter()` (slot
-    /// order) aligns them node-for-node, and `NodeId` is the slot index, so
+    /// order) aligns them node-for-node, and `NodeIdx` is the slot index, so
     /// binding targets compare directly too.
     ///
     /// The single intentional divergence is Composite `propagate_mesh_group`

@@ -211,17 +211,17 @@ impl App {
             .and_then(|pi| mapping.core_of.get(pi).copied())
             .filter(|&c| c != u32::MAX);
         let viewport = self.viewport.as_ref()?;
-        let m = viewport.transforms.get(catchlight_core::NodeId(core));
+        let m = viewport.transforms.get(catchlight_core::NodeIdx(core));
         let origin = m.transform_point3(glam::vec3(0.0, 0.0, 0.0)).truncate();
         let parent_world = parent_core
-            .map(|c| viewport.transforms.get(catchlight_core::NodeId(c)))
+            .map(|c| viewport.transforms.get(catchlight_core::NodeIdx(c)))
             .unwrap_or(glam::Mat4::IDENTITY);
         let node_ref = NodeId::from_ffi(primary.0);
         // Recording edits the *posed* value; document edits start from base.
         let (translation, rotation, scale) = if self.armed.is_some() {
             self.editor
                 .with_puppet(session, |p| {
-                    p.get(catchlight_core::NodeId(core)).map(|n| {
+                    p.get(catchlight_core::NodeIdx(core)).map(|n| {
                         (
                             n.transform.translation.to_array(),
                             n.transform.rotation.to_array(),
