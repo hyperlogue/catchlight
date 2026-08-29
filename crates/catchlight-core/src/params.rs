@@ -248,7 +248,7 @@ pub enum BindingValues {
 
 /// A binding aims a colour target (`Opacity`, `Tint*`, `ScreenTint*`) at a
 /// mesh group, which has no colour to fold it into. The loader rejects the
-/// file rather than drop the binding: a rig that keys a mesh group's opacity
+/// file rather than drop the binding: a model that keys a mesh group's opacity
 /// is broken in a way its author has to see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("param {param}: {target} binding targets mesh group node {node}, which has no colour")]

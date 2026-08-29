@@ -415,7 +415,7 @@ fn build_param(
 
 /// The colour target a binding drives, or `None` for a target that is not a
 /// colour. Named after the field it would have folded into, so the load error
-/// says what the rig meant to drive.
+/// names the property the binding meant to drive.
 fn color_target(v: &ClpBindingValues) -> Option<&'static str> {
     use ClpBindingValues as V;
     Some(match v {
@@ -1300,7 +1300,7 @@ mod tests {
             parent: None,
             name: "root".into(),
             enabled: true,
-            zsort: 0.0,
+            z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
             kind: ClpNodeKind::Empty,
@@ -1309,7 +1309,7 @@ mod tests {
             parent: Some(0),
             name: "lattice".into(),
             enabled: true,
-            zsort: 0.0,
+            z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
             kind: ClpNodeKind::MeshGroup(ClpMeshGroup {
