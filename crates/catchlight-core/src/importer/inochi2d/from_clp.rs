@@ -16,8 +16,8 @@
 use glam::{Vec2, Vec3};
 
 use crate::components::{
-    CompositeData, Mask, Mesh, MeshGroupData, MeshIndices, Node, NodeIdx, NodeKind,
-    PartData, TextureId, Transform,
+    CompositeData, Mask, Mesh, MeshGroupData, MeshIndices, Node, NodeIdx, NodeKind, PartData,
+    TextureId, Transform,
 };
 use crate::deform::DeformStack;
 use crate::formats::clp::{
