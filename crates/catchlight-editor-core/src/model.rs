@@ -179,7 +179,7 @@ pub struct EditMask {
 
 #[derive(Debug, Clone)]
 pub struct EditPhysics {
-    pub model: PendulumKind,
+    pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
     pub target_param: Option<ParamId>,

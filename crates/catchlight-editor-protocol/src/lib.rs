@@ -141,7 +141,7 @@ pub enum Command {
         node: NodeRef,
         /// rigid | spring
         #[serde(default)]
-        model: Option<String>,
+        kind: Option<String>,
         /// xy | yx | angle_length | length_angle
         #[serde(default)]
         map_mode: Option<String>,
@@ -363,13 +363,13 @@ pub enum Command {
         from: NodeRef,
         to: NodeRef,
     },
-    /// Add a SimplePhysics node. `model` is rigid|spring.
+    /// Add a SimplePhysics node. `kind` is rigid|spring.
     PhysicsAdd {
         session: SessionId,
         parent: NodeRef,
         #[serde(default)]
         name: Option<String>,
-        model: String,
+        kind: String,
         #[serde(default)]
         target_param: Option<ParamRef>,
         #[serde(default)]

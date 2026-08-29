@@ -103,13 +103,13 @@ impl VerletPendulum {
 
 #[derive(Debug, Clone)]
 pub struct SimplePhysicsData {
-    pub model: PendulumKind,
+    pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
     pub target_param_id: Option<u32>,
     pub gravity: f32,
     pub length: f32,
-    /// Spring resonant frequency in Hz. Only used when `model` is
+    /// Spring resonant frequency in Hz. Only used when `kind` is
     /// `SpringPendulum`. Defaults to 1.0.
     pub frequency: f32,
     pub angle_damping: f32,
@@ -143,7 +143,7 @@ pub struct SimplePhysicsData {
 impl Default for SimplePhysicsData {
     fn default() -> Self {
         Self {
-            model: PendulumKind::RigidPendulum,
+            kind: PendulumKind::RigidPendulum,
             map_mode: PhysicsParamMapMode::AngleLength,
             local_only: false,
             target_param_id: None,
@@ -351,7 +351,7 @@ impl SimplePhysicsData {
             omega * (d + (d * d - 1.0).max(0.0).sqrt()).max(1.0)
         };
         let angular = mode(omega_gravity, self.angle_damping);
-        match self.model {
+        match self.kind {
             PendulumKind::RigidPendulum => angular,
             PendulumKind::SpringPendulum => angular.max(mode(
                 self.frequency * 2.0 * std::f32::consts::PI,
@@ -452,7 +452,7 @@ impl SimplePhysicsData {
     }
 
     fn step(&mut self, anchor_world: Vec2, dt: f32) {
-        match self.model {
+        match self.kind {
             PendulumKind::RigidPendulum => {
                 rigid_pendulum_rk4_step(self, anchor_world, dt);
             }
@@ -760,7 +760,7 @@ mod tests {
         // spring force = -(0,1)*(length - (length - g/k))*k = -(0, g),
         // exactly cancelling gravity.
         SimplePhysicsData {
-            model: PendulumKind::SpringPendulum,
+            kind: PendulumKind::SpringPendulum,
             length: 100.0,
             gravity: 981.0,
             frequency: 1.0,

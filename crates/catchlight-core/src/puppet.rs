@@ -3041,7 +3041,7 @@ mod tests {
             let mut puppet = Puppet::new();
             let target_uuid = 77;
             let data = SimplePhysicsData {
-                model: PendulumKind::SpringPendulum,
+                kind: PendulumKind::SpringPendulum,
                 map_mode: PhysicsParamMapMode::XY,
                 gravity: 9.8 * 100.0,
                 length: 100.0,

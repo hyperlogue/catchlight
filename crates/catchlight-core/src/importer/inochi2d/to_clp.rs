@@ -306,7 +306,7 @@ fn convert_mesh_group(s: &SchemaNode) -> ClpMeshGroup {
 
 fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> ClpSimplePhysics {
     ClpSimplePhysics {
-        model: s
+        kind: s
             .model_type
             .as_deref()
             .and_then(PendulumKind::from_str)

@@ -698,7 +698,7 @@ impl Editor {
             Command::PhysicsSet {
                 session,
                 node,
-                model,
+                kind,
                 map_mode,
                 local_only,
                 target_param,
@@ -710,7 +710,7 @@ impl Editor {
                 length_damping,
                 output_scale,
             } => self.edit_session(session, |s| {
-                let parsed_model = model
+                let parsed_kind = kind
                     .as_deref()
                     .map(|m| parse_pendulum_kind(m).ok_or(EditorError::BadTarget(m.to_string())))
                     .transpose()?;
@@ -736,8 +736,8 @@ impl Editor {
                 let EditNodeKind::SimplePhysics(ph) = &mut n.kind else {
                     return Err(EditorError::BadTarget("not a physics node".into()));
                 };
-                if let Some(m) = parsed_model {
-                    ph.model = m;
+                if let Some(m) = parsed_kind {
+                    ph.kind = m;
                 }
                 if let Some(m) = parsed_map {
                     ph.map_mode = m;
@@ -1134,7 +1134,7 @@ impl Editor {
                 session,
                 parent,
                 name,
-                model,
+                kind,
                 target_param,
                 length,
                 gravity,
@@ -1142,8 +1142,8 @@ impl Editor {
                 angle_damping,
                 length_damping,
             } => self.edit_session(session, |s| {
-                let phys_model = parse_pendulum_kind(&model)
-                    .ok_or_else(|| EditorError::BadTarget(model.clone()))?;
+                let phys_kind = parse_pendulum_kind(&kind)
+                    .ok_or_else(|| EditorError::BadTarget(kind.clone()))?;
                 let target = match target_param {
                     Some(p) => {
                         let pid = ParamId::from_ffi(p.0);
@@ -1155,7 +1155,7 @@ impl Editor {
                     None => None,
                 };
                 let phys = EditPhysics {
-                    model: phys_model,
+                    kind: phys_kind,
                     map_mode: PhysicsParamMapMode::default(),
                     local_only: false,
                     target_param: target,

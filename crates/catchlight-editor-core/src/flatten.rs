@@ -274,7 +274,7 @@ fn flatten_kind(
         }),
         EditNodeKind::MeshGroup(mg) => ClpNodeKind::MeshGroup(mg.to_clp()),
         EditNodeKind::SimplePhysics(ph) => ClpNodeKind::SimplePhysics(ClpSimplePhysics {
-            model: ph.model,
+            kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
             target_param: match ph.target_param {
@@ -343,7 +343,7 @@ fn unflatten_kind(
         }),
         ClpNodeKind::MeshGroup(mg) => EditNodeKind::MeshGroup(EditMeshGroup::from_clp(mg)),
         ClpNodeKind::SimplePhysics(ph) => EditNodeKind::SimplePhysics(EditPhysics {
-            model: ph.model,
+            kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
             target_param: match ph.target_param {
