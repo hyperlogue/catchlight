@@ -354,7 +354,7 @@ impl Puppet {
         if let Some(dirty) = self.node_transform_dirty.get_mut(slot) {
             *dirty = false;
         }
-        self.rebuild_all_mesh_group_bindings();
+        self.rebuild_all_mesh_group_attachments();
         self.invalidate_pose_memos();
         self.bump_node_revision();
         true
@@ -558,12 +558,12 @@ impl Puppet {
 
         self.mg_pre_order_cache = None;
         self.rebuild_param_effect_cache();
-        self.rebuild_all_mesh_group_bindings();
+        self.rebuild_all_mesh_group_attachments();
         self.invalidate_pose_memos();
         self.bump_node_revision();
     }
 
-    fn rebuild_all_mesh_group_bindings(&mut self) {
+    fn rebuild_all_mesh_group_attachments(&mut self) {
         self.reset_dynamic_state();
         self.reset_deforms();
         if self.mesh_group_node_ids.is_empty() {
@@ -575,7 +575,8 @@ impl Puppet {
             .mesh_group_node_ids
             .iter()
             .map(|&id| {
-                let bindings = crate::meshgroup::bake_mesh_group_bindings(self, &transforms, id);
+                let attachments =
+                    crate::meshgroup::bake_mesh_group_attachments(self, &transforms, id);
                 let bitmap = self
                     .nodes
                     .get(id.0 as usize)
@@ -585,14 +586,14 @@ impl Puppet {
                         }
                         _ => None,
                     });
-                (id, bindings, bitmap)
+                (id, attachments, bitmap)
             })
             .collect();
-        for (id, bindings, bitmap) in baked {
+        for (id, attachments, bitmap) in baked {
             if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             {
-                mesh_group.bindings = bindings;
+                mesh_group.attachments = attachments;
                 mesh_group.bitmap = bitmap;
             }
         }
@@ -1748,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn replacing_base_transform_rebakes_mesh_group_bindings() {
+    fn replacing_base_transform_rebakes_mesh_group_attachments() {
         use crate::{deform::DeformStack, Mesh, MeshGroupData, MeshIndices, PartData};
 
         let mut puppet = Puppet::new();
@@ -1799,7 +1800,7 @@ mod tests {
             let NodeKind::MeshGroup(group) = &puppet.get(group).expect("mesh group").kind else {
                 panic!("not a mesh group");
             };
-            group.bindings.per_child[&child].vertices[0].weights
+            group.attachments.per_child[&child].vertices[0].weights
         };
 
         assert!(puppet.set_node_base_transform(child, transform_at(3.0)));

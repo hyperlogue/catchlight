@@ -3,13 +3,13 @@ use glam::{Vec2, Vec3};
 use crate::{
     animation::{Animation, AnimationLane, Keyframe},
     components::{
-        BlendMode, CompositeData, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices, Node,
-        NodeIdx, NodeKind, PartData, TextureId, Transform,
+        BlendMode, CompositeData, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices, Node, NodeIdx,
+        NodeKind, PartData, TextureId, Transform,
     },
     deform::DeformStack,
     formats::ModelTexture,
     load_budget::MAX_PARAM_GRID_CELLS,
-    meshgroup::MeshGroupBindings,
+    meshgroup::MeshGroupAttachments,
     params::{Binding, BindingValues, DeformMatrix, InterpolateMode, Matrix, Param},
     physics::{PhysicsModel, PhysicsParamMapMode, SimplePhysicsData},
     puppet::Puppet,
@@ -314,7 +314,7 @@ fn convert_mesh_group(schema: &SchemaNode) -> Result<MeshGroupData, ImportError>
         dynamic: schema.dynamic_deformation.unwrap_or(false),
         translate_children: schema.translate_children.unwrap_or(false),
         deform_stack,
-        bindings: MeshGroupBindings::default(),
+        attachments: MeshGroupAttachments::default(),
         bitmap: None,
     })
 }
@@ -488,11 +488,11 @@ pub(crate) fn bake_mesh_groups(puppet: &mut Puppet) {
     let mut transforms = crate::puppet::GlobalTransforms::new();
     puppet.compute_transforms(&mut transforms);
     for id in mg_ids {
-        let baked = crate::meshgroup::bake_mesh_group_bindings(puppet, &transforms, id);
+        let baked = crate::meshgroup::bake_mesh_group_attachments(puppet, &transforms, id);
         if let Some(node) = puppet.get_mut(id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 let bitmap = crate::meshgroup::MgTriangleBitmap::build(&mg.mesh);
-                mg.bindings = baked;
+                mg.attachments = baked;
                 mg.bitmap = bitmap;
             }
         }
