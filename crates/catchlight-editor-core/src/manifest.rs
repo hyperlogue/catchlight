@@ -18,8 +18,13 @@ use catchlight_core::formats::clp::{
 };
 use catchlight_core::{LoadBudget, LoadLimitError, LoadResource};
 
+/// A manifest import mints Ids from this seed, so importing the same manifest
+/// twice produces the same Ids.
+const IMPORT_SEED: u32 = 0x0c1a_7c17;
+
+use catchlight_core::id::{Name, NodeId, SeededHex, TexId};
 use catchlight_core::{
-    Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelTexture, NodeKey, TexKey,
+    Model, ModelError, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelTexture,
 };
 
 #[derive(Debug, Error)]
@@ -42,6 +47,8 @@ pub enum ManifestError {
     Decode(String, String),
     #[error(transparent)]
     LoadLimit(#[from] LoadLimitError),
+    #[error("building the model: {0}")]
+    Model(#[from] ModelError),
 }
 
 /// The decoded PNG/TGA bytes for one manifest texture, supplied by the caller
@@ -210,13 +217,17 @@ impl ModelManifestExt for Model {
         budget.charge(LoadResource::Textures, manifest.textures.len() as u64)?;
         budget.charge(LoadResource::Nodes, manifest.nodes.len() as u64)?;
         budget.charge(LoadResource::Params, manifest.params.len() as u64)?;
+        // Ids are generated, not taken from the manifest, so the two id
+        // spaces stay separate; a fixed seed keeps one manifest importing to
+        // one set of Ids.
+        let mut hex = SeededHex::new(IMPORT_SEED);
         let mut m = Model::new();
         m.set_physics(ClpPhysics {
             pixels_per_meter: manifest.physics.pixels_per_meter,
             gravity: manifest.physics.gravity,
         });
 
-        let mut tex_ids: HashMap<&str, TexKey> = HashMap::new();
+        let mut tex_ids: HashMap<&str, TexId> = HashMap::new();
         let mut tex_dims: HashMap<&str, (f32, f32)> = HashMap::new();
         for t in &manifest.textures {
             let d = data
@@ -226,11 +237,14 @@ impl ModelManifestExt for Model {
             let (w, h) =
                 image_dims(&d.bytes).map_err(|e| ManifestError::Decode(t.id.clone(), e))?;
             budget.check_texture_dimensions(w, h)?;
-            let id = m.add_texture(ModelTexture {
-                encoding: d.encoding,
-                alpha: TextureAlpha::Straight,
-                data: d.bytes.clone(),
-            });
+            let id = m.add_texture(
+                ModelTexture {
+                    encoding: d.encoding,
+                    alpha: TextureAlpha::Straight,
+                    data: d.bytes.clone(),
+                },
+                &mut hex,
+            )?;
             tex_ids.insert(t.id.as_str(), id);
             tex_dims.insert(t.id.as_str(), (w as f32, h as f32));
         }
@@ -244,15 +258,15 @@ impl ModelManifestExt for Model {
 
         // Place nodes in any order: resolve a node once its parent exists (or it
         // is top-level, attaching under the implicit root).
-        let mut resolved: HashMap<&str, NodeKey> = HashMap::new();
+        let mut resolved: HashMap<&str, NodeId> = HashMap::new();
         let mut pending: Vec<&ManifestNode> = manifest.nodes.iter().collect();
         while !pending.is_empty() {
             let before = pending.len();
             let mut still = Vec::new();
             for mn in pending {
                 let parent = match &mn.parent {
-                    None => Some(m.root()),
-                    Some(pid) => resolved.get(pid.as_str()).copied(),
+                    None => Some(m.root().clone()),
+                    Some(pid) => resolved.get(pid.as_str()).cloned(),
                 };
                 let Some(parent) = parent else {
                     still.push(mn);
@@ -268,11 +282,10 @@ impl ModelManifestExt for Model {
                 };
                 node.z_order = mn.z_order;
                 let id = m
-                    .add_node(parent, node)
+                    .add_node(&parent, node, &mut hex)
                     .map_err(|_| ManifestError::UnknownParent(mn.id.clone(), "<root>".into()))?;
                 if albedo.is_some() {
-                    m.set_part_albedo(id, albedo)
-                        .map_err(|_| ManifestError::UnknownKind(mn.id.clone(), "part".into()))?;
+                    m.set_part_albedo(&id, albedo)?;
                 }
                 resolved.insert(mn.id.as_str(), id);
             }
@@ -308,15 +321,18 @@ impl ModelManifestExt for Model {
                 axis_x.len() as u64,
                 axis_y.len() as u64,
             )?;
-            m.add_param(ModelParam {
-                name: mp.name.clone(),
-                is_vec2: mp.vec2,
-                min: mp.min,
-                max: mp.max,
-                defaults: mp.defaults,
-                axis_points_x: axis_x,
-                axis_points_y: axis_y,
-            });
+            m.add_param(
+                ModelParam {
+                    name: Name::truncated(&mp.name),
+                    is_vec2: mp.vec2,
+                    min: mp.min,
+                    max: mp.max,
+                    defaults: mp.defaults,
+                    axis_points_x: axis_x,
+                    axis_points_y: axis_y,
+                },
+                &mut hex,
+            )?;
         }
 
         Ok(m)
@@ -324,15 +340,15 @@ impl ModelManifestExt for Model {
 
     fn to_manifest(&self) -> Manifest {
         let order = self.nodes_in_order();
-        let node_name: HashMap<NodeKey, String> = order
+        let node_name: HashMap<&NodeId, String> = order
             .iter()
             .enumerate()
-            .map(|(i, &id)| (id, format!("n{i}")))
+            .map(|(i, id)| (id, format!("n{i}")))
             .collect();
 
-        let mut tex_name: HashMap<TexKey, String> = HashMap::new();
+        let mut tex_name: HashMap<&TexId, String> = HashMap::new();
         let mut textures = Vec::new();
-        for (i, &tid) in self.texture_ids().iter().enumerate() {
+        for (i, tid) in self.texture_ids().iter().enumerate() {
             let id = format!("tex{i}");
             let ext = match self.texture(tid).map(|t| t.encoding) {
                 Some(TextureEncoding::Tga) => "tga",
@@ -346,26 +362,26 @@ impl ModelManifestExt for Model {
         }
 
         let mut nodes = Vec::new();
-        for &id in &order {
+        for id in &order {
             if id == self.root() {
                 continue;
             }
             let Some(n) = self.node(id) else { continue };
             let parent = match n.parent() {
                 Some(p) if p == self.root() => None,
-                Some(p) => node_name.get(&p).cloned(),
+                Some(p) => node_name.get(p).cloned(),
                 None => None,
             };
             let (kind, texture) = match &n.kind {
                 ModelNodeKind::Part(p) => {
-                    ("part", p.albedo().and_then(|t| tex_name.get(&t).cloned()))
+                    ("part", p.albedo().and_then(|t| tex_name.get(t).cloned()))
                 }
                 _ => ("group", None),
             };
             nodes.push(ManifestNode {
-                id: node_name.get(&id).cloned().unwrap_or_default(),
+                id: node_name.get(id).cloned().unwrap_or_default(),
                 parent,
-                name: Some(n.name.clone()),
+                name: Some(n.name.to_string()),
                 kind: kind.to_string(),
                 translate: Some(n.transform.translation),
                 rotate: Some(n.transform.rotation),
@@ -379,9 +395,9 @@ impl ModelManifestExt for Model {
         let params = self
             .param_ids()
             .iter()
-            .filter_map(|&pid| self.param(pid))
+            .filter_map(|pid| self.param(pid))
             .map(|p| ManifestParam {
-                name: p.name.clone(),
+                name: p.name.to_string(),
                 vec2: p.is_vec2,
                 min: p.min,
                 max: p.max,
@@ -406,18 +422,19 @@ impl ModelManifestExt for Model {
 
 fn build_kind(
     mn: &ManifestNode,
-    tex_ids: &HashMap<&str, TexKey>,
+    tex_ids: &HashMap<&str, TexId>,
     tex_dims: &HashMap<&str, (f32, f32)>,
     budget: &mut LoadBudget,
-) -> Result<(ModelNodeKind, Option<TexKey>), ManifestError> {
+) -> Result<(ModelNodeKind, Option<TexId>), ManifestError> {
     match mn.kind.as_str() {
         "group" => Ok((ModelNodeKind::Group, None)),
         "part" => {
             let albedo = match &mn.texture {
                 Some(t) => Some(
-                    *tex_ids
+                    tex_ids
                         .get(t.as_str())
-                        .ok_or_else(|| ManifestError::UnknownTexture(mn.id.clone(), t.clone()))?,
+                        .ok_or_else(|| ManifestError::UnknownTexture(mn.id.clone(), t.clone()))?
+                        .clone(),
                 ),
                 None => None,
             };
@@ -597,9 +614,9 @@ mod tests {
         let face = m
             .nodes_in_order()
             .into_iter()
-            .find(|&id| matches!(m.node(id).map(|n| &n.kind), Some(ModelNodeKind::Part(_))))
+            .find(|id| matches!(m.node(id).map(|n| &n.kind), Some(ModelNodeKind::Part(_))))
             .unwrap();
-        if let Some(ModelNodeKind::Part(p)) = m.node(face).map(|n| &n.kind) {
+        if let Some(ModelNodeKind::Part(p)) = m.node(&face).map(|n| &n.kind) {
             assert_eq!(p.mesh().verts.len() / 2, 9); // 3x3 grid vertices
             assert!(p.albedo().is_some());
         } else {
@@ -724,13 +741,14 @@ mod tests {
     #[test]
     fn check_flags_untextured_part_and_physics_without_target() {
         let mut m = Model::new();
-        let root = m.root();
+        let root = m.root().clone();
         m.add_node(
-            root,
+            &root,
             ModelNode::new(
                 "ghost",
                 ModelNodeKind::Part(ModelPart::new(ClpMesh::default())),
             ),
+            &mut catchlight_core::id::SeededHex::new(0),
         )
         .unwrap();
         let warnings = m.check();

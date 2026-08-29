@@ -11,6 +11,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
+mod refs;
 #[cfg(unix)]
 mod transport;
 
@@ -23,17 +24,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clp::{ClpIndices, ClpMesh, TextureAlpha, TextureEncoding};
+use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, TexId};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Vec2;
 use catchlight_core::{
     from_clp_cached, BindingKey, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup,
-    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, NodeKey, ParamKey,
-    Puppet, ScalarTarget, TexKey, TexturePrepCache,
+    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, Puppet,
+    ScalarTarget, TexturePrepCache,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_editor_core::{Manifest, ModelManifestExt as _, TextureData};
 use catchlight_editor_core::{ManifestError, ModelMeshExt as _};
+pub use refs::RefMap;
 
 /// Per-session undo history depth.
 const UNDO_DEPTH: usize = 64;
@@ -53,6 +56,8 @@ pub enum EditorError {
     NoSession(SessionId),
     #[error("no node {0:?}")]
     NoNode(NodeRef),
+    #[error("no param {0:?}")]
+    NoParam(ParamRef),
     #[error("no texture {0:?}")]
     NoTexture(TexRef),
     #[error("unknown binding target {0:?}")]
@@ -79,6 +84,11 @@ pub enum EditorError {
 
 struct Session {
     model: Model,
+    /// Handle <-> Id for this session's clients; grows, never forgets.
+    refs: RefMap,
+    /// Where generated Ids come from. Seeded per session so a session's Ids
+    /// are reproducible; uniqueness is the model's job, not the seed's.
+    hex: SeededHex,
     title: String,
     file: Option<PathBuf>,
     rev: u64,
@@ -114,6 +124,8 @@ impl Session {
     fn new(model: Model, title: String, file: Option<PathBuf>) -> Self {
         Self {
             model,
+            refs: RefMap::default(),
+            hex: SeededHex::new(0x1d5e_ed01),
             title,
             file,
             rev: 0,
@@ -132,6 +144,74 @@ impl Session {
     fn touch(&mut self) {
         self.rev += 1;
         self.puppet_dirty = true;
+    }
+
+    fn node_id(&self, handle: NodeRef) -> Result<NodeId, EditorError> {
+        self.refs
+            .node_id(handle)
+            .cloned()
+            .ok_or(EditorError::NoNode(handle))
+    }
+
+    fn param_id(&self, handle: ParamRef) -> Result<ParamId, EditorError> {
+        self.refs
+            .param_id(handle)
+            .cloned()
+            .ok_or(EditorError::NoParam(handle))
+    }
+
+    fn tex_id(&self, handle: TexRef) -> Result<TexId, EditorError> {
+        self.refs
+            .tex_id(handle)
+            .cloned()
+            .ok_or(EditorError::NoTexture(handle))
+    }
+
+    /// The binding one protocol request names.
+    fn binding_key(
+        &self,
+        param: ParamRef,
+        node: NodeRef,
+        target: BindingTarget,
+    ) -> Result<BindingKey, EditorError> {
+        Ok(BindingKey::new(
+            self.param_id(param)?,
+            self.node_id(node)?,
+            target,
+        ))
+    }
+
+    /// Creation splits the borrow between the model and its Id source.
+    fn add_node(&mut self, parent: &NodeId, node: ModelNode) -> Result<NodeRef, EditorError> {
+        let Self {
+            model, hex, refs, ..
+        } = self;
+        let id = model.add_node(parent, node, hex)?;
+        Ok(refs.node(&id))
+    }
+
+    fn add_param(&mut self, param: ModelParam) -> Result<ParamRef, EditorError> {
+        let Self {
+            model, hex, refs, ..
+        } = self;
+        let id = model.add_param(param, hex)?;
+        Ok(refs.param(&id))
+    }
+
+    fn add_texture(&mut self, texture: ModelTexture) -> Result<TexRef, EditorError> {
+        let Self {
+            model, hex, refs, ..
+        } = self;
+        let id = model.add_texture(texture, hex)?;
+        Ok(refs.texture(&id))
+    }
+
+    fn duplicate_subtree(&mut self, node: &NodeId) -> Result<NodeRef, EditorError> {
+        let Self {
+            model, hex, refs, ..
+        } = self;
+        let id = model.duplicate_subtree(node, hex)?;
+        Ok(refs.node(&id))
     }
 
     fn push_undo(&mut self, snapshot: Model) {
@@ -305,11 +385,12 @@ impl Editor {
     pub fn with_model<R>(
         &self,
         id: SessionId,
-        f: impl FnOnce(&Model) -> R,
+        f: impl FnOnce(&Model, &mut RefMap) -> R,
     ) -> Result<R, EditorError> {
         let session = self.session(id)?;
-        let s = lock(&session);
-        Ok(f(&s.model))
+        let mut s = lock(&session);
+        let Session { model, refs, .. } = &mut *s;
+        Ok(f(model, refs))
     }
 
     /// Register an already-encoded PNG/TGA texture from bytes (the browser
@@ -322,13 +403,13 @@ impl Editor {
     ) -> Result<TexRef, EditorError> {
         image_dims(&bytes)?;
         self.edit_session(id, |s| {
-            let tex = s.model.add_texture(ModelTexture {
+            let tex = s.add_texture(ModelTexture {
                 encoding,
                 alpha: TextureAlpha::Straight,
                 data: Arc::new(bytes),
-            });
+            })?;
             s.touch();
-            Ok(TexRef(tex.to_ffi()))
+            Ok(tex)
         })
     }
 
@@ -393,10 +474,13 @@ impl Editor {
                 return Some(cached.clone());
             }
         }
+        let rev = session.rev;
+        let Session { model, refs, .. } = &mut *session;
+        let root = model.root().clone();
         let snap = Arc::new(DocSnapshot {
-            rev: session.rev,
-            root: build_tree(&session.model, session.model.root()),
-            params: param_infos(&session.model),
+            rev,
+            root: build_tree(model, refs, &root),
+            params: param_infos(model, refs),
         });
         session.snapshot = Some(snap.clone());
         Some(snap)
@@ -537,7 +621,7 @@ impl Editor {
                         .texture_ids()
                         .iter()
                         .enumerate()
-                        .filter_map(|(i, &tid)| {
+                        .filter_map(|(i, tid)| {
                             let texture = s.model.texture(tid)?;
                             let ext = match texture.encoding {
                                 TextureEncoding::Tga => "tga",
@@ -578,8 +662,10 @@ impl Editor {
                 })
             }),
             Command::NodeTree { session } => self.with_session(session, |s| {
+                let root = s.model.root().clone();
+                let Session { model, refs, .. } = s;
                 Ok(ResponseBody::Tree {
-                    root: build_tree(&s.model, s.model.root()),
+                    root: build_tree(model, refs, &root),
                 })
             }),
             Command::NodeAdd {
@@ -590,39 +676,38 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let node =
                     ModelNode::new(name.unwrap_or_else(|| default_name(kind)), make_kind(kind));
-                let id = s.model.add_node(NodeKey::from_ffi(parent.0), node)?;
+                let parent = s.node_id(parent)?;
+                let node = s.add_node(&parent, node)?;
                 s.touch();
-                Ok(ResponseBody::Node {
-                    node: NodeRef(id.to_ffi()),
-                })
+                Ok(ResponseBody::Node { node })
             }),
             Command::NodeSet {
                 session,
                 node,
                 patch,
             } => self.edit_session(session, |s| {
-                let id = NodeKey::from_ffi(node.0);
+                let id = s.node_id(node)?;
                 if let Some(tref) = patch.texture {
-                    let tex = TexKey::from_ffi(tref.0);
-                    if s.model.texture(tex).is_none() {
+                    let tex = s.tex_id(tref)?;
+                    if s.model.texture(&tex).is_none() {
                         return Err(EditorError::NoTexture(tref));
                     }
                     if matches!(
-                        s.model.node(id).map(|n| &n.kind),
+                        s.model.node(&id).map(|n| &n.kind),
                         Some(ModelNodeKind::Part(_))
                     ) {
-                        s.model.set_part_albedo(id, Some(tex))?;
+                        s.model.set_part_albedo(&id, Some(tex))?;
                     }
                 }
                 s.model
-                    .update_node(id, |n| apply_patch(n, &patch))
+                    .update_node(&id, |n| apply_patch(n, &patch))
                     .map_err(|_| EditorError::NoNode(node))??;
                 s.touch();
                 Ok(ResponseBody::Node { node })
             }),
             Command::NodeReparent { session, node, to } => self.edit_session(session, |s| {
-                s.model
-                    .reparent(NodeKey::from_ffi(node.0), NodeKey::from_ffi(to.0))?;
+                let (node, to) = (s.node_id(node)?, s.node_id(to)?);
+                s.model.reparent(&node, &to)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -631,7 +716,8 @@ impl Editor {
                 node,
                 index,
             } => self.edit_session(session, |s| {
-                s.model.reorder(NodeKey::from_ffi(node.0), index as usize)?;
+                let node = s.node_id(node)?;
+                s.model.reorder(&node, index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -641,20 +727,19 @@ impl Editor {
                 parent,
                 index,
             } => self.edit_session(session, |s| {
-                let id = NodeKey::from_ffi(node.0);
-                s.model.reparent(id, NodeKey::from_ffi(parent.0))?;
+                let (id, parent) = (s.node_id(node)?, s.node_id(parent)?);
+                s.model.reparent(&id, &parent)?;
                 // reorder can only fail on unknown/root, both excluded by the
                 // successful reparent — the combined edit stays atomic.
-                s.model.reorder(id, index as usize)?;
+                s.model.reorder(&id, index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDuplicate { session, node } => self.edit_session(session, |s| {
-                let copy = s.model.duplicate_subtree(NodeKey::from_ffi(node.0))?;
+                let node = s.node_id(node)?;
+                let copy = s.duplicate_subtree(&node)?;
                 s.touch();
-                Ok(ResponseBody::Node {
-                    node: NodeRef(copy.to_ffi()),
-                })
+                Ok(ResponseBody::Node { node: copy })
             }),
             Command::MaskAdd {
                 session,
@@ -663,8 +748,8 @@ impl Editor {
                 mode,
             } => self.edit_session(session, |s| {
                 let mode = parse_mask_mode(&mode)?;
-                s.model
-                    .mask_add(NodeKey::from_ffi(node.0), NodeKey::from_ffi(source.0), mode)?;
+                let (node, source) = (s.node_id(node)?, s.node_id(source)?);
+                s.model.mask_add(&node, &source, mode)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -675,8 +760,8 @@ impl Editor {
                 mode,
             } => self.edit_session(session, |s| {
                 let mode = parse_mask_mode(&mode)?;
-                s.model
-                    .mask_set_mode(NodeKey::from_ffi(node.0), index as usize, mode)?;
+                let node = s.node_id(node)?;
+                s.model.mask_set_mode(&node, index as usize, mode)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -686,8 +771,8 @@ impl Editor {
                 index,
                 to,
             } => self.edit_session(session, |s| {
-                s.model
-                    .mask_reorder(NodeKey::from_ffi(node.0), index as usize, to as usize)?;
+                let node = s.node_id(node)?;
+                s.model.mask_reorder(&node, index as usize, to as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -696,8 +781,8 @@ impl Editor {
                 node,
                 index,
             } => self.edit_session(session, |s| {
-                s.model
-                    .mask_delete(NodeKey::from_ffi(node.0), index as usize)?;
+                let node = s.node_id(node)?;
+                s.model.mask_delete(&node, index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -727,20 +812,20 @@ impl Editor {
                 let target = match (clear_target_param, target_param) {
                     (true, _) => Some(None),
                     (false, Some(p)) => {
-                        let pid = ParamKey::from_ffi(p.0);
-                        if s.model.param(pid).is_none() {
+                        let pid = s.param_id(p)?;
+                        if s.model.param(&pid).is_none() {
                             return Err(EditorError::BadTarget("target param".into()));
                         }
                         Some(Some(pid))
                     }
                     (false, None) => None,
                 };
-                let id = NodeKey::from_ffi(node.0);
+                let id = s.node_id(node)?;
                 if let Some(t) = target {
-                    s.model.set_physics_target(id, t)?;
+                    s.model.set_physics_target(&id, t)?;
                 }
                 s.model
-                    .update_node(id, |n| {
+                    .update_node(&id, |n| {
                         let ModelNodeKind::SimplePhysics(ph) = &mut n.kind else {
                             return Err(EditorError::BadTarget("not a physics node".into()));
                         };
@@ -794,7 +879,8 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDelete { session, node } => self.edit_session(session, |s| {
-                s.model.delete_node(NodeKey::from_ffi(node.0))?;
+                let node = s.node_id(node)?;
+                s.model.delete_node(&node)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -802,23 +888,22 @@ impl Editor {
             Command::TextureAdd { session, path } => self.edit_session(session, |s| {
                 let bytes = std::fs::read(&path)?;
                 image_dims(&bytes)?; // validate it decodes
-                let id = s.model.add_texture(ModelTexture {
+                let texture = s.add_texture(ModelTexture {
                     encoding: encoding_from_path(&path),
                     alpha: TextureAlpha::Straight,
                     data: Arc::new(bytes),
-                });
+                })?;
                 s.touch();
-                Ok(ResponseBody::Texture {
-                    texture: TexRef(id.to_ffi()),
-                })
+                Ok(ResponseBody::Texture { texture })
             }),
             Command::TextureList { session } => self.with_session(session, |s| {
+                let Session { model, refs, .. } = s;
                 let mut textures = Vec::new();
-                for &tid in s.model.texture_ids() {
-                    if let Some(t) = s.model.texture(tid) {
+                for tid in model.texture_ids() {
+                    if let Some(t) = model.texture(tid) {
                         let (width, height) = image_dims(&t.data).unwrap_or((0, 0));
                         textures.push(TexInfo {
-                            texture: TexRef(tid.to_ffi()),
+                            texture: refs.texture(tid),
                             width,
                             height,
                         });
@@ -853,23 +938,22 @@ impl Editor {
                 } else {
                     vec![0.0]
                 };
-                let id = s.model.add_param(ModelParam {
-                    name,
+                let param = s.add_param(ModelParam {
+                    name: Name::truncated(name),
                     is_vec2: vec2,
                     min,
                     max,
                     defaults,
                     axis_points_x,
                     axis_points_y,
-                });
+                })?;
                 s.touch();
-                Ok(ResponseBody::Param {
-                    param: ParamRef(id.to_ffi()),
-                })
+                Ok(ResponseBody::Param { param })
             }),
             Command::ParamList { session } => self.with_session(session, |s| {
+                let Session { model, refs, .. } = s;
                 Ok(ResponseBody::Params {
-                    params: param_infos(&s.model),
+                    params: param_infos(model, refs),
                 })
             }),
             Command::ParamSet {
@@ -880,24 +964,25 @@ impl Editor {
                 max,
                 defaults,
             } => self.edit_session(session, |s| {
-                let pid = ParamKey::from_ffi(param.0);
+                let pid = s.param_id(param)?;
                 if let Some(n) = name {
-                    s.model.set_param_name(pid, n)?;
+                    s.model.set_param_name(&pid, Name::truncated(n))?;
                 }
                 if min.is_some() || max.is_some() {
-                    let p = s.model.param(pid).ok_or(ModelError::UnknownParam)?;
+                    let p = s.model.param(&pid).ok_or(ModelError::UnknownParam)?;
                     let new_min = min.unwrap_or(p.min);
                     let new_max = max.unwrap_or(p.max);
-                    s.model.set_param_range(pid, new_min, new_max)?;
+                    s.model.set_param_range(&pid, new_min, new_max)?;
                 }
                 if let Some(d) = defaults {
-                    s.model.set_param_defaults(pid, d)?;
+                    s.model.set_param_defaults(&pid, d)?;
                 }
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::ParamDelete { session, param } => self.edit_session(session, |s| {
-                s.model.delete_param(ParamKey::from_ffi(param.0))?;
+                let param = s.param_id(param)?;
+                s.model.delete_param(&param)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -907,8 +992,8 @@ impl Editor {
                 axis,
                 value,
             } => self.edit_session(session, |s| {
-                s.model
-                    .axis_insert(ParamKey::from_ffi(param.0), axis, value)?;
+                let param = s.param_id(param)?;
+                s.model.axis_insert(&param, axis, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -918,8 +1003,8 @@ impl Editor {
                 axis,
                 index,
             } => self.edit_session(session, |s| {
-                s.model
-                    .axis_delete(ParamKey::from_ffi(param.0), axis, index as usize)?;
+                let param = s.param_id(param)?;
+                s.model.axis_delete(&param, axis, index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -930,8 +1015,8 @@ impl Editor {
                 index,
                 value,
             } => self.edit_session(session, |s| {
-                s.model
-                    .axis_move(ParamKey::from_ffi(param.0), axis, index as usize, value)?;
+                let param = s.param_id(param)?;
+                s.model.axis_move(&param, axis, index as usize, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -940,7 +1025,8 @@ impl Editor {
                 param,
                 axis,
             } => self.edit_session(session, |s| {
-                s.model.param_flip(ParamKey::from_ffi(param.0), axis)?;
+                let param = s.param_id(param)?;
+                s.model.param_flip(&param, axis)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -960,11 +1046,7 @@ impl Editor {
                     })
                     .collect::<Result<_, _>>()?;
                 for (t, value) in parsed {
-                    let key = BindingKey::new(
-                        ParamKey::from_ffi(param.0),
-                        NodeKey::from_ffi(node.0),
-                        BindingTarget::Scalar(t),
-                    );
+                    let key = s.binding_key(param, node, BindingTarget::Scalar(t))?;
                     s.model.set_binding_key(&key, cell, value)?;
                 }
                 s.touch();
@@ -978,8 +1060,8 @@ impl Editor {
                 cell,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model
-                    .unset_binding_key(&binding_key(param, node, t), cell)?;
+                let key = s.binding_key(param, node, t)?;
+                s.model.unset_binding_key(&key, cell)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -991,8 +1073,8 @@ impl Editor {
                 cell,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model
-                    .reset_binding_key(&binding_key(param, node, t), cell)?;
+                let key = s.binding_key(param, node, t)?;
+                s.model.reset_binding_key(&key, cell)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1003,7 +1085,8 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.delete_binding(&binding_key(param, node, t))?;
+                let key = s.binding_key(param, node, t)?;
+                s.model.delete_binding(&key)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1016,8 +1099,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 let m = parse_interpolate_mode(&mode)?;
-                s.model
-                    .set_binding_interpolate(&binding_key(param, node, t), m)?;
+                let key = s.binding_key(param, node, t)?;
+                s.model.set_binding_interpolate(&key, m)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1028,7 +1111,8 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.invert_binding(&binding_key(param, node, t))?;
+                let key = s.binding_key(param, node, t)?;
+                s.model.invert_binding(&key)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1041,8 +1125,8 @@ impl Editor {
                 to,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model
-                    .copy_binding_key(&binding_key(param, node, t), from, to)?;
+                let key = s.binding_key(param, node, t)?;
+                s.model.copy_binding_key(&key, from, to)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1053,11 +1137,8 @@ impl Editor {
                 cell,
                 offsets,
             } => self.edit_session(session, |s| {
-                s.model.set_deform_vertices(
-                    &binding_key(param, node, BindingTarget::Deform),
-                    cell,
-                    offsets,
-                )?;
+                let key = s.binding_key(param, node, BindingTarget::Deform)?;
+                s.model.set_deform_vertices(&key, cell, offsets)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1082,8 +1163,9 @@ impl Editor {
                 } else {
                     ClpIndices::U32(indices)
                 };
+                let node = s.node_id(node)?;
                 s.model.set_mesh_with_refit(
-                    NodeKey::from_ffi(node.0),
+                    &node,
                     ClpMesh {
                         verts,
                         uvs,
@@ -1095,14 +1177,16 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::MeshCopy { session, from, to } => self.edit_session(session, |s| {
-                let mesh = match s.model.node_mesh(NodeKey::from_ffi(from.0)) {
+                let from_id = s.node_id(from)?;
+                let mesh = match s.model.node_mesh(&from_id) {
                     Some(mesh) => mesh.clone(),
-                    None if s.model.node(NodeKey::from_ffi(from.0)).is_some() => {
+                    None if s.model.node(&from_id).is_some() => {
                         return Err(EditorError::BadTarget("not a meshed node".into()))
                     }
                     None => return Err(EditorError::NoNode(from)),
                 };
-                s.model.set_mesh_with_refit(NodeKey::from_ffi(to.0), mesh)?;
+                let to = s.node_id(to)?;
+                s.model.set_mesh_with_refit(&to, mesh)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1132,8 +1216,8 @@ impl Editor {
                     .ok_or_else(|| EditorError::BadTarget(kind.clone()))?;
                 let target = match target_param {
                     Some(p) => {
-                        let pid = ParamKey::from_ffi(p.0);
-                        if s.model.param(pid).is_none() {
+                        let pid = s.param_id(p)?;
+                        if s.model.param(&pid).is_none() {
                             return Err(EditorError::BadTarget("target param".into()));
                         }
                         Some(pid)
@@ -1160,12 +1244,12 @@ impl Editor {
                     name.unwrap_or_else(|| "Physics".into()),
                     ModelNodeKind::SimplePhysics(phys),
                 );
-                let id = s.model.add_node(NodeKey::from_ffi(parent.0), node)?;
-                s.model.set_physics_target(id, target)?;
+                let parent = s.node_id(parent)?;
+                let handle = s.add_node(&parent, node)?;
+                let id = s.node_id(handle)?;
+                s.model.set_physics_target(&id, target)?;
                 s.touch();
-                Ok(ResponseBody::Node {
-                    node: NodeRef(id.to_ffi()),
-                })
+                Ok(ResponseBody::Node { node: handle })
             }),
             Command::DeformSet {
                 session,
@@ -1176,8 +1260,9 @@ impl Editor {
                 rotate,
                 scale,
             } => self.edit_session(session, |s| {
+                let key = s.binding_key(param, node, BindingTarget::Deform)?;
                 s.model.set_deform_from_transform(
-                    &binding_key(param, node, BindingTarget::Deform),
+                    &key,
                     cell,
                     translate.unwrap_or([0.0, 0.0]),
                     rotate.unwrap_or(0.0),
@@ -1193,8 +1278,8 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model
-                    .add_binding(&binding_key(param, node, BindingTarget::Scalar(t)))?;
+                let key = s.binding_key(param, node, BindingTarget::Scalar(t))?;
+                s.model.add_binding(&key)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1207,11 +1292,8 @@ impl Editor {
                 value,
             } => self.edit_session(session, |s| {
                 let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model.set_binding_key(
-                    &binding_key(param, node, BindingTarget::Scalar(t)),
-                    cell,
-                    value,
-                )?;
+                let key = s.binding_key(param, node, BindingTarget::Scalar(t))?;
+                s.model.set_binding_key(&key, cell, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1330,24 +1412,14 @@ use transport::{
     MAX_SOCKET_CONNECTIONS,
 };
 
-/// Protocol handles name a param and a node; the model addresses a binding by
-/// those two plus the property it drives.
-fn binding_key(param: ParamRef, node: NodeRef, target: BindingTarget) -> BindingKey {
-    BindingKey::new(
-        ParamKey::from_ffi(param.0),
-        NodeKey::from_ffi(node.0),
-        target,
-    )
-}
-
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn build_tree(model: &Model, id: NodeKey) -> TreeNode {
+fn build_tree(model: &Model, refs: &mut RefMap, id: &NodeId) -> TreeNode {
     let (name, kind, z_order, enabled, children) = match model.node(id) {
         Some(n) => (
-            n.name.clone(),
+            n.name.to_string(),
             n.kind.name().to_string(),
             n.z_order,
             n.enabled,
@@ -1356,12 +1428,15 @@ fn build_tree(model: &Model, id: NodeKey) -> TreeNode {
         None => (String::new(), "group".to_string(), 0.0, true, Vec::new()),
     };
     TreeNode {
-        node: NodeRef(id.to_ffi()),
+        node: refs.node(id),
         name,
         kind,
         z_order,
         enabled,
-        children: children.iter().map(|&c| build_tree(model, c)).collect(),
+        children: children
+            .iter()
+            .map(|c| build_tree(model, refs, c))
+            .collect(),
     }
 }
 
@@ -1374,27 +1449,26 @@ pub struct DocSnapshot {
     pub params: Vec<ParamInfo>,
 }
 
-fn param_infos(model: &Model) -> Vec<ParamInfo> {
-    model
-        .param_ids()
-        .iter()
-        .filter_map(|&pid| {
-            let p = model.param(pid)?;
-            let (w, h) = model.param_grid(pid).ok()?;
-            Some(ParamInfo {
-                param: ParamRef(pid.to_ffi()),
-                name: p.name.clone(),
-                vec2: p.is_vec2,
-                min: p.min,
-                max: p.max,
-                defaults: p.defaults,
-                axis: [w, h],
-                axis_points_x: p.axis_points_x.clone(),
-                axis_points_y: p.axis_points_y.clone(),
-                bindings: model.bindings_of_param(pid).count() as u32,
-            })
-        })
-        .collect()
+fn param_infos(model: &Model, refs: &mut RefMap) -> Vec<ParamInfo> {
+    let mut out = Vec::with_capacity(model.param_ids().len());
+    for pid in model.param_ids() {
+        let (Some(p), Ok((w, h))) = (model.param(pid), model.param_grid(pid)) else {
+            continue;
+        };
+        out.push(ParamInfo {
+            param: refs.param(pid),
+            name: p.name.to_string(),
+            vec2: p.is_vec2,
+            min: p.min,
+            max: p.max,
+            defaults: p.defaults,
+            axis: [w, h],
+            axis_points_x: p.axis_points_x.clone(),
+            axis_points_y: p.axis_points_y.clone(),
+            bindings: model.bindings_of_param(pid).count() as u32,
+        });
+    }
+    out
 }
 
 fn default_name(kind: NodeKindArg) -> String {
@@ -1424,7 +1498,7 @@ fn apply_patch(n: &mut ModelNode, patch: &NodePatch) -> Result<(), EditorError> 
         .map(|s| BlendMode::from_name(s).ok_or_else(|| EditorError::BadTarget(s.to_string())))
         .transpose()?;
     if let Some(name) = &patch.name {
-        n.name = name.clone();
+        n.name = Name::truncated(name);
     }
     if let Some(t) = patch.translate {
         n.transform.translation = t;
@@ -1696,7 +1770,7 @@ mod tests {
         let blocking_editor = editor.clone();
         let blocking = std::thread::spawn(move || {
             blocking_editor
-                .with_model(first, |_| {
+                .with_model(first, |_, _| {
                     entered_tx.send(()).unwrap();
                     release_rx.recv().unwrap();
                 })
@@ -1722,8 +1796,10 @@ mod tests {
         let mut session = Session::new(Model::new(), "history".into(), None);
         for name in ["first", "second", "third"] {
             let mut model = Model::new();
-            let root = model.root();
-            model.update_node(root, |n| n.name = name.into()).unwrap();
+            let root = model.root().clone();
+            model
+                .update_node(&root, |n| n.name = Name::truncated(name))
+                .unwrap();
             let entry = HistoryEntry::new(model);
             session.history_bytes = session.history_bytes.saturating_add(entry.bytes);
             session.undo.push(entry);
@@ -1738,7 +1814,8 @@ mod tests {
                 .model
                 .node(session.undo[0].model.root())
                 .unwrap()
-                .name,
+                .name
+                .as_str(),
             "third"
         );
         assert_eq!(session.history_bytes, newest_bytes);

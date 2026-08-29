@@ -14,7 +14,8 @@
 use catchlight_core::formats::clp::{ClpIndices, ClpMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
-use catchlight_core::{Model, ModelError, NodeKey};
+use catchlight_core::id::NodeId;
+use catchlight_core::{Model, ModelError};
 
 /// Minimum distance between distinct vertices; closer placements are rejected
 /// (coincident points would merge in the triangulation and corrupt indexing).
@@ -883,11 +884,11 @@ pub trait ModelMeshExt {
     /// carried over by triangle-affine interpolation across the old rest mesh;
     /// [`Model::set_node_mesh_with`] validates the mesh and moves the cells and
     /// the mesh together.
-    fn set_mesh_with_refit(&mut self, node: NodeKey, mesh: ClpMesh) -> Result<(), ModelError>;
+    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClpMesh) -> Result<(), ModelError>;
 }
 
 impl ModelMeshExt for Model {
-    fn set_mesh_with_refit(&mut self, node: NodeKey, mesh: ClpMesh) -> Result<(), ModelError> {
+    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClpMesh) -> Result<(), ModelError> {
         self.set_node_mesh_with(node, mesh, |old, new, offsets| {
             refit_deform_offsets(old, &new.verts, offsets)
         })
@@ -1036,28 +1037,36 @@ mod tests {
 
     #[test]
     fn set_mesh_with_refit_updates_bindings_in_one_step() {
+        use catchlight_core::id::{Name, SeededHex};
         use catchlight_core::{
             BindingKey, BindingTarget, ModelNode, ModelNodeKind, ModelParam, ModelPart,
         };
 
+        let mut hex = SeededHex::new(1);
         let mut m = Model::new();
-        let root = m.root();
+        let root = m.root().clone();
         let part = m
             .add_node(
-                root,
+                &root,
                 ModelNode::new("p", ModelNodeKind::Part(ModelPart::new(quad()))),
+                &mut hex,
             )
             .unwrap();
-        let param = m.add_param(ModelParam {
-            name: "d".into(),
-            is_vec2: false,
-            min: [0.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-        });
-        let key = BindingKey::new(param, part, BindingTarget::Deform);
+        let param = m
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("d"),
+                    is_vec2: false,
+                    min: [0.0, 0.0],
+                    max: [1.0, 0.0],
+                    defaults: [0.0, 0.0],
+                    axis_points_x: vec![0.0, 1.0],
+                    axis_points_y: vec![0.0],
+                },
+                &mut hex,
+            )
+            .unwrap();
+        let key = BindingKey::new(param, part.clone(), BindingTarget::Deform);
         m.set_deform_from_transform(&key, [1, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
             .unwrap();
 
@@ -1066,7 +1075,7 @@ mod tests {
         new_mesh.verts.extend_from_slice(&[0.0, 0.0]);
         new_mesh.uvs.extend_from_slice(&[0.5, 0.5]);
         new_mesh.indices = ClpIndices::U16(vec![0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4]);
-        m.set_mesh_with_refit(part, new_mesh).unwrap();
+        m.set_mesh_with_refit(&part, new_mesh).unwrap();
 
         let b = m.binding(&key).unwrap();
         let cells = catchlight_core::deform_cells(b.values()).unwrap();
