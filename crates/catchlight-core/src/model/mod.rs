@@ -37,6 +37,10 @@
 //!   order, so [`Model::reorder`] is an edit, not view state.
 //! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
 //!   bytes verbatim; decoding is the render cache's job.
+//! - **Derived values are memoized, never stored.** A binding's dense grid —
+//!   what `crate::fill` derives from its authored cells — is built on first
+//!   read and dropped the moment the cells, the key positions or the mesh it
+//!   was derived from move. Nothing else on a Model is derived.
 //! - **Heavy leaves are shared.** Meshes, binding cell grids and texture bytes
 //!   sit behind `Arc` and are edited through `Arc::make_mut`, so cloning a
 //!   Model for undo is a shallow copy of small structs plus refcount bumps.
@@ -55,14 +59,14 @@ mod flatten;
 
 pub use binding::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
-    BindingParams, BindingTarget, ScalarTarget,
+    BindingParams, BindingTarget, DenseGrid, ScalarTarget,
 };
 pub use check::CheckWarning;
 pub use eval::Pose;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::components::{BlendMode, MaskMode};
 use crate::formats::clp::{
@@ -483,13 +487,17 @@ impl ModelParam {
     }
 }
 
-/// One param's control over one property of one node. Bindings live on the
-/// model, not on the param, and are addressed by their [`BindingKey`].
+/// One or two params' control over one property of one node. Bindings live on
+/// the model, not on the param, and are addressed by their [`BindingKey`].
 #[derive(Debug, Clone)]
 pub struct ModelBinding {
     key: BindingKey,
     interpolate_mode: InterpolateMode,
     values: ModelBindingValues,
+    /// The dense grid derived from `values`, built on the first read. Shared
+    /// by every snapshot that shares the cells, and dropped by
+    /// [`Self::values_mut`] — the only way the cells change.
+    dense: OnceLock<Arc<DenseGrid>>,
 }
 
 impl ModelBinding {
@@ -517,6 +525,20 @@ impl ModelBinding {
     pub fn values(&self) -> &ClpBindingValues {
         &self.values
     }
+
+    /// Copy-on-write access to the cells, dropping the dense grid derived from
+    /// them. This is the only way a binding's cells change, which is what
+    /// makes the memo safe to hand out from a `&self` method.
+    fn values_mut(&mut self) -> &mut ClpBindingValues {
+        self.dense.take();
+        Arc::make_mut(&mut self.values.0)
+    }
+
+    /// Drop the derived grid without touching the cells — for a change to the
+    /// key positions or to the mesh the deform identity is sized to.
+    fn invalidate_dense(&mut self) {
+        self.dense.take();
+    }
 }
 
 /// A binding's authored cell grid behind an `Arc`, shared by every snapshot
@@ -527,12 +549,6 @@ pub struct ModelBindingValues(Arc<ClpBindingValues>);
 impl ModelBindingValues {
     pub fn to_clp(&self) -> ClpBindingValues {
         (*self.0).clone()
-    }
-
-    /// Copy-on-write access, `pub(crate)` so every cell rewrite goes through a
-    /// [`Model`] method that can bump the generation.
-    pub(crate) fn make_mut(&mut self) -> &mut ClpBindingValues {
-        Arc::make_mut(&mut self.0)
     }
 }
 
@@ -904,6 +920,7 @@ impl Model {
                     },
                     interpolate_mode: b.interpolate_mode,
                     values: b.values.clone(),
+                    dense: b.dense.clone(),
                 })
             })
             .collect();
@@ -1135,7 +1152,10 @@ impl Model {
             if &b.key.node != id {
                 continue;
             }
-            if let ClpBindingValues::Deform(cells) = b.values.make_mut() {
+            // A deform's identity is sized to the mesh, so every binding on
+            // the node loses its derived grid, authored cells or not.
+            b.invalidate_dense();
+            if let ClpBindingValues::Deform(cells) = b.values_mut() {
                 for cell in &mut cells.cells {
                     cell.value = refit(&old, &mesh, &cell.value);
                 }

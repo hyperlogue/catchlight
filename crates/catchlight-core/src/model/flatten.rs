@@ -410,6 +410,7 @@ impl Model {
                     },
                     interpolate_mode: b.interpolate_mode,
                     values: b.values.clone().into(),
+                    dense: std::sync::OnceLock::new(),
                 });
             }
         }
@@ -675,6 +676,7 @@ mod tests {
                 }],
             })
             .into(),
+            dense: std::sync::OnceLock::new(),
         });
         m
     }

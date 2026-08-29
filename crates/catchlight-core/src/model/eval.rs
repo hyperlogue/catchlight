@@ -5,16 +5,16 @@
 //! key positions, then interpolates the binding's dense grid: linearly along
 //! one param, bilinearly across two, and the same four modes the runtime folds
 //! with. `bracket` and `frac` come from [`crate::params`], so a Model and a
-//! puppet locate the same pose in the same place.
+//! puppet locate the same pose in the same place, and the grid itself is
+//! [`Model::binding_dense`]'s memo, so posing a model repeatedly derives each
+//! fill once.
 
 use std::collections::HashMap;
 
-use crate::fill::derive_dense;
 use crate::id::ParamId;
 use crate::params::{bracket, cubic, frac, InterpolateMode};
 
-use super::binding::{deform_cells, scalar_cells};
-use super::{BindingKey, BindingTarget, Model, ModelError};
+use super::{BindingKey, BindingTarget, DenseGrid, Model, ModelError};
 
 /// An assignment of values to a model's params. A param the pose does not
 /// mention reads its default, so a partial pose is a legal pose.
@@ -114,25 +114,14 @@ impl Model {
     /// The value a scalar binding contributes at `pose`, or `None` when the
     /// key names no binding (or names a deform one).
     pub fn eval_scalar(&self, key: &BindingKey, pose: &Pose) -> Option<f32> {
-        let BindingTarget::Scalar(target) = key.target else {
+        if !matches!(key.target, BindingTarget::Scalar(_)) {
             return None;
-        };
-        let binding = self.binding(key)?;
+        }
         let (w, h) = self.binding_grid(key).ok()?;
-        let (axis_x, axis_y) = self.binding_axes(key).ok()?;
-        let cells: Vec<((u32, u32), f32)> = scalar_cells(binding.values())?
-            .iter()
-            .map(|c| ((c.x, c.y), c.value))
-            .collect();
-        let dense = derive_dense(
-            w as usize,
-            h as usize,
-            axis_x,
-            axis_y,
-            &cells,
-            &target.identity(),
-        );
-        self.interpolate(key, &dense, w as usize, h as usize, pose)
+        match &**self.binding_dense(key)? {
+            DenseGrid::Scalar(dense) => self.interpolate(key, dense, w as usize, h as usize, pose),
+            DenseGrid::Deform(_) => None,
+        }
     }
 
     /// The per-vertex offsets a deform binding contributes at `pose`, flat
@@ -141,16 +130,11 @@ impl Model {
         if key.target != BindingTarget::Deform {
             return None;
         }
-        let binding = self.binding(key)?;
         let (w, h) = self.binding_grid(key).ok()?;
-        let (axis_x, axis_y) = self.binding_axes(key).ok()?;
-        let identity = vec![0.0f32; self.deform_len(&key.node)];
-        let cells: Vec<((u32, u32), Vec<f32>)> = deform_cells(binding.values())?
-            .iter()
-            .map(|c| ((c.x, c.y), c.value.clone()))
-            .collect();
-        let dense = derive_dense(w as usize, h as usize, axis_x, axis_y, &cells, &identity);
-        self.interpolate(key, &dense, w as usize, h as usize, pose)
+        match &**self.binding_dense(key)? {
+            DenseGrid::Deform(dense) => self.interpolate(key, dense, w as usize, h as usize, pose),
+            DenseGrid::Scalar(_) => None,
+        }
     }
 
     /// Where `pose` puts a param on its own key positions.
@@ -241,7 +225,7 @@ impl Model {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::formats::clp::{ClpIndices, ClpMesh};
     use crate::id::{Name, SeededHex};
@@ -251,7 +235,7 @@ mod tests {
 
     /// A part driven by two params, each with key positions at 0 / 0.5 / 1 over
     /// the range [0, 1].
-    fn rig() -> (Model, BindingKey, ParamId, ParamId) {
+    pub(super) fn rig() -> (Model, BindingKey, ParamId, ParamId) {
         let mut hex = SeededHex::new(13);
         let mut model = Model::new();
         let root = model.root().clone();
@@ -379,5 +363,96 @@ mod tests {
         // of the way along lands halfway between -2 and 2.
         assert!((at(0.5) - 2.0).abs() < 1e-5, "{}", at(0.5));
         assert!(at(0.25).abs() < 1e-5, "{}", at(0.25));
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::tests::*;
+    use super::*;
+    use crate::formats::clp::{ClpIndices, ClpMesh};
+    use crate::model::DenseGrid;
+
+    /// The memo is only sound if everything the fill reads invalidates it: the
+    /// authored cells, the key positions they are weighed by, and the mesh a
+    /// deform's identity is sized to.
+    #[test]
+    fn the_dense_grid_is_rebuilt_when_what_it_came_from_moves() {
+        let (mut model, key, x, _) = rig();
+        model
+            .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        let at = |m: &Model| m.eval_deform(&key, &[(x.clone(), 0.25)].into_iter().collect());
+
+        let before = at(&model).unwrap();
+        assert_eq!(at(&model).unwrap(), before, "a second read is the memo");
+
+        // An authored cell.
+        model
+            .set_deform_vertices(&key, [1, 0], vec![9.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        let after_cell = at(&model).unwrap();
+        assert_ne!(after_cell, before, "the new keypoint reached the grid");
+
+        // A key position: the cells are unchanged, their weights are not.
+        model.key_move(&x, 1, 0.9).unwrap();
+        assert_ne!(at(&model).unwrap(), after_cell, "moving the key re-derived");
+
+        // The mesh a deform is sized to.
+        let node = key.node.clone();
+        model
+            .set_node_mesh(
+                &node,
+                ClpMesh {
+                    verts: vec![0.0, 0.0, 1.0, 0.0, 2.0, 0.0],
+                    uvs: vec![0.0; 6],
+                    indices: ClpIndices::U16(Vec::new()),
+                    origin: [0.0, 0.0],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            at(&model).unwrap().len(),
+            6,
+            "the grid follows the new vertex count",
+        );
+    }
+
+    /// Cloning a model shares the memo, and editing one snapshot must not
+    /// reach the other's.
+    #[test]
+    fn a_snapshot_keeps_the_grid_it_was_taken_with() {
+        let (mut model, key, x, _) = rig();
+        model
+            .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        let pose: Pose = [(x.clone(), 1.0)].into_iter().collect();
+        let snapshot = model.clone();
+        let before = snapshot.eval_deform(&key, &pose).unwrap();
+
+        model
+            .set_deform_vertices(&key, [2, 0], vec![-4.0, 0.0, 0.0, 0.0])
+            .unwrap();
+
+        assert_eq!(snapshot.eval_deform(&key, &pose).unwrap(), before);
+        assert_eq!(
+            model.eval_deform(&key, &pose).unwrap(),
+            vec![-4.0, 0.0, 0.0, 0.0],
+        );
+    }
+
+    /// A binding with no authored cells still has a grid — the identity at
+    /// every cell — so a reader never has to special-case one.
+    #[test]
+    fn an_unauthored_binding_derives_the_identity_grid() {
+        let (mut model, key, _, _) = rig();
+        model.add_binding(&key).unwrap();
+        match &**model.binding_dense(&key).unwrap() {
+            DenseGrid::Deform(cells) => {
+                assert_eq!(cells.len(), 9);
+                assert!(cells.iter().all(|c| c == &vec![0.0; 4]));
+            }
+            DenseGrid::Scalar(_) => panic!("a deform binding derives a deform grid"),
+        }
     }
 }
