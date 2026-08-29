@@ -223,7 +223,7 @@ fn wrong_type_fields_fall_through_to_defaults() {
 fn unknown_type_becomes_empty() {
     let puppet = parse_node_json(r#"{"type":"NotARealNodeType"}"#);
     let (_, node) = puppet.iter().find(|(id, _)| *id != puppet.root()).unwrap();
-    assert!(matches!(node.kind, NodeKind::Empty));
+    assert!(matches!(node.kind, NodeKind::Group));
 }
 
 #[test]

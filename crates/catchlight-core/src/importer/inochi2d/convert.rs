@@ -225,7 +225,7 @@ fn convert_node_kind(
     transform: &Transform,
     g_scale: f32,
 ) -> Result<NodeKind, ImportError> {
-    // Inochi2D 0.8.6: missing/unknown type falls through to Empty (container node).
+    // Inochi2D 0.8.6: missing/unknown type falls through to Group (container node).
     Ok(match schema.ty.as_deref().unwrap_or("") {
         "Part" => NodeKind::Part(Box::new(convert_part(schema)?)),
         "Composite" => NodeKind::Composite(Box::new(convert_composite(schema)?)),
@@ -233,7 +233,7 @@ fn convert_node_kind(
         "SimplePhysics" => {
             NodeKind::SimplePhysics(Box::new(convert_simple_physics(schema, transform, g_scale)))
         }
-        _ => NodeKind::Empty,
+        _ => NodeKind::Group,
     })
 }
 

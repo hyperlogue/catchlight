@@ -398,7 +398,7 @@ pub(crate) fn bake_mesh_group_attachments(
 }
 
 /// Non-Drawable descendants reached from a `translateChildren=true` MG.
-/// Walk through Parts and Composites, collecting Empty, Origin, and
+/// Walk through Parts and Composites, collecting Group, Origin, and
 /// SimplePhysics nodes at the ends without descending past them. Nested MGs
 /// receive vertex deformation through `descendant_drawables`; applying a
 /// Node-level shift to them too would double the warp.
@@ -588,7 +588,7 @@ pub(crate) fn propagate_mesh_group_deforms(puppet: &mut Puppet, transforms: &Glo
 
 /// Apply each `translate_children=true` MG's deformation as a
 /// Node-level transform shift on its non-Drawable descendants
-/// (Origin Nodes, Empty Nodes, SimplePhysics nodes).
+/// (Origin Nodes, Group Nodes, SimplePhysics nodes).
 ///
 /// For each target Origin node:
 ///

@@ -2413,7 +2413,7 @@ fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorDat
     let id = NodeId::from_ffi(node.0);
     let n = model.node(id)?;
     let kind = match &n.kind {
-        EditNodeKind::Empty => InspectorKind::Empty,
+        EditNodeKind::Group => InspectorKind::Group,
         EditNodeKind::Part(p) => InspectorKind::Part {
             props: DrawableProps {
                 opacity: p.opacity,

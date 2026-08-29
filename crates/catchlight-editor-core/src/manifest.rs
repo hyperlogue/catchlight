@@ -94,7 +94,7 @@ pub struct ManifestNode {
     pub parent: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default = "empty_kind")]
+    #[serde(default = "group_kind")]
     pub kind: String,
     #[serde(default)]
     pub translate: Option<[f32; 3]>,
@@ -110,8 +110,8 @@ pub struct ManifestNode {
     pub mesh: Option<MeshSpec>,
 }
 
-fn empty_kind() -> String {
-    "empty".into()
+fn group_kind() -> String {
+    "group".into()
 }
 
 /// A mesh generator: a quad covering the texture, or a `cols`x`rows` grid.
@@ -336,7 +336,7 @@ impl EditModel {
             };
             let (kind, texture) = match &n.kind {
                 EditNodeKind::Part(p) => ("part", p.albedo.and_then(|t| tex_name.get(&t).cloned())),
-                _ => ("empty", None),
+                _ => ("group", None),
             };
             nodes.push(ManifestNode {
                 id: node_name.get(&id).cloned().unwrap_or_default(),
@@ -387,7 +387,7 @@ fn build_kind(
     budget: &mut LoadBudget,
 ) -> Result<EditNodeKind, ManifestError> {
     match mn.kind.as_str() {
-        "empty" => Ok(EditNodeKind::Empty),
+        "group" => Ok(EditNodeKind::Group),
         "part" => {
             let albedo = match &mn.texture {
                 Some(t) => Some(
@@ -689,7 +689,7 @@ mod tests {
         let json = r#"{
             "textures": [{"id": "t", "path": "t.png"}],
             "nodes": [
-                {"id": "grp", "kind": "empty"},
+                {"id": "grp", "kind": "group"},
                 {"id": "leaf", "parent": "grp", "kind": "part", "texture": "t", "z_order": 2.0}
             ],
             "params": [{"name": "p", "min": [0, 0], "max": [1, 0]}]

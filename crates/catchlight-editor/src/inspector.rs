@@ -36,7 +36,7 @@ pub(crate) struct MaskRow {
 }
 
 pub(crate) enum InspectorKind {
-    Empty,
+    Group,
     Part {
         props: DrawableProps,
         albedo: Option<TexRef>,
@@ -175,7 +175,7 @@ pub(crate) fn inspector_ui(
     });
 
     match &data.kind {
-        InspectorKind::Empty => {}
+        InspectorKind::Group => {}
         InspectorKind::Part {
             props,
             albedo,

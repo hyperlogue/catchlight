@@ -39,7 +39,7 @@ fn recorded_binding_moves_the_rebuilt_puppet() {
         Command::NodeAdd {
             session,
             parent: root,
-            kind: NodeKindArg::Empty,
+            kind: NodeKindArg::Group,
             name: Some("probe".into()),
         },
     ) {

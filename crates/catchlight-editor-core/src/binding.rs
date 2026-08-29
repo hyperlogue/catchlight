@@ -987,7 +987,7 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("p", EditNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
 
@@ -1030,7 +1030,7 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("p", EditNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
         m.set_binding_key(param, node, ScalarTarget::Tx, 0, 0, -60.0)
@@ -1058,7 +1058,7 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("p", EditNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
         m.set_binding_key(param, node, ScalarTarget::Rz, 2, 0, 0.5)
@@ -1144,7 +1144,7 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("p", EditNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
         m.set_binding_key(param, node, ScalarTarget::Tx, 0, 0, -60.0)
@@ -1200,7 +1200,7 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("p", EditNodeKind::Group))
             .unwrap();
         let param = m.add_param(EditParam {
             name: "x".into(),

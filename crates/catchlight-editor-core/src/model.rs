@@ -84,7 +84,7 @@ pub struct EditNode {
 
 #[derive(Debug, Clone)]
 pub enum EditNodeKind {
-    Empty,
+    Group,
     Part(EditPart),
     Composite(EditComposite),
     MeshGroup(EditMeshGroup),
@@ -271,10 +271,10 @@ impl EditNode {
 }
 
 impl EditModel {
-    /// A new puppet with a single `Empty` root named "Root".
+    /// A new puppet with a single `Group` root named "Root".
     pub fn new() -> Self {
         let mut nodes = SlotMap::with_key();
-        let root = nodes.insert(EditNode::new("Root", EditNodeKind::Empty));
+        let root = nodes.insert(EditNode::new("Root", EditNodeKind::Group));
         Self {
             physics: ClpPhysics::default(),
             welds: Vec::new(),
@@ -387,7 +387,7 @@ impl EditModel {
                 EditNodeKind::MeshGroup(group) => {
                     bytes = bytes.saturating_add(mesh_size(&group.mesh));
                 }
-                EditNodeKind::Empty | EditNodeKind::SimplePhysics(_) => {}
+                EditNodeKind::Group | EditNodeKind::SimplePhysics(_) => {}
             }
         }
         for param in self.params.values() {
@@ -828,13 +828,13 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let a = m
-            .add_node(root, EditNode::new("a", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("a", EditNodeKind::Group))
             .unwrap();
         let b = m
-            .add_node(root, EditNode::new("b", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("b", EditNodeKind::Group))
             .unwrap();
         let c = m
-            .add_node(root, EditNode::new("c", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("c", EditNodeKind::Group))
             .unwrap();
 
         m.reorder(c, 0).unwrap();
@@ -954,7 +954,7 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let group = m
-            .add_node(root, EditNode::new("g", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("g", EditNodeKind::Group))
             .unwrap();
         let mask_src = m.add_node(group, EditNode::new("mask", part())).unwrap();
         let masked = m.add_node(group, EditNode::new("masked", part())).unwrap();

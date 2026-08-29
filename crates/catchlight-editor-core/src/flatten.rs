@@ -174,7 +174,7 @@ impl EditModel {
         let mut nodes: SlotMap<NodeId, EditNode> = SlotMap::with_key();
         let mut node_ids = Vec::with_capacity(doc.nodes.len());
         for cn in &doc.nodes {
-            node_ids.push(nodes.insert(EditNode::new(cn.name.clone(), EditNodeKind::Empty)));
+            node_ids.push(nodes.insert(EditNode::new(cn.name.clone(), EditNodeKind::Group)));
         }
 
         for (i, cn) in doc.nodes.iter().enumerate() {
@@ -249,7 +249,7 @@ fn flatten_kind(
     param_index: &HashMap<ParamId, u32>,
 ) -> Result<ClpNodeKind, EditError> {
     Ok(match kind {
-        EditNodeKind::Empty => ClpNodeKind::Empty,
+        EditNodeKind::Group => ClpNodeKind::Group,
         EditNodeKind::Part(p) => ClpNodeKind::Part(ClpPart {
             mesh: p.mesh.to_clp(),
             albedo: match p.albedo {
@@ -313,7 +313,7 @@ fn unflatten_kind(
     tex_ids: &[TexId],
 ) -> Result<EditNodeKind, EditError> {
     Ok(match kind {
-        ClpNodeKind::Empty => EditNodeKind::Empty,
+        ClpNodeKind::Group => EditNodeKind::Group,
         ClpNodeKind::Part(p) => EditNodeKind::Part(EditPart {
             mesh: p.mesh.clone().into(),
             albedo: if p.albedo == u32::MAX {
@@ -416,7 +416,7 @@ mod tests {
             )
             .unwrap();
         let mask_src = m
-            .add_node(root, EditNode::new("MaskSrc", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("MaskSrc", EditNodeKind::Group))
             .unwrap();
         if let Some(EditNodeKind::Part(p)) = m.node_mut(part).map(|n| &mut n.kind) {
             p.masks.push(EditMask {
@@ -525,10 +525,10 @@ mod tests {
         let mut m = EditModel::new();
         let root = m.root();
         let a = m
-            .add_node(root, EditNode::new("A", EditNodeKind::Empty))
+            .add_node(root, EditNode::new("A", EditNodeKind::Group))
             .unwrap();
         let b = m
-            .add_node(a, EditNode::new("B", EditNodeKind::Empty))
+            .add_node(a, EditNode::new("B", EditNodeKind::Group))
             .unwrap();
         assert!(matches!(m.reparent(a, b), Err(EditError::Cycle)));
         assert!(matches!(m.reparent(root, a), Err(EditError::Root(_))));
