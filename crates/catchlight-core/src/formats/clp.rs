@@ -194,7 +194,7 @@ pub struct ClpMeshGroup {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClpSimplePhysics {
-    pub model: PendulumKind,
+    pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
     /// Driven param index, or `None`.

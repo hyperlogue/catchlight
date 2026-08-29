@@ -58,7 +58,7 @@ fn run_scenario(data: SimplePhysicsData) -> Vec<[f32; 2]> {
 /// world anchor).
 fn rigid_perturbed() -> SimplePhysicsData {
     SimplePhysicsData {
-        model: PendulumKind::RigidPendulum,
+        kind: PendulumKind::RigidPendulum,
         map_mode: PhysicsParamMapMode::AngleLength,
         target_param_id: Some(TARGET_UUID),
         gravity: 981.0,
@@ -76,7 +76,7 @@ fn rigid_perturbed() -> SimplePhysicsData {
 /// part of the fingerprint, not just the integrator.
 fn spring_stretched() -> SimplePhysicsData {
     SimplePhysicsData {
-        model: PendulumKind::SpringPendulum,
+        kind: PendulumKind::SpringPendulum,
         map_mode: PhysicsParamMapMode::XY,
         target_param_id: Some(TARGET_UUID),
         gravity: 981.0,
@@ -99,7 +99,7 @@ fn spring_stretched() -> SimplePhysicsData {
 /// substep rewrote — has no trajectory gate at all.
 fn spring_stiff() -> SimplePhysicsData {
     SimplePhysicsData {
-        model: PendulumKind::SpringPendulum,
+        kind: PendulumKind::SpringPendulum,
         map_mode: PhysicsParamMapMode::XY,
         target_param_id: Some(TARGET_UUID),
         gravity: 981.0,

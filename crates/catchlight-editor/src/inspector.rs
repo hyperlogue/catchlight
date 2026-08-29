@@ -53,7 +53,7 @@ pub(crate) enum InspectorKind {
         vert_count: usize,
     },
     Physics {
-        model: PendulumKind,
+        kind: PendulumKind,
         map_mode: PhysicsParamMapMode,
         local_only: bool,
         target_param: Option<ParamRef>,
@@ -94,7 +94,7 @@ pub(crate) enum InspectorAction {
 
 #[derive(Default)]
 pub(crate) struct PhysicsPatch {
-    pub model: Option<String>,
+    pub kind: Option<String>,
     pub map_mode: Option<String>,
     pub local_only: Option<bool>,
     pub target_param: Option<ParamRef>,
@@ -242,7 +242,7 @@ pub(crate) fn inspector_ui(
             // No colour here: a mesh group is never drawn.
         }
         InspectorKind::Physics {
-            model,
+            kind,
             map_mode,
             local_only,
             target_param,
@@ -257,7 +257,7 @@ pub(crate) fn inspector_ui(
             ui.label("SimplePhysics");
             physics_ui(
                 ui,
-                *model,
+                *kind,
                 *map_mode,
                 *local_only,
                 *target_param,
@@ -357,7 +357,7 @@ fn drawable_props_ui(
 #[allow(clippy::too_many_arguments)]
 fn physics_ui(
     ui: &mut egui::Ui,
-    model: PendulumKind,
+    kind: PendulumKind,
     map_mode: PhysicsParamMapMode,
     local_only: bool,
     target_param: Option<ParamRef>,
@@ -370,22 +370,22 @@ fn physics_ui(
     ctx: &InspectorContext<'_>,
     out: &mut Vec<InspectorAction>,
 ) {
-    let model_name = |m: PendulumKind| match m {
+    let kind_name = |m: PendulumKind| match m {
         PendulumKind::RigidPendulum => "Pendulum",
         PendulumKind::SpringPendulum => "SpringPendulum",
     };
-    let mut m = model;
-    egui::ComboBox::from_label("model")
-        .selected_text(model_name(m))
+    let mut m = kind;
+    egui::ComboBox::from_label("kind")
+        .selected_text(kind_name(m))
         .show_ui(ui, |ui| {
             for candidate in [PendulumKind::RigidPendulum, PendulumKind::SpringPendulum] {
                 if ui
-                    .selectable_value(&mut m, candidate, model_name(candidate))
+                    .selectable_value(&mut m, candidate, kind_name(candidate))
                     .clicked()
-                    && m != model
+                    && m != kind
                 {
                     out.push(InspectorAction::PhysicsCommit(PhysicsPatch {
-                        model: Some(model_name(m).to_string()),
+                        kind: Some(kind_name(m).to_string()),
                         ..Default::default()
                     }));
                 }

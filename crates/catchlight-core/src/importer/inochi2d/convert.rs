@@ -326,7 +326,7 @@ fn convert_simple_physics(
 ) -> SimplePhysicsData {
     // Inochi2D 0.8.6: missing/unknown model_type and map_mode fall through to
     // PendulumKind::default() (Pendulum) / PhysicsParamMapMode::default().
-    let model = schema
+    let kind = schema
         .model_type
         .as_deref()
         .and_then(PendulumKind::from_str)
@@ -349,7 +349,7 @@ fn convert_simple_physics(
     let anchor = Vec2::new(transform.translation.x, transform.translation.y);
 
     SimplePhysicsData {
-        model,
+        kind,
         map_mode,
         local_only: schema.local_only.unwrap_or(false),
         target_param_id: schema.param,

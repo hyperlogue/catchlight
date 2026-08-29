@@ -580,9 +580,7 @@ impl DrawableCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catchlight_core::{
-        CompositeData, Mask, MaskMode, Node, PartData, Puppet, PuppetTexture,
-    };
+    use catchlight_core::{CompositeData, Mask, MaskMode, Node, PartData, Puppet, PuppetTexture};
 
     fn one_pixel_texture() -> PuppetTexture {
         PuppetTexture {

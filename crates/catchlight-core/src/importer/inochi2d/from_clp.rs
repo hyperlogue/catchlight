@@ -287,7 +287,7 @@ fn build_simple_physics(
 ) -> SimplePhysicsData {
     let anchor = Vec2::new(transform.translation.x, transform.translation.y);
     SimplePhysicsData {
-        model: s.model,
+        kind: s.kind,
         map_mode: s.map_mode,
         local_only: s.local_only,
         target_param_id: s.target_param,
@@ -793,7 +793,7 @@ mod tests {
                     assert_meshes_match(&ma.mesh, &mb.mesh, &format!("node {id} mg mesh"));
                 }
                 (NodeKind::SimplePhysics(sa), NodeKind::SimplePhysics(sb)) => {
-                    assert_eq!(sa.model, sb.model, "node {id} phys model");
+                    assert_eq!(sa.kind, sb.kind, "node {id} phys kind");
                     assert_eq!(sa.map_mode, sb.map_mode, "node {id} phys map_mode");
                     assert_eq!(sa.length, sb.length, "node {id} phys length");
                     assert!(

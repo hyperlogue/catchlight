@@ -2291,7 +2291,7 @@ impl App {
                     session,
                     parent,
                     name: None,
-                    model: "rigid".into(),
+                    kind: "rigid".into(),
                     target_param: None,
                     length: None,
                     gravity: None,
@@ -2360,7 +2360,7 @@ impl App {
                 self.send(Command::PhysicsSet {
                     session,
                     node: primary,
-                    model: p.model,
+                    kind: p.kind,
                     map_mode: p.map_mode,
                     local_only: p.local_only,
                     target_param: p.target_param,
@@ -2447,7 +2447,7 @@ fn build_inspector_data(model: &EditModel, node: NodeRef) -> Option<InspectorDat
             vert_count: mg.mesh.verts.len() / 2,
         },
         EditNodeKind::SimplePhysics(ph) => InspectorKind::Physics {
-            model: ph.model,
+            kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
             target_param: ph.target_param.map(|p| ParamRef(p.to_ffi())),

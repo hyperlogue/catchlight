@@ -400,12 +400,12 @@ enum BindingCmd {
 
 #[derive(Subcommand)]
 enum PhysicsCmd {
-    /// Add a physics node under `--parent`. `--model rigid|spring`.
+    /// Add a physics node under `--parent`. `--kind rigid|spring`.
     Add {
         #[arg(long)]
         parent: u64,
         #[arg(long)]
-        model: String,
+        kind: String,
         #[arg(long)]
         name: Option<String>,
         #[arg(long = "target-param")]
@@ -421,12 +421,12 @@ enum PhysicsCmd {
         #[arg(long = "length-damping", allow_hyphen_values = true)]
         length_damping: Option<f32>,
     },
-    /// Change fields on a physics node. `--model Pendulum|SpringPendulum`,
+    /// Change fields on a physics node. `--kind Pendulum|SpringPendulum`,
     /// `--map-mode XY|YX|AngleLength|LengthAngle`.
     Set {
         node: u64,
         #[arg(long)]
-        model: Option<String>,
+        kind: Option<String>,
         #[arg(long = "map-mode")]
         map_mode: Option<String>,
         #[arg(long = "local-only")]
@@ -791,7 +791,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
             match action {
                 PhysicsCmd::Add {
                     parent,
-                    model,
+                    kind,
                     name,
                     target_param,
                     length,
@@ -803,7 +803,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     parent: NodeRef(*parent),
                     name: name.clone(),
-                    model: model.clone(),
+                    kind: kind.clone(),
                     target_param: target_param.map(ParamRef),
                     length: *length,
                     gravity: *gravity,
@@ -813,7 +813,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 },
                 PhysicsCmd::Set {
                     node,
-                    model,
+                    kind,
                     map_mode,
                     local_only,
                     target_param,
@@ -827,7 +827,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 } => Command::PhysicsSet {
                     session,
                     node: NodeRef(*node),
-                    model: model.clone(),
+                    kind: kind.clone(),
                     map_mode: map_mode.clone(),
                     local_only: *local_only,
                     target_param: target_param.map(ParamRef),
