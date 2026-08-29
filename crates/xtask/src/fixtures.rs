@@ -106,7 +106,7 @@ fn mip_checker() -> (ClpDocument, Vec<ClpTexture>) {
         parent: None,
         name: "root".into(),
         enabled: true,
-        zsort: 0.0,
+        z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
         kind: ClpNodeKind::Empty,
@@ -238,7 +238,7 @@ fn composite_blit_uniforms() -> (ClpDocument, Vec<ClpTexture>) {
         parent: None,
         name: "root".into(),
         enabled: true,
-        zsort: 0.0,
+        z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
         kind: ClpNodeKind::Empty,
@@ -246,7 +246,7 @@ fn composite_blit_uniforms() -> (ClpDocument, Vec<ClpTexture>) {
     let backdrop = ClpNode {
         parent: Some(0),
         name: "backdrop".into(),
-        zsort: -10.0,
+        z_order: -10.0,
         ..part_node(quad_part(0, 256.0))
     };
 
@@ -315,7 +315,7 @@ fn composite_node(
         parent: Some(0),
         name: name.into(),
         enabled: true,
-        zsort: 0.0,
+        z_order: 0.0,
         transform: ClpTransform {
             translation: [x, 0.0, 0.0],
             ..identity_transform()
@@ -382,7 +382,7 @@ fn welded_seam() -> (ClpDocument, Vec<ClpTexture>) {
         parent: None,
         name: "root".into(),
         enabled: true,
-        zsort: 0.0,
+        z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
         kind: ClpNodeKind::Empty,
@@ -571,7 +571,7 @@ fn part_node(part: ClpPart) -> ClpNode {
         parent: None,
         name: String::new(),
         enabled: true,
-        zsort: 0.0,
+        z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
         kind: ClpNodeKind::Part(part),

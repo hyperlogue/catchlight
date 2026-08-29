@@ -2,8 +2,8 @@
 //!
 //! **Z order: higher `z_order` draws in front.** `collect_drawables`
 //! accumulates `parent_z + node.z_order` down the tree and sorts ascending, so
-//! the last draw is the frontmost. `.inx` is the opposite (lower `zsort` in
-//! front); the flip happens at import, never here.
+//! the last draw is the frontmost. `.inx` is authored the other way round,
+//! lower in front; the flip happens at import, never here.
 
 use catchlight_core::{
     BlendMode, CompositeData, GlobalTransforms, MaskMode, MeshId, NodeId, NodeKind, Puppet,

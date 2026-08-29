@@ -155,7 +155,7 @@ enum NodeCmd {
         #[arg(long, allow_hyphen_values = true)]
         scale: Option<String>,
         #[arg(long, allow_hyphen_values = true)]
-        zsort: Option<f32>,
+        z_order: Option<f32>,
         #[arg(long, allow_hyphen_values = true)]
         opacity: Option<f32>,
         #[arg(long)]
@@ -310,7 +310,7 @@ enum ParamCmd {
 
 #[derive(Subcommand)]
 enum BindingCmd {
-    /// Create an identity binding: `--target tx|ty|sx|sy|rx|ry|rz|zsort|opacity|tint{r,g,b}|…`.
+    /// Create an identity binding: `--target tx|ty|sx|sy|rx|ry|rz|z_order|opacity|tint{r,g,b}|…`.
     Add {
         #[arg(long)]
         param: u64,
@@ -986,7 +986,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
             translate,
             rotate,
             scale,
-            zsort,
+            z_order,
             opacity,
             enabled,
             texture,
@@ -1006,7 +1006,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
                 translate: translate.as_deref().map(parse_vec3).transpose()?,
                 rotate: rotate.as_deref().map(parse_vec3).transpose()?,
                 scale: scale.as_deref().map(parse_vec2).transpose()?,
-                zsort: *zsort,
+                z_order: *z_order,
                 opacity: *opacity,
                 enabled: *enabled,
                 texture: texture.map(TexRef),
@@ -1274,7 +1274,7 @@ fn print_tree(node: &TreeNode, depth: usize) {
         node.node.0,
         node.kind,
         node.name,
-        node.zsort
+        node.z_order
     );
     for child in &node.children {
         print_tree(child, depth + 1);

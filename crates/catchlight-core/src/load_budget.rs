@@ -259,7 +259,7 @@ pub fn charge_clp_structure(
             };
             let authored = match &binding.values {
                 ClpBindingValues::Deform(values) => values.cells.len(),
-                ClpBindingValues::ZSort(values)
+                ClpBindingValues::ZOrder(values)
                 | ClpBindingValues::TransformTX(values)
                 | ClpBindingValues::TransformTY(values)
                 | ClpBindingValues::TransformSX(values)

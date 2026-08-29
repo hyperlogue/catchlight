@@ -14,7 +14,7 @@ pub(crate) struct InspectorData {
     pub name: String,
     pub enabled: bool,
     pub lock_to_root: bool,
-    pub zsort: f32,
+    pub z_order: f32,
     pub translation: [f32; 3],
     pub rotation: [f32; 3],
     pub scale: [f32; 2],
@@ -172,9 +172,9 @@ pub(crate) fn inspector_ui(
         scale: Some(v),
         ..Default::default()
     });
-    let mut z = data.zsort;
-    single_drag(ui, "zsort", &mut z, 0.01, &mut out, |v| NodePatch {
-        zsort: Some(v),
+    let mut z = data.z_order;
+    single_drag(ui, "z order", &mut z, 0.01, &mut out, |v| NodePatch {
+        z_order: Some(v),
         ..Default::default()
     });
 

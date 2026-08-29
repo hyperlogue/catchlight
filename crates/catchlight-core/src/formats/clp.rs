@@ -33,7 +33,7 @@ use crate::params::InterpolateMode;
 use crate::physics::{PhysicsModel, PhysicsParamMapMode};
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
-/// Larger cumulative `zsort` values render in front.
+/// Larger cumulative `z_order` values render in front.
 pub const FORMAT_VERSION: u16 = 0;
 
 const SECTION_STRUCTURE: u32 = 0;
@@ -132,7 +132,7 @@ pub struct ClpNode {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub zsort: f32,
+    pub z_order: f32,
     #[serde(default)]
     pub transform: ClpTransform,
     #[serde(default)]
@@ -295,7 +295,7 @@ pub struct ClpBinding {
 pub enum ClpBindingValues {
     /// Per cell: flat `[x, y, x, y, …]` per-vertex offsets.
     Deform(ClpCells<Vec<f32>>),
-    ZSort(ClpCells<f32>),
+    ZOrder(ClpCells<f32>),
     TransformTX(ClpCells<f32>),
     TransformTY(ClpCells<f32>),
     TransformSX(ClpCells<f32>),
@@ -405,7 +405,7 @@ mod tests {
             parent: None,
             name: "Puppet".into(),
             enabled: true,
-            zsort: 0.0,
+            z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
             kind: ClpNodeKind::Empty,
@@ -414,7 +414,7 @@ mod tests {
             parent: Some(0),
             name: "Body".into(),
             enabled: true,
-            zsort: 0.5,
+            z_order: 0.5,
             transform: ClpTransform {
                 translation: [1.0, 2.0, 0.0],
                 rotation: [0.0, 0.0, 0.25],
@@ -568,7 +568,7 @@ mod tests {
         let node: ClpNode = cbor_from_slice(&cbor_to_vec(&value).unwrap()).unwrap();
         assert_eq!(node.parent, None);
         assert!(node.enabled, "enabled must default to true");
-        assert_eq!(node.zsort, 0.0);
+        assert_eq!(node.z_order, 0.0);
         assert_eq!(node.transform, ClpTransform::default());
     }
 

@@ -624,7 +624,7 @@ fn convert_binding(b: &SchemaBinding, puppet: &Puppet) -> Option<Binding> {
 
     let mut values = match kind {
         "deform" => parse_matrix_vec2_list(values_json).map(BindingValues::Deform),
-        "zSort" => parse_matrix_f32(values_json).map(BindingValues::ZSort),
+        "zSort" => parse_matrix_f32(values_json).map(BindingValues::ZOrder),
         "transform.t.x" => parse_matrix_f32(values_json).map(BindingValues::TransformTX),
         "transform.t.y" => parse_matrix_f32(values_json).map(BindingValues::TransformTY),
         "transform.s.x" => parse_matrix_f32(values_json).map(BindingValues::TransformSX),
@@ -659,7 +659,7 @@ fn convert_binding(b: &SchemaBinding, puppet: &Puppet) -> Option<Binding> {
 /// Catchlight's Y-up frame, and zSort into its higher-in-front convention.
 fn reflect_binding_outputs(values: &mut BindingValues) {
     match values {
-        BindingValues::ZSort(m) => {
+        BindingValues::ZOrder(m) => {
             for value in &mut m.data {
                 *value = reflect_z(*value);
             }
@@ -698,7 +698,7 @@ fn reflect_z(value: f32) -> f32 {
 pub(crate) fn binding_is_all_zero(values: &BindingValues) -> bool {
     match values {
         BindingValues::Deform(dm) => dm.offsets().iter().all(|v| *v == Vec2::ZERO),
-        BindingValues::ZSort(m)
+        BindingValues::ZOrder(m)
         | BindingValues::TransformTX(m)
         | BindingValues::TransformTY(m)
         | BindingValues::TransformRX(m)

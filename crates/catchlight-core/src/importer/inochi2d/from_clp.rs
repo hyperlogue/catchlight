@@ -194,9 +194,9 @@ fn build_node(clp: &ClpNode, g_scale: f32) -> Result<Node, ImportError> {
         name: clp.name.clone(),
         enabled: clp.enabled,
         base_transform: transform,
-        base_z_order: clp.zsort,
+        base_z_order: clp.z_order,
         transform,
-        z_order: clp.zsort,
+        z_order: clp.z_order,
         lock_to_root: clp.lock_to_root,
         kind,
     })
@@ -434,7 +434,7 @@ fn build_binding_values(
         V::Deform(c) => {
             BindingValues::Deform(build_deform_matrix(c, node, width, height, axis_x, axis_y)?)
         }
-        V::ZSort(c) => BindingValues::ZSort(scalar(c, 0.0)),
+        V::ZOrder(c) => BindingValues::ZOrder(scalar(c, 0.0)),
         V::TransformTX(c) => BindingValues::TransformTX(scalar(c, 0.0)),
         V::TransformTY(c) => BindingValues::TransformTY(scalar(c, 0.0)),
         V::TransformSX(c) => BindingValues::TransformSX(scalar(c, 1.0)),
@@ -582,7 +582,7 @@ mod tests {
         let clp = super::super::from_inx_model_to_clp(&model).unwrap();
         let rebuilt = from_clp(&clp, 0).unwrap();
 
-        assert_eq!(clp.doc.nodes[0].zsort, -2.5);
+        assert_eq!(clp.doc.nodes[0].z_order, -2.5);
         assert_eq!(
             direct
                 .iter()
@@ -595,10 +595,10 @@ mod tests {
         );
         let direct_values = &direct.params()[0].bindings[0].values;
         let rebuilt_values = &rebuilt.params()[0].bindings[0].values;
-        let (BindingValues::ZSort(direct), BindingValues::ZSort(rebuilt)) =
+        let (BindingValues::ZOrder(direct), BindingValues::ZOrder(rebuilt)) =
             (direct_values, rebuilt_values)
         else {
-            panic!("expected ZSort bindings");
+            panic!("expected ZOrder bindings");
         };
         assert_eq!(direct.data, vec![3.0, -4.0]);
         assert_eq!(direct.data, rebuilt.data);
@@ -609,7 +609,7 @@ mod tests {
     fn binding_kind_name(v: &BindingValues) -> &'static str {
         use BindingValues as V;
         match v {
-            V::ZSort(_) => "zSort",
+            V::ZOrder(_) => "zSort",
             V::TransformTX(_) => "transform.t.x",
             V::TransformTY(_) => "transform.t.y",
             V::TransformSX(_) => "transform.s.x",
@@ -635,7 +635,7 @@ mod tests {
         use BindingValues as V;
         match v {
             V::Deform(_) => None,
-            V::ZSort(m)
+            V::ZOrder(m)
             | V::TransformTX(m)
             | V::TransformTY(m)
             | V::TransformSX(m)
@@ -744,7 +744,7 @@ mod tests {
             let id = id.0;
             assert_eq!(a.name, b.name, "node {id} name");
             assert_eq!(a.enabled, b.enabled, "node {id} enabled");
-            assert_eq!(a.base_z_order, b.base_z_order, "node {id} zsort");
+            assert_eq!(a.base_z_order, b.base_z_order, "node {id} z order");
             assert_transforms_match(
                 &a.base_transform,
                 &b.base_transform,
@@ -989,8 +989,8 @@ mod tests {
         let back = node_named(&inx_puppet, "back");
 
         // zsort: source lower-is-front becomes catchlight higher-is-front.
-        assert_eq!(front.base_z_order, -1.0, "front zsort");
-        assert_eq!(back.base_z_order, -5.0, "back zsort");
+        assert_eq!(front.base_z_order, -1.0, "front z order");
+        assert_eq!(back.base_z_order, -5.0, "back z order");
         assert!(
             front.base_z_order > back.base_z_order,
             "the node authored nearer the viewer must sort in front"
@@ -1123,8 +1123,8 @@ mod tests {
 
         // The .clp intermediate itself, so a drift that cancels out across
         // to_clp + from_clp still shows up.
-        assert_eq!(clp.doc.nodes[1].zsort, -1.0, "clp front zsort");
-        assert_eq!(clp.doc.nodes[2].zsort, -5.0, "clp back zsort");
+        assert_eq!(clp.doc.nodes[1].z_order, -1.0, "clp front z order");
+        assert_eq!(clp.doc.nodes[2].z_order, -5.0, "clp back z order");
         assert_eq!(
             clp.doc.nodes[1].transform.translation,
             [7.0, -10.0, 3.0],
@@ -1150,7 +1150,7 @@ mod tests {
             parent: Some(0),
             name: "part".into(),
             enabled: true,
-            zsort: 0.0,
+            z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
             kind: ClpNodeKind::Part(ClpPart {
@@ -1176,7 +1176,7 @@ mod tests {
             parent: None,
             name: "root".into(),
             enabled: true,
-            zsort: 0.0,
+            z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
             kind: ClpNodeKind::Empty,
