@@ -8,14 +8,13 @@
 //!
 //! Runtime and `.clp` never see any of this — they keep plain indexed triangle
 //! lists; [`WorkingMesh::to_mesh`] flattens on Apply, and
-//! [`EditModel::set_mesh_with_refit`] re-fits existing deform bindings onto the
+//! [`Model::set_mesh_with_refit`] re-fits existing deform bindings onto the
 //! new topology (triangle-affine interpolation over the old rest mesh).
 
 use catchlight_core::formats::clp::{ClpBindingValues, ClpIndices, ClpMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
-use crate::model::*;
-use crate::EditError;
+use catchlight_core::{Model, ModelError, ModelNodeKind, NodeKey};
 
 /// Minimum distance between distinct vertices; closer placements are rejected
 /// (coincident points would merge in the triangulation and corrupt indexing).
@@ -74,14 +73,14 @@ impl WorkingMesh {
     }
 
     /// Add a vertex; rejected when it lands on an existing vertex.
-    pub fn add_vertex(&mut self, pos: [f32; 2]) -> Result<u32, EditError> {
+    pub fn add_vertex(&mut self, pos: [f32; 2]) -> Result<u32, ModelError> {
         if !pos[0].is_finite() || !pos[1].is_finite() {
-            return Err(EditError::CellOutOfRange);
+            return Err(ModelError::CellOutOfRange);
         }
         for i in 0..self.vertex_count() {
             let p = self.pos(i as u32);
             if dist2(p, pos) < MIN_VERTEX_DISTANCE * MIN_VERTEX_DISTANCE {
-                return Err(EditError::CellOutOfRange);
+                return Err(ModelError::CellOutOfRange);
             }
         }
         self.verts.extend_from_slice(&pos);
@@ -90,16 +89,16 @@ impl WorkingMesh {
 
     /// Move a vertex; rejected when the move would make constraint edges cross
     /// or stack the vertex onto another.
-    pub fn move_vertex(&mut self, i: u32, pos: [f32; 2]) -> Result<(), EditError> {
+    pub fn move_vertex(&mut self, i: u32, pos: [f32; 2]) -> Result<(), ModelError> {
         if i as usize >= self.vertex_count() {
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         if !pos[0].is_finite() || !pos[1].is_finite() {
-            return Err(EditError::CellOutOfRange);
+            return Err(ModelError::CellOutOfRange);
         }
         for j in 0..self.vertex_count() as u32 {
             if j != i && dist2(self.pos(j), pos) < MIN_VERTEX_DISTANCE * MIN_VERTEX_DISTANCE {
-                return Err(EditError::CellOutOfRange);
+                return Err(ModelError::CellOutOfRange);
             }
         }
         // Every constraint incident to `i` (at its new position) must stay
@@ -112,7 +111,7 @@ impl WorkingMesh {
                     continue;
                 }
                 if segments_cross(seg.0, seg.1, self.pos(c), self.pos(d)) {
-                    return Err(EditError::ConstraintCross);
+                    return Err(ModelError::ConstraintCross);
                 }
             }
         }
@@ -147,13 +146,13 @@ impl WorkingMesh {
 
     /// Pin an edge as a constraint. Rejected when it would cross an existing
     /// constraint (touching at a shared endpoint is fine).
-    pub fn add_constraint(&mut self, a: u32, b: u32) -> Result<(), EditError> {
+    pub fn add_constraint(&mut self, a: u32, b: u32) -> Result<(), ModelError> {
         let n = self.vertex_count() as u32;
         if a >= n || b >= n {
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         if a == b {
-            return Err(EditError::ConstraintCross);
+            return Err(ModelError::ConstraintCross);
         }
         let key = (a.min(b), a.max(b));
         if self.constraints.contains(&key) {
@@ -164,7 +163,7 @@ impl WorkingMesh {
                 continue;
             }
             if segments_cross(self.pos(a), self.pos(b), self.pos(c), self.pos(d)) {
-                return Err(EditError::ConstraintCross);
+                return Err(ModelError::ConstraintCross);
             }
         }
         self.constraints.push(key);
@@ -183,7 +182,7 @@ impl WorkingMesh {
 
     /// Derived triangulation (the live "triangulate preview"). Stored state is
     /// always triangulable — the ops above refuse to persist a crossing set.
-    pub fn triangulate(&self) -> Result<Vec<[u32; 3]>, EditError> {
+    pub fn triangulate(&self) -> Result<Vec<[u32; 3]>, ModelError> {
         let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
             ConstrainedDelaunayTriangulation::new();
         let mut handles = Vec::with_capacity(self.vertex_count());
@@ -191,7 +190,7 @@ impl WorkingMesh {
             let p = self.pos(i as u32);
             let h = cdt
                 .insert(Point2::new(p[0] as f64, p[1] as f64))
-                .map_err(|_| EditError::CellOutOfRange)?;
+                .map_err(|_| ModelError::CellOutOfRange)?;
             handles.push(h);
         }
         // Reverse map: spade vertex index -> our vertex index. Coincident
@@ -230,7 +229,11 @@ impl WorkingMesh {
     /// Flatten to the plain indexed triangle list runtime/`.clp` consume.
     /// UVs are re-derived from texture space; triangles covering only
     /// transparent texels are culled when an alpha mask is given.
-    pub fn to_mesh(&self, uv_map: &UvMap, alpha: Option<&AlphaMask>) -> Result<ClpMesh, EditError> {
+    pub fn to_mesh(
+        &self,
+        uv_map: &UvMap,
+        alpha: Option<&AlphaMask>,
+    ) -> Result<ClpMesh, ModelError> {
         let tris = self.triangulate()?;
         let uvs: Vec<f32> = (0..self.vertex_count())
             .flat_map(|i| uv_map.uv(self.pos(i as u32)))
@@ -456,7 +459,7 @@ pub fn contour_automesh(
     knobs: &ContourKnobs,
     uv_map: &UvMap,
     origin: [f32; 2],
-) -> Result<WorkingMesh, EditError> {
+) -> Result<WorkingMesh, ModelError> {
     let (w, h) = (alpha.width as i64, alpha.height as i64);
     let mut solid = vec![false; (w * h) as usize];
     for y in 0..h {
@@ -527,7 +530,7 @@ pub fn grid_automesh(
     rows: u32,
     uv_map: &UvMap,
     origin: [f32; 2],
-) -> Result<WorkingMesh, EditError> {
+) -> Result<WorkingMesh, ModelError> {
     let (w, h) = (alpha.width as i64, alpha.height as i64);
     let mut min = [i64::MAX, i64::MAX];
     let mut max = [i64::MIN, i64::MIN];
@@ -540,7 +543,7 @@ pub fn grid_automesh(
         }
     }
     if min[0] > max[0] {
-        return Err(EditError::CellOutOfRange);
+        return Err(ModelError::CellOutOfRange);
     }
     // One texel of margin so boundary texels stay inside the outer cells.
     let min = [(min[0] - 1) as f32, (min[1] - 1) as f32];
@@ -872,11 +875,17 @@ fn clamp_bary(b: [f32; 3]) -> [f32; 3] {
     }
 }
 
-impl EditModel {
+/// Mesh authoring over a [`Model`]. An extension trait because the Model is
+/// defined in `catchlight-core` while the mesh tools live here.
+pub trait ModelMeshExt {
     /// Replace a Part/MeshGroup mesh and re-fit every deform binding that
     /// drives the node onto the new topology — one undoable step. The mesh is
     /// validated first: a malformed one would poison every later puppet build.
-    pub fn set_mesh_with_refit(&mut self, node: NodeId, mesh: ClpMesh) -> Result<(), EditError> {
+    fn set_mesh_with_refit(&mut self, node: NodeKey, mesh: ClpMesh) -> Result<(), ModelError>;
+}
+
+impl ModelMeshExt for Model {
+    fn set_mesh_with_refit(&mut self, node: NodeKey, mesh: ClpMesh) -> Result<(), ModelError> {
         let vcount = mesh.verts.len() / 2;
         let max_index = match &mesh.indices {
             ClpIndices::U16(v) => v.iter().map(|&i| i as usize).max(),
@@ -886,16 +895,16 @@ impl EditModel {
             || mesh.uvs.len() != mesh.verts.len()
             || max_index.is_some_and(|m| m >= vcount)
         {
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         let old = match self.node(node).map(|n| &n.kind) {
-            Some(EditNodeKind::Part(p)) => p.mesh.clone(),
-            Some(EditNodeKind::MeshGroup(mg)) => mg.mesh.clone(),
-            Some(_) => return Err(EditError::NotAPart),
-            None => return Err(EditError::UnknownNode),
+            Some(ModelNodeKind::Part(p)) => p.mesh.clone(),
+            Some(ModelNodeKind::MeshGroup(mg)) => mg.mesh.clone(),
+            Some(_) => return Err(ModelError::NotAPart),
+            None => return Err(ModelError::UnknownNode),
         };
-        for pid in self.param_order.clone() {
-            let Some(p) = self.params.get_mut(pid) else {
+        for pid in self.param_ids().to_vec() {
+            let Some(p) = self.param_mut(pid) else {
                 continue;
             };
             for b in &mut p.bindings {
@@ -910,9 +919,9 @@ impl EditModel {
             }
         }
         match self.node_mut(node).map(|n| &mut n.kind) {
-            Some(EditNodeKind::Part(p)) => p.mesh = mesh.into(),
-            Some(EditNodeKind::MeshGroup(mg)) => mg.mesh = mesh.into(),
-            _ => return Err(EditError::NotAPart),
+            Some(ModelNodeKind::Part(p)) => p.mesh = mesh.into(),
+            Some(ModelNodeKind::MeshGroup(mg)) => mg.mesh = mesh.into(),
+            _ => return Err(ModelError::NotAPart),
         }
         Ok(())
     }
@@ -949,7 +958,7 @@ mod tests {
         // The other diagonal (1,3) crosses the seeded (0,2).
         assert!(matches!(
             wm.add_constraint(1, 3),
-            Err(EditError::ConstraintCross)
+            Err(ModelError::ConstraintCross)
         ));
         // Unpinning the first diagonal makes room.
         wm.remove_constraint(0, 2);
@@ -971,7 +980,7 @@ mod tests {
         // quad's right edge (1,2) — rejected.
         assert!(matches!(
             wm.move_vertex(v, [2.0, 0.0]),
-            Err(EditError::ConstraintCross)
+            Err(ModelError::ConstraintCross)
         ));
         // A harmless move is fine.
         wm.move_vertex(v, [-2.0, -1.2]).unwrap();
@@ -1061,15 +1070,16 @@ mod tests {
     #[test]
     fn set_mesh_with_refit_updates_bindings_in_one_step() {
         use catchlight_core::components::BlendMode;
+        use catchlight_core::{ModelNode, ModelParam, ModelPart, ParamKey};
 
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let part = m
             .add_node(
                 root,
-                EditNode::new(
+                ModelNode::new(
                     "p",
-                    EditNodeKind::Part(EditPart {
+                    ModelNodeKind::Part(ModelPart {
                         mesh: quad().into(),
                         albedo: None,
                         opacity: 1.0,
@@ -1082,7 +1092,7 @@ mod tests {
                 ),
             )
             .unwrap();
-        let param = m.add_param(EditParam {
+        let param = m.add_param(ModelParam {
             name: "d".into(),
             is_vec2: false,
             min: [0.0, 0.0],
@@ -1103,14 +1113,14 @@ mod tests {
         m.set_mesh_with_refit(part, new_mesh).unwrap();
 
         let b = m
-            .binding(part_param(&m), part, crate::BindingTarget::Deform)
+            .binding(part_param(&m), part, catchlight_core::BindingTarget::Deform)
             .unwrap();
-        let cells = crate::deform_cells(&b.values).unwrap();
+        let cells = catchlight_core::deform_cells(&b.values).unwrap();
         assert_eq!(cells[0].value.len(), 10);
         // Old corners keep the uniform offset; the new center interpolates it.
         assert!((cells[1].value[8] - 10.0).abs() < 1e-4);
 
-        fn part_param(m: &EditModel) -> ParamId {
+        fn part_param(m: &Model) -> ParamKey {
             m.param_ids()[0]
         }
     }

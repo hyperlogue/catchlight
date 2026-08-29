@@ -1538,6 +1538,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "slotmap",
  "smallvec",
  "thiserror 2.0.18",
  "tracing",
@@ -1585,7 +1586,6 @@ dependencies = [
  "image",
  "serde",
  "serde_json",
- "slotmap",
  "spade",
  "thiserror 2.0.18",
 ]

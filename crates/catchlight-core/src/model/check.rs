@@ -4,19 +4,19 @@
 //! flattens to a file `catchlight_core` then refuses to load (a mesh group is
 //! never drawn, so it has no colour for the binding to fold into).
 
-use catchlight_core::formats::clp::{ClpBindingValues, ClpIndices};
+use crate::formats::clp::{ClpBindingValues, ClpIndices};
 
-use crate::binding::{target_of, BindingTarget};
-use crate::model::*;
+use super::*;
+use crate::model::binding::{target_of, BindingTarget};
 
 #[derive(Debug, Clone)]
 pub struct CheckWarning {
     /// The node the warning is about, if any.
-    pub node: Option<NodeId>,
+    pub node: Option<NodeKey>,
     pub message: String,
 }
 
-impl EditModel {
+impl Model {
     /// Walk the model and report likely-unintended states: parts that render to
     /// nothing, malformed meshes, physics nodes that drive nothing, and bindings
     /// whose value matrix does not match their param's axis grid.
@@ -25,7 +25,7 @@ impl EditModel {
         for id in self.nodes_in_order() {
             let Some(n) = self.node(id) else { continue };
             match &n.kind {
-                EditNodeKind::Part(p) => {
+                ModelNodeKind::Part(p) => {
                     if p.albedo.is_none() {
                         out.push(warn(
                             id,
@@ -58,7 +58,7 @@ impl EditModel {
                         ));
                     }
                 }
-                EditNodeKind::SimplePhysics(ph) if ph.target_param.is_none() => {
+                ModelNodeKind::SimplePhysics(ph) if ph.target_param.is_none() => {
                     out.push(warn(
                         id,
                         format!("physics node {:?} drives no target param", n.name),
@@ -77,7 +77,7 @@ impl EditModel {
                     if t.is_color()
                         && matches!(
                             self.node(b.node).map(|n| &n.kind),
-                            Some(EditNodeKind::MeshGroup(_))
+                            Some(ModelNodeKind::MeshGroup(_))
                         )
                     {
                         out.push(CheckWarning {
@@ -107,7 +107,7 @@ impl EditModel {
     }
 }
 
-fn warn(node: NodeId, message: String) -> CheckWarning {
+fn warn(node: NodeKey, message: String) -> CheckWarning {
     CheckWarning {
         node: Some(node),
         message,
@@ -127,9 +127,9 @@ fn cells_outside(values: &ClpBindingValues, w: u32, h: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use catchlight_core::formats::clp::ClpMesh;
+    use crate::formats::clp::ClpMesh;
 
-    use crate::binding::ScalarTarget;
+    use crate::model::binding::ScalarTarget;
     use crate::model::*;
 
     /// The editor can hold a colour binding on a mesh group — a `.clp` written
@@ -137,14 +137,14 @@ mod tests {
     /// back, so `check` has to say so.
     #[test]
     fn check_flags_a_color_binding_on_a_mesh_group() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let group = m
             .add_node(
                 root,
-                EditNode::new(
+                ModelNode::new(
                     "lattice",
-                    EditNodeKind::MeshGroup(EditMeshGroup {
+                    ModelNodeKind::MeshGroup(ModelMeshGroup {
                         mesh: ClpMesh::default().into(),
                         dynamic: false,
                         translate_children: true,
@@ -152,7 +152,7 @@ mod tests {
                 ),
             )
             .unwrap();
-        let param = m.add_param(EditParam {
+        let param = m.add_param(ModelParam {
             name: "shade".into(),
             is_vec2: false,
             min: [0.0, 0.0],

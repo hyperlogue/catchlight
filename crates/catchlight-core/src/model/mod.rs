@@ -1,23 +1,97 @@
+//! The authored model: the character as a person made it.
+//!
+//! [`Model`] holds what a model file holds — the node tree, params and their
+//! bindings, textures, welds and physics settings — and nothing that animating
+//! it produces. A puppet animates a Model; a render cache is prepared from
+//! one. Both read it, neither owns it.
+//!
+//! Invariants this module enforces:
+//!
+//! - **The tree is always valid.** One root, no cycles, no dangling
+//!   cross-reference: deleting a node also drops every mask and binding that
+//!   pointed into the removed subtree, and deleting a param or texture nulls
+//!   out whatever referenced it. That is what makes [`Model::flatten`] total.
+//! - **Keys are stable, indices are not.** Nodes, params and textures are
+//!   addressed by slotmap keys ([`NodeKey`], [`ParamKey`], [`TexKey`]) that
+//!   survive insert, reparent and delete. Array indices exist only at the file
+//!   edge: [`Model::flatten`] assigns them in topological order on save and
+//!   [`Model::from_clp_file`] recovers keys on open.
+//! - **Sibling order is document state.** It is the draw order for equal z
+//!   order, so [`Model::reorder`] is an edit, not view state.
+//! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
+//!   bytes verbatim; decoding is the render cache's job.
+//! - **Heavy leaves are shared.** Meshes, binding cell grids and texture bytes
+//!   sit behind `Arc`, so cloning a Model for undo is shallow.
+//!
+//! Pure and wasm-safe: no GPU, no async, no filesystem.
+
+mod binding;
+mod check;
+mod flatten;
+
+pub use binding::{
+    deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingTarget,
+    ScalarTarget,
+};
+pub use check::CheckWarning;
+
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use slotmap::{new_key_type, SlotMap};
 
-use catchlight_core::components::{BlendMode, MaskMode};
-use catchlight_core::formats::clp::{
+use crate::components::{BlendMode, MaskMode};
+use crate::formats::clp::{
     self as clp, ClpBindingValues, ClpMesh, ClpMeshGroup, ClpPhysics, ClpTransform, TextureAlpha,
     TextureEncoding,
 };
-use catchlight_core::params::InterpolateMode;
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
+use crate::params::InterpolateMode;
+use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
-use crate::EditError;
+/// Why an edit to a [`Model`] — or a read of a `.clp` file into one — could
+/// not be carried out. Every mutating method leaves the model untouched when
+/// it returns one of these.
+#[derive(Debug, thiserror::Error)]
+pub enum ModelError {
+    #[error("unknown node id")]
+    UnknownNode,
+    #[error("unknown param id")]
+    UnknownParam,
+    #[error("unknown texture id")]
+    UnknownTexture,
+    #[error(".clp node arena must contain exactly one root at index 0")]
+    InvalidClpRoot,
+    #[error(".clp node {node} parent index {parent} must name a preceding node")]
+    InvalidClpParent { node: usize, parent: u32 },
+    #[error("cannot reparent a node under itself or a descendant")]
+    Cycle,
+    #[error("the root node cannot be {0}")]
+    Root(&'static str),
+    #[error("binding cell is outside the param's axis grid")]
+    CellOutOfRange,
+    #[error("no such binding")]
+    UnknownBinding,
+    #[error("node is not a part")]
+    NotAPart,
+    #[error("node cannot have masks")]
+    NotMaskable,
+    #[error("a node cannot mask itself")]
+    SelfMask,
+    #[error("index out of range")]
+    IndexOutOfRange,
+    #[error("constraint edges may not cross")]
+    ConstraintCross,
+    #[error(".clp codec: {0}")]
+    Clp(#[from] crate::formats::clp::ClpError),
+    #[error(transparent)]
+    LoadLimit(#[from] crate::LoadLimitError),
+}
 
 new_key_type! {
-    pub struct NodeId;
-    pub struct ParamId;
-    pub struct TexId;
+    pub struct NodeKey;
+    pub struct ParamKey;
+    pub struct TexKey;
 }
 
 /// Opaque `u64` conversions for the wire/handle layer (the server maps these
@@ -34,14 +108,14 @@ macro_rules! ffi_id {
         }
     };
 }
-ffi_id!(NodeId);
-ffi_id!(ParamId);
-ffi_id!(TexId);
+ffi_id!(NodeKey);
+ffi_id!(ParamKey);
+ffi_id!(TexKey);
 
 /// A source-encoded texture (verbatim PNG/TGA bytes), shared via `Arc` so model
 /// snapshots are cheap to clone even when the structure churns.
 #[derive(Debug, Clone)]
-pub struct EditTexture {
+pub struct ModelTexture {
     pub encoding: TextureEncoding,
     pub alpha: TextureAlpha,
     pub data: Arc<Vec<u8>>,
@@ -49,64 +123,64 @@ pub struct EditTexture {
 
 /// The editable puppet: a tree of nodes by stable id, ordered params and
 /// textures, and authored physics. The tree is always valid (single root, no
-/// cycles, no dangling cross-references), so [`EditModel::flatten`] is total.
+/// cycles, no dangling cross-references), so [`Model::flatten`] is total.
 #[derive(Debug, Clone)]
-pub struct EditModel {
+pub struct Model {
     pub physics: ClpPhysics,
-    pub welds: Vec<EditWeld>,
-    pub(crate) nodes: SlotMap<NodeId, EditNode>,
-    pub(crate) root: NodeId,
-    pub(crate) params: SlotMap<ParamId, EditParam>,
-    pub(crate) param_order: Vec<ParamId>,
-    pub(crate) textures: SlotMap<TexId, EditTexture>,
-    pub(crate) texture_order: Vec<TexId>,
+    pub welds: Vec<ModelWeld>,
+    pub(crate) nodes: SlotMap<NodeKey, ModelNode>,
+    pub(crate) root: NodeKey,
+    pub(crate) params: SlotMap<ParamKey, ModelParam>,
+    pub(crate) param_order: Vec<ParamKey>,
+    pub(crate) textures: SlotMap<TexKey, ModelTexture>,
+    pub(crate) texture_order: Vec<TexKey>,
 }
 
 /// A welded Part pair (`ClpWeld` with stable node ids).
 #[derive(Debug, Clone)]
-pub struct EditWeld {
-    pub a: NodeId,
-    pub b: NodeId,
+pub struct ModelWeld {
+    pub a: NodeKey,
+    pub b: NodeKey,
     pub pairs: Arc<Vec<clp::ClpWeldPair>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct EditNode {
+pub struct ModelNode {
     pub name: String,
     pub enabled: bool,
     pub z_order: f32,
     pub transform: ClpTransform,
     pub lock_to_root: bool,
-    pub kind: EditNodeKind,
-    pub(crate) parent: Option<NodeId>,
-    pub(crate) children: Vec<NodeId>,
+    pub kind: ModelNodeKind,
+    pub(crate) parent: Option<NodeKey>,
+    pub(crate) children: Vec<NodeKey>,
 }
 
 #[derive(Debug, Clone)]
-pub enum EditNodeKind {
+pub enum ModelNodeKind {
     Group,
-    Part(EditPart),
-    Composite(EditComposite),
-    MeshGroup(EditMeshGroup),
-    SimplePhysics(EditPhysics),
+    Part(ModelPart),
+    Composite(ModelComposite),
+    MeshGroup(ModelMeshGroup),
+    SimplePhysics(ModelPhysics),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EditMesh(Arc<ClpMesh>);
+pub struct ModelMesh(Arc<ClpMesh>);
 
-impl EditMesh {
+impl ModelMesh {
     pub fn to_clp(&self) -> ClpMesh {
         (*self.0).clone()
     }
 }
 
-impl From<ClpMesh> for EditMesh {
+impl From<ClpMesh> for ModelMesh {
     fn from(mesh: ClpMesh) -> Self {
         Self(Arc::new(mesh))
     }
 }
 
-impl Deref for EditMesh {
+impl Deref for ModelMesh {
     type Target = ClpMesh;
 
     fn deref(&self) -> &Self::Target {
@@ -114,7 +188,7 @@ impl Deref for EditMesh {
     }
 }
 
-impl DerefMut for EditMesh {
+impl DerefMut for ModelMesh {
     fn deref_mut(&mut self) -> &mut Self::Target {
         Arc::make_mut(&mut self.0)
     }
@@ -123,13 +197,13 @@ impl DerefMut for EditMesh {
 /// A mesh group deforms what is beneath it and is never drawn, so it has no
 /// colour to edit: no opacity, blend mode, tint or screen tint.
 #[derive(Debug, Clone)]
-pub struct EditMeshGroup {
-    pub mesh: EditMesh,
+pub struct ModelMeshGroup {
+    pub mesh: ModelMesh,
     pub dynamic: bool,
     pub translate_children: bool,
 }
 
-impl EditMeshGroup {
+impl ModelMeshGroup {
     pub fn from_clp(group: &ClpMeshGroup) -> Self {
         Self {
             mesh: group.mesh.clone().into(),
@@ -148,41 +222,41 @@ impl EditMeshGroup {
 }
 
 #[derive(Debug, Clone)]
-pub struct EditPart {
-    pub mesh: EditMesh,
+pub struct ModelPart {
+    pub mesh: ModelMesh,
     /// Albedo texture, or `None` for an unmapped part (the renderer culls it).
-    pub albedo: Option<TexId>,
+    pub albedo: Option<TexKey>,
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub tint: [f32; 3],
     pub screen_tint: [f32; 3],
-    pub masks: Vec<EditMask>,
+    pub masks: Vec<ModelMask>,
     pub mask_threshold: f32,
 }
 
 #[derive(Debug, Clone)]
-pub struct EditComposite {
+pub struct ModelComposite {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub tint: [f32; 3],
     pub screen_tint: [f32; 3],
-    pub masks: Vec<EditMask>,
+    pub masks: Vec<ModelMask>,
     pub mask_threshold: f32,
     pub propagate_meshgroup: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct EditMask {
-    pub source: NodeId,
+pub struct ModelMask {
+    pub source: NodeKey,
     pub mode: MaskMode,
 }
 
 #[derive(Debug, Clone)]
-pub struct EditPhysics {
+pub struct ModelPhysics {
     pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
-    pub target_param: Option<ParamId>,
+    pub target_param: Option<ParamKey>,
     pub gravity: f32,
     pub length: f32,
     pub frequency: f32,
@@ -192,7 +266,7 @@ pub struct EditPhysics {
 }
 
 #[derive(Debug, Clone)]
-pub struct EditParam {
+pub struct ModelParam {
     pub name: String,
     pub is_vec2: bool,
     pub min: [f32; 2],
@@ -203,32 +277,32 @@ pub struct EditParam {
     /// convention `.clp` stores and the runtime interpolates in.
     pub axis_points_x: Vec<f32>,
     pub axis_points_y: Vec<f32>,
-    pub bindings: Vec<EditBinding>,
+    pub bindings: Vec<ModelBinding>,
 }
 
 #[derive(Debug, Clone)]
-pub struct EditBinding {
-    pub node: NodeId,
+pub struct ModelBinding {
+    pub node: NodeKey,
     pub interpolate_mode: InterpolateMode,
-    pub values: EditBindingValues,
+    pub values: ModelBindingValues,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EditBindingValues(Arc<ClpBindingValues>);
+pub struct ModelBindingValues(Arc<ClpBindingValues>);
 
-impl EditBindingValues {
+impl ModelBindingValues {
     pub fn to_clp(&self) -> ClpBindingValues {
         (*self.0).clone()
     }
 }
 
-impl From<ClpBindingValues> for EditBindingValues {
+impl From<ClpBindingValues> for ModelBindingValues {
     fn from(values: ClpBindingValues) -> Self {
         Self(Arc::new(values))
     }
 }
 
-impl Deref for EditBindingValues {
+impl Deref for ModelBindingValues {
     type Target = ClpBindingValues;
 
     fn deref(&self) -> &Self::Target {
@@ -236,15 +310,15 @@ impl Deref for EditBindingValues {
     }
 }
 
-impl DerefMut for EditBindingValues {
+impl DerefMut for ModelBindingValues {
     fn deref_mut(&mut self) -> &mut Self::Target {
         Arc::make_mut(&mut self.0)
     }
 }
 
-impl EditNode {
+impl ModelNode {
     /// A node at the identity transform (unit scale), enabled, z order 0.
-    pub fn new(name: impl Into<String>, kind: EditNodeKind) -> Self {
+    pub fn new(name: impl Into<String>, kind: ModelNodeKind) -> Self {
         Self {
             name: name.into(),
             enabled: true,
@@ -261,20 +335,20 @@ impl EditNode {
         }
     }
 
-    pub fn parent(&self) -> Option<NodeId> {
+    pub fn parent(&self) -> Option<NodeKey> {
         self.parent
     }
 
-    pub fn children(&self) -> &[NodeId] {
+    pub fn children(&self) -> &[NodeKey] {
         &self.children
     }
 }
 
-impl EditModel {
+impl Model {
     /// A new puppet with a single `Group` root named "Root".
     pub fn new() -> Self {
         let mut nodes = SlotMap::with_key();
-        let root = nodes.insert(EditNode::new("Root", EditNodeKind::Group));
+        let root = nodes.insert(ModelNode::new("Root", ModelNodeKind::Group));
         Self {
             physics: ClpPhysics::default(),
             welds: Vec::new(),
@@ -287,15 +361,15 @@ impl EditModel {
         }
     }
 
-    pub fn root(&self) -> NodeId {
+    pub fn root(&self) -> NodeKey {
         self.root
     }
 
-    pub fn node(&self, id: NodeId) -> Option<&EditNode> {
+    pub fn node(&self, id: NodeKey) -> Option<&ModelNode> {
         self.nodes.get(id)
     }
 
-    pub fn node_mut(&mut self, id: NodeId) -> Option<&mut EditNode> {
+    pub fn node_mut(&mut self, id: NodeKey) -> Option<&mut ModelNode> {
         self.nodes.get_mut(id)
     }
 
@@ -303,23 +377,23 @@ impl EditModel {
         self.nodes.len()
     }
 
-    pub fn param_ids(&self) -> &[ParamId] {
+    pub fn param_ids(&self) -> &[ParamKey] {
         &self.param_order
     }
 
-    pub fn param(&self, id: ParamId) -> Option<&EditParam> {
+    pub fn param(&self, id: ParamKey) -> Option<&ModelParam> {
         self.params.get(id)
     }
 
-    pub fn param_mut(&mut self, id: ParamId) -> Option<&mut EditParam> {
+    pub fn param_mut(&mut self, id: ParamKey) -> Option<&mut ModelParam> {
         self.params.get_mut(id)
     }
 
-    pub fn texture_ids(&self) -> &[TexId] {
+    pub fn texture_ids(&self) -> &[TexKey] {
         &self.texture_order
     }
 
-    pub fn texture(&self, id: TexId) -> Option<&EditTexture> {
+    pub fn texture(&self, id: TexKey) -> Option<&ModelTexture> {
         self.textures.get(id)
     }
 
@@ -328,32 +402,32 @@ impl EditModel {
             .saturating_add(
                 self.nodes
                     .len()
-                    .saturating_mul(std::mem::size_of::<EditNode>()),
+                    .saturating_mul(std::mem::size_of::<ModelNode>()),
             )
             .saturating_add(
                 self.params
                     .len()
-                    .saturating_mul(std::mem::size_of::<EditParam>()),
+                    .saturating_mul(std::mem::size_of::<ModelParam>()),
             )
             .saturating_add(
                 self.textures
                     .len()
-                    .saturating_mul(std::mem::size_of::<EditTexture>()),
+                    .saturating_mul(std::mem::size_of::<ModelTexture>()),
             )
             .saturating_add(
                 self.param_order
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<ParamId>()),
+                    .saturating_mul(std::mem::size_of::<ParamKey>()),
             )
             .saturating_add(
                 self.texture_order
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<TexId>()),
+                    .saturating_mul(std::mem::size_of::<TexKey>()),
             )
             .saturating_add(
                 self.welds
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<EditWeld>()),
+                    .saturating_mul(std::mem::size_of::<ModelWeld>()),
             );
         for weld in &self.welds {
             bytes = bytes.saturating_add(
@@ -366,28 +440,28 @@ impl EditModel {
             bytes = bytes.saturating_add(node.name.capacity()).saturating_add(
                 node.children
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<NodeId>()),
+                    .saturating_mul(std::mem::size_of::<NodeKey>()),
             );
             match &node.kind {
-                EditNodeKind::Part(part) => {
+                ModelNodeKind::Part(part) => {
                     bytes = bytes.saturating_add(mesh_size(&part.mesh)).saturating_add(
                         part.masks
                             .capacity()
-                            .saturating_mul(std::mem::size_of::<EditMask>()),
+                            .saturating_mul(std::mem::size_of::<ModelMask>()),
                     );
                 }
-                EditNodeKind::Composite(composite) => {
+                ModelNodeKind::Composite(composite) => {
                     bytes = bytes.saturating_add(
                         composite
                             .masks
                             .capacity()
-                            .saturating_mul(std::mem::size_of::<EditMask>()),
+                            .saturating_mul(std::mem::size_of::<ModelMask>()),
                     );
                 }
-                EditNodeKind::MeshGroup(group) => {
+                ModelNodeKind::MeshGroup(group) => {
                     bytes = bytes.saturating_add(mesh_size(&group.mesh));
                 }
-                EditNodeKind::Group | EditNodeKind::SimplePhysics(_) => {}
+                ModelNodeKind::Group | ModelNodeKind::SimplePhysics(_) => {}
             }
         }
         for param in self.params.values() {
@@ -409,7 +483,7 @@ impl EditModel {
                     param
                         .bindings
                         .capacity()
-                        .saturating_mul(std::mem::size_of::<EditBinding>()),
+                        .saturating_mul(std::mem::size_of::<ModelBinding>()),
                 );
             for binding in &param.bindings {
                 bytes = bytes.saturating_add(binding_values_size(&binding.values));
@@ -422,10 +496,10 @@ impl EditModel {
     }
 
     /// The node's editable mesh, for the two kinds that carry one.
-    pub fn node_mesh(&self, id: NodeId) -> Option<&ClpMesh> {
+    pub fn node_mesh(&self, id: NodeKey) -> Option<&ClpMesh> {
         match self.node(id).map(|n| &n.kind)? {
-            EditNodeKind::Part(p) => Some(&p.mesh),
-            EditNodeKind::MeshGroup(mg) => Some(&mg.mesh),
+            ModelNodeKind::Part(p) => Some(&p.mesh),
+            ModelNodeKind::MeshGroup(mg) => Some(&mg.mesh),
             _ => None,
         }
     }
@@ -433,7 +507,7 @@ impl EditModel {
     /// Nodes in topological pre-order from the root, each parent before its
     /// children, following sibling order. This is the order [`Self::flatten`]
     /// snapshots into the arena.
-    pub fn nodes_in_order(&self) -> Vec<NodeId> {
+    pub fn nodes_in_order(&self) -> Vec<NodeKey> {
         let mut out = Vec::with_capacity(self.nodes.len());
         let mut stack = vec![self.root];
         while let Some(id) = stack.pop() {
@@ -449,9 +523,13 @@ impl EditModel {
 
     /// Insert `node` as the last child of `parent`. The node's own parent/child
     /// links are set here regardless of how it was constructed.
-    pub fn add_node(&mut self, parent: NodeId, mut node: EditNode) -> Result<NodeId, EditError> {
+    pub fn add_node(
+        &mut self,
+        parent: NodeKey,
+        mut node: ModelNode,
+    ) -> Result<NodeKey, ModelError> {
         if !self.nodes.contains_key(parent) {
-            return Err(EditError::UnknownNode);
+            return Err(ModelError::UnknownNode);
         }
         node.parent = Some(parent);
         node.children.clear();
@@ -464,15 +542,15 @@ impl EditModel {
 
     /// Remove a node and its whole subtree, then drop every mask and binding
     /// that pointed into the removed set so the model stays referentially valid.
-    pub fn delete_node(&mut self, id: NodeId) -> Result<(), EditError> {
+    pub fn delete_node(&mut self, id: NodeKey) -> Result<(), ModelError> {
         if id == self.root {
-            return Err(EditError::Root("deleted"));
+            return Err(ModelError::Root("deleted"));
         }
         if !self.nodes.contains_key(id) {
-            return Err(EditError::UnknownNode);
+            return Err(ModelError::UnknownNode);
         }
-        let removed: Vec<NodeId> = self.subtree(id);
-        let removed_set: HashSet<NodeId> = removed.iter().copied().collect();
+        let removed: Vec<NodeKey> = self.subtree(id);
+        let removed_set: HashSet<NodeKey> = removed.iter().copied().collect();
         if let Some(parent) = self.nodes.get(id).and_then(|n| n.parent) {
             if let Some(p) = self.nodes.get_mut(parent) {
                 p.children.retain(|&c| c != id);
@@ -483,8 +561,8 @@ impl EditModel {
         }
         for node in self.nodes.values_mut() {
             match &mut node.kind {
-                EditNodeKind::Part(p) => p.masks.retain(|m| !removed_set.contains(&m.source)),
-                EditNodeKind::Composite(c) => c.masks.retain(|m| !removed_set.contains(&m.source)),
+                ModelNodeKind::Part(p) => p.masks.retain(|m| !removed_set.contains(&m.source)),
+                ModelNodeKind::Composite(c) => c.masks.retain(|m| !removed_set.contains(&m.source)),
                 _ => {}
             }
         }
@@ -498,15 +576,15 @@ impl EditModel {
 
     /// Move `id` (and its subtree) under `new_parent`. Rejects moving the root
     /// or creating a cycle.
-    pub fn reparent(&mut self, id: NodeId, new_parent: NodeId) -> Result<(), EditError> {
+    pub fn reparent(&mut self, id: NodeKey, new_parent: NodeKey) -> Result<(), ModelError> {
         if id == self.root {
-            return Err(EditError::Root("reparented"));
+            return Err(ModelError::Root("reparented"));
         }
         if !self.nodes.contains_key(id) || !self.nodes.contains_key(new_parent) {
-            return Err(EditError::UnknownNode);
+            return Err(ModelError::UnknownNode);
         }
         if self.is_self_or_descendant(new_parent, id) {
-            return Err(EditError::Cycle);
+            return Err(ModelError::Cycle);
         }
         let old_parent = self.nodes.get(id).and_then(|n| n.parent);
         if let Some(op) = old_parent {
@@ -526,21 +604,21 @@ impl EditModel {
     /// Move `id` to `index` within its parent's children (clamped to the end).
     /// Sibling order is draw-list order for equal z order, so this is a document
     /// edit, not view state.
-    pub fn reorder(&mut self, id: NodeId, index: usize) -> Result<(), EditError> {
+    pub fn reorder(&mut self, id: NodeKey, index: usize) -> Result<(), ModelError> {
         if id == self.root {
-            return Err(EditError::Root("reordered"));
+            return Err(ModelError::Root("reordered"));
         }
         let parent = self
             .nodes
             .get(id)
             .and_then(|n| n.parent)
-            .ok_or(EditError::UnknownNode)?;
-        let p = self.nodes.get_mut(parent).ok_or(EditError::UnknownNode)?;
+            .ok_or(ModelError::UnknownNode)?;
+        let p = self.nodes.get_mut(parent).ok_or(ModelError::UnknownNode)?;
         let cur = p
             .children
             .iter()
             .position(|&c| c == id)
-            .ok_or(EditError::UnknownNode)?;
+            .ok_or(ModelError::UnknownNode)?;
         p.children.remove(cur);
         let index = index.min(p.children.len());
         p.children.insert(index, id);
@@ -551,15 +629,15 @@ impl EditModel {
     /// subtree point at the copies; external ones stay shared. Each copied node
     /// also copies its param bindings, so the duplicate deforms like the
     /// original. The copy's root is renamed "<name> copy".
-    pub fn duplicate_subtree(&mut self, id: NodeId) -> Result<NodeId, EditError> {
+    pub fn duplicate_subtree(&mut self, id: NodeKey) -> Result<NodeKey, ModelError> {
         if id == self.root {
-            return Err(EditError::Root("duplicated"));
+            return Err(ModelError::Root("duplicated"));
         }
         let parent = self
             .nodes
             .get(id)
             .and_then(|n| n.parent)
-            .ok_or(EditError::UnknownNode)?;
+            .ok_or(ModelError::UnknownNode)?;
 
         // Pre-order with sibling order preserved (parent precedes children).
         let mut order = Vec::new();
@@ -573,11 +651,11 @@ impl EditModel {
             }
         }
 
-        let mut map: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut map: HashMap<NodeKey, NodeKey> = HashMap::new();
         for &old in &order {
-            let mut copy = self.nodes.get(old).ok_or(EditError::UnknownNode)?.clone();
+            let mut copy = self.nodes.get(old).ok_or(ModelError::UnknownNode)?.clone();
             let new_parent = match copy.parent {
-                Some(p) if old != id => *map.get(&p).ok_or(EditError::UnknownNode)?,
+                Some(p) if old != id => *map.get(&p).ok_or(ModelError::UnknownNode)?,
                 _ => parent,
             };
             if old == id {
@@ -590,8 +668,8 @@ impl EditModel {
         for &new_id in map.values() {
             if let Some(node) = self.nodes.get_mut(new_id) {
                 let masks = match &mut node.kind {
-                    EditNodeKind::Part(p) => Some(&mut p.masks),
-                    EditNodeKind::Composite(c) => Some(&mut c.masks),
+                    ModelNodeKind::Part(p) => Some(&mut p.masks),
+                    ModelNodeKind::Composite(c) => Some(&mut c.masks),
                     _ => None,
                 };
                 if let Some(masks) = masks {
@@ -605,11 +683,11 @@ impl EditModel {
         }
 
         for param in self.params.values_mut() {
-            let copied: Vec<EditBinding> = param
+            let copied: Vec<ModelBinding> = param
                 .bindings
                 .iter()
                 .filter_map(|b| {
-                    map.get(&b.node).map(|&new_node| EditBinding {
+                    map.get(&b.node).map(|&new_node| ModelBinding {
                         node: new_node,
                         interpolate_mode: b.interpolate_mode,
                         values: b.values.clone(),
@@ -619,22 +697,22 @@ impl EditModel {
             param.bindings.extend(copied);
         }
 
-        let new_root = *map.get(&id).ok_or(EditError::UnknownNode)?;
+        let new_root = *map.get(&id).ok_or(ModelError::UnknownNode)?;
         let pos = self
             .nodes
             .get(parent)
             .and_then(|p| p.children.iter().position(|&c| c == id))
-            .ok_or(EditError::UnknownNode)?;
+            .ok_or(ModelError::UnknownNode)?;
         self.reorder(new_root, pos + 1)?;
         Ok(new_root)
     }
 
-    fn masks_mut(&mut self, id: NodeId) -> Result<&mut Vec<EditMask>, EditError> {
+    fn masks_mut(&mut self, id: NodeKey) -> Result<&mut Vec<ModelMask>, ModelError> {
         match self.nodes.get_mut(id).map(|n| &mut n.kind) {
-            Some(EditNodeKind::Part(p)) => Ok(&mut p.masks),
-            Some(EditNodeKind::Composite(c)) => Ok(&mut c.masks),
-            Some(_) => Err(EditError::NotMaskable),
-            None => Err(EditError::UnknownNode),
+            Some(ModelNodeKind::Part(p)) => Ok(&mut p.masks),
+            Some(ModelNodeKind::Composite(c)) => Ok(&mut c.masks),
+            Some(_) => Err(ModelError::NotMaskable),
+            None => Err(ModelError::UnknownNode),
         }
     }
 
@@ -642,40 +720,40 @@ impl EditModel {
     /// source's own mesh + texture into the mask).
     pub fn mask_add(
         &mut self,
-        id: NodeId,
-        source: NodeId,
+        id: NodeKey,
+        source: NodeKey,
         mode: MaskMode,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         if source == id {
-            return Err(EditError::SelfMask);
+            return Err(ModelError::SelfMask);
         }
         match self.nodes.get(source).map(|n| &n.kind) {
-            Some(EditNodeKind::Part(_)) => {}
-            Some(_) => return Err(EditError::NotAPart),
-            None => return Err(EditError::UnknownNode),
+            Some(ModelNodeKind::Part(_)) => {}
+            Some(_) => return Err(ModelError::NotAPart),
+            None => return Err(ModelError::UnknownNode),
         }
-        self.masks_mut(id)?.push(EditMask { source, mode });
+        self.masks_mut(id)?.push(ModelMask { source, mode });
         Ok(())
     }
 
     pub fn mask_set_mode(
         &mut self,
-        id: NodeId,
+        id: NodeKey,
         index: usize,
         mode: MaskMode,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         let masks = self.masks_mut(id)?;
-        let m = masks.get_mut(index).ok_or(EditError::IndexOutOfRange)?;
+        let m = masks.get_mut(index).ok_or(ModelError::IndexOutOfRange)?;
         m.mode = mode;
         Ok(())
     }
 
     /// Move the mask at `index` to `to` (clamped). Mask order is evaluation
     /// order, so this is a document edit.
-    pub fn mask_reorder(&mut self, id: NodeId, index: usize, to: usize) -> Result<(), EditError> {
+    pub fn mask_reorder(&mut self, id: NodeKey, index: usize, to: usize) -> Result<(), ModelError> {
         let masks = self.masks_mut(id)?;
         if index >= masks.len() {
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         let m = masks.remove(index);
         let to = to.min(masks.len());
@@ -683,29 +761,29 @@ impl EditModel {
         Ok(())
     }
 
-    pub fn mask_delete(&mut self, id: NodeId, index: usize) -> Result<(), EditError> {
+    pub fn mask_delete(&mut self, id: NodeKey, index: usize) -> Result<(), ModelError> {
         let masks = self.masks_mut(id)?;
         if index >= masks.len() {
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         masks.remove(index);
         Ok(())
     }
 
-    pub fn add_param(&mut self, param: EditParam) -> ParamId {
+    pub fn add_param(&mut self, param: ModelParam) -> ParamKey {
         let id = self.params.insert(param);
         self.param_order.push(id);
         id
     }
 
     /// Remove a param and null out any physics node that drove it.
-    pub fn delete_param(&mut self, id: ParamId) -> Result<(), EditError> {
+    pub fn delete_param(&mut self, id: ParamKey) -> Result<(), ModelError> {
         if self.params.remove(id).is_none() {
-            return Err(EditError::UnknownParam);
+            return Err(ModelError::UnknownParam);
         }
         self.param_order.retain(|&p| p != id);
         for node in self.nodes.values_mut() {
-            if let EditNodeKind::SimplePhysics(ph) = &mut node.kind {
+            if let ModelNodeKind::SimplePhysics(ph) = &mut node.kind {
                 if ph.target_param == Some(id) {
                     ph.target_param = None;
                 }
@@ -714,20 +792,20 @@ impl EditModel {
         Ok(())
     }
 
-    pub fn add_texture(&mut self, texture: EditTexture) -> TexId {
+    pub fn add_texture(&mut self, texture: ModelTexture) -> TexKey {
         let id = self.textures.insert(texture);
         self.texture_order.push(id);
         id
     }
 
     /// Remove a texture and unmap any part that referenced it.
-    pub fn delete_texture(&mut self, id: TexId) -> Result<(), EditError> {
+    pub fn delete_texture(&mut self, id: TexKey) -> Result<(), ModelError> {
         if self.textures.remove(id).is_none() {
-            return Err(EditError::UnknownTexture);
+            return Err(ModelError::UnknownTexture);
         }
         self.texture_order.retain(|&t| t != id);
         for node in self.nodes.values_mut() {
-            if let EditNodeKind::Part(p) = &mut node.kind {
+            if let ModelNodeKind::Part(p) = &mut node.kind {
                 if p.albedo == Some(id) {
                     p.albedo = None;
                 }
@@ -736,7 +814,7 @@ impl EditModel {
         Ok(())
     }
 
-    fn subtree(&self, root: NodeId) -> Vec<NodeId> {
+    fn subtree(&self, root: NodeKey) -> Vec<NodeKey> {
         let mut out = Vec::new();
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
@@ -748,7 +826,7 @@ impl EditModel {
         out
     }
 
-    fn is_self_or_descendant(&self, candidate: NodeId, ancestor: NodeId) -> bool {
+    fn is_self_or_descendant(&self, candidate: NodeKey, ancestor: NodeKey) -> bool {
         let mut cur = Some(candidate);
         while let Some(c) = cur {
             if c == ancestor {
@@ -813,7 +891,7 @@ fn binding_values_size(values: &ClpBindingValues) -> usize {
     }
 }
 
-impl Default for EditModel {
+impl Default for Model {
     fn default() -> Self {
         Self::new()
     }
@@ -825,16 +903,16 @@ mod tests {
 
     #[test]
     fn reorder_moves_within_siblings_and_clamps() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let a = m
-            .add_node(root, EditNode::new("a", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("a", ModelNodeKind::Group))
             .unwrap();
         let b = m
-            .add_node(root, EditNode::new("b", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("b", ModelNodeKind::Group))
             .unwrap();
         let c = m
-            .add_node(root, EditNode::new("c", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("c", ModelNodeKind::Group))
             .unwrap();
 
         m.reorder(c, 0).unwrap();
@@ -850,8 +928,8 @@ mod tests {
         assert!(m.reorder(root, 0).is_err());
     }
 
-    fn part() -> EditNodeKind {
-        EditNodeKind::Part(EditPart {
+    fn part() -> ModelNodeKind {
+        ModelNodeKind::Part(ModelPart {
             mesh: ClpMesh::default().into(),
             albedo: None,
             opacity: 1.0,
@@ -865,13 +943,13 @@ mod tests {
 
     #[test]
     fn model_snapshots_share_large_payloads_until_mutated() {
-        let mut model = EditModel::new();
+        let mut model = Model::new();
         let node = model
             .add_node(
                 model.root(),
-                EditNode::new(
+                ModelNode::new(
                     "mesh",
-                    EditNodeKind::Part(EditPart {
+                    ModelNodeKind::Part(ModelPart {
                         mesh: ClpMesh {
                             verts: vec![-1.0, 0.0, 1.0, 0.0],
                             uvs: vec![0.0; 4],
@@ -890,7 +968,7 @@ mod tests {
                 ),
             )
             .unwrap();
-        let param = model.add_param(EditParam {
+        let param = model.add_param(ModelParam {
             name: "deform".into(),
             is_vec2: false,
             min: [0.0, 0.0],
@@ -906,11 +984,11 @@ mod tests {
 
         let mut edited = model.clone();
         let original_mesh = match &model.node(node).unwrap().kind {
-            EditNodeKind::Part(part) => &part.mesh,
+            ModelNodeKind::Part(part) => &part.mesh,
             _ => unreachable!(),
         };
         let edited_mesh = match &edited.node(node).unwrap().kind {
-            EditNodeKind::Part(part) => &part.mesh,
+            ModelNodeKind::Part(part) => &part.mesh,
             _ => unreachable!(),
         };
         assert!(Arc::ptr_eq(&original_mesh.0, &edited_mesh.0));
@@ -921,12 +999,12 @@ mod tests {
 
         edited.node_mut(node).unwrap().name = "renamed".into();
         let edited_mesh = match &edited.node(node).unwrap().kind {
-            EditNodeKind::Part(part) => &part.mesh,
+            ModelNodeKind::Part(part) => &part.mesh,
             _ => unreachable!(),
         };
         assert!(Arc::ptr_eq(&original_mesh.0, &edited_mesh.0));
 
-        if let EditNodeKind::Part(part) = &mut edited.node_mut(node).unwrap().kind {
+        if let ModelNodeKind::Part(part) = &mut edited.node_mut(node).unwrap().kind {
             part.mesh.verts[0] = 7.0;
         }
         edited
@@ -934,7 +1012,7 @@ mod tests {
             .unwrap();
 
         let edited_mesh = match &edited.node(node).unwrap().kind {
-            EditNodeKind::Part(part) => &part.mesh,
+            ModelNodeKind::Part(part) => &part.mesh,
             _ => unreachable!(),
         };
         assert!(!Arc::ptr_eq(&original_mesh.0, &edited_mesh.0));
@@ -944,23 +1022,24 @@ mod tests {
         ));
         assert_eq!(original_mesh.verts[0], -1.0);
         assert_eq!(
-            crate::deform_cells(&model.param(param).unwrap().bindings[0].values).unwrap()[0].value,
+            crate::model::deform_cells(&model.param(param).unwrap().bindings[0].values).unwrap()[0]
+                .value,
             vec![0.0; 4],
         );
     }
 
     #[test]
     fn duplicate_copies_bindings_and_remaps_internal_masks() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let group = m
-            .add_node(root, EditNode::new("g", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("g", ModelNodeKind::Group))
             .unwrap();
-        let mask_src = m.add_node(group, EditNode::new("mask", part())).unwrap();
-        let masked = m.add_node(group, EditNode::new("masked", part())).unwrap();
+        let mask_src = m.add_node(group, ModelNode::new("mask", part())).unwrap();
+        let masked = m.add_node(group, ModelNode::new("masked", part())).unwrap();
         m.mask_add(masked, mask_src, MaskMode::Mask).unwrap();
 
-        let param = m.add_param(EditParam {
+        let param = m.add_param(ModelParam {
             name: "x".into(),
             is_vec2: false,
             min: [0.0, 0.0],
@@ -970,7 +1049,7 @@ mod tests {
             axis_points_y: vec![0.0],
             bindings: Vec::new(),
         });
-        m.set_binding_key(param, masked, crate::ScalarTarget::Tx, 1, 0, 5.0)
+        m.set_binding_key(param, masked, crate::model::ScalarTarget::Tx, 1, 0, 5.0)
             .unwrap();
 
         let copy = m.duplicate_subtree(group).unwrap();
@@ -982,7 +1061,7 @@ mod tests {
         assert_eq!(copy_children.len(), 2);
         let copy_masked = copy_children[1];
         // internal mask reference points at the copied source, not the original.
-        if let EditNodeKind::Part(p) = &m.node(copy_masked).unwrap().kind {
+        if let ModelNodeKind::Part(p) = &m.node(copy_masked).unwrap().kind {
             assert_eq!(p.masks.len(), 1);
             assert_eq!(p.masks[0].source, copy_children[0]);
         } else {
@@ -1001,17 +1080,17 @@ mod tests {
 
     #[test]
     fn mask_ops_validate_and_reorder() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
-        let a = m.add_node(root, EditNode::new("a", part())).unwrap();
-        let b = m.add_node(root, EditNode::new("b", part())).unwrap();
-        let c = m.add_node(root, EditNode::new("c", part())).unwrap();
-        let target = m.add_node(root, EditNode::new("t", part())).unwrap();
+        let a = m.add_node(root, ModelNode::new("a", part())).unwrap();
+        let b = m.add_node(root, ModelNode::new("b", part())).unwrap();
+        let c = m.add_node(root, ModelNode::new("c", part())).unwrap();
+        let target = m.add_node(root, ModelNode::new("t", part())).unwrap();
 
         assert!(m.mask_add(target, target, MaskMode::Mask).is_err());
         assert!(m
             .mask_add(a, root, MaskMode::Mask)
-            .is_err_and(|e| matches!(e, EditError::NotAPart)));
+            .is_err_and(|e| matches!(e, ModelError::NotAPart)));
 
         m.mask_add(target, a, MaskMode::Mask).unwrap();
         m.mask_add(target, b, MaskMode::DodgeMask).unwrap();
@@ -1019,7 +1098,7 @@ mod tests {
         m.mask_reorder(target, 2, 0).unwrap();
         m.mask_set_mode(target, 1, MaskMode::DodgeMask).unwrap();
         m.mask_delete(target, 2).unwrap();
-        if let EditNodeKind::Part(p) = &m.node(target).unwrap().kind {
+        if let ModelNodeKind::Part(p) = &m.node(target).unwrap().kind {
             assert_eq!(p.masks.len(), 2);
             assert_eq!(p.masks[0].source, c);
             assert_eq!(p.masks[1].source, a);

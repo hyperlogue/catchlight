@@ -1,15 +1,14 @@
 //! Param bindings over the sparse authored-keypoint model: a binding stores
 //! only the cells the rigger set; everything else is derived at puppet build by
-//! `catchlight_core::fill`. Authored = present, so set/partial/unset UX reads
+//! `crate::fill`. Authored = present, so set/partial/unset UX reads
 //! the data shape directly. Cells stay sorted by `(y, x)` so saves stay
 //! byte-stable regardless of authoring order.
 
-use catchlight_core::fill::{derive_dense, FillCell};
-use catchlight_core::formats::clp::{ClpBindingValues, ClpCell, ClpCells};
-use catchlight_core::params::InterpolateMode;
+use crate::fill::{derive_dense, FillCell};
+use crate::formats::clp::{ClpBindingValues, ClpCell, ClpCells};
+use crate::params::InterpolateMode;
 
-use crate::model::*;
-use crate::EditError;
+use super::*;
 
 /// Finite, strictly ordered box. 1D params leave Y at `[0, 0]`.
 pub fn param_range_is_valid(is_vec2: bool, min: [f32; 2], max: [f32; 2]) -> bool {
@@ -113,7 +112,7 @@ impl ScalarTarget {
 
     /// Does this target drive colour? Colour lands on a part or a composite; a
     /// mesh group is never drawn, so `catchlight_core` refuses to load a model
-    /// whose colour binding targets one (`EditModel::check` flags it).
+    /// whose colour binding targets one (`Model::check` flags it).
     pub fn is_color(self) -> bool {
         matches!(
             self,
@@ -240,10 +239,10 @@ pub fn scalar_cells(v: &ClpBindingValues) -> Option<&[ClpCell<f32>]> {
 }
 
 /// Wire names for mask modes (the inverse of the server's parse).
-pub fn mask_mode_name(m: catchlight_core::components::MaskMode) -> &'static str {
+pub fn mask_mode_name(m: crate::components::MaskMode) -> &'static str {
     match m {
-        catchlight_core::components::MaskMode::Mask => "mask",
-        catchlight_core::components::MaskMode::DodgeMask => "dodge",
+        crate::components::MaskMode::Mask => "mask",
+        crate::components::MaskMode::DodgeMask => "dodge",
     }
 }
 
@@ -285,28 +284,28 @@ fn nearest_axis_index(points: &[f32], v: f32) -> u32 {
     best as u32
 }
 
-impl EditModel {
+impl Model {
     /// Axis grid (width, height) of a param; each is at least 1.
-    pub fn param_grid(&self, param: ParamId) -> Result<(u32, u32), EditError> {
-        let p = self.param(param).ok_or(EditError::UnknownParam)?;
+    pub fn param_grid(&self, param: ParamKey) -> Result<(u32, u32), ModelError> {
+        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         Ok((
             p.axis_points_x.len().max(1) as u32,
             p.axis_points_y.len().max(1) as u32,
         ))
     }
 
-    fn check_cell(&self, param: ParamId, x: u32, y: u32) -> Result<(), EditError> {
+    fn check_cell(&self, param: ParamKey, x: u32, y: u32) -> Result<(), ModelError> {
         let (w, h) = self.param_grid(param)?;
         if x >= w || y >= h {
-            return Err(EditError::CellOutOfRange);
+            return Err(ModelError::CellOutOfRange);
         }
         Ok(())
     }
 
     /// The grid cell holding the param's rest pose: nearest keypoint to
     /// `defaults`, mapped into the normalized space the axis points live in.
-    fn rest_cell(&self, param: ParamId) -> Result<[u32; 2], EditError> {
-        let p = self.param(param).ok_or(EditError::UnknownParam)?;
+    fn rest_cell(&self, param: ParamKey) -> Result<[u32; 2], ModelError> {
+        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         Ok([
             nearest_axis_index(&p.axis_points_x, normed(p.defaults[0], p.min[0], p.max[0])),
             nearest_axis_index(&p.axis_points_y, normed(p.defaults[1], p.min[1], p.max[1])),
@@ -314,7 +313,7 @@ impl EditModel {
     }
 
     /// Whether the binding has no authored cells (or doesn't exist yet).
-    fn binding_is_unauthored(&self, param: ParamId, node: NodeId, target: BindingTarget) -> bool {
+    fn binding_is_unauthored(&self, param: ParamKey, node: NodeKey, target: BindingTarget) -> bool {
         self.binding(param, node, target).is_none_or(|b| {
             deform_cells(&b.values)
                 .map(<[_]>::is_empty)
@@ -329,12 +328,12 @@ impl EditModel {
     /// at that value at every parameter position.
     fn author_rest_after_first_key(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
         was_unauthored: bool,
         authored: [u32; 2],
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         if !was_unauthored {
             return Ok(());
         }
@@ -347,23 +346,23 @@ impl EditModel {
 
     fn binding_mut(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
-    ) -> Result<&mut EditBinding, EditError> {
-        let p = self.params.get_mut(param).ok_or(EditError::UnknownParam)?;
+    ) -> Result<&mut ModelBinding, ModelError> {
+        let p = self.params.get_mut(param).ok_or(ModelError::UnknownParam)?;
         p.bindings
             .iter_mut()
             .find(|b| b.node == node && target_of(&b.values) == target)
-            .ok_or(EditError::UnknownBinding)
+            .ok_or(ModelError::UnknownBinding)
     }
 
     pub fn binding(
         &self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
-    ) -> Option<&EditBinding> {
+    ) -> Option<&ModelBinding> {
         self.param(param)?
             .bindings
             .iter()
@@ -374,21 +373,21 @@ impl EditModel {
     /// binding if it does not exist yet (an unset binding contributes nothing).
     pub fn add_scalar_binding(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: ScalarTarget,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         if !self.nodes.contains_key(node) {
-            return Err(EditError::UnknownNode);
+            return Err(ModelError::UnknownNode);
         }
         self.param_grid(param)?;
-        let p = self.params.get_mut(param).ok_or(EditError::UnknownParam)?;
+        let p = self.params.get_mut(param).ok_or(ModelError::UnknownParam)?;
         let exists = p
             .bindings
             .iter()
             .any(|b| b.node == node && target_of(&b.values) == BindingTarget::Scalar(target));
         if !exists {
-            p.bindings.push(EditBinding {
+            p.bindings.push(ModelBinding {
                 node,
                 interpolate_mode: InterpolateMode::Linear,
                 values: target.wrap(ClpCells::default()).into(),
@@ -398,20 +397,20 @@ impl EditModel {
     }
 
     /// Ensure a Deform binding for `node`, everywhere-unset when created.
-    pub fn add_deform_binding(&mut self, param: ParamId, node: NodeId) -> Result<(), EditError> {
+    pub fn add_deform_binding(&mut self, param: ParamKey, node: NodeKey) -> Result<(), ModelError> {
         match self.node(node).map(|n| &n.kind) {
-            Some(EditNodeKind::Part(_)) | Some(EditNodeKind::MeshGroup(_)) => {}
-            Some(_) => return Err(EditError::NotAPart),
-            None => return Err(EditError::UnknownNode),
+            Some(ModelNodeKind::Part(_)) | Some(ModelNodeKind::MeshGroup(_)) => {}
+            Some(_) => return Err(ModelError::NotAPart),
+            None => return Err(ModelError::UnknownNode),
         }
         self.param_grid(param)?;
-        let p = self.params.get_mut(param).ok_or(EditError::UnknownParam)?;
+        let p = self.params.get_mut(param).ok_or(ModelError::UnknownParam)?;
         let exists = p
             .bindings
             .iter()
             .any(|b| b.node == node && target_of(&b.values) == BindingTarget::Deform);
         if !exists {
-            p.bindings.push(EditBinding {
+            p.bindings.push(ModelBinding {
                 node,
                 interpolate_mode: InterpolateMode::Linear,
                 values: ClpBindingValues::Deform(ClpCells::default()).into(),
@@ -424,13 +423,13 @@ impl EditModel {
     /// `(x, y)` indexes the param's axis grid.
     pub fn set_binding_key(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: ScalarTarget,
         x: u32,
         y: u32,
         value: f32,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         // Validate before creating anything — a failed key write must not
         // leave a phantom binding behind.
         self.check_cell(param, x, y)?;
@@ -452,12 +451,12 @@ impl EditModel {
     /// Un-author a keypoint (the cell goes back to derived).
     pub fn unset_binding_key(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
         x: u32,
         y: u32,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         self.check_cell(param, x, y)?;
         let binding = self.binding_mut(param, node, target)?;
         match &mut *binding.values {
@@ -474,12 +473,12 @@ impl EditModel {
     /// Author the do-nothing identity value at a keypoint.
     pub fn reset_binding_key(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
         x: u32,
         y: u32,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         self.check_cell(param, x, y)?;
         let vcount = self.deform_len(node);
         let binding = self.binding_mut(param, node, target)?;
@@ -500,27 +499,27 @@ impl EditModel {
 
     pub fn delete_binding(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
-    ) -> Result<(), EditError> {
-        let p = self.params.get_mut(param).ok_or(EditError::UnknownParam)?;
+    ) -> Result<(), ModelError> {
+        let p = self.params.get_mut(param).ok_or(ModelError::UnknownParam)?;
         let before = p.bindings.len();
         p.bindings
             .retain(|b| !(b.node == node && target_of(&b.values) == target));
         if p.bindings.len() == before {
-            return Err(EditError::UnknownBinding);
+            return Err(ModelError::UnknownBinding);
         }
         Ok(())
     }
 
     pub fn set_binding_interpolate(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
         mode: InterpolateMode,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         self.binding_mut(param, node, target)?.interpolate_mode = mode;
         Ok(())
     }
@@ -528,10 +527,10 @@ impl EditModel {
     /// Negate every authored value.
     pub fn invert_binding(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         let binding = self.binding_mut(param, node, target)?;
         match &mut *binding.values {
             ClpBindingValues::Deform(c) => {
@@ -556,17 +555,17 @@ impl EditModel {
     /// the derived fill — the single implementation every reader shares.
     pub fn scalar_value_at(
         &self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: ScalarTarget,
         cell: [u32; 2],
-    ) -> Result<f32, EditError> {
+    ) -> Result<f32, ModelError> {
         self.check_cell(param, cell[0], cell[1])?;
         let (w, h) = self.param_grid(param)?;
-        let p = self.param(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         let binding = self
             .binding(param, node, BindingTarget::Scalar(target))
-            .ok_or(EditError::UnknownBinding)?;
+            .ok_or(ModelError::UnknownBinding)?;
         let cells = scalar_cells(&binding.values).unwrap_or(&[]);
         Ok(derived_at(
             cells,
@@ -584,14 +583,14 @@ impl EditModel {
     /// everywhere-unset binding evaluates to well-shaped rest offsets.
     pub fn deform_value_at(
         &self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         cell: [u32; 2],
-    ) -> Result<Vec<f32>, EditError> {
+    ) -> Result<Vec<f32>, ModelError> {
         self.check_cell(param, cell[0], cell[1])?;
         let (w, h) = self.param_grid(param)?;
         let identity = vec![0.0f32; self.deform_len(node)];
-        let p = self.param(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         let cells = self
             .binding(param, node, BindingTarget::Deform)
             .and_then(|b| deform_cells(&b.values))
@@ -610,18 +609,18 @@ impl EditModel {
     /// Copy the (derived-or-authored) value at `from` and author it at `to`.
     pub fn copy_binding_key(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         target: BindingTarget,
         from: [u32; 2],
         to: [u32; 2],
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         self.check_cell(param, to[0], to[1])?;
         let was_unauthored = self.binding_is_unauthored(param, node, target);
         match target {
             BindingTarget::Deform => {
                 if self.binding(param, node, target).is_none() {
-                    return Err(EditError::UnknownBinding);
+                    return Err(ModelError::UnknownBinding);
                 }
                 let value = self.deform_value_at(param, node, from)?;
                 let binding = self.binding_mut(param, node, target)?;
@@ -644,14 +643,14 @@ impl EditModel {
     /// `[dx, dy, …]` and must match the node's mesh.
     pub fn set_deform_vertices(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         cell: [u32; 2],
         offsets: Vec<f32>,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         let expected = self.deform_len(node);
         if expected == 0 || offsets.len() != expected {
-            return Err(EditError::NotAPart);
+            return Err(ModelError::NotAPart);
         }
         self.check_cell(param, cell[0], cell[1])?;
         let was_unauthored = self.binding_is_unauthored(param, node, BindingTarget::Deform);
@@ -668,18 +667,18 @@ impl EditModel {
     /// storing the resulting per-vertex offsets in `cell`.
     pub fn set_deform_from_transform(
         &mut self,
-        param: ParamId,
-        node: NodeId,
+        param: ParamKey,
+        node: NodeKey,
         cell: [u32; 2],
         translate: [f32; 2],
         rotate: f32,
         scale: [f32; 2],
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         let (verts, origin) = match self.node(node).map(|n| &n.kind) {
-            Some(EditNodeKind::Part(p)) => (p.mesh.verts.clone(), p.mesh.origin),
-            Some(EditNodeKind::MeshGroup(mg)) => (mg.mesh.verts.clone(), mg.mesh.origin),
-            Some(_) => return Err(EditError::NotAPart),
-            None => return Err(EditError::UnknownNode),
+            Some(ModelNodeKind::Part(p)) => (p.mesh.verts.clone(), p.mesh.origin),
+            Some(ModelNodeKind::MeshGroup(mg)) => (mg.mesh.verts.clone(), mg.mesh.origin),
+            Some(_) => return Err(ModelError::NotAPart),
+            None => return Err(ModelError::UnknownNode),
         };
         let vcount = verts.len() / 2;
         let mut offsets = Vec::with_capacity(vcount * 2);
@@ -697,28 +696,28 @@ impl EditModel {
     }
 
     /// Flat length of the node's mesh vertex array (`2 * vertex count`).
-    pub fn deform_len(&self, node: NodeId) -> usize {
+    pub fn deform_len(&self, node: NodeKey) -> usize {
         match self.node(node).map(|n| &n.kind) {
-            Some(EditNodeKind::Part(p)) => p.mesh.verts.len(),
-            Some(EditNodeKind::MeshGroup(mg)) => mg.mesh.verts.len(),
+            Some(ModelNodeKind::Part(p)) => p.mesh.verts.len(),
+            Some(ModelNodeKind::MeshGroup(mg)) => mg.mesh.verts.len(),
             _ => 0,
         }
     }
 
     // ---- param structure ----
 
-    pub fn set_param_name(&mut self, param: ParamId, name: String) -> Result<(), EditError> {
-        self.param_mut(param).ok_or(EditError::UnknownParam)?.name = name;
+    pub fn set_param_name(&mut self, param: ParamKey, name: String) -> Result<(), ModelError> {
+        self.param_mut(param).ok_or(ModelError::UnknownParam)?.name = name;
         Ok(())
     }
 
     pub fn set_param_defaults(
         &mut self,
-        param: ParamId,
+        param: ParamKey,
         defaults: [f32; 2],
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         self.param_mut(param)
-            .ok_or(EditError::UnknownParam)?
+            .ok_or(ModelError::UnknownParam)?
             .defaults = defaults;
         Ok(())
     }
@@ -728,16 +727,16 @@ impl EditModel {
     /// and don't move).
     pub fn set_param_range(
         &mut self,
-        param: ParamId,
+        param: ParamKey,
         min: [f32; 2],
         max: [f32; 2],
-    ) -> Result<(), EditError> {
-        let p = self.param_mut(param).ok_or(EditError::UnknownParam)?;
+    ) -> Result<(), ModelError> {
+        let p = self.param_mut(param).ok_or(ModelError::UnknownParam)?;
         // A collapsed or inverted range can't map poses onto the normalized
         // axis. The Y axis of a 1D param legitimately stays [0, 0]. Axis
         // points are normalized, so the keypoints themselves don't move.
         if !param_range_is_valid(p.is_vec2, min, max) {
-            return Err(EditError::CellOutOfRange);
+            return Err(ModelError::CellOutOfRange);
         }
         p.min = min;
         p.max = max;
@@ -745,10 +744,10 @@ impl EditModel {
     }
 
     /// Axis 0 is x; axis 1 is y and only exists on vec2 params.
-    fn check_axis(&self, param: ParamId, axis: u8) -> Result<(), EditError> {
-        let p = self.param(param).ok_or(EditError::UnknownParam)?;
+    fn check_axis(&self, param: ParamKey, axis: u8) -> Result<(), ModelError> {
+        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         if axis > 1 || (axis == 1 && !p.is_vec2) {
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         Ok(())
     }
@@ -759,26 +758,26 @@ impl EditModel {
     /// column/row derives.
     pub fn axis_insert(
         &mut self,
-        param: ParamId,
+        param: ParamKey,
         axis: u8,
         value: f32,
-    ) -> Result<usize, EditError> {
+    ) -> Result<usize, ModelError> {
         self.check_axis(param, axis)?;
-        let p = self.param(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         let points = if axis == 0 {
             &p.axis_points_x
         } else {
             &p.axis_points_y
         };
         if points.iter().any(|&v| (v - value).abs() <= f32::EPSILON) {
-            return Err(EditError::CellOutOfRange);
+            return Err(ModelError::CellOutOfRange);
         }
         if !(value > 0.0 && value < 1.0) {
-            return Err(EditError::CellOutOfRange);
+            return Err(ModelError::CellOutOfRange);
         }
         let idx = points.iter().take_while(|&&v| v < value).count();
 
-        let p = self.param_mut(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param_mut(param).ok_or(ModelError::UnknownParam)?;
         if axis == 0 {
             p.axis_points_x.insert(idx, value);
         } else {
@@ -796,9 +795,14 @@ impl EditModel {
 
     /// Remove an interior axis point; its authored cells are dropped and the
     /// rest shift back.
-    pub fn axis_delete(&mut self, param: ParamId, axis: u8, index: usize) -> Result<(), EditError> {
+    pub fn axis_delete(
+        &mut self,
+        param: ParamKey,
+        axis: u8,
+        index: usize,
+    ) -> Result<(), ModelError> {
         self.check_axis(param, axis)?;
-        let p = self.param(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         let len = if axis == 0 {
             p.axis_points_x.len()
         } else {
@@ -806,9 +810,9 @@ impl EditModel {
         };
         if index == 0 || index + 1 >= len {
             // Endpoints define the range; they can't be removed.
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
-        let p = self.param_mut(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param_mut(param).ok_or(ModelError::UnknownParam)?;
         if axis == 0 {
             p.axis_points_x.remove(index);
         } else {
@@ -829,9 +833,9 @@ impl EditModel {
     /// normalized range and every binding cell moves to the mirrored index.
     /// Values are untouched (compose with `invert_binding` for negating
     /// semantics).
-    pub fn param_flip(&mut self, param: ParamId, axis: u8) -> Result<(), EditError> {
+    pub fn param_flip(&mut self, param: ParamKey, axis: u8) -> Result<(), ModelError> {
         self.check_axis(param, axis)?;
-        let p = self.param_mut(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param_mut(param).ok_or(ModelError::UnknownParam)?;
         let points = if axis == 0 {
             &mut p.axis_points_x
         } else {
@@ -852,23 +856,23 @@ impl EditModel {
     /// strictly between neighbors. Cells are index-keyed and stay authored.
     pub fn axis_move(
         &mut self,
-        param: ParamId,
+        param: ParamKey,
         axis: u8,
         index: usize,
         value: f32,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), ModelError> {
         self.check_axis(param, axis)?;
-        let p = self.param_mut(param).ok_or(EditError::UnknownParam)?;
+        let p = self.param_mut(param).ok_or(ModelError::UnknownParam)?;
         let points = if axis == 0 {
             &mut p.axis_points_x
         } else {
             &mut p.axis_points_y
         };
         if index == 0 || index + 1 >= points.len() {
-            return Err(EditError::IndexOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         if value <= points[index - 1] || value >= points[index + 1] {
-            return Err(EditError::CellOutOfRange);
+            return Err(ModelError::CellOutOfRange);
         }
         points[index] = value;
         Ok(())
@@ -899,7 +903,7 @@ fn derived_at<T: FillCell>(
         .unwrap_or_else(|| identity.clone())
 }
 
-fn shift_cells(p: &mut EditParam, axis: u8, f: impl Fn(u32) -> u32) {
+fn shift_cells(p: &mut ModelParam, axis: u8, f: impl Fn(u32) -> u32) {
     for b in &mut p.bindings {
         match &mut *b.values {
             ClpBindingValues::Deform(c) => {
@@ -928,7 +932,7 @@ fn shift_cells(p: &mut EditParam, axis: u8, f: impl Fn(u32) -> u32) {
     }
 }
 
-fn drop_cells_at(p: &mut EditParam, axis: u8, coord: u32) {
+fn drop_cells_at(p: &mut ModelParam, axis: u8, coord: u32) {
     for b in &mut p.bindings {
         match &mut *b.values {
             ClpBindingValues::Deform(c) => {
@@ -969,8 +973,8 @@ mod tests {
         assert!(!param_range_is_valid(false, [f32::NAN, 0.0], [1.0, 0.0]));
     }
 
-    fn param_1d(m: &mut EditModel) -> ParamId {
-        m.add_param(EditParam {
+    fn param_1d(m: &mut Model) -> ParamKey {
+        m.add_param(ModelParam {
             name: "x".into(),
             is_vec2: false,
             min: [-1.0, 0.0],
@@ -984,10 +988,10 @@ mod tests {
 
     #[test]
     fn set_unset_reset_key_roundtrip() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
 
@@ -1027,10 +1031,10 @@ mod tests {
 
     #[test]
     fn copy_key_takes_derived_values() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
         m.set_binding_key(param, node, ScalarTarget::Tx, 0, 0, -60.0)
@@ -1055,10 +1059,10 @@ mod tests {
 
     #[test]
     fn invert_and_delete_binding() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
         m.set_binding_key(param, node, ScalarTarget::Rz, 2, 0, 0.5)
@@ -1083,17 +1087,17 @@ mod tests {
 
     #[test]
     fn deform_from_transform_writes_offsets() {
-        use catchlight_core::components::BlendMode;
-        use catchlight_core::formats::clp::{ClpIndices, ClpMesh};
+        use crate::components::BlendMode;
+        use crate::formats::clp::{ClpIndices, ClpMesh};
 
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let part = m
             .add_node(
                 root,
-                EditNode::new(
+                ModelNode::new(
                     "q",
-                    EditNodeKind::Part(EditPart {
+                    ModelNodeKind::Part(ModelPart {
                         mesh: ClpMesh {
                             verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
                             uvs: vec![0.0; 8],
@@ -1112,7 +1116,7 @@ mod tests {
                 ),
             )
             .unwrap();
-        let param = m.add_param(EditParam {
+        let param = m.add_param(ModelParam {
             name: "d".into(),
             is_vec2: false,
             min: [0.0, 0.0],
@@ -1141,10 +1145,10 @@ mod tests {
 
     #[test]
     fn axis_ops_remap_authored_cells() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
             .unwrap();
         let param = param_1d(&mut m);
         m.set_binding_key(param, node, ScalarTarget::Tx, 0, 0, -60.0)
@@ -1197,12 +1201,12 @@ mod tests {
 
     #[test]
     fn param_flip_mirrors_axis_points_and_cells() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         let node = m
-            .add_node(root, EditNode::new("p", EditNodeKind::Group))
+            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
             .unwrap();
-        let param = m.add_param(EditParam {
+        let param = m.add_param(ModelParam {
             name: "x".into(),
             is_vec2: false,
             min: [-1.0, 0.0],
