@@ -13,7 +13,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clp::{
     ClpIndices, ClpMesh, ClpPhysics, ClpTransform, TextureAlpha, TextureEncoding,
 };
@@ -212,10 +211,10 @@ impl ModelManifestExt for Model {
         budget.charge(LoadResource::Nodes, manifest.nodes.len() as u64)?;
         budget.charge(LoadResource::Params, manifest.params.len() as u64)?;
         let mut m = Model::new();
-        m.physics = ClpPhysics {
+        m.set_physics(ClpPhysics {
             pixels_per_meter: manifest.physics.pixels_per_meter,
             gravity: manifest.physics.gravity,
-        };
+        });
 
         let mut tex_ids: HashMap<&str, TexKey> = HashMap::new();
         let mut tex_dims: HashMap<&str, (f32, f32)> = HashMap::new();
@@ -259,7 +258,7 @@ impl ModelManifestExt for Model {
                     still.push(mn);
                     continue;
                 };
-                let kind = build_kind(mn, &tex_ids, &tex_dims, budget)?;
+                let (kind, albedo) = build_kind(mn, &tex_ids, &tex_dims, budget)?;
                 let mut node =
                     ModelNode::new(mn.name.clone().unwrap_or_else(|| mn.id.clone()), kind);
                 node.transform = ClpTransform {
@@ -271,6 +270,10 @@ impl ModelManifestExt for Model {
                 let id = m
                     .add_node(parent, node)
                     .map_err(|_| ManifestError::UnknownParent(mn.id.clone(), "<root>".into()))?;
+                if albedo.is_some() {
+                    m.set_part_albedo(id, albedo)
+                        .map_err(|_| ManifestError::UnknownKind(mn.id.clone(), "part".into()))?;
+                }
                 resolved.insert(mn.id.as_str(), id);
             }
             if still.len() == before {
@@ -313,7 +316,6 @@ impl ModelManifestExt for Model {
                 defaults: mp.defaults,
                 axis_points_x: axis_x,
                 axis_points_y: axis_y,
-                bindings: Vec::new(),
             });
         }
 
@@ -356,7 +358,7 @@ impl ModelManifestExt for Model {
             };
             let (kind, texture) = match &n.kind {
                 ModelNodeKind::Part(p) => {
-                    ("part", p.albedo.and_then(|t| tex_name.get(&t).cloned()))
+                    ("part", p.albedo().and_then(|t| tex_name.get(&t).cloned()))
                 }
                 _ => ("group", None),
             };
@@ -392,8 +394,8 @@ impl ModelManifestExt for Model {
         Manifest {
             name: String::new(),
             physics: ManifestPhysics {
-                pixels_per_meter: self.physics.pixels_per_meter,
-                gravity: self.physics.gravity,
+                pixels_per_meter: self.physics().pixels_per_meter,
+                gravity: self.physics().gravity,
             },
             textures,
             nodes,
@@ -407,9 +409,9 @@ fn build_kind(
     tex_ids: &HashMap<&str, TexKey>,
     tex_dims: &HashMap<&str, (f32, f32)>,
     budget: &mut LoadBudget,
-) -> Result<ModelNodeKind, ManifestError> {
+) -> Result<(ModelNodeKind, Option<TexKey>), ManifestError> {
     match mn.kind.as_str() {
-        "group" => Ok(ModelNodeKind::Group),
+        "group" => Ok((ModelNodeKind::Group, None)),
         "part" => {
             let albedo = match &mn.texture {
                 Some(t) => Some(
@@ -431,16 +433,7 @@ fn build_kind(
                     None => ClpMesh::default(),
                 },
             };
-            Ok(ModelNodeKind::Part(ModelPart {
-                mesh: mesh.into(),
-                albedo,
-                opacity: 1.0,
-                blend_mode: BlendMode::Normal,
-                tint: [1.0; 3],
-                screen_tint: [0.0; 3],
-                masks: Vec::new(),
-                mask_threshold: 0.5,
-            }))
+            Ok((ModelNodeKind::Part(ModelPart::new(mesh)), albedo))
         }
         other => Err(ManifestError::UnknownKind(mn.id.clone(), other.to_string())),
     }
@@ -607,8 +600,8 @@ mod tests {
             .find(|&id| matches!(m.node(id).map(|n| &n.kind), Some(ModelNodeKind::Part(_))))
             .unwrap();
         if let Some(ModelNodeKind::Part(p)) = m.node(face).map(|n| &n.kind) {
-            assert_eq!(p.mesh.verts.len() / 2, 9); // 3x3 grid vertices
-            assert!(p.albedo.is_some());
+            assert_eq!(p.mesh().verts.len() / 2, 9); // 3x3 grid vertices
+            assert!(p.albedo().is_some());
         } else {
             panic!("expected a part");
         }
@@ -736,16 +729,7 @@ mod tests {
             root,
             ModelNode::new(
                 "ghost",
-                ModelNodeKind::Part(ModelPart {
-                    mesh: ClpMesh::default().into(),
-                    albedo: None,
-                    opacity: 1.0,
-                    blend_mode: BlendMode::Normal,
-                    tint: [1.0; 3],
-                    screen_tint: [0.0; 3],
-                    masks: Vec::new(),
-                    mask_threshold: 0.5,
-                }),
+                ModelNodeKind::Part(ModelPart::new(ClpMesh::default())),
             ),
         )
         .unwrap();

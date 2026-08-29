@@ -1,4 +1,4 @@
-//! The file boundary: stable ids in memory <-> array indices on disk.
+//! The file boundary: stable keys in memory <-> array indices on disk.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,11 +58,11 @@ impl Model {
         let mut params = Vec::with_capacity(self.param_ids().len());
         for &pid in self.param_ids() {
             let p = self.param(pid).ok_or(ModelError::UnknownParam)?;
-            let mut bindings = Vec::with_capacity(p.bindings.len());
-            for b in &p.bindings {
+            let mut bindings = Vec::new();
+            for b in self.bindings_of_param(pid) {
                 bindings.push(ClpBinding {
-                    node: *node_index.get(&b.node).ok_or(ModelError::UnknownNode)?,
-                    interpolate_mode: b.interpolate_mode,
+                    node: *node_index.get(&b.node()).ok_or(ModelError::UnknownNode)?,
+                    interpolate_mode: b.interpolate_mode(),
                     values: b.values.to_clp(),
                 });
             }
@@ -88,19 +88,19 @@ impl Model {
             });
         }
 
-        let mut welds = Vec::with_capacity(self.welds.len());
-        for w in &self.welds {
+        let mut welds = Vec::with_capacity(self.welds().len());
+        for w in self.welds() {
             welds.push(ClpWeld {
-                a: *node_index.get(&w.a).ok_or(ModelError::UnknownNode)?,
-                b: *node_index.get(&w.b).ok_or(ModelError::UnknownNode)?,
-                pairs: (*w.pairs).clone(),
+                a: *node_index.get(&w.a()).ok_or(ModelError::UnknownNode)?,
+                b: *node_index.get(&w.b()).ok_or(ModelError::UnknownNode)?,
+                pairs: w.pairs().to_vec(),
             });
         }
 
         Ok(ClpFile {
             version: FORMAT_VERSION,
             doc: ClpDocument {
-                physics: self.physics,
+                physics: *self.physics(),
                 nodes,
                 params,
                 welds,
@@ -115,8 +115,8 @@ impl Model {
         Ok(clp::encode(&file.doc, &file.textures)?)
     }
 
-    /// Rebuild an [`Model`] from a decoded `.clp`, recovering a fresh stable
-    /// id per arena slot and rewiring every index back to an id. Errors on an
+    /// Rebuild a [`Model`] from a decoded `.clp`, recovering a fresh stable
+    /// key per arena slot and rewiring every index back to a key. Errors on an
     /// invalid node arena or an out-of-range cross-reference.
     pub fn from_clp_file(file: &ClpFile) -> Result<Model, ModelError> {
         Self::from_clp_file_with_budget(file, &mut LoadBudget::default())
@@ -141,7 +141,6 @@ impl Model {
 
         let mut textures = SlotMap::with_key();
         let mut texture_order = Vec::with_capacity(file.textures.len());
-        let mut tex_ids = Vec::with_capacity(file.textures.len());
         for t in &file.textures {
             let id = textures.insert(ModelTexture {
                 encoding: t.encoding,
@@ -149,12 +148,11 @@ impl Model {
                 data: Arc::new(t.data.clone()),
             });
             texture_order.push(id);
-            tex_ids.push(id);
         }
+        let tex_ids = texture_order.clone();
 
         let mut params: SlotMap<ParamKey, ModelParam> = SlotMap::with_key();
         let mut param_order = Vec::with_capacity(doc.params.len());
-        let mut param_ids = Vec::with_capacity(doc.params.len());
         for p in &doc.params {
             let id = params.insert(ModelParam {
                 name: p.name.clone(),
@@ -164,11 +162,10 @@ impl Model {
                 defaults: p.defaults,
                 axis_points_x: p.axis_points_x.clone(),
                 axis_points_y: p.axis_points_y.clone(),
-                bindings: Vec::new(),
             });
             param_order.push(id);
-            param_ids.push(id);
         }
+        let param_ids = param_order.clone();
 
         let mut nodes: SlotMap<NodeKey, ModelNode> = SlotMap::with_key();
         let mut node_ids = Vec::with_capacity(doc.nodes.len());
@@ -199,32 +196,31 @@ impl Model {
         }
         let root = node_ids[0];
 
+        let mut bindings = Vec::new();
         for (j, cp) in doc.params.iter().enumerate() {
-            let mut bindings = Vec::with_capacity(cp.bindings.len());
             for b in &cp.bindings {
+                let node = *node_ids
+                    .get(b.node as usize)
+                    .ok_or(ModelError::UnknownNode)?;
                 bindings.push(ModelBinding {
-                    node: *node_ids
-                        .get(b.node as usize)
-                        .ok_or(ModelError::UnknownNode)?,
+                    key: BindingKey::new(param_ids[j], node, target_of(&b.values)),
                     interpolate_mode: b.interpolate_mode,
                     values: b.values.clone().into(),
                 });
-            }
-            if let Some(p) = params.get_mut(param_ids[j]) {
-                p.bindings = bindings;
             }
         }
 
         let mut welds = Vec::with_capacity(doc.welds.len());
         for w in &doc.welds {
-            welds.push(ModelWeld {
-                a: *node_ids.get(w.a as usize).ok_or(ModelError::UnknownNode)?,
-                b: *node_ids.get(w.b as usize).ok_or(ModelError::UnknownNode)?,
-                pairs: Arc::new(w.pairs.clone()),
-            });
+            welds.push(ModelWeld::new(
+                *node_ids.get(w.a as usize).ok_or(ModelError::UnknownNode)?,
+                *node_ids.get(w.b as usize).ok_or(ModelError::UnknownNode)?,
+                w.pairs.clone(),
+            ));
         }
 
         Ok(Model {
+            generation: 0,
             physics: doc.physics,
             welds,
             nodes,
@@ -233,6 +229,7 @@ impl Model {
             param_order,
             textures,
             texture_order,
+            bindings,
         })
     }
 
@@ -250,8 +247,8 @@ fn flatten_kind(
     Ok(match kind {
         ModelNodeKind::Group => ClpNodeKind::Group,
         ModelNodeKind::Part(p) => ClpNodeKind::Part(ClpPart {
-            mesh: p.mesh.to_clp(),
-            albedo: match p.albedo {
+            mesh: p.mesh().clone(),
+            albedo: match p.albedo() {
                 Some(t) => *tex_index.get(&t).ok_or(ModelError::UnknownTexture)?,
                 None => u32::MAX,
             },
@@ -259,7 +256,7 @@ fn flatten_kind(
             blend_mode: p.blend_mode,
             tint: p.tint,
             screen_tint: p.screen_tint,
-            masks: flatten_masks(&p.masks, node_index)?,
+            masks: flatten_masks(p.masks(), node_index)?,
             mask_threshold: p.mask_threshold,
         }),
         ModelNodeKind::Composite(c) => ClpNodeKind::Composite(ClpComposite {
@@ -267,7 +264,7 @@ fn flatten_kind(
             blend_mode: c.blend_mode,
             tint: c.tint,
             screen_tint: c.screen_tint,
-            masks: flatten_masks(&c.masks, node_index)?,
+            masks: flatten_masks(c.masks(), node_index)?,
             mask_threshold: c.mask_threshold,
             propagate_meshgroup: c.propagate_meshgroup,
         }),
@@ -276,7 +273,7 @@ fn flatten_kind(
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
-            target_param: match ph.target_param {
+            target_param: match ph.target_param() {
                 Some(p) => Some(*param_index.get(&p).ok_or(ModelError::UnknownParam)?),
                 None => None,
             },
@@ -298,8 +295,8 @@ fn flatten_masks(
         .iter()
         .map(|m| {
             Ok(ClpMask {
-                source: *node_index.get(&m.source).ok_or(ModelError::UnknownNode)?,
-                mode: m.mode,
+                source: *node_index.get(&m.source()).ok_or(ModelError::UnknownNode)?,
+                mode: m.mode(),
             })
         })
         .collect()
@@ -313,9 +310,9 @@ fn unflatten_kind(
 ) -> Result<ModelNodeKind, ModelError> {
     Ok(match kind {
         ClpNodeKind::Group => ModelNodeKind::Group,
-        ClpNodeKind::Part(p) => ModelNodeKind::Part(ModelPart {
-            mesh: p.mesh.clone().into(),
-            albedo: if p.albedo == u32::MAX {
+        ClpNodeKind::Part(p) => {
+            let mut part = ModelPart::new(p.mesh.clone());
+            part.albedo = if p.albedo == u32::MAX {
                 None
             } else {
                 Some(
@@ -323,39 +320,43 @@ fn unflatten_kind(
                         .get(p.albedo as usize)
                         .ok_or(ModelError::UnknownTexture)?,
                 )
-            },
-            opacity: p.opacity,
-            blend_mode: p.blend_mode,
-            tint: p.tint,
-            screen_tint: p.screen_tint,
-            masks: unflatten_masks(&p.masks, node_ids)?,
-            mask_threshold: p.mask_threshold,
-        }),
-        ClpNodeKind::Composite(c) => ModelNodeKind::Composite(ModelComposite {
-            opacity: c.opacity,
-            blend_mode: c.blend_mode,
-            tint: c.tint,
-            screen_tint: c.screen_tint,
-            masks: unflatten_masks(&c.masks, node_ids)?,
-            mask_threshold: c.mask_threshold,
-            propagate_meshgroup: c.propagate_meshgroup,
-        }),
+            };
+            part.opacity = p.opacity;
+            part.blend_mode = p.blend_mode;
+            part.tint = p.tint;
+            part.screen_tint = p.screen_tint;
+            part.masks = unflatten_masks(&p.masks, node_ids)?;
+            part.mask_threshold = p.mask_threshold;
+            ModelNodeKind::Part(part)
+        }
+        ClpNodeKind::Composite(c) => {
+            let mut composite = ModelComposite::new();
+            composite.opacity = c.opacity;
+            composite.blend_mode = c.blend_mode;
+            composite.tint = c.tint;
+            composite.screen_tint = c.screen_tint;
+            composite.masks = unflatten_masks(&c.masks, node_ids)?;
+            composite.mask_threshold = c.mask_threshold;
+            composite.propagate_meshgroup = c.propagate_meshgroup;
+            ModelNodeKind::Composite(composite)
+        }
         ClpNodeKind::MeshGroup(mg) => ModelNodeKind::MeshGroup(ModelMeshGroup::from_clp(mg)),
-        ClpNodeKind::SimplePhysics(ph) => ModelNodeKind::SimplePhysics(ModelPhysics {
-            kind: ph.kind,
-            map_mode: ph.map_mode,
-            local_only: ph.local_only,
-            target_param: match ph.target_param {
+        ClpNodeKind::SimplePhysics(ph) => {
+            let mut physics = ModelPhysics::new(ph.kind);
+            physics.map_mode = ph.map_mode;
+            physics.local_only = ph.local_only;
+            physics.target_param = match ph.target_param {
                 Some(i) => Some(*param_ids.get(i as usize).ok_or(ModelError::UnknownParam)?),
                 None => None,
-            },
-            gravity: ph.gravity,
-            length: ph.length,
-            frequency: ph.frequency,
-            angle_damping: ph.angle_damping,
-            length_damping: ph.length_damping,
-            output_scale: ph.output_scale,
-        }),
+            };
+            physics.gravity = ph.gravity;
+            physics.length = ph.length;
+            physics.frequency = ph.frequency;
+            physics.angle_damping = ph.angle_damping;
+            physics.length_damping = ph.length_damping;
+            physics.output_scale = ph.output_scale;
+            ModelNodeKind::SimplePhysics(physics)
+        }
     })
 }
 
@@ -395,35 +396,27 @@ mod tests {
                 root,
                 ModelNode::new(
                     "Body",
-                    ModelNodeKind::Part(ModelPart {
-                        mesh: ClpMesh {
-                            verts: vec![-1.0, -1.0, 1.0, -1.0, 0.0, 1.0],
-                            uvs: vec![0.0, 1.0, 1.0, 1.0, 0.5, 0.0],
-                            indices: ClpIndices::U16(vec![0, 1, 2]),
-                            origin: [0.0, 0.0],
-                        }
-                        .into(),
-                        albedo: Some(tex),
-                        opacity: 1.0,
-                        blend_mode: BlendMode::Normal,
-                        tint: [1.0; 3],
-                        screen_tint: [0.0; 3],
-                        masks: Vec::new(),
-                        mask_threshold: 0.5,
-                    }),
+                    ModelNodeKind::Part(ModelPart::new(ClpMesh {
+                        verts: vec![-1.0, -1.0, 1.0, -1.0, 0.0, 1.0],
+                        uvs: vec![0.0, 1.0, 1.0, 1.0, 0.5, 0.0],
+                        indices: ClpIndices::U16(vec![0, 1, 2]),
+                        origin: [0.0, 0.0],
+                    })),
                 ),
             )
             .unwrap();
+        m.set_part_albedo(part, Some(tex)).unwrap();
         let mask_src = m
-            .add_node(root, ModelNode::new("MaskSrc", ModelNodeKind::Group))
+            .add_node(
+                root,
+                ModelNode::new(
+                    "MaskSrc",
+                    ModelNodeKind::Part(ModelPart::new(ClpMesh::default())),
+                ),
+            )
             .unwrap();
-        if let Some(ModelNodeKind::Part(p)) = m.node_mut(part).map(|n| &mut n.kind) {
-            p.masks.push(ModelMask {
-                source: mask_src,
-                mode: MaskMode::DodgeMask,
-            });
-        }
-        m.add_param(ModelParam {
+        m.mask_add(part, mask_src, MaskMode::DodgeMask).unwrap();
+        let param = m.add_param(ModelParam {
             name: "Mouth".into(),
             is_vec2: false,
             min: [0.0, 0.0],
@@ -431,18 +424,18 @@ mod tests {
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-            bindings: vec![ModelBinding {
-                node: part,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::Deform(ClpCells {
-                    cells: vec![ClpCell {
-                        x: 1,
-                        y: 0,
-                        value: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                    }],
-                })
-                .into(),
-            }],
+        });
+        m.bindings.push(ModelBinding {
+            key: BindingKey::new(param, part, BindingTarget::Deform),
+            interpolate_mode: InterpolateMode::Linear,
+            values: ClpBindingValues::Deform(ClpCells {
+                cells: vec![ClpCell {
+                    x: 1,
+                    y: 0,
+                    value: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                }],
+            })
+            .into(),
         });
         m
     }
@@ -453,10 +446,7 @@ mod tests {
         let bytes = m.to_clp_bytes().unwrap();
         let m2 = Model::from_clp_bytes(&bytes).unwrap();
         let bytes2 = m2.to_clp_bytes().unwrap();
-        assert_eq!(
-            bytes, bytes2,
-            "edit-model -> clp -> edit-model must be byte-stable"
-        );
+        assert_eq!(bytes, bytes2, "model -> clp -> model must be byte-stable");
         assert_eq!(clp::decode(&bytes).unwrap(), m2.flatten().unwrap());
     }
 
@@ -509,12 +499,11 @@ mod tests {
         let part = m
             .nodes_in_order()
             .into_iter()
-            .find(|&id| matches!(m.node(id).map(|n| &n.kind), Some(ModelNodeKind::Part(_))))
+            .find(|&id| m.node(id).is_some_and(|n| n.name == "Body"))
             .unwrap();
         m.delete_node(part).unwrap();
         // the surviving param must have dropped the binding that targeted it.
-        let pid = m.param_ids()[0];
-        assert!(m.param(pid).unwrap().bindings.is_empty());
+        assert_eq!(m.bindings().count(), 0);
         // still flattens cleanly (no dangling index).
         assert!(m.to_clp_bytes().is_ok());
     }
@@ -533,5 +522,32 @@ mod tests {
         assert!(matches!(m.reparent(root, a), Err(ModelError::Root(_))));
         // a legal move is fine.
         assert!(m.reparent(b, root).is_ok());
+    }
+
+    /// `BlendMode` reaches the wire through the part's public fields; pin one
+    /// so the round-trip test above isn't the only thing that touches them.
+    #[test]
+    fn part_colour_fields_reach_the_wire() {
+        let mut m = sample();
+        let part = m
+            .nodes_in_order()
+            .into_iter()
+            .find(|&id| m.node(id).is_some_and(|n| n.name == "Body"))
+            .unwrap();
+        m.update_node(part, |n| {
+            if let ModelNodeKind::Part(p) = &mut n.kind {
+                p.blend_mode = BlendMode::Multiply;
+                p.opacity = 0.25;
+            }
+        })
+        .unwrap();
+        let file = m.flatten().unwrap();
+        match &file.doc.nodes[1].kind {
+            ClpNodeKind::Part(p) => {
+                assert_eq!(p.blend_mode, BlendMode::Multiply);
+                assert_eq!(p.opacity, 0.25);
+            }
+            _ => panic!("expected a part at index 1"),
+        }
     }
 }

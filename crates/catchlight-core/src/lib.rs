@@ -25,10 +25,10 @@ pub use importer::{
 pub use load::*;
 pub use load_budget::*;
 pub use model::{
-    deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingTarget,
-    CheckWarning, Model, ModelBinding, ModelBindingValues, ModelComposite, ModelError, ModelMask,
-    ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics,
-    ModelTexture, ModelWeld, NodeKey, ParamKey, ScalarTarget, TexKey,
+    deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
+    BindingTarget, CheckWarning, Model, ModelBinding, ModelBindingValues, ModelComposite,
+    ModelError, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam,
+    ModelPart, ModelPhysics, ModelTexture, ModelWeld, NodeKey, ParamKey, ScalarTarget, TexKey,
 };
 pub use node::*;
 pub use params::*;

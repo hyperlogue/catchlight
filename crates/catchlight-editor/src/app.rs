@@ -365,11 +365,11 @@ impl App {
         let pid = catchlight_core::ParamKey::from_ffi(param.0);
         let data = editor
             .with_model(session, |m| {
-                let p = m.param(pid)?;
+                m.param(pid)?;
                 let mut authored_count = vec![0u32; w * h];
                 let mut rows = Vec::new();
-                for b in &p.bindings {
-                    let target = catchlight_core::target_of(&b.values);
+                for b in m.bindings_of_param(pid) {
+                    let target = b.target();
                     let mut mark = |x: u32, y: u32| {
                         // A stray out-of-grid cell must not wrap into another
                         // row's slot.
@@ -381,30 +381,30 @@ impl App {
                         }
                     };
                     let mut authored_at = false;
-                    if let Some(cells) = catchlight_core::scalar_cells(&b.values) {
+                    if let Some(cells) = catchlight_core::scalar_cells(b.values()) {
                         for c in cells {
                             mark(c.x, c.y);
                             authored_at |= [c.x, c.y] == cell;
                         }
                     }
-                    if let Some(cells) = catchlight_core::deform_cells(&b.values) {
+                    if let Some(cells) = catchlight_core::deform_cells(b.values()) {
                         for c in cells {
                             mark(c.x, c.y);
                             authored_at |= [c.x, c.y] == cell;
                         }
                     }
                     rows.push(BindingRow {
-                        node: NodeRef(b.node.to_ffi()),
+                        node: NodeRef(b.node().to_ffi()),
                         node_name: m
-                            .node(b.node)
+                            .node(b.node())
                             .map(|n| n.name.clone())
                             .unwrap_or_else(|| "?".into()),
                         target: target.name().to_string(),
-                        interpolate: interp_name(b.interpolate_mode).to_string(),
+                        interpolate: interp_name(b.interpolate_mode()).to_string(),
                         authored_at_cell: authored_at,
                     });
                 }
-                let total = p.bindings.len() as u32;
+                let total = rows.len() as u32;
                 let states = authored_count
                     .into_iter()
                     .map(|n| {
@@ -476,7 +476,8 @@ impl App {
         let key_at = |t: T| {
             editor
                 .with_model(session, |m| {
-                    m.scalar_value_at(pid, nid, t, cell).unwrap_or(t.identity())
+                    m.scalar_value_at(&scalar_key(pid, nid, t), cell)
+                        .unwrap_or(t.identity())
                 })
                 .unwrap_or(t.identity())
         };
@@ -600,14 +601,12 @@ impl App {
         let editor = self.editor.clone();
         let Ok(Some((mesh, tex_bytes))) = editor.with_model(session, |m| {
             let albedo = match m.node(id).map(|n| &n.kind) {
-                Some(ModelNodeKind::Part(p)) => p.albedo,
+                Some(ModelNodeKind::Part(p)) => p.albedo(),
                 Some(ModelNodeKind::MeshGroup(_)) => None,
                 _ => return None,
             };
             let mesh = m.node_mesh(id)?.clone();
-            let bytes = albedo
-                .and_then(|t| m.texture(t))
-                .map(|t| t.data.as_ref().clone());
+            let bytes = albedo.and_then(|t| m.texture(t)).map(|t| t.data.to_vec());
             Some((mesh, bytes))
         }) else {
             self.status = "mesh edit: node has no mesh".into();
@@ -837,7 +836,16 @@ impl App {
                         .with_model(session, |m| {
                             let src_mesh = m.node_mesh(src_id)?.clone();
                             let dst_verts = m.node_mesh(dst_id)?.verts.clone();
-                            let src_offsets = m.deform_value_at(pid, src_id, src_cell).ok()?;
+                            let src_offsets = m
+                                .deform_value_at(
+                                    &catchlight_core::BindingKey::new(
+                                        pid,
+                                        src_id,
+                                        BindingTarget::Deform,
+                                    ),
+                                    src_cell,
+                                )
+                                .ok()?;
                             Some(catchlight_editor_core::refit_deform_offsets(
                                 &src_mesh,
                                 &dst_verts,
@@ -864,7 +872,8 @@ impl App {
                             let BindingTarget::Scalar(t) = BindingTarget::parse(&target)? else {
                                 return None;
                             };
-                            m.scalar_value_at(pid, src_id, t, src_cell).ok()
+                            m.scalar_value_at(&scalar_key(pid, src_id, t), src_cell)
+                                .ok()
                         })
                         .ok()
                         .flatten();
@@ -1889,7 +1898,13 @@ impl App {
         let nid = NodeKey::from_ffi(node.0);
         let editor = self.editor.clone();
         let base = editor
-            .with_model(session, |m| m.deform_value_at(pid, nid, cell).ok())
+            .with_model(session, |m| {
+                m.deform_value_at(
+                    &catchlight_core::BindingKey::new(pid, nid, BindingTarget::Deform),
+                    cell,
+                )
+                .ok()
+            })
             .ok()
             .flatten();
         let Some(mut offsets) = base else { return };
@@ -2197,9 +2212,9 @@ impl App {
         ui.separator();
         ui.label("Puppet physics");
         let editor = self.editor.clone();
-        let Ok((gravity, ppm)) =
-            editor.with_model(session, |m| (m.physics.gravity, m.physics.pixels_per_meter))
-        else {
+        let Ok((gravity, ppm)) = editor.with_model(session, |m| {
+            (m.physics().gravity, m.physics().pixels_per_meter)
+        }) else {
             return;
         };
         let mut g = gravity;
@@ -2409,6 +2424,15 @@ impl App {
     }
 }
 
+/// The binding a scalar target on one node is driven by, for one param.
+fn scalar_key(
+    param: catchlight_core::ParamKey,
+    node: NodeKey,
+    target: catchlight_core::ScalarTarget,
+) -> catchlight_core::BindingKey {
+    catchlight_core::BindingKey::new(param, node, BindingTarget::Scalar(target))
+}
+
 fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
     let id = NodeKey::from_ffi(node.0);
     let n = model.node(id)?;
@@ -2421,11 +2445,11 @@ fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
                 tint: p.tint,
                 screen_tint: p.screen_tint,
                 mask_threshold: p.mask_threshold,
-                masks: mask_rows(model, &p.masks),
+                masks: mask_rows(model, p.masks()),
             },
-            albedo: p.albedo.map(|t| TexRef(t.to_ffi())),
-            vert_count: p.mesh.verts.len() / 2,
-            tri_count: match &p.mesh.indices {
+            albedo: p.albedo().map(|t| TexRef(t.to_ffi())),
+            vert_count: p.mesh().verts.len() / 2,
+            tri_count: match &p.mesh().indices {
                 catchlight_core::formats::clp::ClpIndices::U16(v) => v.len() / 3,
                 catchlight_core::formats::clp::ClpIndices::U32(v) => v.len() / 3,
             },
@@ -2437,20 +2461,20 @@ fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
                 tint: c.tint,
                 screen_tint: c.screen_tint,
                 mask_threshold: c.mask_threshold,
-                masks: mask_rows(model, &c.masks),
+                masks: mask_rows(model, c.masks()),
             },
             propagate_meshgroup: c.propagate_meshgroup,
         },
         ModelNodeKind::MeshGroup(mg) => InspectorKind::MeshGroup {
             dynamic: mg.dynamic,
             translate_children: mg.translate_children,
-            vert_count: mg.mesh.verts.len() / 2,
+            vert_count: mg.mesh().verts.len() / 2,
         },
         ModelNodeKind::SimplePhysics(ph) => InspectorKind::Physics {
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
-            target_param: ph.target_param.map(|p| ParamRef(p.to_ffi())),
+            target_param: ph.target_param().map(|p| ParamRef(p.to_ffi())),
             gravity: ph.gravity,
             length: ph.length,
             frequency: ph.frequency,
@@ -2476,10 +2500,10 @@ fn mask_rows(model: &Model, masks: &[catchlight_core::ModelMask]) -> Vec<MaskRow
         .iter()
         .map(|m| MaskRow {
             source_name: model
-                .node(m.source)
+                .node(m.source())
                 .map(|n| n.name.clone())
                 .unwrap_or_else(|| "?".into()),
-            mode: m.mode,
+            mode: m.mode(),
         })
         .collect()
 }
