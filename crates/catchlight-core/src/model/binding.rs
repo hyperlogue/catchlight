@@ -8,11 +8,23 @@
 //! [`BindingKey`] — the param, the node and the property — so nothing has to
 //! walk a param's private list to find one.
 
-use crate::fill::{derive_dense, FillCell};
+use std::sync::OnceLock;
+
+use crate::fill::derive_dense;
 use crate::formats::clp::{ClpBindingValues, ClpCell, ClpCells};
 use crate::params::InterpolateMode;
 
 use super::*;
+
+/// A binding's dense evaluation grid, row-major over its cell grid: what the
+/// author set at a keypoint and what [`crate::fill`] derived everywhere else.
+/// Always exactly one shape for one binding — a deform binding's grid holds a
+/// flat `[dx, dy, …]` per cell, every other target one `f32`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DenseGrid {
+    Scalar(Vec<f32>),
+    Deform(Vec<Vec<f32>>),
+}
 
 /// A finite, strictly increasing range. A collapsed or inverted one cannot map
 /// a pose onto the normalized key positions.
@@ -537,6 +549,7 @@ impl Model {
             key: key.clone(),
             interpolate_mode: InterpolateMode::Linear,
             values: values.into(),
+            dense: OnceLock::new(),
         });
         self.bump();
         Ok(())
@@ -557,7 +570,7 @@ impl Model {
         let was_unauthored = self.binding_is_unauthored(key);
         self.add_binding(key)?;
         let binding = self.binding_mut(key)?;
-        if let Some(cells) = scalar_cells_mut(binding.values.make_mut()) {
+        if let Some(cells) = scalar_cells_mut(binding.values_mut()) {
             upsert(cells, cell, value);
         }
         self.bump();
@@ -573,7 +586,7 @@ impl Model {
         self.check_cell(key, cell)?;
         let binding = self.binding_mut(key)?;
         let [x, y] = cell;
-        match binding.values.make_mut() {
+        match binding.values_mut() {
             ClpBindingValues::Deform(c) => c.cells.retain(|c| !(c.x == x && c.y == y)),
             other => {
                 if let Some(cells) = scalar_cells_mut(other) {
@@ -599,7 +612,7 @@ impl Model {
         let vcount = self.deform_len(&key.node);
         let target = key.target;
         let binding = self.binding_mut(key)?;
-        match binding.values.make_mut() {
+        match binding.values_mut() {
             ClpBindingValues::Deform(c) => upsert(&mut c.cells, cell, vec![0.0; vcount]),
             other => {
                 let identity = match target {
@@ -638,7 +651,7 @@ impl Model {
     /// Negate every authored value.
     pub fn invert_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
         let binding = self.binding_mut(key)?;
-        match binding.values.make_mut() {
+        match binding.values_mut() {
             ClpBindingValues::Deform(c) => {
                 for cell in &mut c.cells {
                     for v in &mut cell.value {
@@ -658,29 +671,72 @@ impl Model {
         Ok(())
     }
 
+    /// The binding's dense grid: the value at every cell of it, authored or
+    /// derived by [`crate::fill`]. Built on the first read and shared until
+    /// the cells, the key positions or the mesh it came from move — so a
+    /// reader that walks a whole grid pays for the fill once.
+    pub fn binding_dense(&self, key: &BindingKey) -> Option<&Arc<DenseGrid>> {
+        let binding = self.binding(key)?;
+        Some(
+            binding
+                .dense
+                .get_or_init(|| Arc::new(self.derive_grid(key))),
+        )
+    }
+
+    fn derive_grid(&self, key: &BindingKey) -> DenseGrid {
+        let (w, h) = self.binding_grid(key).unwrap_or((1, 1));
+        let (axis_x, axis_y) = self
+            .binding_axes(key)
+            .unwrap_or((&SINGLE_POSITION[..], &SINGLE_POSITION[..]));
+        let (w, h) = (w as usize, h as usize);
+        let values = self.binding(key).map(|b| &b.values);
+        match values.map(|v| &**v) {
+            Some(ClpBindingValues::Deform(c)) => {
+                let identity = vec![0.0f32; self.deform_len(&key.node)];
+                let authored: Vec<((u32, u32), Vec<f32>)> = c
+                    .cells
+                    .iter()
+                    .map(|c| ((c.x, c.y), c.value.clone()))
+                    .collect();
+                DenseGrid::Deform(derive_dense(w, h, axis_x, axis_y, &authored, &identity))
+            }
+            other => {
+                let identity = match key.target {
+                    BindingTarget::Scalar(t) => t.identity(),
+                    BindingTarget::Deform => 0.0,
+                };
+                let authored: Vec<((u32, u32), f32)> = other
+                    .and_then(scalar_cells)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|c| ((c.x, c.y), c.value))
+                    .collect();
+                DenseGrid::Scalar(derive_dense(w, h, axis_x, axis_y, &authored, &identity))
+            }
+        }
+    }
+
     /// The evaluated scalar value at a cell: authored if present, otherwise
     /// the derived fill — the single implementation every reader shares.
     pub fn scalar_value_at(&self, key: &BindingKey, cell: [u32; 2]) -> Result<f32, ModelError> {
-        let target = key.target.scalar()?;
+        key.target.scalar()?;
         self.check_cell(key, cell)?;
-        let (w, h) = self.binding_grid(key)?;
-        let (axis_x, axis_y) = self.binding_axes(key)?;
-        let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
-        let cells = scalar_cells(&binding.values).unwrap_or(&[]);
-        Ok(derived_at(
-            cells,
-            w,
-            h,
-            axis_x,
-            axis_y,
-            cell,
-            &target.identity(),
-        ))
+        let (w, _) = self.binding_grid(key)?;
+        let dense = self.binding_dense(key).ok_or(ModelError::UnknownBinding)?;
+        match &**dense {
+            DenseGrid::Scalar(values) => values
+                .get((cell[1] * w + cell[0]) as usize)
+                .copied()
+                .ok_or(ModelError::CellOutOfRange),
+            DenseGrid::Deform(_) => Err(ModelError::WrongTarget),
+        }
     }
 
     /// The evaluated deform offsets at a cell: authored if present, otherwise
     /// the derived fill; the identity is zeros sized to the node's mesh, so an
-    /// everywhere-unset binding evaluates to well-shaped rest offsets.
+    /// everywhere-unset — or entirely absent — binding evaluates to
+    /// well-shaped rest offsets.
     pub fn deform_value_at(
         &self,
         key: &BindingKey,
@@ -690,14 +746,17 @@ impl Model {
             return Err(ModelError::WrongTarget);
         }
         self.check_cell(key, cell)?;
-        let (w, h) = self.binding_grid(key)?;
-        let (axis_x, axis_y) = self.binding_axes(key)?;
-        let identity = vec![0.0f32; self.deform_len(&key.node)];
-        let cells = self
-            .binding(key)
-            .and_then(|b| deform_cells(&b.values))
-            .unwrap_or(&[]);
-        Ok(derived_at(cells, w, h, axis_x, axis_y, cell, &identity))
+        let (w, _) = self.binding_grid(key)?;
+        let Some(dense) = self.binding_dense(key) else {
+            return Ok(vec![0.0f32; self.deform_len(&key.node)]);
+        };
+        match &**dense {
+            DenseGrid::Deform(values) => values
+                .get((cell[1] * w + cell[0]) as usize)
+                .cloned()
+                .ok_or(ModelError::CellOutOfRange),
+            DenseGrid::Scalar(_) => Err(ModelError::WrongTarget),
+        }
     }
 
     /// Copy the (derived-or-authored) value at `from` and author it at `to`.
@@ -716,14 +775,14 @@ impl Model {
                 }
                 let value = self.deform_value_at(key, from)?;
                 let binding = self.binding_mut(key)?;
-                if let ClpBindingValues::Deform(c) = binding.values.make_mut() {
+                if let ClpBindingValues::Deform(c) = binding.values_mut() {
                     upsert(&mut c.cells, to, value);
                 }
             }
             BindingTarget::Scalar(_) => {
                 let value = self.scalar_value_at(key, from)?;
                 let binding = self.binding_mut(key)?;
-                if let Some(cells) = scalar_cells_mut(binding.values.make_mut()) {
+                if let Some(cells) = scalar_cells_mut(binding.values_mut()) {
                     upsert(cells, to, value);
                 }
             }
@@ -751,7 +810,7 @@ impl Model {
         let was_unauthored = self.binding_is_unauthored(key);
         self.add_binding(key)?;
         let binding = self.binding_mut(key)?;
-        if let ClpBindingValues::Deform(c) = binding.values.make_mut() {
+        if let ClpBindingValues::Deform(c) = binding.values_mut() {
             upsert(&mut c.cells, cell, offsets);
         }
         self.bump();
@@ -902,7 +961,8 @@ impl Model {
 
     /// Move an interior key position to normalized `value`; it must stay
     /// strictly between its neighbours. Cells are index-keyed and stay
-    /// authored.
+    /// authored, but the fill weighs them by position, so every grid the param
+    /// feeds is re-derived.
     pub fn key_move(
         &mut self,
         param: &ParamId,
@@ -917,6 +977,11 @@ impl Model {
             return Err(ModelError::CellOutOfRange);
         }
         points[index] = value;
+        for b in &mut self.bindings {
+            if b.key.params.contains(param) {
+                b.invalidate_dense();
+            }
+        }
         self.bump();
         Ok(())
     }
@@ -928,7 +993,7 @@ impl Model {
             let Some(axis) = b.key.params.axis_of(param) else {
                 continue;
             };
-            let cells: &mut dyn CellCoords = match b.values.make_mut() {
+            let cells: &mut dyn CellCoords = match b.values_mut() {
                 ClpBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
                     Some(cells) => cells,
@@ -944,7 +1009,7 @@ impl Model {
             let Some(axis) = b.key.params.axis_of(param) else {
                 continue;
             };
-            let cells: &mut dyn CellCoords = match b.values.make_mut() {
+            let cells: &mut dyn CellCoords = match b.values_mut() {
                 ClpBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
                     Some(cells) => cells,
@@ -984,30 +1049,6 @@ impl<T> CellCoords for Vec<ClpCell<T>> {
             }
         });
     }
-}
-
-/// Value of a cell as evaluated — authored value if present, derived otherwise.
-fn derived_at<T: FillCell>(
-    cells: &[ClpCell<T>],
-    w: u32,
-    h: u32,
-    axis_x: &[f32],
-    axis_y: &[f32],
-    at: [u32; 2],
-    identity: &T,
-) -> T {
-    if let Some(c) = cells.iter().find(|c| c.x == at[0] && c.y == at[1]) {
-        return c.value.clone();
-    }
-    let authored: Vec<((u32, u32), T)> = cells
-        .iter()
-        .map(|c| ((c.x, c.y), c.value.clone()))
-        .collect();
-    let dense = derive_dense(w as usize, h as usize, axis_x, axis_y, &authored, identity);
-    dense
-        .into_iter()
-        .nth((at[1] * w + at[0]) as usize)
-        .unwrap_or_else(|| identity.clone())
 }
 
 #[cfg(test)]
