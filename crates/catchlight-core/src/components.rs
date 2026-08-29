@@ -204,7 +204,7 @@ pub struct PartData {
     pub screen_tint: Vec3,
     pub base_screen_tint: Vec3,
     pub blend_mode: BlendMode,
-    pub masks: Vec<MaskBinding>,
+    pub masks: Vec<Mask>,
     pub mask_threshold: f32,
     pub deform_stack: crate::deform::DeformStack,
 }
@@ -237,7 +237,7 @@ pub struct CompositeData {
     pub screen_tint: Vec3,
     pub base_screen_tint: Vec3,
     pub blend_mode: BlendMode,
-    pub masks: Vec<MaskBinding>,
+    pub masks: Vec<Mask>,
     pub propagate_mesh_group: bool,
     pub mask_threshold: f32,
 }
@@ -529,7 +529,7 @@ pub enum MaskMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct MaskBinding {
+pub struct Mask {
     pub source_uuid: u32,
     pub mode: MaskMode,
 }
