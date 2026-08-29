@@ -20,6 +20,9 @@ pub enum ImportError {
     #[error(transparent)]
     LoadLimit(#[from] crate::load_budget::LoadLimitError),
 
+    #[error(transparent)]
+    MeshGroupColorBinding(#[from] crate::params::MeshGroupColorBindingError),
+
     #[error("missing required field: {0}")]
     MissingField(&'static str),
 

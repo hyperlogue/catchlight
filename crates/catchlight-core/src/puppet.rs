@@ -399,7 +399,6 @@ impl Puppet {
         match &mut node.kind {
             crate::NodeKind::Part(part) => part.opacity = opacity,
             crate::NodeKind::Composite(composite) => composite.opacity = opacity,
-            crate::NodeKind::MeshGroup(mesh_group) => mesh_group.opacity = opacity,
             _ => return false,
         }
         true
@@ -425,7 +424,6 @@ impl Puppet {
         match &mut node.kind {
             crate::NodeKind::Part(part) => part.blend_mode = blend_mode,
             crate::NodeKind::Composite(composite) => composite.blend_mode = blend_mode,
-            crate::NodeKind::MeshGroup(mesh_group) => mesh_group.blend_mode = blend_mode,
             _ => return false,
         }
         self.bump_node_revision();
@@ -643,11 +641,6 @@ impl Puppet {
                     c.opacity = c.base_opacity;
                     c.tint = c.base_tint;
                     c.screen_tint = c.base_screen_tint;
-                }
-                crate::NodeKind::MeshGroup(mg) => {
-                    mg.opacity = mg.base_opacity;
-                    mg.tint = mg.base_tint;
-                    mg.screen_tint = mg.base_screen_tint;
                 }
                 crate::NodeKind::SimplePhysics(p) => {
                     p.offset_output_scale = glam::Vec2::ONE;

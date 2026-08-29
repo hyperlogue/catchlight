@@ -17,8 +17,8 @@ use crate::{
 
 use super::error::ImportError;
 use super::schema::{
-    SchemaAnimation, SchemaBinding, SchemaMask, SchemaMesh, SchemaNode, SchemaParam,
-    SchemaPuppetPhysics, SchemaTransform,
+    source_binding_is_color, SchemaAnimation, SchemaBinding, SchemaMask, SchemaMesh, SchemaNode,
+    SchemaParam, SchemaPuppetPhysics, SchemaTransform,
 };
 
 /// Default puppet-level physics constants from inochi2d
@@ -306,18 +306,10 @@ fn convert_mesh_group(schema: &SchemaNode) -> Result<MeshGroupData, ImportError>
         .map(convert_mesh)
         .transpose()?
         .unwrap_or_default();
-    // Inochi2D 0.8.6: opacity defaults to 1 when absent.
-    let opacity = schema.opacity.unwrap_or(1.0);
     let deform_stack = DeformStack::new(mesh.vertices.len());
+    schema.log_dropped_mesh_group_color();
     Ok(MeshGroupData {
         mesh,
-        opacity,
-        base_opacity: opacity,
-        tint: convert_vec3(&schema.tint, Vec3::ONE),
-        base_tint: convert_vec3(&schema.tint, Vec3::ONE),
-        screen_tint: convert_vec3(&schema.screen_tint, Vec3::ZERO),
-        base_screen_tint: convert_vec3(&schema.screen_tint, Vec3::ZERO),
-        blend_mode: convert_blend_mode(schema.blend_mode.as_deref())?,
         // Inochi2D 0.8.6: dynamic_deformation / translate_children default false.
         dynamic: schema.dynamic_deformation.unwrap_or(false),
         translate_children: schema.translate_children.unwrap_or(false),
@@ -619,6 +611,22 @@ fn convert_binding(b: &SchemaBinding, puppet: &Puppet) -> Option<Binding> {
     // Missing param_name falls through the match below to `_ => None`, which
     // drops the binding. Treating absence as "" mirrors that.
     let kind = b.param_name.as_deref().unwrap_or("");
+    // A mesh group is never drawn and carries no colour, so a colour binding on
+    // one has nowhere to land. Drop it here rather than write it out: the `.clp`
+    // loader rejects that shape outright.
+    if source_binding_is_color(kind)
+        && matches!(
+            puppet.get(node).map(|n| &n.kind),
+            Some(NodeKind::MeshGroup(_))
+        )
+    {
+        tracing::debug!(
+            "dropping {:?} binding on mesh group node {}: a mesh group is never drawn",
+            kind,
+            node_uuid
+        );
+        return None;
+    }
     let mode = convert_interpolate_mode(b.interpolate_mode.as_deref());
     let values_json = b.values.as_ref()?;
 
