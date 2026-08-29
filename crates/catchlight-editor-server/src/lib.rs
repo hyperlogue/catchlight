@@ -26,14 +26,14 @@ use catchlight_core::formats::clp::{ClpIndices, ClpMesh, TextureAlpha, TextureEn
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Vec2;
-use catchlight_core::{from_clp_cached, Puppet, TexturePrepCache};
-use catchlight_editor_core::{
-    BindingTarget, EditComposite, EditError, EditMeshGroup, EditModel, EditNode, EditNodeKind,
-    EditParam, EditPart, EditPhysics, EditTexture, ManifestError, NodeId, ParamId, ScalarTarget,
-    TexId,
+use catchlight_core::{
+    from_clp_cached, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup, ModelNode,
+    ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, NodeKey, ParamKey, Puppet,
+    ScalarTarget, TexKey, TexturePrepCache,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use catchlight_editor_core::{Manifest, TextureData};
+use catchlight_editor_core::{Manifest, ModelManifestExt as _, TextureData};
+use catchlight_editor_core::{ManifestError, ModelMeshExt as _};
 
 /// Per-session undo history depth.
 const UNDO_DEPTH: usize = 64;
@@ -64,7 +64,7 @@ pub enum EditorError {
     #[error("session has no file; pass a path to save")]
     NoSavePath,
     #[error("edit: {0}")]
-    Edit(#[from] EditError),
+    Edit(#[from] ModelError),
     #[error("manifest: {0}")]
     Manifest(#[from] ManifestError),
     #[error("io: {0}")]
@@ -78,7 +78,7 @@ pub enum EditorError {
 }
 
 struct Session {
-    model: EditModel,
+    model: Model,
     title: String,
     file: Option<PathBuf>,
     rev: u64,
@@ -99,19 +99,19 @@ struct Session {
 }
 
 struct HistoryEntry {
-    model: EditModel,
+    model: Model,
     bytes: usize,
 }
 
 impl HistoryEntry {
-    fn new(model: EditModel) -> Self {
+    fn new(model: Model) -> Self {
         let bytes = model.estimated_size_bytes();
         Self { model, bytes }
     }
 }
 
 impl Session {
-    fn new(model: EditModel, title: String, file: Option<PathBuf>) -> Self {
+    fn new(model: Model, title: String, file: Option<PathBuf>) -> Self {
         Self {
             model,
             title,
@@ -134,7 +134,7 @@ impl Session {
         self.puppet_dirty = true;
     }
 
-    fn push_undo(&mut self, snapshot: EditModel) {
+    fn push_undo(&mut self, snapshot: Model) {
         self.history_bytes = self.history_bytes.saturating_sub(
             self.redo
                 .iter()
@@ -263,7 +263,7 @@ impl Editor {
         title: impl Into<String>,
         bytes: &[u8],
     ) -> Result<SessionId, EditorError> {
-        let model = EditModel::from_clp_bytes(bytes)?;
+        let model = Model::from_clp_bytes(bytes)?;
         let id = self.alloc_id();
         self.insert_session(id, Session::new(model, title.into(), None));
         Ok(id)
@@ -305,7 +305,7 @@ impl Editor {
     pub fn with_model<R>(
         &self,
         id: SessionId,
-        f: impl FnOnce(&EditModel) -> R,
+        f: impl FnOnce(&Model) -> R,
     ) -> Result<R, EditorError> {
         let session = self.session(id)?;
         let s = lock(&session);
@@ -322,7 +322,7 @@ impl Editor {
     ) -> Result<TexRef, EditorError> {
         image_dims(&bytes)?;
         self.edit_session(id, |s| {
-            let tex = s.model.add_texture(EditTexture {
+            let tex = s.model.add_texture(ModelTexture {
                 encoding,
                 alpha: TextureAlpha::Straight,
                 data: Arc::new(bytes),
@@ -435,13 +435,13 @@ impl Editor {
             Command::SessionNew { name } => {
                 let id = self.alloc_id();
                 let title = name.unwrap_or_else(|| format!("untitled-{}", id.0));
-                self.insert_session(id, Session::new(EditModel::new(), title, None));
+                self.insert_session(id, Session::new(Model::new(), title, None));
                 Ok(ResponseBody::Session { session: id })
             }
             #[cfg(not(target_arch = "wasm32"))]
             Command::SessionOpen { path } => {
                 let path = PathBuf::from(path);
-                let model = EditModel::from_clp_bytes(&std::fs::read(&path)?)?;
+                let model = Model::from_clp_bytes(&std::fs::read(&path)?)?;
                 let id = self.alloc_id();
                 let title = file_stem(&path);
                 self.insert_session(id, Session::new(model, title, Some(path)));
@@ -466,7 +466,7 @@ impl Editor {
                         },
                     );
                 }
-                let model = EditModel::from_manifest(&manifest, &data)?;
+                let model = Model::from_manifest(&manifest, &data)?;
                 let id = self.alloc_id();
                 let title = if manifest.name.is_empty() {
                     file_stem(&mpath)
@@ -589,8 +589,8 @@ impl Editor {
                 name,
             } => self.edit_session(session, |s| {
                 let node =
-                    EditNode::new(name.unwrap_or_else(|| default_name(kind)), make_kind(kind));
-                let id = s.model.add_node(NodeId::from_ffi(parent.0), node)?;
+                    ModelNode::new(name.unwrap_or_else(|| default_name(kind)), make_kind(kind));
+                let id = s.model.add_node(NodeKey::from_ffi(parent.0), node)?;
                 s.touch();
                 Ok(ResponseBody::Node {
                     node: NodeRef(id.to_ffi()),
@@ -602,13 +602,13 @@ impl Editor {
                 patch,
             } => self.edit_session(session, |s| {
                 if let Some(tref) = patch.texture {
-                    if s.model.texture(TexId::from_ffi(tref.0)).is_none() {
+                    if s.model.texture(TexKey::from_ffi(tref.0)).is_none() {
                         return Err(EditorError::NoTexture(tref));
                     }
                 }
                 let n = s
                     .model
-                    .node_mut(NodeId::from_ffi(node.0))
+                    .node_mut(NodeKey::from_ffi(node.0))
                     .ok_or(EditorError::NoNode(node))?;
                 apply_patch(n, &patch)?;
                 s.touch();
@@ -616,7 +616,7 @@ impl Editor {
             }),
             Command::NodeReparent { session, node, to } => self.edit_session(session, |s| {
                 s.model
-                    .reparent(NodeId::from_ffi(node.0), NodeId::from_ffi(to.0))?;
+                    .reparent(NodeKey::from_ffi(node.0), NodeKey::from_ffi(to.0))?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -625,7 +625,7 @@ impl Editor {
                 node,
                 index,
             } => self.edit_session(session, |s| {
-                s.model.reorder(NodeId::from_ffi(node.0), index as usize)?;
+                s.model.reorder(NodeKey::from_ffi(node.0), index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -635,8 +635,8 @@ impl Editor {
                 parent,
                 index,
             } => self.edit_session(session, |s| {
-                let id = NodeId::from_ffi(node.0);
-                s.model.reparent(id, NodeId::from_ffi(parent.0))?;
+                let id = NodeKey::from_ffi(node.0);
+                s.model.reparent(id, NodeKey::from_ffi(parent.0))?;
                 // reorder can only fail on unknown/root, both excluded by the
                 // successful reparent — the combined edit stays atomic.
                 s.model.reorder(id, index as usize)?;
@@ -644,7 +644,7 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDuplicate { session, node } => self.edit_session(session, |s| {
-                let copy = s.model.duplicate_subtree(NodeId::from_ffi(node.0))?;
+                let copy = s.model.duplicate_subtree(NodeKey::from_ffi(node.0))?;
                 s.touch();
                 Ok(ResponseBody::Node {
                     node: NodeRef(copy.to_ffi()),
@@ -658,7 +658,7 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let mode = parse_mask_mode(&mode)?;
                 s.model
-                    .mask_add(NodeId::from_ffi(node.0), NodeId::from_ffi(source.0), mode)?;
+                    .mask_add(NodeKey::from_ffi(node.0), NodeKey::from_ffi(source.0), mode)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -670,7 +670,7 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let mode = parse_mask_mode(&mode)?;
                 s.model
-                    .mask_set_mode(NodeId::from_ffi(node.0), index as usize, mode)?;
+                    .mask_set_mode(NodeKey::from_ffi(node.0), index as usize, mode)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -681,7 +681,7 @@ impl Editor {
                 to,
             } => self.edit_session(session, |s| {
                 s.model
-                    .mask_reorder(NodeId::from_ffi(node.0), index as usize, to as usize)?;
+                    .mask_reorder(NodeKey::from_ffi(node.0), index as usize, to as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -691,7 +691,7 @@ impl Editor {
                 index,
             } => self.edit_session(session, |s| {
                 s.model
-                    .mask_delete(NodeId::from_ffi(node.0), index as usize)?;
+                    .mask_delete(NodeKey::from_ffi(node.0), index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -721,7 +721,7 @@ impl Editor {
                 let target = match (clear_target_param, target_param) {
                     (true, _) => Some(None),
                     (false, Some(p)) => {
-                        let pid = ParamId::from_ffi(p.0);
+                        let pid = ParamKey::from_ffi(p.0);
                         if s.model.param(pid).is_none() {
                             return Err(EditorError::BadTarget("target param".into()));
                         }
@@ -731,9 +731,9 @@ impl Editor {
                 };
                 let n = s
                     .model
-                    .node_mut(NodeId::from_ffi(node.0))
+                    .node_mut(NodeKey::from_ffi(node.0))
                     .ok_or(EditorError::NoNode(node))?;
-                let EditNodeKind::SimplePhysics(ph) = &mut n.kind else {
+                let ModelNodeKind::SimplePhysics(ph) = &mut n.kind else {
                     return Err(EditorError::BadTarget("not a physics node".into()));
                 };
                 if let Some(m) = parsed_kind {
@@ -784,7 +784,7 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDelete { session, node } => self.edit_session(session, |s| {
-                s.model.delete_node(NodeId::from_ffi(node.0))?;
+                s.model.delete_node(NodeKey::from_ffi(node.0))?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -792,7 +792,7 @@ impl Editor {
             Command::TextureAdd { session, path } => self.edit_session(session, |s| {
                 let bytes = std::fs::read(&path)?;
                 image_dims(&bytes)?; // validate it decodes
-                let id = s.model.add_texture(EditTexture {
+                let id = s.model.add_texture(ModelTexture {
                     encoding: encoding_from_path(&path),
                     alpha: TextureAlpha::Straight,
                     data: Arc::new(bytes),
@@ -826,8 +826,8 @@ impl Editor {
                 axis_x,
                 axis_y,
             } => self.edit_session(session, |s| {
-                if !catchlight_editor_core::param_range_is_valid(vec2, min, max) {
-                    return Err(EditError::CellOutOfRange.into());
+                if !catchlight_core::param_range_is_valid(vec2, min, max) {
+                    return Err(ModelError::CellOutOfRange.into());
                 }
                 let axis_points_x = if axis_x.is_empty() {
                     vec![0.0, 1.0]
@@ -843,7 +843,7 @@ impl Editor {
                 } else {
                     vec![0.0]
                 };
-                let id = s.model.add_param(EditParam {
+                let id = s.model.add_param(ModelParam {
                     name,
                     is_vec2: vec2,
                     min,
@@ -871,12 +871,12 @@ impl Editor {
                 max,
                 defaults,
             } => self.edit_session(session, |s| {
-                let pid = ParamId::from_ffi(param.0);
+                let pid = ParamKey::from_ffi(param.0);
                 if let Some(n) = name {
                     s.model.set_param_name(pid, n)?;
                 }
                 if min.is_some() || max.is_some() {
-                    let p = s.model.param(pid).ok_or(EditError::UnknownParam)?;
+                    let p = s.model.param(pid).ok_or(ModelError::UnknownParam)?;
                     let new_min = min.unwrap_or(p.min);
                     let new_max = max.unwrap_or(p.max);
                     s.model.set_param_range(pid, new_min, new_max)?;
@@ -888,7 +888,7 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::ParamDelete { session, param } => self.edit_session(session, |s| {
-                s.model.delete_param(ParamId::from_ffi(param.0))?;
+                s.model.delete_param(ParamKey::from_ffi(param.0))?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -899,7 +899,7 @@ impl Editor {
                 value,
             } => self.edit_session(session, |s| {
                 s.model
-                    .axis_insert(ParamId::from_ffi(param.0), axis, value)?;
+                    .axis_insert(ParamKey::from_ffi(param.0), axis, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -910,7 +910,7 @@ impl Editor {
                 index,
             } => self.edit_session(session, |s| {
                 s.model
-                    .axis_delete(ParamId::from_ffi(param.0), axis, index as usize)?;
+                    .axis_delete(ParamKey::from_ffi(param.0), axis, index as usize)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -922,7 +922,7 @@ impl Editor {
                 value,
             } => self.edit_session(session, |s| {
                 s.model
-                    .axis_move(ParamId::from_ffi(param.0), axis, index as usize, value)?;
+                    .axis_move(ParamKey::from_ffi(param.0), axis, index as usize, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -931,7 +931,7 @@ impl Editor {
                 param,
                 axis,
             } => self.edit_session(session, |s| {
-                s.model.param_flip(ParamId::from_ffi(param.0), axis)?;
+                s.model.param_flip(ParamKey::from_ffi(param.0), axis)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -952,8 +952,8 @@ impl Editor {
                     .collect::<Result<_, _>>()?;
                 for (t, value) in parsed {
                     s.model.set_binding_key(
-                        ParamId::from_ffi(param.0),
-                        NodeId::from_ffi(node.0),
+                        ParamKey::from_ffi(param.0),
+                        NodeKey::from_ffi(node.0),
                         t,
                         cell[0],
                         cell[1],
@@ -972,8 +972,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 s.model.unset_binding_key(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     t,
                     cell[0],
                     cell[1],
@@ -990,8 +990,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 s.model.reset_binding_key(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     t,
                     cell[0],
                     cell[1],
@@ -1006,8 +1006,11 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model
-                    .delete_binding(ParamId::from_ffi(param.0), NodeId::from_ffi(node.0), t)?;
+                s.model.delete_binding(
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
+                    t,
+                )?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1021,8 +1024,8 @@ impl Editor {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 let m = parse_interpolate_mode(&mode)?;
                 s.model.set_binding_interpolate(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     t,
                     m,
                 )?;
@@ -1036,8 +1039,11 @@ impl Editor {
                 target,
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
-                s.model
-                    .invert_binding(ParamId::from_ffi(param.0), NodeId::from_ffi(node.0), t)?;
+                s.model.invert_binding(
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
+                    t,
+                )?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1051,8 +1057,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 s.model.copy_binding_key(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     t,
                     from,
                     to,
@@ -1068,8 +1074,8 @@ impl Editor {
                 offsets,
             } => self.edit_session(session, |s| {
                 s.model.set_deform_vertices(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     cell,
                     offsets,
                 )?;
@@ -1098,7 +1104,7 @@ impl Editor {
                     ClpIndices::U32(indices)
                 };
                 s.model.set_mesh_with_refit(
-                    NodeId::from_ffi(node.0),
+                    NodeKey::from_ffi(node.0),
                     ClpMesh {
                         verts,
                         uvs,
@@ -1110,13 +1116,13 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::MeshCopy { session, from, to } => self.edit_session(session, |s| {
-                let mesh = match s.model.node(NodeId::from_ffi(from.0)).map(|n| &n.kind) {
-                    Some(EditNodeKind::Part(p)) => p.mesh.to_clp(),
-                    Some(EditNodeKind::MeshGroup(mg)) => mg.mesh.to_clp(),
+                let mesh = match s.model.node(NodeKey::from_ffi(from.0)).map(|n| &n.kind) {
+                    Some(ModelNodeKind::Part(p)) => p.mesh.to_clp(),
+                    Some(ModelNodeKind::MeshGroup(mg)) => mg.mesh.to_clp(),
                     Some(_) => return Err(EditorError::BadTarget("not a meshed node".into())),
                     None => return Err(EditorError::NoNode(from)),
                 };
-                s.model.set_mesh_with_refit(NodeId::from_ffi(to.0), mesh)?;
+                s.model.set_mesh_with_refit(NodeKey::from_ffi(to.0), mesh)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1146,7 +1152,7 @@ impl Editor {
                     .ok_or_else(|| EditorError::BadTarget(kind.clone()))?;
                 let target = match target_param {
                     Some(p) => {
-                        let pid = ParamId::from_ffi(p.0);
+                        let pid = ParamKey::from_ffi(p.0);
                         if s.model.param(pid).is_none() {
                             return Err(EditorError::BadTarget("target param".into()));
                         }
@@ -1154,7 +1160,7 @@ impl Editor {
                     }
                     None => None,
                 };
-                let phys = EditPhysics {
+                let phys = ModelPhysics {
                     kind: phys_kind,
                     map_mode: PhysicsParamMapMode::default(),
                     local_only: false,
@@ -1166,11 +1172,11 @@ impl Editor {
                     length_damping: length_damping.unwrap_or(0.5),
                     output_scale: [1.0, 1.0],
                 };
-                let node = EditNode::new(
+                let node = ModelNode::new(
                     name.unwrap_or_else(|| "Physics".into()),
-                    EditNodeKind::SimplePhysics(phys),
+                    ModelNodeKind::SimplePhysics(phys),
                 );
-                let id = s.model.add_node(NodeId::from_ffi(parent.0), node)?;
+                let id = s.model.add_node(NodeKey::from_ffi(parent.0), node)?;
                 s.touch();
                 Ok(ResponseBody::Node {
                     node: NodeRef(id.to_ffi()),
@@ -1186,8 +1192,8 @@ impl Editor {
                 scale,
             } => self.edit_session(session, |s| {
                 s.model.set_deform_from_transform(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     cell,
                     translate.unwrap_or([0.0, 0.0]),
                     rotate.unwrap_or(0.0),
@@ -1204,8 +1210,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 s.model.add_scalar_binding(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     t,
                 )?;
                 s.touch();
@@ -1221,8 +1227,8 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
                 s.model.set_binding_key(
-                    ParamId::from_ffi(param.0),
-                    NodeId::from_ffi(node.0),
+                    ParamKey::from_ffi(param.0),
+                    NodeKey::from_ffi(node.0),
                     t,
                     cell[0],
                     cell[1],
@@ -1350,7 +1356,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn build_tree(model: &EditModel, id: NodeId) -> TreeNode {
+fn build_tree(model: &Model, id: NodeKey) -> TreeNode {
     let (name, kind, z_order, enabled, children) = match model.node(id) {
         Some(n) => (
             n.name.clone(),
@@ -1380,7 +1386,7 @@ pub struct DocSnapshot {
     pub params: Vec<ParamInfo>,
 }
 
-fn param_infos(model: &EditModel) -> Vec<ParamInfo> {
+fn param_infos(model: &Model) -> Vec<ParamInfo> {
     model
         .param_ids()
         .iter()
@@ -1403,13 +1409,13 @@ fn param_infos(model: &EditModel) -> Vec<ParamInfo> {
         .collect()
 }
 
-fn node_kind_str(kind: &EditNodeKind) -> &'static str {
+fn node_kind_str(kind: &ModelNodeKind) -> &'static str {
     match kind {
-        EditNodeKind::Group => "group",
-        EditNodeKind::Part(_) => "part",
-        EditNodeKind::Composite(_) => "composite",
-        EditNodeKind::MeshGroup(_) => "mesh_group",
-        EditNodeKind::SimplePhysics(_) => "physics",
+        ModelNodeKind::Group => "group",
+        ModelNodeKind::Part(_) => "part",
+        ModelNodeKind::Composite(_) => "composite",
+        ModelNodeKind::MeshGroup(_) => "mesh_group",
+        ModelNodeKind::SimplePhysics(_) => "physics",
     }
 }
 
@@ -1423,10 +1429,10 @@ fn default_name(kind: NodeKindArg) -> String {
     .to_string()
 }
 
-fn make_kind(kind: NodeKindArg) -> EditNodeKind {
+fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
     match kind {
-        NodeKindArg::Group => EditNodeKind::Group,
-        NodeKindArg::Part => EditNodeKind::Part(EditPart {
+        NodeKindArg::Group => ModelNodeKind::Group,
+        NodeKindArg::Part => ModelNodeKind::Part(ModelPart {
             mesh: ClpMesh::default().into(),
             albedo: None,
             opacity: 1.0,
@@ -1436,7 +1442,7 @@ fn make_kind(kind: NodeKindArg) -> EditNodeKind {
             masks: Vec::new(),
             mask_threshold: 0.5,
         }),
-        NodeKindArg::Composite => EditNodeKind::Composite(EditComposite {
+        NodeKindArg::Composite => ModelNodeKind::Composite(ModelComposite {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             tint: [1.0; 3],
@@ -1445,7 +1451,7 @@ fn make_kind(kind: NodeKindArg) -> EditNodeKind {
             mask_threshold: 0.5,
             propagate_meshgroup: false,
         }),
-        NodeKindArg::MeshGroup => EditNodeKind::MeshGroup(EditMeshGroup {
+        NodeKindArg::MeshGroup => ModelNodeKind::MeshGroup(ModelMeshGroup {
             mesh: ClpMesh::default().into(),
             dynamic: false,
             translate_children: false,
@@ -1453,7 +1459,7 @@ fn make_kind(kind: NodeKindArg) -> EditNodeKind {
     }
 }
 
-fn apply_patch(n: &mut EditNode, patch: &NodePatch) -> Result<(), EditorError> {
+fn apply_patch(n: &mut ModelNode, patch: &NodePatch) -> Result<(), EditorError> {
     // Parse before mutating so a bad enum string leaves the node untouched.
     let blend = patch
         .blend_mode
@@ -1485,60 +1491,60 @@ fn apply_patch(n: &mut EditNode, patch: &NodePatch) -> Result<(), EditorError> {
         set_opacity(&mut n.kind, op);
     }
     if let Some(tref) = patch.texture {
-        if let EditNodeKind::Part(p) = &mut n.kind {
-            p.albedo = Some(TexId::from_ffi(tref.0));
+        if let ModelNodeKind::Part(p) = &mut n.kind {
+            p.albedo = Some(TexKey::from_ffi(tref.0));
         }
     }
     if let Some(mode) = blend {
         match &mut n.kind {
-            EditNodeKind::Part(p) => p.blend_mode = mode,
-            EditNodeKind::Composite(c) => c.blend_mode = mode,
+            ModelNodeKind::Part(p) => p.blend_mode = mode,
+            ModelNodeKind::Composite(c) => c.blend_mode = mode,
             _ => {}
         }
     }
     if let Some(t) = patch.tint {
         match &mut n.kind {
-            EditNodeKind::Part(p) => p.tint = t,
-            EditNodeKind::Composite(c) => c.tint = t,
+            ModelNodeKind::Part(p) => p.tint = t,
+            ModelNodeKind::Composite(c) => c.tint = t,
             _ => {}
         }
     }
     if let Some(t) = patch.screen_tint {
         match &mut n.kind {
-            EditNodeKind::Part(p) => p.screen_tint = t,
-            EditNodeKind::Composite(c) => c.screen_tint = t,
+            ModelNodeKind::Part(p) => p.screen_tint = t,
+            ModelNodeKind::Composite(c) => c.screen_tint = t,
             _ => {}
         }
     }
     if let Some(th) = patch.mask_threshold {
         match &mut n.kind {
-            EditNodeKind::Part(p) => p.mask_threshold = th,
-            EditNodeKind::Composite(c) => c.mask_threshold = th,
+            ModelNodeKind::Part(p) => p.mask_threshold = th,
+            ModelNodeKind::Composite(c) => c.mask_threshold = th,
             _ => {}
         }
     }
     if let Some(v) = patch.propagate_meshgroup {
-        if let EditNodeKind::Composite(c) = &mut n.kind {
+        if let ModelNodeKind::Composite(c) = &mut n.kind {
             c.propagate_meshgroup = v;
         }
     }
     if let Some(v) = patch.mg_dynamic {
-        if let EditNodeKind::MeshGroup(mg) = &mut n.kind {
+        if let ModelNodeKind::MeshGroup(mg) = &mut n.kind {
             mg.dynamic = v;
         }
     }
     if let Some(v) = patch.mg_translate_children {
-        if let EditNodeKind::MeshGroup(mg) = &mut n.kind {
+        if let ModelNodeKind::MeshGroup(mg) = &mut n.kind {
             mg.translate_children = v;
         }
     }
     Ok(())
 }
 
-fn set_opacity(kind: &mut EditNodeKind, op: f32) {
+fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
     match kind {
-        EditNodeKind::Part(p) => p.opacity = op,
-        EditNodeKind::Composite(c) => c.opacity = op,
+        ModelNodeKind::Part(p) => p.opacity = op,
+        ModelNodeKind::Composite(c) => c.opacity = op,
         _ => {}
     }
 }
@@ -1761,9 +1767,9 @@ mod tests {
 
     #[test]
     fn history_byte_budget_keeps_the_newest_snapshot() {
-        let mut session = Session::new(EditModel::new(), "history".into(), None);
+        let mut session = Session::new(Model::new(), "history".into(), None);
         for name in ["first", "second", "third"] {
-            let mut model = EditModel::new();
+            let mut model = Model::new();
             model.node_mut(model.root()).unwrap().name = name.into();
             let entry = HistoryEntry::new(model);
             session.history_bytes = session.history_bytes.saturating_add(entry.bytes);

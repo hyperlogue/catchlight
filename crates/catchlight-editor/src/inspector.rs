@@ -89,7 +89,7 @@ pub(crate) enum InspectorAction {
         index: u32,
     },
     /// Enter mesh edit mode on the inspected node.
-    EditMesh,
+    ModelMesh,
 }
 
 #[derive(Default)]
@@ -186,7 +186,7 @@ pub(crate) fn inspector_ui(
             ui.horizontal(|ui| {
                 ui.label(format!("Part — {vert_count} verts, {tri_count} tris"));
                 if ui.button("✎ Edit mesh").clicked() {
-                    out.push(InspectorAction::EditMesh);
+                    out.push(InspectorAction::ModelMesh);
                 }
             });
             texture_combo(ui, *albedo, textures, &mut out);
@@ -219,7 +219,7 @@ pub(crate) fn inspector_ui(
             ui.horizontal(|ui| {
                 ui.label(format!("MeshGroup — {vert_count} lattice verts"));
                 if ui.button("✎ Edit mesh").clicked() {
-                    out.push(InspectorAction::EditMesh);
+                    out.push(InspectorAction::ModelMesh);
                 }
             });
             let mut dy = *dynamic;
@@ -564,7 +564,7 @@ fn blend_combo(ui: &mut egui::Ui, current: BlendMode, out: &mut Vec<InspectorAct
 }
 
 fn mask_mode_label(m: MaskMode) -> &'static str {
-    catchlight_editor_core::mask_mode_name(m)
+    catchlight_core::mask_mode_name(m)
 }
 
 fn single_opacity(ui: &mut egui::Ui, op: &mut f32, out: &mut Vec<InspectorAction>) {

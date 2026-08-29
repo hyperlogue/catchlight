@@ -1,6 +1,6 @@
 use super::*;
 
-/// Rev-gated three-way mapping: EditModel `NodeRef` ⇄ clp arena index ⇄ core
+/// Rev-gated three-way mapping: Model `NodeRef` ⇄ clp arena index ⇄ core
 /// (puppet) node id. `from_clp` stamps the clp index as each node's uuid, which
 /// is what makes the core↔clp direction recoverable.
 pub(super) struct NodeMapping {
@@ -26,7 +26,7 @@ impl App {
         let editor = self.editor.clone();
         let base = editor.with_model(session, |m| {
             let order = m.nodes_in_order();
-            let pos: HashMap<NodeId, usize> =
+            let pos: HashMap<NodeKey, usize> =
                 order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
             let refs: Vec<NodeRef> = order.iter().map(|id| NodeRef(id.to_ffi())).collect();
             let parent_of: Vec<Option<usize>> = order
@@ -216,7 +216,7 @@ impl App {
         let parent_world = parent_core
             .map(|c| viewport.transforms.get(catchlight_core::NodeIdx(c)))
             .unwrap_or(glam::Mat4::IDENTITY);
-        let node_ref = NodeId::from_ffi(primary.0);
+        let node_ref = NodeKey::from_ffi(primary.0);
         // Recording edits the *posed* value; document edits start from base.
         let (translation, rotation, scale) = if self.armed.is_some() {
             self.editor
