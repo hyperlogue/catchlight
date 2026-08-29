@@ -117,7 +117,7 @@ pub(crate) fn world_bounds(
     let mut max = Vec2::splat(f32::NEG_INFINITY);
     let mut any = false;
     for &root in roots {
-        let mut stack = vec![catchlight_core::NodeId(root)];
+        let mut stack = vec![catchlight_core::NodeIdx(root)];
         while let Some(id) = stack.pop() {
             if let Some(node) = puppet.get(id) {
                 if let NodeKind::Part(p) = &node.kind {

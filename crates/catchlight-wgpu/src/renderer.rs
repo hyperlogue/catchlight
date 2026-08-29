@@ -63,7 +63,7 @@
 //! per-invariant tests live in `crates/catchlight-wgpu/tests/`;
 //! `crates/visual-tests` covers the ones that do reach pixels.
 
-use catchlight_core::{BlendMode, MeshId, NodeId, PuppetTexture, TextureId};
+use catchlight_core::{BlendMode, MeshId, NodeIdx, PuppetTexture, TextureId};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1679,7 +1679,7 @@ pub struct WgpuRenderer {
     // draw slice rather than references, so the renderer can own them.
     draw_filter_scratch: Vec<usize>,
     instance_scratch: Vec<InstanceRaw>,
-    composite_mask_textures: HashMap<NodeId, PreparedCompositeMask>,
+    composite_mask_textures: HashMap<NodeIdx, PreparedCompositeMask>,
 }
 
 /// Viewport-sized texture used for mask compositing. Shared across
@@ -5482,7 +5482,7 @@ mod tests {
     #[test]
     fn same_mask_signature_distinguishes_mask_shapes() {
         use crate::drawable_collector::MaskSourceData;
-        use catchlight_core::{MaskMode, MeshId, NodeId, TextureId};
+        use catchlight_core::{MaskMode, MeshId, NodeIdx, TextureId};
 
         let src_t = |mesh: u32, tex: u32, mode, threshold: f32| MaskSourceData::Part {
             mesh_id: MeshId(mesh),
@@ -5512,20 +5512,20 @@ mod tests {
         assert!(!same_mask_signature(&a, &[src(1, 1, MaskMode::DodgeMask)]));
 
         let composite = [MaskSourceData::Composite {
-            node_id: NodeId(7),
+            node_id: NodeIdx(7),
             mode: MaskMode::Mask,
         }];
         assert!(same_mask_signature(
             &composite,
             &[MaskSourceData::Composite {
-                node_id: NodeId(7),
+                node_id: NodeIdx(7),
                 mode: MaskMode::Mask,
             }]
         ));
         assert!(!same_mask_signature(
             &composite,
             &[MaskSourceData::Composite {
-                node_id: NodeId(8),
+                node_id: NodeIdx(8),
                 mode: MaskMode::Mask,
             }]
         ));

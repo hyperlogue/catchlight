@@ -12,7 +12,7 @@ use glam::swizzles::Vec4Swizzles;
 use glam::{Affine2, Mat2, Mat4, Vec2, Vec4};
 
 use crate::{
-    components::{checked_affine_inverse, Mesh, MeshIndices, NodeId, NodeKind},
+    components::{checked_affine_inverse, Mesh, MeshIndices, NodeIdx, NodeKind},
     deform::DeformSource,
     node::NodeTree,
     puppet::{GlobalTransforms, Puppet},
@@ -37,7 +37,7 @@ pub(crate) struct ChildBinding {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MeshGroupBindings {
-    pub(crate) per_child: HashMap<NodeId, ChildBinding>,
+    pub(crate) per_child: HashMap<NodeIdx, ChildBinding>,
 }
 
 /// O(1) point-in-triangle lookup baked at load time. Each cell stores
@@ -257,9 +257,9 @@ fn find_triangle_strict_hint(
 /// those children directly to the outer MG would apply its warp twice.
 /// Non-Drawable descendants of a `translateChildren=true` MG receive a
 /// Node-level shift through `apply_translate_children_filter` instead.
-fn descendant_drawables(tree: &NodeTree, root: NodeId, puppet: &Puppet) -> Vec<NodeId> {
+fn descendant_drawables(tree: &NodeTree, root: NodeIdx, puppet: &Puppet) -> Vec<NodeIdx> {
     let mut out = Vec::new();
-    let mut stack: Vec<NodeId> = tree.get_children(root);
+    let mut stack: Vec<NodeIdx> = tree.get_children(root);
     while let Some(id) = stack.pop() {
         match puppet.get(id).map(|n| &n.kind) {
             Some(NodeKind::Part(_)) => {
@@ -283,7 +283,7 @@ fn descendant_drawables(tree: &NodeTree, root: NodeId, puppet: &Puppet) -> Vec<N
     out
 }
 
-fn drawable_mesh_vertices(puppet: &Puppet, id: NodeId) -> Option<&[Vec2]> {
+fn drawable_mesh_vertices(puppet: &Puppet, id: NodeIdx) -> Option<&[Vec2]> {
     match puppet.get(id).map(|n| &n.kind)? {
         NodeKind::Part(p) => Some(&p.mesh.vertices),
         NodeKind::MeshGroup(mg) => Some(&mg.mesh.vertices),
@@ -291,7 +291,7 @@ fn drawable_mesh_vertices(puppet: &Puppet, id: NodeId) -> Option<&[Vec2]> {
     }
 }
 
-fn drawable_mesh_origin(puppet: &Puppet, id: NodeId) -> Vec2 {
+fn drawable_mesh_origin(puppet: &Puppet, id: NodeIdx) -> Vec2 {
     match puppet.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(p)) => p.mesh.origin,
         Some(NodeKind::MeshGroup(mg)) => mg.mesh.origin,
@@ -343,7 +343,7 @@ pub(crate) fn affine2_from_mat4(m: Mat4) -> Affine2 {
 pub(crate) fn bake_mesh_group_bindings(
     puppet: &Puppet,
     transforms: &GlobalTransforms,
-    mesh_group_id: NodeId,
+    mesh_group_id: NodeIdx,
 ) -> MeshGroupBindings {
     let mut out = MeshGroupBindings::default();
     let Some(mg_node) = puppet.get(mesh_group_id) else {
@@ -402,14 +402,14 @@ pub(crate) fn bake_mesh_group_bindings(
 /// SimplePhysics nodes at the ends without descending past them. Nested MGs
 /// receive vertex deformation through `descendant_drawables`; applying a
 /// Node-level shift to them too would double the warp.
-fn translate_children_targets(tree: &NodeTree, mg_id: NodeId, puppet: &Puppet) -> Vec<NodeId> {
+fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, puppet: &Puppet) -> Vec<NodeIdx> {
     // Descend only through Parts and Composites: the stop condition
     // halts descent at (but still includes) everything else, so a nested
     // MG or a collected Node never has its subtree walked. The retain
     // then drops the Parts/Composites/MGs, leaving the Node-level targets.
     // A Composite with propagateMeshGroup=false clears `isComposite` in
     // the reference guard, so the walk halts there too.
-    let descends = |id: NodeId| match puppet.get(id).map(|n| &n.kind) {
+    let descends = |id: NodeIdx| match puppet.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(_)) => true,
         Some(NodeKind::Composite(c)) => c.propagate_mesh_group,
         _ => false,
@@ -429,7 +429,7 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeId, puppet: &Puppet) -
 /// stack, so the outer must propagate before the inner combines and
 /// pushes to its own children — deform flows outer → inner → Part in
 /// a single pass.
-fn mesh_group_pre_order(puppet: &Puppet) -> Vec<NodeId> {
+fn mesh_group_pre_order(puppet: &Puppet) -> Vec<NodeIdx> {
     puppet.tree().with_dfs_order(|dfs| {
         dfs.iter()
             .copied()
@@ -447,7 +447,7 @@ fn mesh_group_pre_order(puppet: &Puppet) -> Vec<NodeId> {
 // Caller is responsible for putting the Vec back via
 // `restore_mg_pre_order_cache`. This avoids a per-frame clone while
 // keeping the hot-path borrow of Puppet mutable.
-fn take_mg_pre_order(puppet: &mut Puppet) -> Vec<NodeId> {
+fn take_mg_pre_order(puppet: &mut Puppet) -> Vec<NodeIdx> {
     if puppet.mg_pre_order_cache.is_none() {
         puppet.mg_pre_order_cache = Some(mesh_group_pre_order(puppet));
     }
@@ -479,11 +479,11 @@ pub(crate) fn propagate_mesh_group_deforms(puppet: &mut Puppet, transforms: &Glo
 
     // Pull the puppet-owned scratch out so we can interleave borrows of
     // the MG (read) and of each child (write) without building a
-    // per-child Vec<Vec2> or an outer (NodeId, Vec<Vec2>) Vec.
+    // per-child Vec<Vec2> or an outer (NodeIdx, Vec<Vec2>) Vec.
     let mut scratch = std::mem::take(&mut puppet.mg_propagate_scratch);
     let mut cur_deform_scratch = std::mem::take(&mut puppet.mg_cur_deform_scratch);
     let mut deformed_mg_vertices = std::mem::take(&mut puppet.mg_deformed_vertices_scratch);
-    let mut child_ids: smallvec::SmallVec<[NodeId; 8]> = smallvec::SmallVec::new();
+    let mut child_ids: smallvec::SmallVec<[NodeIdx; 8]> = smallvec::SmallVec::new();
 
     for &mg_id in &order {
         if let Some(node) = puppet.get_mut(mg_id) {
@@ -614,7 +614,7 @@ pub(crate) fn apply_translate_children_filter(
     let _span = tracing::trace_span!("apply_translate_children_filter").entered();
 
     let order = take_mg_pre_order(puppet);
-    let mut targets: smallvec::SmallVec<[NodeId; 8]> = smallvec::SmallVec::new();
+    let mut targets: smallvec::SmallVec<[NodeIdx; 8]> = smallvec::SmallVec::new();
     let mut shifted = false;
 
     for &mg_id in &order {
@@ -757,8 +757,8 @@ pub(crate) fn apply_translate_children_filter(
 
 fn propagate_static_to_child(
     puppet: &mut Puppet,
-    mg_id: NodeId,
-    child_id: NodeId,
+    mg_id: NodeIdx,
+    child_id: NodeIdx,
     scratch: &mut Vec<Vec2>,
     offset_mg_to_child: Mat2,
 ) {
@@ -826,8 +826,8 @@ fn propagate_static_to_child(
 #[allow(clippy::too_many_arguments)]
 fn propagate_dynamic_to_child(
     puppet: &mut Puppet,
-    mg_id: NodeId,
-    child_id: NodeId,
+    mg_id: NodeIdx,
+    child_id: NodeIdx,
     scratch: &mut Vec<Vec2>,
     cur_deform_scratch: &mut Vec<Vec2>,
     deformed_mg_vertices: &[Vec2],
@@ -1290,7 +1290,7 @@ mod tests {
     fn dynamic_mg_attenuates_child_param_deform() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
 
-        fn build(dynamic: bool) -> (Puppet, NodeId) {
+        fn build(dynamic: bool) -> (Puppet, NodeIdx) {
             let mut puppet = Puppet::new();
             let mg_mesh = Mesh::new(
                 vec![

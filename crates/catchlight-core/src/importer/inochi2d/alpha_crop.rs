@@ -16,7 +16,7 @@
 //! mip chain, so no mip footprint can straddle into another crop's texels.
 
 use super::error::ImportError;
-use crate::components::{NodeId, NodeKind, PuppetTexture};
+use crate::components::{NodeIdx, NodeKind, PuppetTexture};
 use crate::formats::ModelTexture;
 use crate::puppet::Puppet;
 use std::hash::{Hash, Hasher};
@@ -143,7 +143,7 @@ pub(crate) fn crop_textures_cached(
     // stopped being local once the decode was split out to fan out.
     assert_eq!(table.len(), textures.len());
 
-    let part_ids: Vec<NodeId> = puppet
+    let part_ids: Vec<NodeIdx> = puppet
         .iter()
         .filter(|(_, n)| matches!(n.kind, NodeKind::Part(_)))
         .map(|(id, _)| id)

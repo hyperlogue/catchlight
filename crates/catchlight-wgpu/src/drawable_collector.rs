@@ -6,7 +6,7 @@
 //! lower in front; the flip happens at import, never here.
 
 use catchlight_core::{
-    BlendMode, CompositeData, GlobalTransforms, MaskMode, MeshId, NodeId, NodeKind, Puppet,
+    BlendMode, CompositeData, GlobalTransforms, MaskMode, MeshId, NodeIdx, NodeKind, Puppet,
     TextureId,
 };
 use smallvec::SmallVec;
@@ -25,7 +25,7 @@ pub enum MaskSourceData {
         mask_threshold: f32,
     },
     Composite {
-        node_id: NodeId,
+        node_id: NodeIdx,
         mode: MaskMode,
     },
 }
@@ -72,7 +72,7 @@ pub enum DrawableInfo {
         mask_threshold: f32,
     },
     Composite {
-        node_id: NodeId,
+        node_id: NodeIdx,
         z_order: f32,
         blend_mode: BlendMode,
         opacity: f32,
@@ -102,8 +102,8 @@ impl DrawableInfo {
 #[derive(Debug, Default)]
 pub struct RenderList {
     pub root_drawables: Vec<DrawableInfo>,
-    pub composite_children: HashMap<NodeId, Vec<DrawableInfo>>,
-    pub composite_mask_sources: HashMap<NodeId, CompositeMaskSourceData>,
+    pub composite_children: HashMap<NodeIdx, Vec<DrawableInfo>>,
+    pub composite_mask_sources: HashMap<NodeIdx, CompositeMaskSourceData>,
 }
 
 impl Clone for RenderList {
@@ -225,14 +225,14 @@ pub struct DrawableCollector {
     // enabled ANDed down the tree — a disabled node hides its whole subtree,
     // because a disabled ancestor hides its entire subtree.
     enabled_cum: Vec<bool>,
-    composite_ancestor: Vec<Option<NodeId>>,
+    composite_ancestor: Vec<Option<NodeIdx>>,
     // Per composite node: does it need its own offscreen slot, or is it a
     // pass-through group whose Parts flatten into the enclosing composite?
-    // Indexed by NodeId; set when the composite is visited (pre-order), read
+    // Indexed by NodeIdx; set when the composite is visited (pre-order), read
     // by its descendants to find the nearest *isolating* composite.
     composite_isolates: Vec<bool>,
     // Cached structural half of the pass-through predicate, per composite
-    // NodeId slot (`None` until that composite is first visited). This half
+    // NodeIdx slot (`None` until that composite is first visited). This half
     // depends only on the tree shape and static blend/mask state, which
     // survives across frames — only the param-driven half is re-checked each
     // frame. Rebuilt wholesale when the puppet's compiled-node revision or
@@ -251,7 +251,7 @@ pub struct DrawableCollector {
 /// groups flatten at all.
 fn composite_passthrough_static(
     puppet: &Puppet,
-    node_id: NodeId,
+    node_id: NodeIdx,
     composite: &CompositeData,
 ) -> bool {
     if composite.blend_mode != BlendMode::Normal || !composite.masks.is_empty() {
@@ -279,10 +279,10 @@ fn composite_passthrough_dynamic(composite: &CompositeData) -> bool {
 }
 
 fn collect_mask_sources(
-    node_id: NodeId,
+    node_id: NodeIdx,
     puppet: &Puppet,
     transforms: &GlobalTransforms,
-    composite_sources: &mut HashMap<NodeId, CompositeMaskSourceData>,
+    composite_sources: &mut HashMap<NodeIdx, CompositeMaskSourceData>,
 ) -> MaskSources {
     let Some(node) = puppet.get(node_id) else {
         return MaskSources::new();
@@ -559,7 +559,7 @@ impl DrawableCollector {
     fn composite_is_passthrough_group(
         &mut self,
         puppet: &Puppet,
-        node_id: NodeId,
+        node_id: NodeIdx,
         composite: &CompositeData,
     ) -> bool {
         let slot = node_id.0 as usize;
@@ -736,7 +736,7 @@ mod tests {
         let render_list = collect_drawables(&puppet, &transforms);
 
         // Only the outer composite emits a drawable; inner is flattened away.
-        let composites: Vec<NodeId> = render_list
+        let composites: Vec<NodeIdx> = render_list
             .root_drawables
             .iter()
             .filter_map(|d| match d {
@@ -846,7 +846,7 @@ mod tests {
         puppet.compute_transforms(&mut transforms);
         let render_list = collect_drawables(&puppet, &transforms);
 
-        let composites = |drawables: &[DrawableInfo]| -> Vec<NodeId> {
+        let composites = |drawables: &[DrawableInfo]| -> Vec<NodeIdx> {
             drawables
                 .iter()
                 .filter_map(|d| match d {
@@ -938,7 +938,7 @@ mod tests {
         // Every Composite drawable in the list, wherever it is routed: the
         // question here is whether `inner` emits one at all, not where it
         // lands (`isolating_nested_composite_is_not_flattened` pins that).
-        let all_composites = |render_list: &RenderList| -> Vec<NodeId> {
+        let all_composites = |render_list: &RenderList| -> Vec<NodeIdx> {
             render_list
                 .root_drawables
                 .iter()

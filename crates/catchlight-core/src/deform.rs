@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{NodeId, Vec2};
+use crate::{NodeIdx, Vec2};
 use smallvec::SmallVec;
 
 // Process-global "combine epoch". Each combine() that actually runs claims
@@ -18,7 +18,7 @@ fn next_deform_generation() -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeformSource {
     Param(u32),
-    Node(NodeId),
+    Node(NodeIdx),
     /// All weld pulls on this part, summed. One slot regardless of how many
     /// weld records touch the part — the weld pass zeroes it on first touch
     /// each frame and accumulates (see [`crate::weld::apply_welds`]).

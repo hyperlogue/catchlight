@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use glam::Mat4;
 
 use crate::{
-    components::{Node, NodeId, PuppetTexture},
+    components::{Node, NodeIdx, PuppetTexture},
     node::NodeTree,
 };
 
@@ -45,7 +45,7 @@ pub struct ParamContribution {
 #[derive(Debug, Clone, Copy)]
 struct ParamContributionEntry {
     uuid: u32,
-    source: NodeId,
+    source: NodeIdx,
     contribution: ParamContribution,
 }
 
@@ -87,7 +87,7 @@ fn resolve_contributions(
 }
 
 /// Computed global transforms for all nodes in a puppet.
-/// Vec<Mat4> indexed by NodeId.0; aligns with the dense Puppet node
+/// Vec<Mat4> indexed by NodeIdx.0; aligns with the dense Puppet node
 /// storage so point lookups are a bounds check + index rather than
 /// a hash probe, and the DFS walk in compute_transforms_with_root
 /// writes through contiguous memory.
@@ -103,7 +103,7 @@ impl GlobalTransforms {
         }
     }
 
-    pub fn get(&self, id: NodeId) -> Mat4 {
+    pub fn get(&self, id: NodeIdx) -> Mat4 {
         self.transforms
             .get(id.0 as usize)
             .copied()
@@ -120,7 +120,7 @@ impl GlobalTransforms {
         }
     }
 
-    fn insert(&mut self, id: NodeId, transform: Mat4) {
+    fn insert(&mut self, id: NodeIdx, transform: Mat4) {
         let idx = id.0 as usize;
         if idx >= self.transforms.len() {
             self.transforms.resize(idx + 1, Mat4::IDENTITY);
@@ -137,13 +137,13 @@ impl Default for GlobalTransforms {
 
 #[derive(Clone)]
 pub struct Puppet {
-    // Dense storage indexed by NodeId.0. Every NodeId allocated via
-    // `allocate_id` is sequential and never removed, so NodeId doubles
-    // as the slot index -- no HashMap<NodeId,_> indirection, full-node
+    // Dense storage indexed by NodeIdx.0. Every NodeIdx allocated via
+    // `allocate_id` is sequential and never removed, so NodeIdx doubles
+    // as the slot index -- no HashMap<NodeIdx,_> indirection, full-node
     // passes are cache-linear, and point lookups are a bounds check + index.
     nodes: Vec<Node>,
     tree: NodeTree,
-    uuid_to_node: HashMap<u32, NodeId>,
+    uuid_to_node: HashMap<u32, NodeIdx>,
     textures: Vec<PuppetTexture>,
     next_id: u32,
     params: Vec<crate::params::Param>,
@@ -194,9 +194,9 @@ pub struct Puppet {
     // child-vert when many children of the same MG hit the same MG
     // triangle. Sized by the largest MG vertex count.
     pub(crate) mg_deformed_vertices_scratch: Vec<glam::Vec2>,
-    // Cached pre-order of MeshGroup NodeIds. Invalidated on tree edits
+    // Cached pre-order of MeshGroup NodeIdxs. Invalidated on tree edits
     // (see insert_child). None = stale, recompute on next access.
-    pub(crate) mg_pre_order_cache: Option<Vec<NodeId>>,
+    pub(crate) mg_pre_order_cache: Option<Vec<NodeIdx>>,
     // base_transform.to_matrix() cached per slot. 60-100ns per node of
     // quat/mat ops saved in compute_transforms when the node has no
     // active transform delta this frame.
@@ -204,7 +204,7 @@ pub struct Puppet {
     // Parallel to nodes: true when apply_params/tick wrote a delta into
     // node.transform this frame. Cleared by reset_dynamic_state.
     pub(crate) node_transform_dirty: Vec<bool>,
-    pub(crate) deform_node_ids: Vec<NodeId>,
+    pub(crate) deform_node_ids: Vec<NodeIdx>,
     /// Puppet-global weld list; solve order is list order (see
     /// [`crate::weld::apply_welds`]).
     pub(crate) welds: Vec<crate::weld::Weld>,
@@ -212,7 +212,7 @@ pub struct Puppet {
     // deform sum, read without disturbing the stack memos.
     pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
     pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
-    pub(crate) physics_node_ids: Vec<NodeId>,
+    pub(crate) physics_node_ids: Vec<NodeIdx>,
     /// When false, `tick` skips SimplePhysics entirely: drivers never
     /// overwrite their target params, so those params evaluate at their
     /// defaults (or whatever the caller poses) and the same pose always
@@ -220,7 +220,7 @@ pub struct Puppet {
     /// dt=0 preview can't integrate, and chained drivers would otherwise
     /// leave pose-history-dependent residue in the authoring view.
     physics_enabled: bool,
-    pub(crate) mesh_group_node_ids: Vec<NodeId>,
+    pub(crate) mesh_group_node_ids: Vec<NodeIdx>,
     param_mesh_group_relevant: HashSet<u32>,
     mesh_group_param_generation: u64,
     last_tick_mesh_group_generation: Option<u64>,
@@ -229,7 +229,7 @@ pub struct Puppet {
     // host world-scale: pendulum length and gravity are loaded in
     // puppet-local units, so anchors must be in matching units.
     pub(crate) physics_transforms: GlobalTransforms,
-    physics_update_scratch: Vec<(u32, NodeId, glam::Vec2)>,
+    physics_update_scratch: Vec<(u32, NodeIdx, glam::Vec2)>,
     /// `Some(G)` means `physics_transforms` and the node-level anchor
     /// inputs (`node.transform` translations, `offset_output_scale`) hold
     /// the anchor pose a fresh pre-pass at `param_generation == G` would
@@ -254,10 +254,10 @@ pub struct Puppet {
 
 impl Puppet {
     pub fn new() -> Self {
-        let root_id = NodeId::new(0);
+        let root_id = NodeIdx::new(0);
         let tree = NodeTree::new(root_id);
 
-        // Slot 0 = root (NodeId::new(0)).
+        // Slot 0 = root (NodeIdx::new(0)).
         let nodes = vec![Node::default()];
 
         Self {
@@ -302,7 +302,7 @@ impl Puppet {
         }
     }
 
-    pub fn root(&self) -> NodeId {
+    pub fn root(&self) -> NodeIdx {
         self.tree.root
     }
 
@@ -326,11 +326,11 @@ impl Puppet {
         self.nodes.is_empty()
     }
 
-    pub fn get(&self, id: NodeId) -> Option<&Node> {
+    pub fn get(&self, id: NodeIdx) -> Option<&Node> {
         self.nodes.get(id.0 as usize)
     }
 
-    pub(crate) fn get_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+    pub(crate) fn get_mut(&mut self, id: NodeIdx) -> Option<&mut Node> {
         self.nodes.get_mut(id.0 as usize)
     }
 
@@ -341,7 +341,7 @@ impl Puppet {
     /// Replace a node's authored transform and reset its working transform to
     /// the same value. Runtime-only pose changes should use
     /// [`Self::update_node_transform`] instead.
-    pub fn set_node_base_transform(&mut self, id: NodeId, transform: crate::Transform) -> bool {
+    pub fn set_node_base_transform(&mut self, id: NodeIdx, transform: crate::Transform) -> bool {
         let slot = id.0 as usize;
         let Some(node) = self.nodes.get_mut(slot) else {
             return false;
@@ -364,7 +364,7 @@ impl Puppet {
     /// node-kind registries remain unchanged.
     pub fn update_node_transform<R>(
         &mut self,
-        id: NodeId,
+        id: NodeIdx,
         update: impl FnOnce(&mut crate::Transform) -> R,
     ) -> Option<R> {
         let slot = id.0 as usize;
@@ -376,7 +376,7 @@ impl Puppet {
         Some(result)
     }
 
-    pub fn set_node_z_order(&mut self, id: NodeId, z_order: f32) -> bool {
+    pub fn set_node_z_order(&mut self, id: NodeIdx, z_order: f32) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
         };
@@ -384,7 +384,7 @@ impl Puppet {
         true
     }
 
-    pub fn set_node_enabled(&mut self, id: NodeId, enabled: bool) -> bool {
+    pub fn set_node_enabled(&mut self, id: NodeIdx, enabled: bool) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
         };
@@ -392,7 +392,7 @@ impl Puppet {
         true
     }
 
-    pub fn set_node_opacity(&mut self, id: NodeId, opacity: f32) -> bool {
+    pub fn set_node_opacity(&mut self, id: NodeIdx, opacity: f32) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
         };
@@ -408,7 +408,7 @@ impl Puppet {
     /// Replace the compiled node kind and rebuild every kind-dependent
     /// registry. Callers that change meshes must re-upload the puppet to any
     /// resident renderer.
-    pub fn set_node_kind(&mut self, id: NodeId, kind: crate::NodeKind) -> bool {
+    pub fn set_node_kind(&mut self, id: NodeIdx, kind: crate::NodeKind) -> bool {
         let old_physics = self.physics_node_ids.clone();
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
@@ -418,7 +418,7 @@ impl Puppet {
         true
     }
 
-    pub fn set_node_blend_mode(&mut self, id: NodeId, blend_mode: crate::BlendMode) -> bool {
+    pub fn set_node_blend_mode(&mut self, id: NodeIdx, blend_mode: crate::BlendMode) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
         };
@@ -434,7 +434,7 @@ impl Puppet {
 
     pub fn retain_node_masks(
         &mut self,
-        id: NodeId,
+        id: NodeIdx,
         mut keep: impl FnMut(&crate::MaskBinding) -> bool,
     ) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
@@ -453,7 +453,7 @@ impl Puppet {
         true
     }
 
-    pub fn set_node_masks(&mut self, id: NodeId, masks: Vec<crate::MaskBinding>) -> bool {
+    pub fn set_node_masks(&mut self, id: NodeIdx, masks: Vec<crate::MaskBinding>) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
         };
@@ -470,7 +470,7 @@ impl Puppet {
     /// stack's shape. Returns `None` for non-deform nodes.
     pub fn update_deform_source<R>(
         &mut self,
-        id: NodeId,
+        id: NodeIdx,
         source: crate::deform::DeformSource,
         update: impl FnOnce(&mut [glam::Vec2]) -> R,
     ) -> Option<R> {
@@ -483,7 +483,7 @@ impl Puppet {
         Some(update(stack.source_buf_mut(source)))
     }
 
-    pub fn reset_node_deforms(&mut self, id: NodeId) -> bool {
+    pub fn reset_node_deforms(&mut self, id: NodeIdx) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
         };
@@ -507,12 +507,12 @@ impl Puppet {
         self.physics_ancestor_mask = None;
     }
 
-    fn rebuild_node_kind_state(&mut self, old_physics: &[NodeId]) {
+    fn rebuild_node_kind_state(&mut self, old_physics: &[NodeIdx]) {
         self.deform_node_ids.clear();
         self.physics_node_ids.clear();
         self.mesh_group_node_ids.clear();
         for (slot, node) in self.nodes.iter().enumerate() {
-            let id = NodeId::new(slot as u32);
+            let id = NodeIdx::new(slot as u32);
             if matches!(
                 &node.kind,
                 crate::NodeKind::Part(_) | crate::NodeKind::MeshGroup(_)
@@ -600,20 +600,20 @@ impl Puppet {
         }
     }
 
-    pub(crate) fn mark_transform_dirty(&mut self, id: NodeId) {
+    pub(crate) fn mark_transform_dirty(&mut self, id: NodeIdx) {
         if let Some(d) = self.node_transform_dirty.get_mut(id.0 as usize) {
             *d = true;
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (NodeId, &Node)> {
+    pub fn iter(&self) -> impl Iterator<Item = (NodeIdx, &Node)> {
         self.nodes
             .iter()
             .enumerate()
-            .map(|(slot, node)| (NodeId::new(slot as u32), node))
+            .map(|(slot, node)| (NodeIdx::new(slot as u32), node))
     }
 
-    pub fn iter_deform_nodes(&self) -> impl Iterator<Item = (NodeId, &Node)> {
+    pub fn iter_deform_nodes(&self) -> impl Iterator<Item = (NodeIdx, &Node)> {
         self.deform_node_ids
             .iter()
             .filter_map(|&id| self.nodes.get(id.0 as usize).map(|node| (id, node)))
@@ -779,7 +779,7 @@ impl Puppet {
     fn physics_anchor(
         &self,
         transforms: &crate::puppet::GlobalTransforms,
-        id: NodeId,
+        id: NodeIdx,
     ) -> Option<crate::Vec2> {
         let node = self.nodes.get(id.0 as usize)?;
         let crate::NodeKind::SimplePhysics(p) = &node.kind else {
@@ -940,7 +940,7 @@ impl Puppet {
     pub fn contribute_param_value(
         &mut self,
         uuid: u32,
-        source: NodeId,
+        source: NodeIdx,
         value: glam::Vec2,
         weight: f32,
     ) -> bool {
@@ -1368,17 +1368,17 @@ impl Puppet {
         crate::meshgroup::apply_translate_children_filter(self, transforms)
     }
 
-    /// NodeId for the given UUID, if any.
-    pub fn node_for_uuid(&self, uuid: u32) -> Option<NodeId> {
+    /// NodeIdx for the given UUID, if any.
+    pub fn node_for_uuid(&self, uuid: u32) -> Option<NodeIdx> {
         self.uuid_to_node.get(&uuid).copied()
     }
 
     /// Allocate a new id, attach as a child of `parent`, install `node`, and
-    /// optionally register a UUID → NodeId mapping (first-wins dedup).
+    /// optionally register a UUID → NodeIdx mapping (first-wins dedup).
     ///
     /// This is the only supported way to grow the puppet, so the three
     /// backing stores (nodes / tree / uuid_to_node) stay in sync.
-    pub fn insert_child(&mut self, parent: NodeId, node: Node, uuid: Option<u32>) -> NodeId {
+    pub fn insert_child(&mut self, parent: NodeIdx, node: Node, uuid: Option<u32>) -> NodeIdx {
         let id = self.allocate_id();
         // An unresolvable parent would leave the node registered in every side
         // index (deform / mesh-group / physics) but absent from the tree, so it
@@ -1394,7 +1394,7 @@ impl Puppet {
         debug_assert_eq!(
             id.0 as usize,
             self.nodes.len(),
-            "NodeId must equal slot index in dense storage"
+            "NodeIdx must equal slot index in dense storage"
         );
         let is_deform_node = matches!(
             &node.kind,
@@ -1440,8 +1440,8 @@ impl Puppet {
         id
     }
 
-    fn allocate_id(&mut self) -> NodeId {
-        let id = NodeId::new(self.next_id);
+    fn allocate_id(&mut self) -> NodeIdx {
+        let id = NodeIdx::new(self.next_id);
         self.next_id += 1;
         id
     }
@@ -2779,7 +2779,7 @@ mod tests {
 
     #[test]
     fn contributions_resolve_as_a_weighted_mean_against_the_base() {
-        let (a, b) = (NodeId::new(1), NodeId::new(2));
+        let (a, b) = (NodeIdx::new(1), NodeIdx::new(2));
         let base = Vec2::new(10.0, 0.0);
 
         let p = contribution_puppet(base);
@@ -2825,7 +2825,7 @@ mod tests {
         // The property that makes a mean the right rule: catchlight has no
         // principled ordering between a host write and a driver write, so
         // the resolution must not encode one.
-        let (a, b) = (NodeId::new(1), NodeId::new(2));
+        let (a, b) = (NodeIdx::new(1), NodeIdx::new(2));
         let mut forward = contribution_puppet(Vec2::new(3.0, -1.0));
         forward.contribute_param_value(1, a, Vec2::new(20.0, 5.0), 0.25);
         forward.contribute_param_value(1, b, Vec2::new(-4.0, 8.0), 0.5);
@@ -2842,7 +2842,7 @@ mod tests {
         // Drivers re-contribute every frame; if that appended instead of
         // replacing, the table would grow without bound and the mean would
         // drift toward whatever the driver used to say.
-        let a = NodeId::new(1);
+        let a = NodeIdx::new(1);
         let mut p = contribution_puppet(Vec2::ZERO);
         for i in 1..=5 {
             p.contribute_param_value(1, a, Vec2::new(i as f32, 0.0), 1.0);
@@ -3158,7 +3158,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind, Transform};
 
-        fn build(local_only: bool) -> (Puppet, NodeId) {
+        fn build(local_only: bool) -> (Puppet, NodeIdx) {
             let mut puppet = Puppet::new();
             let parent_t = Transform {
                 translation: Vec3::new(1000.0, 0.0, 0.0),
@@ -3222,7 +3222,7 @@ mod tests {
     // Build a puppet whose SimplePhysics driver settles at rest and whose
     // target param drives both a Deform and an Opacity binding on a Part.
     // Returns (puppet, part_id).
-    fn settling_physics_puppet() -> (Puppet, NodeId) {
+    fn settling_physics_puppet() -> (Puppet, NodeIdx) {
         use crate::params::{Binding, BindingValues, DeformMatrix, InterpolateMode, Matrix, Param};
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Mesh, MeshIndices, Node, NodeKind, PartData};
@@ -3306,7 +3306,7 @@ mod tests {
         (puppet, part_id)
     }
 
-    fn part_deform(puppet: &Puppet, id: NodeId) -> (Vec<Vec2>, u64) {
+    fn part_deform(puppet: &Puppet, id: NodeIdx) -> (Vec<Vec2>, u64) {
         match &puppet.get(id).unwrap().kind {
             crate::NodeKind::Part(p) => (
                 p.deform_stack.combined().to_vec(),
@@ -3316,7 +3316,7 @@ mod tests {
         }
     }
 
-    fn part_opacity(puppet: &Puppet, id: NodeId) -> f32 {
+    fn part_opacity(puppet: &Puppet, id: NodeIdx) -> f32 {
         match &puppet.get(id).unwrap().kind {
             crate::NodeKind::Part(p) => p.opacity,
             _ => panic!("node isn't a Part"),

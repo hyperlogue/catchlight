@@ -453,7 +453,7 @@ impl App {
         // Puppet working state = the pose *without* the gesture (previews are
         // app-side overrides, never baked into the puppet between renders).
         let Ok(Some((pt, pr, ps, pz, pop))) = editor.with_puppet(session, |p| {
-            p.get(catchlight_core::NodeId(core)).map(|n| {
+            p.get(catchlight_core::NodeIdx(core)).map(|n| {
                 let op = match &n.kind {
                     catchlight_core::NodeKind::Part(part) => part.opacity,
                     catchlight_core::NodeKind::Composite(c) => c.opacity,
@@ -627,7 +627,7 @@ impl App {
         let node_world = self
             .viewport
             .as_ref()
-            .map(|v| v.transforms.get(catchlight_core::NodeId(core)))
+            .map(|v| v.transforms.get(catchlight_core::NodeIdx(core)))
             .unwrap_or(glam::Mat4::IDENTITY);
         let working = catchlight_editor_core::WorkingMesh::from_mesh(&mesh);
         self.deform_mode = false;
@@ -1344,7 +1344,7 @@ impl App {
                         mesh.core = core;
                         if let Some(viewport) = self.viewport.as_ref() {
                             mesh.node_world =
-                                viewport.transforms.get(catchlight_core::NodeId(core));
+                                viewport.transforms.get(catchlight_core::NodeIdx(core));
                         }
                         gizmo_consumed = mesh.interact(ui, rect, &resp, &camera);
                     }
@@ -1689,10 +1689,10 @@ impl App {
         let Some(viewport) = self.viewport.as_ref() else {
             return Vec::new();
         };
-        let m = viewport.transforms.get(catchlight_core::NodeId(core));
+        let m = viewport.transforms.get(catchlight_core::NodeIdx(core));
         self.editor
             .with_puppet(session, |p| {
-                let Some(node) = p.get(catchlight_core::NodeId(core)) else {
+                let Some(node) = p.get(catchlight_core::NodeIdx(core)) else {
                     return Vec::new();
                 };
                 let catchlight_core::NodeKind::Part(part) = &node.kind else {
@@ -1810,7 +1810,7 @@ impl App {
                 return false;
             };
             let Some(node_inv) = catchlight_core::checked_affine_inverse(
-                viewport.transforms.get(catchlight_core::NodeId(core)),
+                viewport.transforms.get(catchlight_core::NodeIdx(core)),
             ) else {
                 self.status = "cannot deform a node under a singular transform".into();
                 return true;
@@ -2131,7 +2131,7 @@ impl App {
         if self.armed.is_some() {
             if let Some(core) = self.core_of_ref(primary) {
                 if let Ok(Some((t, r, s, z, op))) = editor.with_puppet(session, |p| {
-                    p.get(catchlight_core::NodeId(core)).map(|n| {
+                    p.get(catchlight_core::NodeIdx(core)).map(|n| {
                         let op = match &n.kind {
                             catchlight_core::NodeKind::Part(part) => Some(part.opacity),
                             catchlight_core::NodeKind::Composite(c) => Some(c.opacity),

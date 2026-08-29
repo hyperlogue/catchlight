@@ -7,7 +7,7 @@
 //! inochi2d — not a UUID. Several param write paths (`set_param_value`,
 //! `param_value`) also still name their argument `uuid`; it is a `Param.id`.
 
-use crate::components::{NodeId, NodeKind};
+use crate::components::{NodeIdx, NodeKind};
 use crate::deform::{DeformShapeError, DeformSource};
 use glam::Vec2;
 
@@ -53,7 +53,7 @@ pub struct Param {
 
 #[derive(Debug, Clone)]
 pub struct Binding {
-    pub node: NodeId,
+    pub node: NodeIdx,
     pub interpolate_mode: InterpolateMode,
     pub values: BindingValues,
     /// Per-cell flag: true when the cell contributes nothing (every Vec2
@@ -66,7 +66,7 @@ pub struct Binding {
 }
 
 impl Binding {
-    pub fn new(node: NodeId, interpolate_mode: InterpolateMode, values: BindingValues) -> Self {
+    pub fn new(node: NodeIdx, interpolate_mode: InterpolateMode, values: BindingValues) -> Self {
         let cell_zero = compute_cell_zero(&values);
         Self {
             node,
