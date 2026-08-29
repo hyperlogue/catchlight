@@ -23,8 +23,8 @@ pub enum DeformSource {
     /// weld records touch the part — the weld pass zeroes it on first touch
     /// each frame and accumulates (see [`crate::weld::apply_welds`]).
     Weld,
-    /// An external writer's scratch slot — the editor's live drag preview.
-    Preview,
+    /// An external writer's scratch slot — the editor's live drag.
+    Scratch,
     Test,
 }
 

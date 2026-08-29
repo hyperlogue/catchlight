@@ -86,8 +86,8 @@ pub struct App {
     /// Per-vertex deform tool active (armed + Part selected).
     deform_mode: bool,
     deform_drag: Option<DeformDrag>,
-    /// Live vertex-drag preview: (core id, per-vertex node-local deltas).
-    deform_preview: Option<(u32, Vec<(usize, glam::Vec2)>)>,
+    /// Live vertex-drag scratch deform: (core id, per-vertex node-local deltas).
+    scratch_deform: Option<(u32, Vec<(usize, glam::Vec2)>)>,
     /// Deform sub-tool: single vertex, weighted brush, or lasso selection.
     deform_kind: DeformKind,
     /// The core node the lasso selection belongs to; a different node or a
@@ -126,7 +126,7 @@ struct RenderSig {
     size: (u32, u32),
     isolated: Option<NodeRef>,
     previews: Vec<NodePreview>,
-    deform_preview: Option<(u32, Vec<(usize, glam::Vec2)>)>,
+    scratch_deform: Option<(u32, Vec<(usize, glam::Vec2)>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,7 +179,7 @@ impl App {
             copied_cell: None,
             deform_mode: false,
             deform_drag: None,
-            deform_preview: None,
+            scratch_deform: None,
             deform_kind: DeformKind::Single,
             deform_sel_core: None,
             brush_radius: 60.0,
@@ -228,7 +228,7 @@ impl App {
         self.copied_cell = None;
         self.deform_mode = false;
         self.deform_drag = None;
-        self.deform_preview = None;
+        self.scratch_deform = None;
         self.deform_selection.clear();
         self.lasso_points.clear();
         self.mesh_edit = None;
@@ -1307,11 +1307,11 @@ impl App {
         let deform_active = self.deform_mode
             && self.armed.is_some()
             && self.primary().and_then(|r| self.core_of_ref(r)).is_some();
-        if !deform_active && (self.deform_drag.is_some() || self.deform_preview.is_some()) {
+        if !deform_active && (self.deform_drag.is_some() || self.scratch_deform.is_some()) {
             // The tool was switched off out from under a drag — drop it
             // rather than letting a stale gesture commit later.
             self.deform_drag = None;
-            self.deform_preview = None;
+            self.scratch_deform = None;
         }
         // The transforms picking/gizmo/vertex tools read come from the last
         // render; after an edit they describe the old puppet until one render
@@ -1447,7 +1447,7 @@ impl App {
             size: (w, h),
             isolated: self.isolated,
             previews: self.previews.clone(),
-            deform_preview: self.deform_preview.clone(),
+            scratch_deform: self.scratch_deform.clone(),
         };
         if self.rendered.as_ref() != Some(&sig) || self.texture_id.is_none() {
             let Some(render_state) = frame.wgpu_render_state() else {
@@ -1466,7 +1466,7 @@ impl App {
             let editor = self.editor.clone();
             let camera = self.camera;
             let previews = self.previews.clone();
-            let deform_preview = self.deform_preview.clone();
+            let scratch_deform = self.scratch_deform.clone();
             let upload_key = (session.0, rev);
             if let Some(viewport) = self.viewport.as_mut() {
                 match editor.with_puppet(session, |puppet| {
@@ -1476,7 +1476,7 @@ impl App {
                         upload_key,
                         &pose,
                         &previews,
-                        deform_preview.as_ref(),
+                        scratch_deform.as_ref(),
                         &camera,
                         w,
                         h,
@@ -1856,17 +1856,17 @@ impl App {
             let local = to_local(&drag.node_inv, world - drag.start_world);
             drag.pending = drag.verts.iter().map(|&(v, w)| (v, local * w)).collect();
         }
-        let preview: Vec<(usize, glam::Vec2)> =
+        let scratch: Vec<(usize, glam::Vec2)> =
             drag.pending.iter().map(|(&v, &d)| (v, d)).collect();
 
         if resp.drag_stopped_by(egui::PointerButton::Primary) {
             let core = drag.core;
             let deltas = std::mem::take(&mut drag.pending);
             self.deform_drag = None;
-            self.deform_preview = None;
+            self.scratch_deform = None;
             self.commit_deform_deltas(session, core, &deltas, snapshot);
         } else {
-            self.deform_preview = Some((drag.core, preview));
+            self.scratch_deform = Some((drag.core, scratch));
         }
         true
     }

@@ -134,7 +134,7 @@ impl ViewportRenderer {
     /// Render `puppet` into the offscreen target and return the egui texture id
     /// pointing at it. `isolate` limits drawing to the given core node ids
     /// (mask sources ride inside each drawable and keep working).
-    /// `deform_preview` is a live vertex drag: (core id, per-vertex local
+    /// `scratch_deform` is a live vertex drag: (core id, per-vertex local
     /// deltas), applied through the deform stack's scratch source so it
     /// composes with the pose like the committed value will.
     #[allow(clippy::too_many_arguments)]
@@ -145,7 +145,7 @@ impl ViewportRenderer {
         upload_key: (u64, u64),
         pose: &[(String, Vec2)],
         previews: &[NodePreview],
-        deform_preview: Option<&(u32, Vec<(usize, Vec2)>)>,
+        scratch_deform: Option<&(u32, Vec<(usize, Vec2)>)>,
         camera: &EditorCamera,
         width: u32,
         height: u32,
@@ -182,8 +182,8 @@ impl ViewportRenderer {
             puppet.apply_welds(&self.transforms);
             puppet.combine_deforms();
         }
-        if let Some((core, deltas)) = deform_preview {
-            apply_deform_preview(puppet, *core, deltas);
+        if let Some((core, deltas)) = scratch_deform {
+            apply_scratch_deform(puppet, *core, deltas);
         }
         self.renderer.sync_deforms(puppet);
         let aspect = width as f32 / height as f32;
@@ -267,13 +267,13 @@ impl ViewportRenderer {
 }
 
 /// Write vertex-drag deltas into the part's scratch deform source and
-/// re-combine, so the preview stacks on the posed deform exactly like the
+/// re-combine, so the scratch deform stacks on the posed deform exactly like the
 /// committed keypoint will.
-fn apply_deform_preview(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]) {
+fn apply_scratch_deform(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]) {
     use catchlight_core::deform::DeformSource;
     let _ = puppet.update_deform_source(
         catchlight_core::NodeIdx(core),
-        DeformSource::Preview,
+        DeformSource::Scratch,
         |buf| {
             buf.fill(Vec2::ZERO);
             for &(vertex, delta) in deltas {
