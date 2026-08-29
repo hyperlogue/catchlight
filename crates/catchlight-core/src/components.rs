@@ -269,9 +269,9 @@ pub struct MeshGroupData {
     pub dynamic: bool,
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
-    pub(crate) bindings: crate::meshgroup::MeshGroupBindings,
+    pub(crate) attachments: crate::meshgroup::MeshGroupAttachments,
     /// O(1) point-in-triangle bitmap baked from `mesh` at load time
-    /// (alongside `bindings`). `None` when the mesh is empty or
+    /// (alongside `attachments`). `None` when the mesh is empty or
     /// degenerate; the dynamic-MG propagation path then falls back to
     /// the linear hinted scan.
     pub(crate) bitmap: Option<crate::meshgroup::MgTriangleBitmap>,
@@ -284,7 +284,7 @@ impl Default for MeshGroupData {
             dynamic: false,
             translate_children: true,
             deform_stack: crate::deform::DeformStack::default(),
-            bindings: crate::meshgroup::MeshGroupBindings::default(),
+            attachments: crate::meshgroup::MeshGroupAttachments::default(),
             bitmap: None,
         }
     }

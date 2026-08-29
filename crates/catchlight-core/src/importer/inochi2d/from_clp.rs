@@ -27,7 +27,7 @@ use crate::formats::clp::{
 };
 use crate::formats::{ModelTexture, TextureFormat};
 use crate::load_budget::{charge_clp_structure, LoadBudget};
-use crate::meshgroup::MeshGroupBindings;
+use crate::meshgroup::MeshGroupAttachments;
 use crate::params::{
     Binding, BindingValues, DeformMatrix, Matrix, MeshGroupColorBindingError, Param,
 };
@@ -275,7 +275,7 @@ fn build_mesh_group(m: &ClpMeshGroup) -> Result<MeshGroupData, ImportError> {
         translate_children: m.translate_children,
         deform_stack,
         // Filled by bake_mesh_groups, like the inx path.
-        bindings: MeshGroupBindings::default(),
+        attachments: MeshGroupAttachments::default(),
         bitmap: None,
     })
 }

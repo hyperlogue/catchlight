@@ -20,24 +20,24 @@ use crate::{
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ChildVertexBinding {
+pub(crate) struct VertexAttachment {
     pub(crate) triangle: u32,
     pub(crate) weights: [f32; 3],
 }
 
-/// Per-vertex triangle/barycentric bindings baked at load time. The
+/// Per-vertex triangle/barycentric attachments baked at load time. The
 /// MG↔child transforms are *not* baked: propagation recomputes them
 /// per frame from current globals (see `propagate_mesh_group_deforms`),
 /// because params that drive transforms would make load-time matrices
 /// stale.
 #[derive(Debug, Clone)]
-pub(crate) struct ChildBinding {
-    pub(crate) vertices: Vec<ChildVertexBinding>,
+pub(crate) struct ChildAttachment {
+    pub(crate) vertices: Vec<VertexAttachment>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct MeshGroupBindings {
-    pub(crate) per_child: HashMap<NodeIdx, ChildBinding>,
+pub(crate) struct MeshGroupAttachments {
+    pub(crate) per_child: HashMap<NodeIdx, ChildAttachment>,
 }
 
 /// O(1) point-in-triangle lookup baked at load time. Each cell stores
@@ -215,7 +215,7 @@ fn find_triangle_strict_hint(
     indices: &MeshIndices,
     p: Vec2,
     hint: u32,
-) -> Option<ChildVertexBinding> {
+) -> Option<VertexAttachment> {
     let tri_count = triangle_count(indices);
     if tri_count == 0 {
         return None;
@@ -223,7 +223,7 @@ fn find_triangle_strict_hint(
     if let Some((a, b, c)) = triangle_vertices_raw(vertices, indices, hint) {
         let w = barycentric(p, a, b, c);
         if !w[0].is_nan() && inside(w) {
-            return Some(ChildVertexBinding {
+            return Some(VertexAttachment {
                 triangle: hint,
                 weights: w,
             });
@@ -241,7 +241,7 @@ fn find_triangle_strict_hint(
             continue;
         }
         if inside(w) {
-            return Some(ChildVertexBinding {
+            return Some(VertexAttachment {
                 triangle: tri,
                 weights: w,
             });
@@ -251,7 +251,7 @@ fn find_triangle_strict_hint(
 }
 
 /// Drawable descendants that receive this MG's vertex-level deform
-/// bindings: recurse into Parts and Composites, collect Parts and
+/// attachments: recurse into Parts and Composites, collect Parts and
 /// nested MGs, and stop at each nested MG. The outer warp reaches an inner
 /// MG's children transitively through the pre-order propagation pass. Binding
 /// those children directly to the outer MG would apply its warp twice.
@@ -336,16 +336,16 @@ pub(crate) fn affine2_from_mat4(m: Mat4) -> Affine2 {
 /// 2x2 so `propagate_mesh_group_deforms` can apply MG-local offsets as
 /// child-local offsets the renderer can add to child vertices in
 /// child-local space. Without this, any MG whose children don't share
-/// its local frame produces misplaced bindings and offsets applied in
+/// its local frame produces misplaced attachments and offsets applied in
 /// the wrong basis, which shows up as dramatic distortion when a deform
 /// param drives those MGs. `transforms` is the puppet's load-time
 /// GlobalTransforms; callers should compute it immediately before baking.
-pub(crate) fn bake_mesh_group_bindings(
+pub(crate) fn bake_mesh_group_attachments(
     puppet: &Puppet,
     transforms: &GlobalTransforms,
     mesh_group_id: NodeIdx,
-) -> MeshGroupBindings {
-    let mut out = MeshGroupBindings::default();
+) -> MeshGroupAttachments {
+    let mut out = MeshGroupAttachments::default();
     let Some(mg_node) = puppet.get(mesh_group_id) else {
         return out;
     };
@@ -383,14 +383,14 @@ pub(crate) fn bake_mesh_group_bindings(
             if let Some(b) = find_triangle_strict_hint(&mg_local, &mg_mesh.indices, v_in_mg, 0) {
                 vertices.push(b);
             } else {
-                vertices.push(ChildVertexBinding {
+                vertices.push(VertexAttachment {
                     triangle: 0,
                     weights: [0.0; 3],
                 });
             }
         }
         if !vertices.is_empty() {
-            out.per_child.insert(child_id, ChildBinding { vertices });
+            out.per_child.insert(child_id, ChildAttachment { vertices });
         }
     }
 
@@ -511,7 +511,7 @@ pub(crate) fn propagate_mesh_group_deforms(puppet: &mut Puppet, transforms: &Glo
             if !dynamic && mg.deform_stack.combined().iter().all(|v| *v == Vec2::ZERO) {
                 continue;
             }
-            child_ids.extend(mg.bindings.per_child.keys().copied());
+            child_ids.extend(mg.attachments.per_child.keys().copied());
 
             if dynamic {
                 // Pre-compute mg_vertices[i] + mg_combined[i] once per
@@ -770,7 +770,7 @@ fn propagate_static_to_child(
         let NodeKind::MeshGroup(mg) = &node.kind else {
             return;
         };
-        let Some(binding) = mg.bindings.per_child.get(&child_id) else {
+        let Some(attachment) = mg.attachments.per_child.get(&child_id) else {
             return;
         };
         let combined = mg.deform_stack.combined();
@@ -780,10 +780,10 @@ fn propagate_static_to_child(
         // mesh swapped in without rebuilding the stack) otherwise indexes
         // `combined` out of range.
         let vert_count = mg.mesh.vertices.len().min(combined.len());
-        let n = binding.vertices.len();
+        let n = attachment.vertices.len();
         scratch.clear();
         scratch.reserve(n);
-        for b in binding.vertices.iter() {
+        for b in attachment.vertices.iter() {
             let base = b.triangle as usize * 3;
             let i0 = indices.get(base).map(|i| i as usize);
             let i1 = indices.get(base + 1).map(|i| i as usize);
@@ -864,7 +864,7 @@ fn propagate_dynamic_to_child(
         let NodeKind::MeshGroup(mg) = &mg_node.kind else {
             return;
         };
-        let Some(binding) = mg.bindings.per_child.get(&child_id) else {
+        let Some(attachment) = mg.attachments.per_child.get(&child_id) else {
             return;
         };
 
@@ -912,7 +912,7 @@ fn propagate_dynamic_to_child(
             let tri_idx = match bitmap {
                 Some(bm) => bm.lookup(cv_mg_local),
                 None => {
-                    let hint = binding.vertices.get(i).map(|b| b.triangle).unwrap_or(0);
+                    let hint = attachment.vertices.get(i).map(|b| b.triangle).unwrap_or(0);
                     find_triangle_strict_hint(&mg_local, mg_indices, cv_mg_local, hint)
                         .map(|b| b.triangle)
                 }
@@ -1154,14 +1154,14 @@ mod tests {
             None,
         );
 
-        // Bake and attach bindings.
+        // Bake the attachments and install them.
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
-        let bindings = bake_mesh_group_bindings(&puppet, &tx, mg_id);
-        assert!(bindings.per_child.contains_key(&child_id));
+        let attachments = bake_mesh_group_attachments(&puppet, &tx, mg_id);
+        assert!(attachments.per_child.contains_key(&child_id));
         if let Some(node) = puppet.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.bindings = bindings;
+                mg.attachments = attachments;
             }
         }
 
@@ -1251,11 +1251,11 @@ mod tests {
 
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
-        let bindings = bake_mesh_group_bindings(&puppet, &tx, mg_id);
+        let attachments = bake_mesh_group_attachments(&puppet, &tx, mg_id);
         if let Some(node) = puppet.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
-                mg.bindings = bindings;
+                mg.attachments = attachments;
                 mg.deform_stack
                     .set(
                         DeformSource::Param(0),
@@ -1339,11 +1339,11 @@ mod tests {
 
             let mut tx = GlobalTransforms::new();
             puppet.compute_transforms(&mut tx);
-            let bindings = bake_mesh_group_bindings(&puppet, &tx, mg_id);
+            let attachments = bake_mesh_group_attachments(&puppet, &tx, mg_id);
             if let Some(node) = puppet.get_mut(mg_id) {
                 if let NodeKind::MeshGroup(mg) = &mut node.kind {
                     mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
-                    mg.bindings = bindings;
+                    mg.attachments = attachments;
                     // Non-linear MG warp: vertex 1 +(2,0), vertex 2 +(4,0).
                     mg.deform_stack
                         .set(
@@ -1487,20 +1487,20 @@ mod tests {
         // binds the grandchild Part directly.
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
-        let outer_bindings = bake_mesh_group_bindings(&puppet, &tx, outer_id);
-        let inner_bindings = bake_mesh_group_bindings(&puppet, &tx, inner_id);
-        assert!(!outer_bindings.per_child.contains_key(&part_id));
-        assert!(inner_bindings.per_child.contains_key(&part_id));
-        assert!(outer_bindings.per_child.contains_key(&inner_id));
+        let outer_attachments = bake_mesh_group_attachments(&puppet, &tx, outer_id);
+        let inner_attachments = bake_mesh_group_attachments(&puppet, &tx, inner_id);
+        assert!(!outer_attachments.per_child.contains_key(&part_id));
+        assert!(inner_attachments.per_child.contains_key(&part_id));
+        assert!(outer_attachments.per_child.contains_key(&inner_id));
 
         if let Some(node) = puppet.get_mut(outer_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.bindings = outer_bindings;
+                mg.attachments = outer_attachments;
             }
         }
         if let Some(node) = puppet.get_mut(inner_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.bindings = inner_bindings;
+                mg.attachments = inner_attachments;
             }
         }
 
@@ -1652,15 +1652,15 @@ mod tests {
 
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
-        let outer_bindings = bake_mesh_group_bindings(&puppet, &tx, outer_id);
-        let inner_bindings = bake_mesh_group_bindings(&puppet, &tx, inner_id);
-        assert!(outer_bindings.per_child.contains_key(&inner_id));
+        let outer_attachments = bake_mesh_group_attachments(&puppet, &tx, outer_id);
+        let inner_attachments = bake_mesh_group_attachments(&puppet, &tx, inner_id);
+        assert!(outer_attachments.per_child.contains_key(&inner_id));
 
         // Drive the OUTER only: move its vertex 2 (10,10) by (+4,0).
         if let Some(node) = puppet.get_mut(outer_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
-                mg.bindings = outer_bindings;
+                mg.attachments = outer_attachments;
                 mg.deform_stack
                     .set(
                         DeformSource::Param(0),
@@ -1671,7 +1671,7 @@ mod tests {
         }
         if let Some(node) = puppet.get_mut(inner_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.bindings = inner_bindings;
+                mg.attachments = inner_attachments;
             }
         }
 
@@ -1774,13 +1774,13 @@ mod tests {
 
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
-        let bindings = bake_mesh_group_bindings(&puppet, &tx, mg_id);
-        let binding = bindings
+        let attachments = bake_mesh_group_attachments(&puppet, &tx, mg_id);
+        let attachment = attachments
             .per_child
             .get(&child_id)
-            .expect("child bindings present");
+            .expect("child attachments present");
         // Center of tri 0 (verts 0,1,2) has baryc (0, 0.5, 0.5).
-        let v = binding.vertices[0];
+        let v = attachment.vertices[0];
         assert_eq!(v.triangle, 0, "should fall inside triangle 0");
         let sum: f32 = v.weights.iter().sum();
         assert!(
@@ -1790,7 +1790,7 @@ mod tests {
         );
         if let Some(node) = puppet.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.bindings = bindings;
+                mg.attachments = attachments;
                 // Move MG vertex 2 (at (10,10)) by (+4,0). Child at
                 // barycentric (0, 0.5, 0.5) picks up 0.5*(4,0) = (2,0).
                 mg.deform_stack
@@ -1854,7 +1854,7 @@ mod tests {
 
         // Child vertex (5, -5) child-local. After +90° z-rotation, it
         // maps to (5, 5) MG-local, which sits inside the MG mesh (the
-        // strict-inside binding requires this; out-of-bounds vertices produce
+        // strict-inside attachment requires this; out-of-bounds vertices produce
         // zero offset).
         let child_part = PartData {
             mesh: Mesh::new(
@@ -1885,12 +1885,12 @@ mod tests {
 
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
-        let bindings = bake_mesh_group_bindings(&puppet, &tx, mg_id);
-        let binding = bindings.per_child.get(&child_id).unwrap().clone();
+        let attachments = bake_mesh_group_attachments(&puppet, &tx, mg_id);
+        let attachment = attachments.per_child.get(&child_id).unwrap().clone();
 
         if let Some(node) = puppet.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.bindings.per_child.insert(child_id, binding);
+                mg.attachments.per_child.insert(child_id, attachment);
                 // Set MG deforms so barycentric sum at the child vertex
                 // yields (1, 0) in MG-local.
                 mg.deform_stack
