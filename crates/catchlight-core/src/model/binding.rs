@@ -52,15 +52,15 @@ pub enum BindingTarget {
 
 /// What a binding is: one param's control over one property of one node. Two
 /// bindings with the same key are the same binding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BindingKey {
-    pub param: ParamKey,
-    pub node: NodeKey,
+    pub param: ParamId,
+    pub node: NodeId,
     pub target: BindingTarget,
 }
 
 impl BindingKey {
-    pub fn new(param: ParamKey, node: NodeKey, target: BindingTarget) -> Self {
+    pub fn new(param: ParamId, node: NodeId, target: BindingTarget) -> Self {
         Self {
             param,
             node,
@@ -317,8 +317,8 @@ fn nearest_axis_index(points: &[f32], v: f32) -> u32 {
 }
 
 impl Model {
-    /// Axis grid (width, height) of a param; each is at least 1.
-    pub fn param_grid(&self, param: ParamKey) -> Result<(u32, u32), ModelError> {
+    /// Key grid (width, height) of a param; each is at least 1.
+    pub fn param_grid(&self, param: &ParamId) -> Result<(u32, u32), ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         Ok((
             p.axis_points_x.len().max(1) as u32,
@@ -332,8 +332,19 @@ impl Model {
     }
 
     /// The bindings one param drives, in creation order.
-    pub fn bindings_of_param(&self, param: ParamKey) -> impl Iterator<Item = &ModelBinding> {
-        self.bindings.iter().filter(move |b| b.key.param == param)
+    pub fn bindings_of_param<'a>(
+        &'a self,
+        param: &'a ParamId,
+    ) -> impl Iterator<Item = &'a ModelBinding> + 'a {
+        self.bindings.iter().filter(move |b| &b.key.param == param)
+    }
+
+    /// The bindings that drive one node, in creation order.
+    pub fn bindings_of_node<'a>(
+        &'a self,
+        node: &'a NodeId,
+    ) -> impl Iterator<Item = &'a ModelBinding> + 'a {
+        self.bindings.iter().filter(move |b| &b.key.node == node)
     }
 
     pub fn binding(&self, key: &BindingKey) -> Option<&ModelBinding> {
@@ -347,7 +358,7 @@ impl Model {
             .ok_or(ModelError::UnknownBinding)
     }
 
-    fn check_cell(&self, param: ParamKey, cell: [u32; 2]) -> Result<(), ModelError> {
+    fn check_cell(&self, param: &ParamId, cell: [u32; 2]) -> Result<(), ModelError> {
         let (w, h) = self.param_grid(param)?;
         if cell[0] >= w || cell[1] >= h {
             return Err(ModelError::CellOutOfRange);
@@ -357,7 +368,7 @@ impl Model {
 
     /// The grid cell holding the param's rest pose: nearest keypoint to
     /// `defaults`, mapped into the normalized space the axis points live in.
-    fn rest_cell(&self, param: ParamKey) -> Result<[u32; 2], ModelError> {
+    fn rest_cell(&self, param: &ParamId) -> Result<[u32; 2], ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         Ok([
             nearest_axis_index(&p.axis_points_x, normed(p.defaults[0], p.min[0], p.max[0])),
@@ -388,7 +399,7 @@ impl Model {
         if !was_unauthored {
             return Ok(());
         }
-        let rest = self.rest_cell(key.param)?;
+        let rest = self.rest_cell(&key.param)?;
         if rest != authored {
             self.write_identity_at(key, rest)?;
         }
@@ -401,7 +412,7 @@ impl Model {
     /// group is never drawn and has no colour to fold into.
     pub fn add_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
         let kind = self
-            .node(key.node)
+            .node(&key.node)
             .map(|n| &n.kind)
             .ok_or(ModelError::UnknownNode)?;
         let values = match key.target {
@@ -418,12 +429,12 @@ impl Model {
                 t.wrap(ClpCells::default())
             }
         };
-        self.param_grid(key.param)?;
+        self.param_grid(&key.param)?;
         if self.binding(key).is_some() {
             return Ok(());
         }
         self.bindings.push(ModelBinding {
-            key: *key,
+            key: key.clone(),
             interpolate_mode: InterpolateMode::Linear,
             values: values.into(),
         });
@@ -442,7 +453,7 @@ impl Model {
         key.target.scalar()?;
         // Validate before creating anything — a failed key write must not
         // leave a phantom binding behind.
-        self.check_cell(key.param, cell)?;
+        self.check_cell(&key.param, cell)?;
         let was_unauthored = self.binding_is_unauthored(key);
         self.add_binding(key)?;
         let binding = self.binding_mut(key)?;
@@ -459,7 +470,7 @@ impl Model {
         key: &BindingKey,
         cell: [u32; 2],
     ) -> Result<(), ModelError> {
-        self.check_cell(key.param, cell)?;
+        self.check_cell(&key.param, cell)?;
         let binding = self.binding_mut(key)?;
         let [x, y] = cell;
         match binding.values.make_mut() {
@@ -480,12 +491,12 @@ impl Model {
         key: &BindingKey,
         cell: [u32; 2],
     ) -> Result<(), ModelError> {
-        self.check_cell(key.param, cell)?;
+        self.check_cell(&key.param, cell)?;
         self.write_identity_at(key, cell)
     }
 
     fn write_identity_at(&mut self, key: &BindingKey, cell: [u32; 2]) -> Result<(), ModelError> {
-        let vcount = self.deform_len(key.node);
+        let vcount = self.deform_len(&key.node);
         let target = key.target;
         let binding = self.binding_mut(key)?;
         match binding.values.make_mut() {
@@ -551,9 +562,9 @@ impl Model {
     /// the derived fill — the single implementation every reader shares.
     pub fn scalar_value_at(&self, key: &BindingKey, cell: [u32; 2]) -> Result<f32, ModelError> {
         let target = key.target.scalar()?;
-        self.check_cell(key.param, cell)?;
-        let (w, h) = self.param_grid(key.param)?;
-        let p = self.param(key.param).ok_or(ModelError::UnknownParam)?;
+        self.check_cell(&key.param, cell)?;
+        let (w, h) = self.param_grid(&key.param)?;
+        let p = self.param(&key.param).ok_or(ModelError::UnknownParam)?;
         let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
         let cells = scalar_cells(&binding.values).unwrap_or(&[]);
         Ok(derived_at(
@@ -578,10 +589,10 @@ impl Model {
         if key.target != BindingTarget::Deform {
             return Err(ModelError::WrongTarget);
         }
-        self.check_cell(key.param, cell)?;
-        let (w, h) = self.param_grid(key.param)?;
-        let identity = vec![0.0f32; self.deform_len(key.node)];
-        let p = self.param(key.param).ok_or(ModelError::UnknownParam)?;
+        self.check_cell(&key.param, cell)?;
+        let (w, h) = self.param_grid(&key.param)?;
+        let identity = vec![0.0f32; self.deform_len(&key.node)];
+        let p = self.param(&key.param).ok_or(ModelError::UnknownParam)?;
         let cells = self
             .binding(key)
             .and_then(|b| deform_cells(&b.values))
@@ -604,7 +615,7 @@ impl Model {
         from: [u32; 2],
         to: [u32; 2],
     ) -> Result<(), ModelError> {
-        self.check_cell(key.param, to)?;
+        self.check_cell(&key.param, to)?;
         let was_unauthored = self.binding_is_unauthored(key);
         match key.target {
             BindingTarget::Deform => {
@@ -640,11 +651,11 @@ impl Model {
         if key.target != BindingTarget::Deform {
             return Err(ModelError::WrongTarget);
         }
-        let expected = self.deform_len(key.node);
+        let expected = self.deform_len(&key.node);
         if expected == 0 || offsets.len() != expected {
             return Err(ModelError::NotMeshed);
         }
-        self.check_cell(key.param, cell)?;
+        self.check_cell(&key.param, cell)?;
         let was_unauthored = self.binding_is_unauthored(key);
         self.add_binding(key)?;
         let binding = self.binding_mut(key)?;
@@ -666,7 +677,7 @@ impl Model {
         rotate: f32,
         scale: [f32; 2],
     ) -> Result<(), ModelError> {
-        let mesh = match self.node(key.node) {
+        let mesh = match self.node(&key.node) {
             Some(n) => n.mesh().ok_or(ModelError::NotMeshed)?,
             None => return Err(ModelError::UnknownNode),
         };
@@ -687,7 +698,7 @@ impl Model {
     }
 
     /// Flat length of the node's mesh vertex array (`2 * vertex count`).
-    pub fn deform_len(&self, node: NodeKey) -> usize {
+    pub fn deform_len(&self, node: &NodeId) -> usize {
         self.node(node)
             .and_then(ModelNode::mesh)
             .map_or(0, |m| m.verts.len())
@@ -695,7 +706,7 @@ impl Model {
 
     // ---- param structure ----
 
-    pub fn set_param_name(&mut self, param: ParamKey, name: String) -> Result<(), ModelError> {
+    pub fn set_param_name(&mut self, param: &ParamId, name: Name) -> Result<(), ModelError> {
         self.param_mut(param)?.name = name;
         self.bump();
         Ok(())
@@ -703,7 +714,7 @@ impl Model {
 
     pub fn set_param_defaults(
         &mut self,
-        param: ParamKey,
+        param: &ParamId,
         defaults: [f32; 2],
     ) -> Result<(), ModelError> {
         self.param_mut(param)?.defaults = defaults;
@@ -716,7 +727,7 @@ impl Model {
     /// and don't move).
     pub fn set_param_range(
         &mut self,
-        param: ParamKey,
+        param: &ParamId,
         min: [f32; 2],
         max: [f32; 2],
     ) -> Result<(), ModelError> {
@@ -733,12 +744,12 @@ impl Model {
         Ok(())
     }
 
-    fn param_mut(&mut self, param: ParamKey) -> Result<&mut ModelParam, ModelError> {
+    fn param_mut(&mut self, param: &ParamId) -> Result<&mut ModelParam, ModelError> {
         self.params.get_mut(param).ok_or(ModelError::UnknownParam)
     }
 
     /// Axis 0 is x; axis 1 is y and only exists on vec2 params.
-    fn check_axis(&self, param: ParamKey, axis: u8) -> Result<(), ModelError> {
+    fn check_axis(&self, param: &ParamId, axis: u8) -> Result<(), ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
         if axis > 1 || (axis == 1 && !p.is_vec2) {
             return Err(ModelError::IndexOutOfRange);
@@ -752,7 +763,7 @@ impl Model {
     /// column/row derives.
     pub fn axis_insert(
         &mut self,
-        param: ParamKey,
+        param: &ParamId,
         axis: u8,
         value: f32,
     ) -> Result<usize, ModelError> {
@@ -792,7 +803,7 @@ impl Model {
     /// rest shift back.
     pub fn axis_delete(
         &mut self,
-        param: ParamKey,
+        param: &ParamId,
         axis: u8,
         index: usize,
     ) -> Result<(), ModelError> {
@@ -829,7 +840,7 @@ impl Model {
     /// normalized range and every binding cell moves to the mirrored index.
     /// Values are untouched (compose with `invert_binding` for negating
     /// semantics).
-    pub fn param_flip(&mut self, param: ParamKey, axis: u8) -> Result<(), ModelError> {
+    pub fn param_flip(&mut self, param: &ParamId, axis: u8) -> Result<(), ModelError> {
         self.check_axis(param, axis)?;
         let p = self.param_mut(param)?;
         let points = if axis == 0 {
@@ -853,7 +864,7 @@ impl Model {
     /// strictly between neighbors. Cells are index-keyed and stay authored.
     pub fn axis_move(
         &mut self,
-        param: ParamKey,
+        param: &ParamId,
         axis: u8,
         index: usize,
         value: f32,
@@ -876,8 +887,8 @@ impl Model {
         Ok(())
     }
 
-    fn shift_cells(&mut self, param: ParamKey, axis: u8, f: impl Fn(u32) -> u32) {
-        for b in self.bindings.iter_mut().filter(|b| b.key.param == param) {
+    fn shift_cells(&mut self, param: &ParamId, axis: u8, f: impl Fn(u32) -> u32) {
+        for b in self.bindings.iter_mut().filter(|b| &b.key.param == param) {
             let cells: &mut dyn CellCoords = match b.values.make_mut() {
                 ClpBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
@@ -889,8 +900,8 @@ impl Model {
         }
     }
 
-    fn drop_cells_at(&mut self, param: ParamKey, axis: u8, coord: u32) {
-        for b in self.bindings.iter_mut().filter(|b| b.key.param == param) {
+    fn drop_cells_at(&mut self, param: &ParamId, axis: u8, coord: u32) {
+        for b in self.bindings.iter_mut().filter(|b| &b.key.param == param) {
             let cells: &mut dyn CellCoords = match b.values.make_mut() {
                 ClpBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
@@ -961,6 +972,7 @@ fn derived_at<T: FillCell>(
 mod tests {
     use super::*;
     use crate::formats::clp::{ClpIndices, ClpMesh};
+    use crate::id::SeededHex;
 
     #[test]
     fn param_range_rejects_inverted_collapsed_and_nan() {
@@ -972,265 +984,263 @@ mod tests {
         assert!(!param_range_is_valid(false, [f32::NAN, 0.0], [1.0, 0.0]));
     }
 
-    fn param_1d(m: &mut Model) -> ParamKey {
-        m.add_param(ModelParam {
-            name: "x".into(),
-            is_vec2: false,
-            min: [-1.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 0.5, 1.0],
-            axis_points_y: vec![0.0],
-        })
+    /// A model with one group, one quad part and one 3-keypoint param.
+    struct Rig {
+        m: Model,
+        hex: SeededHex,
+        group: NodeId,
+        part: NodeId,
+        param: ParamId,
     }
 
-    fn quad_part(m: &mut Model, name: &str) -> NodeKey {
-        let root = m.root();
-        m.add_node(
-            root,
-            ModelNode::new(
-                name,
-                ModelNodeKind::Part(ModelPart::new(ClpMesh {
-                    verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
-                    uvs: vec![0.0; 8],
-                    indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
-                    origin: [0.0, 0.0],
-                })),
-            ),
-        )
-        .unwrap()
+    fn rig() -> Rig {
+        let mut hex = SeededHex::new(5);
+        let mut m = Model::new();
+        let root = m.root().clone();
+        let group = m
+            .add_node(&root, ModelNode::new("g", ModelNodeKind::Group), &mut hex)
+            .unwrap();
+        let part = m
+            .add_node(
+                &root,
+                ModelNode::new(
+                    "q",
+                    ModelNodeKind::Part(ModelPart::new(ClpMesh {
+                        verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
+                        uvs: vec![0.0; 8],
+                        indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+                        origin: [0.0, 0.0],
+                    })),
+                ),
+                &mut hex,
+            )
+            .unwrap();
+        let param = m
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("x"),
+                    is_vec2: false,
+                    min: [-1.0, 0.0],
+                    max: [1.0, 0.0],
+                    defaults: [0.0, 0.0],
+                    axis_points_x: vec![0.0, 0.5, 1.0],
+                    axis_points_y: vec![0.0],
+                },
+                &mut hex,
+            )
+            .unwrap();
+        Rig {
+            m,
+            hex,
+            group,
+            part,
+            param,
+        }
     }
 
-    fn tx(param: ParamKey, node: NodeKey) -> BindingKey {
-        BindingKey::new(param, node, BindingTarget::Scalar(ScalarTarget::Tx))
+    impl Rig {
+        fn tx(&self, node: &NodeId) -> BindingKey {
+            BindingKey::new(
+                self.param.clone(),
+                node.clone(),
+                BindingTarget::Scalar(ScalarTarget::Tx),
+            )
+        }
+
+        fn deform(&self, node: &NodeId) -> BindingKey {
+            BindingKey::new(self.param.clone(), node.clone(), BindingTarget::Deform)
+        }
+    }
+
+    fn cells_of(m: &Model, key: &BindingKey) -> Vec<(u32, f32)> {
+        scalar_cells(m.binding(key).unwrap().values())
+            .unwrap()
+            .iter()
+            .map(|c| (c.x, c.value))
+            .collect()
     }
 
     #[test]
     fn set_unset_reset_key_roundtrip() {
-        let mut m = Model::new();
-        let root = m.root();
-        let node = m
-            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
-            .unwrap();
-        let param = param_1d(&mut m);
-        let key = tx(param, node);
+        let mut r = rig();
+        let key = r.tx(&r.group.clone());
 
-        m.set_binding_key(&key, [2, 0], 60.0).unwrap();
-        m.set_binding_key(&key, [0, 0], -60.0).unwrap();
+        r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
+        r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
         // one binding; the first key also authored the rest identity at x=1.
-        assert_eq!(m.bindings_of_param(param).count(), 1);
-        let cells = scalar_cells(m.binding(&key).unwrap().values()).unwrap();
-        assert_eq!(
-            cells.iter().map(|c| (c.x, c.value)).collect::<Vec<_>>(),
-            vec![(0, -60.0), (1, 0.0), (2, 60.0)]
-        );
+        assert_eq!(r.m.bindings_of_param(&r.param).count(), 1);
+        assert_eq!(cells_of(&r.m, &key), vec![(0, -60.0), (1, 0.0), (2, 60.0)]);
 
-        m.unset_binding_key(&key, [0, 0]).unwrap();
-        m.reset_binding_key(&key, [1, 0]).unwrap();
-        let cells = scalar_cells(m.binding(&key).unwrap().values()).unwrap();
-        assert_eq!(
-            cells.iter().map(|c| (c.x, c.value)).collect::<Vec<_>>(),
-            vec![(1, 0.0), (2, 60.0)]
-        );
+        r.m.unset_binding_key(&key, [0, 0]).unwrap();
+        r.m.reset_binding_key(&key, [1, 0]).unwrap();
+        assert_eq!(cells_of(&r.m, &key), vec![(1, 0.0), (2, 60.0)]);
 
-        assert!(m.set_binding_key(&key, [3, 0], 1.0).is_err());
-        assert!(m.to_clp_bytes().is_ok());
+        assert!(r.m.set_binding_key(&key, [3, 0], 1.0).is_err());
+        assert!(r.m.to_clp_bytes().is_ok());
     }
 
     #[test]
     fn copy_key_takes_derived_values() {
-        let mut m = Model::new();
-        let root = m.root();
-        let node = m
-            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
-            .unwrap();
-        let param = param_1d(&mut m);
-        let key = tx(param, node);
-        m.set_binding_key(&key, [0, 0], -60.0).unwrap();
-        m.set_binding_key(&key, [2, 0], 60.0).unwrap();
+        let mut r = rig();
+        let key = r.tx(&r.group.clone());
+        r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
+        r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
         // cell 1 is derived (midpoint = 0); copying it to cell 2 authors 0 there.
-        m.copy_binding_key(&key, [1, 0], [2, 0]).unwrap();
-        let cells = scalar_cells(m.binding(&key).unwrap().values()).unwrap();
-        assert_eq!(cells.iter().find(|c| c.x == 2).unwrap().value, 0.0);
+        r.m.copy_binding_key(&key, [1, 0], [2, 0]).unwrap();
+        assert_eq!(
+            cells_of(&r.m, &key).into_iter().find(|c| c.0 == 2),
+            Some((2, 0.0))
+        );
     }
 
     #[test]
     fn invert_and_delete_binding() {
-        let mut m = Model::new();
-        let root = m.root();
-        let node = m
-            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
-            .unwrap();
-        let param = param_1d(&mut m);
-        let key = BindingKey::new(param, node, BindingTarget::Scalar(ScalarTarget::Rz));
-        m.set_binding_key(&key, [2, 0], 0.5).unwrap();
-        m.invert_binding(&key).unwrap();
-        let cells = scalar_cells(m.binding(&key).unwrap().values()).unwrap();
-        assert_eq!(cells.iter().find(|c| c.x == 2).unwrap().value, -0.5);
+        let mut r = rig();
+        let key = BindingKey::new(
+            r.param.clone(),
+            r.group.clone(),
+            BindingTarget::Scalar(ScalarTarget::Rz),
+        );
+        r.m.set_binding_key(&key, [2, 0], 0.5).unwrap();
+        r.m.invert_binding(&key).unwrap();
+        assert_eq!(
+            cells_of(&r.m, &key).into_iter().find(|c| c.0 == 2),
+            Some((2, -0.5))
+        );
 
-        m.delete_binding(&key).unwrap();
-        assert!(m.binding(&key).is_none());
-        assert!(m.delete_binding(&key).is_err());
+        r.m.delete_binding(&key).unwrap();
+        assert!(r.m.binding(&key).is_none());
+        assert!(r.m.delete_binding(&key).is_err());
     }
 
     #[test]
     fn deform_from_transform_writes_offsets() {
-        let mut m = Model::new();
-        let part = quad_part(&mut m, "q");
-        let param = m.add_param(ModelParam {
-            name: "d".into(),
-            is_vec2: false,
-            min: [0.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-        });
-        let key = BindingKey::new(param, part, BindingTarget::Deform);
-        m.set_deform_from_transform(&key, [1, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
+        let mut r = rig();
+        let key = r.deform(&r.part.clone());
+        r.m.set_deform_from_transform(&key, [2, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
             .unwrap();
-        let cells = deform_cells(m.binding(&key).unwrap().values()).unwrap();
+        let cells = deform_cells(r.m.binding(&key).unwrap().values()).unwrap();
+        // The first authored key also authors the identity at the rest cell,
+        // which for this param is the middle keypoint.
         assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].value, vec![0.0; 8]);
+        assert_eq!((cells[0].x, &cells[0].value), (1, &vec![0.0; 8]));
         assert_eq!(
-            cells[1].value,
-            vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0]
+            (cells[1].x, &cells[1].value),
+            (2, &vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0])
         );
         // wrong-length vertex writes are refused.
-        assert!(m.set_deform_vertices(&key, [0, 0], vec![1.0, 2.0]).is_err());
-        assert!(m.to_clp_bytes().is_ok());
+        assert!(r
+            .m
+            .set_deform_vertices(&key, [0, 0], vec![1.0, 2.0])
+            .is_err());
+        assert!(r.m.to_clp_bytes().is_ok());
     }
 
     /// A binding is one param's control over one property of one node, so the
     /// key has to reject an operation aimed at the wrong kind of value.
     #[test]
     fn the_key_target_decides_which_operations_apply() {
-        let mut m = Model::new();
-        let part = quad_part(&mut m, "q");
-        let param = param_1d(&mut m);
-        let deform = BindingKey::new(param, part, BindingTarget::Deform);
-        let scalar = tx(param, part);
+        let mut r = rig();
+        let deform = r.deform(&r.part.clone());
+        let scalar = r.tx(&r.part.clone());
 
         assert!(matches!(
-            m.set_binding_key(&deform, [0, 0], 1.0),
+            r.m.set_binding_key(&deform, [0, 0], 1.0),
             Err(ModelError::WrongTarget)
         ));
         assert!(matches!(
-            m.set_deform_vertices(&scalar, [0, 0], vec![0.0; 8]),
+            r.m.set_deform_vertices(&scalar, [0, 0], vec![0.0; 8]),
             Err(ModelError::WrongTarget)
         ));
         assert!(matches!(
-            m.deform_value_at(&scalar, [0, 0]),
+            r.m.deform_value_at(&scalar, [0, 0]),
             Err(ModelError::WrongTarget)
         ));
     }
 
     #[test]
     fn axis_ops_remap_authored_cells() {
-        let mut m = Model::new();
-        let root = m.root();
-        let node = m
-            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
-            .unwrap();
-        let param = param_1d(&mut m);
-        let key = tx(param, node);
-        m.set_binding_key(&key, [0, 0], -60.0).unwrap();
-        m.set_binding_key(&key, [2, 0], 60.0).unwrap();
+        let mut r = rig();
+        let key = r.tx(&r.group.clone());
+        r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
+        r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
 
         // insert between 0.5 and 1.0 → index 2; the authored cell at 2 shifts to 3.
-        let idx = m.axis_insert(param, 0, 0.75).unwrap();
+        let idx = r.m.axis_insert(&r.param, 0, 0.75).unwrap();
         assert_eq!(idx, 2);
         assert_eq!(
-            m.param(param).unwrap().axis_points_x,
+            r.m.param(&r.param).unwrap().axis_points_x,
             vec![0.0, 0.5, 0.75, 1.0]
         );
-        let xs: Vec<u32> = scalar_cells(m.binding(&key).unwrap().values())
-            .unwrap()
-            .iter()
-            .map(|c| c.x)
-            .collect();
+        let xs: Vec<u32> = cells_of(&r.m, &key).into_iter().map(|c| c.0).collect();
         assert_eq!(xs, vec![0, 1, 3]);
 
         // endpoints can't be deleted; duplicates and out-of-range inserts rejected.
-        assert!(m.axis_delete(param, 0, 0).is_err());
-        assert!(m.axis_insert(param, 0, 0.5).is_err());
-        assert!(m.axis_insert(param, 0, 2.0).is_err());
+        assert!(r.m.axis_delete(&r.param, 0, 0).is_err());
+        assert!(r.m.axis_insert(&r.param, 0, 0.5).is_err());
+        assert!(r.m.axis_insert(&r.param, 0, 2.0).is_err());
 
         // move the inserted point (must stay between neighbors).
-        m.axis_move(param, 0, 2, 0.6).unwrap();
-        assert!(m.axis_move(param, 0, 2, 0.4).is_err());
+        r.m.axis_move(&r.param, 0, 2, 0.6).unwrap();
+        assert!(r.m.axis_move(&r.param, 0, 2, 0.4).is_err());
 
         // deleting it keeps the shifted cells consistent.
-        m.axis_delete(param, 0, 2).unwrap();
-        let xs: Vec<u32> = scalar_cells(m.binding(&key).unwrap().values())
-            .unwrap()
-            .iter()
-            .map(|c| c.x)
-            .collect();
+        r.m.axis_delete(&r.param, 0, 2).unwrap();
+        let xs: Vec<u32> = cells_of(&r.m, &key).into_iter().map(|c| c.0).collect();
         assert_eq!(xs, vec![0, 1, 2]);
 
-        // a range change leaves the normalized axis points alone.
-        m.set_param_range(param, [0.0, 0.0], [4.0, 0.0]).unwrap();
-        assert_eq!(m.param(param).unwrap().axis_points_x, vec![0.0, 0.5, 1.0]);
+        // a range change leaves the normalized key positions alone.
+        r.m.set_param_range(&r.param, [0.0, 0.0], [4.0, 0.0])
+            .unwrap();
+        assert_eq!(
+            r.m.param(&r.param).unwrap().axis_points_x,
+            vec![0.0, 0.5, 1.0]
+        );
     }
 
     #[test]
-    fn param_flip_mirrors_axis_points_and_cells() {
-        let mut m = Model::new();
-        let root = m.root();
-        let node = m
-            .add_node(root, ModelNode::new("p", ModelNodeKind::Group))
-            .unwrap();
-        let param = m.add_param(ModelParam {
-            name: "x".into(),
-            is_vec2: false,
-            min: [-1.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 0.75, 1.0],
-            axis_points_y: vec![0.0],
-        });
-        let key = tx(param, node);
-        m.set_binding_key(&key, [0, 0], -60.0).unwrap();
-        m.set_binding_key(&key, [1, 0], 10.0).unwrap();
+    fn param_flip_mirrors_key_positions_and_cells() {
+        let mut r = rig();
+        r.m.axis_move(&r.param, 0, 1, 0.75).unwrap();
+        let key = r.tx(&r.group.clone());
+        r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
+        r.m.set_binding_key(&key, [1, 0], 10.0).unwrap();
 
-        m.param_flip(param, 0).unwrap();
+        r.m.param_flip(&r.param, 0).unwrap();
         // 0, 0.75, 1 reflect to 1, 0.25, 0, then reverse to stay ascending.
-        assert_eq!(m.param(param).unwrap().axis_points_x, vec![0.0, 0.25, 1.0]);
-        let cells: Vec<(u32, f32)> = scalar_cells(m.binding(&key).unwrap().values())
-            .unwrap()
-            .iter()
-            .map(|c| (c.x, c.value))
-            .collect();
+        assert_eq!(
+            r.m.param(&r.param).unwrap().axis_points_x,
+            vec![0.0, 0.25, 1.0]
+        );
         // cell 0 -> 2, cell 1 -> 1; values untouched.
-        assert_eq!(cells, vec![(1, 10.0), (2, -60.0)]);
+        assert_eq!(cells_of(&r.m, &key), vec![(1, 10.0), (2, -60.0)]);
     }
 
     /// A mesh group is never drawn, so a colour binding on one has nowhere to
     /// land and the runtime refuses to load the file it would flatten to.
     #[test]
     fn a_colour_binding_cannot_be_authored_on_a_mesh_group() {
-        let mut m = Model::new();
-        let root = m.root();
-        let group = m
-            .add_node(
-                root,
+        let mut r = rig();
+        let root = r.m.root().clone();
+        let group =
+            r.m.add_node(
+                &root,
                 ModelNode::new(
                     "lattice",
                     ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClpMesh::default())),
                 ),
+                &mut r.hex,
             )
             .unwrap();
-        let param = param_1d(&mut m);
         assert!(matches!(
-            m.add_binding(&BindingKey::new(
-                param,
-                group,
+            r.m.add_binding(&BindingKey::new(
+                r.param.clone(),
+                group.clone(),
                 BindingTarget::Scalar(ScalarTarget::Opacity)
             )),
             Err(ModelError::ColorOnMeshGroup)
         ));
         // A non-colour target on the same node is fine.
-        m.add_binding(&tx(param, group)).unwrap();
+        r.m.add_binding(&r.tx(&group)).unwrap();
     }
 }

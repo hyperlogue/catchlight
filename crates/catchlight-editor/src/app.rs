@@ -12,12 +12,13 @@ use std::sync::Arc;
 
 use catchlight_core::formats::clp::TextureEncoding;
 use catchlight_core::Vec2;
-use catchlight_core::{BindingTarget, Model, ModelNodeKind, NodeKey};
+use catchlight_core::{BindingKey, BindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
     BindingKeyEntry, Command, NodePatch, NodeRef, ParamInfo, ParamRef, Reply, Request,
     ResponseBody, SessionId, TexRef, TreeNode,
 };
 use catchlight_editor_server::Editor;
+use catchlight_editor_server::RefMap;
 use eframe::egui;
 
 use crate::camera::EditorCamera;
@@ -362,13 +363,13 @@ impl App {
         let info = snap.params.iter().find(|p| p.param == param)?;
         let (w, h) = (info.axis[0] as usize, info.axis[1] as usize);
         let editor = self.editor.clone();
-        let pid = catchlight_core::ParamKey::from_ffi(param.0);
         let data = editor
-            .with_model(session, |m| {
-                m.param(pid)?;
+            .with_model(session, |m, refs| {
+                let pid = refs.param_id(param)?.clone();
+                m.param(&pid)?;
                 let mut authored_count = vec![0u32; w * h];
                 let mut rows = Vec::new();
-                for b in m.bindings_of_param(pid) {
+                for b in m.bindings_of_param(&pid) {
                     let target = b.target();
                     let mut mark = |x: u32, y: u32| {
                         // A stray out-of-grid cell must not wrap into another
@@ -394,10 +395,10 @@ impl App {
                         }
                     }
                     rows.push(BindingRow {
-                        node: NodeRef(b.node().to_ffi()),
+                        node: refs.node(b.node()),
                         node_name: m
                             .node(b.node())
-                            .map(|n| n.name.clone())
+                            .map(|n| n.name.to_string())
                             .unwrap_or_else(|| "?".into()),
                         target: target.name().to_string(),
                         interpolate: interp_name(b.interpolate_mode()).to_string(),
@@ -471,14 +472,14 @@ impl App {
             return Vec::new();
         };
         use catchlight_core::ScalarTarget as T;
-        let pid = catchlight_core::ParamKey::from_ffi(param.0);
-        let nid = NodeKey::from_ffi(node.0);
         let key_at = |t: T| {
             editor
-                .with_model(session, |m| {
-                    m.scalar_value_at(&scalar_key(pid, nid, t), cell)
-                        .unwrap_or(t.identity())
+                .with_model(session, |m, refs| {
+                    let key = scalar_key(refs, param, node, t)?;
+                    m.scalar_value_at(&key, cell).ok()
                 })
+                .ok()
+                .flatten()
                 .unwrap_or(t.identity())
         };
         let mut out = Vec::new();
@@ -597,9 +598,9 @@ impl App {
         let Some(core) = self.core_of_ref(node) else {
             return;
         };
-        let id = NodeKey::from_ffi(node.0);
         let editor = self.editor.clone();
-        let Ok(Some((mesh, tex_bytes))) = editor.with_model(session, |m| {
+        let Ok(Some((mesh, tex_bytes))) = editor.with_model(session, |m, refs| {
+            let id = refs.node_id(node)?;
             let albedo = match m.node(id).map(|n| &n.kind) {
                 Some(ModelNodeKind::Part(p)) => p.albedo(),
                 Some(ModelNodeKind::MeshGroup(_)) => None,
@@ -665,9 +666,10 @@ impl App {
     /// is untouched until Apply).
     fn mesh_copy_into_working(&mut self, src: NodeRef) {
         let Some(session) = self.session else { return };
-        let id = NodeKey::from_ffi(src.0);
         let editor = self.editor.clone();
-        let Ok(Some(src_mesh)) = editor.with_model(session, |m| m.node_mesh(id).cloned()) else {
+        let Ok(Some(src_mesh)) =
+            editor.with_model(session, |m, refs| m.node_mesh(refs.node_id(src)?).cloned())
+        else {
             return;
         };
         if let Some(mesh) = &mut self.mesh_edit {
@@ -827,22 +829,18 @@ impl App {
                 }
                 // Cross-node paste: scalars carry over directly; deforms are
                 // re-fitted from the source mesh onto the target's topology.
-                let pid = catchlight_core::ParamKey::from_ffi(param.0);
-                let src_id = NodeKey::from_ffi(src_node.0);
-                let dst_id = NodeKey::from_ffi(node.0);
                 let editor = self.editor.clone();
                 if target == "deform" {
                     let refit = editor
-                        .with_model(session, |m| {
-                            let src_mesh = m.node_mesh(src_id)?.clone();
+                        .with_model(session, |m, refs| {
+                            let pid = refs.param_id(param)?.clone();
+                            let src_id = refs.node_id(src_node)?.clone();
+                            let dst_id = refs.node_id(node)?;
+                            let src_mesh = m.node_mesh(&src_id)?.clone();
                             let dst_verts = m.node_mesh(dst_id)?.verts.clone();
                             let src_offsets = m
                                 .deform_value_at(
-                                    &catchlight_core::BindingKey::new(
-                                        pid,
-                                        src_id,
-                                        BindingTarget::Deform,
-                                    ),
+                                    &BindingKey::new(pid, src_id, BindingTarget::Deform),
                                     src_cell,
                                 )
                                 .ok()?;
@@ -868,12 +866,12 @@ impl App {
                     }
                 } else {
                     let value = editor
-                        .with_model(session, |m| {
+                        .with_model(session, |m, refs| {
                             let BindingTarget::Scalar(t) = BindingTarget::parse(&target)? else {
                                 return None;
                             };
-                            m.scalar_value_at(&scalar_key(pid, src_id, t), src_cell)
-                                .ok()
+                            let key = scalar_key(refs, param, src_node, t)?;
+                            m.scalar_value_at(&key, src_cell).ok()
                         })
                         .ok()
                         .flatten();
@@ -1599,7 +1597,7 @@ impl App {
             return;
         }
         let editor = self.editor.clone();
-        if let Ok(Ok(bytes)) = editor.with_model(session, |m| m.to_clp_bytes()) {
+        if let Ok(Ok(bytes)) = editor.with_model(session, |m, _| m.to_clp_bytes()) {
             crate::io::autosave_write(self.io_queue.clone(), bytes);
             self.autosave_rev = rev;
         }
@@ -1894,16 +1892,15 @@ impl App {
         let Some(node) = self.ref_of_core(core) else {
             return;
         };
-        let pid = catchlight_core::ParamKey::from_ffi(param.0);
-        let nid = NodeKey::from_ffi(node.0);
         let editor = self.editor.clone();
         let base = editor
-            .with_model(session, |m| {
-                m.deform_value_at(
-                    &catchlight_core::BindingKey::new(pid, nid, BindingTarget::Deform),
-                    cell,
-                )
-                .ok()
+            .with_model(session, |m, refs| {
+                let key = BindingKey::new(
+                    refs.param_id(param)?.clone(),
+                    refs.node_id(node)?.clone(),
+                    BindingTarget::Deform,
+                );
+                m.deform_value_at(&key, cell).ok()
             })
             .ok()
             .flatten();
@@ -2053,13 +2050,10 @@ impl App {
         ui.heading("Textures");
         let Some(session) = self.session else { return };
         let editor = self.editor.clone();
-        let Ok(texs) = editor.with_model(session, |m| {
-            m.texture_ids()
-                .iter()
-                .filter_map(|&t| {
-                    m.texture(t)
-                        .map(|tex| (TexRef(t.to_ffi()), tex.data.clone()))
-                })
+        let Ok(texs) = editor.with_model(session, |m, refs| {
+            let ids = m.texture_ids().to_vec();
+            ids.iter()
+                .filter_map(|t| m.texture(t).map(|tex| (refs.texture(t), tex.data.clone())))
                 .collect::<Vec<_>>()
         }) else {
             return;
@@ -2091,9 +2085,9 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for (i, (tref, data)) in texs.iter().enumerate() {
-                        // Keyed by the byte buffer's address, not the TexRef:
-                        // undo rewinds slotmap versions, so a TexRef can be
-                        // re-minted for a different image.
+                        // Keyed by the byte buffer's address: two parts
+                        // drawing one image share a thumbnail, and replacing an
+                        // image gets a new one.
                         let key = Arc::as_ptr(data) as usize;
                         let handle = self
                             .thumbs
@@ -2137,7 +2131,8 @@ impl App {
             return Vec::new();
         };
         let editor = self.editor.clone();
-        let Ok(Some(mut data)) = editor.with_model(session, |m| build_inspector_data(m, primary))
+        let Ok(Some(mut data)) =
+            editor.with_model(session, |m, refs| build_inspector_data(m, refs, primary))
         else {
             return Vec::new();
         };
@@ -2192,11 +2187,11 @@ impl App {
             .map(|s| s.params.iter().map(|p| (p.param, p.name.clone())).collect())
             .unwrap_or_default();
         let textures: Vec<(TexRef, String)> = editor
-            .with_model(session, |m| {
-                m.texture_ids()
-                    .iter()
+            .with_model(session, |m, refs| {
+                let ids = m.texture_ids().to_vec();
+                ids.iter()
                     .enumerate()
-                    .map(|(i, &t)| (TexRef(t.to_ffi()), format!("tex{i}")))
+                    .map(|(i, t)| (refs.texture(t), format!("tex{i}")))
                     .collect()
             })
             .unwrap_or_default();
@@ -2212,7 +2207,7 @@ impl App {
         ui.separator();
         ui.label("Puppet physics");
         let editor = self.editor.clone();
-        let Ok((gravity, ppm)) = editor.with_model(session, |m| {
+        let Ok((gravity, ppm)) = editor.with_model(session, |m, _| {
             (m.physics().gravity, m.physics().pixels_per_meter)
         }) else {
             return;
@@ -2426,16 +2421,21 @@ impl App {
 
 /// The binding a scalar target on one node is driven by, for one param.
 fn scalar_key(
-    param: catchlight_core::ParamKey,
-    node: NodeKey,
+    refs: &RefMap,
+    param: ParamRef,
+    node: NodeRef,
     target: catchlight_core::ScalarTarget,
-) -> catchlight_core::BindingKey {
-    catchlight_core::BindingKey::new(param, node, BindingTarget::Scalar(target))
+) -> Option<BindingKey> {
+    Some(BindingKey::new(
+        refs.param_id(param)?.clone(),
+        refs.node_id(node)?.clone(),
+        BindingTarget::Scalar(target),
+    ))
 }
 
-fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
-    let id = NodeKey::from_ffi(node.0);
-    let n = model.node(id)?;
+fn build_inspector_data(model: &Model, refs: &mut RefMap, node: NodeRef) -> Option<InspectorData> {
+    let id = refs.node_id(node)?.clone();
+    let n = model.node(&id)?;
     let kind = match &n.kind {
         ModelNodeKind::Group => InspectorKind::Group,
         ModelNodeKind::Part(p) => InspectorKind::Part {
@@ -2447,7 +2447,7 @@ fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
                 mask_threshold: p.mask_threshold,
                 masks: mask_rows(model, p.masks()),
             },
-            albedo: p.albedo().map(|t| TexRef(t.to_ffi())),
+            albedo: p.albedo().cloned().map(|t| refs.texture(&t)),
             vert_count: p.mesh().verts.len() / 2,
             tri_count: match &p.mesh().indices {
                 catchlight_core::formats::clp::ClpIndices::U16(v) => v.len() / 3,
@@ -2474,7 +2474,7 @@ fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
-            target_param: ph.target_param().map(|p| ParamRef(p.to_ffi())),
+            target_param: ph.target_param().cloned().map(|p| refs.param(&p)),
             gravity: ph.gravity,
             length: ph.length,
             frequency: ph.frequency,
@@ -2484,7 +2484,7 @@ fn build_inspector_data(model: &Model, node: NodeRef) -> Option<InspectorData> {
         },
     };
     Some(InspectorData {
-        name: n.name.clone(),
+        name: n.name.to_string(),
         enabled: n.enabled,
         lock_to_root: n.lock_to_root,
         z_order: n.z_order,
@@ -2501,7 +2501,7 @@ fn mask_rows(model: &Model, masks: &[catchlight_core::ModelMask]) -> Vec<MaskRow
         .map(|m| MaskRow {
             source_name: model
                 .node(m.source())
-                .map(|n| n.name.clone())
+                .map(|n| n.name.to_string())
                 .unwrap_or_else(|| "?".into()),
             mode: m.mode(),
         })

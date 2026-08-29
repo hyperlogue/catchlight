@@ -28,7 +28,7 @@ pub use model::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
     BindingTarget, CheckWarning, Model, ModelBinding, ModelBindingValues, ModelComposite,
     ModelError, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam,
-    ModelPart, ModelPhysics, ModelTexture, ModelWeld, NodeKey, ParamKey, ScalarTarget, TexKey,
+    ModelPart, ModelPhysics, ModelTexture, ModelWeld, ScalarTarget,
 };
 pub use node::*;
 pub use params::*;

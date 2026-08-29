@@ -20,11 +20,15 @@
 //!   source, a physics target, a weld's ends) are private and only reachable
 //!   through methods that check them, which is what makes [`Model::flatten`]
 //!   total.
-//! - **Keys are stable, indices are not.** Nodes, params and textures are
-//!   addressed by slotmap keys ([`NodeKey`], [`ParamKey`], [`TexKey`]) that
-//!   survive insert, reparent and delete. Array indices exist only at the file
-//!   edge: [`Model::flatten`] assigns them in topological order on save and
-//!   [`Model::from_clp_file`] recovers keys on open.
+//! - **An Id is unique within the model and never changes on its own.** This
+//!   is where the uniqueness [`crate::id`] cannot check is enforced: a
+//!   generated Id is re-drawn until it is free, an author-chosen one is
+//!   refused if it is taken, and [`Model::rename_node_id`] and its two
+//!   siblings are the only way an Id ever changes — each rewrites every
+//!   reference to it. The root's Id starts out `root`; a model read from a
+//!   `.clp`, which stores no Ids, gets `node-<arena index>` for the rest.
+//! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
+//!   free to repeat, and never a key.
 //! - **Sibling order is document state.** It is the draw order for equal z
 //!   order, so [`Model::reorder`] is an edit, not view state.
 //! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
@@ -53,15 +57,19 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
 
-use slotmap::{new_key_type, SlotMap};
-
 use crate::components::{BlendMode, MaskMode};
 use crate::formats::clp::{
     self as clp, ClpBindingValues, ClpMesh, ClpMeshGroup, ClpPhysics, ClpTransform, TextureAlpha,
     TextureEncoding,
 };
+use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, TexId};
 use crate::params::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
+
+/// How many times a generated Id is re-drawn before the model gives up. The
+/// 32 bits collide by birthday around 2^16 siblings, so a handful of retries
+/// covers any real model and the cap only fires on a wedged [`HexSource`].
+const ID_MINT_ATTEMPTS: usize = 64;
 
 /// Why an edit to a [`Model`] — or a read of a `.clp` file into one — could
 /// not be carried out. Every mutating method leaves the model untouched when
@@ -74,6 +82,12 @@ pub enum ModelError {
     UnknownParam,
     #[error("unknown texture id")]
     UnknownTexture,
+    #[error("id {0:?} is already used in this model")]
+    DuplicateId(String),
+    #[error("could not draw a free id in {ID_MINT_ATTEMPTS} attempts")]
+    IdExhausted,
+    #[error(transparent)]
+    Id(#[from] IdError),
     #[error(".clp node arena must contain exactly one root at index 0")]
     InvalidClpRoot,
     #[error(".clp node {node} parent index {parent} must name a preceding node")]
@@ -82,7 +96,7 @@ pub enum ModelError {
     Cycle,
     #[error("the root node cannot be {0}")]
     Root(&'static str),
-    #[error("binding cell is outside the param's axis grid")]
+    #[error("binding cell is outside the param's key grid")]
     CellOutOfRange,
     #[error("no such binding")]
     UnknownBinding,
@@ -112,30 +126,6 @@ pub enum ModelError {
     LoadLimit(#[from] crate::LoadLimitError),
 }
 
-new_key_type! {
-    pub struct NodeKey;
-    pub struct ParamKey;
-    pub struct TexKey;
-}
-
-/// Opaque `u64` conversions for the wire/handle layer (the server maps these
-/// to/from protocol refs); the encoding is slotmap's, callers only round-trip it.
-macro_rules! ffi_id {
-    ($t:ty) => {
-        impl $t {
-            pub fn to_ffi(self) -> u64 {
-                slotmap::Key::data(&self).as_ffi()
-            }
-            pub fn from_ffi(v: u64) -> Self {
-                slotmap::KeyData::from_ffi(v).into()
-            }
-        }
-    };
-}
-ffi_id!(NodeKey);
-ffi_id!(ParamKey);
-ffi_id!(TexKey);
-
 /// A source-encoded texture (verbatim PNG/TGA bytes), shared via `Arc` so model
 /// snapshots are cheap to clone even when the structure churns.
 #[derive(Debug, Clone)]
@@ -145,21 +135,21 @@ pub struct ModelTexture {
     pub data: Arc<Vec<u8>>,
 }
 
-/// The authored model: a tree of nodes by stable key, ordered params and
-/// textures, the bindings params drive nodes through, and authored physics.
-/// The tree is always valid (single root, no cycles, no dangling
-/// cross-references), so [`Model::flatten`] is total.
+/// The authored model: a tree of nodes by Id, ordered params and textures, the
+/// bindings params drive nodes through, and authored physics. The tree is
+/// always valid (single root, no cycles, no dangling cross-references), so
+/// [`Model::flatten`] is total.
 #[derive(Debug, Clone)]
 pub struct Model {
     generation: u64,
     physics: ClpPhysics,
     welds: Vec<ModelWeld>,
-    nodes: SlotMap<NodeKey, ModelNode>,
-    root: NodeKey,
-    params: SlotMap<ParamKey, ModelParam>,
-    param_order: Vec<ParamKey>,
-    textures: SlotMap<TexKey, ModelTexture>,
-    texture_order: Vec<TexKey>,
+    nodes: HashMap<NodeId, ModelNode>,
+    root: NodeId,
+    params: HashMap<ParamId, ModelParam>,
+    param_order: Vec<ParamId>,
+    textures: HashMap<TexId, ModelTexture>,
+    texture_order: Vec<TexId>,
     bindings: Vec<ModelBinding>,
 }
 
@@ -167,13 +157,13 @@ pub struct Model {
 /// every other deformation.
 #[derive(Debug, Clone)]
 pub struct ModelWeld {
-    a: NodeKey,
-    b: NodeKey,
+    a: NodeId,
+    b: NodeId,
     pairs: Arc<Vec<clp::ClpWeldPair>>,
 }
 
 impl ModelWeld {
-    pub fn new(a: NodeKey, b: NodeKey, pairs: Vec<clp::ClpWeldPair>) -> Self {
+    pub fn new(a: NodeId, b: NodeId, pairs: Vec<clp::ClpWeldPair>) -> Self {
         Self {
             a,
             b,
@@ -181,12 +171,12 @@ impl ModelWeld {
         }
     }
 
-    pub fn a(&self) -> NodeKey {
-        self.a
+    pub fn a(&self) -> &NodeId {
+        &self.a
     }
 
-    pub fn b(&self) -> NodeKey {
-        self.b
+    pub fn b(&self) -> &NodeId {
+        &self.b
     }
 
     pub fn pairs(&self) -> &[clp::ClpWeldPair] {
@@ -196,14 +186,14 @@ impl ModelWeld {
 
 #[derive(Debug, Clone)]
 pub struct ModelNode {
-    pub name: String,
+    pub name: Name,
     pub enabled: bool,
     pub z_order: f32,
     pub transform: ClpTransform,
     pub lock_to_root: bool,
     pub kind: ModelNodeKind,
-    parent: Option<NodeKey>,
-    children: Vec<NodeKey>,
+    parent: Option<NodeId>,
+    children: Vec<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +214,17 @@ impl ModelNodeKind {
             Self::Composite(_) => "composite",
             Self::MeshGroup(_) => "mesh_group",
             Self::SimplePhysics(_) => "physics",
+        }
+    }
+
+    /// The segment a generated Id records the node's kind as.
+    fn id_kind(&self) -> NodeIdKind {
+        match self {
+            Self::Group => NodeIdKind::Group,
+            Self::Part(_) => NodeIdKind::Part,
+            Self::Composite(_) => NodeIdKind::Composite,
+            Self::MeshGroup(_) => NodeIdKind::MeshGroup,
+            Self::SimplePhysics(_) => NodeIdKind::SimplePhysics,
         }
     }
 }
@@ -302,7 +303,7 @@ pub struct ModelPart {
     pub mask_threshold: f32,
     mesh: ModelMesh,
     /// Albedo texture, or `None` for an unmapped part (the renderer culls it).
-    albedo: Option<TexKey>,
+    albedo: Option<TexId>,
     masks: Vec<ModelMask>,
 }
 
@@ -325,8 +326,8 @@ impl ModelPart {
         &self.mesh
     }
 
-    pub fn albedo(&self) -> Option<TexKey> {
-        self.albedo
+    pub fn albedo(&self) -> Option<&TexId> {
+        self.albedo.as_ref()
     }
 
     pub fn masks(&self) -> &[ModelMask] {
@@ -373,15 +374,15 @@ impl Default for ModelComposite {
 /// One drawable's clipping rule: whose shape clips it, and whether what that
 /// shape covers is kept or cut away. Only [`Model::mask_add`] builds one, so a
 /// mask's source is always a live part.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ModelMask {
-    source: NodeKey,
+    source: NodeId,
     mode: MaskMode,
 }
 
 impl ModelMask {
-    pub fn source(&self) -> NodeKey {
-        self.source
+    pub fn source(&self) -> &NodeId {
+        &self.source
     }
 
     pub fn mode(&self) -> MaskMode {
@@ -400,7 +401,7 @@ pub struct ModelPhysics {
     pub angle_damping: f32,
     pub length_damping: f32,
     pub output_scale: [f32; 2],
-    target_param: Option<ParamKey>,
+    target_param: Option<ParamId>,
 }
 
 impl ModelPhysics {
@@ -421,20 +422,20 @@ impl ModelPhysics {
     }
 
     /// The param the pendulum's swing is written into, if any.
-    pub fn target_param(&self) -> Option<ParamKey> {
-        self.target_param
+    pub fn target_param(&self) -> Option<&ParamId> {
+        self.target_param.as_ref()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ModelParam {
-    pub name: String,
+    pub name: Name,
     pub is_vec2: bool,
     pub min: [f32; 2],
     pub max: [f32; 2],
-    /// Rest pose, in param-value space (unlike the axis points).
+    /// Rest pose, in param-value space (unlike the key positions).
     pub defaults: [f32; 2],
-    /// Keypoint positions, normalized 0..1 across `[min, max]` — the same
+    /// Key positions, normalized 0..1 across `[min, max]` — the same
     /// convention `.clp` stores and the runtime interpolates in.
     pub axis_points_x: Vec<f32>,
     pub axis_points_y: Vec<f32>,
@@ -454,12 +455,12 @@ impl ModelBinding {
         &self.key
     }
 
-    pub fn param(&self) -> ParamKey {
-        self.key.param
+    pub fn param(&self) -> &ParamId {
+        &self.key.param
     }
 
-    pub fn node(&self) -> NodeKey {
-        self.key.node
+    pub fn node(&self) -> &NodeId {
+        &self.key.node
     }
 
     pub fn target(&self) -> BindingTarget {
@@ -507,10 +508,11 @@ impl Deref for ModelBindingValues {
 }
 
 impl ModelNode {
-    /// A node at the identity transform (unit scale), enabled, z order 0.
-    pub fn new(name: impl Into<String>, kind: ModelNodeKind) -> Self {
+    /// A node at the identity transform (unit scale), enabled, z order 0. The
+    /// label is truncated rather than rejected — a name is not a key.
+    pub fn new(name: impl AsRef<str>, kind: ModelNodeKind) -> Self {
         Self {
-            name: name.into(),
+            name: Name::truncated(name),
             enabled: true,
             z_order: 0.0,
             transform: ClpTransform {
@@ -525,11 +527,11 @@ impl ModelNode {
         }
     }
 
-    pub fn parent(&self) -> Option<NodeKey> {
-        self.parent
+    pub fn parent(&self) -> Option<&NodeId> {
+        self.parent.as_ref()
     }
 
-    pub fn children(&self) -> &[NodeKey] {
+    pub fn children(&self) -> &[NodeId] {
         &self.children
     }
 
@@ -567,20 +569,24 @@ impl ModelNode {
     }
 }
 
+/// The Id a fresh model's root carries until an author renames it.
+const DEFAULT_ROOT_ID: &str = "root";
+
 impl Model {
-    /// A new model with a single `Group` root named "Root".
+    /// A new model with a single `Group` root named "Root", at Id `root`.
     pub fn new() -> Self {
-        let mut nodes = SlotMap::with_key();
-        let root = nodes.insert(ModelNode::new("Root", ModelNodeKind::Group));
+        let root = NodeId::from_generated(DEFAULT_ROOT_ID.to_string());
+        let mut nodes = HashMap::new();
+        nodes.insert(root.clone(), ModelNode::new("Root", ModelNodeKind::Group));
         Self {
             generation: 0,
             physics: ClpPhysics::default(),
             welds: Vec::new(),
             nodes,
             root,
-            params: SlotMap::with_key(),
+            params: HashMap::new(),
             param_order: Vec::new(),
-            textures: SlotMap::with_key(),
+            textures: HashMap::new(),
             texture_order: Vec::new(),
             bindings: Vec::new(),
         }
@@ -602,16 +608,20 @@ impl Model {
 
     // ---- tree ----
 
-    pub fn root(&self) -> NodeKey {
-        self.root
+    pub fn root(&self) -> &NodeId {
+        &self.root
     }
 
-    pub fn node(&self, id: NodeKey) -> Option<&ModelNode> {
+    pub fn node(&self, id: &NodeId) -> Option<&ModelNode> {
         self.nodes.get(id)
     }
 
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn node_ids(&self) -> impl Iterator<Item = &NodeId> {
+        self.nodes.keys()
     }
 
     /// Edit one node's own properties: name, transform, z order, enabled,
@@ -620,7 +630,7 @@ impl Model {
     /// because they have to be checked against the rest of the model.
     pub fn update_node<R>(
         &mut self,
-        id: NodeKey,
+        id: &NodeId,
         f: impl FnOnce(&mut ModelNode) -> R,
     ) -> Result<R, ModelError> {
         let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
@@ -632,77 +642,98 @@ impl Model {
     /// Nodes in topological pre-order from the root, each parent before its
     /// children, following sibling order. This is the order [`Self::flatten`]
     /// snapshots into the arena.
-    pub fn nodes_in_order(&self) -> Vec<NodeKey> {
+    pub fn nodes_in_order(&self) -> Vec<NodeId> {
         let mut out = Vec::with_capacity(self.nodes.len());
-        let mut stack = vec![self.root];
+        let mut stack = vec![self.root.clone()];
         while let Some(id) = stack.pop() {
-            out.push(id);
-            if let Some(n) = self.nodes.get(id) {
-                for &child in n.children.iter().rev() {
-                    stack.push(child);
+            if let Some(n) = self.nodes.get(&id) {
+                for child in n.children.iter().rev() {
+                    stack.push(child.clone());
                 }
             }
+            out.push(id);
         }
         out
     }
 
-    /// Insert `node` as the last child of `parent`. The node's own parent/child
-    /// links are set here regardless of how it was constructed.
+    /// Insert `node` as the last child of `parent` under a generated Id
+    /// (`<parent>/<kind>-<8 hex>`, re-drawn until it is free).
     pub fn add_node(
         &mut self,
-        parent: NodeKey,
+        parent: &NodeId,
+        node: ModelNode,
+        hex: &mut impl HexSource,
+    ) -> Result<NodeId, ModelError> {
+        let kind = node.kind.id_kind();
+        let id = self.mint(
+            |h| NodeId::generate(parent, kind, h),
+            |m, id| m.nodes.contains_key(id),
+            hex,
+        )?;
+        self.add_node_with_id(id.clone(), parent, node)?;
+        Ok(id)
+    }
+
+    /// Insert `node` under an Id the author chose. Fails if the Id is taken.
+    pub fn add_node_with_id(
+        &mut self,
+        id: NodeId,
+        parent: &NodeId,
         mut node: ModelNode,
-    ) -> Result<NodeKey, ModelError> {
+    ) -> Result<(), ModelError> {
         if !self.nodes.contains_key(parent) {
             return Err(ModelError::UnknownNode);
         }
-        // A node cloned out of another model carries that model's keys.
+        if self.nodes.contains_key(&id) {
+            return Err(ModelError::DuplicateId(id.to_string()));
+        }
+        // A node cloned out of another model carries that model's Ids.
         self.check_node_refs(&node)?;
-        node.parent = Some(parent);
+        node.parent = Some(parent.clone());
         node.children.clear();
-        let id = self.nodes.insert(node);
+        self.nodes.insert(id.clone(), node);
         if let Some(p) = self.nodes.get_mut(parent) {
             p.children.push(id);
         }
         self.bump();
-        Ok(id)
+        Ok(())
     }
 
     /// Remove a node and its whole subtree, then drop every mask and binding
     /// that pointed into the removed set so the model stays referentially valid.
-    pub fn delete_node(&mut self, id: NodeKey) -> Result<(), ModelError> {
-        if id == self.root {
+    pub fn delete_node(&mut self, id: &NodeId) -> Result<(), ModelError> {
+        if id == &self.root {
             return Err(ModelError::Root("deleted"));
         }
         if !self.nodes.contains_key(id) {
             return Err(ModelError::UnknownNode);
         }
-        let removed: Vec<NodeKey> = self.subtree(id);
-        let removed_set: HashSet<NodeKey> = removed.iter().copied().collect();
-        if let Some(parent) = self.nodes.get(id).and_then(|n| n.parent) {
-            if let Some(p) = self.nodes.get_mut(parent) {
-                p.children.retain(|&c| c != id);
+        let removed: HashSet<NodeId> = self.subtree(id).into_iter().collect();
+        if let Some(parent) = self.nodes.get(id).and_then(|n| n.parent.clone()) {
+            if let Some(p) = self.nodes.get_mut(&parent) {
+                p.children.retain(|c| c != id);
             }
         }
         for r in &removed {
-            self.nodes.remove(*r);
+            self.nodes.remove(r);
         }
         for node in self.nodes.values_mut() {
             if let Some(masks) = node.masks_mut() {
-                masks.retain(|m| !removed_set.contains(&m.source));
+                masks.retain(|m| !removed.contains(&m.source));
             }
         }
-        self.bindings.retain(|b| !removed_set.contains(&b.key.node));
+        self.bindings.retain(|b| !removed.contains(&b.key.node));
         self.welds
-            .retain(|w| !removed_set.contains(&w.a) && !removed_set.contains(&w.b));
+            .retain(|w| !removed.contains(&w.a) && !removed.contains(&w.b));
         self.bump();
         Ok(())
     }
 
     /// Move `id` (and its subtree) under `new_parent`. Rejects moving the root
-    /// or creating a cycle.
-    pub fn reparent(&mut self, id: NodeKey, new_parent: NodeKey) -> Result<(), ModelError> {
-        if id == self.root {
+    /// or creating a cycle. The node keeps its Id, parent prefix and all: the
+    /// prefix records where a node was created, not where it lives.
+    pub fn reparent(&mut self, id: &NodeId, new_parent: &NodeId) -> Result<(), ModelError> {
+        if id == &self.root {
             return Err(ModelError::Root("reparented"));
         }
         if !self.nodes.contains_key(id) || !self.nodes.contains_key(new_parent) {
@@ -711,17 +742,17 @@ impl Model {
         if self.is_self_or_descendant(new_parent, id) {
             return Err(ModelError::Cycle);
         }
-        let old_parent = self.nodes.get(id).and_then(|n| n.parent);
+        let old_parent = self.nodes.get(id).and_then(|n| n.parent.clone());
         if let Some(op) = old_parent {
-            if let Some(p) = self.nodes.get_mut(op) {
-                p.children.retain(|&c| c != id);
+            if let Some(p) = self.nodes.get_mut(&op) {
+                p.children.retain(|c| c != id);
             }
         }
         if let Some(p) = self.nodes.get_mut(new_parent) {
-            p.children.push(id);
+            p.children.push(id.clone());
         }
         if let Some(n) = self.nodes.get_mut(id) {
-            n.parent = Some(new_parent);
+            n.parent = Some(new_parent.clone());
         }
         self.bump();
         Ok(())
@@ -730,78 +761,89 @@ impl Model {
     /// Move `id` to `index` within its parent's children (clamped to the end).
     /// Sibling order is draw-list order for equal z order, so this is a document
     /// edit, not view state.
-    pub fn reorder(&mut self, id: NodeKey, index: usize) -> Result<(), ModelError> {
-        if id == self.root {
+    pub fn reorder(&mut self, id: &NodeId, index: usize) -> Result<(), ModelError> {
+        if id == &self.root {
             return Err(ModelError::Root("reordered"));
         }
         let parent = self
             .nodes
             .get(id)
-            .and_then(|n| n.parent)
+            .and_then(|n| n.parent.clone())
             .ok_or(ModelError::UnknownNode)?;
-        let p = self.nodes.get_mut(parent).ok_or(ModelError::UnknownNode)?;
+        let p = self.nodes.get_mut(&parent).ok_or(ModelError::UnknownNode)?;
         let cur = p
             .children
             .iter()
-            .position(|&c| c == id)
+            .position(|c| c == id)
             .ok_or(ModelError::UnknownNode)?;
-        p.children.remove(cur);
+        let moved = p.children.remove(cur);
         let index = index.min(p.children.len());
-        p.children.insert(index, id);
+        p.children.insert(index, moved);
         self.bump();
         Ok(())
     }
 
-    /// Deep-copy `id`'s subtree as its next sibling. Mask references inside the
-    /// subtree point at the copies; external ones stay shared. Each copied node
-    /// also copies its param bindings, so the duplicate deforms like the
-    /// original. The copy's root is renamed "<name> copy".
-    pub fn duplicate_subtree(&mut self, id: NodeKey) -> Result<NodeKey, ModelError> {
-        if id == self.root {
+    /// Deep-copy `id`'s subtree as its next sibling, under fresh Ids. Mask
+    /// references inside the subtree point at the copies; external ones stay
+    /// shared. Each copied node also copies its param bindings, so the
+    /// duplicate deforms like the original. The copy's root is renamed
+    /// "<name> copy".
+    pub fn duplicate_subtree(
+        &mut self,
+        id: &NodeId,
+        hex: &mut impl HexSource,
+    ) -> Result<NodeId, ModelError> {
+        if id == &self.root {
             return Err(ModelError::Root("duplicated"));
         }
         let parent = self
             .nodes
             .get(id)
-            .and_then(|n| n.parent)
+            .and_then(|n| n.parent.clone())
             .ok_or(ModelError::UnknownNode)?;
 
         // Pre-order with sibling order preserved (parent precedes children).
         let mut order = Vec::new();
-        let mut stack = vec![id];
+        let mut stack = vec![id.clone()];
         while let Some(n) = stack.pop() {
-            order.push(n);
-            if let Some(node) = self.nodes.get(n) {
-                for &c in node.children.iter().rev() {
-                    stack.push(c);
+            if let Some(node) = self.nodes.get(&n) {
+                for c in node.children.iter().rev() {
+                    stack.push(c.clone());
                 }
             }
+            order.push(n);
         }
 
-        let mut map: HashMap<NodeKey, NodeKey> = HashMap::new();
-        for &old in &order {
+        let mut map: HashMap<NodeId, NodeId> = HashMap::new();
+        for old in &order {
             let mut copy = self.nodes.get(old).ok_or(ModelError::UnknownNode)?.clone();
-            let new_parent = match copy.parent {
-                Some(p) if old != id => *map.get(&p).ok_or(ModelError::UnknownNode)?,
-                _ => parent,
+            let new_parent = match &copy.parent {
+                Some(p) if old != id => map.get(p).ok_or(ModelError::UnknownNode)?.clone(),
+                _ => parent.clone(),
             };
             if old == id {
-                copy.name = format!("{} copy", copy.name);
+                copy.name = Name::truncated(format!("{} copy", copy.name));
             }
-            copy.parent = Some(new_parent);
+            copy.parent = Some(new_parent.clone());
             copy.children.clear();
-            let new_id = self.nodes.insert(copy);
-            if let Some(p) = self.nodes.get_mut(new_parent) {
-                p.children.push(new_id);
+            let kind = copy.kind.id_kind();
+            let new_id = self.mint(
+                |h| NodeId::generate(&new_parent, kind, h),
+                |m, id| m.nodes.contains_key(id),
+                hex,
+            )?;
+            self.nodes.insert(new_id.clone(), copy);
+            if let Some(p) = self.nodes.get_mut(&new_parent) {
+                p.children.push(new_id.clone());
             }
-            map.insert(old, new_id);
+            map.insert(old.clone(), new_id);
         }
 
-        for &new_id in map.values() {
+        for new_id in map.values() {
             if let Some(masks) = self.nodes.get_mut(new_id).and_then(ModelNode::masks_mut) {
                 for m in masks.iter_mut() {
-                    if let Some(&mapped) = map.get(&m.source) {
-                        m.source = mapped;
+                    if let Some(mapped) = map.get(&m.source) {
+                        m.source = mapped.clone();
                     }
                 }
             }
@@ -811,8 +853,8 @@ impl Model {
             .bindings
             .iter()
             .filter_map(|b| {
-                map.get(&b.key.node).map(|&node| ModelBinding {
-                    key: BindingKey { node, ..b.key },
+                map.get(&b.key.node).map(|node| ModelBinding {
+                    key: BindingKey::new(b.key.param.clone(), node.clone(), b.key.target),
                     interpolate_mode: b.interpolate_mode,
                     values: b.values.clone(),
                 })
@@ -820,15 +862,144 @@ impl Model {
             .collect();
         self.bindings.extend(copied);
 
-        let new_root = *map.get(&id).ok_or(ModelError::UnknownNode)?;
+        let new_root = map.get(id).ok_or(ModelError::UnknownNode)?.clone();
         let pos = self
             .nodes
-            .get(parent)
-            .and_then(|p| p.children.iter().position(|&c| c == id))
+            .get(&parent)
+            .and_then(|p| p.children.iter().position(|c| c == id))
             .ok_or(ModelError::UnknownNode)?;
         // reorder bumps the generation for the whole duplicate.
-        self.reorder(new_root, pos + 1)?;
+        self.reorder(&new_root, pos + 1)?;
         Ok(new_root)
+    }
+
+    // ---- renaming ----
+
+    /// Give a node a different Id, rewriting every reference to it: its
+    /// parent's child list, its children's parent, masks that name it as a
+    /// source, bindings that drive it, welds that end on it, and the root
+    /// itself. Renaming is a breaking change for any addon that referenced the
+    /// old Id; there are no aliases.
+    pub fn rename_node_id(&mut self, old: &NodeId, new: NodeId) -> Result<(), ModelError> {
+        if old == &new {
+            return Ok(());
+        }
+        if !self.nodes.contains_key(old) {
+            return Err(ModelError::UnknownNode);
+        }
+        if self.nodes.contains_key(&new) {
+            return Err(ModelError::DuplicateId(new.to_string()));
+        }
+        let node = self.nodes.remove(old).ok_or(ModelError::UnknownNode)?;
+        let parent = node.parent.clone();
+        let children = node.children.clone();
+        self.nodes.insert(new.clone(), node);
+        if let Some(p) = parent.and_then(|p| self.nodes.get_mut(&p)) {
+            for c in &mut p.children {
+                if c == old {
+                    *c = new.clone();
+                }
+            }
+        }
+        for child in children {
+            if let Some(c) = self.nodes.get_mut(&child) {
+                c.parent = Some(new.clone());
+            }
+        }
+        for node in self.nodes.values_mut() {
+            if let Some(masks) = node.masks_mut() {
+                for m in masks.iter_mut() {
+                    if &m.source == old {
+                        m.source = new.clone();
+                    }
+                }
+            }
+        }
+        for b in &mut self.bindings {
+            if &b.key.node == old {
+                b.key.node = new.clone();
+            }
+        }
+        for w in &mut self.welds {
+            if &w.a == old {
+                w.a = new.clone();
+            }
+            if &w.b == old {
+                w.b = new.clone();
+            }
+        }
+        if &self.root == old {
+            self.root = new;
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Give a param a different Id, rewriting the bindings it drives and any
+    /// physics node aimed at it.
+    pub fn rename_param_id(&mut self, old: &ParamId, new: ParamId) -> Result<(), ModelError> {
+        if old == &new {
+            return Ok(());
+        }
+        if !self.params.contains_key(old) {
+            return Err(ModelError::UnknownParam);
+        }
+        if self.params.contains_key(&new) {
+            return Err(ModelError::DuplicateId(new.to_string()));
+        }
+        let param = self.params.remove(old).ok_or(ModelError::UnknownParam)?;
+        self.params.insert(new.clone(), param);
+        for p in &mut self.param_order {
+            if p == old {
+                *p = new.clone();
+            }
+        }
+        for b in &mut self.bindings {
+            if &b.key.param == old {
+                b.key.param = new.clone();
+            }
+        }
+        for node in self.nodes.values_mut() {
+            if let ModelNodeKind::SimplePhysics(ph) = &mut node.kind {
+                if ph.target_param.as_ref() == Some(old) {
+                    ph.target_param = Some(new.clone());
+                }
+            }
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Give a texture a different Id, rewriting every part that draws with it.
+    pub fn rename_tex_id(&mut self, old: &TexId, new: TexId) -> Result<(), ModelError> {
+        if old == &new {
+            return Ok(());
+        }
+        if !self.textures.contains_key(old) {
+            return Err(ModelError::UnknownTexture);
+        }
+        if self.textures.contains_key(&new) {
+            return Err(ModelError::DuplicateId(new.to_string()));
+        }
+        let texture = self
+            .textures
+            .remove(old)
+            .ok_or(ModelError::UnknownTexture)?;
+        self.textures.insert(new.clone(), texture);
+        for t in &mut self.texture_order {
+            if t == old {
+                *t = new.clone();
+            }
+        }
+        for node in self.nodes.values_mut() {
+            if let ModelNodeKind::Part(p) = &mut node.kind {
+                if p.albedo.as_ref() == Some(old) {
+                    p.albedo = Some(new.clone());
+                }
+            }
+        }
+        self.bump();
+        Ok(())
     }
 
     // ---- node cross-references ----
@@ -837,13 +1008,14 @@ impl Model {
     /// part).
     pub fn set_part_albedo(
         &mut self,
-        id: NodeKey,
-        albedo: Option<TexKey>,
+        id: &NodeId,
+        albedo: Option<TexId>,
     ) -> Result<(), ModelError> {
-        if let Some(t) = albedo {
-            if !self.textures.contains_key(t) {
-                return Err(ModelError::UnknownTexture);
-            }
+        if albedo
+            .as_ref()
+            .is_some_and(|t| !self.textures.contains_key(t))
+        {
+            return Err(ModelError::UnknownTexture);
         }
         match self.nodes.get_mut(id).map(|n| &mut n.kind) {
             Some(ModelNodeKind::Part(p)) => p.albedo = albedo,
@@ -857,13 +1029,11 @@ impl Model {
     /// Aim a simple physics node at a param, or at nothing.
     pub fn set_physics_target(
         &mut self,
-        id: NodeKey,
-        param: Option<ParamKey>,
+        id: &NodeId,
+        param: Option<ParamId>,
     ) -> Result<(), ModelError> {
-        if let Some(p) = param {
-            if !self.params.contains_key(p) {
-                return Err(ModelError::UnknownParam);
-            }
+        if param.as_ref().is_some_and(|p| !self.params.contains_key(p)) {
+            return Err(ModelError::UnknownParam);
         }
         match self.nodes.get_mut(id).map(|n| &mut n.kind) {
             Some(ModelNodeKind::SimplePhysics(ph)) => ph.target_param = param,
@@ -880,7 +1050,7 @@ impl Model {
     /// fitted to a mesh that is gone.
     pub fn set_node_mesh_with(
         &mut self,
-        id: NodeKey,
+        id: &NodeId,
         mesh: ClpMesh,
         mut refit: impl FnMut(&ClpMesh, &ClpMesh, &[f32]) -> Vec<f32>,
     ) -> Result<(), ModelError> {
@@ -896,7 +1066,7 @@ impl Model {
             }
         };
         for b in &mut self.bindings {
-            if b.key.node != id {
+            if &b.key.node != id {
                 continue;
             }
             if let ClpBindingValues::Deform(cells) = b.values.make_mut() {
@@ -914,7 +1084,7 @@ impl Model {
 
     /// Replace a meshed node's mesh, resizing every authored deform cell on it
     /// to the new vertex count (new vertices start at zero offset).
-    pub fn set_node_mesh(&mut self, id: NodeKey, mesh: ClpMesh) -> Result<(), ModelError> {
+    pub fn set_node_mesh(&mut self, id: &NodeId, mesh: ClpMesh) -> Result<(), ModelError> {
         self.set_node_mesh_with(id, mesh, |_, new, offsets| {
             let mut out = offsets.to_vec();
             out.resize(new.verts.len(), 0.0);
@@ -924,7 +1094,7 @@ impl Model {
 
     // ---- masks ----
 
-    fn masks_mut(&mut self, id: NodeKey) -> Result<&mut Vec<ModelMask>, ModelError> {
+    fn masks_mut(&mut self, id: &NodeId) -> Result<&mut Vec<ModelMask>, ModelError> {
         match self.nodes.get_mut(id) {
             Some(n) => n.masks_mut().ok_or(ModelError::NotMaskable),
             None => Err(ModelError::UnknownNode),
@@ -935,8 +1105,8 @@ impl Model {
     /// source's own mesh + texture into the mask).
     pub fn mask_add(
         &mut self,
-        id: NodeKey,
-        source: NodeKey,
+        id: &NodeId,
+        source: &NodeId,
         mode: MaskMode,
     ) -> Result<(), ModelError> {
         if source == id {
@@ -947,6 +1117,7 @@ impl Model {
             Some(_) => return Err(ModelError::NotAPart),
             None => return Err(ModelError::UnknownNode),
         }
+        let source = source.clone();
         self.masks_mut(id)?.push(ModelMask { source, mode });
         self.bump();
         Ok(())
@@ -954,7 +1125,7 @@ impl Model {
 
     pub fn mask_set_mode(
         &mut self,
-        id: NodeKey,
+        id: &NodeId,
         index: usize,
         mode: MaskMode,
     ) -> Result<(), ModelError> {
@@ -967,7 +1138,7 @@ impl Model {
 
     /// Move the mask at `index` to `to` (clamped). Mask order is evaluation
     /// order, so this is a document edit.
-    pub fn mask_reorder(&mut self, id: NodeKey, index: usize, to: usize) -> Result<(), ModelError> {
+    pub fn mask_reorder(&mut self, id: &NodeId, index: usize, to: usize) -> Result<(), ModelError> {
         let masks = self.masks_mut(id)?;
         if index >= masks.len() {
             return Err(ModelError::IndexOutOfRange);
@@ -979,7 +1150,7 @@ impl Model {
         Ok(())
     }
 
-    pub fn mask_delete(&mut self, id: NodeKey, index: usize) -> Result<(), ModelError> {
+    pub fn mask_delete(&mut self, id: &NodeId, index: usize) -> Result<(), ModelError> {
         let masks = self.masks_mut(id)?;
         if index >= masks.len() {
             return Err(ModelError::IndexOutOfRange);
@@ -991,31 +1162,46 @@ impl Model {
 
     // ---- params ----
 
-    pub fn param_ids(&self) -> &[ParamKey] {
+    pub fn param_ids(&self) -> &[ParamId] {
         &self.param_order
     }
 
-    pub fn param(&self, id: ParamKey) -> Option<&ModelParam> {
+    pub fn param(&self, id: &ParamId) -> Option<&ModelParam> {
         self.params.get(id)
     }
 
-    pub fn add_param(&mut self, param: ModelParam) -> ParamKey {
-        let id = self.params.insert(param);
+    /// Add a param under a generated Id (`param-<8 hex>`).
+    pub fn add_param(
+        &mut self,
+        param: ModelParam,
+        hex: &mut impl HexSource,
+    ) -> Result<ParamId, ModelError> {
+        let id = self.mint(ParamId::generate, |m, id| m.params.contains_key(id), hex)?;
+        self.add_param_with_id(id.clone(), param)?;
+        Ok(id)
+    }
+
+    /// Add a param under an Id the author chose. Fails if the Id is taken.
+    pub fn add_param_with_id(&mut self, id: ParamId, param: ModelParam) -> Result<(), ModelError> {
+        if self.params.contains_key(&id) {
+            return Err(ModelError::DuplicateId(id.to_string()));
+        }
+        self.params.insert(id.clone(), param);
         self.param_order.push(id);
         self.bump();
-        id
+        Ok(())
     }
 
     /// Remove a param, its bindings, and any physics node that drove it.
-    pub fn delete_param(&mut self, id: ParamKey) -> Result<(), ModelError> {
+    pub fn delete_param(&mut self, id: &ParamId) -> Result<(), ModelError> {
         if self.params.remove(id).is_none() {
             return Err(ModelError::UnknownParam);
         }
-        self.param_order.retain(|&p| p != id);
-        self.bindings.retain(|b| b.key.param != id);
+        self.param_order.retain(|p| p != id);
+        self.bindings.retain(|b| &b.key.param != id);
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::SimplePhysics(ph) = &mut node.kind {
-                if ph.target_param == Some(id) {
+                if ph.target_param.as_ref() == Some(id) {
                     ph.target_param = None;
                 }
             }
@@ -1026,30 +1212,49 @@ impl Model {
 
     // ---- textures ----
 
-    pub fn texture_ids(&self) -> &[TexKey] {
+    pub fn texture_ids(&self) -> &[TexId] {
         &self.texture_order
     }
 
-    pub fn texture(&self, id: TexKey) -> Option<&ModelTexture> {
+    pub fn texture(&self, id: &TexId) -> Option<&ModelTexture> {
         self.textures.get(id)
     }
 
-    pub fn add_texture(&mut self, texture: ModelTexture) -> TexKey {
-        let id = self.textures.insert(texture);
+    /// Add a texture under a generated Id (`tex-<8 hex>`).
+    pub fn add_texture(
+        &mut self,
+        texture: ModelTexture,
+        hex: &mut impl HexSource,
+    ) -> Result<TexId, ModelError> {
+        let id = self.mint(TexId::generate, |m, id| m.textures.contains_key(id), hex)?;
+        self.add_texture_with_id(id.clone(), texture)?;
+        Ok(id)
+    }
+
+    /// Add a texture under an Id the author chose. Fails if the Id is taken.
+    pub fn add_texture_with_id(
+        &mut self,
+        id: TexId,
+        texture: ModelTexture,
+    ) -> Result<(), ModelError> {
+        if self.textures.contains_key(&id) {
+            return Err(ModelError::DuplicateId(id.to_string()));
+        }
+        self.textures.insert(id.clone(), texture);
         self.texture_order.push(id);
         self.bump();
-        id
+        Ok(())
     }
 
     /// Remove a texture and unmap any part that referenced it.
-    pub fn delete_texture(&mut self, id: TexKey) -> Result<(), ModelError> {
+    pub fn delete_texture(&mut self, id: &TexId) -> Result<(), ModelError> {
         if self.textures.remove(id).is_none() {
             return Err(ModelError::UnknownTexture);
         }
-        self.texture_order.retain(|&t| t != id);
+        self.texture_order.retain(|t| t != id);
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::Part(p) = &mut node.kind {
-                if p.albedo == Some(id) {
+                if p.albedo.as_ref() == Some(id) {
                     p.albedo = None;
                 }
             }
@@ -1077,7 +1282,7 @@ impl Model {
     pub fn set_welds(&mut self, welds: Vec<ModelWeld>) -> Result<(), ModelError> {
         if welds
             .iter()
-            .any(|w| !self.nodes.contains_key(w.a) || !self.nodes.contains_key(w.b))
+            .any(|w| !self.nodes.contains_key(&w.a) || !self.nodes.contains_key(&w.b))
         {
             return Err(ModelError::UnknownNode);
         }
@@ -1089,42 +1294,37 @@ impl Model {
     // ---- accounting ----
 
     pub fn estimated_size_bytes(&self) -> usize {
-        let mut bytes = std::mem::size_of::<Self>()
-            .saturating_add(
-                self.nodes
-                    .len()
-                    .saturating_mul(std::mem::size_of::<ModelNode>()),
-            )
-            .saturating_add(
-                self.params
-                    .len()
-                    .saturating_mul(std::mem::size_of::<ModelParam>()),
-            )
-            .saturating_add(
-                self.textures
-                    .len()
-                    .saturating_mul(std::mem::size_of::<ModelTexture>()),
-            )
-            .saturating_add(
-                self.param_order
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<ParamKey>()),
-            )
-            .saturating_add(
-                self.texture_order
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<TexKey>()),
-            )
-            .saturating_add(
-                self.welds
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<ModelWeld>()),
-            )
-            .saturating_add(
-                self.bindings
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<ModelBinding>()),
-            );
+        let mut bytes =
+            std::mem::size_of::<Self>()
+                .saturating_add(self.nodes.len().saturating_mul(
+                    std::mem::size_of::<ModelNode>() + std::mem::size_of::<NodeId>(),
+                ))
+                .saturating_add(self.params.len().saturating_mul(
+                    std::mem::size_of::<ModelParam>() + std::mem::size_of::<ParamId>(),
+                ))
+                .saturating_add(self.textures.len().saturating_mul(
+                    std::mem::size_of::<ModelTexture>() + std::mem::size_of::<TexId>(),
+                ))
+                .saturating_add(
+                    self.param_order
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<ParamId>()),
+                )
+                .saturating_add(
+                    self.texture_order
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<TexId>()),
+                )
+                .saturating_add(
+                    self.welds
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<ModelWeld>()),
+                )
+                .saturating_add(
+                    self.bindings
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<ModelBinding>()),
+                );
         for weld in &self.welds {
             bytes = bytes.saturating_add(
                 weld.pairs
@@ -1132,12 +1332,15 @@ impl Model {
                     .saturating_mul(std::mem::size_of::<clp::ClpWeldPair>()),
             );
         }
-        for node in self.nodes.values() {
-            bytes = bytes.saturating_add(node.name.capacity()).saturating_add(
-                node.children
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<NodeKey>()),
-            );
+        for (id, node) in &self.nodes {
+            bytes = bytes
+                .saturating_add(id.as_str().len())
+                .saturating_add(node.name.as_str().len())
+                .saturating_add(
+                    node.children
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<NodeId>()),
+                );
             if let Some(mesh) = node.mesh() {
                 bytes = bytes.saturating_add(mesh_size(mesh));
             }
@@ -1146,9 +1349,10 @@ impl Model {
                     .saturating_add(masks.len().saturating_mul(std::mem::size_of::<ModelMask>()));
             }
         }
-        for param in self.params.values() {
+        for (id, param) in &self.params {
             bytes = bytes
-                .saturating_add(param.name.capacity())
+                .saturating_add(id.as_str().len())
+                .saturating_add(param.name.as_str().len())
                 .saturating_add(
                     param
                         .axis_points_x
@@ -1165,28 +1369,52 @@ impl Model {
         for binding in &self.bindings {
             bytes = bytes.saturating_add(binding_values_size(&binding.values));
         }
-        for texture in self.textures.values() {
-            bytes = bytes.saturating_add(texture.data.capacity());
+        for (id, texture) in &self.textures {
+            bytes = bytes
+                .saturating_add(id.as_str().len())
+                .saturating_add(texture.data.capacity());
         }
         bytes
     }
 
     /// The node's mesh, for the two kinds that carry one.
-    pub fn node_mesh(&self, id: NodeKey) -> Option<&ClpMesh> {
+    pub fn node_mesh(&self, id: &NodeId) -> Option<&ClpMesh> {
         self.node(id)?.mesh()
+    }
+
+    /// Draw a generated Id until `taken` says it is free. 32 bits collide
+    /// eventually, and [`crate::id`] cannot check uniqueness — this is where
+    /// the model does.
+    fn mint<T, H: HexSource>(
+        &self,
+        mut generate: impl FnMut(&mut H) -> T,
+        taken: impl Fn(&Self, &T) -> bool,
+        hex: &mut H,
+    ) -> Result<T, ModelError> {
+        for _ in 0..ID_MINT_ATTEMPTS {
+            let id = generate(hex);
+            if !taken(self, &id) {
+                return Ok(id);
+            }
+        }
+        Err(ModelError::IdExhausted)
     }
 
     /// Every cross-reference a node about to join the model carries has to
     /// name something this model actually has.
     fn check_node_refs(&self, node: &ModelNode) -> Result<(), ModelError> {
         if let ModelNodeKind::Part(p) = &node.kind {
-            if p.albedo.is_some_and(|t| !self.textures.contains_key(t)) {
+            if p.albedo
+                .as_ref()
+                .is_some_and(|t| !self.textures.contains_key(t))
+            {
                 return Err(ModelError::UnknownTexture);
             }
         }
         if let ModelNodeKind::SimplePhysics(ph) = &node.kind {
             if ph
                 .target_param
+                .as_ref()
                 .is_some_and(|p| !self.params.contains_key(p))
             {
                 return Err(ModelError::UnknownParam);
@@ -1194,7 +1422,7 @@ impl Model {
         }
         if let Some(masks) = node.masks() {
             for m in masks {
-                match self.nodes.get(m.source).map(|n| &n.kind) {
+                match self.nodes.get(&m.source).map(|n| &n.kind) {
                     Some(ModelNodeKind::Part(_)) => {}
                     Some(_) => return Err(ModelError::NotAPart),
                     None => return Err(ModelError::UnknownNode),
@@ -1204,25 +1432,25 @@ impl Model {
         Ok(())
     }
 
-    fn subtree(&self, root: NodeKey) -> Vec<NodeKey> {
+    fn subtree(&self, root: &NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
-        let mut stack = vec![root];
+        let mut stack = vec![root.clone()];
         while let Some(id) = stack.pop() {
-            out.push(id);
-            if let Some(n) = self.nodes.get(id) {
-                stack.extend(n.children.iter().copied());
+            if let Some(n) = self.nodes.get(&id) {
+                stack.extend(n.children.iter().cloned());
             }
+            out.push(id);
         }
         out
     }
 
-    fn is_self_or_descendant(&self, candidate: NodeKey, ancestor: NodeKey) -> bool {
+    fn is_self_or_descendant(&self, candidate: &NodeId, ancestor: &NodeId) -> bool {
         let mut cur = Some(candidate);
         while let Some(c) = cur {
             if c == ancestor {
                 return true;
             }
-            cur = self.nodes.get(c).and_then(|n| n.parent);
+            cur = self.nodes.get(c).and_then(|n| n.parent.as_ref());
         }
         false
     }
@@ -1314,89 +1542,93 @@ impl Default for Model {
 mod tests {
     use super::*;
     use crate::formats::clp::{ClpIndices, ClpWeldPair};
-
-    fn quad() -> ClpMesh {
-        ClpMesh {
-            verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
-            uvs: vec![0.0; 8],
-            indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
-            origin: [0.0, 0.0],
-        }
-    }
-
-    fn part_kind() -> ModelNodeKind {
-        ModelNodeKind::Part(ModelPart::new(quad()))
-    }
+    use crate::id::SeededHex;
 
     /// One model carrying every kind of thing a mutating method can reach.
-    struct Rig {
-        model: Model,
-        root: NodeKey,
-        part: NodeKey,
-        other: NodeKey,
-        composite: NodeKey,
-        physics: NodeKey,
-        param: ParamKey,
-        tex: TexKey,
+    pub(super) struct Rig {
+        pub model: Model,
+        pub root: NodeId,
+        pub part: NodeId,
+        pub other: NodeId,
+        pub composite: NodeId,
+        pub physics: NodeId,
+        pub param: ParamId,
+        pub tex: TexId,
+        pub hex: SeededHex,
+    }
+
+    impl Rig {
+        fn node(&mut self, name: &str, kind: ModelNodeKind) -> NodeId {
+            let root = self.root.clone();
+            self.model
+                .add_node(&root, ModelNode::new(name, kind), &mut self.hex)
+                .unwrap()
+        }
     }
 
     fn rig() -> Rig {
+        let mut hex = SeededHex::new(7);
         let mut model = Model::new();
-        let root = model.root();
-        let tex = model.add_texture(ModelTexture {
-            encoding: TextureEncoding::Png,
-            alpha: TextureAlpha::Straight,
-            data: Arc::new(vec![0x89, b'P', b'N', b'G']),
-        });
-        let part = model
-            .add_node(root, ModelNode::new("part", part_kind()))
-            .unwrap();
-        let other = model
-            .add_node(root, ModelNode::new("other", part_kind()))
-            .unwrap();
-        let composite = model
-            .add_node(
-                root,
-                ModelNode::new("composite", ModelNodeKind::Composite(ModelComposite::new())),
+        let root = model.root().clone();
+        let tex = model
+            .add_texture(
+                ModelTexture {
+                    encoding: TextureEncoding::Png,
+                    alpha: TextureAlpha::Straight,
+                    data: Arc::new(vec![0x89, b'P', b'N', b'G']),
+                },
+                &mut hex,
             )
             .unwrap();
-        let physics = model
-            .add_node(
-                root,
-                ModelNode::new(
-                    "physics",
-                    ModelNodeKind::SimplePhysics(ModelPhysics::new(PendulumKind::RigidPendulum)),
-                ),
+        let param = model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("p"),
+                    is_vec2: false,
+                    min: [-1.0, 0.0],
+                    max: [1.0, 0.0],
+                    defaults: [0.0, 0.0],
+                    axis_points_x: vec![0.0, 0.5, 1.0],
+                    axis_points_y: vec![0.0],
+                },
+                &mut hex,
             )
             .unwrap();
-        let param = model.add_param(ModelParam {
-            name: "p".into(),
-            is_vec2: false,
-            min: [-1.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 0.5, 1.0],
-            axis_points_y: vec![0.0],
-        });
-        model.mask_add(composite, part, MaskMode::Mask).unwrap();
-        Rig {
+        let mut rig = Rig {
             model,
             root,
-            part,
-            other,
-            composite,
-            physics,
+            part: NodeId::new("placeholder").unwrap(),
+            other: NodeId::new("placeholder").unwrap(),
+            composite: NodeId::new("placeholder").unwrap(),
+            physics: NodeId::new("placeholder").unwrap(),
             param,
             tex,
-        }
+            hex,
+        };
+        rig.part = rig.node("part", part_kind());
+        rig.other = rig.node("other", part_kind());
+        rig.composite = rig.node("composite", ModelNodeKind::Composite(ModelComposite::new()));
+        rig.physics = rig.node(
+            "physics",
+            ModelNodeKind::SimplePhysics(ModelPhysics::new(PendulumKind::RigidPendulum)),
+        );
+        let (composite, part) = (rig.composite.clone(), rig.part.clone());
+        rig.model
+            .mask_add(&composite, &part, MaskMode::Mask)
+            .unwrap();
+        rig
     }
 
     fn scalar_key(r: &Rig) -> BindingKey {
-        BindingKey::new(r.param, r.part, BindingTarget::Scalar(ScalarTarget::Tx))
+        BindingKey::new(
+            r.param.clone(),
+            r.part.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        )
     }
 
     fn deform_key(r: &Rig) -> BindingKey {
-        BindingKey::new(r.param, r.part, BindingTarget::Deform)
+        BindingKey::new(r.param.clone(), r.part.clone(), BindingTarget::Deform)
     }
 
     /// Every derived object (puppet, render cache) rebakes off `generation`, so
@@ -1410,53 +1642,95 @@ mod tests {
             (
                 "update_node",
                 Box::new(|r| {
-                    r.model.update_node(r.part, |n| n.z_order = 3.0).unwrap();
+                    r.model.update_node(&r.part, |n| n.z_order = 3.0).unwrap();
                 }),
             ),
             (
                 "add_node",
                 Box::new(|r| {
+                    r.node("new", ModelNodeKind::Group);
+                }),
+            ),
+            (
+                "add_node_with_id",
+                Box::new(|r| {
                     r.model
-                        .add_node(r.root, ModelNode::new("new", ModelNodeKind::Group))
+                        .add_node_with_id(
+                            NodeId::new("chosen").unwrap(),
+                            &r.root,
+                            ModelNode::new("new", ModelNodeKind::Group),
+                        )
                         .unwrap();
                 }),
             ),
             (
                 "delete_node",
-                Box::new(|r| r.model.delete_node(r.other).unwrap()),
+                Box::new(|r| r.model.delete_node(&r.other).unwrap()),
             ),
             (
                 "reparent",
-                Box::new(|r| r.model.reparent(r.part, r.composite).unwrap()),
+                Box::new(|r| r.model.reparent(&r.part, &r.composite).unwrap()),
             ),
-            ("reorder", Box::new(|r| r.model.reorder(r.part, 0).unwrap())),
+            (
+                "reorder",
+                Box::new(|r| r.model.reorder(&r.part, 0).unwrap()),
+            ),
             (
                 "duplicate_subtree",
                 Box::new(|r| {
-                    r.model.duplicate_subtree(r.part).unwrap();
+                    let part = r.part.clone();
+                    r.model.duplicate_subtree(&part, &mut r.hex).unwrap();
+                }),
+            ),
+            (
+                "rename_node_id",
+                Box::new(|r| {
+                    r.model
+                        .rename_node_id(&r.part, NodeId::new("renamed").unwrap())
+                        .unwrap()
+                }),
+            ),
+            (
+                "rename_param_id",
+                Box::new(|r| {
+                    r.model
+                        .rename_param_id(&r.param, ParamId::new("renamed").unwrap())
+                        .unwrap()
+                }),
+            ),
+            (
+                "rename_tex_id",
+                Box::new(|r| {
+                    r.model
+                        .rename_tex_id(&r.tex, TexId::new("renamed").unwrap())
+                        .unwrap()
                 }),
             ),
             (
                 "set_part_albedo",
-                Box::new(|r| r.model.set_part_albedo(r.part, Some(r.tex)).unwrap()),
+                Box::new(|r| {
+                    r.model
+                        .set_part_albedo(&r.part, Some(r.tex.clone()))
+                        .unwrap()
+                }),
             ),
             (
                 "set_physics_target",
                 Box::new(|r| {
                     r.model
-                        .set_physics_target(r.physics, Some(r.param))
+                        .set_physics_target(&r.physics, Some(r.param.clone()))
                         .unwrap()
                 }),
             ),
             (
                 "set_node_mesh",
-                Box::new(|r| r.model.set_node_mesh(r.part, quad()).unwrap()),
+                Box::new(|r| r.model.set_node_mesh(&r.part, quad()).unwrap()),
             ),
             (
                 "set_node_mesh_with",
                 Box::new(|r| {
                     r.model
-                        .set_node_mesh_with(r.part, quad(), |_, _, v| v.to_vec())
+                        .set_node_mesh_with(&r.part, quad(), |_, _, v| v.to_vec())
                         .unwrap()
                 }),
             ),
@@ -1464,7 +1738,7 @@ mod tests {
                 "mask_add",
                 Box::new(|r| {
                     r.model
-                        .mask_add(r.composite, r.other, MaskMode::Mask)
+                        .mask_add(&r.composite, &r.other, MaskMode::Mask)
                         .unwrap()
                 }),
             ),
@@ -1472,49 +1746,55 @@ mod tests {
                 "mask_set_mode",
                 Box::new(|r| {
                     r.model
-                        .mask_set_mode(r.composite, 0, MaskMode::DodgeMask)
+                        .mask_set_mode(&r.composite, 0, MaskMode::DodgeMask)
                         .unwrap()
                 }),
             ),
             (
                 "mask_reorder",
-                Box::new(|r| r.model.mask_reorder(r.composite, 0, 0).unwrap()),
+                Box::new(|r| r.model.mask_reorder(&r.composite, 0, 0).unwrap()),
             ),
             (
                 "mask_delete",
-                Box::new(|r| r.model.mask_delete(r.composite, 0).unwrap()),
+                Box::new(|r| r.model.mask_delete(&r.composite, 0).unwrap()),
             ),
             (
                 "add_param",
                 Box::new(|r| {
-                    r.model.add_param(ModelParam {
-                        name: "q".into(),
-                        is_vec2: false,
-                        min: [0.0, 0.0],
-                        max: [1.0, 0.0],
-                        defaults: [0.0, 0.0],
-                        axis_points_x: vec![0.0, 1.0],
-                        axis_points_y: vec![0.0],
-                    });
+                    let p = param("q");
+                    r.model.add_param(p, &mut r.hex).unwrap();
+                }),
+            ),
+            (
+                "add_param_with_id",
+                Box::new(|r| {
+                    r.model
+                        .add_param_with_id(ParamId::new("chosen").unwrap(), param("q"))
+                        .unwrap()
                 }),
             ),
             (
                 "delete_param",
-                Box::new(|r| r.model.delete_param(r.param).unwrap()),
+                Box::new(|r| r.model.delete_param(&r.param).unwrap()),
             ),
             (
                 "add_texture",
                 Box::new(|r| {
-                    r.model.add_texture(ModelTexture {
-                        encoding: TextureEncoding::Png,
-                        alpha: TextureAlpha::Straight,
-                        data: Arc::new(Vec::new()),
-                    });
+                    let t = texture();
+                    r.model.add_texture(t, &mut r.hex).unwrap();
+                }),
+            ),
+            (
+                "add_texture_with_id",
+                Box::new(|r| {
+                    r.model
+                        .add_texture_with_id(TexId::new("chosen").unwrap(), texture())
+                        .unwrap()
                 }),
             ),
             (
                 "delete_texture",
-                Box::new(|r| r.model.delete_texture(r.tex).unwrap()),
+                Box::new(|r| r.model.delete_texture(&r.tex).unwrap()),
             ),
             (
                 "set_physics",
@@ -1525,8 +1805,8 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .set_welds(vec![ModelWeld::new(
-                            r.part,
-                            r.other,
+                            r.part.clone(),
+                            r.other.clone(),
                             vec![ClpWeldPair {
                                 a_vert: 0,
                                 b_vert: 0,
@@ -1622,37 +1902,41 @@ mod tests {
             ),
             (
                 "set_param_name",
-                Box::new(|r| r.model.set_param_name(r.param, "renamed".into()).unwrap()),
+                Box::new(|r| {
+                    r.model
+                        .set_param_name(&r.param, Name::truncated("renamed"))
+                        .unwrap()
+                }),
             ),
             (
                 "set_param_defaults",
-                Box::new(|r| r.model.set_param_defaults(r.param, [0.5, 0.0]).unwrap()),
+                Box::new(|r| r.model.set_param_defaults(&r.param, [0.5, 0.0]).unwrap()),
             ),
             (
                 "set_param_range",
                 Box::new(|r| {
                     r.model
-                        .set_param_range(r.param, [0.0, 0.0], [2.0, 0.0])
+                        .set_param_range(&r.param, [0.0, 0.0], [2.0, 0.0])
                         .unwrap()
                 }),
             ),
             (
                 "axis_insert",
                 Box::new(|r| {
-                    r.model.axis_insert(r.param, 0, 0.25).unwrap();
+                    r.model.axis_insert(&r.param, 0, 0.25).unwrap();
                 }),
             ),
             (
                 "axis_delete",
-                Box::new(|r| r.model.axis_delete(r.param, 0, 1).unwrap()),
+                Box::new(|r| r.model.axis_delete(&r.param, 0, 1).unwrap()),
             ),
             (
                 "axis_move",
-                Box::new(|r| r.model.axis_move(r.param, 0, 1, 0.6).unwrap()),
+                Box::new(|r| r.model.axis_move(&r.param, 0, 1, 0.6).unwrap()),
             ),
             (
                 "param_flip",
-                Box::new(|r| r.model.param_flip(r.param, 0).unwrap()),
+                Box::new(|r| r.model.param_flip(&r.param, 0).unwrap()),
             ),
         ];
 
@@ -1673,10 +1957,11 @@ mod tests {
     fn a_rejected_edit_leaves_the_generation_alone() {
         let mut r = rig();
         let before = r.model.generation();
-        assert!(r.model.delete_node(r.root).is_err());
-        assert!(r.model.reparent(r.root, r.part).is_err());
-        assert!(r.model.mask_add(r.part, r.part, MaskMode::Mask).is_err());
-        assert!(r.model.mask_delete(r.composite, 7).is_err());
+        let root = r.root.clone();
+        assert!(r.model.delete_node(&root).is_err());
+        assert!(r.model.reparent(&root, &r.part).is_err());
+        assert!(r.model.mask_add(&r.part, &r.part, MaskMode::Mask).is_err());
+        assert!(r.model.mask_delete(&r.composite, 7).is_err());
         assert!(r
             .model
             .set_binding_key(&scalar_key(&r), [9, 0], 1.0)
@@ -1684,55 +1969,223 @@ mod tests {
         assert_eq!(r.model.generation(), before);
     }
 
+    /// An Id is what an addon reaches into a model by, so a rename has to be a
+    /// whole-model rewrite or it leaves a dangling reference behind.
+    #[test]
+    fn renaming_rewrites_every_reference_to_the_id() {
+        let mut r = rig();
+        let (part, other, composite, physics) = (
+            r.part.clone(),
+            r.other.clone(),
+            r.composite.clone(),
+            r.physics.clone(),
+        );
+        let (param, tex) = (r.param.clone(), r.tex.clone());
+        let child = r
+            .model
+            .add_node(&part, ModelNode::new("child", part_kind()), &mut r.hex)
+            .unwrap();
+        r.model.set_part_albedo(&part, Some(tex.clone())).unwrap();
+        r.model
+            .set_physics_target(&physics, Some(param.clone()))
+            .unwrap();
+        r.model
+            .set_welds(vec![ModelWeld::new(part.clone(), other, Vec::new())])
+            .unwrap();
+        let key = BindingKey::new(param.clone(), part.clone(), BindingTarget::Deform);
+        r.model
+            .set_deform_vertices(&key, [1, 0], vec![1.0; 8])
+            .unwrap();
+
+        let new_node = NodeId::new("head/part-renamed").unwrap();
+        r.model.rename_node_id(&part, new_node.clone()).unwrap();
+
+        assert!(r.model.node(&part).is_none());
+        assert!(r.model.node(&new_node).is_some());
+        // parent's child list, and the child's parent
+        assert!(r
+            .model
+            .node(&r.root)
+            .unwrap()
+            .children()
+            .contains(&new_node));
+        assert_eq!(r.model.node(&child).unwrap().parent(), Some(&new_node));
+        // the mask that named it as a source
+        assert_eq!(
+            r.model.node(&composite).unwrap().masks().unwrap()[0].source(),
+            &new_node
+        );
+        // the binding that drives it, and the weld that ends on it
+        assert_eq!(r.model.bindings().next().unwrap().node(), &new_node);
+        assert_eq!(r.model.welds()[0].a(), &new_node);
+        assert!(r.model.to_clp_bytes().is_ok());
+
+        let new_param = ParamId::new("head-turn").unwrap();
+        r.model.rename_param_id(&param, new_param.clone()).unwrap();
+        assert_eq!(r.model.param_ids(), std::slice::from_ref(&new_param));
+        assert_eq!(r.model.bindings().next().unwrap().param(), &new_param);
+        assert_eq!(
+            physics_target(&r.model, &physics),
+            Some(new_param),
+            "the physics node follows its param",
+        );
+
+        let new_tex = TexId::new("skin").unwrap();
+        r.model.rename_tex_id(&tex, new_tex.clone()).unwrap();
+        assert_eq!(r.model.texture_ids(), std::slice::from_ref(&new_tex));
+        assert_eq!(albedo(&r.model, &new_node), Some(new_tex));
+        assert!(r.model.to_clp_bytes().is_ok());
+
+        // Renaming the root moves the root handle too.
+        let new_root = NodeId::new("body").unwrap();
+        let old_root = r.root.clone();
+        r.model.rename_node_id(&old_root, new_root.clone()).unwrap();
+        assert_eq!(r.model.root(), &new_root);
+        assert!(r.model.to_clp_bytes().is_ok());
+    }
+
+    #[test]
+    fn renaming_onto_a_taken_id_is_refused() {
+        let mut r = rig();
+        let (part, other) = (r.part.clone(), r.other.clone());
+        assert!(matches!(
+            r.model.rename_node_id(&part, other),
+            Err(ModelError::DuplicateId(_))
+        ));
+        // Renaming to the same Id is a no-op, not a conflict.
+        r.model.rename_node_id(&part, part.clone()).unwrap();
+        assert!(r.model.node(&part).is_some());
+    }
+
+    /// A generated Id records the parent a node was *created* under; it is a
+    /// reading aid, not a path, so moving the node must not touch it.
+    #[test]
+    fn reparenting_leaves_the_generated_id_alone() {
+        let mut r = rig();
+        let part = r.part.clone();
+        assert!(
+            part.as_str().starts_with("root/part-"),
+            "generated under the root: {part}"
+        );
+        r.model.reparent(&part, &r.composite.clone()).unwrap();
+        assert_eq!(
+            r.model.node(&part).unwrap().parent(),
+            Some(&r.composite),
+            "the node moved",
+        );
+        assert!(
+            r.model.node(&part).is_some(),
+            "and kept the Id it was created with: {part}",
+        );
+        assert!(part.as_str().starts_with("root/part-"));
+    }
+
+    /// 32 bits collide eventually and `id.rs` cannot check uniqueness, so the
+    /// model re-draws until the Id is free.
+    #[test]
+    fn a_colliding_generated_id_is_redrawn() {
+        // Hands out 0xaaaaaaaa twice, then 0xbbbbbbbb forever.
+        let mut draws = 0u32;
+        let mut hex = move || {
+            draws += 1;
+            if draws <= 2 {
+                0xaaaa_aaaa
+            } else {
+                0xbbbb_bbbb
+            }
+        };
+        let mut model = Model::new();
+        let root = model.root().clone();
+        let a = model
+            .add_node(&root, ModelNode::new("a", ModelNodeKind::Group), &mut hex)
+            .unwrap();
+        let b = model
+            .add_node(&root, ModelNode::new("b", ModelNodeKind::Group), &mut hex)
+            .unwrap();
+        assert_eq!(a.as_str(), "root/group-aaaaaaaa");
+        assert_eq!(
+            b.as_str(),
+            "root/group-bbbbbbbb",
+            "the collision was redrawn"
+        );
+        assert_eq!(model.node_count(), 3);
+
+        // A source that never moves runs the attempts out rather than looping.
+        let mut stuck = || 0xaaaa_aaaa_u32;
+        assert!(matches!(
+            model.add_node(&root, ModelNode::new("c", ModelNodeKind::Group), &mut stuck),
+            Err(ModelError::IdExhausted)
+        ));
+    }
+
+    #[test]
+    fn an_author_chosen_id_cannot_collide() {
+        let mut model = Model::new();
+        let root = model.root().clone();
+        let chosen = NodeId::new("head").unwrap();
+        model
+            .add_node_with_id(
+                chosen.clone(),
+                &root,
+                ModelNode::new("Head", ModelNodeKind::Group),
+            )
+            .unwrap();
+        assert!(matches!(
+            model.add_node_with_id(
+                chosen,
+                &root,
+                ModelNode::new("Head again", ModelNodeKind::Group)
+            ),
+            Err(ModelError::DuplicateId(_))
+        ));
+    }
+
     #[test]
     fn reorder_moves_within_siblings_and_clamps() {
+        let mut hex = SeededHex::new(1);
         let mut m = Model::new();
-        let root = m.root();
-        let a = m
-            .add_node(root, ModelNode::new("a", ModelNodeKind::Group))
-            .unwrap();
-        let b = m
-            .add_node(root, ModelNode::new("b", ModelNodeKind::Group))
-            .unwrap();
-        let c = m
-            .add_node(root, ModelNode::new("c", ModelNodeKind::Group))
-            .unwrap();
+        let root = m.root().clone();
+        let mut add = |m: &mut Model, name: &str| {
+            m.add_node(&root, ModelNode::new(name, ModelNodeKind::Group), &mut hex)
+                .unwrap()
+        };
+        let a = add(&mut m, "a");
+        let b = add(&mut m, "b");
+        let c = add(&mut m, "c");
+        let root = m.root().clone();
 
-        m.reorder(c, 0).unwrap();
-        assert_eq!(m.node(root).unwrap().children(), &[c, a, b]);
+        m.reorder(&c, 0).unwrap();
+        assert_eq!(
+            m.node(&root).unwrap().children(),
+            &[c.clone(), a.clone(), b.clone()]
+        );
 
         // an out-of-range index clamps to the end.
-        m.reorder(c, 99).unwrap();
-        assert_eq!(m.node(root).unwrap().children(), &[a, b, c]);
+        m.reorder(&c, 99).unwrap();
+        assert_eq!(
+            m.node(&root).unwrap().children(),
+            &[a.clone(), b.clone(), c.clone()]
+        );
 
-        m.reorder(b, 1).unwrap();
-        assert_eq!(m.node(root).unwrap().children(), &[a, b, c]);
+        m.reorder(&b, 1).unwrap();
+        assert_eq!(m.node(&root).unwrap().children(), &[a, b, c]);
 
-        assert!(m.reorder(root, 0).is_err());
+        assert!(m.reorder(&root, 0).is_err());
     }
 
     #[test]
     fn model_snapshots_share_large_payloads_until_mutated() {
-        let mut model = Model::new();
-        let node = model
-            .add_node(model.root(), ModelNode::new("mesh", part_kind()))
-            .unwrap();
-        let param = model.add_param(ModelParam {
-            name: "deform".into(),
-            is_vec2: false,
-            min: [0.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-        });
-        let key = BindingKey::new(param, node, BindingTarget::Deform);
+        let mut r = rig();
+        let node = r.part.clone();
+        let key = deform_key(&r);
+        let model = &mut r.model;
         model
-            .set_deform_vertices(&key, [1, 0], vec![1.0; 8])
+            .set_deform_vertices(&key, [2, 0], vec![1.0; 8])
             .unwrap();
 
+        let model = r.model;
         let mut edited = model.clone();
-        let mesh_arc = |m: &Model| match &m.node(node).unwrap().kind {
+        let mesh_arc = |m: &Model| match &m.node(&node).unwrap().kind {
             ModelNodeKind::Part(part) => part.mesh.0.clone(),
             _ => unreachable!(),
         };
@@ -1744,162 +2197,195 @@ mod tests {
 
         // An unrelated edit still shares.
         edited
-            .update_node(node, |n| n.name = "renamed".into())
+            .update_node(&node, |n| n.name = Name::truncated("renamed"))
             .unwrap();
         assert!(Arc::ptr_eq(&original_mesh, &mesh_arc(&edited)));
 
         let mut moved = quad();
         moved.verts[0] = 7.0;
-        edited.set_node_mesh(node, moved).unwrap();
+        edited.set_node_mesh(&node, moved).unwrap();
         edited
-            .set_deform_vertices(&key, [1, 0], vec![2.0; 8])
+            .set_deform_vertices(&key, [2, 0], vec![2.0; 8])
             .unwrap();
 
         assert!(!Arc::ptr_eq(&original_mesh, &mesh_arc(&edited)));
         assert!(!Arc::ptr_eq(&original_cells, &cells_arc(&edited)));
         // The snapshot taken before the edits is byte-identical afterwards.
-        assert_eq!(model.node_mesh(node).unwrap().verts, quad().verts);
+        assert_eq!(model.node_mesh(&node).unwrap().verts, quad().verts);
         assert_eq!(
             deform_cells(model.binding(&key).unwrap().values())
                 .unwrap()
                 .iter()
                 .map(|c| (c.x, c.y, c.value.clone()))
                 .collect::<Vec<_>>(),
-            vec![(0, 0, vec![0.0; 8]), (1, 0, vec![1.0; 8])],
+            vec![(1, 0, vec![0.0; 8]), (2, 0, vec![1.0; 8])],
         );
     }
 
     #[test]
     fn duplicate_copies_bindings_and_remaps_internal_masks() {
+        let mut hex = SeededHex::new(3);
         let mut m = Model::new();
-        let root = m.root();
+        let root = m.root().clone();
         let group = m
-            .add_node(root, ModelNode::new("g", ModelNodeKind::Group))
+            .add_node(&root, ModelNode::new("g", ModelNodeKind::Group), &mut hex)
             .unwrap();
         let mask_src = m
-            .add_node(group, ModelNode::new("mask", part_kind()))
+            .add_node(&group, ModelNode::new("mask", part_kind()), &mut hex)
             .unwrap();
         let masked = m
-            .add_node(group, ModelNode::new("masked", part_kind()))
+            .add_node(&group, ModelNode::new("masked", part_kind()), &mut hex)
             .unwrap();
-        m.mask_add(masked, mask_src, MaskMode::Mask).unwrap();
+        m.mask_add(&masked, &mask_src, MaskMode::Mask).unwrap();
 
-        let param = m.add_param(ModelParam {
-            name: "x".into(),
-            is_vec2: false,
-            min: [0.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-        });
-        let key = BindingKey::new(param, masked, BindingTarget::Scalar(ScalarTarget::Tx));
+        let param = m.add_param(param("x"), &mut hex).unwrap();
+        let key = BindingKey::new(
+            param.clone(),
+            masked,
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
         m.set_binding_key(&key, [1, 0], 5.0).unwrap();
 
-        let copy = m.duplicate_subtree(group).unwrap();
-        // the copy lands right after the original.
-        assert_eq!(m.node(root).unwrap().children(), &[group, copy]);
-        assert_eq!(m.node(copy).unwrap().name, "g copy");
+        let copy = m.duplicate_subtree(&group, &mut hex).unwrap();
+        // the copy lands right after the original, under its own Id.
+        assert_ne!(copy, group);
+        assert_eq!(
+            m.node(&root).unwrap().children(),
+            &[group.clone(), copy.clone()]
+        );
+        assert_eq!(m.node(&copy).unwrap().name.as_str(), "g copy");
 
-        let copy_children = m.node(copy).unwrap().children().to_vec();
+        let copy_children = m.node(&copy).unwrap().children().to_vec();
         assert_eq!(copy_children.len(), 2);
-        let copy_masked = copy_children[1];
+        let copy_masked = &copy_children[1];
         // internal mask reference points at the copied source, not the original.
-        if let ModelNodeKind::Part(p) = &m.node(copy_masked).unwrap().kind {
-            assert_eq!(p.masks().len(), 1);
-            assert_eq!(p.masks()[0].source(), copy_children[0]);
-        } else {
-            panic!("expected part");
-        }
+        let masks = m.node(copy_masked).unwrap().masks().unwrap();
+        assert_eq!(masks.len(), 1);
+        assert_eq!(masks[0].source(), &copy_children[0]);
         // the copied node has its own binding.
-        assert_eq!(m.bindings_of_param(param).count(), 2);
+        assert_eq!(m.bindings_of_param(&param).count(), 2);
         assert!(m.bindings().any(|b| b.node() == copy_masked));
         assert!(m.to_clp_bytes().is_ok());
     }
 
     #[test]
     fn mask_ops_validate_and_reorder() {
-        let mut m = Model::new();
-        let root = m.root();
-        let a = m.add_node(root, ModelNode::new("a", part_kind())).unwrap();
-        let b = m.add_node(root, ModelNode::new("b", part_kind())).unwrap();
-        let c = m.add_node(root, ModelNode::new("c", part_kind())).unwrap();
-        let target = m.add_node(root, ModelNode::new("t", part_kind())).unwrap();
+        let mut r = rig();
+        let (a, b, target) = (r.part.clone(), r.other.clone(), r.composite.clone());
+        let c = r.node("c", part_kind());
+        let root = r.root.clone();
+        let m = &mut r.model;
 
-        assert!(m.mask_add(target, target, MaskMode::Mask).is_err());
+        m.mask_delete(&target, 0).unwrap();
+        assert!(m.mask_add(&a, &a, MaskMode::Mask).is_err());
         assert!(m
-            .mask_add(a, root, MaskMode::Mask)
+            .mask_add(&a, &root, MaskMode::Mask)
             .is_err_and(|e| matches!(e, ModelError::NotAPart)));
 
-        m.mask_add(target, a, MaskMode::Mask).unwrap();
-        m.mask_add(target, b, MaskMode::DodgeMask).unwrap();
-        m.mask_add(target, c, MaskMode::Mask).unwrap();
-        m.mask_reorder(target, 2, 0).unwrap();
-        m.mask_set_mode(target, 1, MaskMode::DodgeMask).unwrap();
-        m.mask_delete(target, 2).unwrap();
-        if let ModelNodeKind::Part(p) = &m.node(target).unwrap().kind {
-            assert_eq!(p.masks().len(), 2);
-            assert_eq!(p.masks()[0].source(), c);
-            assert!(matches!(p.masks()[1].mode(), MaskMode::DodgeMask));
-        } else {
-            panic!("expected part");
-        }
-        assert!(m.mask_delete(target, 5).is_err());
+        m.mask_add(&target, &a, MaskMode::Mask).unwrap();
+        m.mask_add(&target, &b, MaskMode::DodgeMask).unwrap();
+        m.mask_add(&target, &c, MaskMode::Mask).unwrap();
+        m.mask_reorder(&target, 2, 0).unwrap();
+        m.mask_set_mode(&target, 1, MaskMode::DodgeMask).unwrap();
+        m.mask_delete(&target, 2).unwrap();
+        let masks = m.node(&target).unwrap().masks().unwrap();
+        assert_eq!(masks.len(), 2);
+        assert_eq!(masks[0].source(), &c);
+        assert!(matches!(masks[1].mode(), MaskMode::DodgeMask));
+        assert!(m.mask_delete(&target, 5).is_err());
     }
 
     #[test]
     fn cross_references_are_checked_before_they_land() {
         let mut r = rig();
         // A texture, param and node this model no longer has.
-        let orphan_tex = r.model.add_texture(ModelTexture {
-            encoding: TextureEncoding::Png,
-            alpha: TextureAlpha::Straight,
-            data: Arc::new(Vec::new()),
-        });
-        r.model.delete_texture(orphan_tex).unwrap();
+        let orphan_tex = r.model.add_texture(texture(), &mut r.hex).unwrap();
+        r.model.delete_texture(&orphan_tex).unwrap();
+        let orphan_param = r.model.add_param(param("gone"), &mut r.hex).unwrap();
+        r.model.delete_param(&orphan_param).unwrap();
+        let orphan_node = r.node("gone", ModelNodeKind::Group);
+        r.model.delete_node(&orphan_node).unwrap();
+
         assert!(matches!(
-            r.model.set_part_albedo(r.part, Some(orphan_tex)),
+            r.model.set_part_albedo(&r.part, Some(orphan_tex.clone())),
             Err(ModelError::UnknownTexture)
         ));
         assert!(matches!(
-            r.model.set_part_albedo(r.composite, Some(r.tex)),
+            r.model.set_part_albedo(&r.composite, Some(r.tex.clone())),
             Err(ModelError::NotAPart)
         ));
-        let orphan_param = r.model.add_param(ModelParam {
-            name: "gone".into(),
+        assert!(matches!(
+            r.model.set_physics_target(&r.physics, Some(orphan_param)),
+            Err(ModelError::UnknownParam)
+        ));
+        assert!(matches!(
+            r.model.set_welds(vec![ModelWeld::new(
+                r.part.clone(),
+                orphan_node,
+                Vec::new()
+            )]),
+            Err(ModelError::UnknownNode)
+        ));
+        // A node cloned out of another model cannot smuggle its Ids in.
+        let mut foreign = ModelPart::new(quad());
+        foreign.albedo = Some(orphan_tex);
+        let root = r.root.clone();
+        assert!(matches!(
+            r.model.add_node(
+                &root,
+                ModelNode::new("smuggler", ModelNodeKind::Part(foreign)),
+                &mut r.hex,
+            ),
+            Err(ModelError::UnknownTexture)
+        ));
+        assert!(r.model.to_clp_bytes().is_ok());
+    }
+
+    fn physics_target(m: &Model, node: &NodeId) -> Option<ParamId> {
+        match &m.node(node)?.kind {
+            ModelNodeKind::SimplePhysics(ph) => ph.target_param().cloned(),
+            _ => None,
+        }
+    }
+
+    fn albedo(m: &Model, node: &NodeId) -> Option<TexId> {
+        match &m.node(node)?.kind {
+            ModelNodeKind::Part(p) => p.albedo().cloned(),
+            _ => None,
+        }
+    }
+
+    fn texture() -> ModelTexture {
+        ModelTexture {
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: Arc::new(Vec::new()),
+        }
+    }
+
+    pub(super) fn quad() -> ClpMesh {
+        ClpMesh {
+            verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
+            uvs: vec![0.0; 8],
+            indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            origin: [0.0, 0.0],
+        }
+    }
+
+    pub(super) fn part_kind() -> ModelNodeKind {
+        ModelNodeKind::Part(ModelPart::new(quad()))
+    }
+
+    pub(super) fn param(name: &str) -> ModelParam {
+        ModelParam {
+            name: Name::truncated(name),
             is_vec2: false,
             min: [0.0, 0.0],
             max: [1.0, 0.0],
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-        });
-        r.model.delete_param(orphan_param).unwrap();
-        let orphan_node = r
-            .model
-            .add_node(r.root, ModelNode::new("gone", ModelNodeKind::Group))
-            .unwrap();
-        r.model.delete_node(orphan_node).unwrap();
-        assert!(matches!(
-            r.model.set_physics_target(r.physics, Some(orphan_param)),
-            Err(ModelError::UnknownParam)
-        ));
-        assert!(matches!(
-            r.model
-                .set_welds(vec![ModelWeld::new(r.part, orphan_node, Vec::new())]),
-            Err(ModelError::UnknownNode)
-        ));
-        // A node cloned out of another model cannot smuggle its keys in.
-        let mut foreign = ModelPart::new(quad());
-        foreign.albedo = Some(orphan_tex);
-        assert!(matches!(
-            r.model.add_node(
-                r.root,
-                ModelNode::new("smuggler", ModelNodeKind::Part(foreign))
-            ),
-            Err(ModelError::UnknownTexture)
-        ));
-        assert!(r.model.to_clp_bytes().is_ok());
+        }
     }
 }
 
@@ -1953,22 +2439,29 @@ mod bench {
 mod tests_support {
     use super::*;
     use crate::formats::clp::ClpIndices;
+    use crate::id::SeededHex;
 
     /// A model with `nodes` parts, each carrying a `verts`-vertex mesh and a
     /// deform binding whose `keys` x `keys` grid is fully authored.
     pub(super) fn dense_model(nodes: usize, verts: usize, keys: usize) -> (Model, BindingKey) {
         let positions: Vec<f32> = (0..keys).map(|i| i as f32 / (keys - 1) as f32).collect();
+        let mut hex = SeededHex::new(11);
         let mut model = Model::new();
-        let root = model.root();
-        let param = model.add_param(ModelParam {
-            name: "sweep".into(),
-            is_vec2: true,
-            min: [-1.0, -1.0],
-            max: [1.0, 1.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: positions.clone(),
-            axis_points_y: positions,
-        });
+        let root = model.root().clone();
+        let param = model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("sweep"),
+                    is_vec2: true,
+                    min: [-1.0, -1.0],
+                    max: [1.0, 1.0],
+                    defaults: [0.0, 0.0],
+                    axis_points_x: positions.clone(),
+                    axis_points_y: positions,
+                },
+                &mut hex,
+            )
+            .unwrap();
         let mesh = ClpMesh {
             verts: (0..verts * 2).map(|i| i as f32).collect(),
             uvs: vec![0.0; verts * 2],
@@ -1979,14 +2472,15 @@ mod tests_support {
         for i in 0..nodes {
             let node = model
                 .add_node(
-                    root,
+                    &root,
                     ModelNode::new(
                         format!("part-{i}"),
                         ModelNodeKind::Part(ModelPart::new(mesh.clone())),
                     ),
+                    &mut hex,
                 )
                 .unwrap();
-            let key = BindingKey::new(param, node, BindingTarget::Deform);
+            let key = BindingKey::new(param.clone(), node, BindingTarget::Deform);
             for y in 0..keys as u32 {
                 for x in 0..keys as u32 {
                     model

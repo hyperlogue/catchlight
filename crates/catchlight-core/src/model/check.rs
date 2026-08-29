@@ -14,7 +14,7 @@ use crate::model::binding::BindingTarget;
 #[derive(Debug, Clone)]
 pub struct CheckWarning {
     /// The node the warning is about, if any.
-    pub node: Option<NodeKey>,
+    pub node: Option<NodeId>,
     pub message: String,
 }
 
@@ -25,23 +25,26 @@ impl Model {
     pub fn check(&self) -> Vec<CheckWarning> {
         let mut out = Vec::new();
         for id in self.nodes_in_order() {
-            let Some(n) = self.node(id) else { continue };
+            let Some(n) = self.node(&id) else { continue };
             match &n.kind {
                 ModelNodeKind::Part(p) => {
                     if p.albedo().is_none() {
                         out.push(warn(
-                            id,
-                            format!("part {:?} has no texture (the renderer culls it)", n.name),
+                            id.clone(),
+                            format!(
+                                "part {:?} has no texture (the renderer culls it)",
+                                n.name.as_str()
+                            ),
                         ));
                     }
                     let mesh = p.mesh();
                     let verts = mesh.verts.len() / 2;
                     if mesh.uvs.len() / 2 != verts {
                         out.push(warn(
-                            id,
+                            id.clone(),
                             format!(
                                 "part {:?} has {} vertices but {} uvs",
-                                n.name,
+                                n.name.as_str(),
                                 verts,
                                 mesh.uvs.len() / 2
                             ),
@@ -53,10 +56,10 @@ impl Model {
                     };
                     if tris == 0 && p.albedo().is_some() {
                         out.push(warn(
-                            id,
+                            id.clone(),
                             format!(
                                 "part {:?} is textured but its mesh has no triangles",
-                                n.name
+                                n.name.as_str()
                             ),
                         ));
                     }
@@ -64,7 +67,7 @@ impl Model {
                 ModelNodeKind::SimplePhysics(ph) if ph.target_param().is_none() => {
                     out.push(warn(
                         id,
-                        format!("physics node {:?} drives no target param", n.name),
+                        format!("physics node {:?} drives no target param", n.name.as_str()),
                     ));
                 }
                 _ => {}
@@ -85,11 +88,11 @@ impl Model {
                     )
                 {
                     out.push(CheckWarning {
-                        node: Some(b.node()),
+                        node: Some(b.node().clone()),
                         message: format!(
                             "param {:?}: {} binding targets a mesh group, which has no \
                              colour (the runtime refuses to load this model)",
-                            p.name,
+                            p.name.as_str(),
                             t.name()
                         ),
                     });
@@ -98,10 +101,13 @@ impl Model {
             let stray = cells_outside(b.values(), w, h);
             if stray > 0 {
                 out.push(CheckWarning {
-                    node: Some(b.node()),
+                    node: Some(b.node().clone()),
                     message: format!(
-                        "param {:?}: {} authored cell(s) outside the {}x{} axis grid",
-                        p.name, stray, w, h
+                        "param {:?}: {} authored cell(s) outside the {}x{} key grid",
+                        p.name.as_str(),
+                        stray,
+                        w,
+                        h
                     ),
                 });
             }
@@ -110,7 +116,7 @@ impl Model {
     }
 }
 
-fn warn(node: NodeKey, message: String) -> CheckWarning {
+fn warn(node: NodeId, message: String) -> CheckWarning {
     CheckWarning {
         node: Some(node),
         message,
@@ -131,7 +137,7 @@ fn cells_outside(values: &ClpBindingValues, w: u32, h: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use crate::formats::clp::ClpMesh;
-
+    use crate::id::{Name, SeededHex};
     use crate::model::binding::ScalarTarget;
     use crate::model::*;
 
@@ -140,26 +146,33 @@ mod tests {
     /// load that model back, so `check` has to say so.
     #[test]
     fn check_flags_a_color_binding_on_a_mesh_group() {
+        let mut hex = SeededHex::new(9);
         let mut m = Model::new();
-        let root = m.root();
+        let root = m.root().clone();
         let group = m
             .add_node(
-                root,
+                &root,
                 ModelNode::new(
                     "lattice",
                     ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClpMesh::default())),
                 ),
+                &mut hex,
             )
             .unwrap();
-        let param = m.add_param(ModelParam {
-            name: "shade".into(),
-            is_vec2: false,
-            min: [0.0, 0.0],
-            max: [1.0, 0.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-        });
+        let param = m
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("shade"),
+                    is_vec2: false,
+                    min: [0.0, 0.0],
+                    max: [1.0, 0.0],
+                    defaults: [0.0, 0.0],
+                    axis_points_x: vec![0.0, 1.0],
+                    axis_points_y: vec![0.0],
+                },
+                &mut hex,
+            )
+            .unwrap();
 
         m.add_binding(&BindingKey::new(
             param,
@@ -173,9 +186,14 @@ mod tests {
             .any(|w| w.message.contains("has no colour")));
 
         // Authoring one is refused outright...
+        let group = m
+            .nodes_in_order()
+            .into_iter()
+            .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == "lattice"))
+            .unwrap();
         assert!(matches!(
             m.add_binding(&BindingKey::new(
-                param,
+                m.param_ids()[0].clone(),
                 group,
                 BindingTarget::Scalar(ScalarTarget::Opacity)
             )),

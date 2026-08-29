@@ -11,10 +11,12 @@
 //! Invariants this module enforces:
 //!
 //! - **Charset.** An Id is non-empty, is made only of `[A-Za-z0-9_./-]`, and
-//!   does not start with `.`. Every constructor validates; [`IdError`] names
-//!   the offending byte and its offset. The set is deliberately narrow: an Id
-//!   has to survive a file path, a URL, a JSON key and a shell argument
-//!   without quoting.
+//!   starts with neither `.` nor `/`. Every constructor validates; [`IdError`]
+//!   names the offending byte and its offset. The set is deliberately narrow:
+//!   an Id has to survive a file path, a URL, a JSON key and a shell argument
+//!   without quoting. A leading `-` is left alone: it is a CLI hazard, and the
+//!   CLI ends its option list with `--` rather than the format narrowing the
+//!   charset for it.
 //! - **Case-sensitive.** `Head` and `head` are two different Ids.
 //! - **The `/` in an Id is not a path.** A generated Id carries its parent's
 //!   Id as a prefix (`head/part-3f9a2c1e`) purely as a reading aid. It is
@@ -59,6 +61,13 @@ pub enum IdError {
     /// and an Id is not a path.
     #[error("an id must not start with '.'")]
     LeadingDot,
+    /// A leading `/` is reserved for the same reason: it is what an absolute
+    /// path starts with. Interior `/` is ordinary — it is how a generated Id
+    /// carries its parent — but an Id that opens with one reads as rooted at
+    /// something, and it is not. Forbidden now because relaxing a rule later
+    /// is additive while tightening one is not.
+    #[error("an id must not start with '/'")]
+    LeadingSlash,
     /// A byte outside `[A-Za-z0-9_./-]`.
     #[error("invalid byte '{}' (0x{byte:02x}) at offset {offset} of an id", .byte.escape_ascii())]
     Byte {
@@ -87,8 +96,10 @@ pub fn validate_id(s: &str) -> Result<(), IdError> {
     if s.is_empty() {
         return Err(IdError::Empty);
     }
-    if s.as_bytes()[0] == b'.' {
-        return Err(IdError::LeadingDot);
+    match s.as_bytes()[0] {
+        b'.' => return Err(IdError::LeadingDot),
+        b'/' => return Err(IdError::LeadingSlash),
+        _ => {}
     }
     for (offset, byte) in s.bytes().enumerate() {
         if !is_id_byte(byte) {
@@ -274,6 +285,24 @@ impl HexSource for SeededHex {
     }
 }
 
+/// Wraps a string this crate just built to the charset, for the Ids the
+/// crate mints itself: generated Ids and the ones the `.clp` bridge derives
+/// from arena indices. Seam and slot Ids are always authored, so they have
+/// none. [`generated`] debug-asserts the charset, so a minter that drifts off
+/// it fails a test rather than writing a file.
+macro_rules! from_generated {
+    ($t:ty) => {
+        impl $t {
+            pub(crate) fn from_generated(s: String) -> Self {
+                Self(generated(s))
+            }
+        }
+    };
+}
+from_generated!(NodeId);
+from_generated!(ParamId);
+from_generated!(TexId);
+
 impl NodeId {
     /// Generates `<parent>/<kind>-<8 hex>`.
     ///
@@ -431,6 +460,16 @@ mod tests {
         assert_eq!(TexId::new(""), Err(IdError::Empty));
         assert_eq!(SeamId::new(""), Err(IdError::Empty));
         assert_eq!(SlotId::new(""), Err(IdError::Empty));
+    }
+
+    #[test]
+    fn rejects_leading_slash() {
+        assert_eq!(NodeId::new("/"), Err(IdError::LeadingSlash));
+        assert_eq!(NodeId::new("/head"), Err(IdError::LeadingSlash));
+        assert_eq!(NodeId::new("//head"), Err(IdError::LeadingSlash));
+        // Only *leading*: the `/` a generated id carries is ordinary.
+        assert!(NodeId::new("head/part-3f9a2c1e").is_ok());
+        assert!(NodeId::new("a//b").is_ok());
     }
 
     #[test]

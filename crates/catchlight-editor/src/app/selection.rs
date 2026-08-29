@@ -1,4 +1,5 @@
 use super::*;
+use catchlight_core::id::NodeId;
 
 /// Rev-gated three-way mapping: Model `NodeRef` ⇄ clp arena index ⇄ core
 /// (puppet) node id. `from_clp` stamps the clp index as each node's uuid, which
@@ -24,19 +25,19 @@ impl App {
         }
         let Some(session) = self.session else { return };
         let editor = self.editor.clone();
-        let base = editor.with_model(session, |m| {
+        let base = editor.with_model(session, |m, ref_map| {
             let order = m.nodes_in_order();
-            let pos: HashMap<NodeKey, usize> =
-                order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-            let refs: Vec<NodeRef> = order.iter().map(|id| NodeRef(id.to_ffi())).collect();
+            let pos: HashMap<&NodeId, usize> =
+                order.iter().enumerate().map(|(i, id)| (id, i)).collect();
             let parent_of: Vec<Option<usize>> = order
                 .iter()
-                .map(|&id| {
+                .map(|id| {
                     m.node(id)
                         .and_then(|n| n.parent())
-                        .and_then(|p| pos.get(&p).copied())
+                        .and_then(|p| pos.get(p).copied())
                 })
                 .collect();
+            let refs: Vec<NodeRef> = order.iter().map(|id| ref_map.node(id)).collect();
             (refs, parent_of)
         });
         let Ok((refs, parent_of)) = base else { return };
@@ -216,7 +217,7 @@ impl App {
         let parent_world = parent_core
             .map(|c| viewport.transforms.get(catchlight_core::NodeIdx(c)))
             .unwrap_or(glam::Mat4::IDENTITY);
-        let node_ref = NodeKey::from_ffi(primary.0);
+
         // Recording edits the *posed* value; document edits start from base.
         let (translation, rotation, scale) = if self.armed.is_some() {
             self.editor
@@ -233,8 +234,8 @@ impl App {
                 .flatten()?
         } else {
             self.editor
-                .with_model(session, |model| {
-                    model.node(node_ref).map(|n| {
+                .with_model(session, |model, refs| {
+                    model.node(refs.node_id(primary)?).map(|n| {
                         (
                             n.transform.translation,
                             n.transform.rotation,
