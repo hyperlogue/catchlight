@@ -12,8 +12,8 @@
 //! `parent < self`), so the positional indices are stable for the file's
 //! lifetime — handle-stability under live editing is the in-memory arena's job,
 //! not the file's. Stable ids live in memory, never in the file:
-//! `catchlight-editor-core`'s `EditModel` assigns indices only at the file edge
-//! (`crates/catchlight-editor-core/src/flatten.rs`).
+//! [`Model`](crate::Model) assigns indices only at the file edge
+//! (`crates/catchlight-core/src/model/flatten.rs`).
 //!
 //! The wire mirrors catchlight's *authored* `Puppet` model — no derived caches,
 //! no runtime state, nothing the runtime doesn't model (metadata, groups,

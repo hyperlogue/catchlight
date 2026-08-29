@@ -19,7 +19,9 @@ use catchlight_core::formats::clp::{
 };
 use catchlight_core::{LoadBudget, LoadLimitError, LoadResource};
 
-use crate::model::*;
+use catchlight_core::{
+    Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelTexture, NodeKey, TexKey,
+};
 
 #[derive(Debug, Error)]
 pub enum ManifestError {
@@ -170,31 +172,52 @@ impl Manifest {
     }
 }
 
-impl EditModel {
+/// Manifest authoring over a [`Model`]. An extension trait because the Model is
+/// defined in `catchlight-core` while the manifest lives here.
+pub trait ModelManifestExt: Sized {
     /// Build a model from a manifest plus the caller-loaded texture bytes. Parts
     /// auto-generate their mesh from the referenced texture's pixel dimensions.
-    pub fn from_manifest(
+    fn from_manifest(
         manifest: &Manifest,
         data: &HashMap<String, TextureData>,
-    ) -> Result<EditModel, ManifestError> {
-        Self::from_manifest_with_budget(manifest, data, &mut LoadBudget::default())
-    }
+    ) -> Result<Self, ManifestError>;
 
-    pub fn from_manifest_with_budget(
+    /// [`Self::from_manifest`], charged against a caller-supplied budget.
+    fn from_manifest_with_budget(
         manifest: &Manifest,
         data: &HashMap<String, TextureData>,
         budget: &mut LoadBudget,
-    ) -> Result<EditModel, ManifestError> {
+    ) -> Result<Self, ManifestError>;
+
+    /// Best-effort text mirror: structure, transforms, texture references and
+    /// param definitions. Textures get synthetic ids/paths (the caller writes
+    /// the bytes there); meshes are not emitted (re-import regenerates a quad).
+    fn to_manifest(&self) -> Manifest;
+}
+
+impl ModelManifestExt for Model {
+    fn from_manifest(
+        manifest: &Manifest,
+        data: &HashMap<String, TextureData>,
+    ) -> Result<Model, ManifestError> {
+        Self::from_manifest_with_budget(manifest, data, &mut LoadBudget::default())
+    }
+
+    fn from_manifest_with_budget(
+        manifest: &Manifest,
+        data: &HashMap<String, TextureData>,
+        budget: &mut LoadBudget,
+    ) -> Result<Model, ManifestError> {
         budget.charge(LoadResource::Textures, manifest.textures.len() as u64)?;
         budget.charge(LoadResource::Nodes, manifest.nodes.len() as u64)?;
         budget.charge(LoadResource::Params, manifest.params.len() as u64)?;
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         m.physics = ClpPhysics {
             pixels_per_meter: manifest.physics.pixels_per_meter,
             gravity: manifest.physics.gravity,
         };
 
-        let mut tex_ids: HashMap<&str, TexId> = HashMap::new();
+        let mut tex_ids: HashMap<&str, TexKey> = HashMap::new();
         let mut tex_dims: HashMap<&str, (f32, f32)> = HashMap::new();
         for t in &manifest.textures {
             let d = data
@@ -204,7 +227,7 @@ impl EditModel {
             let (w, h) =
                 image_dims(&d.bytes).map_err(|e| ManifestError::Decode(t.id.clone(), e))?;
             budget.check_texture_dimensions(w, h)?;
-            let id = m.add_texture(EditTexture {
+            let id = m.add_texture(ModelTexture {
                 encoding: d.encoding,
                 alpha: TextureAlpha::Straight,
                 data: d.bytes.clone(),
@@ -222,7 +245,7 @@ impl EditModel {
 
         // Place nodes in any order: resolve a node once its parent exists (or it
         // is top-level, attaching under the implicit root).
-        let mut resolved: HashMap<&str, NodeId> = HashMap::new();
+        let mut resolved: HashMap<&str, NodeKey> = HashMap::new();
         let mut pending: Vec<&ManifestNode> = manifest.nodes.iter().collect();
         while !pending.is_empty() {
             let before = pending.len();
@@ -238,7 +261,7 @@ impl EditModel {
                 };
                 let kind = build_kind(mn, &tex_ids, &tex_dims, budget)?;
                 let mut node =
-                    EditNode::new(mn.name.clone().unwrap_or_else(|| mn.id.clone()), kind);
+                    ModelNode::new(mn.name.clone().unwrap_or_else(|| mn.id.clone()), kind);
                 node.transform = ClpTransform {
                     translation: mn.translate.unwrap_or([0.0; 3]),
                     rotation: mn.rotate.unwrap_or([0.0; 3]),
@@ -262,7 +285,7 @@ impl EditModel {
 
         for mp in &manifest.params {
             // Axis points are normalized 0..1 across [min, max] (see
-            // EditParam::axis_points_x), not param-value space.
+            // ModelParam::axis_points_x), not param-value space.
             let axis_x = if mp.axis_x.is_empty() {
                 vec![0.0, 1.0]
             } else {
@@ -282,7 +305,7 @@ impl EditModel {
                 axis_x.len() as u64,
                 axis_y.len() as u64,
             )?;
-            m.add_param(EditParam {
+            m.add_param(ModelParam {
                 name: mp.name.clone(),
                 is_vec2: mp.vec2,
                 min: mp.min,
@@ -297,18 +320,15 @@ impl EditModel {
         Ok(m)
     }
 
-    /// Best-effort text mirror: structure, transforms, texture references and
-    /// param definitions. Textures get synthetic ids/paths (the caller writes
-    /// the bytes there); meshes are not emitted (re-import regenerates a quad).
-    pub fn to_manifest(&self) -> Manifest {
+    fn to_manifest(&self) -> Manifest {
         let order = self.nodes_in_order();
-        let node_name: HashMap<NodeId, String> = order
+        let node_name: HashMap<NodeKey, String> = order
             .iter()
             .enumerate()
             .map(|(i, &id)| (id, format!("n{i}")))
             .collect();
 
-        let mut tex_name: HashMap<TexId, String> = HashMap::new();
+        let mut tex_name: HashMap<TexKey, String> = HashMap::new();
         let mut textures = Vec::new();
         for (i, &tid) in self.texture_ids().iter().enumerate() {
             let id = format!("tex{i}");
@@ -335,7 +355,9 @@ impl EditModel {
                 None => None,
             };
             let (kind, texture) = match &n.kind {
-                EditNodeKind::Part(p) => ("part", p.albedo.and_then(|t| tex_name.get(&t).cloned())),
+                ModelNodeKind::Part(p) => {
+                    ("part", p.albedo.and_then(|t| tex_name.get(&t).cloned()))
+                }
                 _ => ("group", None),
             };
             nodes.push(ManifestNode {
@@ -382,12 +404,12 @@ impl EditModel {
 
 fn build_kind(
     mn: &ManifestNode,
-    tex_ids: &HashMap<&str, TexId>,
+    tex_ids: &HashMap<&str, TexKey>,
     tex_dims: &HashMap<&str, (f32, f32)>,
     budget: &mut LoadBudget,
-) -> Result<EditNodeKind, ManifestError> {
+) -> Result<ModelNodeKind, ManifestError> {
     match mn.kind.as_str() {
-        "group" => Ok(EditNodeKind::Group),
+        "group" => Ok(ModelNodeKind::Group),
         "part" => {
             let albedo = match &mn.texture {
                 Some(t) => Some(
@@ -409,7 +431,7 @@ fn build_kind(
                     None => ClpMesh::default(),
                 },
             };
-            Ok(EditNodeKind::Part(EditPart {
+            Ok(ModelNodeKind::Part(ModelPart {
                 mesh: mesh.into(),
                 albedo,
                 opacity: 1.0,
@@ -575,16 +597,16 @@ mod tests {
             "params": [{"name": "ht", "min": [-1, 0], "max": [1, 0], "axis_x": [-1, 0, 1]}]
         }"#;
         let manifest = Manifest::from_json(json).unwrap();
-        let m = EditModel::from_manifest(&manifest, &data("face", 16, 16)).unwrap();
+        let m = Model::from_manifest(&manifest, &data("face", 16, 16)).unwrap();
         assert_eq!(m.node_count(), 2); // implicit root + face
         assert_eq!(m.texture_ids().len(), 1);
         assert_eq!(m.param_ids().len(), 1);
         let face = m
             .nodes_in_order()
             .into_iter()
-            .find(|&id| matches!(m.node(id).map(|n| &n.kind), Some(EditNodeKind::Part(_))))
+            .find(|&id| matches!(m.node(id).map(|n| &n.kind), Some(ModelNodeKind::Part(_))))
             .unwrap();
-        if let Some(EditNodeKind::Part(p)) = m.node(face).map(|n| &n.kind) {
+        if let Some(ModelNodeKind::Part(p)) = m.node(face).map(|n| &n.kind) {
             assert_eq!(p.mesh.verts.len() / 2, 9); // 3x3 grid vertices
             assert!(p.albedo.is_some());
         } else {
@@ -634,9 +656,8 @@ mod tests {
             manifest_grid_cells: 7,
             ..catchlight_core::LoadLimits::default()
         });
-        let err =
-            EditModel::from_manifest_with_budget(&manifest, &data("face", 16, 16), &mut budget)
-                .unwrap_err();
+        let err = Model::from_manifest_with_budget(&manifest, &data("face", 16, 16), &mut budget)
+            .unwrap_err();
 
         assert!(matches!(
             err,
@@ -673,7 +694,7 @@ mod tests {
             ..Manifest::default()
         };
 
-        let err = EditModel::from_manifest(&manifest, &data("face", 16, 16)).unwrap_err();
+        let err = Model::from_manifest(&manifest, &data("face", 16, 16)).unwrap_err();
 
         assert!(matches!(
             err,
@@ -694,10 +715,10 @@ mod tests {
             ],
             "params": [{"name": "p", "min": [0, 0], "max": [1, 0]}]
         }"#;
-        let m = EditModel::from_manifest(&Manifest::from_json(json).unwrap(), &data("t", 8, 8))
-            .unwrap();
+        let m =
+            Model::from_manifest(&Manifest::from_json(json).unwrap(), &data("t", 8, 8)).unwrap();
         let exported = m.to_manifest().to_json().unwrap();
-        let m2 = EditModel::from_manifest(
+        let m2 = Model::from_manifest(
             &Manifest::from_json(&exported).unwrap(),
             &data("tex0", 8, 8),
         )
@@ -709,13 +730,13 @@ mod tests {
 
     #[test]
     fn check_flags_untextured_part_and_physics_without_target() {
-        let mut m = EditModel::new();
+        let mut m = Model::new();
         let root = m.root();
         m.add_node(
             root,
-            EditNode::new(
+            ModelNode::new(
                 "ghost",
-                EditNodeKind::Part(EditPart {
+                ModelNodeKind::Part(ModelPart {
                     mesh: ClpMesh::default().into(),
                     albedo: None,
                     opacity: 1.0,
