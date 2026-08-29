@@ -5,9 +5,9 @@
 //! albedo slots.
 //!
 //! Why the *opaque* bbox and not the mesh-referenced *UV* bbox: on inochi2d
-//! rigs the UV bbox is dominated by transparent texels the mesh's vertices
-//! straddle but never show (on the reference rig it comes out ~12% opaque).
-//! The opaque bbox is ~4x tighter — reference rig ~158 MB -> ~56 MB.
+//! models the UV bbox is dominated by transparent texels the mesh's vertices
+//! straddle but never show (on the reference model it comes out ~12% opaque).
+//! The opaque bbox is ~4x tighter — reference model ~158 MB -> ~56 MB.
 //!
 //! Sampling stays correct because premultiplied storage plus a transparent
 //! ClampToBorder make taps past the opaque region read transparent, and the
@@ -171,7 +171,7 @@ pub(crate) fn crop_textures_cached(
 
 /// Decode and crop the textures at `indices`.
 ///
-/// PNG decode dominates the cost of loading a rig and is entropy decoding
+/// PNG decode dominates the cost of loading a model and is entropy decoding
 /// plus un-filtering — pure CPU work with no GPU analogue — but it is
 /// independent per texture, so native builds fan it out across cores.
 /// wasm stays sequential: the wgpu web backend is not thread-safe and

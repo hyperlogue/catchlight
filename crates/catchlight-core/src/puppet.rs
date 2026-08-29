@@ -16,7 +16,7 @@
 //!
 //! **`settle_physics` before the first render.** It iterates to the fixed
 //! point of "anchor → param value → transforms → anchor" so a freshly loaded
-//! rig renders settled instead of swinging into place, and it leaves the
+//! model renders settled instead of swinging into place, and it leaves the
 //! puppet *unposed* — `tick` is what folds a renderable pose.
 
 use std::collections::{HashMap, HashSet};
@@ -30,7 +30,7 @@ use crate::{
 
 /// Squared anchor movement below which `settle_physics` calls a driver
 /// converged. Anchors are in puppet units, so this is a sub-millipixel
-/// displacement on rigs whose coordinates run to the thousands.
+/// displacement on models whose coordinates run to the thousands.
 const SETTLE_EPS_SQ: f32 = 1e-6;
 
 /// One source's opinion about a parameter. `weight` is authority, at or
@@ -693,7 +693,7 @@ impl Puppet {
     }
 
     /// Bring every physics driver to its analytic rest pose without
-    /// simulating, so a freshly-loaded or re-posed rig renders settled on
+    /// simulating, so a freshly-loaded or re-posed model renders settled on
     /// its first frame instead of visibly swinging into place.
     ///
     /// One driver's output can position another's anchor, so a single pass
@@ -916,7 +916,7 @@ impl Puppet {
 
     /// Commit `uuid`'s base value. Equivalent to a full-authority
     /// contribution whenever nothing else writes the same parameter, which
-    /// is every parameter on a rig with no driver targeting it. Where a
+    /// is every parameter on a model with no driver targeting it. Where a
     /// driver *does* contribute, this is the value the driver's weight
     /// blends against — see [`resolve_contributions`].
     pub fn set_param_value(&mut self, uuid: u32, val: glam::Vec2) {
@@ -1258,7 +1258,7 @@ impl Puppet {
     /// Driver-output params are included at their *last-frame* values
     /// (they persist in `param_values`), so a driver whose output
     /// transform-binds another driver's anchor moves it — this is what
-    /// makes chained physics work (the reference rig's segmented hair: `Physics - Head
+    /// makes chained physics work (the reference model's segmented hair: `Physics - Head
     /// (Back)` translates the `Head Back Lower (Physics)` node's anchor).
     /// The two-phase pipeline applies every driver's last-frame output
     /// uniformly, so chained drivers couple with a one-frame delay.
@@ -1343,13 +1343,13 @@ impl Puppet {
     }
 
     /// Run the `translateChildren=true` MG filter on each tc=true
-    /// MG's non-Drawable descendants (Origin Nodes, Group Nodes,
-    /// SimplePhysics nodes). Adds the MG's per-vertex warp at each
+    /// MG's descendants without a mesh (Origin Nodes, Group Nodes,
+    /// SimplePhysics nodes). Adds the MG's per-vertex deform at each
     /// target's base position into the target's
     /// `transform.translation`. Mark-dirty is performed so the next
     /// `compute_transforms` pass picks up the change.
     ///
-    /// Applies a `translateChildren=true` MG's warp to descendant Origin
+    /// Applies a `translateChildren=true` MG's deform to descendant Origin
     /// nodes. Without this,
     /// the Origin Nodes only move via direct param-bound
     /// `transform.t.x/t.y` bindings, which don't fully replicate
@@ -1376,7 +1376,7 @@ impl Puppet {
         let id = self.allocate_id();
         // An unresolvable parent would leave the node registered in every side
         // index (deform / mesh-group / physics) but absent from the tree, so it
-        // never renders while its physics driver still perturbs the rig.
+        // never renders while its physics driver still perturbs the model.
         if let Err(err) = self.tree.add_child(parent, id) {
             tracing::warn!(
                 "insert_child: {err:?}; node {} attached to the root instead",
@@ -1501,12 +1501,12 @@ impl Puppet {
             // Yaw-Pitch t.x/t.y on LIP MG, Mouth Shape t.y on Mouth Inner).
             self.compute_transforms_with_root(out, root);
             // Apply translateChildren=true filters from each tc MG to its
-            // non-Drawable descendants (Origin Nodes etc.). Re-run
+            // descendants without a mesh (Origin Nodes etc.). Re-run
             // compute_transforms so descendants pick up the shifted
             // origins. Catchlight computes transforms eagerly, so re-walk
             // explicitly —
             // but only when the filter actually shifted something
-            // (rigs without tc=true MGs never need the third walk).
+            // (models without tc=true MGs never need the third walk).
             if has_mesh_group_work {
                 if self.apply_translate_children_filter(out) {
                     self.compute_transforms_with_root(out, root);
@@ -2680,7 +2680,7 @@ mod tests {
     #[test]
     fn tick_chained_physics_driver_moves_dependent_anchor() {
         // a driver's output param transform-binding another
-        // driver's anchor must move that anchor (chained physics — the reference rig's
+        // driver's anchor must move that anchor (chained physics — the reference model's
         // segmented hair). The phase-1 anchor pose applies driver params at
         // their last-frame values, so the upstream driver's output drives
         // `dependent`'s anchor away from 0.
@@ -2922,7 +2922,7 @@ mod tests {
 
     #[test]
     fn settled_chained_physics_is_a_fixed_point_of_tick() {
-        // If settling really put the rig at its analytic rest state, then
+        // If settling really put the model at its analytic rest state, then
         // simulating from there with no input change is a no-op — including
         // for the dependent driver, which only lands correctly once the
         // upstream driver's settled output has propagated. Needs no

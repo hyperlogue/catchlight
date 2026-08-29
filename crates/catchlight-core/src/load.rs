@@ -2,7 +2,7 @@
 //!
 //! catchlight's first-class on-disk format is **`.clp`** (the editable source of
 //! truth). The legacy `.inx` / `.inp` formats are kept only as a one-time import
-//! path — convert a rig to `.clp` with `cargo xtask import` and load that. These
+//! path — convert a model to `.clp` with `cargo xtask import` and load that. These
 //! functions are byte-based (no filesystem), so they work on wasm too; callers
 //! read the bytes and tag the format from the file extension.
 

@@ -292,7 +292,7 @@ impl<T> Matrix<T> {
 pub struct DeformMatrix {
     pub width: usize,
     pub height: usize,
-    /// Uniform per-cell vertex count; a well-formed rig's cells all hold
+    /// Uniform per-cell vertex count; a well-formed model's cells all hold
     /// the target's vertex count. Ragged imports are zero-padded to the
     /// longest cell (see [`DeformMatrix::from_cells`]).
     pub vert_count: usize,
@@ -302,7 +302,7 @@ pub struct DeformMatrix {
 impl DeformMatrix {
     /// Build from ragged per-cell offsets laid out `cells[y * width + x]`.
     /// `vert_count` becomes the longest cell and shorter cells are
-    /// zero-padded to that stride, so a malformed rig with ragged lengths
+    /// zero-padded to that stride, so a malformed model with ragged lengths
     /// renders approximately (padded with zero offsets) instead of the
     /// fold skipping brackets — the render-don't-panic stance the rest of
     /// this module takes for malformed input.
@@ -1139,7 +1139,7 @@ mod tests {
         );
 
         // 1D param, x in [0, 1]. tint.r runs 1.0 -> 0.0 (multiply, rest=1),
-        // screenTint.r runs 0.0 -> 1.0 (add, rest=0); mirrors the reference rig's
+        // screenTint.r runs 0.0 -> 1.0 (add, rest=0); mirrors the reference model's
         // "Lighting - Red" layout and exercises both fold kinds at once.
         let tint_r = Matrix {
             width: 2,

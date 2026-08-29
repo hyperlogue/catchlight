@@ -1,11 +1,11 @@
-//! Mesh groups: vertex-level warps applied to a subtree.
+//! Mesh groups: vertex-level deforms applied to a subtree.
 //!
-//! **Mesh-group descent stops at a nested MG.** `descendant_drawables`
+//! **Mesh-group descent stops at a nested MG.** `descendant_meshed_nodes`
 //! recurses through Parts and Composites, collects Parts and nested MGs, and
-//! halts at each nested MG; the outer warp reaches the inner MG's children
+//! halts at each nested MG; the outer deform reaches the inner MG's children
 //! transitively through the pre-order propagation pass. Binding them directly
-//! would apply the warp twice. Same reasoning for `translate_children_targets`,
-//! which shifts only non-Drawable descendants. A Composite with
+//! would apply the deform twice. Same reasoning for `translate_children_targets`,
+//! which shifts only descendants without a mesh. A Composite with
 //! `propagate_mesh_group = false` halts both walks.
 
 use glam::swizzles::Vec4Swizzles;
@@ -77,7 +77,7 @@ impl MgTriangleBitmap {
         let height = (max.y.ceil() - min.y.floor() + 1.0).max(1.0) as u32;
         // Sanity-cap to avoid pathological allocations on malformed
         // input. 4096*4096 = 16M cells is generous for any reasonable
-        // 2D character rig.
+        // 2D character model.
         if width > 4096 || height > 4096 {
             tracing::warn!(
                 width,
@@ -250,14 +250,14 @@ fn find_triangle_strict_hint(
     None
 }
 
-/// Drawable descendants that receive this MG's vertex-level deform
+/// Meshed descendants that receive this MG's vertex-level deform
 /// attachments: recurse into Parts and Composites, collect Parts and
-/// nested MGs, and stop at each nested MG. The outer warp reaches an inner
+/// nested MGs, and stop at each nested MG. The outer deform reaches an inner
 /// MG's children transitively through the pre-order propagation pass. Binding
-/// those children directly to the outer MG would apply its warp twice.
-/// Non-Drawable descendants of a `translateChildren=true` MG receive a
+/// those children directly to the outer MG would apply its deform twice.
+/// Descendants without a mesh, under a `translateChildren=true` MG, receive a
 /// Node-level shift through `apply_translate_children_filter` instead.
-fn descendant_drawables(tree: &NodeTree, root: NodeIdx, puppet: &Puppet) -> Vec<NodeIdx> {
+fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, puppet: &Puppet) -> Vec<NodeIdx> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeIdx> = tree.get_children(root);
     while let Some(id) = stack.pop() {
@@ -363,7 +363,7 @@ pub(crate) fn bake_mesh_group_attachments(
 
     let mg_mesh = &mg.mesh;
     let mg_local = local_positions(mg_mesh);
-    for child_id in descendant_drawables(puppet.tree(), mesh_group_id, puppet) {
+    for child_id in descendant_meshed_nodes(puppet.tree(), mesh_group_id, puppet) {
         let Some(child_verts) = drawable_mesh_vertices(puppet, child_id) else {
             continue;
         };
@@ -397,11 +397,11 @@ pub(crate) fn bake_mesh_group_attachments(
     out
 }
 
-/// Non-Drawable descendants reached from a `translateChildren=true` MG.
+/// Descendants without a mesh, reached from a `translateChildren=true` MG.
 /// Walk through Parts and Composites, collecting Group, Origin, and
 /// SimplePhysics nodes at the ends without descending past them. Nested MGs
-/// receive vertex deformation through `descendant_drawables`; applying a
-/// Node-level shift to them too would double the warp.
+/// receive vertex deformation through `descendant_meshed_nodes`; applying a
+/// Node-level shift to them too would double the deform.
 fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, puppet: &Puppet) -> Vec<NodeIdx> {
     // Descend only through Parts and Composites: the stop condition
     // halts descent at (but still includes) everything else, so a nested
@@ -587,7 +587,7 @@ pub(crate) fn propagate_mesh_group_deforms(puppet: &mut Puppet, transforms: &Glo
 }
 
 /// Apply each `translate_children=true` MG's deformation as a
-/// Node-level transform shift on its non-Drawable descendants
+/// Node-level transform shift on its descendants without a mesh
 /// (Origin Nodes, Group Nodes, SimplePhysics nodes).
 ///
 /// For each target Origin node:
@@ -885,7 +885,7 @@ fn propagate_dynamic_to_child(
         // Identity-pass shortcut: if both the MG and the child have zero
         // deform, the dynamic path emits all-zero deltas. Skipping the
         // per-vert triangle scan + the dirty-marking source_buf_mut
-        // saves ~1ms per frame on a complex rig (a large Body MG has
+        // saves ~1ms per frame on a complex model (a large Body MG has
         // many child verts and many MG triangles; per-vert find_triangle
         // is O(triangles) per vert without the bitmap).
         let mg_zero = mg_combined.iter().all(|v| *v == Vec2::ZERO);
@@ -1029,7 +1029,7 @@ mod tests {
         let opted_out_part = with_composite(false);
         let normal_part = with_composite(true);
 
-        let reached = descendant_drawables(puppet.tree(), mg_id, &puppet);
+        let reached = descendant_meshed_nodes(puppet.tree(), mg_id, &puppet);
         assert!(
             reached.contains(&normal_part),
             "a propagating Composite must not stop the walk"
@@ -1282,7 +1282,7 @@ mod tests {
 
     /// The crux of the bug: when the child has its own non-zero deform
     /// before propagation (e.g. a Param-driven offset), dynamic-MG
-    /// MG semantics evaluate the MG warp at the CURRENT child position,
+    /// MG semantics evaluate the MG deform at the CURRENT child position,
     /// then REPLACE the child's deform with `newPos - base`. The
     /// non-dynamic path evaluates at the BASE position and ADDS, which
     /// double-pulls at extreme params. This test compares the two.
@@ -1344,7 +1344,7 @@ mod tests {
                 if let NodeKind::MeshGroup(mg) = &mut node.kind {
                     mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
                     mg.attachments = attachments;
-                    // Non-linear MG warp: vertex 1 +(2,0), vertex 2 +(4,0).
+                    // Non-linear MG deform: vertex 1 +(2,0), vertex 2 +(4,0).
                     mg.deform_stack
                         .set(
                             DeformSource::Param(0),
@@ -1579,9 +1579,9 @@ mod tests {
     }
 
     /// Dynamic outer MG over a static nested MG: the dynamic path
-    /// (matching the reference's postProcessFilter for Drawable
+    /// (matching the reference's postProcessFilter for meshed
     /// children of a dynamic MG, meshgroup/package.d:292-294) must
-    /// also carry the outer warp through the inner to the Part.
+    /// also carry the outer deform through the inner to the Part.
     #[test]
     fn dynamic_outer_mg_deform_reaches_part_through_nested_mg() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
@@ -1678,7 +1678,7 @@ mod tests {
         propagate_mesh_group_deforms(&mut puppet, &tx);
         puppet.combine_deforms();
 
-        // Outer warp at the inner's lattice vertex (10,10) is (4,0);
+        // Outer deform at the inner's lattice vertex (10,10) is (4,0);
         // the inner then carries it to the part at (5,5) with weights
         // (0, 0.5, 0.5) -> (2,0).
         let node = puppet.get(part_id).unwrap();

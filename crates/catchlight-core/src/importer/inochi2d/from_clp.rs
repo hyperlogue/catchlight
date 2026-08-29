@@ -546,8 +546,8 @@ mod tests {
     use crate::formats::InxModel;
     use serde_json::json;
 
-    /// The full-rig reference model. No such rig ships in the tree yet, so
-    /// every test that needs one is `#[ignore]`d; drop a rig at this path and
+    /// The full reference model. No such model ships in the tree yet, so
+    /// every test that needs one is `#[ignore]`d; drop a model at this path and
     /// remove the attributes to re-enable them.
     fn load_reference() -> InxModel {
         let path = concat!(
@@ -676,7 +676,7 @@ mod tests {
     }
 
     /// Element-wise compare that reports the first differing index. A whole-
-    /// slice `assert_eq!` on a rig-sized mesh buries the one bad element in
+    /// slice `assert_eq!` on a model-sized mesh buries the one bad element in
     /// thousands of good ones.
     fn assert_slices_match<T: PartialEq + std::fmt::Debug>(a: &[T], b: &[T], what: &str) {
         assert_eq!(a.len(), b.len(), "{what} length");
@@ -747,7 +747,7 @@ mod tests {
     /// build synthesizes `id = array index` — so params are matched by order.
     ///
     /// Shared by [`reference_clp_build_matches_inx_puppet`] and
-    /// [`synthetic_rig_reflects_identically_on_both_paths`] so the rig-gated
+    /// [`synthetic_model_reflects_identically_on_both_paths`] so the model-gated
     /// test and the always-on one cannot check different things.
     fn assert_puppets_match(inx_puppet: &Puppet, clp_puppet: &Puppet) {
         assert_eq!(inx_puppet.len(), clp_puppet.len(), "node count");
@@ -844,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the reference rig at example_models/reference/"]
+    #[ignore = "needs the reference model at example_models/reference/"]
     fn reference_clp_build_matches_inx_puppet() {
         let model = load_reference();
         let inx_puppet = super::super::from_inx_model(&model).unwrap();
@@ -853,7 +853,7 @@ mod tests {
         assert_puppets_match(&inx_puppet, &clp_puppet);
     }
 
-    /// A rig authored in inochi2d's frame — Y-down, lower `zsort` in front —
+    /// A model authored in inochi2d's frame — Y-down, lower `zsort` in front —
     /// touching every field the two import paths must reflect, plus controls
     /// on fields they must leave alone. Values are asymmetric and non-zero so
     /// a *missing* negation and a *doubled* one both change the result.
@@ -985,7 +985,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// The always-on half of the reflection guard: with no reference rig in
+    /// The always-on half of the reflection guard: with no reference model in
     /// the tree, this is what keeps `convert.rs` (inx → Puppet) and
     /// `to_clp.rs` (inx → .clp → Puppet) negating the *same* set of fields.
     ///
@@ -994,7 +994,7 @@ mod tests {
     /// values, and every reflected field is paired with a non-reflected
     /// control that must survive unchanged.
     #[test]
-    fn synthetic_rig_reflects_identically_on_both_paths() {
+    fn synthetic_model_reflects_identically_on_both_paths() {
         let model = reflection_fixture();
         let inx_puppet = super::super::from_inx_model(&model).unwrap();
         let clp = super::super::from_inx_model_to_clp(&model).unwrap();
@@ -1403,12 +1403,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the reference rig at example_models/reference/"]
+    #[ignore = "needs the reference model at example_models/reference/"]
     fn build_honors_authored_propagate_meshgroup() {
         let model = load_reference();
         let clp = super::super::from_inx_model_to_clp(&model).unwrap();
         let clp_puppet = from_clp(&clp, 0).unwrap();
-        // The rig's root "Puppet Body" composite authors
+        // The model's root "Puppet Body" composite authors
         // propagate_mesh_group=false; the build must carry that through (the
         // inx path would force true).
         assert!(

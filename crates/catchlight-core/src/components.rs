@@ -74,7 +74,7 @@ pub fn downsample_box_filter(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) 
     // `Rgba8UnormSrgb` (sRGB→linear decode at draw time), so averaging the
     // gamma-encoded RGB bytes directly biases minified texels dark and
     // over-sharpens high-contrast seams (verified against a 4x-supersampled
-    // ground truth on the reference rig's shirt). Decode RGB → average in linear →
+    // ground truth on the reference model's shirt). Decode RGB → average in linear →
     // re-encode. Alpha is stored linear (sRGB formats don't gamma the A
     // channel), so it averages directly.
     let dw = (w / 2).max(1);

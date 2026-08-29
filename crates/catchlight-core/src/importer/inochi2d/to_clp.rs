@@ -671,8 +671,8 @@ mod tests {
     use super::*;
     use crate::formats::{clp, InxModel};
 
-    /// The full-rig reference model. No such rig ships in the tree yet, so
-    /// every test that needs one is `#[ignore]`d; drop a rig at this path and
+    /// The full reference model. No such model ships in the tree yet, so
+    /// every test that needs one is `#[ignore]`d; drop a model at this path and
     /// remove the attributes to re-enable them.
     fn load_reference() -> InxModel {
         let path = concat!(
@@ -684,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the reference rig at example_models/reference/"]
+    #[ignore = "needs the reference model at example_models/reference/"]
     fn reference_inx_roundtrips_through_clp() {
         let model = load_reference();
         let file = from_inx_model_to_clp(&model).unwrap();
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the reference rig at example_models/reference/"]
+    #[ignore = "needs the reference model at example_models/reference/"]
     fn arena_is_topologically_ordered_with_one_root() {
         let model = load_reference();
         let file = from_inx_model_to_clp(&model).unwrap();
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the reference rig at example_models/reference/"]
+    #[ignore = "needs the reference model at example_models/reference/"]
     fn captures_authored_propagate_meshgroup() {
         let model = load_reference();
         let file = from_inx_model_to_clp(&model).unwrap();
