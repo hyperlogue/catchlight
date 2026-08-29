@@ -581,7 +581,7 @@ impl DrawableCollector {
 mod tests {
     use super::*;
     use catchlight_core::{
-        CompositeData, MaskBinding, MaskMode, Node, PartData, Puppet, PuppetTexture,
+        CompositeData, Mask, MaskMode, Node, PartData, Puppet, PuppetTexture,
     };
 
     fn one_pixel_texture() -> PuppetTexture {
@@ -609,7 +609,7 @@ mod tests {
             puppet.root(),
             Node {
                 kind: NodeKind::Composite(Box::new(CompositeData {
-                    masks: vec![MaskBinding {
+                    masks: vec![Mask {
                         source_uuid: 7,
                         mode: MaskMode::DodgeMask,
                     }],
@@ -672,7 +672,7 @@ mod tests {
             puppet.root(),
             Node {
                 kind: NodeKind::Part(Box::new(PartData {
-                    masks: vec![MaskBinding {
+                    masks: vec![Mask {
                         source_uuid: 20,
                         mode: MaskMode::Mask,
                     }],
@@ -1019,7 +1019,7 @@ mod tests {
 
         assert!(puppet.set_node_masks(
             inner,
-            vec![MaskBinding {
+            vec![Mask {
                 source_uuid: 999,
                 mode: MaskMode::Mask,
             }]

@@ -433,7 +433,7 @@ impl Puppet {
     pub fn retain_node_masks(
         &mut self,
         id: NodeIdx,
-        mut keep: impl FnMut(&crate::MaskBinding) -> bool,
+        mut keep: impl FnMut(&crate::Mask) -> bool,
     ) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
@@ -451,7 +451,7 @@ impl Puppet {
         true
     }
 
-    pub fn set_node_masks(&mut self, id: NodeIdx, masks: Vec<crate::MaskBinding>) -> bool {
+    pub fn set_node_masks(&mut self, id: NodeIdx, masks: Vec<crate::Mask>) -> bool {
         let Some(node) = self.nodes.get_mut(id.0 as usize) else {
             return false;
         };

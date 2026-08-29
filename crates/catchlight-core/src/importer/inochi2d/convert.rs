@@ -3,7 +3,7 @@ use glam::{Vec2, Vec3};
 use crate::{
     animation::{Animation, AnimationLane, Keyframe},
     components::{
-        BlendMode, CompositeData, MaskBinding, MaskMode, Mesh, MeshGroupData, MeshIndices, Node,
+        BlendMode, CompositeData, Mask, MaskMode, Mesh, MeshGroupData, MeshIndices, Node,
         NodeIdx, NodeKind, PartData, TextureId, Transform,
     },
     deform::DeformStack,
@@ -439,7 +439,7 @@ fn convert_mesh(m: &SchemaMesh) -> Result<Mesh, ImportError> {
     Ok(Mesh::new(vertices, uvs, indices, origin))
 }
 
-fn convert_masks(masks: &[SchemaMask]) -> Vec<MaskBinding> {
+fn convert_masks(masks: &[SchemaMask]) -> Vec<Mask> {
     masks
         .iter()
         .filter_map(|m| {
@@ -448,7 +448,7 @@ fn convert_masks(masks: &[SchemaMask]) -> Vec<MaskBinding> {
                 Some("DodgeMask") => MaskMode::DodgeMask,
                 _ => MaskMode::Mask,
             };
-            Some(MaskBinding { source_uuid, mode })
+            Some(Mask { source_uuid, mode })
         })
         .collect()
 }

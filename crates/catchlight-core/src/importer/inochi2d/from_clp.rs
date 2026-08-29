@@ -16,7 +16,7 @@
 use glam::{Vec2, Vec3};
 
 use crate::components::{
-    CompositeData, MaskBinding, Mesh, MeshGroupData, MeshIndices, Node, NodeIdx, NodeKind,
+    CompositeData, Mask, Mesh, MeshGroupData, MeshIndices, Node, NodeIdx, NodeKind,
     PartData, TextureId, Transform,
 };
 use crate::deform::DeformStack;
@@ -306,10 +306,10 @@ fn build_simple_physics(
     }
 }
 
-fn build_masks(masks: &[ClpMask]) -> Vec<MaskBinding> {
+fn build_masks(masks: &[ClpMask]) -> Vec<Mask> {
     masks
         .iter()
-        .map(|m| MaskBinding {
+        .map(|m| Mask {
             source_uuid: m.source,
             mode: m.mode,
         })
