@@ -3,6 +3,7 @@ pub mod components;
 pub mod deform;
 pub mod fill;
 pub mod formats;
+pub mod id;
 pub mod importer;
 pub mod load;
 pub mod load_budget;
@@ -16,6 +17,7 @@ pub mod weld;
 pub use animation::*;
 pub use components::*;
 pub use deform::*;
+pub use id::*;
 pub use importer::{
     from_clp, from_clp_cached, from_clp_with_budget, ImportError, TexturePrepCache,
 };
