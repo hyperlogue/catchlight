@@ -1303,7 +1303,7 @@ mod tests {
             z_order: 0.0,
             transform: ClpTransform::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::Empty,
+            kind: ClpNodeKind::Group,
         };
         let mesh_group = ClpNode {
             parent: Some(0),
@@ -1352,7 +1352,7 @@ mod tests {
     /// A mesh group is never drawn, so it has no colour for an `Opacity` /
     /// `Tint*` / `ScreenTint*` binding to fold into. Such a file is refused,
     /// naming the param, the node and the target — dropping the binding
-    /// silently would hide a broken rig.
+    /// silently would hide a broken model.
     #[test]
     fn color_binding_on_a_mesh_group_is_refused_at_load() {
         use ClpBindingValues as V;
