@@ -22,7 +22,10 @@
 //!   `model.generation()` when it bakes; every method that takes a `&Model`
 //!   compares it first and rebakes when it moved. Nothing else may assume the
 //!   arena still matches the model — which is also what makes installing an
-//!   addon between two frames cost one rebake and no caller changes.
+//!   addon between two frames cost one rebake and no caller changes. The
+//!   counter is per model, so ticking one puppet against *two different*
+//!   models that happen to share a generation is the one thing the gate cannot
+//!   catch: a puppet animates the model it was built from.
 //! - **A rebake carries the pose and the drivers, by Id.** Param values,
 //!   driver contributions and every `SimplePhysics` runtime field are saved
 //!   against `ParamId` / `NodeId`, the arena is rebuilt, and they are put back
@@ -226,7 +229,7 @@ impl Puppet {
     /// Rebake if `model` moved since the last bake, carrying the pose and the
     /// drivers across by Id.
     pub fn sync(&mut self, model: &Model) {
-        if self.baked_generation == model.generation() && !self.id_of_node.is_empty() {
+        if self.baked_generation == model.generation() {
             return;
         }
         let pose: Vec<(ParamId, f32)> = self
@@ -415,6 +418,21 @@ impl Puppet {
     /// The transforms the last tick produced.
     pub fn transforms(&self) -> &GlobalTransforms {
         &self.transforms
+    }
+
+    /// Recompute the evaluated transforms without folding anything — for a
+    /// caller that moved a node between ticks and needs where it landed.
+    pub fn compute_transforms(&mut self) {
+        let mut out = std::mem::take(&mut self.transforms);
+        self.arena.compute_transforms(&mut out);
+        self.transforms = out;
+    }
+
+    /// Collapse each deform stack's active sources into its combined offset.
+    /// A tick does this itself; a caller needs it after writing a scratch
+    /// deform outside one.
+    pub fn combine_deforms(&mut self) {
+        self.arena.combine_deforms();
     }
 
     /// One node's combined per-vertex deform after the last tick.
