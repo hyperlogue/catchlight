@@ -45,13 +45,24 @@ fn camera() -> glam::Mat4 {
 /// Adding a node to the model between frames must reach the GPU: the puppet
 /// rebakes on its next tick and the cache rebuilds on its next refresh, with
 /// nothing for the caller to invalidate by hand.
+///
+/// Run with and without the decode memo, because a rebuild is exactly where
+/// the memo has to hand back the textures the edit did not touch.
 #[test]
 fn a_model_edit_between_frames_rebuilds_the_cache() {
+    for memoize_textures in [false, true] {
+        rebuild_after_an_edit(PrepareOptions {
+            texture_halvings: 0,
+            memoize_textures,
+        });
+    }
+}
+
+fn rebuild_after_an_edit(options: PrepareOptions) {
     pollster::block_on(async {
         let mut ctx = context().await;
         let (model, mut hex) = one_quad_model();
-        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
-            .expect("prepare");
+        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, options).expect("prepare");
         let mut puppet = Puppet::new(&model);
         ctx.renderer.update_camera(camera());
 
