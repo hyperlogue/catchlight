@@ -29,10 +29,11 @@ pub use load::*;
 pub use load_budget::*;
 pub use model::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
-    BindingParams, BindingTarget, CheckWarning, Model, ModelBinding, ModelBindingValues,
-    ModelComposite, ModelError, ModelMask, ModelMesh, ModelMeshGroup, ModelNode, ModelNodeKind,
-    ModelParam, ModelPart, ModelPhysics, ModelTexture, ModelWeld, ModelWeldPair, Pose,
-    ScalarTarget, Seam, Slot, DEFAULT_SLOT_WEIGHT,
+    BindingParams, BindingTarget, CheckWarning, InstallError, Installed, Model, ModelBinding,
+    ModelBindingValues, ModelComposite, ModelError, ModelMask, ModelMesh, ModelMeshGroup,
+    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, ModelWeld,
+    ModelWeldPair, Pose, Required, Requirement, Requirements, ScalarTarget, Seam, Slot,
+    DEFAULT_SLOT_WEIGHT,
 };
 pub use node::*;
 pub use params::*;
