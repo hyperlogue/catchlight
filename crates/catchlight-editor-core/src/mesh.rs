@@ -14,7 +14,7 @@
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
-use catchlight_core::id::NodeId;
+use catchlight_core::id::{NodeId, SeamId, SlotId};
 use catchlight_core::{Model, ModelError};
 
 /// Minimum distance between distinct vertices; closer placements are rejected
@@ -905,11 +905,23 @@ pub trait ModelMeshExt {
     /// carried over by triangle-affine interpolation across the old rest mesh;
     /// [`Model::set_node_mesh_with`] validates the mesh and moves the cells and
     /// the mesh together.
-    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClmMesh) -> Result<(), ModelError>;
+    ///
+    /// Seams are not re-fitted, because which vertex a slot names is not
+    /// something interpolation can answer: the returned slots are the ones the
+    /// edit emptied, for the caller to put in front of the author.
+    fn set_mesh_with_refit(
+        &mut self,
+        node: &NodeId,
+        mesh: ClmMesh,
+    ) -> Result<Vec<(SeamId, SlotId)>, ModelError>;
 }
 
 impl ModelMeshExt for Model {
-    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClmMesh) -> Result<(), ModelError> {
+    fn set_mesh_with_refit(
+        &mut self,
+        node: &NodeId,
+        mesh: ClmMesh,
+    ) -> Result<Vec<(SeamId, SlotId)>, ModelError> {
         self.set_node_mesh_with(node, mesh, |old, new, offsets| {
             refit_deform_offsets(old, &new.verts, offsets)
         })

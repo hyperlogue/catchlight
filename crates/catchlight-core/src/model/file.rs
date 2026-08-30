@@ -6,9 +6,12 @@
 //! obligations:
 //!
 //! - **Writing is total and deterministic.** A Model's tree is always valid
-//!   and its cross-references are always live, so the only things
-//!   [`Model::to_clm_file`] can refuse are a weld whose end is not a part and
-//!   a deform cell whose length its node's mesh cannot take. The orders it
+//!   and its cross-references are always live, so the only thing
+//!   [`Model::to_clm_file`] can refuse is a deform cell whose length its
+//!   node's mesh cannot take. (It also refuses a weld whose two seams no
+//!   longer hold the same slots, which no edit can produce — see
+//!   [`Model::slot_add`] — so that a file this writes is always one this
+//!   reader takes.) The orders it
 //!   writes — nodes pre-order from the root, params, textures and bindings in
 //!   the Model's own order — are the Model's, so the same Model always writes
 //!   the same bytes.
@@ -20,9 +23,6 @@
 //!   sized to something other than the node's mesh — so a loaded Model needs
 //!   no repair pass.
 //!
-//! The weld/seam bridge (a Model still pairs vertex indices; the wire pairs
-//! seam slots) is documented in [`crate::formats::clm`], which owns it.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -109,71 +109,18 @@ pub enum ClmLoadError {
     WeldSlotMismatch { a: String, b: String },
 }
 
-/// The seams one part declares: slot Id to vertex, plus the mesh it indexes.
-type SeamTable = HashMap<SeamId, HashMap<SlotId, u32>>;
+/// The slot Ids each of one part's seams holds — what a weld's two ends have
+/// to agree about.
+type SeamTable = HashMap<SeamId, HashSet<SlotId>>;
 
 impl Model {
-    /// Snapshot the model into a `.clm` document. Total for any Model except
-    /// one whose weld ends on something that is not a part, which the wire has
-    /// nowhere to hang a seam on.
+    /// Snapshot the model into a `.clm` document. Total for any Model whose
+    /// deform cells are sized to the meshes they sit on.
     pub fn to_clm_file(&self) -> Result<ClmFile, ModelError> {
-        // Synthesize the weld bridge's seams first: a part's `seams` list is
-        // written with the part, but which seams it has is a property of the
-        // welds. See `formats::clm` for the naming and why it is temporary.
-        let mut seams: HashMap<&NodeId, Vec<ClmSeam>> = HashMap::new();
-        let mut welds = Vec::with_capacity(self.welds.len());
-        for (n, weld) in self.welds.iter().enumerate() {
-            let a_seam = SeamId::new(format!("weld-{n}-a"))?;
-            let b_seam = SeamId::new(format!("weld-{n}-b"))?;
-            let mut a_slots = Vec::with_capacity(weld.pairs().len());
-            let mut b_slots = Vec::with_capacity(weld.pairs().len());
-            let mut weights = Vec::with_capacity(weld.pairs().len());
-            for (i, pair) in weld.pairs().iter().enumerate() {
-                let slot = SlotId::new(format!("s{i}"))?;
-                a_slots.push(ClmSlot {
-                    id: slot.clone(),
-                    vertex: pair.a_vert,
-                });
-                b_slots.push(ClmSlot {
-                    id: slot.clone(),
-                    vertex: pair.b_vert,
-                });
-                weights.push(ClmSlotWeight {
-                    slot,
-                    weight: pair.weight,
-                });
-            }
-            seams.entry(weld.a()).or_default().push(ClmSeam {
-                id: a_seam.clone(),
-                slots: a_slots,
-            });
-            seams.entry(weld.b()).or_default().push(ClmSeam {
-                id: b_seam.clone(),
-                slots: b_slots,
-            });
-            welds.push(ClmWeld {
-                a: ClmWeldEnd {
-                    node: weld.a().clone(),
-                    seam: a_seam,
-                },
-                b: ClmWeldEnd {
-                    node: weld.b().clone(),
-                    seam: b_seam,
-                },
-                weights,
-            });
-        }
-
         let order = self.nodes_in_order();
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
             let node = self.node(id).ok_or(ModelError::UnknownNode)?;
-            let node_seams = seams.remove(id).unwrap_or_default();
-            if !node_seams.is_empty() && !matches!(node.kind, ModelNodeKind::Part(_)) {
-                // A weld ended on something that is not a part, so its seam has
-                // nowhere to hang.
-                return Err(ModelError::NotAPart);
-            }
             nodes.push(ClmNode {
                 id: id.clone(),
                 parent: node.parent().cloned(),
@@ -182,12 +129,45 @@ impl Model {
                 z_order: node.z_order,
                 transform: node.transform,
                 lock_to_root: node.lock_to_root,
-                kind: clm_kind(&node.kind, node_seams),
+                kind: clm_kind(&node.kind),
             });
         }
-        if !seams.is_empty() {
-            // A weld end named a node the tree does not hold.
-            return Err(ModelError::UnknownNode);
+
+        let mut welds = Vec::with_capacity(self.welds.len());
+        for weld in &self.welds {
+            // Unreachable through the Model's own methods, which keep two
+            // welded seams' slot sets equal; checked because the reader
+            // refuses the file if they ever diverge.
+            let (Some(a), Some(b)) = (
+                self.seam(&weld.a().0, &weld.a().1),
+                self.seam(&weld.b().0, &weld.b().1),
+            ) else {
+                return Err(ModelError::UnknownSeam);
+            };
+            if a.slots().len() != b.slots().len()
+                || weld.weights().len() != a.slots().len()
+                || !a.slots().iter().all(|s| b.slot(s.id()).is_some())
+            {
+                return Err(ModelError::WeldSlotMismatch);
+            }
+            welds.push(ClmWeld {
+                a: ClmWeldEnd {
+                    node: weld.a().0.clone(),
+                    seam: weld.a().1.clone(),
+                },
+                b: ClmWeldEnd {
+                    node: weld.b().0.clone(),
+                    seam: weld.b().1.clone(),
+                },
+                weights: weld
+                    .weights()
+                    .iter()
+                    .map(|(slot, weight)| ClmSlotWeight {
+                        slot: slot.clone(),
+                        weight: *weight,
+                    })
+                    .collect(),
+            });
         }
 
         let mut params = Vec::with_capacity(self.param_order.len());
@@ -341,9 +321,24 @@ impl Model {
                 },
             }
 
-            if let ClmNodeKind::Part(part) = &cn.kind {
-                seams.insert(&cn.id, read_seams(&cn.id, part)?);
-            }
+            let node_seams = match &cn.kind {
+                ClmNodeKind::Part(part) => {
+                    let read = read_seams(&cn.id, part)?;
+                    seams.insert(
+                        &cn.id,
+                        read.iter()
+                            .map(|s| {
+                                (
+                                    s.id().clone(),
+                                    s.slots().iter().map(|sl| sl.id().clone()).collect(),
+                                )
+                            })
+                            .collect(),
+                    );
+                    read
+                }
+                _ => Vec::new(),
+            };
 
             let mut node = ModelNode::new(&cn.name, ModelNodeKind::Group);
             node.parent = cn.parent.clone();
@@ -351,7 +346,7 @@ impl Model {
             node.z_order = cn.z_order;
             node.transform = cn.transform;
             node.lock_to_root = cn.lock_to_root;
-            node.kind = model_kind(&cn.id, &cn.kind, &declared, &textures, &params)?;
+            node.kind = model_kind(&cn.id, &cn.kind, node_seams, &declared, &textures, &params)?;
             nodes.insert(cn.id.clone(), node);
         }
         let root = root.ok_or(ClmLoadError::NoRoot)?.clone();
@@ -503,7 +498,7 @@ fn duplicate(kind: &'static str, id: &impl std::fmt::Display) -> ModelError {
     .into()
 }
 
-fn clm_kind(kind: &ModelNodeKind, seams: Vec<ClmSeam>) -> ClmNodeKind {
+fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
     match kind {
         ModelNodeKind::Group => ClmNodeKind::Group,
         ModelNodeKind::Part(p) => ClmNodeKind::Part(ClmPart {
@@ -515,7 +510,21 @@ fn clm_kind(kind: &ModelNodeKind, seams: Vec<ClmSeam>) -> ClmNodeKind {
             screen_tint: p.screen_tint,
             masks: clm_masks(p.masks()),
             mask_threshold: p.mask_threshold,
-            seams,
+            seams: p
+                .seams()
+                .iter()
+                .map(|s| ClmSeam {
+                    id: s.id().clone(),
+                    slots: s
+                        .slots()
+                        .iter()
+                        .map(|slot| ClmSlot {
+                            id: slot.id().clone(),
+                            vertex: slot.vertex(),
+                        })
+                        .collect(),
+                })
+                .collect(),
         }),
         ModelNodeKind::Composite(c) => ClmNodeKind::Composite(ClmComposite {
             opacity: c.opacity,
@@ -559,6 +568,7 @@ fn clm_masks(masks: &[ModelMask]) -> Vec<ClmMask> {
 fn model_kind(
     id: &NodeId,
     kind: &ClmNodeKind,
+    seams: Vec<Seam>,
     declared: &HashSet<&NodeId>,
     textures: &HashMap<TexId, ModelTexture>,
     params: &HashMap<ParamId, ModelParam>,
@@ -583,6 +593,7 @@ fn model_kind(
             part.screen_tint = p.screen_tint;
             part.masks = model_masks(id, &p.masks, declared)?;
             part.mask_threshold = p.mask_threshold;
+            part.seams = seams;
             ModelNodeKind::Part(part)
         }
         ClmNodeKind::Composite(c) => {
@@ -651,25 +662,34 @@ fn model_masks(
         .collect()
 }
 
-/// One part's seams, checked: no repeated seam or slot Id, every slot filled
-/// by a vertex the part's mesh actually has.
-fn read_seams(id: &NodeId, part: &ClmPart) -> Result<SeamTable, ModelError> {
+/// One part's seams, checked: no repeated seam or slot Id, and every *filled*
+/// slot naming a vertex the part's mesh actually has. An unfilled slot is a
+/// slot whose part was re-meshed since it was filled; it carries no index to
+/// check.
+fn read_seams(id: &NodeId, part: &ClmPart) -> Result<Vec<Seam>, ModelError> {
     let vertices = part.mesh.vertex_count();
-    let mut table = SeamTable::with_capacity(part.seams.len());
+    let mut out: Vec<Seam> = Vec::with_capacity(part.seams.len());
     for seam in &part.seams {
-        let mut slots = HashMap::with_capacity(seam.slots.len());
+        if out.iter().any(|s| s.id() == &seam.id) {
+            return Err(ClmLoadError::DuplicateSeam {
+                node: id.to_string(),
+                seam: seam.id.to_string(),
+            }
+            .into());
+        }
+        let mut slots: Vec<Slot> = Vec::with_capacity(seam.slots.len());
         for slot in &seam.slots {
-            if slot.vertex as usize >= vertices {
+            if slot.vertex.is_some_and(|v| v as usize >= vertices) {
                 return Err(ClmLoadError::SlotOutOfRange {
                     node: id.to_string(),
                     seam: seam.id.to_string(),
                     slot: slot.id.to_string(),
-                    vertex: slot.vertex,
+                    vertex: slot.vertex.unwrap_or_default(),
                     vertices,
                 }
                 .into());
             }
-            if slots.insert(slot.id.clone(), slot.vertex).is_some() {
+            if slots.iter().any(|s| s.id() == &slot.id) {
                 return Err(ClmLoadError::DuplicateSlot {
                     node: id.to_string(),
                     seam: seam.id.to_string(),
@@ -677,22 +697,25 @@ fn read_seams(id: &NodeId, part: &ClmPart) -> Result<SeamTable, ModelError> {
                 }
                 .into());
             }
+            slots.push(Slot {
+                id: slot.id.clone(),
+                vertex: slot.vertex,
+            });
         }
-        if table.insert(seam.id.clone(), slots).is_some() {
-            return Err(ClmLoadError::DuplicateSeam {
-                node: id.to_string(),
-                seam: seam.id.to_string(),
-            }
-            .into());
-        }
+        out.push(Seam {
+            id: seam.id.clone(),
+            slots,
+        });
     }
-    Ok(table)
+    Ok(out)
 }
 
-/// Resolve a weld's two seams back to the vertex pairs a Model holds. The
-/// weights list is the pair order, and it has to name each of the two seams'
-/// shared slots exactly once — anything else leaves a slot pair with no
-/// weight, which the solve has no answer for.
+/// A weld, checked against the seams the file declares: both ends have to
+/// name a seam on a part, the two seams have to hold the same slots, and the
+/// weights have to name each of those slots exactly once — anything else
+/// leaves a slot pair with no weight, which the solve has no answer for.
+/// Whether a slot is *filled* is not this check's business:
+/// [`ModelWeld::resolve`] skips the ones that are not.
 fn read_weld(weld: &ClmWeld, seams: &HashMap<&NodeId, SeamTable>) -> Result<ModelWeld, ModelError> {
     let slots_of = |end: &ClmWeldEnd| {
         seams
@@ -714,25 +737,20 @@ fn read_weld(weld: &ClmWeld, seams: &HashMap<&NodeId, SeamTable>) -> Result<Mode
     }
 
     let mut seen = HashSet::with_capacity(weld.weights.len());
-    let mut pairs = Vec::with_capacity(weld.weights.len());
+    let mut weights = Vec::with_capacity(weld.weights.len());
     for weight in &weld.weights {
-        let (Some(a_vert), Some(b_vert)) = (a_slots.get(&weight.slot), b_slots.get(&weight.slot))
-        else {
-            return Err(mismatch().into());
-        };
-        if !seen.insert(&weight.slot) {
+        if !a_slots.contains(&weight.slot)
+            || !b_slots.contains(&weight.slot)
+            || !seen.insert(&weight.slot)
+        {
             return Err(mismatch().into());
         }
-        pairs.push(ModelWeldPair {
-            a_vert: *a_vert,
-            b_vert: *b_vert,
-            weight: weight.weight,
-        });
+        weights.push((weight.slot.clone(), weight.weight));
     }
     Ok(ModelWeld::new(
-        weld.a.node.clone(),
-        weld.b.node.clone(),
-        pairs,
+        (weld.a.node.clone(), weld.a.seam.clone()),
+        (weld.b.node.clone(), weld.b.seam.clone()),
+        weights,
     ))
 }
 
@@ -747,6 +765,14 @@ mod tests {
     use crate::id::SeededHex;
     use crate::params::InterpolateMode;
     use crate::physics::PendulumKind;
+
+    fn seam(id: &str) -> SeamId {
+        SeamId::new(id).unwrap()
+    }
+
+    fn slot(id: &str) -> SlotId {
+        SlotId::new(id).unwrap()
+    }
 
     fn quad(x: f32) -> ClmMesh {
         ClmMesh {
@@ -847,21 +873,19 @@ mod tests {
         m.add_binding(&key).unwrap();
         m.set_deform_vertices(&key, [1, 1], vec![1.0; 8]).unwrap();
 
+        let (collar, hem) = (seam("collar"), seam("hem"));
+        let (left, right) = (slot("left"), slot("right"));
+        for (node, s, verts) in [(&upper, &collar, [0, 3]), (&lower, &hem, [1, 2])] {
+            m.seam_add(node, s.clone()).unwrap();
+            for (slot, vertex) in [(&left, verts[0]), (&right, verts[1])] {
+                m.slot_add(node, s, slot.clone()).unwrap();
+                m.slot_fill(node, s, slot, vertex).unwrap();
+            }
+        }
         m.set_welds(vec![ModelWeld::new(
-            upper,
-            lower,
-            vec![
-                ModelWeldPair {
-                    a_vert: 0,
-                    b_vert: 1,
-                    weight: 1.0,
-                },
-                ModelWeldPair {
-                    a_vert: 3,
-                    b_vert: 2,
-                    weight: 0.25,
-                },
-            ],
+            (upper, collar),
+            (lower, hem),
+            vec![(left, 1.0), (right, 0.25)],
         )])
         .unwrap();
 
@@ -880,6 +904,13 @@ mod tests {
         }])
         .unwrap();
         m
+    }
+
+    fn named(m: &Model, name: &str) -> NodeId {
+        m.nodes_in_order()
+            .into_iter()
+            .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == name))
+            .unwrap_or_else(|| panic!("no node named {name}"))
     }
 
     fn node_named<'a>(file: &'a ClmFile, name: &str) -> &'a ClmNode {
@@ -965,8 +996,9 @@ mod tests {
         assert_eq!(reopened.to_clm_bytes().unwrap(), once);
     }
 
-    /// The bridge cl-32i.15 removes: a Model's vertex pairs become one seam per
-    /// weld end and come back the same pairs, in the same order.
+    /// A part's seams travel with the part and a weld travels as the two
+    /// seams it names — the file is a copy of the model, not a translation of
+    /// it.
     #[test]
     fn a_weld_travels_as_two_seams() {
         let m = sample();
@@ -977,48 +1009,69 @@ mod tests {
             _ => panic!("Upper is a part"),
         };
         assert_eq!(upper.seams.len(), 1);
-        assert_eq!(upper.seams[0].id.as_str(), "weld-0-a");
+        assert_eq!(upper.seams[0].id.as_str(), "collar");
         assert_eq!(
             upper.seams[0]
                 .slots
                 .iter()
                 .map(|s| (s.id.to_string(), s.vertex))
                 .collect::<Vec<_>>(),
-            vec![("s0".to_string(), 0), ("s1".to_string(), 3)],
+            vec![
+                ("left".to_string(), Some(0)),
+                ("right".to_string(), Some(3))
+            ],
         );
         let [weld] = &file.doc.welds[..] else {
             panic!("one weld")
         };
-        assert_eq!(weld.a.seam.as_str(), "weld-0-a");
-        assert_eq!(weld.b.seam.as_str(), "weld-0-b");
+        assert_eq!(weld.a.seam.as_str(), "collar");
+        assert_eq!(weld.b.seam.as_str(), "hem");
         assert_eq!(
             weld.weights
                 .iter()
                 .map(|w| (w.slot.to_string(), w.weight))
                 .collect::<Vec<_>>(),
-            vec![("s0".to_string(), 1.0), ("s1".to_string(), 0.25)],
+            vec![("left".to_string(), 1.0), ("right".to_string(), 0.25)],
         );
 
         let reopened = Model::from_clm_file(&file).unwrap();
-        assert_eq!(reopened.welds()[0].pairs(), m.welds()[0].pairs());
+        assert_eq!(
+            reopened.welds()[0].resolve(&reopened),
+            m.welds()[0].resolve(&m)
+        );
     }
 
-    /// A weld's seam has to hang on a part; a Model whose weld ends elsewhere
-    /// has no `.clm` at all, and saying so beats writing a file that will not
-    /// load.
+    /// A mesh edit empties the slots on the part it re-meshed but leaves the
+    /// weld alone, so the file carries an unfilled slot and reading it back
+    /// gives a weld that solves the pairs it still resolves.
     #[test]
-    fn a_weld_that_ends_on_a_group_cannot_be_written() {
+    fn a_weld_over_an_unfilled_slot_loads_and_skips_the_pair() {
         let mut m = sample();
-        let root = m.root().clone();
-        let lower = m
-            .nodes_in_order()
-            .into_iter()
-            .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == "Lower"))
-            .unwrap();
-        m.set_welds(vec![ModelWeld::new(root, lower, Vec::new())])
+        let upper = named(&m, "Upper");
+        m.slot_clear(&upper, &seam("collar"), &slot("right"))
             .unwrap();
 
-        assert!(matches!(m.to_clm_file(), Err(ModelError::NotAPart)));
+        let bytes = m.to_clm_bytes().unwrap();
+        let reopened = Model::from_clm_bytes(&bytes).unwrap();
+
+        let [weld] = reopened.welds() else {
+            panic!("one weld")
+        };
+        assert_eq!(weld.weights().len(), 2, "the slot is still welded");
+        assert_eq!(
+            weld.resolve(&reopened),
+            vec![ModelWeldPair {
+                a_vert: 0,
+                b_vert: 1,
+                weight: 1.0,
+            }],
+            "only the filled pair solves",
+        );
+        assert_eq!(
+            reopened.unfilled_slots(),
+            vec![(upper, seam("collar"), slot("right"))],
+        );
+        assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
     }
 
     #[test]
@@ -1305,7 +1358,7 @@ mod tests {
     #[test]
     fn a_seam_slot_past_the_mesh_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
-        part_named(&mut file, "Upper").seams[0].slots[1].vertex = 99;
+        part_named(&mut file, "Upper").seams[0].slots[1].vertex = Some(99);
 
         assert!(matches!(
             load_err(&file),
@@ -1326,7 +1379,7 @@ mod tests {
 
         assert!(matches!(
             load_err(&file),
-            ClmLoadError::DuplicateSeam { seam, .. } if seam == "weld-0-a"
+            ClmLoadError::DuplicateSeam { seam, .. } if seam == "collar"
         ));
     }
 
@@ -1338,18 +1391,18 @@ mod tests {
 
         assert!(matches!(
             load_err(&file),
-            ClmLoadError::DuplicateSlot { slot, .. } if slot == "s0"
+            ClmLoadError::DuplicateSlot { slot, .. } if slot == "left"
         ));
     }
 
     #[test]
     fn a_weld_naming_a_seam_the_part_lacks_is_a_structured_error() {
         let mut file = sample().to_clm_file().unwrap();
-        file.doc.welds[0].a.seam = SeamId::new("collar").unwrap();
+        file.doc.welds[0].a.seam = SeamId::new("ghost").unwrap();
 
         assert!(matches!(
             load_err(&file),
-            ClmLoadError::UnknownSeam { seam, .. } if seam == "collar"
+            ClmLoadError::UnknownSeam { seam, .. } if seam == "ghost"
         ));
     }
 

@@ -190,10 +190,12 @@ impl Model {
 
         let mut welds = Vec::with_capacity(self.welds().len());
         for w in self.welds() {
+            // The legacy runtime takes vertex pairs, so the seams resolve on
+            // the way out; a slot either end has not refilled is skipped.
             welds.push(LegacyWeld {
-                a: *node_index.get(w.a()).ok_or(ModelError::UnknownNode)?,
-                b: *node_index.get(w.b()).ok_or(ModelError::UnknownNode)?,
-                pairs: w.pairs().to_vec(),
+                a: *node_index.get(&w.a().0).ok_or(ModelError::UnknownNode)?,
+                b: *node_index.get(&w.b().0).ok_or(ModelError::UnknownNode)?,
+                pairs: w.resolve(self),
             });
         }
 
@@ -409,19 +411,48 @@ impl Model {
             }
         }
 
+        // The arena pairs raw vertex indices, so reading one mints the seams
+        // that name them: `weld-<n>-a` / `weld-<n>-b` on the two parts, slots
+        // `s0..` in pair order. The Ids are the same every time, so two
+        // imports of one `.inx` agree about what an addon would be naming.
         let mut welds = Vec::with_capacity(doc.welds.len());
-        for w in &doc.welds {
-            welds.push(ModelWeld::new(
-                node_ids
-                    .get(w.a as usize)
+        for (n, w) in doc.welds.iter().enumerate() {
+            let end = |side: u32, suffix: &str| -> Result<(NodeId, SeamId), ModelError> {
+                let node = node_ids
+                    .get(side as usize)
                     .ok_or(ModelError::UnknownNode)?
-                    .clone(),
-                node_ids
-                    .get(w.b as usize)
-                    .ok_or(ModelError::UnknownNode)?
-                    .clone(),
-                w.pairs.clone(),
-            ));
+                    .clone();
+                Ok((node, SeamId::new(format!("weld-{n}-{suffix}"))?))
+            };
+            let (a, b) = (end(w.a, "a")?, end(w.b, "b")?);
+            let mut a_slots = Vec::with_capacity(w.pairs.len());
+            let mut b_slots = Vec::with_capacity(w.pairs.len());
+            let mut weights = Vec::with_capacity(w.pairs.len());
+            for (i, pair) in w.pairs.iter().enumerate() {
+                let slot = SlotId::new(format!("s{i}"))?;
+                a_slots.push(Slot {
+                    id: slot.clone(),
+                    vertex: Some(pair.a_vert),
+                });
+                b_slots.push(Slot {
+                    id: slot.clone(),
+                    vertex: Some(pair.b_vert),
+                });
+                weights.push((slot, pair.weight));
+            }
+            for ((node, seam), slots) in [(&a, a_slots), (&b, b_slots)] {
+                match nodes.get_mut(node).map(|n| &mut n.kind) {
+                    Some(ModelNodeKind::Part(p)) => p.seams.push(Seam {
+                        id: seam.clone(),
+                        slots,
+                    }),
+                    // A weld has nowhere to hang a seam on a node that draws
+                    // no mesh.
+                    Some(_) => return Err(ModelError::NotAPart),
+                    None => return Err(ModelError::UnknownNode),
+                }
+            }
+            welds.push(ModelWeld::new(a, b, weights));
         }
 
         Ok(Model {

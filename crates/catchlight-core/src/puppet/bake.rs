@@ -149,16 +149,19 @@ pub(super) fn bake(model: &Model) -> Baked {
         }
     }
 
+    // Seams resolve here: the solve wants vertex pairs, and a slot the
+    // author has not refilled since the part was re-meshed drops out rather
+    // than pulling a vertex that means something else now.
     arena.welds = model
         .welds()
         .iter()
         .filter_map(|w| {
             Some(crate::weld::Weld {
-                a: *node_of_id.get(w.a())?,
-                b: *node_of_id.get(w.b())?,
+                a: *node_of_id.get(&w.a().0)?,
+                b: *node_of_id.get(&w.b().0)?,
                 pairs: w
-                    .pairs()
-                    .iter()
+                    .resolve(model)
+                    .into_iter()
                     .map(|p| crate::weld::WeldPair {
                         a_vert: p.a_vert,
                         b_vert: p.b_vert,
