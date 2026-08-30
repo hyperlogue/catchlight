@@ -1,5 +1,5 @@
 //! One-time `.inx → legacy document` import: turn an inochi2d puppet into the
-//! arena a [`Model`](crate::Model) is built from, which
+//! arena a [`Model`](catchlight_core::Model) is built from, which
 //! `cargo xtask import` then writes as a `.clm`.
 //!
 //! The inx node *tree* is flattened (DFS pre-order) into the arena: each node
@@ -18,23 +18,23 @@
 
 use std::collections::HashMap;
 
-use crate::components::{BlendMode, MaskMode};
-use crate::fill::{derive_dense, FillCell};
-use crate::formats::clm::{
+use crate::inx::InxModel;
+use catchlight_core::components::{BlendMode, MaskMode};
+use catchlight_core::fill::{derive_dense, FillCell};
+use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
     TextureAlpha, TextureEncoding,
 };
-use crate::formats::inx::InxModel;
-use crate::formats::legacy::{
+use catchlight_core::formats::legacy::{
     LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
     LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture,
 };
-use crate::interpolate::InterpolateMode;
-use crate::physics::{PendulumKind, PhysicsParamMapMode};
-use crate::texture::TextureFormat;
+use catchlight_core::interpolate::InterpolateMode;
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
+use catchlight_core::texture::TextureFormat;
 
-use super::error::ImportError;
-use super::schema::{
+use crate::error::ImportError;
+use crate::schema::{
     source_binding_is_color, SchemaBinding, SchemaMask, SchemaMesh, SchemaNode, SchemaParam,
     SchemaPuppetPhysics, SchemaTransform,
 };
@@ -686,8 +686,8 @@ fn interp(s: Option<&str>) -> InterpolateMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::inx::InxModel;
-    use crate::model::{BindingTarget, ScalarTarget};
+    use crate::inx::InxModel;
+    use catchlight_core::model::{BindingTarget, ScalarTarget};
     use serde_json::json;
     /// A model authored in inochi2d's frame — Y-down, lower `zsort` in front —
     /// touching every field the import must reflect, plus controls on fields
@@ -838,8 +838,8 @@ mod tests {
         let bindings = &doc.params[0].bindings;
         assert_eq!(bindings.len(), 9, "binding count");
 
-        let deform =
-            crate::model::deform_cells(&bindings[0].values).expect("binding 0 is the deform");
+        let deform = catchlight_core::model::deform_cells(&bindings[0].values)
+            .expect("binding 0 is the deform");
         assert_eq!(
             deform.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
             vec![
@@ -851,11 +851,11 @@ mod tests {
 
         let scalar = |i: usize, target: ScalarTarget| -> Vec<f32> {
             assert_eq!(
-                crate::model::target_of(&bindings[i].values),
+                catchlight_core::model::target_of(&bindings[i].values),
                 BindingTarget::Scalar(target),
                 "binding {i} target"
             );
-            crate::model::scalar_cells(&bindings[i].values)
+            catchlight_core::model::scalar_cells(&bindings[i].values)
                 .expect("a scalar binding")
                 .iter()
                 .map(|c| c.value)
@@ -902,10 +902,10 @@ mod tests {
         assert_eq!(parts, 117, "expected 117 Part nodes");
         assert_eq!(file.textures.len(), 87);
 
-        let bytes = crate::Model::from_legacy(&file)
+        let bytes = catchlight_core::Model::from_legacy(&file)
             .and_then(|m| m.to_clm_bytes())
             .unwrap();
-        let reopened = crate::Model::from_clm_bytes(&bytes)
+        let reopened = catchlight_core::Model::from_clm_bytes(&bytes)
             .unwrap()
             .to_legacy()
             .unwrap();

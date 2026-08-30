@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Print a rig's render list and write a PNG of it.
+//! Print a `.clm` rig's render list and write a PNG of it. Import an
+//! `.inx` with `cargo xtask import` first.
 //!
 //! It runs the full `settle_physics` + `tick` pipeline on purpose: with a bare
 //! `compute_transforms` the output stays byte-identical through a regression
@@ -13,12 +14,19 @@ use catchlight_wgpu::{
 };
 use std::path::Path;
 
-/// Read a model file off disk. The format dispatch lives in the core; this is
+/// Read a `.clm` off disk. The format dispatch lives in the core; this is
 /// only the filesystem half, which the core deliberately does not have.
+///
+/// `.clm` is the only model file catchlight loads. Convert an inochi2d rig
+/// once with `cargo xtask import <model.inx>` and open the `.clm` it writes.
 fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
-    let format = ModelFormat::from_path(path)
-        .ok_or_else(|| format!("unsupported model file: {}", path.display()))?;
+    let format = ModelFormat::from_path(path).ok_or_else(|| {
+        format!(
+            "{} is not a .clm; convert it first with `cargo xtask import`",
+            path.display()
+        )
+    })?;
     Ok(load_model(&bytes, format)?)
 }
 

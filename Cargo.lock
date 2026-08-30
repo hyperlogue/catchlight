@@ -1543,7 +1543,6 @@ dependencies = [
  "ciborium",
  "glam",
  "image",
- "image_dds",
  "indextree",
  "rayon",
  "serde",
@@ -1626,6 +1625,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "catchlight-import-inochi2d"
+version = "0.1.0"
+dependencies = [
+ "catchlight-core",
+ "image",
+ "image_dds",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -6124,6 +6136,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "catchlight-core",
+ "catchlight-import-inochi2d",
  "image",
 ]
 

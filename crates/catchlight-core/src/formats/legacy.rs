@@ -2,9 +2,9 @@
 //! `.clm`. It has no byte codec any more — nothing reads or writes it — and
 //! `.clm` is the only thing that reaches a disk.
 //!
-//! **It stays until cl-0ci**, because it is still an *authoring* shape: the
-//! `.inx` reader writes one (`importer::inochi2d::to_legacy`) and `cargo
-//! xtask`'s fixture generators author one by hand, and both then go through
+//! **It stays a little longer**, because it is still an *authoring* shape:
+//! `catchlight-import-inochi2d` writes one and `cargo xtask`'s fixture
+//! generators author one by hand, and both then go through
 //! [`Model::from_legacy`](crate::Model::from_legacy) to become a `.clm`.
 //! [`Model::to_legacy`](crate::Model::to_legacy) is the way back, which the
 //! fixture-drift check and the scalar-param-split tests need. When the

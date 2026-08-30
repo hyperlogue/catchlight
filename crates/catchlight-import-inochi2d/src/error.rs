@@ -1,4 +1,4 @@
-use crate::formats::inx::InxParseError;
+use crate::inx::InxParseError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
@@ -6,7 +6,7 @@ pub enum ImportError {
     InxContainer(#[from] InxParseError),
 
     #[error("invalid .clm file: {0}")]
-    Model(#[from] crate::model::ModelError),
+    Model(#[from] catchlight_core::model::ModelError),
 
     #[error("failed to decode payload JSON: {0}")]
     Json(#[from] serde_json::Error),
@@ -15,10 +15,10 @@ pub enum ImportError {
     Io(#[from] std::io::Error),
 
     #[error("invalid deform shape: {0}")]
-    DeformShape(#[from] crate::deform::DeformShapeError),
+    DeformShape(#[from] catchlight_core::deform::DeformShapeError),
 
     #[error(transparent)]
-    LoadLimit(#[from] crate::load_budget::LoadLimitError),
+    LoadLimit(#[from] catchlight_core::load_budget::LoadLimitError),
 
     #[error("missing required field: {0}")]
     MissingField(&'static str),
@@ -63,7 +63,7 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("zsort") && msg.contains("number") && msg.contains("array"));
 
-        let e = ImportError::LoadLimit(crate::load_budget::LoadLimitError {
+        let e = ImportError::LoadLimit(catchlight_core::load_budget::LoadLimitError {
             resource: "texture",
             limit: 64_000_000,
             got: 99_999_999,

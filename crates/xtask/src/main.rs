@@ -48,9 +48,8 @@ fn gen_fixture(args: &[String]) -> Result<()> {
 }
 
 fn import(args: &[String]) -> Result<()> {
-    use catchlight_core::formats::inx::InxModel;
-    use catchlight_core::importer::from_inx_model_to_legacy;
     use catchlight_core::Model;
+    use catchlight_import_inochi2d::{from_inx_model_to_legacy, InxModel};
 
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -77,11 +76,9 @@ fn import(args: &[String]) -> Result<()> {
     let output = output.unwrap_or_else(|| input.with_extension("clm"));
 
     let bytes = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
-    let model = match input.extension().and_then(|e| e.to_str()) {
-        Some("inp") => catchlight_core::formats::inx::parse_inp(std::io::Cursor::new(&bytes))
-            .context("parsing .inp")?,
-        _ => InxModel::parse(std::io::Cursor::new(&bytes)).context("parsing .inx")?,
-    };
+    // `.inx` and `.inp` share one container; the extension is only a label.
+    let model = InxModel::parse(std::io::Cursor::new(&bytes))
+        .with_context(|| format!("parsing {}", input.display()))?;
     let file = from_inx_model_to_legacy(&model).context("inx -> legacy")?;
     let encoded = Model::from_legacy(&file)
         .and_then(|m| m.to_clm_bytes())
