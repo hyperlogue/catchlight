@@ -75,9 +75,9 @@ compiling for the browser.
 - `tests/models/**.clm` and `tests/baselines/**.png` are Git LFS objects
   (`.gitattributes`). Without them fetched, the render suites fail loading their
   fixtures.
-- **Six tests are `#[ignore]`d**, all because they need the private reference rig
-  at `example_models/reference/` (three in `to_legacy.rs`, two in `from_legacy.rs`, one
-  in `crates/catchlight-wgpu/tests/deform_wiring.rs`). Drop a rig at that path and
+- **Four tests are `#[ignore]`d**, all because they need the private reference rig
+  at `example_models/reference/` (three in `to_legacy.rs`, one in
+  `crates/catchlight-wgpu/tests/deform_wiring.rs`). Drop a rig at that path and
   remove the attributes to run them.
 
 # Where the invariants live
@@ -91,10 +91,11 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-wgpu/src/render_cache.rs` — what `prepare` and `refresh`
   own, the generation gates, the Idx arena
 - `crates/catchlight-wgpu/src/lib.rs` — headless context, orthographic camera
-- `crates/catchlight-core/src/legacy_puppet.rs` — `tick`, its caches, `settle_physics`
+- `crates/catchlight-core/src/puppet/mod.rs` — `tick`, its caches, the
+  generation gate, `settle_physics`
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translateChildren`
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down frame
-- `crates/catchlight-core/src/params.rs` — param ids vs node ids
+- `crates/catchlight-core/src/interpolate.rs` — how a binding's grid is read
 - `crates/catchlight-core/src/formats/` — the `.clm` container and structure
 - `crates/catchlight-core/src/importer/inochi2d/mod.rs` — `.inx` reflection
 - `crates/catchlight-bevy/src/lib.rs` — bevy, and one wgpu across the workspace
