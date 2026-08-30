@@ -2016,6 +2016,68 @@ mod tests {
         server_thread.join().unwrap();
     }
 
+    /// An Id is validated where the request is decoded, so a string outside
+    /// the charset never reaches a command. It still has to come back as a
+    /// structured error carrying the *request's* id: a client blocks reading
+    /// until it sees its own id, so an error correlated to 0 would hang it.
+    #[cfg(unix)]
+    #[test]
+    fn an_invalid_id_on_the_wire_is_an_error_against_the_requests_own_id() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let editor = Editor::new();
+            serve_connection(&editor, server);
+        });
+        // `a b` has a space; `.hidden` opens with a dot. Both are refused by
+        // `catchlight_core::id`, and an unknown command shares the code.
+        for line in [
+            br#"{"id":11,"cmd":"node_delete","session":1,"node":"a b"}"#.as_slice(),
+            br#"{"id":12,"cmd":"node_delete","session":1,"node":".hidden"}"#.as_slice(),
+            br#"{"id":13,"cmd":"no_such_command","session":1}"#.as_slice(),
+        ] {
+            client.write_all(line).unwrap();
+            client.write_all(b"\n").unwrap();
+        }
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let mut reader = BufReader::new(client);
+        for want in [11u64, 12, 13] {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            match serde_json::from_str::<Reply>(&line).unwrap() {
+                Reply::Err { id, code, message } => {
+                    assert_eq!(id, want, "the reply correlates to the request");
+                    assert_eq!(code, ErrorCode::BadRequest);
+                    assert!(message.starts_with("bad request:"), "{message}");
+                }
+                other => panic!("expected an error, got {other:?}"),
+            }
+        }
+        server_thread.join().unwrap();
+    }
+
+    /// A well-formed Id the model does not carry is a different answer: the
+    /// command parsed, it just names nothing.
+    #[test]
+    fn a_well_formed_id_the_model_lacks_is_a_no_node_error() {
+        let ed = Editor::new();
+        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        assert!(matches!(
+            ed.handle(req(
+                2,
+                Command::NodeDelete {
+                    session: s,
+                    node: NodeId::new("root/part-deadbeef").unwrap(),
+                },
+            )),
+            Reply::Err {
+                id: 2,
+                code: ErrorCode::NoNode,
+                ..
+            }
+        ));
+    }
+
     fn body(reply: Reply) -> ResponseBody {
         match reply {
             Reply::Ok { body, .. } => body,
