@@ -41,10 +41,10 @@ sure all potential changes can be verified in a tight feedback loop.
 
 | Crate | What it is |
 | --- | --- |
-| `catchlight-core` | The runtime: `Puppet`, params/bindings, deform stacks, mesh groups, welds, physics, the `.clp` format, the inochi2d importer. No GPU, wasm-safe. |
+| `catchlight-core` | The runtime: `Puppet`, params/bindings, deform stacks, mesh groups, welds, physics, the `.clm` format, the inochi2d importer. No GPU, wasm-safe. |
 | `catchlight-wgpu` | The wgpu rendering backend. `drawable_collector` flattens a posed puppet into a `RenderList`; `renderer` draws it. |
 | `catchlight-bevy` | Bevy integration: components, systems, and a render-graph node. |
-| `catchlight-editor-core` | Editable puppet model: a stable-id `EditModel` that flattens to `.clp`. Pure, wasm-safe. |
+| `catchlight-editor-core` | Editable puppet model: a stable-id `EditModel` that flattens to `.clm`. Pure, wasm-safe. |
 | `catchlight-editor-protocol` | Wire types: transport-agnostic request/reply/event over newline-delimited JSON. |
 | `catchlight-editor-server` | Multi-session editor server: holds `EditModel`s + a warm headless renderer, driven in-process or over a Unix socket. |
 | `catchlight-editor` | The editor GUI (egui): one codebase for desktop (embeds the server + socket) and web (wasm via eframe `WebRunner`). |
@@ -72,11 +72,11 @@ compiling for the browser.
 - GPU tests fall back to mesa's CPU Vulkan driver (lavapipe), which the dev
   shell puts on the loader's search path; see `create_headless_context` in
   `crates/catchlight-wgpu/src/lib.rs`.
-- `tests/models/**.clp` and `tests/baselines/**.png` are Git LFS objects
+- `tests/models/**.clm` and `tests/baselines/**.png` are Git LFS objects
   (`.gitattributes`). Without them fetched, the render suites fail loading their
   fixtures.
 - **Six tests are `#[ignore]`d**, all because they need the private reference rig
-  at `example_models/reference/` (three in `to_clp.rs`, two in `from_clp.rs`, one
+  at `example_models/reference/` (three in `to_legacy.rs`, two in `from_legacy.rs`, one
   in `crates/catchlight-wgpu/tests/deform_wiring.rs`). Drop a rig at that path and
   remove the attributes to run them.
 
@@ -93,7 +93,7 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translateChildren`
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down frame
 - `crates/catchlight-core/src/params.rs` — param ids vs node ids
-- `crates/catchlight-core/src/formats/` — the `.clp` container and structure
+- `crates/catchlight-core/src/formats/` — the `.clm` container and structure
 - `crates/catchlight-core/src/importer/inochi2d/mod.rs` — `.inx` reflection
 - `crates/catchlight-bevy/src/lib.rs` — bevy, and one wgpu across the workspace
   (also `Cargo.toml`, at the `glam` / `wgpu` workspace deps)
@@ -105,11 +105,11 @@ that enforces them, not here. Add new ones there.
 
 # Tools
 
-- `cargo run -p catchlight-wgpu --example load-model -- <model.clp> [--control]` —
+- `cargo run -p catchlight-wgpu --example load-model -- <model.clm> [--control]` —
   winit viewer with optional per-param sliders.
-- `cargo run -p catchlight-wgpu --example render-to-png -- <model.clp> [out.png] [w] [h] [cam_h]`
+- `cargo run -p catchlight-wgpu --example render-to-png -- <model.clm> [out.png] [w] [h] [cam_h]`
   — print the render list and write a PNG.
-- `cargo run -p catchlight-editor [-- <model.clp>]` — the editor GUI.
+- `cargo run -p catchlight-editor [-- <model.clm>]` — the editor GUI.
 - `cargo run -p catchlight-editor-cli` — thin client for an editor session.
 
 # Decisions

@@ -23,12 +23,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use catchlight_core::components::{BlendMode, MaskMode};
-use catchlight_core::formats::clp::{ClpIndices, ClpMesh, TextureAlpha, TextureEncoding};
+use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, TexId};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::Vec2;
 use catchlight_core::{
-    from_clp_cached, BindingKey, BindingTarget, LegacyPuppet, Model, ModelComposite, ModelError,
+    from_legacy_cached, BindingKey, BindingTarget, LegacyPuppet, Model, ModelComposite, ModelError,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
     ScalarTarget, TexturePrepCache,
 };
@@ -272,7 +272,7 @@ impl Session {
     fn puppet(&mut self) -> Result<&mut LegacyPuppet, EditorError> {
         if self.puppet.is_none() || self.puppet_dirty {
             let file = self.model.flatten()?;
-            let mut built = from_clp_cached(&file, 0, &mut self.tex_cache)
+            let mut built = from_legacy_cached(&file, 0, &mut self.tex_cache)
                 .map_err(|e| EditorError::Preview(e.to_string()))?;
             // Frozen physics keeps the authoring preview deterministic (the
             // dt=0 tick can't integrate anyway) and lets physics-driven
@@ -335,25 +335,25 @@ impl Editor {
             .ok_or(EditorError::NoSession(id))
     }
 
-    /// Open a `.clp` from in-memory bytes — the browser file-picker path, and
+    /// Open a `.clm` from in-memory bytes — the browser file-picker path, and
     /// the only document-open the wasm build has (no filesystem there).
     pub fn open_bytes(
         &self,
         title: impl Into<String>,
         bytes: &[u8],
     ) -> Result<SessionId, EditorError> {
-        let model = Model::from_clp_bytes(bytes)?;
+        let model = Model::from_clm_bytes(bytes)?;
         let id = self.alloc_id();
         self.insert_session(id, Session::new(model, title.into(), None));
         Ok(id)
     }
 
-    /// Serialize a session to `.clp` bytes; the caller owns where the bytes
+    /// Serialize a session to `.clm` bytes; the caller owns where the bytes
     /// land (blob download, OPFS, a file) and confirms with [`Self::mark_saved`]
     /// once they actually landed — a failed download must not clear the dirty
     /// flag.
     pub fn save_bytes(&self, id: SessionId) -> Result<Vec<u8>, EditorError> {
-        self.with_session(id, |s| Ok(s.model.to_clp_bytes()?))
+        self.with_session(id, |s| Ok(s.model.to_clm_bytes()?))
     }
 
     /// Record that the caller durably persisted the bytes from `save_bytes`.
@@ -534,7 +534,7 @@ impl Editor {
             #[cfg(not(target_arch = "wasm32"))]
             Command::SessionOpen { path } => {
                 let path = PathBuf::from(path);
-                let model = Model::from_clp_bytes(&std::fs::read(&path)?)?;
+                let model = Model::from_clm_bytes(&std::fs::read(&path)?)?;
                 let id = self.alloc_id();
                 let title = file_stem(&path);
                 self.insert_session(id, Session::new(model, title, Some(path)));
@@ -604,11 +604,11 @@ impl Editor {
                         Some(p) => PathBuf::from(p),
                         None => s.file.clone().ok_or(EditorError::NoSavePath)?,
                     };
-                    (path, s.model.to_clp_bytes()?, s.rev)
+                    (path, s.model.to_clm_bytes()?, s.rev)
                 };
                 // Temp-then-rename: an interrupted save must not truncate the
                 // user's only copy.
-                let tmp = path.with_extension("clp.tmp");
+                let tmp = path.with_extension("legacy.tmp");
                 std::fs::write(&tmp, bytes)?;
                 std::fs::rename(&tmp, &path)?;
                 let mut s = lock(&handle);
@@ -1181,14 +1181,14 @@ impl Editor {
                     return Err(EditorError::BadTarget("malformed mesh".into()));
                 }
                 let indices = if indices.iter().max().copied().unwrap_or(0) <= u16::MAX as u32 {
-                    ClpIndices::U16(indices.iter().map(|&i| i as u16).collect())
+                    ClmIndices::U16(indices.iter().map(|&i| i as u16).collect())
                 } else {
-                    ClpIndices::U32(indices)
+                    ClmIndices::U32(indices)
                 };
                 let node = s.node_id(node)?;
                 s.model.set_mesh_with_refit(
                     &node,
-                    ClpMesh {
+                    ClmMesh {
                         verts,
                         uvs,
                         indices,
@@ -1436,7 +1436,7 @@ use transport::{
 };
 
 /// v0 bridge (cl-32i.14): the preview puppet is built by flattening the model
-/// to `.clp`, which puts a `<n>.x` / `<n>.y` param pair back together as one
+/// to `.clm`, which puts a `<n>.x` / `<n>.y` param pair back together as one
 /// 2-D param named `<n>`. A pose keyed by the model's scalar param names has
 /// to be folded the same way or it would name a param the puppet does not
 /// have. Params that are not half of a pair pass straight through.
@@ -1564,9 +1564,9 @@ fn default_name(kind: NodeKindArg) -> String {
 fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
     match kind {
         NodeKindArg::Group => ModelNodeKind::Group,
-        NodeKindArg::Part => ModelNodeKind::Part(ModelPart::new(ClpMesh::default())),
+        NodeKindArg::Part => ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
         NodeKindArg::Composite => ModelNodeKind::Composite(ModelComposite::new()),
-        NodeKindArg::MeshGroup => ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClpMesh::default())),
+        NodeKindArg::MeshGroup => ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClmMesh::default())),
     }
 }
 
@@ -1947,7 +1947,7 @@ mod tests {
         assert_eq!(status.node_count, 2);
         assert!(status.dirty);
 
-        let tmp = std::env::temp_dir().join(format!("clpedit-srv-{}.clp", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("catchlight-srv-{}.clm", std::process::id()));
         assert!(matches!(
             body(ed.handle(req(
                 6,
@@ -2133,7 +2133,7 @@ mod tests {
 
     #[test]
     fn preview_renders_png_smoke() {
-        let dir = std::env::temp_dir().join(format!("clpedit-prev-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("catchlight-prev-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut img = image::RgbaImage::new(32, 32);
         for px in img.pixels_mut() {

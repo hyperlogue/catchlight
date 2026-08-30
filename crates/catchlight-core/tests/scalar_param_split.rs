@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The `.clp` v0 bridge, checked against the runtime that still reads v0.
+//! The `.clm` v0 bridge, checked against the runtime that still reads v0.
 //!
 //! A 2-D param in a file becomes two scalar params plus a two-param binding in
 //! a [`Model`]. That is only lossless if the pair evaluates to what the 2-D
@@ -7,21 +7,24 @@
 //! legacy runtime's `Param::apply` and through `Model::eval_scalar` — and
 //! compares them across the grid.
 
-use catchlight_core::formats::clp::{
-    ClpBinding, ClpBindingValues, ClpCell, ClpCells, ClpDocument, ClpFile, ClpIndices, ClpMesh,
-    ClpNode, ClpNodeKind, ClpParam, ClpPart, ClpPhysics, ClpTransform, FORMAT_VERSION,
+use catchlight_core::formats::clm::{
+    ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
+};
+use catchlight_core::formats::legacy::{
+    LegacyBinding, LegacyDocument, LegacyFile, LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart,
+    FORMAT_VERSION,
 };
 use catchlight_core::params::InterpolateMode;
 use catchlight_core::{BindingKey, BindingParams, BindingTarget, Model, Pose, ScalarTarget};
 
 /// One part under the root, driven by one 2-D param whose z-order binding is
 /// authored at four scattered cells of a 3x3 grid (so the fill has work to do).
-fn two_dimensional_file(mode: InterpolateMode) -> ClpFile {
-    let part = ClpPart {
-        mesh: ClpMesh {
+fn two_dimensional_file(mode: InterpolateMode) -> LegacyFile {
+    let part = LegacyPart {
+        mesh: ClmMesh {
             verts: vec![-1.0, -1.0, 1.0, -1.0, 0.0, 1.0],
             uvs: vec![0.0; 6],
-            indices: ClpIndices::U16(vec![0, 1, 2]),
+            indices: ClmIndices::U16(vec![0, 1, 2]),
             origin: [0.0, 0.0],
         },
         albedo: u32::MAX,
@@ -32,40 +35,40 @@ fn two_dimensional_file(mode: InterpolateMode) -> ClpFile {
         masks: Vec::new(),
         mask_threshold: 0.5,
     };
-    let cell = |x: u32, y: u32, value: f32| ClpCell { x, y, value };
-    ClpFile {
+    let cell = |x: u32, y: u32, value: f32| ClmCell { x, y, value };
+    LegacyFile {
         version: FORMAT_VERSION,
-        doc: ClpDocument {
-            physics: ClpPhysics::default(),
+        doc: LegacyDocument {
+            physics: ClmPhysics::default(),
             nodes: vec![
-                ClpNode {
+                LegacyNode {
                     parent: None,
                     name: "Root".into(),
                     enabled: true,
                     z_order: 0.0,
-                    transform: ClpTransform {
+                    transform: ClmTransform {
                         translation: [0.0; 3],
                         rotation: [0.0; 3],
                         scale: [1.0, 1.0],
                     },
                     lock_to_root: false,
-                    kind: ClpNodeKind::Group,
+                    kind: LegacyNodeKind::Group,
                 },
-                ClpNode {
+                LegacyNode {
                     parent: Some(0),
                     name: "Body".into(),
                     enabled: true,
                     z_order: 3.0,
-                    transform: ClpTransform {
+                    transform: ClmTransform {
                         translation: [0.0; 3],
                         rotation: [0.0; 3],
                         scale: [1.0, 1.0],
                     },
                     lock_to_root: false,
-                    kind: ClpNodeKind::Part(part),
+                    kind: LegacyNodeKind::Part(part),
                 },
             ],
-            params: vec![ClpParam {
+            params: vec![LegacyParam {
                 name: "Head".into(),
                 is_vec2: true,
                 min: [-1.0, -2.0],
@@ -73,10 +76,10 @@ fn two_dimensional_file(mode: InterpolateMode) -> ClpFile {
                 defaults: [0.0, 0.0],
                 axis_points_x: vec![0.0, 0.25, 1.0],
                 axis_points_y: vec![0.0, 0.5, 1.0],
-                bindings: vec![ClpBinding {
+                bindings: vec![LegacyBinding {
                     node: 1,
                     interpolate_mode: mode,
-                    values: ClpBindingValues::ZOrder(ClpCells {
+                    values: ClmBindingValues::ZOrder(ClmCells {
                         cells: vec![
                             cell(0, 0, -4.0),
                             cell(2, 0, 6.0),
@@ -94,8 +97,8 @@ fn two_dimensional_file(mode: InterpolateMode) -> ClpFile {
 
 /// The z order the legacy runtime's 2-D param folds onto the part at `(x, y)`,
 /// as a delta from the part's authored z order.
-fn runtime_contribution(file: &ClpFile, x: f32, y: f32) -> f32 {
-    let mut puppet = catchlight_core::from_clp(file, 0).unwrap();
+fn runtime_contribution(file: &LegacyFile, x: f32, y: f32) -> f32 {
+    let mut puppet = catchlight_core::from_legacy(file, 0).unwrap();
     puppet.apply_pose_overlay(&[("Head", glam::Vec2::new(x, y))]);
     puppet.reset_dynamic_state();
     puppet.apply_params();
@@ -140,7 +143,7 @@ fn a_split_two_dimensional_param_evaluates_as_it_did() {
         InterpolateMode::Cubic,
     ] {
         let file = two_dimensional_file(mode);
-        let model = Model::from_clp_file(&file).unwrap();
+        let model = Model::from_legacy(&file).unwrap();
         let key = split_binding(&model);
 
         // A grid of poses across (and just past) the param's box.
@@ -164,12 +167,12 @@ fn a_split_two_dimensional_param_evaluates_as_it_did() {
 #[test]
 fn splitting_and_re_pairing_is_byte_stable() {
     let file = two_dimensional_file(InterpolateMode::Linear);
-    let model = Model::from_clp_file(&file).unwrap();
+    let model = Model::from_legacy(&file).unwrap();
     assert_eq!(model.flatten().unwrap(), file);
 
-    let bytes = model.to_clp_bytes().unwrap();
-    let reopened = Model::from_clp_bytes(&bytes).unwrap();
-    assert_eq!(reopened.to_clp_bytes().unwrap(), bytes);
+    let bytes = model.to_clm_bytes().unwrap();
+    let reopened = Model::from_clm_bytes(&bytes).unwrap();
+    assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
 }
 
 /// A one-param binding is the same evaluation with the second axis collapsed,
@@ -180,12 +183,12 @@ fn a_one_dimensional_param_still_evaluates_as_it_did() {
     let mut file = two_dimensional_file(InterpolateMode::Linear);
     file.doc.params[0].is_vec2 = false;
     file.doc.params[0].axis_points_y = vec![0.0];
-    let ClpBindingValues::ZOrder(cells) = &mut file.doc.params[0].bindings[0].values else {
+    let ClmBindingValues::ZOrder(cells) = &mut file.doc.params[0].bindings[0].values else {
         panic!("the fixture binds z order");
     };
     cells.cells.retain(|c| c.y == 0);
 
-    let model = Model::from_clp_file(&file).unwrap();
+    let model = Model::from_legacy(&file).unwrap();
     let key = model.bindings().next().unwrap().key().clone();
     let BindingParams::One(param) = key.params.clone() else {
         panic!("a 1-D param keeps a one-param binding");
@@ -209,7 +212,7 @@ fn a_one_dimensional_param_still_evaluates_as_it_did() {
 fn an_unposed_param_reads_its_default() {
     let mut file = two_dimensional_file(InterpolateMode::Linear);
     file.doc.params[0].defaults = [1.0, 2.0];
-    let model = Model::from_clp_file(&file).unwrap();
+    let model = Model::from_legacy(&file).unwrap();
     let key = split_binding(&model);
     let BindingParams::Two(px, py) = key.params.clone() else {
         unreachable!()
@@ -226,7 +229,7 @@ fn an_unposed_param_reads_its_default() {
 #[test]
 fn evaluating_the_wrong_target_is_none() {
     let file = two_dimensional_file(InterpolateMode::Linear);
-    let model = Model::from_clp_file(&file).unwrap();
+    let model = Model::from_legacy(&file).unwrap();
     let key = split_binding(&model);
     assert!(model.eval_deform(&key, &Pose::new()).is_none());
 

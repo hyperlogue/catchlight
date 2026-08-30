@@ -1,7 +1,7 @@
 //! The file boundary: Ids and scalar params in memory <-> array indices and
 //! 2-D params on disk.
 //!
-//! **This is a temporary bridge.** `.clp` v0 stores no Ids and its params
+//! **This is a temporary bridge.** `.clm` v0 stores no Ids and its params
 //! carry two axes with the bindings nested underneath, so opening one has to
 //! mint Ids and split every 2-D param, and saving has to put the halves back
 //! together. cl-32i.14 replaces the format with `.clm`, which stores Ids and
@@ -9,7 +9,7 @@
 //!
 //! What the bridge does, in both directions:
 //!
-//! - **Ids.** A model read from `.clp` gets `root` for the arena's root and
+//! - **Ids.** A model read from `.clm` gets `root` for the arena's root and
 //!   `node-<index>`, `param-<index>`, `tex-<index>` for the rest — the same
 //!   ones every time, so two opens of one file agree about what an addon would
 //!   be naming. They round-trip nowhere, because the wire has nothing to
@@ -30,15 +30,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::formats::clp::{
-    self, ClpBinding, ClpComposite, ClpDocument, ClpFile, ClpMask, ClpNode, ClpNodeKind, ClpParam,
-    ClpPart, ClpSimplePhysics, ClpTexture, ClpWeld, FORMAT_VERSION,
+use crate::formats::legacy::{
+    self, LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyNode,
+    LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture, LegacyWeld,
+    FORMAT_VERSION,
 };
-use crate::{charge_clp_structure, LoadBudget};
+use crate::{charge_legacy_structure, LoadBudget};
 
 use super::*;
 
-/// One `.clp` v0 param slot: either one scalar Model param, or the
+/// One `.clm` v0 param slot: either one scalar Model param, or the
 /// `<name>.x` / `<name>.y` pair a 2-D one splits into.
 #[derive(Debug, PartialEq, Eq)]
 enum V0Slot<'a> {
@@ -124,11 +125,11 @@ impl Model {
         })
     }
 
-    /// Snapshot the model into a `.clp` document: walk the tree in topological
+    /// Snapshot the model into a `.clm` document: walk the tree in topological
     /// order, assign array indices, put split param pairs back together, and
     /// remap every cross-reference. Total for a valid model except for what v0
     /// genuinely cannot hold — see the module doc.
-    pub fn flatten(&self) -> Result<ClpFile, ModelError> {
+    pub fn flatten(&self) -> Result<LegacyFile, ModelError> {
         let order = self.nodes_in_order();
         let node_index: HashMap<&NodeId, u32> = order
             .iter()
@@ -161,7 +162,7 @@ impl Model {
                 Some(p) => Some(*node_index.get(p).ok_or(ModelError::UnknownNode)?),
                 None => None,
             };
-            nodes.push(ClpNode {
+            nodes.push(LegacyNode {
                 parent,
                 name: n.name.to_string(),
                 enabled: n.enabled,
@@ -180,7 +181,7 @@ impl Model {
         let mut textures = Vec::with_capacity(self.texture_ids().len());
         for tid in self.texture_ids() {
             let t = self.texture(tid).ok_or(ModelError::UnknownTexture)?;
-            textures.push(ClpTexture {
+            textures.push(LegacyTexture {
                 encoding: t.encoding,
                 alpha: t.alpha,
                 data: (*t.data).clone(),
@@ -189,16 +190,16 @@ impl Model {
 
         let mut welds = Vec::with_capacity(self.welds().len());
         for w in self.welds() {
-            welds.push(ClpWeld {
+            welds.push(LegacyWeld {
                 a: *node_index.get(w.a()).ok_or(ModelError::UnknownNode)?,
                 b: *node_index.get(w.b()).ok_or(ModelError::UnknownNode)?,
                 pairs: w.pairs().to_vec(),
             });
         }
 
-        Ok(ClpFile {
+        Ok(LegacyFile {
             version: FORMAT_VERSION,
-            doc: ClpDocument {
+            doc: LegacyDocument {
                 physics: *self.physics(),
                 nodes,
                 params,
@@ -212,16 +213,16 @@ impl Model {
         &self,
         slot: &V0Slot<'_>,
         node_index: &HashMap<&NodeId, u32>,
-    ) -> Result<ClpParam, ModelError> {
-        let bindings = |params: BindingParams| -> Result<Vec<ClpBinding>, ModelError> {
+    ) -> Result<LegacyParam, ModelError> {
+        let bindings = |params: BindingParams| -> Result<Vec<LegacyBinding>, ModelError> {
             self.bindings
                 .iter()
                 .filter(|b| b.key.params == params)
                 .map(|b| {
-                    Ok(ClpBinding {
+                    Ok(LegacyBinding {
                         node: *node_index.get(b.node()).ok_or(ModelError::UnknownNode)?,
                         interpolate_mode: b.interpolate_mode(),
-                        values: b.values.to_clp(),
+                        values: b.values.to_legacy(),
                     })
                 })
                 .collect()
@@ -229,7 +230,7 @@ impl Model {
         Ok(match slot {
             V0Slot::One(id) => {
                 let p = self.param(id).ok_or(ModelError::UnknownParam)?;
-                ClpParam {
+                LegacyParam {
                     name: p.name.to_string(),
                     is_vec2: false,
                     min: [p.min, 0.0],
@@ -245,7 +246,7 @@ impl Model {
                 let py = self.param(y).ok_or(ModelError::UnknownParam)?;
                 let name = pair_base(px.name.as_str(), py.name.as_str())
                     .ok_or(ModelError::UnknownParam)?;
-                ClpParam {
+                LegacyParam {
                     name: name.to_string(),
                     is_vec2: true,
                     min: [px.min, py.min],
@@ -259,33 +260,33 @@ impl Model {
         })
     }
 
-    /// `flatten` then encode to `.clp` bytes.
-    pub fn to_clp_bytes(&self) -> Result<Vec<u8>, ModelError> {
+    /// `flatten` then encode to `.clm` bytes.
+    pub fn to_clm_bytes(&self) -> Result<Vec<u8>, ModelError> {
         let file = self.flatten()?;
-        Ok(clp::encode(&file.doc, &file.textures)?)
+        Ok(legacy::encode(&file.doc, &file.textures)?)
     }
 
-    /// Rebuild a [`Model`] from a decoded `.clp`, minting an Id per arena slot,
+    /// Rebuild a [`Model`] from a decoded `.clm`, minting an Id per arena slot,
     /// splitting every 2-D param, and rewiring every index back to an Id.
     /// Errors on an invalid node arena or an out-of-range cross-reference.
-    pub fn from_clp_file(file: &ClpFile) -> Result<Model, ModelError> {
-        Self::from_clp_file_with_budget(file, &mut LoadBudget::default())
+    pub fn from_legacy(file: &LegacyFile) -> Result<Model, ModelError> {
+        Self::from_legacy_with_budget(file, &mut LoadBudget::default())
     }
 
-    pub fn from_clp_file_with_budget(
-        file: &ClpFile,
+    pub fn from_legacy_with_budget(
+        file: &LegacyFile,
         budget: &mut LoadBudget,
     ) -> Result<Model, ModelError> {
-        charge_clp_structure(file, budget)?;
+        charge_legacy_structure(file, budget)?;
         let doc = &file.doc;
         if doc.nodes.first().is_none_or(|node| node.parent.is_some()) {
-            return Err(ModelError::InvalidClpRoot);
+            return Err(ModelError::InvalidLegacyRoot);
         }
         for (i, node) in doc.nodes.iter().enumerate().skip(1) {
             match node.parent {
                 Some(parent) if parent < i as u32 => {}
-                Some(parent) => return Err(ModelError::InvalidClpParent { node: i, parent }),
-                None => return Err(ModelError::InvalidClpRoot),
+                Some(parent) => return Err(ModelError::InvalidLegacyParent { node: i, parent }),
+                None => return Err(ModelError::InvalidLegacyRoot),
             }
         }
 
@@ -444,8 +445,8 @@ impl Model {
         })
     }
 
-    pub fn from_clp_bytes(bytes: &[u8]) -> Result<Model, ModelError> {
-        Self::from_clp_file(&clp::decode(bytes)?)
+    pub fn from_clm_bytes(bytes: &[u8]) -> Result<Model, ModelError> {
+        Self::from_legacy(&legacy::decode(bytes)?)
     }
 }
 
@@ -455,10 +456,10 @@ fn flatten_kind(
     node_index: &HashMap<&NodeId, u32>,
     tex_index: &HashMap<&TexId, u32>,
     v0: &V0Params<'_>,
-) -> Result<ClpNodeKind, ModelError> {
+) -> Result<LegacyNodeKind, ModelError> {
     Ok(match kind {
-        ModelNodeKind::Group => ClpNodeKind::Group,
-        ModelNodeKind::Part(p) => ClpNodeKind::Part(ClpPart {
+        ModelNodeKind::Group => LegacyNodeKind::Group,
+        ModelNodeKind::Part(p) => LegacyNodeKind::Part(LegacyPart {
             mesh: p.mesh().clone(),
             albedo: match p.albedo() {
                 Some(t) => *tex_index.get(t).ok_or(ModelError::UnknownTexture)?,
@@ -471,7 +472,7 @@ fn flatten_kind(
             masks: flatten_masks(p.masks(), node_index)?,
             mask_threshold: p.mask_threshold,
         }),
-        ModelNodeKind::Composite(c) => ClpNodeKind::Composite(ClpComposite {
+        ModelNodeKind::Composite(c) => LegacyNodeKind::Composite(LegacyComposite {
             opacity: c.opacity,
             blend_mode: c.blend_mode,
             tint: c.tint,
@@ -480,8 +481,8 @@ fn flatten_kind(
             mask_threshold: c.mask_threshold,
             propagate_meshgroup: c.propagate_meshgroup,
         }),
-        ModelNodeKind::MeshGroup(mg) => ClpNodeKind::MeshGroup(mg.to_clp()),
-        ModelNodeKind::SimplePhysics(ph) => ClpNodeKind::SimplePhysics(ClpSimplePhysics {
+        ModelNodeKind::MeshGroup(mg) => LegacyNodeKind::MeshGroup(mg.to_legacy()),
+        ModelNodeKind::SimplePhysics(ph) => LegacyNodeKind::SimplePhysics(LegacySimplePhysics {
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
@@ -516,11 +517,11 @@ fn flatten_physics_target(
 fn flatten_masks(
     masks: &[ModelMask],
     node_index: &HashMap<&NodeId, u32>,
-) -> Result<Vec<ClpMask>, ModelError> {
+) -> Result<Vec<LegacyMask>, ModelError> {
     masks
         .iter()
         .map(|m| {
-            Ok(ClpMask {
+            Ok(LegacyMask {
                 source: *node_index.get(m.source()).ok_or(ModelError::UnknownNode)?,
                 mode: m.mode(),
             })
@@ -529,14 +530,14 @@ fn flatten_masks(
 }
 
 fn unflatten_kind(
-    kind: &ClpNodeKind,
+    kind: &LegacyNodeKind,
     node_ids: &[NodeId],
     param_slots: &[BindingParams],
     tex_ids: &[TexId],
 ) -> Result<ModelNodeKind, ModelError> {
     Ok(match kind {
-        ClpNodeKind::Group => ModelNodeKind::Group,
-        ClpNodeKind::Part(p) => {
+        LegacyNodeKind::Group => ModelNodeKind::Group,
+        LegacyNodeKind::Part(p) => {
             let mut part = ModelPart::new(p.mesh.clone());
             part.albedo = if p.albedo == u32::MAX {
                 None
@@ -556,7 +557,7 @@ fn unflatten_kind(
             part.mask_threshold = p.mask_threshold;
             ModelNodeKind::Part(part)
         }
-        ClpNodeKind::Composite(c) => {
+        LegacyNodeKind::Composite(c) => {
             let mut composite = ModelComposite::new();
             composite.opacity = c.opacity;
             composite.blend_mode = c.blend_mode;
@@ -567,8 +568,8 @@ fn unflatten_kind(
             composite.propagate_meshgroup = c.propagate_meshgroup;
             ModelNodeKind::Composite(composite)
         }
-        ClpNodeKind::MeshGroup(mg) => ModelNodeKind::MeshGroup(ModelMeshGroup::from_clp(mg)),
-        ClpNodeKind::SimplePhysics(ph) => {
+        LegacyNodeKind::MeshGroup(mg) => ModelNodeKind::MeshGroup(ModelMeshGroup::from_legacy(mg)),
+        LegacyNodeKind::SimplePhysics(ph) => {
             let mut physics = ModelPhysics::new(ph.kind);
             physics.map_mode = ph.map_mode;
             physics.local_only = ph.local_only;
@@ -593,7 +594,10 @@ fn unflatten_kind(
     })
 }
 
-fn unflatten_masks(masks: &[ClpMask], node_ids: &[NodeId]) -> Result<Vec<ModelMask>, ModelError> {
+fn unflatten_masks(
+    masks: &[LegacyMask],
+    node_ids: &[NodeId],
+) -> Result<Vec<ModelMask>, ModelError> {
     masks
         .iter()
         .map(|m| {
@@ -612,8 +616,8 @@ fn unflatten_masks(masks: &[ClpMask], node_ids: &[NodeId]) -> Result<Vec<ModelMa
 mod tests {
     use super::*;
     use crate::components::{BlendMode, MaskMode};
-    use crate::formats::clp::{
-        ClpBindingValues, ClpCell, ClpCells, ClpIndices, ClpMesh, TextureAlpha, TextureEncoding,
+    use crate::formats::clm::{
+        ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding,
     };
     use crate::id::SeededHex;
     use crate::params::InterpolateMode;
@@ -637,10 +641,10 @@ mod tests {
                 &root,
                 ModelNode::new(
                     "Body",
-                    ModelNodeKind::Part(ModelPart::new(ClpMesh {
+                    ModelNodeKind::Part(ModelPart::new(ClmMesh {
                         verts: vec![-1.0, -1.0, 1.0, -1.0, 0.0, 1.0],
                         uvs: vec![0.0, 1.0, 1.0, 1.0, 0.5, 0.0],
-                        indices: ClpIndices::U16(vec![0, 1, 2]),
+                        indices: ClmIndices::U16(vec![0, 1, 2]),
                         origin: [0.0, 0.0],
                     })),
                 ),
@@ -653,7 +657,7 @@ mod tests {
                 &root,
                 ModelNode::new(
                     "MaskSrc",
-                    ModelNodeKind::Part(ModelPart::new(ClpMesh::default())),
+                    ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
                 ),
                 &mut hex,
             )
@@ -668,8 +672,8 @@ mod tests {
         m.bindings.push(ModelBinding {
             key: BindingKey::new(param, part, BindingTarget::Deform),
             interpolate_mode: InterpolateMode::Linear,
-            values: ClpBindingValues::Deform(ClpCells {
-                cells: vec![ClpCell {
+            values: ClmBindingValues::Deform(ClmCells {
+                cells: vec![ClmCell {
                     x: 1,
                     y: 0,
                     value: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
@@ -689,23 +693,26 @@ mod tests {
     }
 
     #[test]
-    fn flatten_roundtrips_through_clp() {
+    fn flatten_roundtrips_through_legacy() {
         let m = sample();
-        let bytes = m.to_clp_bytes().unwrap();
-        let m2 = Model::from_clp_bytes(&bytes).unwrap();
-        let bytes2 = m2.to_clp_bytes().unwrap();
-        assert_eq!(bytes, bytes2, "model -> clp -> model must be byte-stable");
-        assert_eq!(clp::decode(&bytes).unwrap(), m2.flatten().unwrap());
+        let bytes = m.to_clm_bytes().unwrap();
+        let m2 = Model::from_clm_bytes(&bytes).unwrap();
+        let bytes2 = m2.to_clm_bytes().unwrap();
+        assert_eq!(
+            bytes, bytes2,
+            "model -> legacy -> model must be byte-stable"
+        );
+        assert_eq!(legacy::decode(&bytes).unwrap(), m2.flatten().unwrap());
     }
 
-    /// `.clp` v0 stores no Ids, so opening one has to mint them — the same ones
+    /// `.clm` v0 stores no Ids, so opening one has to mint them — the same ones
     /// every time, or two opens of one file would disagree about what an addon
     /// is naming.
     #[test]
-    fn opening_a_clp_mints_the_documented_ids() {
+    fn opening_a_legacy_document_mints_the_documented_ids() {
         let file = sample().flatten().unwrap();
-        let a = Model::from_clp_file(&file).unwrap();
-        let b = Model::from_clp_file(&file).unwrap();
+        let a = Model::from_legacy(&file).unwrap();
+        let b = Model::from_legacy(&file).unwrap();
 
         assert_eq!(a.root().as_str(), "root");
         assert_eq!(
@@ -720,7 +727,7 @@ mod tests {
         assert_eq!(a.nodes_in_order(), b.nodes_in_order(), "two opens agree");
     }
 
-    /// A `.clp` 2-D param is two scalar params plus a two-param binding, and
+    /// A `.clm` 2-D param is two scalar params plus a two-param binding, and
     /// saving puts it back byte-for-byte. Losing that would rewrite every
     /// imported model the first time the editor saved it.
     #[test]
@@ -734,7 +741,7 @@ mod tests {
         file.doc.params[0].axis_points_x = vec![0.0, 0.5, 1.0];
         file.doc.params[0].axis_points_y = vec![0.0, 1.0];
 
-        let m = Model::from_clp_file(&file).unwrap();
+        let m = Model::from_legacy(&file).unwrap();
         let ids = m.param_ids().to_vec();
         assert_eq!(ids.len(), 2, "one 2-D param becomes two scalars");
         let (x, y) = (&ids[0], &ids[1]);
@@ -799,14 +806,14 @@ mod tests {
         file.doc.params[0].is_vec2 = true;
         file.doc.params[0].max = [1.0, 1.0];
         file.doc.params[0].axis_points_y = vec![0.0, 1.0];
-        file.doc.nodes.push(ClpNode {
+        file.doc.nodes.push(LegacyNode {
             parent: Some(0),
             name: "Pendulum".into(),
             enabled: true,
             z_order: 0.0,
             transform: Default::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::SimplePhysics(ClpSimplePhysics {
+            kind: LegacyNodeKind::SimplePhysics(LegacySimplePhysics {
                 kind: crate::physics::PendulumKind::RigidPendulum,
                 map_mode: Default::default(),
                 local_only: false,
@@ -820,7 +827,7 @@ mod tests {
             }),
         });
 
-        let m = Model::from_clp_file(&file).unwrap();
+        let m = Model::from_legacy(&file).unwrap();
         let ids = m.param_ids().to_vec();
         let pendulum = node_named(&m, "Pendulum");
         match &m.node(&pendulum).unwrap().kind {
@@ -835,37 +842,37 @@ mod tests {
     }
 
     #[test]
-    fn from_clp_rejects_multiple_roots() {
+    fn from_legacy_rejects_multiple_roots() {
         let mut file = sample().flatten().unwrap();
         file.doc.nodes[1].parent = None;
 
         assert!(matches!(
-            Model::from_clp_file(&file),
-            Err(ModelError::InvalidClpRoot)
+            Model::from_legacy(&file),
+            Err(ModelError::InvalidLegacyRoot)
         ));
     }
 
     #[test]
-    fn from_clp_rejects_disconnected_cycles() {
+    fn from_legacy_rejects_disconnected_cycles() {
         let mut file = sample().flatten().unwrap();
         file.doc.nodes[1].parent = Some(2);
         file.doc.nodes[2].parent = Some(1);
 
         assert!(matches!(
-            Model::from_clp_file(&file),
-            Err(ModelError::InvalidClpParent { node: 1, parent: 2 })
+            Model::from_legacy(&file),
+            Err(ModelError::InvalidLegacyParent { node: 1, parent: 2 })
         ));
     }
 
     #[test]
-    fn from_clp_applies_the_shared_aggregate_budget() {
+    fn from_legacy_applies_the_shared_aggregate_budget() {
         let file = sample().flatten().unwrap();
         let mut budget = LoadBudget::new(crate::LoadLimits {
             nodes: 1,
             ..crate::LoadLimits::default()
         });
 
-        let err = Model::from_clp_file_with_budget(&file, &mut budget).unwrap_err();
+        let err = Model::from_legacy_with_budget(&file, &mut budget).unwrap_err();
 
         assert!(matches!(
             err,
@@ -885,7 +892,7 @@ mod tests {
         // the binding that targeted it is gone with it.
         assert_eq!(m.bindings().count(), 0);
         // still flattens cleanly (no dangling index).
-        assert!(m.to_clp_bytes().is_ok());
+        assert!(m.to_clm_bytes().is_ok());
     }
 
     #[test]
@@ -920,7 +927,7 @@ mod tests {
         .unwrap();
         let file = m.flatten().unwrap();
         match &file.doc.nodes[1].kind {
-            ClpNodeKind::Part(p) => {
+            LegacyNodeKind::Part(p) => {
                 assert_eq!(p.blend_mode, BlendMode::Multiply);
                 assert_eq!(p.opacity, 0.25);
             }

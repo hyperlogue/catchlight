@@ -232,7 +232,7 @@ fn grid_puppet(n: usize) -> LegacyPuppet {
 fn model_path(stem: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/models")
-        .join(format!("{stem}.clp"))
+        .join(format!("{stem}.clm"))
 }
 
 fn load_test_model(stem: &str) -> LegacyPuppet {
@@ -259,9 +259,9 @@ fn one_submit_per_frame_regardless_of_part_count() {
     let cases: Vec<(&str, LegacyPuppet)> = vec![
         ("3 parts", grid_puppet(3)),
         ("40 parts", grid_puppet(40)),
-        ("composite_masks.clp", load_test_model("composite_masks")),
+        ("composite_masks.clm", load_test_model("composite_masks")),
         (
-            "blend_modes_composite.clp",
+            "blend_modes_composite.clm",
             load_test_model("blend_modes_composite"),
         ),
     ];

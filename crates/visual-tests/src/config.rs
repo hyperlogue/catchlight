@@ -80,7 +80,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
     vec![
         ModelSpec {
             stem: "disk_masked_by_disk".into(),
-            path: repro.join("disk_masked_by_disk.clp"),
+            path: repro.join("disk_masked_by_disk.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -88,7 +88,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         },
         ModelSpec {
             stem: "multiply_blend".into(),
-            path: repro.join("multiply_blend.clp"),
+            path: repro.join("multiply_blend.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -96,7 +96,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         },
         ModelSpec {
             stem: "quad_over_bg".into(),
-            path: repro.join("quad_over_bg.clp"),
+            path: repro.join("quad_over_bg.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -104,7 +104,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         },
         ModelSpec {
             stem: "single_alpha_quad".into(),
-            path: repro.join("single_alpha_quad.clp"),
+            path: repro.join("single_alpha_quad.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -115,7 +115,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         // blend shader localizes to one cell of the diff heatmap.
         ModelSpec {
             stem: "blend_modes".into(),
-            path: repro.join("blend_modes.clp"),
+            path: repro.join("blend_modes.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -128,7 +128,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         // only) can't reach.
         ModelSpec {
             stem: "blend_modes_composite".into(),
-            path: repro.join("blend_modes_composite.clp"),
+            path: repro.join("blend_modes_composite.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -136,7 +136,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         },
         ModelSpec {
             stem: "composite_masks".into(),
-            path: repro.join("composite_masks.clp"),
+            path: repro.join("composite_masks.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -153,7 +153,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         // the diff heatmap.
         ModelSpec {
             stem: "composite_blit_uniforms".into(),
-            path: repro.join("composite_blit_uniforms.clp"),
+            path: repro.join("composite_blit_uniforms.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,
@@ -169,7 +169,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         // land on 128 and 64 pixels.
         ModelSpec {
             stem: "mip_checker".into(),
-            path: repro.join("mip_checker.clp"),
+            path: repro.join("mip_checker.clm"),
             width: 512,
             height: 512,
             default_zoom: 0.25,
@@ -181,7 +181,7 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
         // each weight regime visible.
         ModelSpec {
             stem: "welded_seam".into(),
-            path: repro.join("welded_seam.clp"),
+            path: repro.join("welded_seam.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.0,

@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use catchlight_core::formats::clp::TextureEncoding;
+use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_core::Vec2;
 use catchlight_core::{BindingKey, BindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
@@ -157,7 +157,7 @@ impl App {
             session: None,
             title: "untitled".into(),
             pose: HashMap::new(),
-            status: "no session — Import a manifest or Open a .clp".into(),
+            status: "no session — Import a manifest or Open a .clm".into(),
             io_queue: IoQueue::new(ctx),
             viewport: None,
             texture_id: None,
@@ -644,10 +644,10 @@ impl App {
         match mesh.working.to_mesh(&mesh.uv_map, mesh.alpha.as_ref()) {
             Ok(new_mesh) => {
                 let indices = match &new_mesh.indices {
-                    catchlight_core::formats::clp::ClpIndices::U16(v) => {
+                    catchlight_core::formats::clm::ClmIndices::U16(v) => {
                         v.iter().map(|&i| i as u32).collect()
                     }
-                    catchlight_core::formats::clp::ClpIndices::U32(v) => v.clone(),
+                    catchlight_core::formats::clm::ClmIndices::U32(v) => v.clone(),
                 };
                 self.send(Command::MeshApply {
                     session,
@@ -1123,7 +1123,7 @@ impl App {
             }
             if ui.button("Open…").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("catchlight puppet", &["clp"])
+                    .add_filter("catchlight puppet", &["clm"])
                     .pick_file()
                 {
                     let title = file_title(&path);
@@ -1138,8 +1138,8 @@ impl App {
             if ui.button("Save As…").clicked() {
                 if let Some(session) = self.session {
                     if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("catchlight puppet", &["clp"])
-                        .set_file_name(format!("{}.clp", self.title))
+                        .add_filter("catchlight puppet", &["clm"])
+                        .set_file_name(format!("{}.clm", self.title))
                         .save_file()
                     {
                         if let Reply::Ok {
@@ -1158,11 +1158,11 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         {
             if ui.button("Open…").clicked() {
-                crate::io::pick_clp(self.io_queue.clone());
+                crate::io::pick_clm(self.io_queue.clone());
             }
-            if ui.button("Download .clp").clicked() {
+            if ui.button("Download .clm").clicked() {
                 if let Some(session) = self.session {
-                    let name = format!("{}.clp", self.title);
+                    let name = format!("{}.clm", self.title);
                     match self.editor.save_bytes(session) {
                         Ok(bytes) => match crate::io::download_bytes(&name, &bytes) {
                             Ok(()) => {
@@ -1470,7 +1470,7 @@ impl App {
                 .iter()
                 .map(|(name, v)| (name.clone(), Vec2::new(v[0], v[1])))
                 .collect();
-            // The puppet is built from a flattened `.clp`, which re-pairs
+            // The puppet is built from a flattened `.clm`, which re-pairs
             // `<n>.x` / `<n>.y` into one 2-D param (cl-32i.14 removes both).
             let pose = self.editor.fold_pose(session, &pose).unwrap_or(pose);
             let editor = self.editor.clone();
@@ -1600,7 +1600,7 @@ impl App {
             return;
         }
         let editor = self.editor.clone();
-        if let Ok(Ok(bytes)) = editor.with_model(session, |m, _| m.to_clp_bytes()) {
+        if let Ok(Ok(bytes)) = editor.with_model(session, |m, _| m.to_clm_bytes()) {
             crate::io::autosave_write(self.io_queue.clone(), bytes);
             self.autosave_rev = rev;
         }
@@ -2453,8 +2453,8 @@ fn build_inspector_data(model: &Model, refs: &mut RefMap, node: NodeRef) -> Opti
             albedo: p.albedo().cloned().map(|t| refs.texture(&t)),
             vert_count: p.mesh().verts.len() / 2,
             tri_count: match &p.mesh().indices {
-                catchlight_core::formats::clp::ClpIndices::U16(v) => v.len() / 3,
-                catchlight_core::formats::clp::ClpIndices::U32(v) => v.len() / 3,
+                catchlight_core::formats::clm::ClmIndices::U16(v) => v.len() / 3,
+                catchlight_core::formats::clm::ClmIndices::U32(v) => v.len() / 3,
             },
         },
         ModelNodeKind::Composite(c) => InspectorKind::Composite {

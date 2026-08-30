@@ -23,9 +23,9 @@ fn recorded_binding_moves_the_rebuilt_puppet() {
     // only needs a document to open.
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/models/welded_seam.clp"
+        "/../../tests/models/welded_seam.clm"
     ))
-    .expect("welded_seam.clp");
+    .expect("welded_seam.clm");
     let ed = Editor::new();
     let session = ed.open_bytes("welded_seam", &bytes).expect("open");
 

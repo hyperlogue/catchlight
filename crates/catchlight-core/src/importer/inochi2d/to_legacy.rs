@@ -1,12 +1,12 @@
-//! One-time `.inx → .clp` import: turn an inochi2d puppet into catchlight's
+//! One-time `.inx → .clm` import: turn an inochi2d puppet into catchlight's
 //! editable source of truth.
 //!
-//! The inx node *tree* is flattened (DFS pre-order) into the `.clp` arena: each
+//! The inx node *tree* is flattened (DFS pre-order) into the `.clm` arena: each
 //! node lands at a sequential index with its `parent` index recorded, so the
 //! result is topologically ordered (`parent < self`). inochi's globally-unique
 //! `uuid`s are resolved to those indices — `binding.node` / `mask.source` to a
 //! node index, `SimplePhysics.target_param` to a param index — and then dropped;
-//! the array position is the only identity `.clp` keeps. References that don't
+//! the array position is the only identity `.clm` keeps. References that don't
 //! resolve are dropped, exactly as the LegacyPuppet path drops them; duplicate uuids
 //! collapse to the first occurrence (the LegacyPuppet path's renumbering, for free).
 //!
@@ -18,10 +18,13 @@ use std::collections::HashMap;
 
 use crate::components::{BlendMode, MaskMode};
 use crate::fill::{derive_dense, FillCell};
-use crate::formats::clp::{
-    ClpBinding, ClpBindingValues, ClpCell, ClpCells, ClpComposite, ClpDocument, ClpFile,
-    ClpIndices, ClpMask, ClpMesh, ClpMeshGroup, ClpNode, ClpNodeKind, ClpParam, ClpPart,
-    ClpPhysics, ClpSimplePhysics, ClpTexture, ClpTransform, TextureAlpha, TextureEncoding,
+use crate::formats::clm::{
+    ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
+    TextureAlpha, TextureEncoding,
+};
+use crate::formats::legacy::{
+    LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
+    LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture,
     FORMAT_VERSION,
 };
 use crate::formats::{InxModel, TextureFormat};
@@ -34,8 +37,8 @@ use super::schema::{
     SchemaPuppetPhysics, SchemaTransform,
 };
 
-/// Convert a parsed `.inx` model into an editable [`ClpFile`].
-pub fn from_inx_model_to_clp(model: &InxModel) -> Result<ClpFile, ImportError> {
+/// Convert a parsed `.inx` model into an editable [`LegacyFile`].
+pub fn from_inx_model_to_legacy(model: &InxModel) -> Result<LegacyFile, ImportError> {
     let obj = model
         .payload
         .as_object()
@@ -44,7 +47,7 @@ pub fn from_inx_model_to_clp(model: &InxModel) -> Result<ClpFile, ImportError> {
     let physics = obj
         .get("physics")
         .and_then(|v| serde_json::from_value::<SchemaPuppetPhysics>(v.clone()).ok())
-        .map(|p| ClpPhysics {
+        .map(|p| ClmPhysics {
             pixels_per_meter: p.pixels_per_meter.unwrap_or(1000.0),
             gravity: p.gravity.unwrap_or(9.8),
         })
@@ -89,7 +92,7 @@ pub fn from_inx_model_to_clp(model: &InxModel) -> Result<ClpFile, ImportError> {
     let textures = model
         .textures
         .iter()
-        .map(|t| ClpTexture {
+        .map(|t| LegacyTexture {
             encoding: match t.format {
                 TextureFormat::Png => TextureEncoding::Png,
                 TextureFormat::Tga => TextureEncoding::Tga,
@@ -99,9 +102,9 @@ pub fn from_inx_model_to_clp(model: &InxModel) -> Result<ClpFile, ImportError> {
         })
         .collect();
 
-    Ok(ClpFile {
+    Ok(LegacyFile {
         version: FORMAT_VERSION,
-        doc: ClpDocument {
+        doc: LegacyDocument {
             physics,
             nodes,
             params,
@@ -166,14 +169,14 @@ fn vec3_arr(v: &[f32], default: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-fn convert_transform(t: Option<&SchemaTransform>) -> ClpTransform {
+fn convert_transform(t: Option<&SchemaTransform>) -> ClmTransform {
     let mut transform = match t {
-        Some(t) => ClpTransform {
+        Some(t) => ClmTransform {
             translation: vec3_arr(&t.trans, [0.0, 0.0, 0.0]),
             rotation: vec3_arr(&t.rot, [0.0, 0.0, 0.0]),
             scale: vec2_arr(&t.scale, [1.0, 1.0]),
         },
-        None => ClpTransform::default(),
+        None => ClmTransform::default(),
     };
     reflect_transform_y(&mut transform);
     transform
@@ -182,7 +185,7 @@ fn convert_transform(t: Option<&SchemaTransform>) -> ClpTransform {
 /// inochi2d authors in a Y-down frame; catchlight is Y-up. Reflect across the
 /// X axis: negate translation Y and the two Euler angles a Y-flip inverts
 /// (rotation about X and Z). Rotation about Y and scale are unchanged.
-fn reflect_transform_y(t: &mut ClpTransform) {
+fn reflect_transform_y(t: &mut ClmTransform) {
     t.translation[1] = -t.translation[1];
     t.rotation[0] = -t.rotation[0];
     t.rotation[2] = -t.rotation[2];
@@ -193,8 +196,8 @@ fn convert_node(
     parent: Option<u32>,
     node_index: &HashMap<u32, u32>,
     param_index: &HashMap<u32, u32>,
-) -> Result<ClpNode, ImportError> {
-    Ok(ClpNode {
+) -> Result<LegacyNode, ImportError> {
+    Ok(LegacyNode {
         parent,
         name: s.name.clone().unwrap_or_default(),
         enabled: s.enabled.unwrap_or(true),
@@ -209,28 +212,28 @@ fn convert_node_kind(
     s: &SchemaNode,
     node_index: &HashMap<u32, u32>,
     param_index: &HashMap<u32, u32>,
-) -> Result<ClpNodeKind, ImportError> {
+) -> Result<LegacyNodeKind, ImportError> {
     Ok(match s.ty.as_deref().unwrap_or("") {
-        "Part" => ClpNodeKind::Part(convert_part(s, node_index)?),
-        "Composite" => ClpNodeKind::Composite(convert_composite(s, node_index)?),
-        "MeshGroup" => ClpNodeKind::MeshGroup(convert_mesh_group(s)),
-        "SimplePhysics" => ClpNodeKind::SimplePhysics(convert_simple_physics(s, param_index)),
+        "Part" => LegacyNodeKind::Part(convert_part(s, node_index)?),
+        "Composite" => LegacyNodeKind::Composite(convert_composite(s, node_index)?),
+        "MeshGroup" => LegacyNodeKind::MeshGroup(convert_mesh_group(s)),
+        "SimplePhysics" => LegacyNodeKind::SimplePhysics(convert_simple_physics(s, param_index)),
         // Node, Camera, and any unmodeled type all become a container Group.
-        _ => ClpNodeKind::Group,
+        _ => LegacyNodeKind::Group,
     })
 }
 
-fn convert_mesh(m: Option<&SchemaMesh>) -> ClpMesh {
+fn convert_mesh(m: Option<&SchemaMesh>) -> ClmMesh {
     let Some(m) = m else {
-        return ClpMesh::default();
+        return ClmMesh::default();
     };
     let max = m.indices.iter().copied().max().unwrap_or(0);
     let indices = if max <= u16::MAX as u32 {
-        ClpIndices::U16(m.indices.iter().map(|&i| i as u16).collect())
+        ClmIndices::U16(m.indices.iter().map(|&i| i as u16).collect())
     } else {
-        ClpIndices::U32(m.indices.clone())
+        ClmIndices::U32(m.indices.clone())
     };
-    let mut mesh = ClpMesh {
+    let mut mesh = ClmMesh {
         verts: m.verts.clone(),
         uvs: m.uvs.clone(),
         indices,
@@ -242,20 +245,20 @@ fn convert_mesh(m: Option<&SchemaMesh>) -> ClpMesh {
 
 /// Reflect mesh geometry into catchlight's Y-up frame (see [`reflect_transform_y`]).
 /// UVs are texture space and stay as authored.
-fn reflect_mesh_y(m: &mut ClpMesh) {
+fn reflect_mesh_y(m: &mut ClmMesh) {
     for y in m.verts.iter_mut().skip(1).step_by(2) {
         *y = -*y;
     }
     m.origin[1] = -m.origin[1];
 }
 
-fn convert_masks(masks: &[SchemaMask], node_index: &HashMap<u32, u32>) -> Vec<ClpMask> {
+fn convert_masks(masks: &[SchemaMask], node_index: &HashMap<u32, u32>) -> Vec<LegacyMask> {
     masks
         .iter()
         .filter_map(|m| {
             // Drop masks whose source node doesn't resolve, as the LegacyPuppet path does.
             let source = *node_index.get(&m.source?)?;
-            Some(ClpMask {
+            Some(LegacyMask {
                 source,
                 mode: mask_mode(m.mode.as_deref()),
             })
@@ -263,12 +266,12 @@ fn convert_masks(masks: &[SchemaMask], node_index: &HashMap<u32, u32>) -> Vec<Cl
         .collect()
 }
 
-fn convert_part(s: &SchemaNode, node_index: &HashMap<u32, u32>) -> Result<ClpPart, ImportError> {
+fn convert_part(s: &SchemaNode, node_index: &HashMap<u32, u32>) -> Result<LegacyPart, ImportError> {
     let albedo = match s.textures.first() {
         None => 0,
         Some(&v) => u32::try_from(v).unwrap_or(u32::MAX),
     };
-    Ok(ClpPart {
+    Ok(LegacyPart {
         mesh: convert_mesh(s.mesh.as_ref()),
         albedo,
         opacity: s.opacity.unwrap_or(1.0),
@@ -283,8 +286,8 @@ fn convert_part(s: &SchemaNode, node_index: &HashMap<u32, u32>) -> Result<ClpPar
 fn convert_composite(
     s: &SchemaNode,
     node_index: &HashMap<u32, u32>,
-) -> Result<ClpComposite, ImportError> {
-    Ok(ClpComposite {
+) -> Result<LegacyComposite, ImportError> {
+    Ok(LegacyComposite {
         opacity: s.opacity.unwrap_or(1.0),
         blend_mode: blend(s.blend_mode.as_deref())?,
         tint: vec3_arr(&s.tint, [1.0, 1.0, 1.0]),
@@ -295,17 +298,17 @@ fn convert_composite(
     })
 }
 
-fn convert_mesh_group(s: &SchemaNode) -> ClpMeshGroup {
+fn convert_mesh_group(s: &SchemaNode) -> LegacyMeshGroup {
     s.log_dropped_mesh_group_color();
-    ClpMeshGroup {
+    LegacyMeshGroup {
         mesh: convert_mesh(s.mesh.as_ref()),
         dynamic: s.dynamic_deformation.unwrap_or(false),
         translate_children: s.translate_children.unwrap_or(false),
     }
 }
 
-fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> ClpSimplePhysics {
-    ClpSimplePhysics {
+fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> LegacySimplePhysics {
+    LegacySimplePhysics {
         kind: s
             .model_type
             .as_deref()
@@ -328,7 +331,11 @@ fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> Cl
     }
 }
 
-fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>, nodes: &[ClpNode]) -> ClpParam {
+fn convert_param(
+    p: &SchemaParam,
+    node_index: &HashMap<u32, u32>,
+    nodes: &[LegacyNode],
+) -> LegacyParam {
     let is_vec2 = p.is_vec2.unwrap_or(false);
     // Resolve inochi2d's axis-point defaults here so the wire holds final axis
     // stops (the same logic the LegacyPuppet path applies in convert.rs): absent axes
@@ -354,7 +361,7 @@ fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>, nodes: &[ClpNo
         .iter()
         .filter_map(|b| convert_binding(b, node_index, nodes, &axis_x, &axis_y))
         .collect();
-    ClpParam {
+    LegacyParam {
         name: p.name.clone().unwrap_or_default(),
         is_vec2,
         min: vec2_arr(&p.min, [0.0, 0.0]),
@@ -369,21 +376,21 @@ fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>, nodes: &[ClpNo
 fn convert_binding(
     b: &SchemaBinding,
     node_index: &HashMap<u32, u32>,
-    nodes: &[ClpNode],
+    nodes: &[LegacyNode],
     axis_x: &[f32],
     axis_y: &[f32],
-) -> Option<ClpBinding> {
+) -> Option<LegacyBinding> {
     // Drop bindings whose target node doesn't resolve, as the LegacyPuppet path does.
     let node = *node_index.get(&b.node?)?;
     let values_json = b.values.as_ref()?;
     let kind = b.param_name.as_deref().unwrap_or("");
     // A mesh group is never drawn and carries no colour, so a colour binding on
-    // one has nowhere to land — and writing it out would produce a `.clp` the
+    // one has nowhere to land — and writing it out would produce a `.clm` the
     // loader rejects. The LegacyPuppet path drops the same shape.
     if source_binding_is_color(kind)
         && matches!(
             nodes.get(node as usize).map(|n| &n.kind),
-            Some(ClpNodeKind::MeshGroup(_))
+            Some(LegacyNodeKind::MeshGroup(_))
         )
     {
         tracing::debug!(
@@ -394,7 +401,7 @@ fn convert_binding(
         return None;
     }
     let values = convert_binding_values(kind, values_json, b.is_set.as_deref(), axis_x, axis_y)?;
-    Some(ClpBinding {
+    Some(LegacyBinding {
         node,
         interpolate_mode: interp(b.interpolate_mode.as_deref()),
         values,
@@ -402,7 +409,7 @@ fn convert_binding(
 }
 
 /// `.inx` carries both the baked dense matrix and the authored `isSet` mask;
-/// `.clp` keeps only the authored cells. The baked values double as the oracle:
+/// `.clm` keeps only the authored cells. The baked values double as the oracle:
 /// if our fill does not reproduce them from the authored set, the binding falls
 /// back to all-cells-authored, preserving pixel parity by construction.
 fn convert_binding_values(
@@ -411,7 +418,7 @@ fn convert_binding_values(
     is_set: Option<&[Vec<bool>]>,
     axis_x: &[f32],
     axis_y: &[f32],
-) -> Option<ClpBindingValues> {
+) -> Option<ClmBindingValues> {
     if kind == "deform" {
         let mut d = matrix_vec2_flat(v);
         for cell in &mut d.data {
@@ -421,7 +428,7 @@ fn convert_binding_values(
         }
         let vlen = d.data.iter().map(Vec::len).max().unwrap_or(0);
         let cells = sparsify(d, is_set, axis_x, axis_y, &vec![0.0f32; vlen], close_vec);
-        return Some(ClpBindingValues::Deform(cells));
+        return Some(ClmBindingValues::Deform(cells));
     }
     // Reflect source-space outputs at the import boundary: spatial Y into
     // Catchlight's Y-up frame, and zSort into its higher-in-front convention.
@@ -446,23 +453,23 @@ fn convert_binding_values(
     }
     let cells = sparsify(d, is_set, axis_x, axis_y, &identity, close_f32);
     Some(match kind {
-        "zSort" => ClpBindingValues::ZOrder(cells),
-        "transform.t.x" => ClpBindingValues::TransformTX(cells),
-        "transform.t.y" => ClpBindingValues::TransformTY(cells),
-        "transform.s.x" => ClpBindingValues::TransformSX(cells),
-        "transform.s.y" => ClpBindingValues::TransformSY(cells),
-        "transform.r.x" => ClpBindingValues::TransformRX(cells),
-        "transform.r.y" => ClpBindingValues::TransformRY(cells),
-        "transform.r.z" => ClpBindingValues::TransformRZ(cells),
-        "opacity" => ClpBindingValues::Opacity(cells),
-        "tint.r" => ClpBindingValues::TintR(cells),
-        "tint.g" => ClpBindingValues::TintG(cells),
-        "tint.b" => ClpBindingValues::TintB(cells),
-        "screenTint.r" => ClpBindingValues::ScreenTintR(cells),
-        "screenTint.g" => ClpBindingValues::ScreenTintG(cells),
-        "screenTint.b" => ClpBindingValues::ScreenTintB(cells),
-        "outputScale.x" => ClpBindingValues::OutputScaleX(cells),
-        "outputScale.y" => ClpBindingValues::OutputScaleY(cells),
+        "zSort" => ClmBindingValues::ZOrder(cells),
+        "transform.t.x" => ClmBindingValues::TransformTX(cells),
+        "transform.t.y" => ClmBindingValues::TransformTY(cells),
+        "transform.s.x" => ClmBindingValues::TransformSX(cells),
+        "transform.s.y" => ClmBindingValues::TransformSY(cells),
+        "transform.r.x" => ClmBindingValues::TransformRX(cells),
+        "transform.r.y" => ClmBindingValues::TransformRY(cells),
+        "transform.r.z" => ClmBindingValues::TransformRZ(cells),
+        "opacity" => ClmBindingValues::Opacity(cells),
+        "tint.r" => ClmBindingValues::TintR(cells),
+        "tint.g" => ClmBindingValues::TintG(cells),
+        "tint.b" => ClmBindingValues::TintB(cells),
+        "screenTint.r" => ClmBindingValues::ScreenTintR(cells),
+        "screenTint.g" => ClmBindingValues::ScreenTintG(cells),
+        "screenTint.b" => ClmBindingValues::ScreenTintB(cells),
+        "outputScale.x" => ClmBindingValues::OutputScaleX(cells),
+        "outputScale.y" => ClmBindingValues::OutputScaleY(cells),
         // emissionStrength and any unknown target are folded by no renderer path,
         // so they're dropped here exactly as the LegacyPuppet importer drops them.
         _ => return None,
@@ -503,13 +510,13 @@ fn sparsify<T: FillCell + Clone>(
     axis_y: &[f32],
     identity: &T,
     close: fn(&T, &T) -> bool,
-) -> ClpCells<T> {
-    let all_authored = |d: &Dense<T>| ClpCells {
+) -> ClmCells<T> {
+    let all_authored = |d: &Dense<T>| ClmCells {
         cells: d
             .data
             .iter()
             .enumerate()
-            .map(|(i, value)| ClpCell {
+            .map(|(i, value)| ClmCell {
                 x: (i % d.width.max(1)) as u32,
                 y: (i / d.width.max(1)) as u32,
                 value: value.clone(),
@@ -528,7 +535,7 @@ fn sparsify<T: FillCell + Clone>(
     for y in 0..d.height {
         for x in 0..d.width {
             if mask[x][y] {
-                cells.push(ClpCell {
+                cells.push(ClmCell {
                     x: x as u32,
                     y: y as u32,
                     value: d.data[y * d.width + x].clone(),
@@ -543,7 +550,7 @@ fn sparsify<T: FillCell + Clone>(
     let derived = derive_dense(d.width, d.height, axis_x, axis_y, &authored, identity);
     let reproduced = derived.iter().zip(&d.data).all(|(a, b)| close(a, b));
     if reproduced {
-        ClpCells { cells }
+        ClmCells { cells }
     } else {
         all_authored(&d)
     }
@@ -640,7 +647,7 @@ fn matrix_vec2_flat(v: &serde_json::Value) -> Dense<Vec<f32>> {
 }
 
 /// Mirrors `convert::convert_blend_mode`: an unrecognised name is an error, not
-/// a silent downgrade to Normal. `.clp` is the source of truth after import, so
+/// a silent downgrade to Normal. `.clm` is the source of truth after import, so
 /// a wrong-but-valid blend mode baked in here is unrecoverable.
 fn blend(s: Option<&str>) -> Result<BlendMode, ImportError> {
     match s {
@@ -669,7 +676,7 @@ fn interp(s: Option<&str>) -> InterpolateMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::{clp, InxModel};
+    use crate::formats::{legacy, InxModel};
 
     /// The full reference model. No such model ships in the tree yet, so
     /// every test that needs one is `#[ignore]`d; drop a model at this path and
@@ -685,21 +692,21 @@ mod tests {
 
     #[test]
     #[ignore = "needs the reference model at example_models/reference/"]
-    fn reference_inx_roundtrips_through_clp() {
+    fn reference_inx_roundtrips_through_legacy() {
         let model = load_reference();
-        let file = from_inx_model_to_clp(&model).unwrap();
+        let file = from_inx_model_to_legacy(&model).unwrap();
 
         let parts = file
             .doc
             .nodes
             .iter()
-            .filter(|n| matches!(n.kind, ClpNodeKind::Part(_)))
+            .filter(|n| matches!(n.kind, LegacyNodeKind::Part(_)))
             .count();
         assert_eq!(parts, 117, "expected 117 Part nodes");
         assert_eq!(file.textures.len(), 87);
 
-        let encoded = clp::encode(&file.doc, &file.textures).unwrap();
-        let decoded = clp::decode(&encoded).unwrap();
+        let encoded = legacy::encode(&file.doc, &file.textures).unwrap();
+        let decoded = legacy::decode(&encoded).unwrap();
         assert_eq!(
             decoded.doc, file.doc,
             "structure must round-trip byte-for-byte"
@@ -711,7 +718,7 @@ mod tests {
     #[ignore = "needs the reference model at example_models/reference/"]
     fn arena_is_topologically_ordered_with_one_root() {
         let model = load_reference();
-        let file = from_inx_model_to_clp(&model).unwrap();
+        let file = from_inx_model_to_legacy(&model).unwrap();
         let nodes = &file.doc.nodes;
 
         let roots = nodes.iter().filter(|n| n.parent.is_none()).count();
@@ -730,11 +737,11 @@ mod tests {
         let p = file.doc.params.len() as u32;
         for node in nodes {
             match &node.kind {
-                ClpNodeKind::Part(part) => {
+                LegacyNodeKind::Part(part) => {
                     assert!(part.masks.iter().all(|m| m.source < n));
                 }
-                ClpNodeKind::Composite(c) => assert!(c.masks.iter().all(|m| m.source < n)),
-                ClpNodeKind::SimplePhysics(sp) => {
+                LegacyNodeKind::Composite(c) => assert!(c.masks.iter().all(|m| m.source < n)),
+                LegacyNodeKind::SimplePhysics(sp) => {
                     assert!(sp.target_param.is_none_or(|t| t < p));
                 }
                 _ => {}
@@ -749,13 +756,13 @@ mod tests {
     #[ignore = "needs the reference model at example_models/reference/"]
     fn captures_authored_propagate_meshgroup() {
         let model = load_reference();
-        let file = from_inx_model_to_clp(&model).unwrap();
+        let file = from_inx_model_to_legacy(&model).unwrap();
         // The root "Puppet Body" composite authors propagate_meshgroup=false —
         // the divergence the LegacyPuppet path hardcodes to true.
         assert!(
             file.doc.nodes.iter().any(|n| matches!(
                 &n.kind,
-                ClpNodeKind::Composite(c) if !c.propagate_meshgroup
+                LegacyNodeKind::Composite(c) if !c.propagate_meshgroup
             )),
             "an authored propagate_meshgroup=false composite must be captured"
         );

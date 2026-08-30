@@ -5,8 +5,8 @@ pub enum ImportError {
     #[error("failed to parse .inx container: {0}")]
     InxContainer(#[from] InxParseError),
 
-    #[error("invalid .clp file: {0}")]
-    Clp(#[from] crate::formats::clp::ClpError),
+    #[error("invalid .clm file: {0}")]
+    Legacy(#[from] crate::formats::legacy::LegacyError),
 
     #[error("failed to decode payload JSON: {0}")]
     Json(#[from] serde_json::Error),

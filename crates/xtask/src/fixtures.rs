@@ -1,7 +1,7 @@
 //! Generators for the committed test fixtures under `tests/models/`.
 //!
 //! These models are authored by hand rather than imported, so they exist only
-//! as code here plus the encoded `.clp` checked into the repo. Regenerating is
+//! as code here plus the encoded `.clm` checked into the repo. Regenerating is
 //! only needed when a fixture's shape changes; the visual baselines under
 //! `tests/baselines/` are rendered from the committed bytes.
 //!
@@ -9,7 +9,7 @@
 //! `committed_fixtures_still_match_their_generators` pins each committed
 //! file's *structure* (never byte equality) to its generator here, so drift
 //! names itself. `cargo xtask` also has `import <model.inx|.inp>
-//! [-o <model.clp>]`.
+//! [-o <model.clm>]`.
 //!
 //! The synthetic `.inx` fixtures are built instead by
 //! `scripts/build_minimal_inx.py`, a `uv` inline-script (`uv` and `python3`
@@ -20,15 +20,19 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use catchlight_core::components::BlendMode;
-use catchlight_core::formats::clp::{
-    self, ClpBinding, ClpBindingValues, ClpCell, ClpCells, ClpComposite, ClpDocument, ClpIndices,
-    ClpMesh, ClpNode, ClpNodeKind, ClpParam, ClpPart, ClpPhysics, ClpTexture, ClpTransform,
-    ClpWeld, ClpWeldPair, TextureAlpha, TextureEncoding,
+use catchlight_core::formats::clm::{
+    ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
+    TextureAlpha, TextureEncoding,
 };
+use catchlight_core::formats::legacy::{
+    self, LegacyBinding, LegacyComposite, LegacyDocument, LegacyNode, LegacyNodeKind, LegacyParam,
+    LegacyPart, LegacyTexture, LegacyWeld,
+};
+use catchlight_core::model::ModelWeldPair;
 use catchlight_core::params::InterpolateMode;
 
 /// Builds a fixture's structure document and its texture table.
-type Build = fn() -> (ClpDocument, Vec<ClpTexture>);
+type Build = fn() -> (LegacyDocument, Vec<LegacyTexture>);
 
 /// Every fixture this command can (re)build, by output stem.
 const FIXTURES: &[(&str, Build)] = &[
@@ -41,7 +45,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     FIXTURES.iter().map(|(name, _)| *name)
 }
 
-/// Build `<name>` and overwrite `tests/models/<name>.clp`. Returns the path
+/// Build `<name>` and overwrite `tests/models/<name>.clm`. Returns the path
 /// written, relative to the workspace root.
 pub fn generate(name: &str) -> Result<PathBuf> {
     let build = FIXTURES
@@ -50,11 +54,11 @@ pub fn generate(name: &str) -> Result<PathBuf> {
         .map(|(_, build)| build)
         .ok_or_else(|| anyhow!("unknown fixture: {name}"))?;
     let (doc, textures) = build();
-    let encoded = clp::encode(&doc, &textures).context("encoding .clp")?;
+    let encoded = legacy::encode(&doc, &textures).context("encoding .clm")?;
 
     let relative = Path::new("tests")
         .join("models")
-        .join(format!("{name}.clp"));
+        .join(format!("{name}.clm"));
     let out = workspace_root().join(&relative);
     std::fs::write(&out, &encoded).with_context(|| format!("writing {}", out.display()))?;
     Ok(relative)
@@ -101,28 +105,28 @@ const CHECKER_QUADS: [(&str, f32, f32); 2] = [
 /// averaged in linear encode to sRGB ~187, averaged as gamma-encoded bytes
 /// they would come out ~128 — far enough apart that the baseline pins which
 /// one happened.
-fn mip_checker() -> (ClpDocument, Vec<ClpTexture>) {
-    let root = ClpNode {
+fn mip_checker() -> (LegacyDocument, Vec<LegacyTexture>) {
+    let root = LegacyNode {
         parent: None,
         name: "root".into(),
         enabled: true,
         z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
-        kind: ClpNodeKind::Group,
+        kind: LegacyNodeKind::Group,
     };
-    let quads = CHECKER_QUADS.map(|(name, half, x)| ClpNode {
+    let quads = CHECKER_QUADS.map(|(name, half, x)| LegacyNode {
         parent: Some(0),
         name: name.into(),
-        transform: ClpTransform {
+        transform: ClmTransform {
             translation: [x, 0.0, 0.0],
             ..identity_transform()
         },
         ..part_node(quad_part(0, half))
     });
 
-    let doc = ClpDocument {
-        physics: ClpPhysics::default(),
+    let doc = LegacyDocument {
+        physics: ClmPhysics::default(),
         nodes: std::iter::once(root).chain(quads).collect(),
         params: Vec::new(),
         welds: Vec::new(),
@@ -133,7 +137,7 @@ fn mip_checker() -> (ClpDocument, Vec<ClpTexture>) {
 /// A `size`x`size` opaque checkerboard with 1-texel cells: the highest
 /// spatial frequency an RGBA8 texture can carry, and the only pattern whose
 /// correctly filtered mip levels are a single known value.
-fn checker_texture(size: u32) -> ClpTexture {
+fn checker_texture(size: u32) -> LegacyTexture {
     let img = image::RgbaImage::from_fn(size, size, |x, y| {
         if (x + y) % 2 == 0 {
             image::Rgba([255, 255, 255, 255])
@@ -147,9 +151,9 @@ fn checker_texture(size: u32) -> ClpTexture {
 /// One quad spanning `[-half, half]` on both axes, its texture mapped over
 /// the whole face. UVs put v = 0 at the top row so the texture sits upright
 /// in the Y-up world, same convention as [`grid_part`].
-fn quad_part(albedo: u32, half: f32) -> ClpPart {
-    ClpPart {
-        mesh: ClpMesh {
+fn quad_part(albedo: u32, half: f32) -> LegacyPart {
+    LegacyPart {
+        mesh: ClmMesh {
             #[rustfmt::skip]
             verts: vec![
                 -half, -half,
@@ -164,7 +168,7 @@ fn quad_part(albedo: u32, half: f32) -> ClpPart {
                 1.0, 0.0,
                 0.0, 0.0,
             ],
-            indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
             origin: [0.0, 0.0],
         },
         albedo,
@@ -233,17 +237,17 @@ const NESTED_INNER_OPACITY: f32 = 0.7;
 /// cell holds an opaque quad under a half-alpha one, so the blit is exercised
 /// over three source alphas at once (opaque, blended, translucent-only) —
 /// which is what the screen-tint term, scaled by the sampled alpha, needs.
-fn composite_blit_uniforms() -> (ClpDocument, Vec<ClpTexture>) {
-    let root = ClpNode {
+fn composite_blit_uniforms() -> (LegacyDocument, Vec<LegacyTexture>) {
+    let root = LegacyNode {
         parent: None,
         name: "root".into(),
         enabled: true,
         z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
-        kind: ClpNodeKind::Group,
+        kind: LegacyNodeKind::Group,
     };
-    let backdrop = ClpNode {
+    let backdrop = LegacyNode {
         parent: Some(0),
         name: "backdrop".into(),
         z_order: -10.0,
@@ -275,7 +279,7 @@ fn composite_blit_uniforms() -> (ClpDocument, Vec<ClpTexture>) {
     ));
     nodes.push(cell_quad(outer, "back", 1, 0.0));
     let inner = nodes.len() as u32;
-    nodes.push(ClpNode {
+    nodes.push(LegacyNode {
         parent: Some(outer),
         ..composite_node(
             "nested_inner",
@@ -287,8 +291,8 @@ fn composite_blit_uniforms() -> (ClpDocument, Vec<ClpTexture>) {
     });
     nodes.push(cell_quad(inner, "front", 2, CELL_FRONT_OFFSET));
 
-    let doc = ClpDocument {
-        physics: ClpPhysics::default(),
+    let doc = LegacyDocument {
+        physics: ClmPhysics::default(),
         nodes,
         params: Vec::new(),
         welds: Vec::new(),
@@ -310,18 +314,18 @@ fn composite_node(
     opacity: f32,
     tint: [f32; 3],
     screen_tint: [f32; 3],
-) -> ClpNode {
-    ClpNode {
+) -> LegacyNode {
+    LegacyNode {
         parent: Some(0),
         name: name.into(),
         enabled: true,
         z_order: 0.0,
-        transform: ClpTransform {
+        transform: ClmTransform {
             translation: [x, 0.0, 0.0],
             ..identity_transform()
         },
         lock_to_root: false,
-        kind: ClpNodeKind::Composite(ClpComposite {
+        kind: LegacyNodeKind::Composite(LegacyComposite {
             opacity,
             blend_mode: BlendMode::Normal,
             tint,
@@ -335,11 +339,11 @@ fn composite_node(
 
 /// One quad inside a cell, offset diagonally by `offset` so the cell ends up
 /// with an opaque region, an overlap, and a translucent-only region.
-fn cell_quad(parent: u32, name: &str, albedo: u32, offset: f32) -> ClpNode {
-    ClpNode {
+fn cell_quad(parent: u32, name: &str, albedo: u32, offset: f32) -> LegacyNode {
+    LegacyNode {
         parent: Some(parent),
         name: name.into(),
-        transform: ClpTransform {
+        transform: ClmTransform {
             translation: [offset, -offset, 0.0],
             ..identity_transform()
         },
@@ -350,7 +354,7 @@ fn cell_quad(parent: u32, name: &str, albedo: u32, offset: f32) -> ClpNode {
 /// A 64x64 opaque two-axis gradient. A composite blitted over it differs
 /// everywhere it covers when its opacity or tint is wrong, not just at the
 /// edges the way a flat backdrop would.
-fn gradient_texture() -> ClpTexture {
+fn gradient_texture() -> LegacyTexture {
     const SIZE: u32 = 64;
     let scale = |v: u32| (v * 255 / (SIZE - 1)) as u8;
     flat_image(image::RgbaImage::from_fn(SIZE, SIZE, |x, y| {
@@ -377,29 +381,29 @@ const SEAM_WEIGHTS: [f32; COLS] = [1.0, 0.5, 0.0];
 /// 1.0 / 0.5 / 0.0 left to right, so a single render at pull = 1 shows all
 /// three regimes at once: the lower part stretching up to follow the upper,
 /// both meeting midway, and the upper's corner staying pinned to the lower.
-fn welded_seam() -> (ClpDocument, Vec<ClpTexture>) {
-    let root = ClpNode {
+fn welded_seam() -> (LegacyDocument, Vec<LegacyTexture>) {
+    let root = LegacyNode {
         parent: None,
         name: "root".into(),
         enabled: true,
         z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
-        kind: ClpNodeKind::Group,
+        kind: LegacyNodeKind::Group,
     };
-    let upper = ClpNode {
+    let upper = LegacyNode {
         parent: Some(0),
         name: "upper".into(),
         ..part_node(grid_part(0, Growth::Up))
     };
-    let lower = ClpNode {
+    let lower = LegacyNode {
         parent: Some(0),
         name: "lower".into(),
         ..part_node(grid_part(1, Growth::Down))
     };
 
     let n_verts = COLS * ROWS;
-    let pull = ClpParam {
+    let pull = LegacyParam {
         name: "pull".into(),
         is_vec2: false,
         min: [0.0, 0.0],
@@ -407,20 +411,20 @@ fn welded_seam() -> (ClpDocument, Vec<ClpTexture>) {
         defaults: [0.0, 0.0],
         axis_points_x: vec![0.0, 1.0],
         axis_points_y: vec![0.0],
-        bindings: vec![ClpBinding {
+        bindings: vec![LegacyBinding {
             node: 1,
             interpolate_mode: InterpolateMode::Linear,
-            values: ClpBindingValues::Deform(ClpCells {
+            values: ClmBindingValues::Deform(ClmCells {
                 // Both ends of the axis are authored: the rest pose has to be
                 // an explicit zero cell, or interpolation has nothing to
                 // interpolate from.
                 cells: vec![
-                    ClpCell {
+                    ClmCell {
                         x: 0,
                         y: 0,
                         value: vec![0.0; 2 * n_verts],
                     },
-                    ClpCell {
+                    ClmCell {
                         x: 1,
                         y: 0,
                         value: PULL.repeat(n_verts),
@@ -430,17 +434,17 @@ fn welded_seam() -> (ClpDocument, Vec<ClpTexture>) {
         }],
     };
 
-    let doc = ClpDocument {
-        physics: ClpPhysics::default(),
+    let doc = LegacyDocument {
+        physics: ClmPhysics::default(),
         nodes: vec![root, upper, lower],
         params: vec![pull],
-        welds: vec![ClpWeld {
+        welds: vec![LegacyWeld {
             a: 1,
             b: 2,
             // Both grids order their seam row first, so vertex i on one side
             // is the coincident vertex i on the other.
             pairs: (0..COLS)
-                .map(|i| ClpWeldPair {
+                .map(|i| ModelWeldPair {
                     a_vert: i as u32,
                     b_vert: i as u32,
                     weight: SEAM_WEIGHTS[i],
@@ -464,7 +468,7 @@ enum Growth {
 /// both parts' seam vertices land at indices 0..COLS, which is what the weld
 /// pairs reference. UVs put v = 0 at the part's topmost row, so both textures
 /// sit upright in world space.
-fn grid_part(albedo: u32, growth: Growth) -> ClpPart {
+fn grid_part(albedo: u32, growth: Growth) -> LegacyPart {
     let y_top = match growth {
         Growth::Up => PART_H,
         Growth::Down => 0.0,
@@ -498,11 +502,11 @@ fn grid_part(albedo: u32, growth: Growth) -> ClpPart {
         }
     }
 
-    ClpPart {
-        mesh: ClpMesh {
+    LegacyPart {
+        mesh: ClmMesh {
             verts,
             uvs,
-            indices: ClpIndices::U16(indices),
+            indices: ClmIndices::U16(indices),
             origin: [0.0, 0.0],
         },
         albedo,
@@ -517,19 +521,19 @@ fn grid_part(albedo: u32, growth: Growth) -> ClpPart {
 
 /// A 64x64 opaque single-colour PNG. Small and deterministic; the fixtures
 /// only need each Part to be visually distinguishable.
-fn solid_texture(rgb: [u8; 3]) -> ClpTexture {
+fn solid_texture(rgb: [u8; 3]) -> LegacyTexture {
     flat_texture([rgb[0], rgb[1], rgb[2], 255])
 }
 
 /// A 64x64 single-colour PNG, alpha included — straight, so the importer
 /// premultiplies it the way a real texture arrives.
-fn flat_texture(rgba: [u8; 4]) -> ClpTexture {
+fn flat_texture(rgba: [u8; 4]) -> LegacyTexture {
     flat_image(image::RgbaImage::from_pixel(64, 64, image::Rgba(rgba)))
 }
 
 /// Wrap an authored image as a straight-alpha PNG fixture texture.
-fn flat_image(img: image::RgbaImage) -> ClpTexture {
-    ClpTexture {
+fn flat_image(img: image::RgbaImage) -> LegacyTexture {
+    LegacyTexture {
         encoding: TextureEncoding::Png,
         alpha: TextureAlpha::Straight,
         data: encode_png(&img),
@@ -557,8 +561,8 @@ fn encode_png(img: &image::RgbaImage) -> Vec<u8> {
     data
 }
 
-fn identity_transform() -> ClpTransform {
-    ClpTransform {
+fn identity_transform() -> ClmTransform {
+    ClmTransform {
         translation: [0.0; 3],
         rotation: [0.0; 3],
         scale: [1.0, 1.0],
@@ -566,15 +570,15 @@ fn identity_transform() -> ClpTransform {
 }
 
 /// A default node wrapping `part`; callers fill in `parent` and `name`.
-fn part_node(part: ClpPart) -> ClpNode {
-    ClpNode {
+fn part_node(part: LegacyPart) -> LegacyNode {
+    LegacyNode {
         parent: None,
         name: String::new(),
         enabled: true,
         z_order: 0.0,
         transform: identity_transform(),
         lock_to_root: false,
-        kind: ClpNodeKind::Part(part),
+        kind: LegacyNodeKind::Part(part),
     }
 }
 
@@ -582,17 +586,17 @@ fn part_node(part: ClpPart) -> ClpNode {
 mod tests {
     use super::*;
 
-    /// Decode `tests/models/<name>.clp`.
-    fn committed(name: &str) -> clp::ClpFile {
+    /// Decode `tests/models/<name>.clm`.
+    fn committed(name: &str) -> legacy::LegacyFile {
         let path = workspace_root()
             .join("tests/models")
-            .join(format!("{name}.clp"));
+            .join(format!("{name}.clm"));
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-        clp::decode(&bytes).unwrap()
+        legacy::decode(&bytes).unwrap()
     }
 
-    /// Every committed `.clp` is what its visual baselines were rendered
+    /// Every committed `.clm` is what its visual baselines were rendered
     /// from, so each has to keep matching the generator it came from — a
     /// fixture whose generator drifts silently renders a different model than
     /// the one the baseline pins. Structure only, never byte-equality against
@@ -604,7 +608,7 @@ mod tests {
             assert_eq!(
                 committed(name).doc,
                 generated,
-                "tests/models/{name}.clp has drifted from its generator; \
+                "tests/models/{name}.clm has drifted from its generator; \
                  re-run `cargo xtask gen-fixture {name}`"
             );
         }
@@ -647,7 +651,7 @@ mod tests {
         let parts = committed
             .nodes
             .iter()
-            .filter(|n| matches!(n.kind, ClpNodeKind::Part(_)))
+            .filter(|n| matches!(n.kind, LegacyNodeKind::Part(_)))
             .count();
         assert_eq!(parts, 2, "two welded grid Parts");
         let weld = committed.welds.first().unwrap();

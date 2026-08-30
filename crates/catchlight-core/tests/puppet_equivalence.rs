@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The new `Puppet` against the runtime it replaces, frame for frame.
 //!
-//! Both runtimes are driven from the *same* `.clp`: the legacy path builds a
+//! Both runtimes are driven from the *same* `.clm`: the legacy path builds a
 //! [`LegacyPuppet`] from it, the new one reads it into a [`Model`] and bakes a
 //! [`Puppet`]. For a grid of poses (and, where a model has drivers, a settle
 //! plus a run of simulated frames) every node's evaluated frame has to agree —
@@ -14,16 +14,21 @@
 
 use catchlight_core::animation::{Animation, AnimationLane, Keyframe, PuppetAnimation, PuppetLane};
 use catchlight_core::components::{BlendMode, MaskMode};
-use catchlight_core::formats::clp::{
-    self, ClpBinding, ClpBindingValues, ClpCell, ClpCells, ClpComposite, ClpDocument, ClpFile,
-    ClpIndices, ClpMask, ClpMesh, ClpMeshGroup, ClpNode, ClpNodeKind, ClpParam, ClpPart,
-    ClpPhysics, ClpSimplePhysics, ClpTransform, ClpWeld, ClpWeldPair, FORMAT_VERSION,
+use catchlight_core::formats::clm::{
+    ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
 };
+use catchlight_core::formats::legacy::{
+    self, LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
+    LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyWeld,
+    FORMAT_VERSION,
+};
+use catchlight_core::model::ModelWeldPair;
 use catchlight_core::params::{InterpolateMode, ParamAxis};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
 use catchlight_core::{
-    from_clp, GlobalTransforms, LegacyPuppet, Mat4, Model, NodeId, NodeIdx, NodeKind, ParamId, Vec2,
+    from_legacy, GlobalTransforms, LegacyPuppet, Mat4, Model, NodeId, NodeIdx, NodeKind, ParamId,
+    Vec2,
 };
 
 /// Absolute tolerance on every compared quantity. Both runtimes do the same
@@ -42,14 +47,14 @@ struct Pair {
     transforms: GlobalTransforms,
     model: Model,
     puppet: Puppet,
-    /// `.clp` node index -> (legacy slot, new slot).
+    /// `.clm` node index -> (legacy slot, new slot).
     nodes: Vec<(NodeIdx, NodeIdx)>,
 }
 
 impl Pair {
-    fn load(file: &ClpFile) -> Pair {
-        let legacy = from_clp(file, 0).expect("legacy build");
-        let model = Model::from_clp_file(file).expect("model build");
+    fn load(file: &LegacyFile) -> Pair {
+        let legacy = from_legacy(file, 0).expect("legacy build");
+        let model = Model::from_legacy(file).expect("model build");
         let puppet = Puppet::new(&model);
         let nodes = (0..file.doc.nodes.len())
             .map(|i| {
@@ -73,7 +78,7 @@ impl Pair {
         }
     }
 
-    fn pose(&mut self, file: &ClpFile, values: &[(f32, f32)]) {
+    fn pose(&mut self, file: &LegacyFile, values: &[(f32, f32)]) {
         for (j, p) in file.doc.params.iter().enumerate() {
             let (x, y) = values[j];
             self.legacy.set_param_value(j as u32, Vec2::new(x, y));
@@ -173,7 +178,7 @@ fn close(where_: &str, what: &str, a: f32, b: f32) {
 /// Poses to drive a file through: everything at rest, everything at each
 /// extreme and at the middle, then each param swept on its own so a binding
 /// that only one param reaches is still exercised.
-fn pose_grid(file: &ClpFile) -> Vec<Vec<(f32, f32)>> {
+fn pose_grid(file: &LegacyFile) -> Vec<Vec<(f32, f32)>> {
     let params = &file.doc.params;
     let at = |k: usize| -> Vec<(f32, f32)> {
         params
@@ -201,13 +206,13 @@ fn pose_grid(file: &ClpFile) -> Vec<Vec<(f32, f32)>> {
     poses
 }
 
-fn check(label: &str, file: &ClpFile) {
+fn check(label: &str, file: &LegacyFile) {
     let mut pair = Pair::load(file);
     let has_physics = file
         .doc
         .nodes
         .iter()
-        .any(|n| matches!(n.kind, ClpNodeKind::SimplePhysics(_)));
+        .any(|n| matches!(n.kind, LegacyNodeKind::SimplePhysics(_)));
 
     for (k, pose) in pose_grid(file).into_iter().enumerate() {
         pair.pose(file, &pose);
@@ -241,41 +246,41 @@ fn every_committed_fixture_evaluates_the_same_both_ways() {
     let mut seen = 0;
     for entry in std::fs::read_dir(dir).expect("read tests/models") {
         let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("clp") {
+        if path.extension().and_then(|e| e.to_str()) != Some("clm") {
             continue;
         }
         let bytes = std::fs::read(&path).expect("read fixture");
-        let file = clp::decode(&bytes).expect("decode fixture");
+        let file = legacy::decode(&bytes).expect("decode fixture");
         let label = path.file_name().unwrap().to_string_lossy().to_string();
         check(&label, &file);
         seen += 1;
     }
-    assert!(seen > 0, "no .clp fixtures found in {dir}");
+    assert!(seen > 0, "no .clm fixtures found in {dir}");
 }
 
 // ---------------------------------------------------------------------------
 // Synthetic rigs: the features the committed fixtures do not cover
 // ---------------------------------------------------------------------------
 
-fn transform() -> ClpTransform {
-    ClpTransform {
+fn transform() -> ClmTransform {
+    ClmTransform {
         translation: [0.0; 3],
         rotation: [0.0; 3],
         scale: [1.0, 1.0],
     }
 }
 
-fn quad(w: f32, h: f32) -> ClpMesh {
-    ClpMesh {
+fn quad(w: f32, h: f32) -> ClmMesh {
+    ClmMesh {
         verts: vec![-w, -h, w, -h, w, h, -w, h],
         uvs: vec![0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
-        indices: ClpIndices::U16(vec![0, 1, 2, 2, 3, 0]),
+        indices: ClmIndices::U16(vec![0, 1, 2, 2, 3, 0]),
         origin: [0.0, 0.0],
     }
 }
 
-fn part(mesh: ClpMesh) -> ClpPart {
-    ClpPart {
+fn part(mesh: ClmMesh) -> LegacyPart {
+    LegacyPart {
         mesh,
         albedo: u32::MAX,
         opacity: 1.0,
@@ -287,8 +292,8 @@ fn part(mesh: ClpMesh) -> ClpPart {
     }
 }
 
-fn node(parent: Option<u32>, name: &str, kind: ClpNodeKind) -> ClpNode {
-    ClpNode {
+fn node(parent: Option<u32>, name: &str, kind: LegacyNodeKind) -> LegacyNode {
+    LegacyNode {
         parent,
         name: name.into(),
         enabled: true,
@@ -299,26 +304,26 @@ fn node(parent: Option<u32>, name: &str, kind: ClpNodeKind) -> ClpNode {
     }
 }
 
-fn at(parent: Option<u32>, name: &str, xy: [f32; 2], kind: ClpNodeKind) -> ClpNode {
+fn at(parent: Option<u32>, name: &str, xy: [f32; 2], kind: LegacyNodeKind) -> LegacyNode {
     let mut n = node(parent, name, kind);
     n.transform.translation = [xy[0], xy[1], 0.0];
     n
 }
 
-fn cells<T>(entries: Vec<(u32, u32, T)>) -> ClpCells<T> {
-    ClpCells {
+fn cells<T>(entries: Vec<(u32, u32, T)>) -> ClmCells<T> {
+    ClmCells {
         cells: entries
             .into_iter()
-            .map(|(x, y, value)| ClpCell { x, y, value })
+            .map(|(x, y, value)| ClmCell { x, y, value })
             .collect(),
     }
 }
 
-fn file(nodes: Vec<ClpNode>, params: Vec<ClpParam>, welds: Vec<ClpWeld>) -> ClpFile {
-    ClpFile {
+fn file(nodes: Vec<LegacyNode>, params: Vec<LegacyParam>, welds: Vec<LegacyWeld>) -> LegacyFile {
+    LegacyFile {
         version: FORMAT_VERSION,
-        doc: ClpDocument {
-            physics: ClpPhysics::default(),
+        doc: LegacyDocument {
+            physics: ClmPhysics::default(),
             nodes,
             params,
             welds,
@@ -330,24 +335,24 @@ fn file(nodes: Vec<ClpNode>, params: Vec<ClpParam>, welds: Vec<ClpWeld>) -> ClpF
 /// A part under a group, driven by one 2-D param whose deform binding is
 /// authored at scattered cells of a 3x3 grid, plus scalar bindings on every
 /// other target the runtime folds.
-fn two_param_rig(mode: InterpolateMode) -> ClpFile {
+fn two_param_rig(mode: InterpolateMode) -> LegacyFile {
     let nodes = vec![
-        node(None, "Root", ClpNodeKind::Group),
+        node(None, "Root", LegacyNodeKind::Group),
         at(
             Some(0),
             "Body",
             [10.0, -5.0],
-            ClpNodeKind::Part(part(quad(8.0, 6.0))),
+            LegacyNodeKind::Part(part(quad(8.0, 6.0))),
         ),
         node(
             Some(0),
             "Layered",
-            ClpNodeKind::Composite(ClpComposite {
+            LegacyNodeKind::Composite(LegacyComposite {
                 opacity: 0.9,
                 blend_mode: BlendMode::Normal,
                 tint: [1.0, 0.8, 0.7],
                 screen_tint: [0.0; 3],
-                masks: vec![ClpMask {
+                masks: vec![LegacyMask {
                     source: 1,
                     mode: MaskMode::Mask,
                 }],
@@ -359,11 +364,11 @@ fn two_param_rig(mode: InterpolateMode) -> ClpFile {
             Some(2),
             "Face",
             [0.0, 4.0],
-            ClpNodeKind::Part(part(quad(3.0, 3.0))),
+            LegacyNodeKind::Part(part(quad(3.0, 3.0))),
         ),
     ];
     let d = |x: u32, y: u32, v: Vec<f32>| (x, y, v);
-    let params = vec![ClpParam {
+    let params = vec![LegacyParam {
         name: "Head".into(),
         is_vec2: true,
         min: [-1.0, -2.0],
@@ -372,55 +377,55 @@ fn two_param_rig(mode: InterpolateMode) -> ClpFile {
         axis_points_x: vec![0.0, 0.25, 1.0],
         axis_points_y: vec![0.0, 0.5, 1.0],
         bindings: vec![
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: mode,
-                values: ClpBindingValues::Deform(cells(vec![
+                values: ClmBindingValues::Deform(cells(vec![
                     d(0, 0, vec![-2.0, 0.5, 0.0, 0.0, 1.0, -1.0, 0.0, 3.0]),
                     d(2, 0, vec![4.0, 0.0, -1.0, 2.0, 0.0, 0.0, 0.5, 0.5]),
                     d(1, 2, vec![0.0, -3.0, 2.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
                     d(2, 2, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
                 ])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: mode,
-                values: ClpBindingValues::TransformTX(cells(vec![(0, 0, -6.0), (2, 2, 9.0)])),
+                values: ClmBindingValues::TransformTX(cells(vec![(0, 0, -6.0), (2, 2, 9.0)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: mode,
-                values: ClpBindingValues::TransformRZ(cells(vec![(2, 0, 0.7)])),
+                values: ClmBindingValues::TransformRZ(cells(vec![(2, 0, 0.7)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: mode,
-                values: ClpBindingValues::TransformSY(cells(vec![(0, 2, 1.8)])),
+                values: ClmBindingValues::TransformSY(cells(vec![(0, 2, 1.8)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: mode,
-                values: ClpBindingValues::ZOrder(cells(vec![(0, 0, -4.0), (2, 2, 6.0)])),
+                values: ClmBindingValues::ZOrder(cells(vec![(0, 0, -4.0), (2, 2, 6.0)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: mode,
-                values: ClpBindingValues::Opacity(cells(vec![(0, 0, 0.25), (2, 2, 1.0)])),
+                values: ClmBindingValues::Opacity(cells(vec![(0, 0, 0.25), (2, 2, 1.0)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 3,
                 interpolate_mode: mode,
-                values: ClpBindingValues::TintG(cells(vec![(0, 0, 0.2), (2, 2, 1.0)])),
+                values: ClmBindingValues::TintG(cells(vec![(0, 0, 0.2), (2, 2, 1.0)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 3,
                 interpolate_mode: mode,
-                values: ClpBindingValues::ScreenTintB(cells(vec![(1, 1, 0.6)])),
+                values: ClmBindingValues::ScreenTintB(cells(vec![(1, 1, 0.6)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 2,
                 interpolate_mode: mode,
-                values: ClpBindingValues::Opacity(cells(vec![(0, 2, 0.3)])),
+                values: ClmBindingValues::Opacity(cells(vec![(0, 2, 0.3)])),
             },
         ],
     }];
@@ -445,15 +450,15 @@ fn a_two_param_rig_folds_the_same_in_every_interpolation_mode() {
 #[test]
 fn two_params_deforming_one_node_sum_the_same() {
     let nodes = vec![
-        node(None, "Root", ClpNodeKind::Group),
-        node(Some(0), "Body", ClpNodeKind::Part(part(quad(5.0, 5.0)))),
+        node(None, "Root", LegacyNodeKind::Group),
+        node(Some(0), "Body", LegacyNodeKind::Part(part(quad(5.0, 5.0)))),
     ];
-    let binding = |v: Vec<f32>| ClpBinding {
+    let binding = |v: Vec<f32>| LegacyBinding {
         node: 1,
         interpolate_mode: InterpolateMode::Linear,
-        values: ClpBindingValues::Deform(cells(vec![(1, 0, v)])),
+        values: ClmBindingValues::Deform(cells(vec![(1, 0, v)])),
     };
-    let param = |name: &str, values: Vec<f32>| ClpParam {
+    let param = |name: &str, values: Vec<f32>| LegacyParam {
         name: name.into(),
         is_vec2: false,
         min: [0.0, 0.0],
@@ -472,13 +477,13 @@ fn two_params_deforming_one_node_sum_the_same() {
 
 /// A mesh group over two parts, keyed by a param: the descent, the attachment
 /// bake and the `translate_children` filter all have to land the same.
-fn mesh_group_rig(dynamic: bool, translate_children: bool) -> ClpFile {
+fn mesh_group_rig(dynamic: bool, translate_children: bool) -> LegacyFile {
     let nodes = vec![
-        node(None, "Root", ClpNodeKind::Group),
+        node(None, "Root", LegacyNodeKind::Group),
         node(
             Some(0),
             "MG",
-            ClpNodeKind::MeshGroup(ClpMeshGroup {
+            LegacyNodeKind::MeshGroup(LegacyMeshGroup {
                 mesh: quad(20.0, 20.0),
                 dynamic,
                 translate_children,
@@ -488,17 +493,17 @@ fn mesh_group_rig(dynamic: bool, translate_children: bool) -> ClpFile {
             Some(1),
             "Under",
             [2.0, 3.0],
-            ClpNodeKind::Part(part(quad(6.0, 6.0))),
+            LegacyNodeKind::Part(part(quad(6.0, 6.0))),
         ),
-        at(Some(1), "Origin", [-4.0, 1.0], ClpNodeKind::Group),
+        at(Some(1), "Origin", [-4.0, 1.0], LegacyNodeKind::Group),
         at(
             Some(3),
             "Deep",
             [1.0, -1.0],
-            ClpNodeKind::Part(part(quad(2.0, 2.0))),
+            LegacyNodeKind::Part(part(quad(2.0, 2.0))),
         ),
     ];
-    let params = vec![ClpParam {
+    let params = vec![LegacyParam {
         name: "Warp".into(),
         is_vec2: false,
         min: [-1.0, 0.0],
@@ -507,18 +512,18 @@ fn mesh_group_rig(dynamic: bool, translate_children: bool) -> ClpFile {
         axis_points_x: vec![0.0, 0.5, 1.0],
         axis_points_y: vec![0.0],
         bindings: vec![
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::Deform(cells(vec![
+                values: ClmBindingValues::Deform(cells(vec![
                     (0, 0, vec![-5.0, 0.0, 3.0, 1.0, 0.0, -6.0, 2.0, 2.0]),
                     (2, 0, vec![4.0, 4.0, -2.0, 0.0, 1.0, 5.0, -3.0, 1.0]),
                 ])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 2,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::Deform(cells(vec![(
+                values: ClmBindingValues::Deform(cells(vec![(
                     2,
                     0,
                     vec![1.0, 1.0, -1.0, 0.0, 0.5, 0.5, 0.0, -1.0],
@@ -546,21 +551,21 @@ fn mesh_groups_propagate_the_same() {
 #[test]
 fn welds_solve_the_same() {
     let nodes = vec![
-        node(None, "Root", ClpNodeKind::Group),
+        node(None, "Root", LegacyNodeKind::Group),
         at(
             Some(0),
             "A",
             [-4.0, 0.0],
-            ClpNodeKind::Part(part(quad(4.0, 4.0))),
+            LegacyNodeKind::Part(part(quad(4.0, 4.0))),
         ),
         at(
             Some(0),
             "B",
             [4.0, 0.0],
-            ClpNodeKind::Part(part(quad(4.0, 4.0))),
+            LegacyNodeKind::Part(part(quad(4.0, 4.0))),
         ),
     ];
-    let params = vec![ClpParam {
+    let params = vec![LegacyParam {
         name: "Pull".into(),
         is_vec2: false,
         min: [0.0, 0.0],
@@ -569,19 +574,19 @@ fn welds_solve_the_same() {
         axis_points_x: vec![0.0, 1.0],
         axis_points_y: vec![0.0],
         bindings: vec![
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::Deform(cells(vec![(
+                values: ClmBindingValues::Deform(cells(vec![(
                     1,
                     0,
                     vec![0.0, 0.0, 2.0, 1.0, 2.0, -1.0, 0.0, 0.0],
                 )])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 2,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::Deform(cells(vec![(
+                values: ClmBindingValues::Deform(cells(vec![(
                     1,
                     0,
                     vec![-3.0, 0.5, 0.0, 0.0, 0.0, 0.0, -3.0, -0.5],
@@ -589,16 +594,16 @@ fn welds_solve_the_same() {
             },
         ],
     }];
-    let welds = vec![ClpWeld {
+    let welds = vec![LegacyWeld {
         a: 1,
         b: 2,
         pairs: vec![
-            ClpWeldPair {
+            ModelWeldPair {
                 a_vert: 1,
                 b_vert: 0,
                 weight: 0.5,
             },
-            ClpWeldPair {
+            ModelWeldPair {
                 a_vert: 2,
                 b_vert: 3,
                 weight: 0.25,
@@ -608,8 +613,8 @@ fn welds_solve_the_same() {
     check("welds", &file(nodes, params, welds));
 }
 
-fn physics(target: Option<u32>, local_only: bool) -> ClpSimplePhysics {
-    ClpSimplePhysics {
+fn physics(target: Option<u32>, local_only: bool) -> LegacySimplePhysics {
+    LegacySimplePhysics {
         kind: PendulumKind::RigidPendulum,
         map_mode: PhysicsParamMapMode::AngleLength,
         local_only,
@@ -629,29 +634,29 @@ fn physics(target: Option<u32>, local_only: bool) -> ClpSimplePhysics {
 #[test]
 fn chained_physics_drivers_agree_frame_by_frame() {
     let nodes = vec![
-        node(None, "Root", ClpNodeKind::Group),
+        node(None, "Root", LegacyNodeKind::Group),
         at(
             Some(0),
             "Upper",
             [0.0, 40.0],
-            ClpNodeKind::SimplePhysics(physics(Some(0), false)),
+            LegacyNodeKind::SimplePhysics(physics(Some(0), false)),
         ),
-        at(Some(0), "Mid", [0.0, 10.0], ClpNodeKind::Group),
+        at(Some(0), "Mid", [0.0, 10.0], LegacyNodeKind::Group),
         at(
             Some(2),
             "Lower",
             [5.0, -20.0],
-            ClpNodeKind::SimplePhysics(physics(Some(1), true)),
+            LegacyNodeKind::SimplePhysics(physics(Some(1), true)),
         ),
         at(
             Some(0),
             "Hair",
             [0.0, 0.0],
-            ClpNodeKind::Part(part(quad(6.0, 20.0))),
+            LegacyNodeKind::Part(part(quad(6.0, 20.0))),
         ),
     ];
     let params = vec![
-        ClpParam {
+        LegacyParam {
             name: "Swing".into(),
             is_vec2: true,
             min: [-1.0, 0.0],
@@ -661,29 +666,29 @@ fn chained_physics_drivers_agree_frame_by_frame() {
             axis_points_y: vec![0.0, 1.0],
             bindings: vec![
                 // The upper driver's output moves the lower driver's anchor.
-                ClpBinding {
+                LegacyBinding {
                     node: 2,
                     interpolate_mode: InterpolateMode::Linear,
-                    values: ClpBindingValues::TransformTX(cells(vec![(0, 0, -30.0), (2, 1, 30.0)])),
+                    values: ClmBindingValues::TransformTX(cells(vec![(0, 0, -30.0), (2, 1, 30.0)])),
                 },
-                ClpBinding {
+                LegacyBinding {
                     node: 4,
                     interpolate_mode: InterpolateMode::Linear,
-                    values: ClpBindingValues::Deform(cells(vec![
+                    values: ClmBindingValues::Deform(cells(vec![
                         (0, 0, vec![-4.0, 0.0, 4.0, 0.0, 0.0, 2.0, 0.0, -2.0]),
                         (2, 1, vec![4.0, 1.0, -4.0, 1.0, 0.0, -2.0, 0.0, 2.0]),
                     ])),
                 },
                 // An output-scale binding, so the pre-pass's second target
                 // kind is exercised too.
-                ClpBinding {
+                LegacyBinding {
                     node: 3,
                     interpolate_mode: InterpolateMode::Linear,
-                    values: ClpBindingValues::OutputScaleX(cells(vec![(0, 0, 0.5)])),
+                    values: ClmBindingValues::OutputScaleX(cells(vec![(0, 0, 0.5)])),
                 },
             ],
         },
-        ClpParam {
+        LegacyParam {
             name: "Tip".into(),
             is_vec2: false,
             min: [-1.0, 0.0],
@@ -691,10 +696,10 @@ fn chained_physics_drivers_agree_frame_by_frame() {
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-            bindings: vec![ClpBinding {
+            bindings: vec![LegacyBinding {
                 node: 4,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::TransformTY(cells(vec![(1, 0, 12.0)])),
+                values: ClmBindingValues::TransformTY(cells(vec![(1, 0, 12.0)])),
             }],
         },
     ];
@@ -706,11 +711,11 @@ fn chained_physics_drivers_agree_frame_by_frame() {
 #[test]
 fn a_translate_children_mesh_group_over_a_local_driver_agrees() {
     let nodes = vec![
-        node(None, "Root", ClpNodeKind::Group),
+        node(None, "Root", LegacyNodeKind::Group),
         node(
             Some(0),
             "MG",
-            ClpNodeKind::MeshGroup(ClpMeshGroup {
+            LegacyNodeKind::MeshGroup(LegacyMeshGroup {
                 mesh: quad(30.0, 30.0),
                 dynamic: false,
                 translate_children: true,
@@ -720,17 +725,17 @@ fn a_translate_children_mesh_group_over_a_local_driver_agrees() {
             Some(1),
             "Driver",
             [3.0, 6.0],
-            ClpNodeKind::SimplePhysics(physics(Some(1), true)),
+            LegacyNodeKind::SimplePhysics(physics(Some(1), true)),
         ),
         at(
             Some(1),
             "Skin",
             [0.0, 0.0],
-            ClpNodeKind::Part(part(quad(8.0, 8.0))),
+            LegacyNodeKind::Part(part(quad(8.0, 8.0))),
         ),
     ];
     let params = vec![
-        ClpParam {
+        LegacyParam {
             name: "Warp".into(),
             is_vec2: false,
             min: [-1.0, 0.0],
@@ -738,17 +743,17 @@ fn a_translate_children_mesh_group_over_a_local_driver_agrees() {
             defaults: [0.0, 0.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0],
-            bindings: vec![ClpBinding {
+            bindings: vec![LegacyBinding {
                 node: 1,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::Deform(cells(vec![(
+                values: ClmBindingValues::Deform(cells(vec![(
                     1,
                     0,
                     vec![6.0, -2.0, 6.0, -2.0, 6.0, -2.0, 6.0, -2.0],
                 )])),
             }],
         },
-        ClpParam {
+        LegacyParam {
             name: "Sway".into(),
             is_vec2: true,
             min: [-1.0, 0.0],
@@ -756,10 +761,10 @@ fn a_translate_children_mesh_group_over_a_local_driver_agrees() {
             defaults: [0.0, 1.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0, 1.0],
-            bindings: vec![ClpBinding {
+            bindings: vec![LegacyBinding {
                 node: 3,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::TransformTX(cells(vec![(1, 1, 7.0)])),
+                values: ClmBindingValues::TransformTX(cells(vec![(1, 1, 7.0)])),
             }],
         },
     ];
@@ -775,7 +780,7 @@ fn a_translate_children_mesh_group_over_a_local_driver_agrees() {
 #[test]
 fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
     let f = two_param_rig(InterpolateMode::Linear);
-    let mut model = Model::from_clp_file(&f).unwrap();
+    let mut model = Model::from_legacy(&f).unwrap();
     let mut puppet = Puppet::new(&model);
     let (px, py) = (
         ParamId::new("param-0.x").unwrap(),
@@ -832,21 +837,21 @@ fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
 fn a_model_edit_keeps_the_drivers_running() {
     let f = {
         let nodes = vec![
-            node(None, "Root", ClpNodeKind::Group),
+            node(None, "Root", LegacyNodeKind::Group),
             at(
                 Some(0),
                 "Driver",
                 [0.0, 40.0],
-                ClpNodeKind::SimplePhysics(physics(Some(0), false)),
+                LegacyNodeKind::SimplePhysics(physics(Some(0), false)),
             ),
             at(
                 Some(0),
                 "Hair",
                 [0.0, 0.0],
-                ClpNodeKind::Part(part(quad(6.0, 20.0))),
+                LegacyNodeKind::Part(part(quad(6.0, 20.0))),
             ),
         ];
-        let params = vec![ClpParam {
+        let params = vec![LegacyParam {
             name: "Swing".into(),
             is_vec2: true,
             min: [-1.0, 0.0],
@@ -854,15 +859,15 @@ fn a_model_edit_keeps_the_drivers_running() {
             defaults: [0.0, 1.0],
             axis_points_x: vec![0.0, 1.0],
             axis_points_y: vec![0.0, 1.0],
-            bindings: vec![ClpBinding {
+            bindings: vec![LegacyBinding {
                 node: 2,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::TransformTX(cells(vec![(1, 1, 20.0)])),
+                values: ClmBindingValues::TransformTX(cells(vec![(1, 1, 20.0)])),
             }],
         }];
         file(nodes, params, Vec::new())
     };
-    let mut model = Model::from_clp_file(&f).unwrap();
+    let mut model = Model::from_legacy(&f).unwrap();
     let mut puppet = Puppet::new(&model);
     puppet.settle_physics(&model);
     // Kick the pendulum away from rest and let it swing.
@@ -894,10 +899,10 @@ fn a_model_edit_keeps_the_drivers_running() {
 #[test]
 fn a_playing_animation_drives_the_same_frames() {
     let nodes = vec![
-        node(None, "Root", ClpNodeKind::Group),
-        node(Some(0), "Body", ClpNodeKind::Part(part(quad(5.0, 5.0)))),
+        node(None, "Root", LegacyNodeKind::Group),
+        node(Some(0), "Body", LegacyNodeKind::Part(part(quad(5.0, 5.0)))),
     ];
-    let params = vec![ClpParam {
+    let params = vec![LegacyParam {
         name: "Blink".into(),
         is_vec2: false,
         min: [0.0, 0.0],
@@ -906,15 +911,15 @@ fn a_playing_animation_drives_the_same_frames() {
         axis_points_x: vec![0.0, 0.5, 1.0],
         axis_points_y: vec![0.0],
         bindings: vec![
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::TransformTY(cells(vec![(0, 0, -3.0), (2, 0, 9.0)])),
+                values: ClmBindingValues::TransformTY(cells(vec![(0, 0, -3.0), (2, 0, 9.0)])),
             },
-            ClpBinding {
+            LegacyBinding {
                 node: 1,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClpBindingValues::Deform(cells(vec![(
+                values: ClmBindingValues::Deform(cells(vec![(
                     2,
                     0,
                     vec![1.0, 2.0, -1.0, 0.0, 0.0, 3.0, 0.5, -0.5],

@@ -26,7 +26,7 @@
 //!   refused if it is taken, and [`Model::rename_node_id`] and its two
 //!   siblings are the only way an Id ever changes — each rewrites every
 //!   reference to it. The root's Id starts out `root`; a model read from a
-//!   `.clp`, which stores no Ids, gets `node-<arena index>` for the rest.
+//!   `.clm`, which stores no Ids, gets `node-<arena index>` for the rest.
 //! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
 //!   free to repeat, and never a key.
 //! - **Every param is a scalar.** Joint control over two params is a property
@@ -64,15 +64,16 @@ pub use binding::{
 pub use check::CheckWarning;
 pub use eval::Pose;
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 use crate::components::{BlendMode, MaskMode};
-use crate::formats::clp::{
-    self as clp, ClpBindingValues, ClpMesh, ClpMeshGroup, ClpPhysics, ClpTransform, TextureAlpha,
-    TextureEncoding,
+use crate::formats::clm::{
+    self as clm, ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha, TextureEncoding,
 };
+use crate::formats::legacy::LegacyMeshGroup;
 use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, TexId};
 use crate::params::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
@@ -82,7 +83,7 @@ use crate::physics::{PendulumKind, PhysicsParamMapMode};
 /// covers any real model and the cap only fires on a wedged [`HexSource`].
 const ID_MINT_ATTEMPTS: usize = 64;
 
-/// Why an edit to a [`Model`] — or a read of a `.clp` file into one — could
+/// Why an edit to a [`Model`] — or a read of a `.clm` file into one — could
 /// not be carried out. Every mutating method leaves the model untouched when
 /// it returns one of these.
 #[derive(Debug, thiserror::Error)]
@@ -99,10 +100,10 @@ pub enum ModelError {
     IdExhausted,
     #[error(transparent)]
     Id(#[from] IdError),
-    #[error(".clp node arena must contain exactly one root at index 0")]
-    InvalidClpRoot,
-    #[error(".clp node {node} parent index {parent} must name a preceding node")]
-    InvalidClpParent { node: usize, parent: u32 },
+    #[error(".clm node arena must contain exactly one root at index 0")]
+    InvalidLegacyRoot,
+    #[error(".clm node {node} parent index {parent} must name a preceding node")]
+    InvalidLegacyParent { node: usize, parent: u32 },
     #[error("cannot reparent a node under itself or a descendant")]
     Cycle,
     #[error("the root node cannot be {0}")]
@@ -126,13 +127,13 @@ pub enum ModelError {
     #[error("a two-param binding needs two different params")]
     SelfPairedBinding,
     #[error(
-        "the two-param binding on node {node} ({target}) cannot be written to .clp v0: its \
+        "the two-param binding on node {node} ({target}) cannot be written to .clm v0: its \
          params are not an adjacent `<name>.x` / `<name>.y` pair"
     )]
     UnpairableBinding { node: String, target: &'static str },
     #[error(
         "physics node {0} drives two params that are not an adjacent `<name>.x` / `<name>.y` \
-         pair, which .clp v0 cannot express"
+         pair, which .clm v0 cannot express"
     )]
     UnpairablePhysicsTarget(String),
     #[error("binding target does not match the operation")]
@@ -141,8 +142,8 @@ pub enum ModelError {
     IndexOutOfRange,
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
-    #[error(".clp codec: {0}")]
-    Clp(#[from] crate::formats::clp::ClpError),
+    #[error(".clm codec: {0}")]
+    Legacy(#[from] crate::formats::legacy::LegacyError),
     #[error(transparent)]
     LoadLimit(#[from] crate::LoadLimitError),
 }
@@ -163,7 +164,7 @@ pub struct ModelTexture {
 #[derive(Debug, Clone)]
 pub struct Model {
     generation: u64,
-    physics: ClpPhysics,
+    physics: ClmPhysics,
     welds: Vec<ModelWeld>,
     nodes: HashMap<NodeId, ModelNode>,
     root: NodeId,
@@ -180,11 +181,11 @@ pub struct Model {
 pub struct ModelWeld {
     a: NodeId,
     b: NodeId,
-    pairs: Arc<Vec<clp::ClpWeldPair>>,
+    pairs: Arc<Vec<ModelWeldPair>>,
 }
 
 impl ModelWeld {
-    pub fn new(a: NodeId, b: NodeId, pairs: Vec<clp::ClpWeldPair>) -> Self {
+    pub fn new(a: NodeId, b: NodeId, pairs: Vec<ModelWeldPair>) -> Self {
         Self {
             a,
             b,
@@ -200,9 +201,22 @@ impl ModelWeld {
         &self.b
     }
 
-    pub fn pairs(&self) -> &[clp::ClpWeldPair] {
+    pub fn pairs(&self) -> &[ModelWeldPair] {
         &self.pairs
     }
+}
+
+/// One pair of welded vertices, one from each part. The vertex indices are
+/// how a weld is held in memory; `.clm` names them through seam slots instead
+/// (see [`crate::formats::clm`]).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ModelWeldPair {
+    /// Vertex indices into each part's mesh.
+    pub a_vert: u32,
+    pub b_vert: u32,
+    /// A's share of the meeting point in `[0, 1]`: 1.0 pins A and snaps B
+    /// to it, 0.5 meets midway.
+    pub weight: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -210,7 +224,7 @@ pub struct ModelNode {
     pub name: Name,
     pub enabled: bool,
     pub z_order: f32,
-    pub transform: ClpTransform,
+    pub transform: ClmTransform,
     pub lock_to_root: bool,
     pub kind: ModelNodeKind,
     parent: Option<NodeId>,
@@ -253,22 +267,22 @@ impl ModelNodeKind {
 /// A mesh behind an `Arc`: cloning a Model shares it, and the first edit
 /// through [`Model`] copies it out.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ModelMesh(Arc<ClpMesh>);
+pub struct ModelMesh(Arc<ClmMesh>);
 
 impl ModelMesh {
-    pub fn to_clp(&self) -> ClpMesh {
+    pub fn to_legacy(&self) -> ClmMesh {
         (*self.0).clone()
     }
 }
 
-impl From<ClpMesh> for ModelMesh {
-    fn from(mesh: ClpMesh) -> Self {
+impl From<ClmMesh> for ModelMesh {
+    fn from(mesh: ClmMesh) -> Self {
         Self(Arc::new(mesh))
     }
 }
 
 impl Deref for ModelMesh {
-    type Target = ClpMesh;
+    type Target = ClmMesh;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -294,11 +308,11 @@ impl ModelMeshGroup {
         }
     }
 
-    pub fn mesh(&self) -> &ClpMesh {
+    pub fn mesh(&self) -> &ClmMesh {
         &self.mesh
     }
 
-    pub fn from_clp(group: &ClpMeshGroup) -> Self {
+    pub fn from_legacy(group: &LegacyMeshGroup) -> Self {
         Self {
             dynamic: group.dynamic,
             translate_children: group.translate_children,
@@ -306,9 +320,9 @@ impl ModelMeshGroup {
         }
     }
 
-    pub fn to_clp(&self) -> ClpMeshGroup {
-        ClpMeshGroup {
-            mesh: self.mesh.to_clp(),
+    pub fn to_legacy(&self) -> LegacyMeshGroup {
+        LegacyMeshGroup {
+            mesh: self.mesh.to_legacy(),
             dynamic: self.dynamic,
             translate_children: self.translate_children,
         }
@@ -343,7 +357,7 @@ impl ModelPart {
         }
     }
 
-    pub fn mesh(&self) -> &ClpMesh {
+    pub fn mesh(&self) -> &ClmMesh {
         &self.mesh
     }
 
@@ -466,7 +480,7 @@ pub struct ModelParam {
     /// Rest value, in param-value space (unlike the key positions).
     pub default: f32,
     /// The values along the param at which a binding may hold authored cells,
-    /// normalized 0..1 across `[min, max]` — the same convention `.clp` stores
+    /// normalized 0..1 across `[min, max]` — the same convention `.clm` stores
     /// and the runtime interpolates in.
     pub key_positions: Vec<f32>,
 }
@@ -520,14 +534,14 @@ impl ModelBinding {
         self.interpolate_mode
     }
 
-    pub fn values(&self) -> &ClpBindingValues {
+    pub fn values(&self) -> &ClmBindingValues {
         &self.values
     }
 
     /// Copy-on-write access to the cells, dropping the dense grid derived from
     /// them. This is the only way a binding's cells change, which is what
     /// makes the memo safe to hand out from a `&self` method.
-    fn values_mut(&mut self) -> &mut ClpBindingValues {
+    fn values_mut(&mut self) -> &mut ClmBindingValues {
         self.dense.take();
         Arc::make_mut(&mut self.values.0)
     }
@@ -542,22 +556,22 @@ impl ModelBinding {
 /// A binding's authored cell grid behind an `Arc`, shared by every snapshot
 /// until one of them edits it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ModelBindingValues(Arc<ClpBindingValues>);
+pub struct ModelBindingValues(Arc<ClmBindingValues>);
 
 impl ModelBindingValues {
-    pub fn to_clp(&self) -> ClpBindingValues {
+    pub fn to_legacy(&self) -> ClmBindingValues {
         (*self.0).clone()
     }
 }
 
-impl From<ClpBindingValues> for ModelBindingValues {
-    fn from(values: ClpBindingValues) -> Self {
+impl From<ClmBindingValues> for ModelBindingValues {
+    fn from(values: ClmBindingValues) -> Self {
         Self(Arc::new(values))
     }
 }
 
 impl Deref for ModelBindingValues {
-    type Target = ClpBindingValues;
+    type Target = ClmBindingValues;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -572,7 +586,7 @@ impl ModelNode {
             name: Name::truncated(name),
             enabled: true,
             z_order: 0.0,
-            transform: ClpTransform {
+            transform: ClmTransform {
                 translation: [0.0; 3],
                 rotation: [0.0; 3],
                 scale: [1.0, 1.0],
@@ -593,7 +607,7 @@ impl ModelNode {
     }
 
     /// The node's mesh, for the two kinds that carry one.
-    pub fn mesh(&self) -> Option<&ClpMesh> {
+    pub fn mesh(&self) -> Option<&ClmMesh> {
         match &self.kind {
             ModelNodeKind::Part(p) => Some(p.mesh()),
             ModelNodeKind::MeshGroup(mg) => Some(mg.mesh()),
@@ -637,7 +651,7 @@ impl Model {
         nodes.insert(root.clone(), ModelNode::new("Root", ModelNodeKind::Group));
         Self {
             generation: 0,
-            physics: ClpPhysics::default(),
+            physics: ClmPhysics::default(),
             welds: Vec::new(),
             nodes,
             root,
@@ -1132,8 +1146,8 @@ impl Model {
     pub fn set_node_mesh_with(
         &mut self,
         id: &NodeId,
-        mesh: ClpMesh,
-        mut refit: impl FnMut(&ClpMesh, &ClpMesh, &[f32]) -> Vec<f32>,
+        mesh: ClmMesh,
+        mut refit: impl FnMut(&ClmMesh, &ClmMesh, &[f32]) -> Vec<f32>,
     ) -> Result<(), ModelError> {
         validate_mesh(&mesh)?;
         let old = match self.nodes.get(id).and_then(ModelNode::mesh) {
@@ -1153,7 +1167,7 @@ impl Model {
             // A deform's identity is sized to the mesh, so every binding on
             // the node loses its derived grid, authored cells or not.
             b.invalidate_dense();
-            if let ClpBindingValues::Deform(cells) = b.values_mut() {
+            if let ClmBindingValues::Deform(cells) = b.values_mut() {
                 for cell in &mut cells.cells {
                     cell.value = refit(&old, &mesh, &cell.value);
                 }
@@ -1168,7 +1182,7 @@ impl Model {
 
     /// Replace a meshed node's mesh, resizing every authored deform cell on it
     /// to the new vertex count (new vertices start at zero offset).
-    pub fn set_node_mesh(&mut self, id: &NodeId, mesh: ClpMesh) -> Result<(), ModelError> {
+    pub fn set_node_mesh(&mut self, id: &NodeId, mesh: ClmMesh) -> Result<(), ModelError> {
         self.set_node_mesh_with(id, mesh, |_, new, offsets| {
             let mut out = offsets.to_vec();
             out.resize(new.verts.len(), 0.0);
@@ -1352,11 +1366,11 @@ impl Model {
 
     // ---- physics and welds ----
 
-    pub fn physics(&self) -> &ClpPhysics {
+    pub fn physics(&self) -> &ClmPhysics {
         &self.physics
     }
 
-    pub fn set_physics(&mut self, physics: ClpPhysics) {
+    pub fn set_physics(&mut self, physics: ClmPhysics) {
         self.physics = physics;
         self.bump();
     }
@@ -1416,7 +1430,7 @@ impl Model {
             bytes = bytes.saturating_add(
                 weld.pairs
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<clp::ClpWeldPair>()),
+                    .saturating_mul(std::mem::size_of::<ModelWeldPair>()),
             );
         }
         for (id, node) in &self.nodes {
@@ -1459,7 +1473,7 @@ impl Model {
     }
 
     /// The node's mesh, for the two kinds that carry one.
-    pub fn node_mesh(&self, id: &NodeId) -> Option<&ClpMesh> {
+    pub fn node_mesh(&self, id: &NodeId) -> Option<&ClmMesh> {
         self.node(id)?.mesh()
     }
 
@@ -1539,7 +1553,7 @@ impl Model {
 }
 
 /// Vertices come in pairs, uvs match them, and every index names a vertex.
-fn validate_mesh(mesh: &ClpMesh) -> Result<(), ModelError> {
+fn validate_mesh(mesh: &ClmMesh) -> Result<(), ModelError> {
     if !mesh.verts.len().is_multiple_of(2) {
         return Err(ModelError::MalformedMesh(
             "vertex array is not [x, y] pairs",
@@ -1552,8 +1566,8 @@ fn validate_mesh(mesh: &ClpMesh) -> Result<(), ModelError> {
     }
     let vcount = mesh.verts.len() / 2;
     let max_index = match &mesh.indices {
-        clp::ClpIndices::U16(v) => v.iter().map(|&i| i as usize).max(),
-        clp::ClpIndices::U32(v) => v.iter().map(|&i| i as usize).max(),
+        clm::ClmIndices::U16(v) => v.iter().map(|&i| i as usize).max(),
+        clm::ClmIndices::U32(v) => v.iter().map(|&i| i as usize).max(),
     };
     if max_index.is_some_and(|m| m >= vcount) {
         return Err(ModelError::MalformedMesh("index names a missing vertex"));
@@ -1561,12 +1575,12 @@ fn validate_mesh(mesh: &ClpMesh) -> Result<(), ModelError> {
     Ok(())
 }
 
-fn mesh_size(mesh: &ClpMesh) -> usize {
+fn mesh_size(mesh: &ClmMesh) -> usize {
     let indices = match &mesh.indices {
-        clp::ClpIndices::U16(indices) => indices
+        clm::ClmIndices::U16(indices) => indices
             .capacity()
             .saturating_mul(std::mem::size_of::<u16>()),
-        clp::ClpIndices::U32(indices) => indices
+        clm::ClmIndices::U32(indices) => indices
             .capacity()
             .saturating_mul(std::mem::size_of::<u32>()),
     };
@@ -1577,13 +1591,13 @@ fn mesh_size(mesh: &ClpMesh) -> usize {
         .saturating_add(indices)
 }
 
-fn binding_values_size(values: &ClpBindingValues) -> usize {
-    use ClpBindingValues as V;
+fn binding_values_size(values: &ClmBindingValues) -> usize {
+    use ClmBindingValues as V;
     match values {
         V::Deform(cells) => cells
             .cells
             .capacity()
-            .saturating_mul(std::mem::size_of::<clp::ClpCell<Vec<f32>>>())
+            .saturating_mul(std::mem::size_of::<clm::ClmCell<Vec<f32>>>())
             .saturating_add(cells.cells.iter().fold(0usize, |bytes, cell| {
                 bytes.saturating_add(
                     cell.value
@@ -1610,7 +1624,7 @@ fn binding_values_size(values: &ClpBindingValues) -> usize {
         | V::OutputScaleY(cells) => cells
             .cells
             .capacity()
-            .saturating_mul(std::mem::size_of::<clp::ClpCell<f32>>()),
+            .saturating_mul(std::mem::size_of::<clm::ClmCell<f32>>()),
     }
 }
 
@@ -1623,7 +1637,7 @@ impl Default for Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::clp::{ClpIndices, ClpWeldPair};
+    use crate::formats::clm::ClmIndices;
     use crate::id::SeededHex;
 
     /// One model carrying every kind of thing a mutating method can reach.
@@ -1878,7 +1892,7 @@ mod tests {
             ),
             (
                 "set_physics",
-                Box::new(|r| r.model.set_physics(ClpPhysics::default())),
+                Box::new(|r| r.model.set_physics(ClmPhysics::default())),
             ),
             (
                 "set_welds",
@@ -1887,7 +1901,7 @@ mod tests {
                         .set_welds(vec![ModelWeld::new(
                             r.part.clone(),
                             r.other.clone(),
-                            vec![ClpWeldPair {
+                            vec![ModelWeldPair {
                                 a_vert: 0,
                                 b_vert: 0,
                                 weight: 1.0,
@@ -2094,7 +2108,7 @@ mod tests {
         // the binding that drives it, and the weld that ends on it
         assert_eq!(r.model.bindings().next().unwrap().node(), &new_node);
         assert_eq!(r.model.welds()[0].a(), &new_node);
-        assert!(r.model.to_clp_bytes().is_ok());
+        assert!(r.model.to_clm_bytes().is_ok());
 
         let new_param = ParamId::new("head-turn").unwrap();
         r.model.rename_param_id(&param, new_param.clone()).unwrap();
@@ -2113,14 +2127,14 @@ mod tests {
         r.model.rename_tex_id(&tex, new_tex.clone()).unwrap();
         assert_eq!(r.model.texture_ids(), std::slice::from_ref(&new_tex));
         assert_eq!(albedo(&r.model, &new_node), Some(new_tex));
-        assert!(r.model.to_clp_bytes().is_ok());
+        assert!(r.model.to_clm_bytes().is_ok());
 
         // Renaming the root moves the root handle too.
         let new_root = NodeId::new("body").unwrap();
         let old_root = r.root.clone();
         r.model.rename_node_id(&old_root, new_root.clone()).unwrap();
         assert_eq!(r.model.root(), &new_root);
-        assert!(r.model.to_clp_bytes().is_ok());
+        assert!(r.model.to_clm_bytes().is_ok());
     }
 
     #[test]
@@ -2344,7 +2358,7 @@ mod tests {
         // the copied node has its own binding.
         assert_eq!(m.bindings_of_param(&param).count(), 2);
         assert!(m.bindings().any(|b| b.node() == copy_masked));
-        assert!(m.to_clp_bytes().is_ok());
+        assert!(m.to_clm_bytes().is_ok());
     }
 
     #[test]
@@ -2418,7 +2432,7 @@ mod tests {
             ),
             Err(ModelError::UnknownTexture)
         ));
-        assert!(r.model.to_clp_bytes().is_ok());
+        assert!(r.model.to_clm_bytes().is_ok());
     }
 
     fn physics_target(m: &Model, node: &NodeId) -> Option<ParamId> {
@@ -2443,11 +2457,11 @@ mod tests {
         }
     }
 
-    pub(super) fn quad() -> ClpMesh {
-        ClpMesh {
+    pub(super) fn quad() -> ClmMesh {
+        ClmMesh {
             verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
             uvs: vec![0.0; 8],
-            indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
             origin: [0.0, 0.0],
         }
     }
@@ -2510,7 +2524,7 @@ mod bench {
 #[cfg(test)]
 mod tests_support {
     use super::*;
-    use crate::formats::clp::ClpIndices;
+    use crate::formats::clm::ClmIndices;
     use crate::id::SeededHex;
 
     /// A model with `nodes` parts, each carrying a `verts`-vertex mesh and a
@@ -2535,10 +2549,10 @@ mod tests_support {
                 .unwrap()
         };
         let (param_x, param_y) = (param("sweep.x", &mut model), param("sweep.y", &mut model));
-        let mesh = ClpMesh {
+        let mesh = ClmMesh {
             verts: (0..verts * 2).map(|i| i as f32).collect(),
             uvs: vec![0.0; verts * 2],
-            indices: ClpIndices::U16(Vec::new()),
+            indices: ClmIndices::U16(Vec::new()),
             origin: [0.0, 0.0],
         };
         let mut last = None;

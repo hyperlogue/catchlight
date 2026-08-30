@@ -2,7 +2,7 @@
 //! loose textures, and a best-effort text mirror of the model (`to_manifest`).
 //!
 //! The manifest is authoring sugar — meshes are *generated* (quad / grid) from
-//! texture dimensions, not stored vertex-for-vertex. `.clp` is the lossless
+//! texture dimensions, not stored vertex-for-vertex. `.clm` is the lossless
 //! form; `to_manifest` preserves structure (tree, transforms, textures, params)
 //! but re-generates meshes on re-import.
 //!
@@ -17,8 +17,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use catchlight_core::formats::clp::{
-    ClpIndices, ClpMesh, ClpPhysics, ClpTransform, TextureAlpha, TextureEncoding,
+use catchlight_core::formats::clm::{
+    ClmIndices, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{LoadBudget, LoadLimitError, LoadResource};
 
@@ -85,7 +85,7 @@ pub struct ManifestPhysics {
 
 impl Default for ManifestPhysics {
     fn default() -> Self {
-        let p = ClpPhysics::default();
+        let p = ClmPhysics::default();
         Self {
             pixels_per_meter: p.pixels_per_meter,
             gravity: p.gravity,
@@ -226,7 +226,7 @@ impl ModelManifestExt for Model {
         // one set of Ids.
         let mut hex = SeededHex::new(IMPORT_SEED);
         let mut m = Model::new();
-        m.set_physics(ClpPhysics {
+        m.set_physics(ClmPhysics {
             pixels_per_meter: manifest.physics.pixels_per_meter,
             gravity: manifest.physics.gravity,
         });
@@ -279,7 +279,7 @@ impl ModelManifestExt for Model {
                 let (kind, albedo) = build_kind(mn, &tex_ids, &tex_dims, budget)?;
                 let mut node =
                     ModelNode::new(mn.name.clone().unwrap_or_else(|| mn.id.clone()), kind);
-                node.transform = ClpTransform {
+                node.transform = ClmTransform {
                     translation: mn.translate.unwrap_or([0.0; 3]),
                     rotation: mn.rotate.unwrap_or([0.0; 3]),
                     scale: mn.scale.unwrap_or([1.0, 1.0]),
@@ -464,7 +464,7 @@ fn build_kind(
                 }
                 None => match dims {
                     Some((w, h)) => quad_mesh(w, h, budget)?,
-                    None => ClpMesh::default(),
+                    None => ClmMesh::default(),
                 },
             };
             Ok((ModelNodeKind::Part(ModelPart::new(mesh)), albedo))
@@ -478,7 +478,7 @@ fn gen_mesh(
     w: f32,
     h: f32,
     budget: &mut LoadBudget,
-) -> Result<ClpMesh, ManifestError> {
+) -> Result<ClmMesh, ManifestError> {
     match spec {
         MeshSpec::Quad => quad_mesh(w, h, budget),
         MeshSpec::Grid { cols, rows } => grid_mesh(w, h, cols, rows, budget),
@@ -487,14 +487,14 @@ fn gen_mesh(
 
 /// One quad centered on the origin, the texture mapped corner-to-corner. UV `v`
 /// increases downward, matching texture coordinate space.
-fn quad_mesh(w: f32, h: f32, budget: &mut LoadBudget) -> Result<ClpMesh, ManifestError> {
+fn quad_mesh(w: f32, h: f32, budget: &mut LoadBudget) -> Result<ClmMesh, ManifestError> {
     budget.charge(LoadResource::Vertices, 4)?;
     budget.charge(LoadResource::Indices, 6)?;
     let (hw, hh) = (w / 2.0, h / 2.0);
-    Ok(ClpMesh {
+    Ok(ClmMesh {
         verts: vec![-hw, -hh, hw, -hh, hw, hh, -hw, hh],
         uvs: vec![0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
-        indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+        indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
         origin: [0.0, 0.0],
     })
 }
@@ -505,7 +505,7 @@ fn grid_mesh(
     cols: u32,
     rows: u32,
     budget: &mut LoadBudget,
-) -> Result<ClpMesh, ManifestError> {
+) -> Result<ClmMesh, ManifestError> {
     let cols = u64::from(cols.max(1));
     let rows = u64::from(rows.max(1));
     let cells = budget.charge_product(LoadResource::ManifestGridCells, cols, rows)?;
@@ -571,11 +571,11 @@ fn grid_mesh(
         }
     }
     let indices = if vertex_count <= u16::MAX as u64 {
-        ClpIndices::U16(idx.iter().map(|&i| i as u16).collect())
+        ClmIndices::U16(idx.iter().map(|&i| i as u16).collect())
     } else {
-        ClpIndices::U32(idx)
+        ClmIndices::U32(idx)
     };
-    Ok(ClpMesh {
+    Ok(ClmMesh {
         verts,
         uvs,
         indices,
@@ -639,7 +639,7 @@ mod tests {
         } else {
             panic!("expected a part");
         }
-        assert!(m.to_clp_bytes().is_ok());
+        assert!(m.to_clm_bytes().is_ok());
         assert!(m.check().is_empty());
     }
 
@@ -763,7 +763,7 @@ mod tests {
             &root,
             ModelNode::new(
                 "ghost",
-                ModelNodeKind::Part(ModelPart::new(ClpMesh::default())),
+                ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
             ),
             &mut catchlight_core::id::SeededHex::new(0),
         )

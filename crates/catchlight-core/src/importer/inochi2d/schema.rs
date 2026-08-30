@@ -129,7 +129,7 @@ pub(super) struct SchemaNode {
     pub(super) output_scale: Vec<f32>,
 
     // The authored Composite flag the LegacyPuppet path hardcodes to true;
-    // the `.clp` importer reads it.
+    // the `.clm` importer reads it.
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) propagate_meshgroup: Option<bool>,
 }

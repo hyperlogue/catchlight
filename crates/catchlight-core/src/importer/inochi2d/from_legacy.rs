@@ -1,17 +1,17 @@
-//! `.clp → LegacyPuppet` build: load the editable format into a runtime [`LegacyPuppet`]
-//! (the editor/preview path, and the structural inverse of [`super::to_clp`]).
+//! `.clm → LegacyPuppet` build: load the editable format into a runtime [`LegacyPuppet`]
+//! (the editor/preview path, and the structural inverse of [`super::to_legacy`]).
 //!
 //! The flat arena makes this a linear fill — walk `nodes` in topological order
 //! and [`LegacyPuppet::insert_child`] each under its already-inserted parent — then
 //! reuse the inx path's mesh-group bake ([`bake_mesh_groups`]) and texture crop
 //! ([`crop_textures`]) so the result is the same `LegacyPuppet` an `.inx` load builds.
 //!
-//! `.clp` carries no uuids, but the runtime is uuid-keyed (masks resolve a node
+//! `.clm` carries no uuids, but the runtime is uuid-keyed (masks resolve a node
 //! by uuid, params/physics by uuid), so the build synthesizes `uuid = arena
 //! index`: node index → node uuid, param index → param uuid. The two are
 //! independent namespaces in `LegacyPuppet`, so the overlap is harmless. The one
 //! authored-vs-runtime transform redone here is the global g-scale fold into
-//! each SimplePhysics node's gravity (the `.clp` stores it authored/unscaled).
+//! each SimplePhysics node's gravity (the `.clm` stores it authored/unscaled).
 
 use glam::{Vec2, Vec3};
 
@@ -20,14 +20,16 @@ use crate::components::{
     TextureId, Transform,
 };
 use crate::deform::DeformStack;
-use crate::formats::clp::{
-    ClpBindingValues, ClpCells, ClpComposite, ClpFile, ClpIndices, ClpMask, ClpMesh, ClpMeshGroup,
-    ClpNode, ClpNodeKind, ClpParam, ClpPart, ClpSimplePhysics, ClpTexture, ClpTransform, ClpWeld,
-    TextureAlpha, TextureEncoding,
+use crate::formats::clm::{
+    ClmBindingValues, ClmCells, ClmIndices, ClmMesh, ClmTransform, TextureAlpha, TextureEncoding,
+};
+use crate::formats::legacy::{
+    LegacyComposite, LegacyFile, LegacyMask, LegacyMeshGroup, LegacyNode, LegacyNodeKind,
+    LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture, LegacyWeld,
 };
 use crate::formats::{ModelTexture, TextureFormat};
 use crate::legacy_puppet::LegacyPuppet;
-use crate::load_budget::{charge_clp_structure, LoadBudget};
+use crate::load_budget::{charge_legacy_structure, LoadBudget};
 use crate::meshgroup::MeshGroupAttachments;
 use crate::params::{
     Binding, BindingValues, DeformMatrix, Matrix, MeshGroupColorBindingError, Param,
@@ -37,29 +39,29 @@ use crate::physics::SimplePhysicsData;
 use super::convert::{bake_mesh_groups, binding_is_all_zero};
 use super::error::ImportError;
 
-/// Build a runtime [`LegacyPuppet`] from a decoded [`ClpFile`], downsampling each
+/// Build a runtime [`LegacyPuppet`] from a decoded [`LegacyFile`], downsampling each
 /// texture by `texture_halvings` power-of-two steps (0 = full resolution).
-pub fn from_clp(file: &ClpFile, texture_halvings: u32) -> Result<LegacyPuppet, ImportError> {
-    from_clp_with_budget(file, texture_halvings, &mut LoadBudget::default())
+pub fn from_legacy(file: &LegacyFile, texture_halvings: u32) -> Result<LegacyPuppet, ImportError> {
+    from_legacy_with_budget(file, texture_halvings, &mut LoadBudget::default())
 }
 
-pub fn from_clp_with_budget(
-    file: &ClpFile,
+pub fn from_legacy_with_budget(
+    file: &LegacyFile,
     texture_halvings: u32,
     budget: &mut LoadBudget,
 ) -> Result<LegacyPuppet, ImportError> {
-    from_clp_impl(file, texture_halvings, None, budget)
+    from_legacy_impl(file, texture_halvings, None, budget)
 }
 
-/// [`from_clp`] with a texture-prep memo: the editor rebuilds the puppet on
+/// [`from_legacy`] with a texture-prep memo: the editor rebuilds the puppet on
 /// every document edit, and re-decoding megabytes of unchanged PNGs per edit
 /// is what would otherwise dominate that rebuild.
-pub fn from_clp_cached(
-    file: &ClpFile,
+pub fn from_legacy_cached(
+    file: &LegacyFile,
     texture_halvings: u32,
     cache: &mut super::alpha_crop::TexturePrepCache,
 ) -> Result<LegacyPuppet, ImportError> {
-    from_clp_impl(
+    from_legacy_impl(
         file,
         texture_halvings,
         Some(cache),
@@ -67,13 +69,13 @@ pub fn from_clp_cached(
     )
 }
 
-fn from_clp_impl(
-    file: &ClpFile,
+fn from_legacy_impl(
+    file: &LegacyFile,
     texture_halvings: u32,
     cache: Option<&mut super::alpha_crop::TexturePrepCache>,
     budget: &mut LoadBudget,
 ) -> Result<LegacyPuppet, ImportError> {
-    charge_clp_structure(file, budget)?;
+    charge_legacy_structure(file, budget)?;
     let doc = &file.doc;
     let model_textures = build_model_textures(&file.textures)?;
     for texture in &model_textures {
@@ -82,7 +84,7 @@ fn from_clp_impl(
             .map_err(|error| ImportError::TextureDecode(error.to_string()))?;
         budget.check_texture_dimensions(width, height)?;
     }
-    // The .clp stores authored, unscaled physics; the runtime integrator wants
+    // The .clm stores authored, unscaled physics; the runtime integrator wants
     // gravity pre-folded with the puppet-level pixelsPerMeter × gravity, exactly
     // as the inx path folds it (convert.rs).
     let g_scale = doc.physics.pixels_per_meter * doc.physics.gravity;
@@ -91,8 +93,8 @@ fn from_clp_impl(
     // arena index → runtime NodeIdx. Topological order (`parent < self`)
     // guarantees a node's parent is already present, so this is a linear fill.
     let mut node_ids: Vec<NodeIdx> = Vec::with_capacity(doc.nodes.len());
-    for (i, clp_node) in doc.nodes.iter().enumerate() {
-        let parent = match clp_node.parent {
+    for (i, legacy_node) in doc.nodes.iter().enumerate() {
+        let parent = match legacy_node.parent {
             None => puppet.root(),
             Some(p) => *node_ids.get(p as usize).ok_or_else(|| {
                 ImportError::MalformedPayload(format!(
@@ -100,7 +102,7 @@ fn from_clp_impl(
                 ))
             })?,
         };
-        let node = build_node(clp_node, g_scale)?;
+        let node = build_node(legacy_node, g_scale)?;
         node_ids.push(puppet.insert_child(parent, node, Some(i as u32)));
     }
 
@@ -127,18 +129,18 @@ fn from_clp_impl(
     Ok(puppet)
 }
 
-/// Welds validate hard: `.clp` is machine-written, so a bad weld means the
+/// Welds validate hard: `.clm` is machine-written, so a bad weld means the
 /// writer is broken — reject the file rather than render a silently
 /// half-welded puppet.
 fn build_welds(
-    welds: &[ClpWeld],
+    welds: &[LegacyWeld],
     node_ids: &[NodeIdx],
-    nodes: &[ClpNode],
+    nodes: &[LegacyNode],
 ) -> Result<Vec<crate::weld::Weld>, ImportError> {
     let bad = |msg: String| ImportError::MalformedPayload(msg);
     let part_vert_count = |idx: u32| -> Result<usize, ImportError> {
         match nodes.get(idx as usize).map(|n| &n.kind) {
-            Some(ClpNodeKind::Part(p)) => Ok(p.mesh.verts.len() / 2),
+            Some(LegacyNodeKind::Part(p)) => Ok(p.mesh.verts.len() / 2),
             Some(_) => Err(bad(format!("weld endpoint {idx} is not a Part"))),
             None => Err(bad(format!("weld endpoint {idx} is not a node"))),
         }
@@ -189,22 +191,22 @@ fn build_welds(
     Ok(out)
 }
 
-fn build_node(clp: &ClpNode, g_scale: f32) -> Result<Node, ImportError> {
-    let transform = build_transform(&clp.transform);
-    let kind = build_node_kind(clp, &transform, g_scale)?;
+fn build_node(legacy: &LegacyNode, g_scale: f32) -> Result<Node, ImportError> {
+    let transform = build_transform(&legacy.transform);
+    let kind = build_node_kind(legacy, &transform, g_scale)?;
     Ok(Node {
-        name: clp.name.clone(),
-        enabled: clp.enabled,
+        name: legacy.name.clone(),
+        enabled: legacy.enabled,
         base_transform: transform,
-        base_z_order: clp.z_order,
+        base_z_order: legacy.z_order,
         transform,
-        z_order: clp.z_order,
-        lock_to_root: clp.lock_to_root,
+        z_order: legacy.z_order,
+        lock_to_root: legacy.lock_to_root,
         kind,
     })
 }
 
-fn build_transform(t: &ClpTransform) -> Transform {
+fn build_transform(t: &ClmTransform) -> Transform {
     Transform {
         translation: Vec3::from_array(t.translation),
         rotation: Vec3::from_array(t.rotation),
@@ -213,22 +215,22 @@ fn build_transform(t: &ClpTransform) -> Transform {
 }
 
 fn build_node_kind(
-    clp: &ClpNode,
+    legacy: &LegacyNode,
     transform: &Transform,
     g_scale: f32,
 ) -> Result<NodeKind, ImportError> {
-    Ok(match &clp.kind {
-        ClpNodeKind::Group => NodeKind::Group,
-        ClpNodeKind::Part(p) => NodeKind::Part(Box::new(build_part(p)?)),
-        ClpNodeKind::Composite(c) => NodeKind::Composite(Box::new(build_composite(c))),
-        ClpNodeKind::MeshGroup(m) => NodeKind::MeshGroup(Box::new(build_mesh_group(m)?)),
-        ClpNodeKind::SimplePhysics(s) => {
+    Ok(match &legacy.kind {
+        LegacyNodeKind::Group => NodeKind::Group,
+        LegacyNodeKind::Part(p) => NodeKind::Part(Box::new(build_part(p)?)),
+        LegacyNodeKind::Composite(c) => NodeKind::Composite(Box::new(build_composite(c))),
+        LegacyNodeKind::MeshGroup(m) => NodeKind::MeshGroup(Box::new(build_mesh_group(m)?)),
+        LegacyNodeKind::SimplePhysics(s) => {
             NodeKind::SimplePhysics(Box::new(build_simple_physics(s, transform, g_scale)))
         }
     })
 }
 
-fn build_part(p: &ClpPart) -> Result<PartData, ImportError> {
+fn build_part(p: &LegacyPart) -> Result<PartData, ImportError> {
     let mesh = build_mesh(&p.mesh)?;
     let deform_stack = DeformStack::new(mesh.vertices.len());
     let tint = Vec3::from_array(p.tint);
@@ -249,7 +251,7 @@ fn build_part(p: &ClpPart) -> Result<PartData, ImportError> {
     })
 }
 
-fn build_composite(c: &ClpComposite) -> CompositeData {
+fn build_composite(c: &LegacyComposite) -> CompositeData {
     let tint = Vec3::from_array(c.tint);
     let screen_tint = Vec3::from_array(c.screen_tint);
     CompositeData {
@@ -266,7 +268,7 @@ fn build_composite(c: &ClpComposite) -> CompositeData {
     }
 }
 
-fn build_mesh_group(m: &ClpMeshGroup) -> Result<MeshGroupData, ImportError> {
+fn build_mesh_group(m: &LegacyMeshGroup) -> Result<MeshGroupData, ImportError> {
     let mesh = build_mesh(&m.mesh)?;
     let deform_stack = DeformStack::new(mesh.vertices.len());
     Ok(MeshGroupData {
@@ -281,7 +283,7 @@ fn build_mesh_group(m: &ClpMeshGroup) -> Result<MeshGroupData, ImportError> {
 }
 
 fn build_simple_physics(
-    s: &ClpSimplePhysics,
+    s: &LegacySimplePhysics,
     transform: &Transform,
     g_scale: f32,
 ) -> SimplePhysicsData {
@@ -306,7 +308,7 @@ fn build_simple_physics(
     }
 }
 
-fn build_masks(masks: &[ClpMask]) -> Vec<Mask> {
+fn build_masks(masks: &[LegacyMask]) -> Vec<Mask> {
     masks
         .iter()
         .map(|m| Mask {
@@ -319,7 +321,7 @@ fn build_masks(masks: &[ClpMask]) -> Vec<Mask> {
 /// Rebuild a runtime [`Mesh`], re-establishing the invariant the deform/runtime
 /// loops rely on (every index in range, uvs 1:1 with vertices) — the same
 /// validation `convert.rs` does on the inx path.
-fn build_mesh(m: &ClpMesh) -> Result<Mesh, ImportError> {
+fn build_mesh(m: &ClmMesh) -> Result<Mesh, ImportError> {
     let vertices: Vec<Vec2> = m
         .verts
         .as_chunks::<2>()
@@ -342,8 +344,8 @@ fn build_mesh(m: &ClpMesh) -> Result<Mesh, ImportError> {
         )));
     }
     let indices = match &m.indices {
-        ClpIndices::U16(v) => MeshIndices::U16(v.clone()),
-        ClpIndices::U32(v) => MeshIndices::U32(v.clone()),
+        ClmIndices::U16(v) => MeshIndices::U16(v.clone()),
+        ClmIndices::U32(v) => MeshIndices::U32(v.clone()),
     };
     if let Some(bad) = indices.iter_u32().find(|&i| i as usize >= vertices.len()) {
         return Err(ImportError::MalformedPayload(format!(
@@ -361,9 +363,9 @@ fn build_mesh(m: &ClpMesh) -> Result<Mesh, ImportError> {
 
 fn build_param(
     id: u32,
-    p: &ClpParam,
+    p: &LegacyParam,
     node_ids: &[NodeIdx],
-    nodes: &[ClpNode],
+    nodes: &[LegacyNode],
 ) -> Result<Param, ImportError> {
     let width = p.axis_points_x.len().max(1);
     let height = p.axis_points_y.len().max(1);
@@ -374,9 +376,12 @@ fn build_param(
         let Some(&node) = node_ids.get(b.node as usize) else {
             continue;
         };
-        let clp_node = nodes.get(b.node as usize);
+        let legacy_node = nodes.get(b.node as usize);
         if let Some(target) = color_target(&b.values) {
-            if matches!(clp_node.map(|n| &n.kind), Some(ClpNodeKind::MeshGroup(_))) {
+            if matches!(
+                legacy_node.map(|n| &n.kind),
+                Some(LegacyNodeKind::MeshGroup(_))
+            ) {
                 return Err(MeshGroupColorBindingError {
                     param: id,
                     node: b.node,
@@ -387,7 +392,7 @@ fn build_param(
         }
         let values = build_binding_values(
             &b.values,
-            clp_node,
+            legacy_node,
             width,
             height,
             &p.axis_points_x,
@@ -416,8 +421,8 @@ fn build_param(
 /// The colour target a binding drives, or `None` for a target that is not a
 /// colour. Named after the field it would have folded into, so the load error
 /// names the property the binding meant to drive.
-fn color_target(v: &ClpBindingValues) -> Option<&'static str> {
-    use ClpBindingValues as V;
+fn color_target(v: &ClmBindingValues) -> Option<&'static str> {
+    use ClmBindingValues as V;
     Some(match v {
         V::Opacity(_) => "opacity",
         V::TintR(_) => "tint.r",
@@ -433,14 +438,14 @@ fn color_target(v: &ClpBindingValues) -> Option<&'static str> {
 /// Derive the dense evaluation grid from the stored authored cells — the
 /// loader half of the single-layer keypoint model (see [`crate::fill`]).
 fn build_binding_values(
-    v: &ClpBindingValues,
-    node: Option<&ClpNode>,
+    v: &ClmBindingValues,
+    node: Option<&LegacyNode>,
     width: usize,
     height: usize,
     axis_x: &[f32],
     axis_y: &[f32],
 ) -> Result<BindingValues, crate::deform::DeformShapeError> {
-    let scalar = |c: &ClpCells<f32>, identity: f32| -> Matrix<f32> {
+    let scalar = |c: &ClmCells<f32>, identity: f32| -> Matrix<f32> {
         let authored: Vec<((u32, u32), f32)> =
             c.cells.iter().map(|c| ((c.x, c.y), c.value)).collect();
         Matrix {
@@ -449,7 +454,7 @@ fn build_binding_values(
             data: crate::fill::derive_dense(width, height, axis_x, axis_y, &authored, &identity),
         }
     };
-    use ClpBindingValues as V;
+    use ClmBindingValues as V;
     Ok(match v {
         V::Deform(c) => {
             BindingValues::Deform(build_deform_matrix(c, node, width, height, axis_x, axis_y)?)
@@ -479,8 +484,8 @@ fn build_binding_values(
 /// uniform-stride [`DeformMatrix`]. An empty authored set derives all-zero
 /// offsets sized to the node's mesh.
 fn build_deform_matrix(
-    c: &ClpCells<Vec<f32>>,
-    node: Option<&ClpNode>,
+    c: &ClmCells<Vec<f32>>,
+    node: Option<&LegacyNode>,
     width: usize,
     height: usize,
     axis_x: &[f32],
@@ -513,15 +518,15 @@ fn build_deform_matrix(
     DeformMatrix::from_cells(width, height, cells)
 }
 
-fn node_mesh_flat_len(node: Option<&ClpNode>) -> usize {
+fn node_mesh_flat_len(node: Option<&LegacyNode>) -> usize {
     match node.map(|n| &n.kind) {
-        Some(ClpNodeKind::Part(p)) => p.mesh.verts.len(),
-        Some(ClpNodeKind::MeshGroup(mg)) => mg.mesh.verts.len(),
+        Some(LegacyNodeKind::Part(p)) => p.mesh.verts.len(),
+        Some(LegacyNodeKind::MeshGroup(mg)) => mg.mesh.verts.len(),
         _ => 0,
     }
 }
 
-fn build_model_textures(textures: &[ClpTexture]) -> Result<Vec<ModelTexture>, ImportError> {
+fn build_model_textures(textures: &[LegacyTexture]) -> Result<Vec<ModelTexture>, ImportError> {
     textures
         .iter()
         .map(|t| {
@@ -569,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn inx_and_clp_paths_reflect_z_order_identically() {
+    fn inx_and_legacy_paths_reflect_z_order_identically() {
         let model = InxModel {
             payload: json!({
                 "nodes": {
@@ -599,10 +604,10 @@ mod tests {
         };
 
         let direct = super::super::from_inx_model(&model).unwrap();
-        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
-        let rebuilt = from_clp(&clp, 0).unwrap();
+        let legacy = super::super::from_inx_model_to_legacy(&model).unwrap();
+        let rebuilt = from_legacy(&legacy, 0).unwrap();
 
-        assert_eq!(clp.doc.nodes[0].z_order, -2.5);
+        assert_eq!(legacy.doc.nodes[0].z_order, -2.5);
         assert_eq!(
             direct
                 .iter()
@@ -735,32 +740,32 @@ mod tests {
         }
     }
 
-    /// `.inx → LegacyPuppet` and `.inx → .clp → LegacyPuppet` must build the same runtime
+    /// `.inx → LegacyPuppet` and `.inx → .clm → LegacyPuppet` must build the same runtime
     /// puppet. Both insert nodes in the same DFS pre-order, so `iter()` (slot
     /// order) aligns them node-for-node, and `NodeIdx` is the slot index, so
     /// binding targets compare directly too.
     ///
     /// The single intentional divergence is Composite `propagate_mesh_group`
-    /// (the inx path hardcodes `true`; the `.clp` build honors the authored
+    /// (the inx path hardcodes `true`; the `.clm` build honors the authored
     /// value), which is asserted separately and deliberately left out here.
-    /// Param *ids* also differ by construction — `.clp` has no uuids, so the
+    /// Param *ids* also differ by construction — `.clm` has no uuids, so the
     /// build synthesizes `id = array index` — so params are matched by order.
     ///
-    /// Shared by [`reference_clp_build_matches_inx_puppet`] and
+    /// Shared by [`reference_legacy_build_matches_inx_puppet`] and
     /// [`synthetic_model_reflects_identically_on_both_paths`] so the model-gated
     /// test and the always-on one cannot check different things.
-    fn assert_puppets_match(inx_puppet: &LegacyPuppet, clp_puppet: &LegacyPuppet) {
-        assert_eq!(inx_puppet.len(), clp_puppet.len(), "node count");
+    fn assert_puppets_match(inx_puppet: &LegacyPuppet, file_puppet: &LegacyPuppet) {
+        assert_eq!(inx_puppet.len(), file_puppet.len(), "node count");
         assert_eq!(
             inx_puppet.textures().len(),
-            clp_puppet.textures().len(),
+            file_puppet.textures().len(),
             "texture count"
         );
-        for (a, b) in inx_puppet.textures().iter().zip(clp_puppet.textures()) {
+        for (a, b) in inx_puppet.textures().iter().zip(file_puppet.textures()) {
             assert_eq!((a.width, a.height), (b.width, b.height), "texture dims");
         }
 
-        for ((id, a), (_, b)) in inx_puppet.iter().zip(clp_puppet.iter()) {
+        for ((id, a), (_, b)) in inx_puppet.iter().zip(file_puppet.iter()) {
             let id = id.0;
             assert_eq!(a.name, b.name, "node {id} name");
             assert_eq!(a.enabled, b.enabled, "node {id} enabled");
@@ -811,10 +816,10 @@ mod tests {
 
         assert_eq!(
             inx_puppet.params().len(),
-            clp_puppet.params().len(),
+            file_puppet.params().len(),
             "param count"
         );
-        for (pa, pb) in inx_puppet.params().iter().zip(clp_puppet.params()) {
+        for (pa, pb) in inx_puppet.params().iter().zip(file_puppet.params()) {
             assert_eq!(pa.name, pb.name, "param name");
             let name = &pa.name;
             assert_eq!(pa.is_vec2, pb.is_vec2, "param {name} is_vec2");
@@ -845,12 +850,12 @@ mod tests {
 
     #[test]
     #[ignore = "needs the reference model at example_models/reference/"]
-    fn reference_clp_build_matches_inx_puppet() {
+    fn reference_legacy_build_matches_inx_puppet() {
         let model = load_reference();
         let inx_puppet = super::super::from_inx_model(&model).unwrap();
-        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
-        let clp_puppet = from_clp(&clp, 0).unwrap();
-        assert_puppets_match(&inx_puppet, &clp_puppet);
+        let legacy = super::super::from_inx_model_to_legacy(&model).unwrap();
+        let file_puppet = from_legacy(&legacy, 0).unwrap();
+        assert_puppets_match(&inx_puppet, &file_puppet);
     }
 
     /// A model authored in inochi2d's frame — Y-down, lower `zsort` in front —
@@ -987,7 +992,7 @@ mod tests {
 
     /// The always-on half of the reflection guard: with no reference model in
     /// the tree, this is what keeps `convert.rs` (inx → LegacyPuppet) and
-    /// `to_clp.rs` (inx → .clp → LegacyPuppet) negating the *same* set of fields.
+    /// `to_legacy.rs` (inx → .clm → LegacyPuppet) negating the *same* set of fields.
     ///
     /// Agreement alone is not enough — both paths could forget the same
     /// negation — so the absolute assertions below pin the authored → runtime
@@ -997,14 +1002,14 @@ mod tests {
     fn synthetic_model_reflects_identically_on_both_paths() {
         let model = reflection_fixture();
         let inx_puppet = super::super::from_inx_model(&model).unwrap();
-        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
-        let clp_puppet = from_clp(&clp, 0).unwrap();
+        let legacy = super::super::from_inx_model_to_legacy(&model).unwrap();
+        let file_puppet = from_legacy(&legacy, 0).unwrap();
 
         // 1. The two paths agree, field for field.
-        assert_puppets_match(&inx_puppet, &clp_puppet);
+        assert_puppets_match(&inx_puppet, &file_puppet);
 
         // 2. ...and they agree on the *right* answer. Checked on the inx
-        //    puppet; step 1 has already pinned the clp one to it.
+        //    puppet; step 1 has already pinned the legacy one to it.
         let front = node_named(&inx_puppet, "front");
         let back = node_named(&inx_puppet, "back");
 
@@ -1141,19 +1146,19 @@ mod tests {
             "opacity binding (control)"
         );
 
-        // The .clp intermediate itself, so a drift that cancels out across
-        // to_clp + from_clp still shows up.
-        assert_eq!(clp.doc.nodes[1].z_order, -1.0, "clp front z order");
-        assert_eq!(clp.doc.nodes[2].z_order, -5.0, "clp back z order");
+        // The .clm intermediate itself, so a drift that cancels out across
+        // to_legacy + from_legacy still shows up.
+        assert_eq!(legacy.doc.nodes[1].z_order, -1.0, "legacy front z order");
+        assert_eq!(legacy.doc.nodes[2].z_order, -5.0, "legacy back z order");
         assert_eq!(
-            clp.doc.nodes[1].transform.translation,
+            legacy.doc.nodes[1].transform.translation,
             [7.0, -10.0, 3.0],
-            "clp front translation"
+            "legacy front translation"
         );
         assert_eq!(
-            clp.doc.nodes[1].transform.rotation,
+            legacy.doc.nodes[1].transform.rotation,
             [-0.25, 0.5, -0.75],
-            "clp front rotation"
+            "legacy front rotation"
         );
     }
 
@@ -1165,19 +1170,19 @@ mod tests {
         out.into_inner()
     }
 
-    fn triangle_part() -> ClpNode {
-        ClpNode {
+    fn triangle_part() -> LegacyNode {
+        LegacyNode {
             parent: Some(0),
             name: "part".into(),
             enabled: true,
             z_order: 0.0,
-            transform: ClpTransform::default(),
+            transform: ClmTransform::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::Part(ClpPart {
-                mesh: ClpMesh {
+            kind: LegacyNodeKind::Part(LegacyPart {
+                mesh: ClmMesh {
                     verts: vec![0.0, 0.0, 10.0, 0.0, 5.0, 10.0],
                     uvs: vec![0.0, 0.0, 1.0, 0.0, 0.5, 1.0],
-                    indices: ClpIndices::U16(vec![0, 1, 2]),
+                    indices: ClmIndices::U16(vec![0, 1, 2]),
                     origin: [0.0, 0.0],
                 },
                 albedo: 0,
@@ -1191,25 +1196,25 @@ mod tests {
         }
     }
 
-    fn two_part_file(welds: Vec<crate::formats::clp::ClpWeld>) -> ClpFile {
-        let root = ClpNode {
+    fn two_part_file(welds: Vec<crate::formats::legacy::LegacyWeld>) -> LegacyFile {
+        let root = LegacyNode {
             parent: None,
             name: "root".into(),
             enabled: true,
             z_order: 0.0,
-            transform: ClpTransform::default(),
+            transform: ClmTransform::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::Group,
+            kind: LegacyNodeKind::Group,
         };
-        ClpFile {
-            version: crate::formats::clp::FORMAT_VERSION,
-            doc: crate::formats::clp::ClpDocument {
+        LegacyFile {
+            version: crate::formats::legacy::FORMAT_VERSION,
+            doc: crate::formats::legacy::LegacyDocument {
                 physics: Default::default(),
                 nodes: vec![root, triangle_part(), triangle_part()],
                 params: Vec::new(),
                 welds,
             },
-            textures: vec![ClpTexture {
+            textures: vec![LegacyTexture {
                 encoding: TextureEncoding::Png,
                 alpha: TextureAlpha::Straight,
                 data: tiny_png(),
@@ -1217,11 +1222,17 @@ mod tests {
         }
     }
 
-    fn weld(a: u32, b: u32, a_vert: u32, b_vert: u32, weight: f32) -> crate::formats::clp::ClpWeld {
-        crate::formats::clp::ClpWeld {
+    fn weld(
+        a: u32,
+        b: u32,
+        a_vert: u32,
+        b_vert: u32,
+        weight: f32,
+    ) -> crate::formats::legacy::LegacyWeld {
+        crate::formats::legacy::LegacyWeld {
             a,
             b,
-            pairs: vec![crate::formats::clp::ClpWeldPair {
+            pairs: vec![crate::model::ModelWeldPair {
                 a_vert,
                 b_vert,
                 weight,
@@ -1232,7 +1243,7 @@ mod tests {
     #[test]
     fn valid_welds_load_and_resolve_to_node_ids() {
         let file = two_part_file(vec![weld(1, 2, 0, 1, 0.25)]);
-        let puppet = from_clp(&file, 0).unwrap();
+        let puppet = from_legacy(&file, 0).unwrap();
         assert_eq!(puppet.welds().len(), 1);
         let w = &puppet.welds()[0];
         assert_ne!(w.a, w.b);
@@ -1252,7 +1263,7 @@ mod tests {
             ..crate::load_budget::LoadLimits::default()
         });
 
-        let err = match from_clp_with_budget(&file, 0, &mut budget) {
+        let err = match from_legacy_with_budget(&file, 0, &mut budget) {
             Err(error) => error,
             Ok(_) => panic!("expected the aggregate vertex budget to reject the file"),
         };
@@ -1269,7 +1280,7 @@ mod tests {
 
     #[test]
     fn malformed_welds_are_a_hard_error() {
-        let cases: Vec<(&str, Vec<crate::formats::clp::ClpWeld>)> = vec![
+        let cases: Vec<(&str, Vec<crate::formats::legacy::LegacyWeld>)> = vec![
             ("self weld", vec![weld(1, 1, 0, 0, 0.5)]),
             ("dangling node", vec![weld(1, 9, 0, 0, 0.5)]),
             ("non-Part endpoint", vec![weld(0, 1, 0, 0, 0.5)]),
@@ -1284,7 +1295,7 @@ mod tests {
         ];
         for (name, welds) in cases {
             let file = two_part_file(welds);
-            match from_clp(&file, 0) {
+            match from_legacy(&file, 0) {
                 Err(ImportError::MalformedPayload(_)) => {}
                 Err(other) => panic!("{name}: expected MalformedPayload, got {other:?}"),
                 Ok(_) => panic!("{name}: expected MalformedPayload, got a puppet"),
@@ -1294,36 +1305,36 @@ mod tests {
 
     /// A one-mesh-group, one-param file whose single binding aims `values` at
     /// the mesh group at index 1 — the shape no writer should produce.
-    fn colored_mesh_group_file(values: ClpBindingValues) -> ClpFile {
-        use crate::formats::clp as f;
-        let root = ClpNode {
+    fn colored_mesh_group_file(values: ClmBindingValues) -> LegacyFile {
+        use crate::formats::legacy as f;
+        let root = LegacyNode {
             parent: None,
             name: "root".into(),
             enabled: true,
             z_order: 0.0,
-            transform: ClpTransform::default(),
+            transform: ClmTransform::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::Group,
+            kind: LegacyNodeKind::Group,
         };
-        let mesh_group = ClpNode {
+        let mesh_group = LegacyNode {
             parent: Some(0),
             name: "lattice".into(),
             enabled: true,
             z_order: 0.0,
-            transform: ClpTransform::default(),
+            transform: ClmTransform::default(),
             lock_to_root: false,
-            kind: ClpNodeKind::MeshGroup(ClpMeshGroup {
-                mesh: ClpMesh::default(),
+            kind: LegacyNodeKind::MeshGroup(LegacyMeshGroup {
+                mesh: ClmMesh::default(),
                 dynamic: false,
                 translate_children: true,
             }),
         };
-        ClpFile {
+        LegacyFile {
             version: f::FORMAT_VERSION,
-            doc: f::ClpDocument {
+            doc: f::LegacyDocument {
                 physics: Default::default(),
                 nodes: vec![root, mesh_group],
-                params: vec![f::ClpParam {
+                params: vec![f::LegacyParam {
                     name: "shade".into(),
                     is_vec2: false,
                     min: [0.0, 0.0],
@@ -1331,7 +1342,7 @@ mod tests {
                     defaults: [0.0, 0.0],
                     axis_points_x: vec![0.0, 1.0],
                     axis_points_y: vec![0.0],
-                    bindings: vec![f::ClpBinding {
+                    bindings: vec![f::LegacyBinding {
                         node: 1,
                         interpolate_mode: crate::params::InterpolateMode::Linear,
                         values,
@@ -1343,9 +1354,9 @@ mod tests {
         }
     }
 
-    fn one_cell(value: f32) -> ClpCells<f32> {
-        ClpCells {
-            cells: vec![crate::formats::clp::ClpCell { x: 1, y: 0, value }],
+    fn one_cell(value: f32) -> ClmCells<f32> {
+        ClmCells {
+            cells: vec![crate::formats::clm::ClmCell { x: 1, y: 0, value }],
         }
     }
 
@@ -1355,7 +1366,7 @@ mod tests {
     /// silently would hide a broken model.
     #[test]
     fn color_binding_on_a_mesh_group_is_refused_at_load() {
-        use ClpBindingValues as V;
+        use ClmBindingValues as V;
         let cases = [
             (V::Opacity(one_cell(0.25)), "opacity"),
             (V::TintR(one_cell(0.5)), "tint.r"),
@@ -1368,8 +1379,8 @@ mod tests {
         for (values, target) in cases {
             let file = colored_mesh_group_file(values);
             // Through the encoded bytes, so the refusal covers a file on disk.
-            let bytes = crate::formats::clp::encode(&file.doc, &file.textures).unwrap();
-            let err = match crate::load::load_model(&bytes, crate::load::ModelFormat::Clp, 0) {
+            let bytes = crate::formats::legacy::encode(&file.doc, &file.textures).unwrap();
+            let err = match crate::load::load_model(&bytes, crate::load::ModelFormat::Clm, 0) {
                 Err(ImportError::MeshGroupColorBinding(err)) => err,
                 Err(other) => panic!("{target}: expected MeshGroupColorBinding, got {other:?}"),
                 Ok(_) => panic!("{target}: a colour binding on a mesh group must not load"),
@@ -1388,15 +1399,15 @@ mod tests {
     /// The control: the same binding on a node that *is* drawn still loads.
     #[test]
     fn color_binding_on_a_part_still_loads() {
-        let mut file = colored_mesh_group_file(ClpBindingValues::Opacity(one_cell(0.25)));
+        let mut file = colored_mesh_group_file(ClmBindingValues::Opacity(one_cell(0.25)));
         file.doc.nodes[1] = triangle_part();
-        file.textures = vec![ClpTexture {
+        file.textures = vec![LegacyTexture {
             encoding: TextureEncoding::Png,
             alpha: TextureAlpha::Straight,
             data: tiny_png(),
         }];
-        let bytes = crate::formats::clp::encode(&file.doc, &file.textures).unwrap();
-        let puppet = crate::load::load_model(&bytes, crate::load::ModelFormat::Clp, 0)
+        let bytes = crate::formats::legacy::encode(&file.doc, &file.textures).unwrap();
+        let puppet = crate::load::load_model(&bytes, crate::load::ModelFormat::Clm, 0)
             .expect("a colour binding on a part loads");
         assert_eq!(puppet.params().len(), 1);
         assert_eq!(puppet.params()[0].bindings.len(), 1);
@@ -1406,13 +1417,13 @@ mod tests {
     #[ignore = "needs the reference model at example_models/reference/"]
     fn build_honors_authored_propagate_meshgroup() {
         let model = load_reference();
-        let clp = super::super::from_inx_model_to_clp(&model).unwrap();
-        let clp_puppet = from_clp(&clp, 0).unwrap();
+        let legacy = super::super::from_inx_model_to_legacy(&model).unwrap();
+        let file_puppet = from_legacy(&legacy, 0).unwrap();
         // The model's root "Puppet Body" composite authors
         // propagate_mesh_group=false; the build must carry that through (the
         // inx path would force true).
         assert!(
-            clp_puppet.iter().any(|(_, n)| matches!(
+            file_puppet.iter().any(|(_, n)| matches!(
                 &n.kind,
                 NodeKind::Composite(c) if !c.propagate_mesh_group
             )),

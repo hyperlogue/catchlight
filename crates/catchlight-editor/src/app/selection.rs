@@ -1,16 +1,16 @@
 use super::*;
 use catchlight_core::id::NodeId;
 
-/// Rev-gated three-way mapping: Model `NodeRef` ⇄ clp arena index ⇄ core
-/// (puppet) node id. `from_clp` stamps the clp index as each node's uuid, which
-/// is what makes the core↔clp direction recoverable.
+/// Rev-gated three-way mapping: Model `NodeRef` ⇄ legacy arena index ⇄ core
+/// (puppet) node id. `from_legacy` stamps the arena index as each node's uuid, which
+/// is what makes the core↔arena direction recoverable.
 pub(super) struct NodeMapping {
     rev: u64,
     refs: Vec<NodeRef>,
     core_of: Vec<u32>,
     parent_of: Vec<Option<usize>>,
-    clp_of_ref: HashMap<u64, usize>,
-    clp_of_core: HashMap<u32, usize>,
+    arena_of_ref: HashMap<u64, usize>,
+    arena_of_core: HashMap<u32, usize>,
 }
 
 impl App {
@@ -18,7 +18,7 @@ impl App {
         self.selection.last().copied()
     }
 
-    /// Rebuild the ref⇄clp⇄core mapping when the document revision moves.
+    /// Rebuild the ref⇄arena⇄core mapping when the document revision moves.
     pub(super) fn ensure_mapping(&mut self, rev: u64) {
         if self.mapping.as_ref().is_some_and(|m| m.rev == rev) {
             return;
@@ -47,8 +47,8 @@ impl App {
                 .collect::<Vec<u32>>()
         });
         let Ok(core_of) = core_of else { return };
-        let clp_of_ref = refs.iter().enumerate().map(|(i, r)| (r.0, i)).collect();
-        let clp_of_core = core_of
+        let arena_of_ref = refs.iter().enumerate().map(|(i, r)| (r.0, i)).collect();
+        let arena_of_core = core_of
             .iter()
             .enumerate()
             .filter(|(_, &c)| c != u32::MAX)
@@ -59,21 +59,21 @@ impl App {
             refs,
             core_of,
             parent_of,
-            clp_of_ref,
-            clp_of_core,
+            arena_of_ref,
+            arena_of_core,
         });
     }
 
     pub(super) fn core_of_ref(&self, r: NodeRef) -> Option<u32> {
         let m = self.mapping.as_ref()?;
-        let i = *m.clp_of_ref.get(&r.0)?;
+        let i = *m.arena_of_ref.get(&r.0)?;
         let c = *m.core_of.get(i)?;
         (c != u32::MAX).then_some(c)
     }
 
     pub(super) fn ref_of_core(&self, core: u32) -> Option<NodeRef> {
         let m = self.mapping.as_ref()?;
-        let i = *m.clp_of_core.get(&core)?;
+        let i = *m.arena_of_core.get(&core)?;
         m.refs.get(i).copied()
     }
 
@@ -203,10 +203,10 @@ impl App {
         let primary = self.primary()?;
         let core = self.core_of_ref(primary)?;
         let mapping = self.mapping.as_ref()?;
-        let clp = *mapping.clp_of_ref.get(&primary.0)?;
+        let arena = *mapping.arena_of_ref.get(&primary.0)?;
         let parent_core = mapping
             .parent_of
-            .get(clp)
+            .get(arena)
             .copied()
             .flatten()
             .and_then(|pi| mapping.core_of.get(pi).copied())

@@ -12,7 +12,7 @@ fn main() -> eframe::Result<()> {
 
     let editor = Arc::new(Editor::new());
 
-    // Optional CLI argument: a .clp to open at startup.
+    // Optional CLI argument: a .clm to open at startup.
     let initial = std::env::args().nth(1).and_then(|path| {
         use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody};
         let title = catchlight_editor_server::file_stem(std::path::Path::new(&path));
