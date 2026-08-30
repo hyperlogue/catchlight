@@ -64,7 +64,9 @@ pub fn mesh_to_clm(mesh: &Mesh) -> ClmMesh {
 /// than bookkeeping Ids it never reads.
 pub struct Build {
     pub model: Model,
-    hex: SeededHex,
+    /// Public so a test can keep minting Ids after the model has moved into
+    /// a [`Rig`] — an edit between frames is a case worth writing.
+    pub hex: SeededHex,
 }
 
 impl Default for Build {
