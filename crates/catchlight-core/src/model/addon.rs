@@ -1270,6 +1270,54 @@ mod tests {
         assert!(addon.node(&child).is_some());
     }
 
+    /// A fragment is still an editable model: its roots are a sibling list of
+    /// their own, because their parents are not here to hold one.
+    #[test]
+    fn a_fragment_is_edited_like_any_other_model() {
+        let b = base();
+        let mut addon = hat_addon(&b);
+        let (hat, sway) = (named(&addon, "Hat"), named(&addon, "Sway"));
+        assert_eq!(addon.roots(), [hat.clone(), sway.clone()]);
+
+        addon.reorder(&sway, 0).unwrap();
+        assert_eq!(addon.roots(), [sway.clone(), hat.clone()]);
+
+        // A duplicated root lands beside the original, still a root.
+        let mut hex = SeededHex::new(5);
+        let copy = addon.duplicate_subtree(&hat, &mut hex).unwrap();
+        assert_eq!(addon.roots(), [sway.clone(), hat.clone(), copy.clone()]);
+        assert!(addon.is_fragment());
+
+        // Reparenting one root under another takes it off the root list.
+        addon.reparent(&copy, &hat).unwrap();
+        assert_eq!(addon.roots(), [sway.clone(), hat.clone()]);
+        assert_eq!(addon.node(&hat).unwrap().children(), [copy.clone()]);
+
+        addon.delete_node(&sway).unwrap();
+        assert_eq!(addon.roots(), [hat.clone()]);
+
+        // Two hats now, so install renames nothing and both arrive.
+        let mut m = b.m.clone();
+        m.install(&addon).unwrap();
+        assert_eq!(m.node(&copy).unwrap().parent(), Some(&hat));
+    }
+
+    /// A fragment's dangling weld end is a requirement, not a broken weld, so
+    /// the editor's lint pass has nothing to say about it.
+    #[test]
+    fn check_does_not_lint_a_fragments_dangling_weld() {
+        let b = base();
+        let addon = hat_addon(&b);
+        assert!(
+            !addon
+                .check()
+                .iter()
+                .any(|w| w.message.contains("carries no such seam")),
+            "{:?}",
+            addon.check()
+        );
+    }
+
     /// Extracting from the root gives back a complete model, not a fragment:
     /// the root's parent is `None`, which is the only thing that ever made it
     /// one.
