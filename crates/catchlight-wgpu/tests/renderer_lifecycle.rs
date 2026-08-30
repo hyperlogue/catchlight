@@ -279,7 +279,7 @@ fn one_submit_per_frame_regardless_of_part_count() {
         );
         assert_eq!(
             fs.deform_buffer_writes, 0,
-            "{label}: deforms upload from sync_deforms, outside the frame",
+            "{label}: deforms upload from upload_deforms, outside the frame",
         );
         assert_eq!(
             fs.queue_writes, 3,
@@ -351,7 +351,7 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
     );
     assert_eq!(
         first.deform_buffer_reallocs, 0,
-        "the deform atlas grew during upload_puppet, before the frame",
+        "the deform atlas grew before the frame, with the meshes",
     );
     assert_eq!(
         first.late_buffer_reallocs, 0,

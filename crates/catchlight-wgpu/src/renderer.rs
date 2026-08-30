@@ -147,8 +147,8 @@ pub struct RenderStats {
     /// batched `write_buffer` flushed at frame end).
     pub instance_bytes_uploaded: u64,
     /// Bytes written into the deform atlas by the preceding
-    /// `sync_deforms`. Zero on a static frame where every resident
-    /// deform generation already matched.
+    /// [`WgpuRenderer::upload_deforms`]. Zero on a static frame where every
+    /// resident deform generation already matched.
     pub deform_bytes_uploaded: u64,
     /// Offscreen composite slots acquired this frame (peak concurrent
     /// is the pool's reuse cursor — non-nested composites share a slot).
@@ -183,7 +183,8 @@ pub struct FrameStats {
     /// `render_list`, into that view's own ring slot.
     pub camera_buffer_writes: u32,
     /// `queue.write_buffer` calls targeting the deform atlas. Deforms
-    /// upload from `sync_deforms`, outside the frame, so this reads 0.
+    /// upload from [`WgpuRenderer::upload_deforms`], outside the frame, so
+    /// this reads 0.
     pub deform_buffer_writes: u32,
     /// Times `instance_buffer` was recreated this frame. Only
     /// `begin_frame_instances` may do this, so: 1 on the first frame that
@@ -1572,10 +1573,6 @@ impl<V> DenseMap<V> {
         self.slots.clear();
     }
 
-    fn truncate(&mut self, len: usize) {
-        self.slots.truncate(len);
-    }
-
     /// Indices currently holding a value, ascending. Used to sweep the
     /// deform-upload set for meshes that went inactive this frame.
     fn keys(&self) -> impl Iterator<Item = usize> + '_ {
@@ -1614,8 +1611,8 @@ pub struct WgpuRenderer {
     deform_buffer_capacity: u64,
     deform_buffer_len: u64,
     deform_upload_mirror: Vec<u8>,
-    // Bytes written by the most recent `sync_deforms`, folded into the
-    // next `render_list`'s RenderStats (sync runs before render_list,
+    // Bytes written by the most recent `upload_deforms`, folded into the
+    // next `render_list`'s RenderStats (the upload runs before render_list,
     // which resets current_stats, so it can't accumulate directly).
     pending_deform_bytes: u64,
     // Per-frame pass / draw tallies. Atomics, not plain counters on
@@ -1657,7 +1654,7 @@ pub struct WgpuRenderer {
     gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
     /// MeshIds whose deform buffer currently holds active data on the
     /// GPU, paired with the `DeformStack` generation that produced it.
-    /// `sync_deforms` skips writes when the active generation is already
+    /// `upload_deforms` skips writes when the active generation is already
     /// resident and zero-fills meshes that transition back to inactive.
     deform_uploaded: DenseMap<u64>,
     deform_still_active: DenseMap<()>,
@@ -2395,49 +2392,6 @@ impl WgpuRenderer {
         pixels_to_scissor(acc?, width, height)
     }
 
-    pub fn upload_puppet(
-        &mut self,
-        puppet: &catchlight_core::LegacyPuppet,
-    ) -> RendererResult<(usize, usize)> {
-        let _span = tracing::trace_span!("upload_puppet").entered();
-        let texture_count = puppet.textures().len();
-        self.upload_puppet_textures(puppet.textures())?;
-        let mesh_count = self.upload_puppet_meshes(puppet)?;
-        Ok((texture_count, mesh_count))
-    }
-
-    /// For every Part/MeshGroup with an active DeformStack, push the
-    /// combined per-vertex deform into its GPU deform_buffer. Call
-    /// after `LegacyPuppet::combine_deforms()` and before `render_list()`.
-    pub fn sync_deforms(&mut self, puppet: &catchlight_core::LegacyPuppet) {
-        let _span = tracing::trace_span!("sync_deforms").entered();
-        use catchlight_core::NodeKind;
-        let active = puppet.iter_deform_nodes().filter_map(|(node_id, node)| {
-            let stack = match &node.kind {
-                NodeKind::Part(p) => &p.deform_stack,
-                NodeKind::MeshGroup(mg) => &mg.deform_stack,
-                _ => return None,
-            };
-            stack
-                .is_active()
-                .then(|| (node_id.0, stack.generation(), stack.combined()))
-        });
-        self.upload_deforms(active);
-    }
-
-    /// Like [`Self::sync_deforms`] but uploads from a [`DeformSnapshot`]
-    /// captured while the puppet was idle, so a caller can compute the next
-    /// frame's deforms (which overwrite the live `combined` buffers in
-    /// place) concurrently with this upload — the snapshot owns its copy.
-    pub fn sync_deforms_snapshot(&mut self, snapshot: &crate::DeformSnapshot) {
-        let _span = tracing::trace_span!("sync_deforms_snapshot").entered();
-        let active = snapshot
-            .entries
-            .iter()
-            .map(|e| (e.node_id, e.generation, e.combined.as_slice()));
-        self.upload_deforms(active);
-    }
-
     /// Shared deform-upload core: write each changed mesh's combined verts
     /// into the mirror, zero meshes that went inactive (otherwise the
     /// vertex shader keeps reading a stale config's offsets), and flush the
@@ -2464,7 +2418,7 @@ impl WgpuRenderer {
                     node = mesh_id,
                     stack_len = combined.len(),
                     buffer_len = buf.vert_count,
-                    "sync_deforms: deform length mismatch, skipping",
+                    "upload_deforms: deform length mismatch, skipping",
                 );
                 continue;
             }
@@ -2551,55 +2505,6 @@ impl WgpuRenderer {
     pub fn clear_meshes(&mut self) {
         self.mesh_buffers.clear();
         self.reset_deform_buffer_layout();
-    }
-
-    /// Uploads every Part / MeshGroup mesh. A mesh that fails upload is
-    /// skipped with a warning rather than aborting the puppet — one
-    /// quirky mesh must not blank every other part (callers like the
-    /// bevy prepare step log the error and drop the whole upload).
-    pub fn upload_puppet_meshes(
-        &mut self,
-        puppet: &catchlight_core::LegacyPuppet,
-    ) -> RendererResult<usize> {
-        use catchlight_core::NodeKind;
-        let mut mesh_count = 0;
-        self.clear_meshes();
-
-        for (node_id, node) in puppet.iter_deform_nodes() {
-            let mesh = match &node.kind {
-                NodeKind::Part(part) => &part.mesh,
-                NodeKind::MeshGroup(mg) => &mg.mesh,
-                _ => unreachable!("iter_deform_nodes only yields Part/MeshGroup nodes"),
-            };
-
-            if mesh.vertices.is_empty() {
-                continue;
-            }
-            // The format marks uvs optional; a MeshGroup without uvs is
-            // normal (its mesh only drives deformation, never draws). A
-            // Part without uvs *is* drawn — upload_mesh substitutes
-            // zeros, so flag it.
-            if mesh.uvs.is_empty() && matches!(node.kind, NodeKind::Part(_)) {
-                tracing::warn!(
-                    node = node_id.0,
-                    name = %node.name,
-                    "part mesh has no uvs; substituting (0,0) for every vertex",
-                );
-            }
-
-            let mesh_id = node_id.0;
-            match self.upload_mesh(mesh_id, mesh) {
-                Ok(()) => mesh_count += 1,
-                Err(err) => {
-                    tracing::warn!(
-                        node = node_id.0,
-                        name = %node.name,
-                        "skipping mesh that failed upload: {err}",
-                    );
-                }
-            }
-        }
-        Ok(mesh_count)
     }
 
     /// Tolerance matches the importer (which matches the reference's
@@ -3423,14 +3328,6 @@ impl WgpuRenderer {
 
         self.draw_filter_scratch = valid;
         Ok(true)
-    }
-
-    pub fn upload_puppet_textures(&mut self, textures: &[PuppetTexture]) -> RendererResult<()> {
-        for (i, texture) in textures.iter().enumerate() {
-            self.upload_texture(i as u32, texture)?;
-        }
-        self.textures.truncate(textures.len());
-        Ok(())
     }
 
     /// Filter `drawables` for resident GPU resources into
@@ -5381,7 +5278,7 @@ mod tests {
     use super::{
         blend_mode_to_wgpu, blend_transparent_src_is_identity, camera_slot_offset,
         pixels_to_scissor, project_aabb_to_pixels, renders_as_over, same_mask_signature, Aabb2,
-        DenseMap, RendererError, ScreenRect, TextureSource, CAMERA_RING_SLOTS,
+        RendererError, ScreenRect, TextureSource, CAMERA_RING_SLOTS,
     };
     use catchlight_core::{BlendMode, PuppetTexture};
     use std::sync::Arc;
@@ -5405,18 +5302,6 @@ mod tests {
             height: 1,
             rgba,
         }));
-    }
-
-    #[test]
-    fn dense_map_truncate_drops_stale_slots() {
-        let mut map = DenseMap::default();
-        map.insert(1, 10);
-        map.insert(3, 30);
-
-        map.truncate(2);
-
-        assert_eq!(map.get(1), Some(&10));
-        assert_eq!(map.get(3), None);
     }
 
     #[test]

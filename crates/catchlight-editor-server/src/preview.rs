@@ -7,8 +7,8 @@
 //! inside the renderer that prepared it — so two sessions cannot hold live
 //! caches at once. The cache is therefore kept alongside the session it was
 //! prepared for and re-prepared when the previewed session changes, which is
-//! what the old per-render `upload_puppet` did unconditionally. Previewing
-//! one session repeatedly keeps its decode memo.
+//! what the old per-render whole-puppet upload did unconditionally.
+//! Previewing one session repeatedly keeps its decode memo.
 
 use std::path::Path;
 

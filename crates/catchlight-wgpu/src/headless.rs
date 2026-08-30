@@ -1,4 +1,4 @@
-use catchlight_core::{DeformSource, GlobalTransforms, LegacyPuppet, NodeKind, Puppet, Vec2};
+use catchlight_core::{NodeKind, Puppet, Vec2};
 
 use crate::{
     create_headless_context, read_texture_to_rgba, CompositePool, FramebufferSnapshotPool,
@@ -14,7 +14,6 @@ pub struct RenderContext {
     pub view: wgpu::TextureView,
     pub width: u32,
     pub height: u32,
-    pub transforms: GlobalTransforms,
 }
 
 impl RenderContext {
@@ -60,7 +59,6 @@ impl RenderContext {
             view,
             width,
             height,
-            transforms: GlobalTransforms::new(),
         })
     }
 
@@ -122,27 +120,6 @@ pub fn apply_uniform_scratch_deform(puppet: &mut Puppet, shift: Vec2) {
             continue;
         }
         puppet.set_scratch_deform(id, &vec![shift; count]);
-    }
-    puppet.combine_deforms();
-}
-
-// legacy: removed by cl-32i.8
-pub fn apply_uniform_test_deform(puppet: &mut LegacyPuppet, shift: Vec2) {
-    let ids_and_lens: Vec<_> = puppet
-        .iter()
-        .filter_map(|(id, node)| match &node.kind {
-            NodeKind::Part(p) => Some((id, p.mesh.vertices.len())),
-            _ => None,
-        })
-        .collect();
-    for (id, n) in ids_and_lens {
-        if n == 0 {
-            continue;
-        }
-        let _ = puppet.update_deform_source(id, DeformSource::Test, |buf| {
-            debug_assert_eq!(buf.len(), n);
-            buf.fill(shift);
-        });
     }
     puppet.combine_deforms();
 }
