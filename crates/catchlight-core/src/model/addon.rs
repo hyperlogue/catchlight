@@ -592,6 +592,7 @@ impl Model {
                 })
                 .collect(),
             animations: Vec::new(),
+            binding_index: OnceLock::new(),
         }
     }
 

@@ -472,6 +472,7 @@ impl Model {
             texture_order,
             bindings,
             animations: Vec::new(),
+            binding_index: OnceLock::new(),
         })
     }
 }

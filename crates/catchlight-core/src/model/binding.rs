@@ -446,14 +446,29 @@ impl Model {
     }
 
     pub fn binding(&self, key: &BindingKey) -> Option<&ModelBinding> {
-        self.bindings.iter().find(|b| &b.key == key)
+        self.bindings.get(*self.binding_index().get(key)?)
+    }
+
+    /// `bindings` by key, built on the first lookup after an edit. A puppet
+    /// bakes every binding in the model and a rebake does it again, so the
+    /// lookup this backs is on a path that runs once per binding — a scan
+    /// there is quadratic in the model's size.
+    fn binding_index(&self) -> &HashMap<BindingKey, usize> {
+        self.binding_index.get_or_init(|| {
+            self.bindings
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (b.key.clone(), i))
+                .collect()
+        })
     }
 
     fn binding_mut(&mut self, key: &BindingKey) -> Result<&mut ModelBinding, ModelError> {
-        self.bindings
-            .iter_mut()
-            .find(|b| &b.key == key)
-            .ok_or(ModelError::UnknownBinding)
+        let i = *self
+            .binding_index()
+            .get(key)
+            .ok_or(ModelError::UnknownBinding)?;
+        self.bindings.get_mut(i).ok_or(ModelError::UnknownBinding)
     }
 
     fn check_cell(&self, key: &BindingKey, cell: [u32; 2]) -> Result<(), ModelError> {
@@ -1322,5 +1337,71 @@ mod tests {
         ));
         // A non-colour target on the same node is fine.
         r.m.add_binding(&r.tx(&group)).unwrap();
+    }
+
+    /// Every key in `bindings()` resolves to the binding at that position, and
+    /// nothing else resolves at all. `binding` reads a derived index, so this
+    /// is the check that the index never outlives the edit that invalidated
+    /// it.
+    fn index_agrees_with_the_vec(m: &Model, what: &str) {
+        for (i, b) in m.bindings().enumerate() {
+            let found = m.binding(b.key());
+            assert!(
+                found.is_some_and(|f| std::ptr::eq(f, b)),
+                "{what}: binding {i} ({:?}) is not what its own key resolves to",
+                b.key()
+            );
+        }
+        assert_eq!(
+            m.bindings().count(),
+            m.bindings()
+                .map(|b| b.key().clone())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            "{what}: two bindings share a key"
+        );
+    }
+
+    #[test]
+    fn the_binding_index_survives_every_edit_that_moves_a_binding() {
+        let mut r = rig();
+        let (group, part, param) = (r.group.clone(), r.part.clone(), r.param.clone());
+
+        r.m.add_binding(&r.tx(&group)).unwrap();
+        r.m.add_binding(&r.deform(&part)).unwrap();
+        index_agrees_with_the_vec(&r.m, "after add");
+
+        let gone = r.tx(&group);
+        r.m.delete_binding(&gone).unwrap();
+        assert!(
+            r.m.binding(&gone).is_none(),
+            "a deleted key resolves to none"
+        );
+        index_agrees_with_the_vec(&r.m, "after delete");
+
+        r.m.add_binding(&r.tx(&group)).unwrap();
+        let renamed = ParamId::new("renamed").unwrap();
+        r.m.rename_param_id(&param, renamed.clone()).unwrap();
+        assert!(
+            r.m.binding(&BindingKey::new(
+                param.clone(),
+                group.clone(),
+                BindingTarget::Scalar(ScalarTarget::Tx)
+            ))
+            .is_none(),
+            "the old param id no longer resolves"
+        );
+        index_agrees_with_the_vec(&r.m, "after a param rename");
+
+        let renamed_node = NodeId::new("renamed-part").unwrap();
+        r.m.rename_node_id(&part, renamed_node).unwrap();
+        index_agrees_with_the_vec(&r.m, "after a node rename");
+
+        r.m.delete_node(&group).unwrap();
+        index_agrees_with_the_vec(&r.m, "after deleting a bound node");
+
+        r.m.delete_param(&renamed).unwrap();
+        assert_eq!(r.m.bindings().count(), 0, "the param took its bindings");
+        index_agrees_with_the_vec(&r.m, "after deleting the param");
     }
 }
