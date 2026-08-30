@@ -120,9 +120,9 @@ that enforces them, not here. Add new ones there.
   rather than Ids
 - `crates/catchlight-wgpu/src/renderer.rs` — buffer writes, submits, camera
   slots, masking blends, resource sharing, WebGL fallbacks
-- `crates/catchlight-wgpu/src/lib.rs` — headless context (on
-  `create_headless_context`), the camera's missing axis flip (on
-  `create_orthographic_camera_at`)
+- `crates/catchlight-wgpu/src/lib.rs` — on `create_headless_context`, the
+  backend and adapter choice; on `create_orthographic_camera_at`, that the
+  camera holds no axis flip
 - `crates/catchlight-editor-protocol/src/lib.rs` — Ids on the wire, the document
   path against the presence path
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
