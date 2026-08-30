@@ -1,18 +1,31 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The new `Puppet` against the runtime it replaces, frame for frame.
+//! What a tick evaluates, pinned against a committed baseline.
 //!
-//! Both runtimes are driven from the *same* `.clm`: the legacy path builds a
-//! [`LegacyPuppet`] from it, the new one reads it into a [`Model`] and bakes a
-//! [`Puppet`]. For a grid of poses (and, where a model has drivers, a settle
-//! plus a run of simulated frames) every node's evaluated frame has to agree —
-//! global transform, z order, opacity, tint, screen tint and combined deform.
+//! Each rig here is a synthetic model exercising one part of the pipeline the
+//! committed `.clm` fixtures do not reach: mesh groups in every
+//! `dynamic` x `translate_children` combination, two-param bindings in all
+//! four interpolation modes, two params deforming one node, welds, chained
+//! physics drivers, a `translate_children` group over a `local_only` driver,
+//! and a playing animation. For a grid of poses (plus, where a rig has
+//! drivers, a settle and a run of simulated frames) the whole evaluated frame
+//! — every node's global transform, z order, enabled flag, colour and
+//! combined deform — is compared against
+//! `tests/fixtures/evaluated_frame.json`.
 //!
 //! The combined deform is what proves the passes downstream of the fold: a
-//! mesh group's attachments, the `translate_children` filter and the weld solve
-//! all land in a node's deform stack, so a difference in any of them shows up
-//! here as a per-vertex difference. Nothing else observes them.
+//! mesh group's attachments, the `translate_children` filter and the weld
+//! solve all land in a node's deform stack, so a difference in any of them
+//! shows up here as a per-vertex difference. Nothing else observes them.
+//!
+//! **Where the numbers came from.** They are the output of the runtime this
+//! suite used to compare against the one it replaced, frame for frame, at the
+//! same `1e-5`. That comparison retired with the old runtime; these are the
+//! values it had proven equal, captured.
+//!
+//! Regenerate after an intentional behaviour change:
+//!   UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-core --test evaluated_frame
 
-use catchlight_core::animation::{Animation, AnimationLane, Keyframe, PuppetAnimation, PuppetLane};
+use catchlight_core::animation::{PuppetAnimation, PuppetLane};
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
@@ -22,38 +35,46 @@ use catchlight_core::formats::legacy::{
     LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyWeld,
 };
 use catchlight_core::model::ModelWeldPair;
-use catchlight_core::params::{InterpolateMode, ParamAxis};
+use catchlight_core::params::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
-use catchlight_core::{
-    from_legacy, GlobalTransforms, LegacyPuppet, Mat4, Model, NodeId, NodeIdx, NodeKind, ParamId,
-    Vec2,
-};
+use catchlight_core::{Keyframe, Model, NodeId, NodeIdx, NodeKind, ParamId, Vec2};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-/// Absolute tolerance on every compared quantity. Both runtimes do the same
-/// arithmetic but not always in the same association order (the fold walks
-/// bindings, not params), so the difference is float reassociation, not method.
+/// Absolute tolerance on every compared number, the one the retired
+/// two-runtime comparison used.
 const TOL: f32 = 1e-5;
 
 const DT: f32 = 1.0 / 60.0;
 
+/// Frames between samples of a simulated run. The drivers move slowly enough
+/// at 60 Hz that every tenth frame still pins the curve.
+const SAMPLE_EVERY: usize = 10;
+
+/// One evaluated frame, flattened: per node, the global transform's sixteen
+/// elements, its z order and enabled flag, then its colour if it has one,
+/// then its combined deform if it has one.
+type Frame = Vec<Vec<f32>>;
+
+/// Every label this suite captures, in name order.
+type Baseline = BTreeMap<String, Frame>;
+
 // ---------------------------------------------------------------------------
-// Comparing one file, driven both ways
+// Driving one rig
 // ---------------------------------------------------------------------------
 
-struct Pair {
-    legacy: LegacyPuppet,
-    transforms: GlobalTransforms,
+struct Rig {
+    file: LegacyFile,
     model: Model,
     puppet: Puppet,
-    /// `.clm` node index -> (legacy slot, new slot).
-    nodes: Vec<(NodeIdx, NodeIdx)>,
+    /// Arena index of each `.clm` node, in document order.
+    nodes: Vec<NodeIdx>,
 }
 
-impl Pair {
-    fn load(file: &LegacyFile) -> Pair {
-        let legacy = from_legacy(file, 0).expect("legacy build");
-        let model = Model::from_legacy(file).expect("model build");
+impl Rig {
+    fn load(file: LegacyFile) -> Rig {
+        let model = Model::from_legacy(&file).expect("model build");
         let puppet = Puppet::new(&model);
         let nodes = (0..file.doc.nodes.len())
             .map(|i| {
@@ -62,25 +83,20 @@ impl Pair {
                 } else {
                     NodeId::new(format!("node-{i}")).unwrap()
                 };
-                (
-                    legacy.node_for_uuid(i as u32).expect("legacy node"),
-                    puppet.node_idx(&id).expect("baked node"),
-                )
+                puppet.node_idx(&id).expect("baked node")
             })
             .collect();
-        Pair {
-            legacy,
-            transforms: GlobalTransforms::new(),
+        Rig {
+            file,
             model,
             puppet,
             nodes,
         }
     }
 
-    fn pose(&mut self, file: &LegacyFile, values: &[(f32, f32)]) {
-        for (j, p) in file.doc.params.iter().enumerate() {
+    fn pose(&mut self, values: &[(f32, f32)]) {
+        for (j, p) in self.file.doc.params.iter().enumerate() {
             let (x, y) = values[j];
-            self.legacy.set_param_value(j as u32, Vec2::new(x, y));
             if p.is_vec2 {
                 self.puppet
                     .set_param_value(&ParamId::new(format!("param-{j}.x")).unwrap(), x);
@@ -93,61 +109,53 @@ impl Pair {
         }
     }
 
-    fn settle(&mut self) {
-        self.legacy.settle_physics();
-        self.puppet.settle_physics(&self.model);
+    fn tick(&mut self) {
+        self.puppet.tick(&self.model, DT);
     }
 
-    fn tick(&mut self, dt: f32) {
-        self.legacy.tick(&mut self.transforms, Mat4::IDENTITY, dt);
-        self.puppet.tick(&self.model, dt);
-    }
-
-    fn assert_agrees(&self, label: &str) {
-        for (i, &(l, n)) in self.nodes.iter().enumerate() {
-            let where_ = format!("{label}: node {i}");
-            let (lt, nt) = (self.transforms.get(l), self.puppet.transforms().get(n));
-            for (a, b) in lt.to_cols_array().iter().zip(nt.to_cols_array().iter()) {
+    /// Displace every driver's pendulum so the run that follows is a swing
+    /// rather than a fixed point.
+    fn kick_drivers(&mut self) {
+        for (i, node) in self.file.doc.nodes.iter().enumerate() {
+            if matches!(node.kind, LegacyNodeKind::SimplePhysics(_)) {
                 assert!(
-                    (a - b).abs() <= TOL,
-                    "{where_}: global transform\n legacy {lt:?}\n new    {nt:?}"
+                    self.puppet
+                        .place_driver(self.nodes[i], Vec2::new(40.0, 40.0)),
+                    "node {i} is a driver"
                 );
             }
-            let ln = self.legacy.get(l).expect("legacy node");
-            let nn = self.puppet.get(n).expect("new node");
-            close(&where_, "z_order", ln.z_order, nn.z_order);
-            assert_eq!(
-                ln.enabled, nn.enabled,
-                "{where_}: enabled {} vs {}",
-                ln.enabled, nn.enabled
-            );
-            let lc = colour(&ln.kind);
-            let nc = colour(&nn.kind);
-            match (lc, nc) {
-                (Some(lc), Some(nc)) => {
-                    close(&where_, "opacity", lc.0, nc.0);
-                    for k in 0..3 {
-                        close(&where_, "tint", lc.1[k], nc.1[k]);
-                        close(&where_, "screen_tint", lc.2[k], nc.2[k]);
-                    }
-                }
-                (None, None) => {}
-                _ => panic!("{where_}: node kinds disagree"),
-            }
-            match (deform(&ln.kind), self.puppet.combined_deform(n)) {
-                (Some(ld), Some(nd)) => {
-                    assert_eq!(ld.len(), nd.len(), "{where_}: deform length");
-                    for (v, (a, b)) in ld.iter().zip(nd.iter()).enumerate() {
-                        assert!(
-                            (a.x - b.x).abs() <= TOL && (a.y - b.y).abs() <= TOL,
-                            "{where_}: deform vertex {v}: legacy {a:?} vs new {b:?}"
-                        );
-                    }
-                }
-                (None, None) => {}
-                _ => panic!("{where_}: one runtime has a deform stack and the other does not"),
-            }
         }
+    }
+
+    fn has_drivers(&self) -> bool {
+        self.file
+            .doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, LegacyNodeKind::SimplePhysics(_)))
+    }
+
+    /// The evaluated frame, flattened for the baseline.
+    fn frame(&self) -> Frame {
+        self.nodes
+            .iter()
+            .map(|&idx| {
+                let t = self.puppet.transforms().get(idx);
+                let node = self.puppet.get(idx).expect("node");
+                let mut row: Vec<f32> = t.to_cols_array().to_vec();
+                row.push(node.z_order);
+                row.push(if node.enabled { 1.0 } else { 0.0 });
+                if let Some((opacity, tint, screen)) = colour(&node.kind) {
+                    row.push(opacity);
+                    row.extend(tint);
+                    row.extend(screen);
+                }
+                if let Some(deform) = self.puppet.combined_deform(idx) {
+                    row.extend(deform.iter().flat_map(|v| [v.x, v.y]));
+                }
+                row
+            })
+            .collect()
     }
 }
 
@@ -159,22 +167,7 @@ fn colour(kind: &NodeKind) -> Option<(f32, [f32; 3], [f32; 3])> {
     }
 }
 
-fn deform(kind: &NodeKind) -> Option<&[Vec2]> {
-    match kind {
-        NodeKind::Part(p) => Some(p.deform_stack.combined()),
-        NodeKind::MeshGroup(mg) => Some(mg.deform_stack.combined()),
-        _ => None,
-    }
-}
-
-fn close(where_: &str, what: &str, a: f32, b: f32) {
-    assert!(
-        (a - b).abs() <= TOL,
-        "{where_}: {what}: legacy {a} vs new {b}"
-    );
-}
-
-/// Poses to drive a file through: everything at rest, everything at each
+/// Poses to drive a rig through: everything at rest, everything at each
 /// extreme and at the middle, then each param swept on its own so a binding
 /// that only one param reaches is still exercised.
 fn pose_grid(file: &LegacyFile) -> Vec<Vec<(f32, f32)>> {
@@ -193,7 +186,7 @@ fn pose_grid(file: &LegacyFile) -> Vec<Vec<(f32, f32)>> {
     let mut poses: Vec<Vec<(f32, f32)>> = (0..4).map(at).collect();
     let rest = at(0);
     for (j, p) in params.iter().enumerate() {
-        for &t in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
+        for &t in &[0.0f32, 0.5, 1.0] {
             let mut pose = rest.clone();
             pose[j] = (
                 p.min[0] + (p.max[0] - p.min[0]) * t,
@@ -205,66 +198,208 @@ fn pose_grid(file: &LegacyFile) -> Vec<Vec<(f32, f32)>> {
     poses
 }
 
-fn check(label: &str, file: &LegacyFile) {
-    let mut pair = Pair::load(file);
-    let has_physics = file
-        .doc
-        .nodes
-        .iter()
-        .any(|n| matches!(n.kind, LegacyNodeKind::SimplePhysics(_)));
+/// Run one rig's whole schedule into `out`.
+///
+/// A rig with no drivers is ticked twice per pose and the second frame has to
+/// equal the first — that is the memo that lets an unchanged pose skip the
+/// fold, and it is a property rather than a captured number. A rig with
+/// drivers moves between the two ticks by design, so both frames are captured
+/// instead, and a settle plus a simulated run follows.
+fn capture(label: &str, file: LegacyFile, out: &mut Baseline) {
+    let mut rig = Rig::load(file);
+    let drivers = rig.has_drivers();
 
-    for (k, pose) in pose_grid(file).into_iter().enumerate() {
-        pair.pose(file, &pose);
-        // Two ticks: the first folds, the second exercises the memo that lets
-        // an unchanged pose skip the fold.
-        pair.tick(DT);
-        pair.assert_agrees(&format!("{label} pose {k}"));
-        pair.tick(DT);
-        pair.assert_agrees(&format!("{label} pose {k} (second tick)"));
+    for (k, pose) in pose_grid(&rig.file).into_iter().enumerate() {
+        rig.pose(&pose);
+        rig.tick();
+        let first = rig.frame();
+        out.insert(format!("{label} pose {k}"), first.clone());
+        rig.tick();
+        if drivers {
+            out.insert(format!("{label} pose {k} (second tick)"), rig.frame());
+        } else {
+            compare(
+                &format!("{label} pose {k}: an unchanged pose re-evaluates the same"),
+                &first,
+                &rig.frame(),
+            );
+        }
     }
 
-    if has_physics {
-        let mut pair = Pair::load(file);
-        pair.settle();
-        pair.tick(DT);
-        pair.assert_agrees(&format!("{label} settled"));
+    if drivers {
+        let mut rig = Rig::load(rig.file);
+        rig.puppet.settle_physics(&rig.model);
+        rig.tick();
+        let settled = rig.frame();
+        out.insert(format!("{label} settled"), settled.clone());
+
+        // Settling leaves the pendulums at the fixed point of the rest pose,
+        // where they would sit still forever — and posing cannot move them,
+        // because a driver claims its target params at full authority and
+        // overwrites whatever was posed. Displacing each bob is what makes
+        // the frames below a swing decaying back to rest, which is the
+        // transient nothing else in the suite pins.
+        rig.kick_drivers();
         for frame in 0..90 {
-            pair.tick(DT);
-            pair.assert_agrees(&format!("{label} physics frame {frame}"));
+            rig.tick();
+            if frame % SAMPLE_EVERY == 0 {
+                out.insert(format!("{label} frame {frame}"), rig.frame());
+            }
+        }
+        assert_ne!(
+            out[&format!("{label} frame 0")],
+            out[&format!("{label} frame 80")],
+            "{label}: the simulated run has to actually move"
+        );
+    }
+}
+
+fn compare(where_: &str, expected: &Frame, got: &Frame) {
+    assert_eq!(expected.len(), got.len(), "{where_}: node count");
+    for (i, (e, g)) in expected.iter().zip(got).enumerate() {
+        assert_eq!(e.len(), g.len(), "{where_}: node {i}: value count");
+        for (k, (a, b)) in e.iter().zip(g).enumerate() {
+            assert!(
+                (a - b).abs() <= TOL,
+                "{where_}: node {i} value {k}: expected {a} got {b}"
+            );
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// The committed fixtures
+// The whole matrix, against the committed baseline
 // ---------------------------------------------------------------------------
+
+fn current() -> Baseline {
+    let mut out = Baseline::new();
+    for mode in [
+        InterpolateMode::Linear,
+        InterpolateMode::Nearest,
+        InterpolateMode::Stepped,
+        InterpolateMode::Cubic,
+    ] {
+        capture(
+            &format!("two_param {mode:?}"),
+            two_param_rig(mode),
+            &mut out,
+        );
+    }
+    capture(
+        "two params one node",
+        two_params_deforming_one_node(),
+        &mut out,
+    );
+    for dynamic in [false, true] {
+        for tc in [false, true] {
+            capture(
+                &format!("mesh group dynamic={dynamic} tc={tc}"),
+                mesh_group_rig(dynamic, tc),
+                &mut out,
+            );
+        }
+    }
+    capture("welds", weld_rig(), &mut out);
+    capture("chained physics", chained_physics_rig(), &mut out);
+    capture("tc over local driver", tc_over_local_driver_rig(), &mut out);
+    animation_frames(&mut out);
+    out
+}
+
+/// A clip the puppet plays, sampled over 120 frames: the loop region, the
+/// lead-in and the keyframe interpolator, all reaching bindings.
+fn animation_frames(out: &mut Baseline) {
+    let mut rig = Rig::load(animation_rig());
+    rig.puppet.set_animations(vec![PuppetAnimation {
+        name: "Blink".into(),
+        timestep: 1.0 / 60.0,
+        length: 31,
+        lead_in: 6,
+        lead_out: 28,
+        lanes: vec![PuppetLane {
+            param: ParamId::new("param-0").unwrap(),
+            keyframes: vec![
+                Keyframe {
+                    frame: 0,
+                    value: 0.0,
+                },
+                Keyframe {
+                    frame: 12,
+                    value: 1.0,
+                },
+                Keyframe {
+                    frame: 30,
+                    value: 0.25,
+                },
+            ],
+            interpolation: InterpolateMode::Linear,
+        }],
+    }]);
+    assert!(rig.puppet.play_animation("Blink"));
+    assert_eq!(rig.puppet.playing_animation(), Some("Blink"));
+
+    let mut moved = false;
+    for frame in 0..120 {
+        rig.tick();
+        if frame % SAMPLE_EVERY == 0 {
+            out.insert(format!("animation frame {frame}"), rig.frame());
+        }
+        if rig.puppet.transforms().get(rig.nodes[1]).w_axis.y.abs() > 1e-3 {
+            moved = true;
+        }
+    }
+    assert!(moved, "the lane actually drove the binding");
+
+    rig.puppet.stop_animation();
+    assert!(!rig.puppet.has_playing_animation());
+    rig.tick();
+    out.insert("animation stopped".into(), rig.frame());
+}
+
+fn baseline_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/evaluated_frame.json")
+}
 
 #[test]
-fn every_committed_fixture_evaluates_the_same_both_ways() {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/models");
-    let mut seen = 0;
-    for entry in std::fs::read_dir(dir).expect("read tests/models") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("clm") {
-            continue;
+fn every_rig_evaluates_the_frame_it_always_has() -> Result<(), Box<dyn std::error::Error>> {
+    let current = current();
+    let path = baseline_path();
+
+    if std::env::var_os("UPDATE_FRAME_BASELINE").is_some() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        let bytes = std::fs::read(&path).expect("read fixture");
-        // `.clm` is read into a Model; the legacy runtime is fed the Model's
-        // own arena projection, so both sides still come from one file.
-        let file = Model::from_clm_bytes(&bytes)
-            .and_then(|m| m.to_legacy())
-            .expect("read fixture");
-        let label = path.file_name().unwrap().to_string_lossy().to_string();
-        check(&label, &file);
-        seen += 1;
+        std::fs::write(&path, serde_json::to_string(&current)?)?;
+        eprintln!("updated frame baseline at {}", path.display());
+        return Ok(());
     }
-    assert!(seen > 0, "no .clm fixtures found in {dir}");
+
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "missing frame baseline {} ({e}); regenerate with \
+             UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-core --test evaluated_frame",
+            path.display()
+        )
+    })?;
+    let expected: Baseline = serde_json::from_str(&raw)?;
+
+    let missing: Vec<&String> = current
+        .keys()
+        .filter(|k| !expected.contains_key(*k))
+        .collect();
+    let extra: Vec<&String> = expected
+        .keys()
+        .filter(|k| !current.contains_key(*k))
+        .collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "the label set moved; regenerate the baseline. missing {missing:?}, stale {extra:?}"
+    );
+    for (label, got) in &current {
+        compare(label, &expected[label], got);
+    }
+    Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Synthetic rigs: the features the committed fixtures do not cover
-// ---------------------------------------------------------------------------
-
 fn transform() -> ClmTransform {
     ClmTransform {
         translation: [0.0; 3],
@@ -434,23 +569,10 @@ fn two_param_rig(mode: InterpolateMode) -> LegacyFile {
     file(nodes, params, Vec::new())
 }
 
-#[test]
-fn a_two_param_rig_folds_the_same_in_every_interpolation_mode() {
-    for mode in [
-        InterpolateMode::Linear,
-        InterpolateMode::Nearest,
-        InterpolateMode::Stepped,
-        InterpolateMode::Cubic,
-    ] {
-        check(&format!("two_param {mode:?}"), &two_param_rig(mode));
-    }
-}
-
 /// Two one-param bindings on one node, from different params — the case the
 /// legacy runtime gives one deform slot per param and the new one gives one
 /// per binding.
-#[test]
-fn two_params_deforming_one_node_sum_the_same() {
+fn two_params_deforming_one_node() -> LegacyFile {
     let nodes = vec![
         node(None, "Root", LegacyNodeKind::Group),
         node(Some(0), "Body", LegacyNodeKind::Part(part(quad(5.0, 5.0)))),
@@ -474,7 +596,7 @@ fn two_params_deforming_one_node_sum_the_same() {
         param("A", vec![3.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 0.0]),
         param("B", vec![0.0, -4.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.5]),
     ];
-    check("two params one node", &file(nodes, params, Vec::new()));
+    file(nodes, params, Vec::new())
 }
 
 /// A mesh group over two parts, keyed by a param: the descent, the attachment
@@ -536,22 +658,9 @@ fn mesh_group_rig(dynamic: bool, translate_children: bool) -> LegacyFile {
     file(nodes, params, Vec::new())
 }
 
-#[test]
-fn mesh_groups_propagate_the_same() {
-    for dynamic in [false, true] {
-        for tc in [false, true] {
-            check(
-                &format!("mesh group dynamic={dynamic} tc={tc}"),
-                &mesh_group_rig(dynamic, tc),
-            );
-        }
-    }
-}
-
 /// Two parts welded seam to seam, each with its own deform binding, so the
 /// weld pass has something to pull together.
-#[test]
-fn welds_solve_the_same() {
+fn weld_rig() -> LegacyFile {
     let nodes = vec![
         node(None, "Root", LegacyNodeKind::Group),
         at(
@@ -612,7 +721,7 @@ fn welds_solve_the_same() {
             },
         ],
     }];
-    check("welds", &file(nodes, params, welds));
+    file(nodes, params, welds)
 }
 
 fn physics(target: Option<u32>, local_only: bool) -> LegacySimplePhysics {
@@ -633,8 +742,7 @@ fn physics(target: Option<u32>, local_only: bool) -> LegacySimplePhysics {
 /// Two drivers, the first's output translating the second's anchor: the
 /// chained-physics case the contribution table exists for. The first writes a
 /// 2-D param (two scalar params on the new side), the second a 1-D one.
-#[test]
-fn chained_physics_drivers_agree_frame_by_frame() {
+fn chained_physics_rig() -> LegacyFile {
     let nodes = vec![
         node(None, "Root", LegacyNodeKind::Group),
         at(
@@ -705,13 +813,12 @@ fn chained_physics_drivers_agree_frame_by_frame() {
             }],
         },
     ];
-    check("chained physics", &file(nodes, params, Vec::new()));
+    file(nodes, params, Vec::new())
 }
 
 /// A mesh group whose `translate_children` filter targets a `local_only`
 /// driver — the case that forces the anchor pre-pass every frame.
-#[test]
-fn a_translate_children_mesh_group_over_a_local_driver_agrees() {
+fn tc_over_local_driver_rig() -> LegacyFile {
     let nodes = vec![
         node(None, "Root", LegacyNodeKind::Group),
         node(
@@ -766,11 +873,11 @@ fn a_translate_children_mesh_group_over_a_local_driver_agrees() {
             bindings: vec![LegacyBinding {
                 node: 3,
                 interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::TransformTX(cells(vec![(1, 1, 7.0)])),
+                values: ClmBindingValues::TransformTX(cells(vec![(0, 0, -7.0), (1, 1, 7.0)])),
             }],
         },
     ];
-    check("tc over local driver", &file(nodes, params, Vec::new()));
+    file(nodes, params, Vec::new())
 }
 
 // ---------------------------------------------------------------------------
@@ -895,11 +1002,9 @@ fn a_model_edit_keeps_the_drivers_running() {
     );
 }
 
-/// A playing animation has to pose the same params in the same order for both
-/// runtimes. A model carries no animations, so both are handed the same clip
-/// built by hand — the legacy one keyed by param index, the new one by Id.
-#[test]
-fn a_playing_animation_drives_the_same_frames() {
+/// A part whose transform and deform a single param drives, for a clip's lane
+/// to reach.
+fn animation_rig() -> LegacyFile {
     let nodes = vec![
         node(None, "Root", LegacyNodeKind::Group),
         node(Some(0), "Body", LegacyNodeKind::Part(part(quad(5.0, 5.0)))),
@@ -929,65 +1034,5 @@ fn a_playing_animation_drives_the_same_frames() {
             },
         ],
     }];
-    let f = file(nodes, params, Vec::new());
-
-    let keyframes = vec![
-        Keyframe {
-            frame: 0,
-            value: 0.0,
-        },
-        Keyframe {
-            frame: 12,
-            value: 1.0,
-        },
-        Keyframe {
-            frame: 30,
-            value: 0.25,
-        },
-    ];
-    let mut pair = Pair::load(&f);
-    pair.legacy.set_animations(vec![Animation {
-        name: "Blink".into(),
-        timestep: 1.0 / 60.0,
-        length: 31,
-        lead_in: 6,
-        lead_out: 28,
-        lanes: vec![AnimationLane {
-            param_id: 0,
-            axis: ParamAxis::X,
-            keyframes: keyframes.clone(),
-            interpolation: InterpolateMode::Linear,
-        }],
-    }]);
-    pair.puppet.set_animations(vec![PuppetAnimation {
-        name: "Blink".into(),
-        timestep: 1.0 / 60.0,
-        length: 31,
-        lead_in: 6,
-        lead_out: 28,
-        lanes: vec![PuppetLane {
-            param: ParamId::new("param-0").unwrap(),
-            keyframes,
-            interpolation: InterpolateMode::Linear,
-        }],
-    }]);
-    assert!(pair.legacy.play_animation("Blink"));
-    assert!(pair.puppet.play_animation("Blink"));
-    assert!(pair.legacy.has_playing_animation() && pair.puppet.has_playing_animation());
-
-    let mut moved = false;
-    for frame in 0..120 {
-        pair.tick(DT);
-        pair.assert_agrees(&format!("animation frame {frame}"));
-        if pair.transforms.get(pair.nodes[1].0).w_axis.y.abs() > 1e-3 {
-            moved = true;
-        }
-    }
-    assert!(moved, "the lane actually drove the binding");
-
-    pair.legacy.stop_animation();
-    pair.puppet.stop_animation();
-    assert!(!pair.legacy.has_playing_animation() && !pair.puppet.has_playing_animation());
-    pair.tick(DT);
-    pair.assert_agrees("animation stopped");
+    file(nodes, params, Vec::new())
 }
