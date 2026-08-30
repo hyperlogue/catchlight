@@ -3,7 +3,8 @@
 //! There are **two independent reflection paths** and they must stay in step:
 //!
 //! - `convert.rs` — `.inx` → `LegacyPuppet` (the legacy direct load).
-//! - `to_legacy.rs` — `.inx` → `.clm` (what `cargo xtask import` runs).
+//! - `to_legacy.rs` — `.inx` → legacy document → `.clm` (what
+//!   `cargo xtask import` runs).
 //!
 //! `.inx` is authored **Y-down with lower `zsort` in front**; catchlight is
 //! **Y-up with higher `z_order` in front**. Both paths must negate exactly

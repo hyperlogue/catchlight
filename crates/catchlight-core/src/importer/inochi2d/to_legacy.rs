@@ -1,12 +1,14 @@
-//! One-time `.inx → .clm` import: turn an inochi2d puppet into catchlight's
-//! editable source of truth.
+//! One-time `.inx → legacy document` import: turn an inochi2d puppet into the
+//! arena a [`Model`](crate::Model) is built from, which
+//! `cargo xtask import` then writes as a `.clm`.
 //!
-//! The inx node *tree* is flattened (DFS pre-order) into the `.clm` arena: each
-//! node lands at a sequential index with its `parent` index recorded, so the
-//! result is topologically ordered (`parent < self`). inochi's globally-unique
+//! The inx node *tree* is flattened (DFS pre-order) into the arena: each node
+//! lands at a sequential index with its `parent` index recorded, so the result
+//! is topologically ordered (`parent < self`). inochi's globally-unique
 //! `uuid`s are resolved to those indices — `binding.node` / `mask.source` to a
-//! node index, `SimplePhysics.target_param` to a param index — and then dropped;
-//! the array position is the only identity `.clm` keeps. References that don't
+//! node index, `SimplePhysics.target_param` to a param index — and then
+//! dropped; the array position is the only identity the arena has, and the
+//! Ids a Model mints from it are what the file stores. References that don't
 //! resolve are dropped, exactly as the LegacyPuppet path drops them; duplicate uuids
 //! collapse to the first occurrence (the LegacyPuppet path's renumbering, for free).
 //!
