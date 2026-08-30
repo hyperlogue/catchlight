@@ -5,13 +5,12 @@ pub mod fill;
 pub mod formats;
 pub mod id;
 pub mod importer;
-pub mod legacy_puppet;
+pub mod interpolate;
 pub mod load;
 pub mod load_budget;
 pub(crate) mod meshgroup;
 pub mod model;
 pub mod node;
-pub mod params;
 pub mod physics;
 pub mod puppet;
 pub mod weld;
@@ -21,10 +20,10 @@ pub use components::*;
 pub use deform::*;
 pub use id::*;
 pub use importer::{
-    from_legacy, from_legacy_cached, from_legacy_with_budget, prepare_textures, ImportError,
-    PreppedTexture, TexturePrepCache, UvCrop,
+    from_inx_model_to_legacy, prepare_textures, ImportError, PreppedTexture, TexturePrepCache,
+    UvCrop,
 };
-pub use legacy_puppet::*;
+pub use interpolate::*;
 pub use load::*;
 pub use load_budget::*;
 pub use model::{
@@ -36,7 +35,6 @@ pub use model::{
     DEFAULT_SLOT_WEIGHT,
 };
 pub use node::*;
-pub use params::*;
 pub use physics::*;
 pub use puppet::*;
 pub use weld::{Weld, WeldPair};

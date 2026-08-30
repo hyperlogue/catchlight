@@ -8,10 +8,10 @@
 //! describes does not change with frame rate or substep count. Applying
 //! damping per step would make 60 Hz and 144 Hz render different hair.
 //!
-//! **Physics drivers work in a Y-down frame.** `LegacyPuppet::physics_anchor` flips
-//! Y going in and `write_physics_param_outputs` conjugates `world_inverse` by
-//! the same flip coming out, matching the reference pendulum's
-//! gravity-toward-+Y convention.
+//! **Physics drivers work in a Y-down frame.** `Arena::physics_anchor` flips Y
+//! going in and `Puppet::write_physics_param_outputs` conjugates
+//! `world_inverse` by the same flip coming out, matching the reference
+//! pendulum's gravity-toward-+Y convention.
 
 use crate::{Mat4, Vec2};
 
@@ -106,7 +106,6 @@ pub struct SimplePhysicsData {
     pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
     pub local_only: bool,
-    pub target_param_id: Option<u32>,
     pub gravity: f32,
     pub length: f32,
     /// Spring resonant frequency in Hz. Only used when `kind` is
@@ -116,9 +115,8 @@ pub struct SimplePhysicsData {
     pub length_damping: f32,
     pub output_scale: Vec2,
     /// Per-frame multiplicative factor driven by `outputScale.x/.y`
-    /// param bindings. Reset to (1, 1) each frame by
-    /// `LegacyPuppet::reset_dynamic_state`, then multiplied into `output_scale`
-    /// when the parameter value is read.
+    /// param bindings. Reset to (1, 1) at the start of every tick, then
+    /// multiplied into `output_scale` when the parameter value is read.
     pub offset_output_scale: Vec2,
     /// Bob position. For `RigidPendulum` the bob is recomputed each
     /// tick from (anchor, angle, length); the persistent state across
@@ -146,7 +144,6 @@ impl Default for SimplePhysicsData {
             kind: PendulumKind::RigidPendulum,
             map_mode: PhysicsParamMapMode::AngleLength,
             local_only: false,
-            target_param_id: None,
             gravity: 9.8 * 100.0,
             length: 100.0,
             frequency: 1.0,

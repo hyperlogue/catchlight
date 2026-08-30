@@ -6,7 +6,7 @@
 //! `compute_transforms` the output stays byte-identical through a regression
 //! in params, mesh groups or welds, so it is the hash-stability check.
 
-use catchlight_core::{load_model_bytes, Model, ModelFormat, Puppet};
+use catchlight_core::{load_model, Model, ModelFormat, Puppet};
 use catchlight_wgpu::{
     collect, create_orthographic_camera, DrawableInfo, PrepareOptions, RenderCache, RenderContext,
     RenderList,
@@ -19,7 +19,7 @@ fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
     let format = ModelFormat::from_path(path)
         .ok_or_else(|| format!("unsupported model file: {}", path.display()))?;
-    Ok(load_model_bytes(&bytes, format)?)
+    Ok(load_model(&bytes, format)?)
 }
 
 fn print_render_list(render_list: &RenderList) {

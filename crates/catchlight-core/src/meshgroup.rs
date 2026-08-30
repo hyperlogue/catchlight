@@ -446,7 +446,7 @@ fn mesh_group_pre_order(puppet: &Arena) -> Vec<NodeIdx> {
 // Ensure the cache is populated, then hand ownership to the caller.
 // Caller is responsible for putting the Vec back via
 // `restore_mg_pre_order_cache`. This avoids a per-frame clone while
-// keeping the hot-path borrow of LegacyPuppet mutable.
+// keeping the hot-path borrow of the arena mutable.
 fn take_mg_pre_order(puppet: &mut Arena) -> Vec<NodeIdx> {
     if puppet.mg_pre_order_cache.is_none() {
         puppet.mg_pre_order_cache = Some(mesh_group_pre_order(puppet));

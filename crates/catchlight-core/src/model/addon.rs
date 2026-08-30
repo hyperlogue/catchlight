@@ -677,7 +677,7 @@ mod tests {
     use crate::components::MaskMode;
     use crate::formats::clm::{ClmIndices, ClmKeyframe, ClmLane, ClmMesh};
     use crate::id::SeededHex;
-    use crate::params::InterpolateMode;
+    use crate::interpolate::InterpolateMode;
     use crate::physics::PendulumKind;
 
     fn quad() -> ClmMesh {

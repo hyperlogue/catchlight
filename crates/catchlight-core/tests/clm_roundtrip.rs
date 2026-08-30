@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane, ClmMesh};
 use catchlight_core::id::{Name, ParamId, SeededHex};
-use catchlight_core::params::InterpolateMode;
+use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::{
     BindingKey, BindingTarget, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart,
 };

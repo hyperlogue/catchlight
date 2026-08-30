@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use crate::fill::derive_dense;
 use crate::formats::clm::{ClmBindingValues, ClmCell, ClmCells};
-use crate::params::InterpolateMode;
+use crate::interpolate::InterpolateMode;
 
 use super::*;
 

@@ -1896,8 +1896,8 @@ fn parse_map_mode(s: &str) -> Option<PhysicsParamMapMode> {
 
 fn parse_interpolate_mode(
     s: &str,
-) -> Result<catchlight_core::params::InterpolateMode, EditorError> {
-    use catchlight_core::params::InterpolateMode as I;
+) -> Result<catchlight_core::interpolate::InterpolateMode, EditorError> {
+    use catchlight_core::interpolate::InterpolateMode as I;
     match s.to_ascii_lowercase().as_str() {
         "nearest" => Ok(I::Nearest),
         "stepped" => Ok(I::Stepped),

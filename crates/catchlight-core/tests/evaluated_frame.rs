@@ -34,8 +34,8 @@ use catchlight_core::formats::legacy::{
     LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
     LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyWeld,
 };
+use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::model::ModelWeldPair;
-use catchlight_core::params::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
 use catchlight_core::{Keyframe, Model, NodeId, NodeIdx, NodeKind, ParamId, Vec2};

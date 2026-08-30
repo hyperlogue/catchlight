@@ -1,11 +1,18 @@
 //! The legacy bridge: a [`Model`] to and from the arena document the inochi2d
-//! importer writes and the legacy runtime builds a puppet from.
+//! importer writes and `cargo xtask`'s fixture generators author.
 //!
-//! **This is temporary**, and it is no longer a *file* boundary — `.clm`
-//! stores Ids and scalar params directly ([`crate::formats::clm`]). What is
-//! left is the translation between a Model and
+//! **This is temporary**, and it is not a *file* boundary — `.clm` stores Ids
+//! and scalar params directly ([`crate::formats::clm`]). What is left is the
+//! translation between a Model and
 //! [`LegacyDocument`](crate::formats::legacy::LegacyDocument), which dies with
-//! the legacy runtime and the importer's move to its own crate.
+//! the importer's move to its own crate (cl-0ci).
+//!
+//! [`Model::from_legacy`] is what the import path runs.
+//! [`Model::to_legacy`] is the way back, and it has no production caller: it
+//! exists for `cargo xtask`'s check that a committed `.clm` still matches the
+//! generator that authored it, and for the tests that pin the scalar-param
+//! split. Both compare in the generators' own vocabulary, which is why the
+//! projection is worth keeping until the generators stop speaking it.
 //!
 //! What the bridge does, in both directions:
 //!
@@ -647,7 +654,7 @@ mod tests {
         ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding,
     };
     use crate::id::SeededHex;
-    use crate::params::InterpolateMode;
+    use crate::interpolate::InterpolateMode;
 
     fn sample() -> Model {
         let mut hex = SeededHex::new(2);

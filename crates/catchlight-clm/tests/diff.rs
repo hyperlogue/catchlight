@@ -177,7 +177,8 @@ fn a_texture_of_the_same_length_with_different_bytes_still_differs() {
 fn a_binding_is_keyed_by_its_params_node_and_target() {
     let base = decode(&common::fixture("welded_seam"));
     let mut changed = base.clone();
-    changed.doc.bindings[0].interpolate_mode = catchlight_core::params::InterpolateMode::Stepped;
+    changed.doc.bindings[0].interpolate_mode =
+        catchlight_core::interpolate::InterpolateMode::Stepped;
 
     assert_eq!(
         diff(&base, &changed),
@@ -210,7 +211,7 @@ fn an_animation_is_keyed_by_name() {
         length: 12,
         lanes: vec![ClmLane {
             param: base.doc.params[0].id.clone(),
-            interpolation: catchlight_core::params::InterpolateMode::Linear,
+            interpolation: catchlight_core::interpolate::InterpolateMode::Linear,
             keyframes: vec![ClmKeyframe {
                 frame: 0,
                 value: 1.0,

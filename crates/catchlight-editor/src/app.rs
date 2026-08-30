@@ -2554,8 +2554,8 @@ fn nearest_index(points: &[f32], v: f32) -> u32 {
     best as u32
 }
 
-fn interp_name(m: catchlight_core::params::InterpolateMode) -> &'static str {
-    use catchlight_core::params::InterpolateMode as I;
+fn interp_name(m: catchlight_core::interpolate::InterpolateMode) -> &'static str {
+    use catchlight_core::interpolate::InterpolateMode as I;
     match m {
         I::Nearest => "nearest",
         I::Stepped => "stepped",

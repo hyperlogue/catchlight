@@ -71,9 +71,9 @@ use crate::animation::{AnimationPlayState, PuppetAnimation};
 use crate::components::{checked_affine_inverse, Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::id::{NodeId, ParamId};
+use crate::interpolate::{bracket, frac};
 use crate::model::{BindingTarget, Model, Pose, ScalarTarget};
 use crate::node::NodeTree;
-use crate::params::{bracket, frac};
 use crate::physics::SimplePhysicsData;
 
 use bake::{Baked, BakedBinding, BakedParam};
@@ -475,14 +475,6 @@ impl Puppet {
     /// The model node an arena slot came from.
     pub fn node_id(&self, idx: NodeIdx) -> Option<&NodeId> {
         self.id_of_node.get(idx.0 as usize)
-    }
-
-    /// A baked mask names its source by arena slot, so this is the identity.
-    /// It exists so a consumer written against the legacy runtime's uuid
-    /// namespace resolves a mask the same way here.
-    pub fn node_for_uuid(&self, uuid: u32) -> Option<NodeIdx> {
-        let idx = NodeIdx::new(uuid);
-        self.arena.get(idx).map(|_| idx)
     }
 
     /// The transforms the last tick produced.
@@ -1385,8 +1377,8 @@ mod tests {
         use crate::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
         use crate::id::Name;
         use crate::id::SeededHex;
+        use crate::interpolate::InterpolateMode;
         use crate::model::ModelParam;
-        use crate::params::InterpolateMode;
 
         let mut model = Model::new();
         let mut hex = SeededHex::new(9);

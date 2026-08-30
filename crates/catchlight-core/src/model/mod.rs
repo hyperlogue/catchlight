@@ -113,7 +113,7 @@ use crate::formats::clm::{
 };
 use crate::formats::legacy::LegacyMeshGroup;
 use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SeamId, SlotId, TexId};
-use crate::params::InterpolateMode;
+use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
 /// How many times a generated Id is re-drawn before the model gives up. The

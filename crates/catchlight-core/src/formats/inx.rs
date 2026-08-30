@@ -936,9 +936,11 @@ mod tests {
         assert!(model.textures.is_empty());
         assert!(model.vendors.is_empty());
 
-        let puppet = crate::importer::from_inx_model(&model).expect("import");
-        assert_eq!(puppet.len(), 2);
-        assert!(puppet.node_for_uuid(1).is_some());
+        let doc = crate::importer::from_inx_model_to_legacy(&model)
+            .expect("import")
+            .doc;
+        assert_eq!(doc.nodes.len(), 1);
+        assert_eq!(doc.nodes[0].name, "Root");
     }
 
     #[test]

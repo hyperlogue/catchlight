@@ -5,12 +5,11 @@
 //! stay 1:1 with the source table, so only part UVs are rewritten, never
 //! albedo slots.
 //!
-//! Two entry points over one implementation. [`prepare_textures`] is the
-//! puppet-free one: it decodes and crops and hands back a [`UvCrop`] per
-//! texture for whoever owns the meshes to apply — that is what the render
-//! cache calls, because a `Model` keeps its textures encoded and its meshes
-//! authored against them. [`crop_textures`] is the legacy load path: it
-//! applies the remap to the `LegacyPuppet`'s own mesh copies in place.
+//! One entry point: [`prepare_textures`] decodes and crops and hands back a
+//! [`UvCrop`] per texture for whoever owns the meshes to apply. That is what
+//! the render cache calls, because a `Model` keeps its textures encoded and
+//! its meshes authored against them, and applying the remap to the meshes it
+//! uploads is the render cache's own business.
 //!
 //! Why the *opaque* bbox and not the mesh-referenced *UV* bbox: on inochi2d
 //! models the UV bbox is dominated by transparent texels the mesh's vertices
@@ -24,9 +23,8 @@
 //! mip chain, so no mip footprint can straddle into another crop's texels.
 
 use super::error::ImportError;
-use crate::components::{NodeIdx, NodeKind, PuppetTexture};
+use crate::components::PuppetTexture;
 use crate::formats::ModelTexture;
-use crate::legacy_puppet::LegacyPuppet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -70,7 +68,7 @@ impl Hash for TexturePrepKey {
     }
 }
 
-/// Memo for the pure per-texture half of [`crop_textures`]. An editor
+/// Memo for the pure per-texture half of [`prepare_textures`]. An editor
 /// rebuilding the puppet after every edit skips decode and crop work for
 /// unchanged textures. Keys retain the encoded bytes so hash collisions are
 /// verified by equality. Each rebuild discards entries that are not used by
@@ -136,8 +134,7 @@ pub struct PreppedTexture {
 /// The returned table is 1:1 with `textures`, so albedo ids index it
 /// unchanged; each entry carries the [`UvCrop`] its parts' mesh UVs must be
 /// remapped through before they are drawn. Whoever owns those meshes applies
-/// it — the legacy load path rewrites the puppet's copy in place
-/// ([`crop_textures_cached`]), the render cache rewrites the UVs it uploads.
+/// it; the render cache rewrites the UVs it uploads.
 pub fn prepare_textures(
     textures: &[ModelTexture],
     texture_halvings: u32,
@@ -161,53 +158,8 @@ pub fn prepare_textures(
         .collect())
 }
 
-/// Decode `textures`, crop each to its opaque bounding box, and rewrite every
-/// part's mesh UVs against its crop. The returned table is 1:1 with the source
-/// table, so albedo ids are left untouched.
-pub(crate) fn crop_textures(
-    puppet: &mut LegacyPuppet,
-    textures: &[ModelTexture],
-    texture_halvings: u32,
-) -> Result<Vec<PuppetTexture>, ImportError> {
-    crop_textures_cached(puppet, textures, texture_halvings, None)
-}
-
-pub(crate) fn crop_textures_cached(
-    puppet: &mut LegacyPuppet,
-    textures: &[ModelTexture],
-    texture_halvings: u32,
-    cache: Option<&mut TexturePrepCache>,
-) -> Result<Vec<PuppetTexture>, ImportError> {
-    let (table, plans) = prep_all(textures, texture_halvings, cache)?;
-
-    let part_ids: Vec<NodeIdx> = puppet
-        .iter()
-        .filter(|(_, n)| matches!(n.kind, NodeKind::Part(_)))
-        .map(|(id, _)| id)
-        .collect();
-    for id in part_ids {
-        let Some(node) = puppet.get_mut(id) else {
-            continue;
-        };
-        let NodeKind::Part(part) = &mut node.kind else {
-            continue;
-        };
-        let ti = part.albedo_texture.0 as usize;
-        let Some(plan) = plans.get(ti) else { continue };
-        let Some((cx, cy, cw, ch)) = plan.crop else {
-            continue;
-        };
-        let (tw, th) = (plan.src_w as f64, plan.src_h as f64);
-        for uv in &mut part.mesh.uvs {
-            uv.x = ((uv.x as f64 * tw - cx as f64) / cw as f64) as f32;
-            uv.y = ((uv.y as f64 * th - cy as f64) / ch as f64) as f32;
-        }
-    }
-    Ok(table)
-}
-
-/// The puppet-free half: probe the memo, decode and crop the misses, and
-/// return the table beside the crop plans.
+/// Probe the memo, decode and crop the misses, and return the table beside
+/// the crop plans.
 fn prep_all(
     textures: &[ModelTexture],
     texture_halvings: u32,
@@ -489,34 +441,21 @@ mod tests {
     fn cache_key_distinguishes_alpha_and_format() {
         let straight = encoded_png([64, 0, 0, 128], false);
         let mut cache = TexturePrepCache::default();
-        let straight_result = crop_textures_cached(
-            &mut LegacyPuppet::new(),
-            std::slice::from_ref(&straight),
-            0,
-            Some(&mut cache),
-        )
-        .unwrap();
+        let straight_result =
+            prepare_textures(std::slice::from_ref(&straight), 0, Some(&mut cache)).unwrap();
 
         let mut premultiplied = straight.clone();
         premultiplied.premultiplied = true;
-        let premultiplied_result = crop_textures_cached(
-            &mut LegacyPuppet::new(),
-            &[premultiplied],
-            0,
-            Some(&mut cache),
-        )
-        .unwrap();
-        assert_ne!(straight_result[0].rgba, premultiplied_result[0].rgba);
+        let premultiplied_result = prepare_textures(&[premultiplied], 0, Some(&mut cache)).unwrap();
+        assert_ne!(
+            straight_result[0].texture.rgba,
+            premultiplied_result[0].texture.rgba
+        );
 
         let mut wrong_format = straight;
         wrong_format.format = crate::formats::TextureFormat::Tga;
         assert!(matches!(
-            crop_textures_cached(
-                &mut LegacyPuppet::new(),
-                &[wrong_format],
-                0,
-                Some(&mut cache)
-            ),
+            prepare_textures(&[wrong_format], 0, Some(&mut cache)),
             Err(ImportError::TextureDecode(_))
         ));
     }
@@ -529,10 +468,10 @@ mod tests {
         let second_key = prep_key(&second, 0);
         let mut cache = TexturePrepCache::default();
 
-        crop_textures_cached(&mut LegacyPuppet::new(), &[first], 0, Some(&mut cache)).unwrap();
+        prepare_textures(&[first], 0, Some(&mut cache)).unwrap();
         assert!(cache.entries.contains_key(&first_key));
 
-        crop_textures_cached(&mut LegacyPuppet::new(), &[second], 0, Some(&mut cache)).unwrap();
+        prepare_textures(&[second], 0, Some(&mut cache)).unwrap();
         assert!(!cache.entries.contains_key(&first_key));
         assert!(cache.entries.contains_key(&second_key));
         assert_eq!(cache.entries.len(), 1);
@@ -584,13 +523,13 @@ mod tests {
         assert!(gx < 0.0 && gy < 0.0);
     }
 
-    /// The two entry points must agree texel for texel: whatever
-    /// `crop_textures` writes into a part's mesh, `prepare_textures` +
-    /// [`UvCrop::map`] must produce for the same UV. This is what lets the
-    /// render cache and the legacy load path sample the same texels.
+    /// [`UvCrop::map`] is the whole contract between the crop and whoever owns
+    /// the meshes: a UV authored against the source texture has to land on the
+    /// same texel of the crop. Checked against the window arithmetic done by
+    /// hand, in f64, so a change to `map` cannot quietly shift every part's
+    /// UVs by a texel.
     #[test]
-    fn the_puppet_free_prep_remaps_uvs_exactly_as_the_in_place_one() {
-        use crate::components::{Mesh, MeshIndices, Node, PartData};
+    fn the_uv_remap_lands_on_the_same_texel_of_the_crop() {
         use crate::Vec2;
 
         // A 64x64 PNG with one opaque texel, so the crop is a real window
@@ -607,43 +546,36 @@ mod tests {
             premultiplied: false,
         };
 
-        let uvs = vec![
+        let prepped = prepare_textures(std::slice::from_ref(&source), 0, None).unwrap();
+        assert_eq!(prepped.len(), 1);
+        let crop = prepped[0].uv_crop.expect("an opaque texel means a crop");
+        let (cx, cy, cw, ch) = alpha_crop_rect(&decode_halved(&source, 0).unwrap())
+            .expect("the same crop the prep found");
+        assert_eq!(
+            (prepped[0].texture.width, prepped[0].texture.height),
+            (cw, ch)
+        );
+
+        let by_hand = |uv: Vec2| {
+            Vec2::new(
+                ((uv.x as f64 * 64.0 - cx as f64) / cw as f64) as f32,
+                ((uv.y as f64 * 64.0 - cy as f64) / ch as f64) as f32,
+            )
+        };
+        for uv in [
             Vec2::new(0.0, 0.0),
             Vec2::new(40.5 / 64.0, 33.5 / 64.0),
             Vec2::new(1.0, 1.0),
-        ];
-        let mut puppet = LegacyPuppet::new();
-        puppet.insert_child(
-            puppet.root(),
-            Node {
-                kind: NodeKind::Part(Box::new(PartData {
-                    mesh: Mesh::new(
-                        vec![Vec2::ZERO; 3],
-                        uvs.clone(),
-                        MeshIndices::U16(vec![0, 1, 2]),
-                        Vec2::ZERO,
-                    ),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            },
-            Some(1),
-        );
+        ] {
+            assert_eq!(crop.map(uv), by_hand(uv), "uv {uv:?}");
+        }
 
-        let in_place = crop_textures(&mut puppet, std::slice::from_ref(&source), 0).unwrap();
-        let rewritten = puppet
-            .iter()
-            .find_map(|(_, n)| match &n.kind {
-                NodeKind::Part(p) => Some(p.mesh.uvs.clone()),
-                _ => None,
-            })
-            .unwrap();
-
-        let prepped = prepare_textures(std::slice::from_ref(&source), 0, None).unwrap();
-        assert_eq!(prepped.len(), 1);
-        assert_eq!(prepped[0].texture.rgba, in_place[0].rgba);
-        let crop = prepped[0].uv_crop.expect("an opaque texel means a crop");
-        let mapped: Vec<Vec2> = uvs.iter().map(|&uv| crop.map(uv)).collect();
-        assert_eq!(mapped, rewritten);
+        // The opaque texel's UV lands inside the crop; the source corner does
+        // not, and reads transparent through ClampToBorder exactly as it did
+        // in the source.
+        let inside = crop.map(Vec2::new(40.5 / 64.0, 33.5 / 64.0));
+        assert!((0.0..=1.0).contains(&inside.x) && (0.0..=1.0).contains(&inside.y));
+        let corner = crop.map(Vec2::ZERO);
+        assert!(corner.x < 0.0 && corner.y < 0.0);
     }
 }
