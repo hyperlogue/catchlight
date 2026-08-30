@@ -22,6 +22,17 @@
 //!   file used to escape, a colour binding on a mesh group and a deform cell
 //!   sized to something other than the node's mesh — so a loaded Model needs
 //!   no repair pass.
+//! - **A file is read as one shape or the other, never guessed.**
+//!   [`Model::from_clm_bytes`] reads a *complete model*: one node with no
+//!   parent, and nothing dangling. [`Model::from_clm_bytes_fragment`] reads an
+//!   *addon fragment*: every node names a parent, the ones the file does not
+//!   carry are its roots, and every other reference into a base — albedo, mask
+//!   source, physics target, binding param, weld end, animation lane — may
+//!   dangle for `Model::install` to resolve. The two shapes are disjoint on
+//!   the wire (a complete model always has a parentless node and a fragment
+//!   never does), so a caller that does not know which it holds decodes once
+//!   and tries both readers against the same [`ClmFile`]; nothing else about
+//!   the container or the document changes between them.
 //!
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -51,6 +62,10 @@ pub enum ClmLoadError {
     DanglingParent { node: String, parent: String },
     #[error("node {node:?} names parent {parent:?}, which the file writes after it")]
     NotTopological { node: String, parent: String },
+    #[error(
+        "node {node:?} has no parent, so this file is a complete model; a fragment's roots name          the base node they hang from"
+    )]
+    FragmentHasNoParent { node: String },
     #[error("node {node:?} names {field} {id:?}, which no node has")]
     DanglingNode {
         node: String,
@@ -113,6 +128,28 @@ pub enum ClmLoadError {
 /// to agree about.
 type SeamTable = HashMap<SeamId, HashSet<SlotId>>;
 
+/// Which of the two shapes a `.clm` is being read as. The reader never
+/// guesses: the caller says, and the file is refused if it is the other one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// A complete model. Exactly one node has no parent, and every Id the file
+    /// names is one the file also carries.
+    Base,
+    /// An addon fragment. Every node names a parent; the ones the file does
+    /// not carry are its roots, and every other reference into the base model
+    /// is left dangling for `Model::install` to resolve.
+    Fragment,
+}
+
+impl Shape {
+    /// Whether a reference this shape allows to leave the file may dangle.
+    /// A binding's *node* never may, in either shape: an addon binds its own
+    /// nodes — see `crate::model::addon`.
+    fn allows_dangling(self) -> bool {
+        matches!(self, Self::Fragment)
+    }
+}
+
 impl Model {
     /// Snapshot the model into a `.clm` document. Total for any Model whose
     /// deform cells are sized to the meshes they sit on.
@@ -133,22 +170,34 @@ impl Model {
             });
         }
 
+        let fragment = self.is_fragment();
         let mut welds = Vec::with_capacity(self.welds.len());
         for weld in &self.welds {
             // Unreachable through the Model's own methods, which keep two
             // welded seams' slot sets equal; checked because the reader
-            // refuses the file if they ever diverge.
-            let (Some(a), Some(b)) = (
+            // refuses the file if they ever diverge. A fragment's weld into a
+            // base part has one end this model cannot see, and only the end
+            // it can see is checked.
+            let ends = [
                 self.seam(&weld.a().0, &weld.a().1),
                 self.seam(&weld.b().0, &weld.b().1),
-            ) else {
-                return Err(ModelError::UnknownSeam);
-            };
-            if a.slots().len() != b.slots().len()
-                || weld.weights().len() != a.slots().len()
-                || !a.slots().iter().all(|s| b.slot(s.id()).is_some())
-            {
-                return Err(ModelError::WeldSlotMismatch);
+            ];
+            for (seam, end) in ends.iter().zip([weld.a(), weld.b()]) {
+                match seam {
+                    Some(seam) if weld.weights().len() != seam.slots().len() => {
+                        return Err(ModelError::WeldSlotMismatch)
+                    }
+                    Some(_) => {}
+                    None if fragment && self.node(&end.0).is_none() => {}
+                    None => return Err(ModelError::UnknownSeam),
+                }
+            }
+            if let [Some(a), Some(b)] = ends {
+                if a.slots().len() != b.slots().len()
+                    || !a.slots().iter().all(|s| b.slot(s.id()).is_some())
+                {
+                    return Err(ModelError::WeldSlotMismatch);
+                }
             }
             welds.push(ClmWeld {
                 a: ClmWeldEnd {
@@ -227,6 +276,7 @@ impl Model {
         Ok(clm::encode(&file.doc, &file.textures)?)
     }
 
+    /// Read a **complete model**: one root with no parent, nothing dangling.
     pub fn from_clm_file(file: &ClmFile) -> Result<Model, ModelError> {
         Self::from_clm_file_with_budget(file, &mut LoadBudget::default())
     }
@@ -235,6 +285,24 @@ impl Model {
         file: &ClmFile,
         budget: &mut LoadBudget,
     ) -> Result<Model, ModelError> {
+        Self::read(file, budget, Shape::Base)
+    }
+
+    /// Read an **addon fragment**: a forest whose roots name absent parents,
+    /// with every other reference into the base model left to dangle. See
+    /// `crate::model::addon` for what install then does with it.
+    pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Model, ModelError> {
+        Self::from_clm_file_fragment_with_budget(file, &mut LoadBudget::default())
+    }
+
+    pub fn from_clm_file_fragment_with_budget(
+        file: &ClmFile,
+        budget: &mut LoadBudget,
+    ) -> Result<Model, ModelError> {
+        Self::read(file, budget, Shape::Fragment)
+    }
+
+    fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
         charge_clm_structure(file, budget)?;
         let doc = &file.doc;
 
@@ -290,17 +358,10 @@ impl Model {
 
         let mut nodes: HashMap<NodeId, ModelNode> = HashMap::with_capacity(doc.nodes.len());
         let mut seams: HashMap<&NodeId, SeamTable> = HashMap::new();
-        let mut root: Option<&NodeId> = None;
+        let mut roots: Vec<NodeId> = Vec::new();
         for cn in &doc.nodes {
             match &cn.parent {
-                Some(parent) => {
-                    if !declared.contains(parent) {
-                        return Err(ClmLoadError::DanglingParent {
-                            node: cn.id.to_string(),
-                            parent: parent.to_string(),
-                        }
-                        .into());
-                    }
+                Some(parent) if declared.contains(parent) => {
                     if !nodes.contains_key(parent) {
                         return Err(ClmLoadError::NotTopological {
                             node: cn.id.to_string(),
@@ -309,16 +370,34 @@ impl Model {
                         .into());
                     }
                 }
-                None => match root {
-                    Some(first) => {
+                // A parent the file does not carry: a fragment's root, or a
+                // complete model that lost a node.
+                Some(parent) => {
+                    if !shape.allows_dangling() {
+                        return Err(ClmLoadError::DanglingParent {
+                            node: cn.id.to_string(),
+                            parent: parent.to_string(),
+                        }
+                        .into());
+                    }
+                    roots.push(cn.id.clone());
+                }
+                None => {
+                    if shape.allows_dangling() {
+                        return Err(ClmLoadError::FragmentHasNoParent {
+                            node: cn.id.to_string(),
+                        }
+                        .into());
+                    }
+                    if let Some(first) = roots.first() {
                         return Err(ClmLoadError::MultipleRoots {
                             root: first.to_string(),
                             node: cn.id.to_string(),
                         }
-                        .into())
+                        .into());
                     }
-                    None => root = Some(&cn.id),
-                },
+                    roots.push(cn.id.clone());
+                }
             }
 
             let node_seams = match &cn.kind {
@@ -346,10 +425,14 @@ impl Model {
             node.z_order = cn.z_order;
             node.transform = cn.transform;
             node.lock_to_root = cn.lock_to_root;
-            node.kind = model_kind(&cn.id, &cn.kind, node_seams, &declared, &textures, &params)?;
+            node.kind = model_kind(
+                &cn.id, &cn.kind, node_seams, &declared, &textures, &params, shape,
+            )?;
             nodes.insert(cn.id.clone(), node);
         }
-        let root = root.ok_or(ClmLoadError::NoRoot)?.clone();
+        if roots.is_empty() && !shape.allows_dangling() {
+            return Err(ClmLoadError::NoRoot.into());
+        }
 
         // Children in document order, which is the model's sibling order.
         for cn in &doc.nodes {
@@ -370,7 +453,7 @@ impl Model {
             }
             let owner = || format!("the binding on node {}", b.node);
             for p in &b.params {
-                if !params.contains_key(p) {
+                if !params.contains_key(p) && !shape.allows_dangling() {
                     return Err(ClmLoadError::DanglingParam {
                         owner: owner(),
                         id: p.to_string(),
@@ -420,12 +503,12 @@ impl Model {
 
         let mut welds = Vec::with_capacity(doc.welds.len());
         for w in &doc.welds {
-            welds.push(read_weld(w, &seams)?);
+            welds.push(read_weld(w, &seams, &declared, shape)?);
         }
 
         for (i, animation) in doc.animations.iter().enumerate() {
             for lane in &animation.lanes {
-                if !params.contains_key(&lane.param) {
+                if !params.contains_key(&lane.param) && !shape.allows_dangling() {
                     return Err(ClmLoadError::DanglingParam {
                         owner: format!("a lane of animation {i}"),
                         id: lane.param.to_string(),
@@ -440,7 +523,7 @@ impl Model {
             physics: doc.physics,
             welds,
             nodes,
-            root,
+            roots,
             params,
             param_order,
             textures,
@@ -450,6 +533,7 @@ impl Model {
         })
     }
 
+    /// Read a **complete model** from `.clm` bytes.
     pub fn from_clm_bytes(bytes: &[u8]) -> Result<Model, ModelError> {
         Self::from_clm_bytes_with_budget(bytes, &mut LoadBudget::default())
     }
@@ -460,6 +544,19 @@ impl Model {
     ) -> Result<Model, ModelError> {
         let file = clm::decode_with_budget(bytes, budget)?;
         Self::from_clm_file_with_budget(&file, budget)
+    }
+
+    /// Read an **addon fragment** from `.clm` bytes.
+    pub fn from_clm_bytes_fragment(bytes: &[u8]) -> Result<Model, ModelError> {
+        Self::from_clm_bytes_fragment_with_budget(bytes, &mut LoadBudget::default())
+    }
+
+    pub fn from_clm_bytes_fragment_with_budget(
+        bytes: &[u8],
+        budget: &mut LoadBudget,
+    ) -> Result<Model, ModelError> {
+        let file = clm::decode_with_budget(bytes, budget)?;
+        Self::from_clm_file_fragment_with_budget(&file, budget)
     }
 }
 
@@ -572,13 +669,14 @@ fn model_kind(
     declared: &HashSet<&NodeId>,
     textures: &HashMap<TexId, ModelTexture>,
     params: &HashMap<ParamId, ModelParam>,
+    shape: Shape,
 ) -> Result<ModelNodeKind, ModelError> {
     Ok(match kind {
         ClmNodeKind::Group => ModelNodeKind::Group,
         ClmNodeKind::Part(p) => {
             let mut part = ModelPart::new(p.mesh.clone());
             if let Some(albedo) = &p.albedo {
-                if !textures.contains_key(albedo) {
+                if !textures.contains_key(albedo) && !shape.allows_dangling() {
                     return Err(ClmLoadError::DanglingTexture {
                         node: id.to_string(),
                         id: albedo.to_string(),
@@ -591,7 +689,7 @@ fn model_kind(
             part.blend_mode = p.blend_mode;
             part.tint = p.tint;
             part.screen_tint = p.screen_tint;
-            part.masks = model_masks(id, &p.masks, declared)?;
+            part.masks = model_masks(id, &p.masks, declared, shape)?;
             part.mask_threshold = p.mask_threshold;
             part.seams = seams;
             ModelNodeKind::Part(part)
@@ -602,7 +700,7 @@ fn model_kind(
             composite.blend_mode = c.blend_mode;
             composite.tint = c.tint;
             composite.screen_tint = c.screen_tint;
-            composite.masks = model_masks(id, &c.masks, declared)?;
+            composite.masks = model_masks(id, &c.masks, declared, shape)?;
             composite.mask_threshold = c.mask_threshold;
             composite.propagate_meshgroup = c.propagate_meshgroup;
             ModelNodeKind::Composite(composite)
@@ -618,7 +716,7 @@ fn model_kind(
             physics.map_mode = ph.map_mode;
             physics.local_only = ph.local_only;
             for target in ph.target_params.iter().flatten() {
-                if !params.contains_key(target) {
+                if !params.contains_key(target) && !shape.allows_dangling() {
                     return Err(ClmLoadError::DanglingParam {
                         owner: format!("physics node {id}"),
                         id: target.to_string(),
@@ -642,11 +740,12 @@ fn model_masks(
     id: &NodeId,
     masks: &[ClmMask],
     declared: &HashSet<&NodeId>,
+    shape: Shape,
 ) -> Result<Vec<ModelMask>, ModelError> {
     masks
         .iter()
         .map(|m| {
-            if !declared.contains(&m.source) {
+            if !declared.contains(&m.source) && !shape.allows_dangling() {
                 return Err(ClmLoadError::DanglingNode {
                     node: id.to_string(),
                     field: "mask source",
@@ -716,15 +815,29 @@ fn read_seams(id: &NodeId, part: &ClmPart) -> Result<Vec<Seam>, ModelError> {
 /// leaves a slot pair with no weight, which the solve has no answer for.
 /// Whether a slot is *filled* is not this check's business:
 /// [`ModelWeld::resolve`] skips the ones that are not.
-fn read_weld(weld: &ClmWeld, seams: &HashMap<&NodeId, SeamTable>) -> Result<ModelWeld, ModelError> {
-    let slots_of = |end: &ClmWeldEnd| {
-        seams
-            .get(&end.node)
-            .and_then(|t| t.get(&end.seam))
-            .ok_or_else(|| ClmLoadError::UnknownSeam {
+///
+/// A **fragment** may weld its own seam to a base part's, so an end naming a
+/// node the file does not carry is checked as far as it can be — the weights
+/// still have to name the resolvable end's slots exactly once — and
+/// `Model::install` finishes the job against the base.
+fn read_weld(
+    weld: &ClmWeld,
+    seams: &HashMap<&NodeId, SeamTable>,
+    declared: &HashSet<&NodeId>,
+    shape: Shape,
+) -> Result<ModelWeld, ModelError> {
+    let slots_of = |end: &ClmWeldEnd| -> Result<Option<&HashSet<SlotId>>, ModelError> {
+        match seams.get(&end.node).and_then(|t| t.get(&end.seam)) {
+            Some(slots) => Ok(Some(slots)),
+            // The seam is missing because the whole part is: in a fragment
+            // that is a requirement, not a broken reference.
+            None if shape.allows_dangling() && !declared.contains(&end.node) => Ok(None),
+            None => Err(ClmLoadError::UnknownSeam {
                 node: end.node.to_string(),
                 seam: end.seam.to_string(),
-            })
+            }
+            .into()),
+        }
     };
     let a_slots = slots_of(&weld.a)?;
     let b_slots = slots_of(&weld.b)?;
@@ -732,17 +845,25 @@ fn read_weld(weld: &ClmWeld, seams: &HashMap<&NodeId, SeamTable>) -> Result<Mode
         a: weld.a.seam.to_string(),
         b: weld.b.seam.to_string(),
     };
-    if a_slots.len() != b_slots.len() || weld.weights.len() != a_slots.len() {
-        return Err(mismatch().into());
+    if let (Some(a), Some(b)) = (a_slots, b_slots) {
+        if a.len() != b.len() {
+            return Err(mismatch().into());
+        }
+    }
+    for end in [a_slots, b_slots].into_iter().flatten() {
+        if weld.weights.len() != end.len() {
+            return Err(mismatch().into());
+        }
     }
 
     let mut seen = HashSet::with_capacity(weld.weights.len());
     let mut weights = Vec::with_capacity(weld.weights.len());
     for weight in &weld.weights {
-        if !a_slots.contains(&weight.slot)
-            || !b_slots.contains(&weight.slot)
-            || !seen.insert(&weight.slot)
-        {
+        let known = [a_slots, b_slots]
+            .into_iter()
+            .flatten()
+            .all(|slots| slots.contains(&weight.slot));
+        if !known || !seen.insert(&weight.slot) {
             return Err(mismatch().into());
         }
         weights.push((weight.slot.clone(), weight.weight));
@@ -789,7 +910,7 @@ mod tests {
     fn sample() -> Model {
         let mut hex = SeededHex::new(9);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
 
         let tex = m
             .add_texture(
@@ -938,6 +1059,95 @@ mod tests {
         match Model::from_clm_file(file) {
             Err(ModelError::InvalidClm(e)) => e,
             other => panic!("expected a structured load error, got {other:?}"),
+        }
+    }
+
+    fn fragment_err(file: &ClmFile) -> ClmLoadError {
+        match Model::from_clm_file_fragment(file) {
+            Err(ModelError::InvalidClm(e)) => e,
+            other => panic!("expected a structured load error, got {other:?}"),
+        }
+    }
+
+    /// [`sample`] with the root, the `Lower` part, the params and the texture
+    /// taken out: what is left is an addon that hangs off `root`, draws a base
+    /// texture, is masked by a base part, welds into one, and is deformed and
+    /// animated by base params. Every kind of dangling reference at once.
+    fn sample_fragment_file() -> ClmFile {
+        let mut file = sample().to_clm_file().unwrap();
+        let lower = node_named(&file, "Lower").id.clone();
+        file.doc
+            .nodes
+            .retain(|n| n.parent.is_some() && n.id != lower);
+        file.doc.params.clear();
+        file.textures.clear();
+        file
+    }
+
+    #[test]
+    fn a_fragment_is_refused_by_the_complete_model_reader() {
+        assert!(matches!(
+            load_err(&sample_fragment_file()),
+            ClmLoadError::DanglingParent { .. }
+        ));
+    }
+
+    #[test]
+    fn a_complete_model_is_refused_by_the_fragment_reader() {
+        let file = sample().to_clm_file().unwrap();
+        assert!(matches!(
+            fragment_err(&file),
+            ClmLoadError::FragmentHasNoParent { node } if node == "root"
+        ));
+    }
+
+    /// The point of the fragment shape: nothing that reaches into a base model
+    /// is dropped, defaulted or rewritten on the way through a file.
+    #[test]
+    fn a_fragment_round_trips_with_its_dangling_references() {
+        let file = sample_fragment_file();
+        let bytes = clm::encode(&file.doc, &file.textures).unwrap();
+        let f = Model::from_clm_bytes_fragment(&bytes).unwrap();
+
+        assert!(f.is_fragment());
+        assert_eq!(f.root(), None);
+        let upper = named(&f, "Upper");
+        let face = named(&f, "Face");
+        assert_eq!(f.roots(), [upper.clone(), face.clone(), named(&f, "Sway")]);
+        // Every root names the base node it hangs off.
+        for r in f.roots() {
+            let parent = f.node(r).unwrap().parent().unwrap();
+            assert_eq!(parent.as_str(), "root");
+            assert!(f.node(parent).is_none());
+        }
+        // ... and every other reference still points at the base.
+        assert!(f.texture(part(&f, &upper).albedo().unwrap()).is_none());
+        assert!(f.node(part_mask_source(&f, &face)).is_none());
+        assert!(f.node(&f.welds()[0].b().0).is_none());
+        assert_eq!(f.welds()[0].weights().len(), 2);
+        let binding = f.bindings().next().unwrap();
+        assert!(binding.params().iter().all(|p| f.param(p).is_none()));
+        assert!(f.animations()[0]
+            .lanes
+            .iter()
+            .all(|l| f.param(&l.param).is_none()));
+
+        assert_eq!(f.to_clm_bytes().unwrap(), bytes);
+        let again = Model::from_clm_bytes_fragment(&f.to_clm_bytes().unwrap()).unwrap();
+        assert_eq!(again.to_clm_bytes().unwrap(), bytes);
+    }
+
+    fn part<'a>(m: &'a Model, id: &NodeId) -> &'a ModelPart {
+        match &m.node(id).unwrap().kind {
+            ModelNodeKind::Part(p) => p,
+            other => panic!("{id} is a {}", other.name()),
+        }
+    }
+
+    fn part_mask_source<'a>(m: &'a Model, id: &NodeId) -> &'a NodeId {
+        match &m.node(id).unwrap().kind {
+            ModelNodeKind::Composite(c) => c.masks()[0].source(),
+            other => panic!("{id} is a {}", other.name()),
         }
     }
 

@@ -1077,7 +1077,7 @@ mod tests {
 
         let mut hex = SeededHex::new(1);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let part = m
             .add_node(
                 &root,

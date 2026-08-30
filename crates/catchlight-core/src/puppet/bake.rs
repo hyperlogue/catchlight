@@ -90,9 +90,21 @@ pub(super) fn bake(model: &Model) -> Baked {
     let mut id_of_node = Vec::with_capacity(model.node_count());
 
     // The root is arena slot 0, already there; fill it in place rather than
-    // hanging a second node under it.
+    // hanging a second node under it. An addon fragment has no single root,
+    // so it bakes to a puppet holding nothing but that empty slot: a fragment
+    // is installed into a model, never animated on its own.
     let g_scale = model.physics().pixels_per_meter * model.physics().gravity;
-    let root_id = model.root().clone();
+    let Some(root_id) = model.root().cloned() else {
+        return Baked {
+            arena,
+            node_of_id,
+            id_of_node,
+            params: Vec::new(),
+            slot_of_param: HashMap::new(),
+            bindings: Vec::new(),
+            physics_targets: Vec::new(),
+        };
+    };
     if let Some(root) = model.node(&root_id) {
         arena.nodes[0] = build_node(model, root, g_scale);
         arena.base_local_matrix[0] = arena.nodes[0].base_transform.to_matrix();

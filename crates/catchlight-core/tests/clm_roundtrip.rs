@@ -40,7 +40,7 @@ fn fixtures() -> Vec<PathBuf> {
 /// field comparison of the decoded documents would miss if the reader silently
 /// re-minted an Id.
 fn identity(model: &Model) -> Vec<String> {
-    let mut out = vec![format!("root={}", model.root())];
+    let mut out = vec![format!("roots={:?}", model.roots())];
     for id in model.nodes_in_order() {
         let node = model.node(&id).expect("node in order");
         out.push(format!(
@@ -126,7 +126,7 @@ fn the_welded_fixture_keeps_its_vertex_pairs() {
 fn five_hundred_node_model() -> Model {
     let mut hex = SeededHex::new(21);
     let mut model = Model::new();
-    let root = model.root().clone();
+    let root = model.root().unwrap().clone();
 
     let mesh = |i: usize| ClmMesh {
         verts: vec![0.0, 0.0, 1.0, 0.0, i as f32, 1.0],
@@ -163,7 +163,7 @@ fn five_hundred_node_model() -> Model {
             .unwrap();
         params.push(param);
         parent = if i % 8 == 7 {
-            model.root().clone()
+            model.root().unwrap().clone()
         } else {
             node
         };

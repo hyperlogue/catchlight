@@ -475,7 +475,9 @@ impl Editor {
         }
         let rev = session.rev;
         let Session { model, refs, .. } = &mut *session;
-        let root = model.root().clone();
+        // A session always holds a complete model: the editor's load path
+        // reads one, and `Model::new` makes one.
+        let root = model.root().cloned()?;
         let snap = Arc::new(DocSnapshot {
             rev,
             root: build_tree(model, refs, &root),
@@ -671,7 +673,7 @@ impl Editor {
                 })
             }),
             Command::NodeTree { session } => self.with_session(session, |s| {
-                let root = s.model.root().clone();
+                let root = s.model.root().cloned().ok_or(ModelError::Fragment)?;
                 let Session { model, refs, .. } = s;
                 Ok(ResponseBody::Tree {
                     root: build_tree(model, refs, &root),
@@ -1876,7 +1878,7 @@ mod tests {
         let mut session = Session::new(Model::new(), "history".into(), None);
         for name in ["first", "second", "third"] {
             let mut model = Model::new();
-            let root = model.root().clone();
+            let root = model.root().unwrap().clone();
             model
                 .update_node(&root, |n| n.name = Name::truncated(name))
                 .unwrap();
@@ -1892,7 +1894,7 @@ mod tests {
         assert_eq!(
             session.undo[0]
                 .model
-                .node(session.undo[0].model.root())
+                .node(session.undo[0].model.root().unwrap())
                 .unwrap()
                 .name
                 .as_str(),
