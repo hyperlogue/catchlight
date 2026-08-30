@@ -460,6 +460,7 @@ impl Model {
         }
 
         Ok(Model {
+            identity: super::next_identity(),
             generation: 0,
             physics: doc.physics,
             welds,

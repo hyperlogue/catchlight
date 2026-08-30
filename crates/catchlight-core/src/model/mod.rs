@@ -13,6 +13,13 @@
 //!   baked against and rebake when it moved. A mutation path that forgets to
 //!   bump is the bug class `generation_bumps_on_every_mutating_method` exists
 //!   to catch.
+//! - **Two models are told apart by [`Model::identity`], not by the
+//!   generation.** Every constructed model draws a nonce from a process-wide
+//!   counter; a clone keeps it, because an undo snapshot is the same model.
+//!   The counter alone cannot do that job — every loader hands back generation
+//!   0, so a puppet baked against one model would tick against another with
+//!   the two numbers agreeing. Derived objects compare the nonce beside the
+//!   generation and `debug_assert!` on a mismatch.
 //! - **The tree is always valid, for the shape the model is.** A *complete*
 //!   model has one root and its parent is `None`; an *addon fragment* has
 //!   [`Model::roots`] naming parents it does not carry, and its other
@@ -93,6 +100,7 @@ pub use file::ClmLoadError;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::components::{BlendMode, MaskMode};
@@ -224,6 +232,7 @@ impl From<&ModelTexture> for crate::formats::ModelTexture {
 /// [`Model::to_clm_file`] is total.
 #[derive(Debug, Clone)]
 pub struct Model {
+    identity: u64,
     generation: u64,
     physics: ClmPhysics,
     welds: Vec<ModelWeld>,
@@ -800,6 +809,14 @@ impl ModelNode {
 /// The Id a fresh model's root carries until an author renames it.
 const DEFAULT_ROOT_ID: &str = "root";
 
+/// Hands out [`Model::identity`]. Starts at 1 so 0 is free to mean "no model".
+static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+/// Mint the next model's identity.
+fn next_identity() -> u64 {
+    NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed)
+}
+
 impl Model {
     /// A new model with a single `Group` root named "Root", at Id `root`.
     pub fn new() -> Self {
@@ -807,6 +824,7 @@ impl Model {
         let mut nodes = HashMap::new();
         nodes.insert(root.clone(), ModelNode::new("Root", ModelNodeKind::Group));
         Self {
+            identity: next_identity(),
             generation: 0,
             physics: ClmPhysics::default(),
             welds: Vec::new(),
@@ -826,6 +844,18 @@ impl Model {
     /// reads the number itself.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// This model's identity, distinct from every other model this process
+    /// builds. Compared beside [`Self::generation`] by everything derived from
+    /// a model, so ticking a puppet against a *different* model that happens
+    /// to sit at the same generation is caught instead of silently reading the
+    /// wrong tree.
+    ///
+    /// A clone keeps it: an undo snapshot is the same model, and a puppet
+    /// baked against one is baked against the other.
+    pub fn identity(&self) -> u64 {
+        self.identity
     }
 
     /// The one place a mutation is recorded. Every `&mut self` method calls it
@@ -2314,6 +2344,27 @@ mod tests {
             r.model.animations()[0].lanes.is_empty(),
             "its lane over the deleted param does not"
         );
+    }
+
+    /// Every model a process builds is a different model, however alike their
+    /// contents — and every loader hands back generation 0, so the identity is
+    /// the only thing that can say so.
+    #[test]
+    fn every_constructed_model_gets_its_own_identity() {
+        let a = Model::new();
+        let b = Model::new();
+        assert_eq!(a.generation(), b.generation(), "both start at generation 0");
+        assert_ne!(a.identity(), b.identity());
+    }
+
+    /// Undo snapshots a model by cloning it, and a puppet built against the
+    /// live model has to keep working when the snapshot is restored, so a
+    /// clone is the *same* model.
+    #[test]
+    fn a_clone_keeps_the_identity() {
+        let model = Model::new();
+        let snapshot = model.clone();
+        assert_eq!(model.identity(), snapshot.identity());
     }
 
     /// Every derived object (puppet, render cache) rebakes off `generation`, so
