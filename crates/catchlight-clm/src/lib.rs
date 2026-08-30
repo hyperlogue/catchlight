@@ -74,6 +74,7 @@
 pub mod diff;
 pub mod file;
 pub mod patch;
+pub mod texture;
 
 use std::path::PathBuf;
 
