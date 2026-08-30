@@ -60,7 +60,13 @@ fn identity(model: &Model) -> Vec<String> {
         out.push(format!("binding {:?}", b.key()));
     }
     for w in model.welds() {
-        out.push(format!("weld {} {} {:?}", w.a(), w.b(), w.pairs()));
+        out.push(format!(
+            "weld {:?} {:?} {:?} {:?}",
+            w.a(),
+            w.b(),
+            w.weights(),
+            w.resolve(model),
+        ));
     }
     out
 }
@@ -93,9 +99,9 @@ fn every_committed_fixture_round_trips_byte_for_byte() {
     }
 }
 
-/// The one fixture with a weld: it is the only committed proof that the seam
-/// bridge survives a real file, and its pairs are what the weld baseline
-/// renders.
+/// The one fixture with a weld: it is the only committed proof that seams
+/// survive a real file, and the vertex pairs they resolve to are what the
+/// weld baseline renders.
 #[test]
 fn the_welded_fixture_keeps_its_vertex_pairs() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).expect("welded_seam.clm");
@@ -105,11 +111,15 @@ fn the_welded_fixture_keeps_its_vertex_pairs() {
         panic!("welded_seam carries exactly one weld");
     };
     assert_eq!(
-        weld.pairs()
+        weld.resolve(&model)
             .iter()
             .map(|p| (p.a_vert, p.b_vert, p.weight))
             .collect::<Vec<_>>(),
         vec![(0, 0, 1.0), (1, 1, 0.5), (2, 2, 0.0)],
+    );
+    assert!(
+        model.unfilled_slots().is_empty(),
+        "every slot the fixture welds is filled",
     );
 }
 

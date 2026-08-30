@@ -24,12 +24,11 @@
 //!   here carries a second axis.
 //! - **No vertex index outside a seam.** A part carries named seams, each a
 //!   set of slots filled by one of its vertices; a weld names two seams and
-//!   weights their shared slots. *Today's bridge:* a [`Model`](crate::Model)
-//!   still pairs raw vertex indices ([`ModelWeld`](crate::ModelWeld)), so the
-//!   writer synthesizes one seam per weld end — `weld-<n>-a` / `weld-<n>-b`,
-//!   slots `s0..` in pair order — and the reader resolves the slots back to
-//!   vertex pairs. cl-32i.15 gives the Model real seams and deletes the
-//!   synthesis; the wire does not change when it does.
+//!   weights their shared slots. A slot may also be *unfilled*
+//!   (`vertex: null`) — what re-authoring a part's mesh leaves behind — and a
+//!   weld over an unfilled slot loads, resolving to one pair fewer. A
+//!   [`Model`](crate::Model) holds the same shape, so this section is a copy
+//!   in both directions.
 //! - **A malformed file is an error, never a panic.** Every Id that names
 //!   something must find it, seam slots must be in mesh range, a weld's two
 //!   seams must hold the same slots, and a binding must name one or two
@@ -353,8 +352,11 @@ pub struct ClmSeam {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClmSlot {
     pub id: SlotId,
-    /// Index into the owning part's mesh vertices.
-    pub vertex: u32,
+    /// Index into the owning part's mesh vertices, or `None` for an unfilled
+    /// slot — a slot whose part has been re-meshed since it was filled. A
+    /// filled slot writes the bare index, so this costs nothing on the wire.
+    #[serde(default)]
+    pub vertex: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -566,10 +568,16 @@ mod tests {
                 mask_threshold: 0.5,
                 seams: vec![ClmSeam {
                     id: SeamId::new("collar").unwrap(),
-                    slots: vec![ClmSlot {
-                        id: SlotId::new("s0").unwrap(),
-                        vertex: 2,
-                    }],
+                    slots: vec![
+                        ClmSlot {
+                            id: SlotId::new("s0").unwrap(),
+                            vertex: Some(2),
+                        },
+                        ClmSlot {
+                            id: SlotId::new("s1").unwrap(),
+                            vertex: None,
+                        },
+                    ],
                 }],
             }),
         };
