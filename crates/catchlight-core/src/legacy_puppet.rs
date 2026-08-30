@@ -1,5 +1,11 @@
 //! The `LegacyPuppet`: node tree, params, deforms, and the per-frame pipeline.
 //!
+//! Superseded by [`crate::puppet::Puppet`], which animates a
+//! [`crate::model::Model`] instead of owning the authored data itself. Both
+//! runtimes evaluate in the same [`crate::puppet::Arena`], so the transform
+//! walks, the mesh-group descent and the weld solve are one implementation;
+//! what lives here is the uuid-keyed pose layer the loader still builds.
+//!
 //! **The per-frame pipeline is `LegacyPuppet::tick`**, not a bare
 //! `compute_transforms`. Semantically it is: fold animations → pose the
 //! physics anchors and step the drivers → apply params → compute transforms →
@@ -26,6 +32,7 @@ use glam::Mat4;
 use crate::{
     components::{Node, NodeIdx, PuppetTexture},
     node::NodeTree,
+    puppet::{Arena, GlobalTransforms},
 };
 
 /// Squared anchor movement below which `settle_physics` calls a driver
@@ -86,66 +93,12 @@ fn resolve_contributions(
     }
 }
 
-/// Computed global transforms for all nodes in a puppet.
-/// Vec<Mat4> indexed by NodeIdx.0; aligns with the dense LegacyPuppet node
-/// storage so point lookups are a bounds check + index rather than
-/// a hash probe, and the DFS walk in compute_transforms_with_root
-/// writes through contiguous memory.
-#[derive(Debug, Clone)]
-pub struct GlobalTransforms {
-    transforms: Vec<Mat4>,
-}
-
-impl GlobalTransforms {
-    pub fn new() -> Self {
-        Self {
-            transforms: Vec::new(),
-        }
-    }
-
-    pub fn get(&self, id: NodeIdx) -> Mat4 {
-        self.transforms
-            .get(id.0 as usize)
-            .copied()
-            .unwrap_or(Mat4::IDENTITY)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.transforms.is_empty()
-    }
-
-    fn ensure_size(&mut self, size: usize) {
-        if self.transforms.len() < size {
-            self.transforms.resize(size, Mat4::IDENTITY);
-        }
-    }
-
-    fn insert(&mut self, id: NodeIdx, transform: Mat4) {
-        let idx = id.0 as usize;
-        if idx >= self.transforms.len() {
-            self.transforms.resize(idx + 1, Mat4::IDENTITY);
-        }
-        self.transforms[idx] = transform;
-    }
-}
-
-impl Default for GlobalTransforms {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Clone)]
 pub struct LegacyPuppet {
-    // Dense storage indexed by NodeIdx.0. Every NodeIdx allocated via
-    // `allocate_id` is sequential and never removed, so NodeIdx doubles
-    // as the slot index -- no HashMap<NodeIdx,_> indirection, full-node
-    // passes are cache-linear, and point lookups are a bounds check + index.
-    nodes: Vec<Node>,
-    tree: NodeTree,
+    /// The dense node arena and every pass that runs over it.
+    pub(crate) arena: Arena,
     uuid_to_node: HashMap<u32, NodeIdx>,
     textures: Vec<PuppetTexture>,
-    next_id: u32,
     params: Vec<crate::params::Param>,
     /// Name -> index into `params`. Built once by `set_params`; lets
     /// `param_by_name` / `set_param_value_by_name` skip the linear
@@ -180,39 +133,6 @@ pub struct LegacyPuppet {
     last_tick_folded_param_generation: Option<u64>,
     animations: Vec<crate::animation::Animation>,
     play_state: Option<crate::animation::AnimationPlayState>,
-    // Frame-persistent scratch used by propagate_mesh_group_deforms to
-    // carry computed offsets between a read-borrow of the MG node and a
-    // write-borrow of the child node. Sized by the largest child
-    // vert_count seen so far; reused across MGs and across frames.
-    pub(crate) mg_propagate_scratch: Vec<glam::Vec2>,
-    // Parallel scratch used by the dynamic-MG branch to read the child's
-    // combined-minus-Node(mg_id) deform without allocating a per-frame
-    // Vec. Sized by the largest child vert_count seen so far.
-    pub(crate) mg_cur_deform_scratch: Vec<glam::Vec2>,
-    // Per-MG scratch for `mg_vertices[i] + mg_combined[i]` precomputed
-    // once per MG before the per-child loop. Avoids re-summing per
-    // child-vert when many children of the same MG hit the same MG
-    // triangle. Sized by the largest MG vertex count.
-    pub(crate) mg_deformed_vertices_scratch: Vec<glam::Vec2>,
-    // Cached pre-order of MeshGroup NodeIdxs. Invalidated on tree edits
-    // (see insert_child). None = stale, recompute on next access.
-    pub(crate) mg_pre_order_cache: Option<Vec<NodeIdx>>,
-    // base_transform.to_matrix() cached per slot. 60-100ns per node of
-    // quat/mat ops saved in compute_transforms when the node has no
-    // active transform delta this frame.
-    pub(crate) base_local_matrix: Vec<Mat4>,
-    // Parallel to nodes: true when apply_params/tick wrote a delta into
-    // node.transform this frame. Cleared by reset_dynamic_state.
-    pub(crate) node_transform_dirty: Vec<bool>,
-    pub(crate) deform_node_ids: Vec<NodeIdx>,
-    /// Puppet-global weld list; solve order is list order (see
-    /// [`crate::weld::apply_welds`]).
-    pub(crate) welds: Vec<crate::weld::Weld>,
-    // Frame-persistent scratches for the weld pass: each side's current
-    // deform sum, read without disturbing the stack memos.
-    pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
-    pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
-    pub(crate) physics_node_ids: Vec<NodeIdx>,
     /// When false, `tick` skips SimplePhysics entirely: drivers never
     /// overwrite their target params, so those params evaluate at their
     /// defaults (or whatever the caller poses) and the same pose always
@@ -220,15 +140,9 @@ pub struct LegacyPuppet {
     /// dt=0 preview can't integrate, and chained drivers would otherwise
     /// leave pose-history-dependent residue in the authoring view.
     physics_enabled: bool,
-    pub(crate) mesh_group_node_ids: Vec<NodeIdx>,
     param_mesh_group_relevant: HashSet<u32>,
     mesh_group_param_generation: u64,
     last_tick_mesh_group_generation: Option<u64>,
-    // Puppet-local (root=IDENTITY) transform scratch used when sampling
-    // SimplePhysics anchors. Decouples the physics integrator from any
-    // host world-scale: pendulum length and gravity are loaded in
-    // puppet-local units, so anchors must be in matching units.
-    pub(crate) physics_transforms: GlobalTransforms,
     physics_update_scratch: Vec<(u32, NodeIdx, glam::Vec2)>,
     /// `Some(G)` means `physics_transforms` and the node-level anchor
     /// inputs (`node.transform` translations, `offset_output_scale`) hold
@@ -239,14 +153,6 @@ pub struct LegacyPuppet {
     /// `set_params`, `insert_child`), so any state change invalidates the
     /// cached pose.
     last_anchor_pose_generation: Option<u64>,
-    /// Cached `physics_anchor_skip_allowed`. Depends only on tree
-    /// structure + node flags, so invalidated on `insert_child`.
-    physics_anchor_skip_cached: Option<bool>,
-    /// Slots that are a SimplePhysics node or an ancestor of one — the
-    /// only slots the physics pre-pass transform walk needs to fill (see
-    /// `compute_physics_ancestor_transforms`). Invalidated on
-    /// `insert_child`.
-    physics_ancestor_mask: Option<Vec<bool>>,
     // Changes whenever compiled node state that can affect a consumer's
     // structural cache is replaced through a public mutation API.
     node_revision: u64,
@@ -254,18 +160,10 @@ pub struct LegacyPuppet {
 
 impl LegacyPuppet {
     pub fn new() -> Self {
-        let root_id = NodeIdx::new(0);
-        let tree = NodeTree::new(root_id);
-
-        // Slot 0 = root (NodeIdx::new(0)).
-        let nodes = vec![Node::default()];
-
         Self {
-            nodes,
-            tree,
+            arena: Arena::new(),
             uuid_to_node: HashMap::new(),
             textures: Vec::new(),
-            next_id: 1,
             params: Vec::new(),
             param_index: HashMap::new(),
             param_id_to_index: HashMap::new(),
@@ -277,37 +175,22 @@ impl LegacyPuppet {
             last_tick_folded_param_generation: None,
             animations: Vec::new(),
             play_state: None,
-            mg_propagate_scratch: Vec::new(),
-            mg_cur_deform_scratch: Vec::new(),
-            mg_deformed_vertices_scratch: Vec::new(),
-            mg_pre_order_cache: None,
-            base_local_matrix: vec![Mat4::IDENTITY],
-            node_transform_dirty: vec![false],
-            deform_node_ids: Vec::new(),
-            welds: Vec::new(),
-            weld_cur_a_scratch: Vec::new(),
-            weld_cur_b_scratch: Vec::new(),
-            physics_node_ids: Vec::new(),
             physics_enabled: true,
-            mesh_group_node_ids: Vec::new(),
             param_mesh_group_relevant: HashSet::new(),
             mesh_group_param_generation: 0,
             last_tick_mesh_group_generation: None,
-            physics_transforms: GlobalTransforms::new(),
             physics_update_scratch: Vec::new(),
             last_anchor_pose_generation: None,
-            physics_anchor_skip_cached: None,
-            physics_ancestor_mask: None,
             node_revision: 0,
         }
     }
 
     pub fn root(&self) -> NodeIdx {
-        self.tree.root
+        self.arena.root()
     }
 
     pub fn tree(&self) -> &NodeTree {
-        &self.tree
+        &self.arena.tree
     }
 
     pub fn textures(&self) -> &[PuppetTexture] {
@@ -319,19 +202,19 @@ impl LegacyPuppet {
     }
 
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.arena.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.arena.is_empty()
     }
 
     pub fn get(&self, id: NodeIdx) -> Option<&Node> {
-        self.nodes.get(id.0 as usize)
+        self.arena.get(id)
     }
 
     pub(crate) fn get_mut(&mut self, id: NodeIdx) -> Option<&mut Node> {
-        self.nodes.get_mut(id.0 as usize)
+        self.arena.get_mut(id)
     }
 
     pub fn node_revision(&self) -> u64 {
@@ -342,19 +225,10 @@ impl LegacyPuppet {
     /// the same value. Runtime-only pose changes should use
     /// [`Self::update_node_transform`] instead.
     pub fn set_node_base_transform(&mut self, id: NodeIdx, transform: crate::Transform) -> bool {
-        let slot = id.0 as usize;
-        let Some(node) = self.nodes.get_mut(slot) else {
+        if self.arena.get(id).is_none() {
             return false;
-        };
-        node.base_transform = transform;
-        node.transform = transform;
-        if let Some(matrix) = self.base_local_matrix.get_mut(slot) {
-            *matrix = transform.to_matrix();
         }
-        if let Some(dirty) = self.node_transform_dirty.get_mut(slot) {
-            *dirty = false;
-        }
-        self.rebuild_all_mesh_group_attachments();
+        self.arena.set_node_base_transform(id, transform);
         self.invalidate_pose_memos();
         self.bump_node_revision();
         true
@@ -367,17 +241,14 @@ impl LegacyPuppet {
         id: NodeIdx,
         update: impl FnOnce(&mut crate::Transform) -> R,
     ) -> Option<R> {
-        let slot = id.0 as usize;
-        let result = update(&mut self.nodes.get_mut(slot)?.transform);
-        if let Some(dirty) = self.node_transform_dirty.get_mut(slot) {
-            *dirty = true;
-        }
+        let result = update(&mut self.arena.get_mut(id)?.transform);
+        self.arena.mark_transform_dirty(id);
         self.last_anchor_pose_generation = None;
         Some(result)
     }
 
     pub fn set_node_z_order(&mut self, id: NodeIdx, z_order: f32) -> bool {
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         node.z_order = z_order;
@@ -385,7 +256,7 @@ impl LegacyPuppet {
     }
 
     pub fn set_node_enabled(&mut self, id: NodeIdx, enabled: bool) -> bool {
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         node.enabled = enabled;
@@ -393,7 +264,7 @@ impl LegacyPuppet {
     }
 
     pub fn set_node_opacity(&mut self, id: NodeIdx, opacity: f32) -> bool {
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         match &mut node.kind {
@@ -408,8 +279,8 @@ impl LegacyPuppet {
     /// registry. Callers that change meshes must re-upload the puppet to any
     /// resident renderer.
     pub fn set_node_kind(&mut self, id: NodeIdx, kind: crate::NodeKind) -> bool {
-        let old_physics = self.physics_node_ids.clone();
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let old_physics = self.arena.physics_node_ids.clone();
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         node.kind = kind;
@@ -418,7 +289,7 @@ impl LegacyPuppet {
     }
 
     pub fn set_node_blend_mode(&mut self, id: NodeIdx, blend_mode: crate::BlendMode) -> bool {
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         match &mut node.kind {
@@ -435,7 +306,7 @@ impl LegacyPuppet {
         id: NodeIdx,
         mut keep: impl FnMut(&crate::Mask) -> bool,
     ) -> bool {
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         let masks = match &mut node.kind {
@@ -452,7 +323,7 @@ impl LegacyPuppet {
     }
 
     pub fn set_node_masks(&mut self, id: NodeIdx, masks: Vec<crate::Mask>) -> bool {
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         match &mut node.kind {
@@ -472,7 +343,7 @@ impl LegacyPuppet {
         source: crate::deform::DeformSource,
         update: impl FnOnce(&mut [glam::Vec2]) -> R,
     ) -> Option<R> {
-        let node = self.nodes.get_mut(id.0 as usize)?;
+        let node = self.arena.get_mut(id)?;
         let stack = match &mut node.kind {
             crate::NodeKind::Part(part) => &mut part.deform_stack,
             crate::NodeKind::MeshGroup(mesh_group) => &mut mesh_group.deform_stack,
@@ -482,7 +353,7 @@ impl LegacyPuppet {
     }
 
     pub fn reset_node_deforms(&mut self, id: NodeIdx) -> bool {
-        let Some(node) = self.nodes.get_mut(id.0 as usize) else {
+        let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
         match &mut node.kind {
@@ -501,32 +372,14 @@ impl LegacyPuppet {
         self.last_tick_folded_param_generation = None;
         self.last_tick_mesh_group_generation = None;
         self.last_anchor_pose_generation = None;
-        self.physics_anchor_skip_cached = None;
-        self.physics_ancestor_mask = None;
+        self.arena.invalidate_structure_caches();
     }
 
     fn rebuild_node_kind_state(&mut self, old_physics: &[NodeIdx]) {
-        self.deform_node_ids.clear();
-        self.physics_node_ids.clear();
-        self.mesh_group_node_ids.clear();
-        for (slot, node) in self.nodes.iter().enumerate() {
-            let id = NodeIdx::new(slot as u32);
-            if matches!(
-                &node.kind,
-                crate::NodeKind::Part(_) | crate::NodeKind::MeshGroup(_)
-            ) {
-                self.deform_node_ids.push(id);
-            }
-            if matches!(&node.kind, crate::NodeKind::SimplePhysics(_)) {
-                self.physics_node_ids.push(id);
-            }
-            if matches!(&node.kind, crate::NodeKind::MeshGroup(_)) {
-                self.mesh_group_node_ids.push(id);
-            }
-        }
+        self.arena.rebuild_kind_registries();
 
         let mut retired = smallvec::SmallVec::<[u32; 4]>::new();
-        let nodes = &self.nodes;
+        let nodes = &self.arena.nodes;
         self.param_contributions.retain(|entry| {
             if !old_physics.contains(&entry.source) {
                 return true;
@@ -556,115 +409,35 @@ impl LegacyPuppet {
             self.bump_param_generation_for_id(uuid);
         }
 
-        self.mg_pre_order_cache = None;
         self.rebuild_param_effect_cache();
-        self.rebuild_all_mesh_group_attachments();
+        self.arena.rebuild_all_mesh_group_attachments();
         self.invalidate_pose_memos();
         self.bump_node_revision();
     }
 
-    fn rebuild_all_mesh_group_attachments(&mut self) {
-        self.reset_dynamic_state();
-        self.reset_deforms();
-        if self.mesh_group_node_ids.is_empty() {
-            return;
-        }
-        let mut transforms = GlobalTransforms::new();
-        self.compute_transforms(&mut transforms);
-        let baked: Vec<_> = self
-            .mesh_group_node_ids
-            .iter()
-            .map(|&id| {
-                let attachments =
-                    crate::meshgroup::bake_mesh_group_attachments(self, &transforms, id);
-                let bitmap = self
-                    .nodes
-                    .get(id.0 as usize)
-                    .and_then(|node| match &node.kind {
-                        crate::NodeKind::MeshGroup(mesh_group) => {
-                            crate::meshgroup::MgTriangleBitmap::build(&mesh_group.mesh)
-                        }
-                        _ => None,
-                    });
-                (id, attachments, bitmap)
-            })
-            .collect();
-        for (id, attachments, bitmap) in baked {
-            if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
-                self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
-            {
-                mesh_group.attachments = attachments;
-                mesh_group.bitmap = bitmap;
-            }
-        }
-    }
-
-    pub(crate) fn mark_transform_dirty(&mut self, id: NodeIdx) {
-        if let Some(d) = self.node_transform_dirty.get_mut(id.0 as usize) {
-            *d = true;
-        }
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = (NodeIdx, &Node)> {
-        self.nodes
-            .iter()
-            .enumerate()
-            .map(|(slot, node)| (NodeIdx::new(slot as u32), node))
+        self.arena.iter()
     }
 
     pub fn iter_deform_nodes(&self) -> impl Iterator<Item = (NodeIdx, &Node)> {
-        self.deform_node_ids
-            .iter()
-            .filter_map(|&id| self.nodes.get(id.0 as usize).map(|node| (id, node)))
+        self.arena.iter_deform_nodes()
     }
 
     /// Restore every node's transform / z_order to its loader-parsed
     /// baseline. Call at the start of a frame before `apply_params`
     /// so param-driven deltas don't accumulate across frames.
     pub fn reset_dynamic_state(&mut self) {
-        let _span = tracing::trace_span!("reset_dynamic_state").entered();
         self.last_tick_folded_param_generation = None;
         // Restoring node.transform to base drops the cached anchor pose.
         self.last_anchor_pose_generation = None;
-        for d in self.node_transform_dirty.iter_mut() {
-            *d = false;
-        }
-        for node in self.nodes.iter_mut() {
-            node.transform = node.base_transform;
-            node.z_order = node.base_z_order;
-            match &mut node.kind {
-                crate::NodeKind::Part(p) => {
-                    p.opacity = p.base_opacity;
-                    p.tint = p.base_tint;
-                    p.screen_tint = p.base_screen_tint;
-                }
-                crate::NodeKind::Composite(c) => {
-                    c.opacity = c.base_opacity;
-                    c.tint = c.base_tint;
-                    c.screen_tint = c.base_screen_tint;
-                }
-                crate::NodeKind::SimplePhysics(p) => {
-                    p.offset_output_scale = glam::Vec2::ONE;
-                }
-                _ => {}
-            }
-        }
+        self.arena.reset_dynamic_state();
     }
 
     /// Clear every DeformStack on Part / MeshGroup nodes. Call at the
     /// start of a frame before any sources push their contributions.
     pub fn reset_deforms(&mut self) {
-        let _span = tracing::trace_span!("reset_deforms").entered();
         self.last_tick_folded_param_generation = None;
-        for &id in &self.deform_node_ids {
-            if let Some(node) = self.nodes.get_mut(id.0 as usize) {
-                match &mut node.kind {
-                    crate::NodeKind::Part(p) => p.deform_stack.reset(),
-                    crate::NodeKind::MeshGroup(mg) => mg.deform_stack.reset(),
-                    _ => {}
-                }
-            }
-        }
+        self.arena.reset_deforms();
     }
 
     /// Advance every SimplePhysics node by `dt` seconds. Uses each
@@ -676,19 +449,15 @@ impl LegacyPuppet {
     /// writes its current `param_value()` into the puppet's
     /// param_values map. A subsequent `apply_params` call then folds
     /// that value into target node deforms / transforms.
-    pub fn tick_physics(
-        &mut self,
-        transforms: &crate::legacy_puppet::GlobalTransforms,
-        dt: f32,
-    ) -> bool {
+    pub fn tick_physics(&mut self, transforms: &GlobalTransforms, dt: f32) -> bool {
         let _span = tracing::trace_span!("tick_physics").entered();
-        for i in 0..self.physics_node_ids.len() {
-            let id = self.physics_node_ids[i];
-            let Some(anchor) = self.physics_anchor(transforms, id) else {
+        for i in 0..self.arena.physics_node_ids.len() {
+            let id = self.arena.physics_node_ids[i];
+            let Some(anchor) = self.arena.physics_anchor(transforms, id) else {
                 continue;
             };
             if let Some(crate::NodeKind::SimplePhysics(p)) =
-                self.nodes.get_mut(id.0 as usize).map(|n| &mut n.kind)
+                self.arena.get_mut(id).map(|n| &mut n.kind)
             {
                 p.tick(anchor, dt);
             }
@@ -713,7 +482,7 @@ impl LegacyPuppet {
     /// the resets here force it to. Render only after ticking.
     pub fn settle_physics(&mut self) {
         let _span = tracing::trace_span!("settle_physics").entered();
-        let n = self.physics_node_ids.len();
+        let n = self.arena.physics_node_ids.len();
         // Settling writes driver outputs, and a frozen puppet never ticks
         // physics again to refresh or retire them — they would sit on the
         // authored pose forever, which is the override `set_physics_enabled`
@@ -721,24 +490,25 @@ impl LegacyPuppet {
         if n == 0 || !self.physics_enabled {
             return;
         }
-        self.ensure_physics_ancestor_mask();
-        let mut transforms = std::mem::take(&mut self.physics_transforms);
+        self.arena.ensure_physics_ancestor_mask();
+        let mut transforms = std::mem::take(&mut self.arena.physics_transforms);
         let mut settled = false;
 
         for _ in 0..=n {
             self.reset_dynamic_state();
             self.reset_deforms();
             self.apply_anchor_transform_bindings();
-            self.compute_physics_ancestor_transforms(&mut transforms);
+            self.arena
+                .compute_physics_ancestor_transforms(&mut transforms);
 
             let mut moved = false;
             for i in 0..n {
-                let id = self.physics_node_ids[i];
-                let Some(anchor) = self.physics_anchor(&transforms, id) else {
+                let id = self.arena.physics_node_ids[i];
+                let Some(anchor) = self.arena.physics_anchor(&transforms, id) else {
                     continue;
                 };
                 if let Some(crate::NodeKind::SimplePhysics(p)) =
-                    self.nodes.get_mut(id.0 as usize).map(|n| &mut n.kind)
+                    self.arena.get_mut(id).map(|n| &mut n.kind)
                 {
                     if !p.anchor_initialized || (p.anchor - anchor).length_squared() > SETTLE_EPS_SQ
                     {
@@ -754,7 +524,7 @@ impl LegacyPuppet {
                 break;
             }
         }
-        self.physics_transforms = transforms;
+        self.arena.physics_transforms = transforms;
 
         if !settled {
             tracing::warn!(
@@ -765,33 +535,6 @@ impl LegacyPuppet {
         }
     }
 
-    /// Anchor point for a physics driver in the driver's own **Y-down**
-    /// frame (gravity toward +Y, matching the reference pendulum). The
-    /// node world is Y-up, so the Y is flipped here;
-    /// `write_physics_param_outputs` conjugates `world_inverse` by the same
-    /// flip to undo it on the output.
-    ///
-    /// The `local_only` branch uses `node.transform.translation`, including
-    /// parameter-driven offsets from the anchor pre-pass rather than the
-    /// frozen load pose.
-    fn physics_anchor(
-        &self,
-        transforms: &crate::legacy_puppet::GlobalTransforms,
-        id: NodeIdx,
-    ) -> Option<crate::Vec2> {
-        let node = self.nodes.get(id.0 as usize)?;
-        let crate::NodeKind::SimplePhysics(p) = &node.kind else {
-            return None;
-        };
-        let anchor = if p.local_only {
-            crate::Vec2::new(node.transform.translation.x, node.transform.translation.y)
-        } else {
-            let world = transforms.get(id);
-            crate::Vec2::new(world.w_axis.x, world.w_axis.y)
-        };
-        Some(crate::Vec2::new(anchor.x, -anchor.y))
-    }
-
     /// Map every driver's current state through its `map_mode` and
     /// contribute the result to its target param. Returns whether any
     /// resolved param value moved.
@@ -800,14 +543,11 @@ impl LegacyPuppet {
     /// determines its target, and two drivers aimed at one param average
     /// rather than resolving by their position in `physics_node_ids`,
     /// which is insertion order and carries no meaning.
-    fn write_physics_param_outputs(
-        &mut self,
-        transforms: &crate::legacy_puppet::GlobalTransforms,
-    ) -> bool {
+    fn write_physics_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
         self.physics_update_scratch.clear();
-        for i in 0..self.physics_node_ids.len() {
-            let id = self.physics_node_ids[i];
-            let update = match self.nodes.get(id.0 as usize).map(|n| &n.kind) {
+        for i in 0..self.arena.physics_node_ids.len() {
+            let id = self.arena.physics_node_ids[i];
+            let update = match self.arena.get(id).map(|n| &n.kind) {
                 Some(crate::NodeKind::SimplePhysics(p)) => p.target_param_id.and_then(|u| {
                     // local_only=true: bob was integrated in the parent's frame
                     // already (anchor is local), so no inverse transform is
@@ -858,7 +598,7 @@ impl LegacyPuppet {
         let before = entries.len();
         let mut retired: smallvec::SmallVec<[u32; 4]> = smallvec::SmallVec::new();
         entries.retain(|e| {
-            let from_driver = self.physics_node_ids.contains(&e.source);
+            let from_driver = self.arena.physics_node_ids.contains(&e.source);
             let live = self
                 .physics_update_scratch
                 .iter()
@@ -1085,14 +825,14 @@ impl LegacyPuppet {
 
     fn rebuild_param_effect_cache(&mut self) {
         self.param_mesh_group_relevant.clear();
-        if self.mesh_group_node_ids.is_empty() {
+        if self.arena.mesh_group_node_ids.is_empty() {
             return;
         }
 
         let mut related = HashSet::new();
-        for &mg_id in &self.mesh_group_node_ids {
+        for &mg_id in &self.arena.mesh_group_node_ids {
             related.insert(mg_id);
-            related.extend(self.tree.get_all_descendants(mg_id));
+            related.extend(self.arena.tree.get_all_descendants(mg_id));
         }
 
         for param in &self.params {
@@ -1131,7 +871,7 @@ impl LegacyPuppet {
     }
 
     pub fn has_simple_physics(&self) -> bool {
-        !self.physics_node_ids.is_empty()
+        !self.arena.physics_node_ids.is_empty()
     }
 
     pub fn set_physics_enabled(&mut self, enabled: bool) {
@@ -1289,7 +1029,7 @@ impl LegacyPuppet {
         &mut self,
         binding_include: impl Fn(&crate::params::BindingValues) -> bool + Copy,
     ) {
-        // Move params out temporarily so apply() can take &mut LegacyPuppet.
+        // Move params out temporarily so apply() can take &mut Arena.
         // `param_values` stays parallel to `params`, so index positionally
         // — no per-param hash on this twice-a-frame hot path.
         let params = std::mem::take(&mut self.params);
@@ -1305,7 +1045,7 @@ impl LegacyPuppet {
             } else {
                 base
             };
-            p.apply_filtered(val, self, binding_include);
+            p.apply_filtered(val, &mut self.arena, binding_include);
         }
         self.params = params;
     }
@@ -1313,29 +1053,19 @@ impl LegacyPuppet {
     /// Collapse each DeformStack's active sources into its combined
     /// per-vertex offset. Idempotent and cheap when nothing is dirty.
     pub fn combine_deforms(&mut self) {
-        let _span = tracing::trace_span!("combine_deforms").entered();
-        for &id in &self.deform_node_ids {
-            if let Some(node) = self.nodes.get_mut(id.0 as usize) {
-                match &mut node.kind {
-                    crate::NodeKind::Part(p) => p.deform_stack.combine(),
-                    crate::NodeKind::MeshGroup(mg) => mg.deform_stack.combine(),
-                    _ => {}
-                }
-            }
-        }
+        self.arena.combine_deforms();
     }
 
     pub fn propagate_mesh_group_deforms(&mut self, transforms: &GlobalTransforms) {
-        let _span = tracing::trace_span!("propagate_mesh_group_deforms").entered();
-        crate::meshgroup::propagate_mesh_group_deforms(self, transforms);
+        self.arena.propagate_mesh_group_deforms(transforms);
     }
 
     pub fn welds(&self) -> &[crate::weld::Weld] {
-        &self.welds
+        &self.arena.welds
     }
 
     pub fn set_welds(&mut self, welds: Vec<crate::weld::Weld>) {
-        self.welds = welds;
+        self.arena.welds = welds;
         // Welds change combined deforms, so a memoized static frame is stale.
         self.last_tick_folded_param_generation = None;
     }
@@ -1343,7 +1073,7 @@ impl LegacyPuppet {
     /// Solve every weld into the parts' `DeformSource::Weld` slots. Call
     /// after `propagate_mesh_group_deforms` and before `combine_deforms`.
     pub fn apply_welds(&mut self, transforms: &GlobalTransforms) {
-        crate::weld::apply_welds(self, transforms);
+        self.arena.apply_welds(transforms);
     }
 
     /// Run the `translateChildren=true` MG filter on each tc=true
@@ -1353,17 +1083,10 @@ impl LegacyPuppet {
     /// `transform.translation`. Mark-dirty is performed so the next
     /// `compute_transforms` pass picks up the change.
     ///
-    /// Applies a `translateChildren=true` MG's deform to descendant Origin
-    /// nodes. Without this,
-    /// the Origin Nodes only move via direct param-bound
-    /// `transform.t.x/t.y` bindings, which don't fully replicate
-    /// the head-rotation effect at e.g. a `Head:: Yaw-Pitch=(1,1)`.
-    ///
     /// Returns whether any target was shifted; when false the caller's
     /// transforms are still valid and the re-walk can be skipped.
     pub fn apply_translate_children_filter(&mut self, transforms: &GlobalTransforms) -> bool {
-        let _span = tracing::trace_span!("apply_translate_children_filter").entered();
-        crate::meshgroup::apply_translate_children_filter(self, transforms)
+        self.arena.apply_translate_children_filter(transforms)
     }
 
     /// NodeIdx for the given UUID, if any.
@@ -1377,46 +1100,9 @@ impl LegacyPuppet {
     /// This is the only supported way to grow the puppet, so the three
     /// backing stores (nodes / tree / uuid_to_node) stay in sync.
     pub fn insert_child(&mut self, parent: NodeIdx, node: Node, uuid: Option<u32>) -> NodeIdx {
-        let id = self.allocate_id();
-        // An unresolvable parent would leave the node registered in every side
-        // index (deform / mesh-group / physics) but absent from the tree, so it
-        // never renders while its physics driver still perturbs the model.
-        if let Err(err) = self.tree.add_child(parent, id) {
-            tracing::warn!(
-                "insert_child: {err:?}; node {} attached to the root instead",
-                id.0
-            );
-            let root = self.tree.root;
-            let _ = self.tree.add_child(root, id);
-        }
-        debug_assert_eq!(
-            id.0 as usize,
-            self.nodes.len(),
-            "NodeIdx must equal slot index in dense storage"
-        );
-        let is_deform_node = matches!(
-            &node.kind,
-            crate::NodeKind::Part(_) | crate::NodeKind::MeshGroup(_)
-        );
         let is_mesh_group = matches!(&node.kind, crate::NodeKind::MeshGroup(_));
-        let is_physics = matches!(&node.kind, crate::NodeKind::SimplePhysics(_));
-        self.base_local_matrix.push(node.base_transform.to_matrix());
-        self.node_transform_dirty.push(false);
-        self.nodes.push(node);
-        if is_deform_node {
-            self.deform_node_ids.push(id);
-        }
-        if is_mesh_group {
-            self.mesh_group_node_ids.push(id);
-        }
-        if is_physics {
-            self.physics_node_ids.push(id);
-        }
-        self.mg_pre_order_cache = None;
-        // A new node changes the physics ancestor set and the tc-target
-        // guard, and invalidates any cached anchor pose.
-        self.physics_ancestor_mask = None;
-        self.physics_anchor_skip_cached = None;
+        let id = self.arena.insert_child(parent, node);
+        // A new node invalidates any cached anchor pose.
         self.last_anchor_pose_generation = None;
         if is_mesh_group && !self.params.is_empty() {
             self.rebuild_param_effect_cache();
@@ -1438,15 +1124,8 @@ impl LegacyPuppet {
         id
     }
 
-    fn allocate_id(&mut self) -> NodeIdx {
-        let id = NodeIdx::new(self.next_id);
-        self.next_id += 1;
-        id
-    }
-
     pub fn compute_transforms(&self, out: &mut GlobalTransforms) {
-        let _span = tracing::trace_span!("compute_transforms").entered();
-        self.compute_transforms_with_root(out, Mat4::IDENTITY);
+        self.arena.compute_transforms(out);
     }
 
     /// Canonical per-frame lifecycle: reset dynamic state, tick
@@ -1466,7 +1145,7 @@ impl LegacyPuppet {
             // moved since the cached pose, or when a local_only physics node
             // is a tc-filter target (see physics_anchor_skip_allowed).
             let stale = self.last_anchor_pose_generation != Some(self.param_generation)
-                || !self.physics_anchor_skip_allowed();
+                || !self.arena.physics_anchor_skip_allowed();
             if stale {
                 // Capture the generation BEFORE tick_physics bumps it: if a
                 // driver moves this frame, next frame's staleness check then
@@ -1476,14 +1155,14 @@ impl LegacyPuppet {
                 self.reset_dynamic_state();
                 self.reset_deforms();
                 self.apply_anchor_transform_bindings();
-                self.ensure_physics_ancestor_mask();
-                let mut local = std::mem::take(&mut self.physics_transforms);
-                self.compute_physics_ancestor_transforms(&mut local);
-                self.physics_transforms = local;
+                self.arena.ensure_physics_ancestor_mask();
+                let mut local = std::mem::take(&mut self.arena.physics_transforms);
+                self.arena.compute_physics_ancestor_transforms(&mut local);
+                self.arena.physics_transforms = local;
             }
-            let local = std::mem::take(&mut self.physics_transforms);
+            let local = std::mem::take(&mut self.arena.physics_transforms);
             self.tick_physics(&local, dt);
-            self.physics_transforms = local;
+            self.arena.physics_transforms = local;
         }
 
         let params_changed = self.last_tick_folded_param_generation != Some(self.param_generation);
@@ -1493,7 +1172,7 @@ impl LegacyPuppet {
         // so the frame that ran it must run the final apply too — otherwise
         // it would render the unposed puppet.
         let needs_final_apply = params_changed || pre_pass_ran;
-        let has_mesh_group_work = !self.mesh_group_node_ids.is_empty()
+        let has_mesh_group_work = !self.arena.mesh_group_node_ids.is_empty()
             && !self.param_mesh_group_relevant.is_empty()
             && (needs_final_apply || mesh_group_generation_changed);
         if needs_final_apply {
@@ -1503,7 +1182,7 @@ impl LegacyPuppet {
             // compute_transforms BEFORE propagate so MG/child relative
             // transforms reflect this frame's param-driven shifts (e.g.
             // Yaw-Pitch t.x/t.y on LIP MG, Mouth Shape t.y on Mouth Inner).
-            self.compute_transforms_with_root(out, root);
+            self.arena.compute_transforms_with_root(out, root);
             // Apply translateChildren=true filters from each tc MG to its
             // descendants without a mesh (Origin Nodes etc.). Re-run
             // compute_transforms so descendants pick up the shifted
@@ -1512,17 +1191,17 @@ impl LegacyPuppet {
             // but only when the filter actually shifted something
             // (models without tc=true MGs never need the third walk).
             if has_mesh_group_work {
-                if self.apply_translate_children_filter(out) {
-                    self.compute_transforms_with_root(out, root);
+                if self.arena.apply_translate_children_filter(out) {
+                    self.arena.compute_transforms_with_root(out, root);
                 }
-                self.propagate_mesh_group_deforms(out);
+                self.arena.propagate_mesh_group_deforms(out);
                 self.last_tick_mesh_group_generation = Some(self.mesh_group_param_generation);
             }
-            self.apply_welds(out);
-            self.combine_deforms();
+            self.arena.apply_welds(out);
+            self.arena.combine_deforms();
             self.last_tick_folded_param_generation = Some(self.param_generation);
         } else {
-            self.compute_transforms_with_root(out, root);
+            self.arena.compute_transforms_with_root(out, root);
         }
         if pre_pass_ran {
             // Set at the very end: the final apply's reset_dynamic_state
@@ -1538,160 +1217,7 @@ impl LegacyPuppet {
     /// shared camera uniform between puppets (which would hit the
     /// queue.write_buffer batching hazard documented in AGENTS.md).
     pub fn compute_transforms_with_root(&self, out: &mut GlobalTransforms, root: Mat4) {
-        let _span = tracing::trace_span!("compute_transforms_with_root").entered();
-        // Size the Vec once at frame start; each insert below is then a
-        // direct index write. DFS covers every reachable node so we
-        // don't need a post-walk clear to scrub stale slots.
-        out.ensure_size(self.nodes.len());
-
-        self.tree.with_dfs_order(|order| {
-            for &id in order {
-                let slot = id.0 as usize;
-                let node = self.nodes.get(slot);
-                // Skip Transform::to_matrix() if (a) apply_params didn't
-                // write this frame and (b) the transform still matches
-                // base (invariant preserved when no external code has
-                // touched the Transform fields). A 36-byte equality
-                // compare is cheaper than from_scale_rotation_translation
-                // + Quat::from_euler.
-                let local_matrix = if let Some(n) = node {
-                    let dirty = self.node_transform_dirty.get(slot).copied().unwrap_or(true);
-                    if !dirty && n.transform == n.base_transform {
-                        self.base_local_matrix
-                            .get(slot)
-                            .copied()
-                            .unwrap_or_else(|| n.transform.to_matrix())
-                    } else {
-                        n.transform.to_matrix()
-                    }
-                } else {
-                    Mat4::IDENTITY
-                };
-                let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
-
-                let parent_matrix = if lock_to_root {
-                    root
-                } else {
-                    self.tree
-                        .get_parent(id)
-                        .map(|parent| out.get(parent))
-                        .unwrap_or(root)
-                };
-
-                let global_matrix = parent_matrix * local_matrix;
-                out.insert(id, global_matrix);
-            }
-        });
-    }
-
-    /// True when the physics pre-pass may be skipped on a settled frame.
-    ///
-    /// A skip frame ticks physics against the cached `physics_transforms`
-    /// and, for `local_only` anchors, against `node.transform.translation`
-    /// — which by then holds the last final apply's pose, including any
-    /// `translate_children` shift, whereas a fresh pre-pass would produce
-    /// the pre-shift pose. A `local_only` physics node that is itself a
-    /// tc-filter target would pop between the two, so when any such node
-    /// exists the pre-pass runs every frame. World-anchored physics reads
-    /// only the cached transforms and is unaffected.
-    fn physics_anchor_skip_allowed(&mut self) -> bool {
-        if let Some(cached) = self.physics_anchor_skip_cached {
-            return cached;
-        }
-        let allowed = !self.any_local_physics_is_tc_target();
-        self.physics_anchor_skip_cached = Some(allowed);
-        allowed
-    }
-
-    /// Whether any `local_only` SimplePhysics node is a translate-children
-    /// target of a `translate_children` MeshGroup. Mirrors the target walk
-    /// in `meshgroup::translate_children_targets` (recurse through
-    /// Part/Composite, stop at nested MeshGroups).
-    fn any_local_physics_is_tc_target(&self) -> bool {
-        for &mg_id in &self.mesh_group_node_ids {
-            let tc = matches!(
-                self.nodes.get(mg_id.0 as usize).map(|n| &n.kind),
-                Some(crate::NodeKind::MeshGroup(mg)) if mg.translate_children
-            );
-            if !tc {
-                continue;
-            }
-            let mut stack = self.tree.get_children(mg_id);
-            while let Some(id) = stack.pop() {
-                match self.nodes.get(id.0 as usize).map(|n| &n.kind) {
-                    Some(crate::NodeKind::Part(_)) | Some(crate::NodeKind::Composite(_)) => {
-                        stack.extend(self.tree.get_children(id));
-                    }
-                    Some(crate::NodeKind::MeshGroup(_)) => {}
-                    Some(crate::NodeKind::SimplePhysics(p)) if p.local_only => return true,
-                    _ => {}
-                }
-            }
-        }
-        false
-    }
-
-    fn ensure_physics_ancestor_mask(&mut self) {
-        if self.physics_ancestor_mask.is_some() {
-            return;
-        }
-        let mut mask = vec![false; self.nodes.len()];
-        for &pid in &self.physics_node_ids {
-            let mut cur = Some(pid);
-            while let Some(id) = cur {
-                match mask.get_mut(id.0 as usize) {
-                    // Already marked -> its ancestors are marked too.
-                    Some(true) => break,
-                    Some(slot) => *slot = true,
-                    None => break,
-                }
-                cur = self.tree.get_parent(id);
-            }
-        }
-        self.physics_ancestor_mask = Some(mask);
-    }
-
-    /// Physics pre-pass transform walk restricted to physics nodes and
-    /// their ancestors — the only slots `tick_physics` reads (both the
-    /// anchor and `world_inverse`). Same per-node logic as
-    /// `compute_transforms_with_root` with `root = IDENTITY`; a member's
-    /// parent is always a member, so parent transforms are ready when
-    /// needed, and stale non-member slots are never read.
-    fn compute_physics_ancestor_transforms(&self, out: &mut GlobalTransforms) {
-        out.ensure_size(self.nodes.len());
-        let mask = self.physics_ancestor_mask.as_deref().unwrap_or(&[]);
-        self.tree.with_dfs_order(|order| {
-            for &id in order {
-                let slot = id.0 as usize;
-                if !mask.get(slot).copied().unwrap_or(false) {
-                    continue;
-                }
-                let node = self.nodes.get(slot);
-                let local_matrix = if let Some(n) = node {
-                    let dirty = self.node_transform_dirty.get(slot).copied().unwrap_or(true);
-                    if !dirty && n.transform == n.base_transform {
-                        self.base_local_matrix
-                            .get(slot)
-                            .copied()
-                            .unwrap_or_else(|| n.transform.to_matrix())
-                    } else {
-                        n.transform.to_matrix()
-                    }
-                } else {
-                    Mat4::IDENTITY
-                };
-                let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
-                let parent_matrix = if lock_to_root {
-                    Mat4::IDENTITY
-                } else {
-                    self.tree
-                        .get_parent(id)
-                        .map(|parent| out.get(parent))
-                        .unwrap_or(Mat4::IDENTITY)
-                };
-                out.insert(id, parent_matrix * local_matrix);
-            }
-        });
+        self.arena.compute_transforms_with_root(out, root);
     }
 }
 
@@ -2550,7 +2076,7 @@ mod tests {
         if let Some(node) = puppet.get_mut(phys_id) {
             node.transform.scale.x = 0.0;
         }
-        puppet.mark_transform_dirty(phys_id);
+        puppet.arena.mark_transform_dirty(phys_id);
         puppet.compute_transforms(&mut transforms);
         puppet.tick_physics(&transforms, 0.0);
 

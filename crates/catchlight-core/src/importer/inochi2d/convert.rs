@@ -485,10 +485,10 @@ pub(crate) fn bake_mesh_groups(puppet: &mut LegacyPuppet) {
         .filter(|(_, n)| matches!(n.kind, NodeKind::MeshGroup(_)))
         .map(|(id, _)| id)
         .collect();
-    let mut transforms = crate::legacy_puppet::GlobalTransforms::new();
+    let mut transforms = crate::puppet::GlobalTransforms::new();
     puppet.compute_transforms(&mut transforms);
     for id in mg_ids {
-        let baked = crate::meshgroup::bake_mesh_group_attachments(puppet, &transforms, id);
+        let baked = crate::meshgroup::bake_mesh_group_attachments(&puppet.arena, &transforms, id);
         if let Some(node) = puppet.get_mut(id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 let bitmap = crate::meshgroup::MgTriangleBitmap::build(&mg.mesh);

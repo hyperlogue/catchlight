@@ -13,6 +13,7 @@ pub mod model;
 pub mod node;
 pub mod params;
 pub mod physics;
+pub mod puppet;
 pub mod weld;
 
 pub use animation::*;
@@ -34,6 +35,7 @@ pub use model::{
 pub use node::*;
 pub use params::*;
 pub use physics::*;
+pub use puppet::*;
 pub use weld::{Weld, WeldPair};
 
 pub type Vec2 = glam::Vec2;

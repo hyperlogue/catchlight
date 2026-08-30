@@ -449,20 +449,14 @@ impl Param {
         (normed, (x0, x1), (y0, y1))
     }
 
-    /// Apply this parameter at `val` to every binding. Pushes Deform
-    /// contributions into the target node's DeformStack; non-Deform
-    /// binding kinds are parsed but not yet wired through here.
-    pub fn apply(&self, val: Vec2, puppet: &mut crate::legacy_puppet::LegacyPuppet) {
-        self.apply_filtered(val, puppet, |_| true);
-    }
-
-    /// `apply` restricted to bindings whose values pass `include`. Lets
-    /// the physics pre-pass skip Deform/Opacity/Tint work that the
-    /// resets before the final apply would discard anyway.
+    /// Apply this parameter at `val` to every binding whose values pass
+    /// `include`, pushing contributions into the arena. The filter lets the
+    /// physics pre-pass skip Deform/Opacity/Tint work that the resets before
+    /// the final apply would discard anyway.
     pub(crate) fn apply_filtered(
         &self,
         val: Vec2,
-        puppet: &mut crate::legacy_puppet::LegacyPuppet,
+        arena: &mut crate::puppet::Arena,
         include: impl Fn(&BindingValues) -> bool,
     ) {
         // A well-formed param has at least one point per axis (the
@@ -535,7 +529,7 @@ impl Param {
             };
             match &binding.values {
                 BindingValues::Deform(dm) => {
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     let stack = match &mut node.kind {
@@ -618,69 +612,69 @@ impl Param {
                     }
                 }
                 BindingValues::ZOrder(m) => {
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.z_order += scalar(m);
                 }
                 BindingValues::TransformTX(m) => {
                     let s = scalar(m);
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.transform.translation.x += s;
-                    puppet.mark_transform_dirty(binding.node);
+                    arena.mark_transform_dirty(binding.node);
                 }
                 BindingValues::TransformTY(m) => {
                     let s = scalar(m);
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.transform.translation.y += s;
-                    puppet.mark_transform_dirty(binding.node);
+                    arena.mark_transform_dirty(binding.node);
                 }
                 BindingValues::TransformSX(m) => {
                     let s = scalar(m);
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.transform.scale.x *= s;
-                    puppet.mark_transform_dirty(binding.node);
+                    arena.mark_transform_dirty(binding.node);
                 }
                 BindingValues::TransformSY(m) => {
                     let s = scalar(m);
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.transform.scale.y *= s;
-                    puppet.mark_transform_dirty(binding.node);
+                    arena.mark_transform_dirty(binding.node);
                 }
                 BindingValues::TransformRX(m) => {
                     let s = scalar(m);
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.transform.rotation.x += s;
-                    puppet.mark_transform_dirty(binding.node);
+                    arena.mark_transform_dirty(binding.node);
                 }
                 BindingValues::TransformRY(m) => {
                     let s = scalar(m);
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.transform.rotation.y += s;
-                    puppet.mark_transform_dirty(binding.node);
+                    arena.mark_transform_dirty(binding.node);
                 }
                 BindingValues::TransformRZ(m) => {
                     let s = scalar(m);
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     node.transform.rotation.z += s;
-                    puppet.mark_transform_dirty(binding.node);
+                    arena.mark_transform_dirty(binding.node);
                 }
                 BindingValues::Opacity(m) => {
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     let factor = scalar(m);
@@ -697,7 +691,7 @@ impl Param {
                         BindingValues::TintG(_) => 1,
                         _ => 2,
                     };
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     let tint = match &mut node.kind {
@@ -716,7 +710,7 @@ impl Param {
                         BindingValues::ScreenTintG(_) => 1,
                         _ => 2,
                     };
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     let screen_tint = match &mut node.kind {
@@ -729,7 +723,7 @@ impl Param {
                 BindingValues::OutputScaleX(m) | BindingValues::OutputScaleY(m) => {
                     let factor = scalar(m);
                     let is_x = matches!(&binding.values, BindingValues::OutputScaleX(_));
-                    let Some(node) = puppet.get_mut(binding.node) else {
+                    let Some(node) = arena.get_mut(binding.node) else {
                         continue;
                     };
                     let NodeKind::SimplePhysics(p) = &mut node.kind else {
