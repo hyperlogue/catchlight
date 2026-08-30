@@ -5,9 +5,7 @@
 //! `--control` (or the `C` key) opens the egui panel of per-param sliders and
 //! stops animation playback.
 
-use catchlight_core::{
-    formats::InxModel, importer::from_inx_model_to_legacy, Model, ModelFormat, ParamId, Puppet,
-};
+use catchlight_core::{load_model_bytes, Model, ModelFormat, ParamId, Puppet};
 use catchlight_wgpu::{
     collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
     SurfaceContext, WgpuRenderer,
@@ -15,18 +13,13 @@ use catchlight_wgpu::{
 use std::path::Path;
 use std::sync::Arc;
 
-/// Load a model file into a [`Model`]. `.inx` goes through the importer's
-/// legacy-document conversion, which is the one path an `.inx` still has.
+/// Read a model file off disk. The format dispatch lives in the core; this is
+/// only the filesystem half, which the core deliberately does not have.
 fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
-    match ModelFormat::from_path(path) {
-        Some(ModelFormat::Clm) => Ok(Model::from_clm_bytes(&bytes)?),
-        Some(ModelFormat::Inx) => {
-            let inx = InxModel::parse(std::io::Cursor::new(bytes))?;
-            Ok(Model::from_legacy(&from_inx_model_to_legacy(&inx)?)?)
-        }
-        _ => Err(format!("unsupported model file: {}", path.display()).into()),
-    }
+    let format = ModelFormat::from_path(path)
+        .ok_or_else(|| format!("unsupported model file: {}", path.display()))?;
+    Ok(load_model_bytes(&bytes, format)?)
 }
 use winit::{
     application::ApplicationHandler,
