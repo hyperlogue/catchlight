@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 use catchlight_bevy::{CatchlightModel, CatchlightPlugin, CatchlightPuppet};
-use catchlight_core::{Model, ParamId, Pose, Puppet};
+use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+use catchlight_core::{InterpolateMode, Model, ParamId, Pose, Puppet};
 
 fn model_path(stem: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -261,4 +262,60 @@ fn a_pose_set_before_the_model_loads_lands_on_the_bake() {
     app.update();
 
     assert_eq!(puppet(&app, entity).param_value(&param), Some(posed));
+}
+
+#[test]
+fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
+    // What `bevy_puppets` does with 50 entities: one model carrying one clip,
+    // and each puppet playing it from its own phase.
+    let mut model = fixture("welded_seam");
+    let param = deform_param(&model);
+    model
+        .set_animations(vec![ClmAnimation {
+            name: "Pull".into(),
+            timestep: 1.0 / 60.0,
+            length: 60,
+            lanes: vec![ClmLane {
+                param: param.clone(),
+                interpolation: InterpolateMode::Linear,
+                keyframes: vec![
+                    ClmKeyframe {
+                        frame: 0,
+                        value: 0.0,
+                    },
+                    ClmKeyframe {
+                        frame: 60,
+                        value: 1.0,
+                    },
+                ],
+            }],
+            ..ClmAnimation::default()
+        }])
+        .expect("install the clip");
+
+    let mut app = headless_app();
+    let handle = add_model(&mut app, model);
+    let entities: Vec<Entity> = (0..3).map(|_| spawn(&mut app, &handle)).collect();
+    app.update();
+
+    let mut values = Vec::new();
+    for (i, entity) in entities.iter().enumerate() {
+        let mut entity_mut = app.world_mut().entity_mut(*entity);
+        let mut component = entity_mut.get_mut::<CatchlightPuppet>().unwrap();
+        let puppet = component.puppet_mut().unwrap();
+        assert_eq!(
+            puppet.animations().len(),
+            1,
+            "the model's own clip is on the puppet, converted at bake",
+        );
+        assert!(puppet.play_animation("Pull"));
+        puppet.tick_animations(i as f32 * 0.25);
+        values.push(puppet.param_value(&param));
+    }
+    app.update();
+
+    assert!(
+        values[0] < values[1] && values[1] < values[2],
+        "each puppet plays the shared clip from its own phase: {values:?}",
+    );
 }
