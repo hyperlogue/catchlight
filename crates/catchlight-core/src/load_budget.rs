@@ -11,6 +11,7 @@ pub enum LoadResource {
     DeformOffsets,
     MeshGroupBitmapCells,
     ManifestGridCells,
+    SeamSlots,
 }
 
 pub const MAX_TEXTURE_DIMENSION: u32 = 8_192;
@@ -29,6 +30,7 @@ impl LoadResource {
             Self::DeformOffsets => "deform offsets",
             Self::MeshGroupBitmapCells => "mesh-group bitmap cells",
             Self::ManifestGridCells => "manifest grid cells",
+            Self::SeamSlots => "seam slots",
         }
     }
 }
@@ -46,6 +48,7 @@ pub struct LoadLimits {
     pub deform_offsets: u64,
     pub mesh_group_bitmap_cells: u64,
     pub manifest_grid_cells: u64,
+    pub seam_slots: u64,
 }
 
 impl Default for LoadLimits {
@@ -62,6 +65,7 @@ impl Default for LoadLimits {
             deform_offsets: 64_000_000,
             mesh_group_bitmap_cells: 32_000_000,
             manifest_grid_cells: 1_000_000,
+            seam_slots: 4_000_000,
         }
     }
 }
@@ -102,6 +106,7 @@ impl LoadBudget {
                 deform_offsets: 0,
                 mesh_group_bitmap_cells: 0,
                 manifest_grid_cells: 0,
+                seam_slots: 0,
             },
         }
     }
@@ -130,6 +135,7 @@ impl LoadBudget {
                 &mut self.used.manifest_grid_cells,
                 self.limits.manifest_grid_cells,
             ),
+            LoadResource::SeamSlots => (&mut self.used.seam_slots, self.limits.seam_slots),
         };
         let got = used.checked_add(amount).ok_or_else(|| LoadLimitError {
             resource: resource.name(),
@@ -198,11 +204,105 @@ impl LoadBudget {
             LoadResource::DeformOffsets => self.limits.deform_offsets,
             LoadResource::MeshGroupBitmapCells => self.limits.mesh_group_bitmap_cells,
             LoadResource::ManifestGridCells => self.limits.manifest_grid_cells,
+            LoadResource::SeamSlots => self.limits.seam_slots,
         }
     }
 }
 
 pub const MAX_PARAM_GRID_CELLS: u64 = 65_536;
+
+/// Charge a decoded `.clm` against the shared budget before any of it is
+/// turned into a [`Model`](crate::Model): the counts and products a hostile
+/// file could make enormous are all here, and each is checked against the
+/// limit before it is used to size anything.
+pub fn charge_clm_structure(
+    file: &crate::formats::clm::ClmFile,
+    budget: &mut LoadBudget,
+) -> Result<(), LoadLimitError> {
+    use crate::formats::clm::{ClmBindingValues, ClmMesh, ClmNodeKind};
+    use std::collections::HashMap;
+
+    let doc = &file.doc;
+    budget.charge(LoadResource::Textures, file.textures.len() as u64)?;
+    budget.charge(LoadResource::Nodes, doc.nodes.len() as u64)?;
+    budget.charge(LoadResource::Params, doc.params.len() as u64)?;
+    for texture in &file.textures {
+        budget.charge(LoadResource::EncodedBytes, texture.data.len() as u64)?;
+    }
+
+    let mut meshes: HashMap<&crate::id::NodeId, &ClmMesh> = HashMap::new();
+    for node in &doc.nodes {
+        let mesh = match &node.kind {
+            ClmNodeKind::Part(part) => {
+                for seam in &part.seams {
+                    budget.charge(LoadResource::SeamSlots, seam.slots.len() as u64)?;
+                }
+                Some(&part.mesh)
+            }
+            ClmNodeKind::MeshGroup(group) => Some(&group.mesh),
+            _ => None,
+        };
+        let Some(mesh) = mesh else { continue };
+        meshes.insert(&node.id, mesh);
+        budget.charge(LoadResource::Vertices, mesh.vertex_count() as u64)?;
+        budget.charge(LoadResource::Indices, index_count(mesh) as u64)?;
+        if matches!(node.kind, ClmNodeKind::MeshGroup(_)) {
+            budget.charge(
+                LoadResource::MeshGroupBitmapCells,
+                mesh_group_bitmap_cells(mesh),
+            )?;
+        }
+    }
+
+    let keys: HashMap<&crate::id::ParamId, u64> = doc
+        .params
+        .iter()
+        .map(|p| (&p.id, p.key_positions.len().max(1) as u64))
+        .collect();
+    for binding in &doc.bindings {
+        // A binding over a param the file does not carry is a load error; the
+        // reader reports it, and one key position is the safe charge here.
+        let cells = binding
+            .params
+            .iter()
+            .map(|p| keys.get(p).copied().unwrap_or(1))
+            .try_fold(1u64, |acc, k| acc.checked_mul(k))
+            .filter(|cells| *cells <= MAX_PARAM_GRID_CELLS)
+            .ok_or(LoadLimitError {
+                resource: "param grid",
+                limit: MAX_PARAM_GRID_CELLS,
+                got: u64::MAX,
+            })?;
+        let authored = match &binding.values {
+            ClmBindingValues::Deform(values) => values.cells.len(),
+            other => crate::model::scalar_cells(other).map_or(0, <[_]>::len),
+        };
+        budget.charge(LoadResource::BindingCells, cells)?;
+        budget.charge(LoadResource::BindingCells, authored as u64)?;
+        if let ClmBindingValues::Deform(values) = &binding.values {
+            let authored_vertices = values
+                .cells
+                .iter()
+                .map(|cell| cell.value.len() / 2)
+                .max()
+                .unwrap_or(0);
+            let mesh_vertices = meshes.get(&binding.node).map_or(0, |m| m.vertex_count());
+            budget.charge_product(
+                LoadResource::DeformOffsets,
+                cells,
+                authored_vertices.max(mesh_vertices) as u64,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn index_count(mesh: &crate::formats::clm::ClmMesh) -> usize {
+    match &mesh.indices {
+        crate::formats::clm::ClmIndices::U16(indices) => indices.len(),
+        crate::formats::clm::ClmIndices::U32(indices) => indices.len(),
+    }
+}
 
 pub fn charge_legacy_structure(
     file: &crate::formats::legacy::LegacyFile,

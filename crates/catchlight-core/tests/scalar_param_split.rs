@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The `.clm` v0 bridge, checked against the runtime that still reads v0.
+//! The legacy bridge, checked against the runtime that still reads the arena.
 //!
-//! A 2-D param in a file becomes two scalar params plus a two-param binding in
-//! a [`Model`]. That is only lossless if the pair evaluates to what the 2-D
-//! param evaluated to, so this drives the *same file* two ways — through the
-//! legacy runtime's `Param::apply` and through `Model::eval_scalar` — and
+//! A 2-D arena param becomes two scalar params plus a two-param binding in a
+//! [`Model`]. That is only lossless if the pair evaluates to what the 2-D
+//! param evaluated to, so this drives the *same document* two ways — through
+//! the legacy runtime's `Param::apply` and through `Model::eval_scalar` — and
 //! compares them across the grid.
 
 use catchlight_core::formats::clm::{
@@ -12,7 +12,6 @@ use catchlight_core::formats::clm::{
 };
 use catchlight_core::formats::legacy::{
     LegacyBinding, LegacyDocument, LegacyFile, LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart,
-    FORMAT_VERSION,
 };
 use catchlight_core::params::InterpolateMode;
 use catchlight_core::{BindingKey, BindingParams, BindingTarget, Model, Pose, ScalarTarget};
@@ -37,7 +36,6 @@ fn two_dimensional_file(mode: InterpolateMode) -> LegacyFile {
     };
     let cell = |x: u32, y: u32, value: f32| ClmCell { x, y, value };
     LegacyFile {
-        version: FORMAT_VERSION,
         doc: LegacyDocument {
             physics: ClmPhysics::default(),
             nodes: vec![
@@ -162,17 +160,18 @@ fn a_split_two_dimensional_param_evaluates_as_it_did() {
     }
 }
 
-/// The split has to survive a save: an editor that opened an imported model
-/// and saved it without editing must write the same bytes back.
+/// The split has to survive a round trip in both directions: back out to the
+/// arena the legacy runtime reads, and out to `.clm` and in again.
 #[test]
-fn splitting_and_re_pairing_is_byte_stable() {
+fn splitting_and_re_pairing_is_stable() {
     let file = two_dimensional_file(InterpolateMode::Linear);
     let model = Model::from_legacy(&file).unwrap();
-    assert_eq!(model.flatten().unwrap(), file);
+    assert_eq!(model.to_legacy().unwrap(), file);
 
     let bytes = model.to_clm_bytes().unwrap();
     let reopened = Model::from_clm_bytes(&bytes).unwrap();
     assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
+    assert_eq!(reopened.to_legacy().unwrap(), file);
 }
 
 /// A one-param binding is the same evaluation with the second axis collapsed,

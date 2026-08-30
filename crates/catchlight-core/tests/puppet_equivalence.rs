@@ -18,9 +18,8 @@ use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
 };
 use catchlight_core::formats::legacy::{
-    self, LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
+    LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
     LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyWeld,
-    FORMAT_VERSION,
 };
 use catchlight_core::model::ModelWeldPair;
 use catchlight_core::params::{InterpolateMode, ParamAxis};
@@ -250,7 +249,11 @@ fn every_committed_fixture_evaluates_the_same_both_ways() {
             continue;
         }
         let bytes = std::fs::read(&path).expect("read fixture");
-        let file = legacy::decode(&bytes).expect("decode fixture");
+        // `.clm` is read into a Model; the legacy runtime is fed the Model's
+        // own arena projection, so both sides still come from one file.
+        let file = Model::from_clm_bytes(&bytes)
+            .and_then(|m| m.to_legacy())
+            .expect("read fixture");
         let label = path.file_name().unwrap().to_string_lossy().to_string();
         check(&label, &file);
         seen += 1;
@@ -321,7 +324,6 @@ fn cells<T>(entries: Vec<(u32, u32, T)>) -> ClmCells<T> {
 
 fn file(nodes: Vec<LegacyNode>, params: Vec<LegacyParam>, welds: Vec<LegacyWeld>) -> LegacyFile {
     LegacyFile {
-        version: FORMAT_VERSION,
         doc: LegacyDocument {
             physics: ClmPhysics::default(),
             nodes,

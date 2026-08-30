@@ -25,7 +25,6 @@ use crate::formats::clm::{
 use crate::formats::legacy::{
     LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
     LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture,
-    FORMAT_VERSION,
 };
 use crate::formats::{InxModel, TextureFormat};
 use crate::params::InterpolateMode;
@@ -103,7 +102,6 @@ pub fn from_inx_model_to_legacy(model: &InxModel) -> Result<LegacyFile, ImportEr
         .collect();
 
     Ok(LegacyFile {
-        version: FORMAT_VERSION,
         doc: LegacyDocument {
             physics,
             nodes,
@@ -676,7 +674,7 @@ fn interp(s: Option<&str>) -> InterpolateMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::{legacy, InxModel};
+    use crate::formats::InxModel;
 
     /// The full reference model. No such model ships in the tree yet, so
     /// every test that needs one is `#[ignore]`d; drop a model at this path and
@@ -692,7 +690,7 @@ mod tests {
 
     #[test]
     #[ignore = "needs the reference model at example_models/reference/"]
-    fn reference_inx_roundtrips_through_legacy() {
+    fn reference_inx_roundtrips_through_clm() {
         let model = load_reference();
         let file = from_inx_model_to_legacy(&model).unwrap();
 
@@ -705,13 +703,18 @@ mod tests {
         assert_eq!(parts, 117, "expected 117 Part nodes");
         assert_eq!(file.textures.len(), 87);
 
-        let encoded = legacy::encode(&file.doc, &file.textures).unwrap();
-        let decoded = legacy::decode(&encoded).unwrap();
+        let bytes = crate::Model::from_legacy(&file)
+            .and_then(|m| m.to_clm_bytes())
+            .unwrap();
+        let reopened = crate::Model::from_clm_bytes(&bytes)
+            .unwrap()
+            .to_legacy()
+            .unwrap();
         assert_eq!(
-            decoded.doc, file.doc,
-            "structure must round-trip byte-for-byte"
+            reopened.doc, file.doc,
+            "structure must round-trip through .clm"
         );
-        assert_eq!(decoded.textures, file.textures, "textures must round-trip");
+        assert_eq!(reopened.textures, file.textures, "textures must round-trip");
     }
 
     #[test]

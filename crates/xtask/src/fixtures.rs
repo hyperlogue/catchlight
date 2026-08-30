@@ -1,7 +1,11 @@
 //! Generators for the committed test fixtures under `tests/models/`.
 //!
 //! These models are authored by hand rather than imported, so they exist only
-//! as code here plus the encoded `.clm` checked into the repo. Regenerating is
+//! as code here plus the encoded `.clm` checked into the repo. A generator
+//! authors the *legacy arena document*, the same shape the inochi2d importer
+//! produces, and `generate` takes it through a [`Model`] on the way to the
+//! file — so a fixture's Ids are the ones an import would mint, and the
+//! generators stay free of Id bookkeeping. Regenerating is
 //! only needed when a fixture's shape changes; the visual baselines under
 //! `tests/baselines/` are rendered from the committed bytes.
 //!
@@ -25,11 +29,12 @@ use catchlight_core::formats::clm::{
     TextureAlpha, TextureEncoding,
 };
 use catchlight_core::formats::legacy::{
-    self, LegacyBinding, LegacyComposite, LegacyDocument, LegacyNode, LegacyNodeKind, LegacyParam,
-    LegacyPart, LegacyTexture, LegacyWeld,
+    LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyNode, LegacyNodeKind,
+    LegacyParam, LegacyPart, LegacyTexture, LegacyWeld,
 };
 use catchlight_core::model::ModelWeldPair;
 use catchlight_core::params::InterpolateMode;
+use catchlight_core::Model;
 
 /// Builds a fixture's structure document and its texture table.
 type Build = fn() -> (LegacyDocument, Vec<LegacyTexture>);
@@ -54,7 +59,9 @@ pub fn generate(name: &str) -> Result<PathBuf> {
         .map(|(_, build)| build)
         .ok_or_else(|| anyhow!("unknown fixture: {name}"))?;
     let (doc, textures) = build();
-    let encoded = legacy::encode(&doc, &textures).context("encoding .clm")?;
+    let encoded = Model::from_legacy(&LegacyFile { doc, textures })
+        .and_then(|m| m.to_clm_bytes())
+        .context("encoding .clm")?;
 
     let relative = Path::new("tests")
         .join("models")
@@ -586,14 +593,15 @@ fn part_node(part: LegacyPart) -> LegacyNode {
 mod tests {
     use super::*;
 
-    /// Decode `tests/models/<name>.clm`.
-    fn committed(name: &str) -> legacy::LegacyFile {
+    /// Decode `tests/models/<name>.clm` back to the arena shape its generator
+    /// authors.
+    fn committed(name: &str) -> LegacyFile {
         let path = workspace_root()
             .join("tests/models")
             .join(format!("{name}.clm"));
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-        legacy::decode(&bytes).unwrap()
+        Model::from_clm_bytes(&bytes).unwrap().to_legacy().unwrap()
     }
 
     /// Every committed `.clm` is what its visual baselines were rendered

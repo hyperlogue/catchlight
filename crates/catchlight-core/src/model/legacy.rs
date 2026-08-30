@@ -1,45 +1,45 @@
-//! The file boundary: Ids and scalar params in memory <-> array indices and
-//! 2-D params on disk.
+//! The legacy bridge: a [`Model`] to and from the arena document the inochi2d
+//! importer writes and the legacy runtime builds a puppet from.
 //!
-//! **This is a temporary bridge.** `.clm` v0 stores no Ids and its params
-//! carry two axes with the bindings nested underneath, so opening one has to
-//! mint Ids and split every 2-D param, and saving has to put the halves back
-//! together. cl-32i.14 replaces the format with `.clm`, which stores Ids and
-//! scalar params directly, and this whole module collapses to an index remap.
+//! **This is temporary**, and it is no longer a *file* boundary — `.clm`
+//! stores Ids and scalar params directly ([`crate::formats::clm`]). What is
+//! left is the translation between a Model and
+//! [`LegacyDocument`](crate::formats::legacy::LegacyDocument), which dies with
+//! the legacy runtime and the importer's move to its own crate.
 //!
 //! What the bridge does, in both directions:
 //!
-//! - **Ids.** A model read from `.clm` gets `root` for the arena's root and
-//!   `node-<index>`, `param-<index>`, `tex-<index>` for the rest — the same
-//!   ones every time, so two opens of one file agree about what an addon would
-//!   be naming. They round-trip nowhere, because the wire has nothing to
-//!   round-trip them to.
-//! - **Params.** A 2-D param splits into `<name>.x` and `<name>.y`, adjacent
-//!   in param order, and its bindings become two-param bindings over the pair.
-//!   [`Model::flatten`] puts a pair back together when the names still match,
-//!   they are still adjacent, and every binding and physics target that names
-//!   either names exactly that pair. A two-param binding whose params are not
-//!   such a pair cannot be written to v0 at all: that is
+//! - **Ids.** The arena stores none, so reading one mints them: `root` for the
+//!   arena's root and `node-<index>`, `param-<index>`, `tex-<index>` for the
+//!   rest — the same ones every time, so two imports of one `.inx` agree about
+//!   what an addon would be naming. Once minted they are stored in the `.clm`
+//!   and never derived again.
+//! - **Params.** An arena param carries two axes with its bindings nested
+//!   underneath, so reading one splits it into `<name>.x` and `<name>.y`,
+//!   adjacent in param order, with two-param bindings over the pair.
+//!   [`Model::to_legacy`] puts a pair back together when the names still
+//!   match, they are still adjacent, and every binding and physics target that
+//!   names either names exactly that pair. A two-param binding whose params
+//!   are not such a pair has no arena representation at all: that is
 //!   [`ModelError::UnpairableBinding`], not a panic and not a silent drop.
 //!
 //! Two adjacent 1-D params that happen to be named `<n>.x` and `<n>.y`, with
 //! no binding and no physics target between them, merge into one 2-D param on
-//! save. Nothing distinguishes them from a split pair on the v0 wire; `.clm`
-//! removes the ambiguity along with the split.
+//! the way out. Nothing distinguishes them from a split pair in the arena;
+//! `.clm` has no such ambiguity, so nothing durable turns on it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::formats::legacy::{
-    self, LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyNode,
+    LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyNode,
     LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture, LegacyWeld,
-    FORMAT_VERSION,
 };
 use crate::{charge_legacy_structure, LoadBudget};
 
 use super::*;
 
-/// One `.clm` v0 param slot: either one scalar Model param, or the
+/// One arena param slot: either one scalar Model param, or the
 /// `<name>.x` / `<name>.y` pair a 2-D one splits into.
 #[derive(Debug, PartialEq, Eq)]
 enum V0Slot<'a> {
@@ -47,7 +47,7 @@ enum V0Slot<'a> {
     Pair(&'a ParamId, &'a ParamId),
 }
 
-/// How this model's scalar params map onto v0's param table.
+/// How this model's scalar params map onto the arena's param table.
 struct V0Params<'a> {
     slots: Vec<V0Slot<'a>>,
     /// Every Model param, and the v0 slot it lands in.
@@ -77,7 +77,7 @@ fn pair_base<'a>(x: &'a str, y: &str) -> Option<&'a str> {
 }
 
 impl Model {
-    /// The v0 param table this model flattens to.
+    /// The arena param table this model flattens to.
     fn v0_params(&self) -> V0Params<'_> {
         let order = self.param_ids();
         let mut slots = Vec::with_capacity(order.len());
@@ -125,11 +125,11 @@ impl Model {
         })
     }
 
-    /// Snapshot the model into a `.clm` document: walk the tree in topological
+    /// Snapshot the model into an arena document: walk the tree in topological
     /// order, assign array indices, put split param pairs back together, and
-    /// remap every cross-reference. Total for a valid model except for what v0
-    /// genuinely cannot hold — see the module doc.
-    pub fn flatten(&self) -> Result<LegacyFile, ModelError> {
+    /// remap every cross-reference. Total for a valid model except for what the
+    /// arena genuinely cannot hold — see the module doc.
+    pub fn to_legacy(&self) -> Result<LegacyFile, ModelError> {
         let order = self.nodes_in_order();
         let node_index: HashMap<&NodeId, u32> = order
             .iter()
@@ -198,7 +198,6 @@ impl Model {
         }
 
         Ok(LegacyFile {
-            version: FORMAT_VERSION,
             doc: LegacyDocument {
                 physics: *self.physics(),
                 nodes,
@@ -222,7 +221,7 @@ impl Model {
                     Ok(LegacyBinding {
                         node: *node_index.get(b.node()).ok_or(ModelError::UnknownNode)?,
                         interpolate_mode: b.interpolate_mode(),
-                        values: b.values.to_legacy(),
+                        values: b.values.to_clm(),
                     })
                 })
                 .collect()
@@ -260,13 +259,7 @@ impl Model {
         })
     }
 
-    /// `flatten` then encode to `.clm` bytes.
-    pub fn to_clm_bytes(&self) -> Result<Vec<u8>, ModelError> {
-        let file = self.flatten()?;
-        Ok(legacy::encode(&file.doc, &file.textures)?)
-    }
-
-    /// Rebuild a [`Model`] from a decoded `.clm`, minting an Id per arena slot,
+    /// Rebuild a [`Model`] from an arena document, minting an Id per slot,
     /// splitting every 2-D param, and rewiring every index back to an Id.
     /// Errors on an invalid node arena or an out-of-range cross-reference.
     pub fn from_legacy(file: &LegacyFile) -> Result<Model, ModelError> {
@@ -445,10 +438,6 @@ impl Model {
             animations: Vec::new(),
         })
     }
-
-    pub fn from_clm_bytes(bytes: &[u8]) -> Result<Model, ModelError> {
-        Self::from_legacy(&legacy::decode(bytes)?)
-    }
 }
 
 fn flatten_kind(
@@ -498,7 +487,7 @@ fn flatten_kind(
     })
 }
 
-/// v0 aims a physics node at one param slot, so a pendulum writing two params
+/// The arena aims a physics node at one param slot, so a pendulum writing two params
 /// only fits if they are one slot's pair.
 fn flatten_physics_target(
     id: &NodeId,
@@ -693,17 +682,14 @@ mod tests {
             .unwrap_or_else(|| panic!("no node named {name}"))
     }
 
+    /// A Model that came from an arena document has to go back to the same
+    /// one: the importer writes an arena, the runtime reads one, and the
+    /// editor's preview goes out through here on every edit.
     #[test]
-    fn flatten_roundtrips_through_legacy() {
-        let m = sample();
-        let bytes = m.to_clm_bytes().unwrap();
-        let m2 = Model::from_clm_bytes(&bytes).unwrap();
-        let bytes2 = m2.to_clm_bytes().unwrap();
-        assert_eq!(
-            bytes, bytes2,
-            "model -> legacy -> model must be byte-stable"
-        );
-        assert_eq!(legacy::decode(&bytes).unwrap(), m2.flatten().unwrap());
+    fn a_model_round_trips_through_the_arena() {
+        let file = sample().to_legacy().unwrap();
+        let m = Model::from_legacy(&file).unwrap();
+        assert_eq!(m.to_legacy().unwrap(), file);
     }
 
     /// `.clm` v0 stores no Ids, so opening one has to mint them — the same ones
@@ -711,7 +697,7 @@ mod tests {
     /// is naming.
     #[test]
     fn opening_a_legacy_document_mints_the_documented_ids() {
-        let file = sample().flatten().unwrap();
+        let file = sample().to_legacy().unwrap();
         let a = Model::from_legacy(&file).unwrap();
         let b = Model::from_legacy(&file).unwrap();
 
@@ -733,7 +719,7 @@ mod tests {
     /// imported model the first time the editor saved it.
     #[test]
     fn a_two_dimensional_param_splits_and_re_pairs() {
-        let mut file = sample().flatten().unwrap();
+        let mut file = sample().to_legacy().unwrap();
         file.doc.params[0].name = "Head".into();
         file.doc.params[0].is_vec2 = true;
         file.doc.params[0].min = [-1.0, -2.0];
@@ -762,7 +748,7 @@ mod tests {
         );
         assert_eq!(m.binding_grid(binding.key()).unwrap(), (3, 2));
 
-        assert_eq!(m.flatten().unwrap(), file, "and saving puts it back");
+        assert_eq!(m.to_legacy().unwrap(), file, "and saving puts it back");
     }
 
     /// v0 has one param slot per binding, so a pair of params it cannot name
@@ -793,7 +779,7 @@ mod tests {
         m.add_binding(&key).unwrap();
 
         assert!(matches!(
-            m.flatten(),
+            m.to_legacy(),
             Err(ModelError::UnpairableBinding { target: "tx", .. })
         ));
     }
@@ -802,7 +788,7 @@ mod tests {
     /// imported pendulum would come back driving nothing.
     #[test]
     fn a_physics_target_follows_the_split_and_the_merge() {
-        let mut file = sample().flatten().unwrap();
+        let mut file = sample().to_legacy().unwrap();
         file.doc.params[0].name = "Head".into();
         file.doc.params[0].is_vec2 = true;
         file.doc.params[0].max = [1.0, 1.0];
@@ -839,12 +825,12 @@ mod tests {
             ),
             _ => panic!("expected a physics node"),
         }
-        assert_eq!(m.flatten().unwrap(), file);
+        assert_eq!(m.to_legacy().unwrap(), file);
     }
 
     #[test]
     fn from_legacy_rejects_multiple_roots() {
-        let mut file = sample().flatten().unwrap();
+        let mut file = sample().to_legacy().unwrap();
         file.doc.nodes[1].parent = None;
 
         assert!(matches!(
@@ -855,7 +841,7 @@ mod tests {
 
     #[test]
     fn from_legacy_rejects_disconnected_cycles() {
-        let mut file = sample().flatten().unwrap();
+        let mut file = sample().to_legacy().unwrap();
         file.doc.nodes[1].parent = Some(2);
         file.doc.nodes[2].parent = Some(1);
 
@@ -867,7 +853,7 @@ mod tests {
 
     #[test]
     fn from_legacy_applies_the_shared_aggregate_budget() {
-        let file = sample().flatten().unwrap();
+        let file = sample().to_legacy().unwrap();
         let mut budget = LoadBudget::new(crate::LoadLimits {
             nodes: 1,
             ..crate::LoadLimits::default()
@@ -926,7 +912,7 @@ mod tests {
             }
         })
         .unwrap();
-        let file = m.flatten().unwrap();
+        let file = m.to_legacy().unwrap();
         match &file.doc.nodes[1].kind {
             LegacyNodeKind::Part(p) => {
                 assert_eq!(p.blend_mode, BlendMode::Multiply);
