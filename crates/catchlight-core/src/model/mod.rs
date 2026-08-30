@@ -18,8 +18,8 @@
 //!   pointed into the removed subtree, and deleting a param or texture nulls
 //!   out whatever referenced it. Cross-references (a part's albedo, a mask's
 //!   source, a physics target, a weld's ends) are private and only reachable
-//!   through methods that check them, which is what makes [`Model::flatten`]
-//!   total.
+//!   through methods that check them, which is what makes
+//!   [`Model::to_clm_file`] total.
 //! - **An Id is unique within the model and never changes on its own.** This
 //!   is where the uniqueness [`crate::id`] cannot check is enforced: a
 //!   generated Id is re-drawn until it is free, an author-chosen one is
@@ -59,7 +59,8 @@
 mod binding;
 mod check;
 mod eval;
-mod flatten;
+mod file;
+mod legacy;
 
 pub use binding::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
@@ -67,8 +68,8 @@ pub use binding::{
 };
 pub use check::CheckWarning;
 pub use eval::Pose;
+pub use file::ClmLoadError;
 
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
@@ -148,7 +149,9 @@ pub enum ModelError {
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
     #[error(".clm codec: {0}")]
-    Legacy(#[from] crate::formats::legacy::LegacyError),
+    Clm(#[from] crate::formats::clm::ClmError),
+    #[error("invalid .clm: {0}")]
+    InvalidClm(#[from] ClmLoadError),
     #[error(transparent)]
     LoadLimit(#[from] crate::LoadLimitError),
 }
@@ -165,7 +168,7 @@ pub struct ModelTexture {
 /// The authored model: a tree of nodes by Id, ordered params and textures, the
 /// bindings params drive nodes through, and authored physics. The tree is
 /// always valid (single root, no cycles, no dangling cross-references), so
-/// [`Model::flatten`] is total.
+/// [`Model::to_clm_file`] is total.
 #[derive(Debug, Clone)]
 pub struct Model {
     generation: u64,
@@ -215,7 +218,7 @@ impl ModelWeld {
 /// One pair of welded vertices, one from each part. The vertex indices are
 /// how a weld is held in memory; `.clm` names them through seam slots instead
 /// (see [`crate::formats::clm`]).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelWeldPair {
     /// Vertex indices into each part's mesh.
     pub a_vert: u32,
@@ -565,7 +568,7 @@ impl ModelBinding {
 pub struct ModelBindingValues(Arc<ClmBindingValues>);
 
 impl ModelBindingValues {
-    pub fn to_legacy(&self) -> ClmBindingValues {
+    pub fn to_clm(&self) -> ClmBindingValues {
         (*self.0).clone()
     }
 }
@@ -718,8 +721,8 @@ impl Model {
     }
 
     /// Nodes in topological pre-order from the root, each parent before its
-    /// children, following sibling order. This is the order [`Self::flatten`]
-    /// snapshots into the arena.
+    /// children, following sibling order. This is the order `.clm` writes
+    /// them in, and the order the arena bridge assigns indices in.
     pub fn nodes_in_order(&self) -> Vec<NodeId> {
         let mut out = Vec::with_capacity(self.nodes.len());
         let mut stack = vec![self.root.clone()];

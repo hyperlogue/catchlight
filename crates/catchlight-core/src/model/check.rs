@@ -197,7 +197,7 @@ mod tests {
 
         // ...so only a file can bring one in. Round-trip through `.clm` with
         // the opacity binding spliced into the param's binding list.
-        let mut file = m.flatten().unwrap();
+        let mut file = m.to_legacy().unwrap();
         let group_index = file
             .doc
             .nodes

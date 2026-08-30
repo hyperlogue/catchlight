@@ -1207,7 +1207,6 @@ mod tests {
             kind: LegacyNodeKind::Group,
         };
         LegacyFile {
-            version: crate::formats::legacy::FORMAT_VERSION,
             doc: crate::formats::legacy::LegacyDocument {
                 physics: Default::default(),
                 nodes: vec![root, triangle_part(), triangle_part()],
@@ -1330,7 +1329,6 @@ mod tests {
             }),
         };
         LegacyFile {
-            version: f::FORMAT_VERSION,
             doc: f::LegacyDocument {
                 physics: Default::default(),
                 nodes: vec![root, mesh_group],
@@ -1379,7 +1377,9 @@ mod tests {
         for (values, target) in cases {
             let file = colored_mesh_group_file(values);
             // Through the encoded bytes, so the refusal covers a file on disk.
-            let bytes = crate::formats::legacy::encode(&file.doc, &file.textures).unwrap();
+            let bytes = crate::Model::from_legacy(&file)
+                .and_then(|m| m.to_clm_bytes())
+                .unwrap();
             let err = match crate::load::load_model(&bytes, crate::load::ModelFormat::Clm, 0) {
                 Err(ImportError::MeshGroupColorBinding(err)) => err,
                 Err(other) => panic!("{target}: expected MeshGroupColorBinding, got {other:?}"),
@@ -1406,7 +1406,9 @@ mod tests {
             alpha: TextureAlpha::Straight,
             data: tiny_png(),
         }];
-        let bytes = crate::formats::legacy::encode(&file.doc, &file.textures).unwrap();
+        let bytes = crate::Model::from_legacy(&file)
+            .and_then(|m| m.to_clm_bytes())
+            .unwrap();
         let puppet = crate::load::load_model(&bytes, crate::load::ModelFormat::Clm, 0)
             .expect("a colour binding on a part loads");
         assert_eq!(puppet.params().len(), 1);

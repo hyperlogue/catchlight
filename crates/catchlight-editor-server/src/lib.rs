@@ -271,7 +271,7 @@ impl Session {
 
     fn puppet(&mut self) -> Result<&mut LegacyPuppet, EditorError> {
         if self.puppet.is_none() || self.puppet_dirty {
-            let file = self.model.flatten()?;
+            let file = self.model.to_legacy()?;
             let mut built = from_legacy_cached(&file, 0, &mut self.tex_cache)
                 .map_err(|e| EditorError::Preview(e.to_string()))?;
             // Frozen physics keeps the authoring preview deterministic (the

@@ -48,8 +48,9 @@ fn gen_fixture(args: &[String]) -> Result<()> {
 }
 
 fn import(args: &[String]) -> Result<()> {
-    use catchlight_core::formats::{legacy, InxModel};
+    use catchlight_core::formats::InxModel;
     use catchlight_core::importer::from_inx_model_to_legacy;
+    use catchlight_core::Model;
 
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -82,7 +83,9 @@ fn import(args: &[String]) -> Result<()> {
         _ => InxModel::parse(std::io::Cursor::new(&bytes)).context("parsing .inx")?,
     };
     let file = from_inx_model_to_legacy(&model).context("inx -> legacy")?;
-    let encoded = legacy::encode(&file.doc, &file.textures).context("encoding .clm")?;
+    let encoded = Model::from_legacy(&file)
+        .and_then(|m| m.to_clm_bytes())
+        .context("legacy -> .clm")?;
     std::fs::write(&output, &encoded).with_context(|| format!("writing {}", output.display()))?;
 
     eprintln!(
