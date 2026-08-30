@@ -1,17 +1,21 @@
-//! `.clm → LegacyPuppet` build: load the editable format into a runtime [`LegacyPuppet`]
-//! (the editor/preview path, and the structural inverse of [`super::to_legacy`]).
+//! `legacy document → LegacyPuppet` build: load the arena into a runtime [`LegacyPuppet`]
+//! (the editor/preview path, and the structural inverse of
+//! [`super::to_legacy`]). A model file reaches this through a
+//! [`Model`](crate::Model) — `.clm` bytes, then
+//! [`Model::to_legacy`](crate::Model::to_legacy) — so nothing here reads a
+//! file.
 //!
 //! The flat arena makes this a linear fill — walk `nodes` in topological order
 //! and [`LegacyPuppet::insert_child`] each under its already-inserted parent — then
 //! reuse the inx path's mesh-group bake ([`bake_mesh_groups`]) and texture crop
 //! ([`crop_textures`]) so the result is the same `LegacyPuppet` an `.inx` load builds.
 //!
-//! `.clm` carries no uuids, but the runtime is uuid-keyed (masks resolve a node
-//! by uuid, params/physics by uuid), so the build synthesizes `uuid = arena
-//! index`: node index → node uuid, param index → param uuid. The two are
+//! The arena carries no uuids, but the runtime is uuid-keyed (masks resolve a
+//! node by uuid, params/physics by uuid), so the build synthesizes `uuid =
+//! arena index`: node index → node uuid, param index → param uuid. The two are
 //! independent namespaces in `LegacyPuppet`, so the overlap is harmless. The one
 //! authored-vs-runtime transform redone here is the global g-scale fold into
-//! each SimplePhysics node's gravity (the `.clm` stores it authored/unscaled).
+//! each SimplePhysics node's gravity (the arena stores it authored/unscaled).
 
 use glam::{Vec2, Vec3};
 
@@ -129,8 +133,8 @@ fn from_legacy_impl(
     Ok(puppet)
 }
 
-/// Welds validate hard: `.clm` is machine-written, so a bad weld means the
-/// writer is broken — reject the file rather than render a silently
+/// Welds validate hard: the arena is machine-written, so a bad weld means the
+/// writer is broken — reject the model rather than render a silently
 /// half-welded puppet.
 fn build_welds(
     welds: &[LegacyWeld],
@@ -746,10 +750,11 @@ mod tests {
     /// binding targets compare directly too.
     ///
     /// The single intentional divergence is Composite `propagate_mesh_group`
-    /// (the inx path hardcodes `true`; the `.clm` build honors the authored
+    /// (the inx path hardcodes `true`; the arena build honors the authored
     /// value), which is asserted separately and deliberately left out here.
-    /// Param *ids* also differ by construction — `.clm` has no uuids, so the
-    /// build synthesizes `id = array index` — so params are matched by order.
+    /// Param *ids* also differ by construction — the arena has no uuids, so
+    /// the build synthesizes `id = array index` — so params are matched by
+    /// order.
     ///
     /// Shared by [`reference_legacy_build_matches_inx_puppet`] and
     /// [`synthetic_model_reflects_identically_on_both_paths`] so the model-gated
