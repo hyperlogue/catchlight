@@ -158,52 +158,13 @@ impl DrawableInfo {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RenderList {
     pub root_drawables: Vec<DrawableInfo>,
     /// Keyed by the composite's own slot, the `node_id` of its
     /// `DrawableInfo::Composite`.
     pub composite_children: HashMap<u32, Vec<DrawableInfo>>,
     pub composite_mask_sources: HashMap<u32, CompositeMaskSourceData>,
-}
-
-impl Clone for RenderList {
-    fn clone(&self) -> Self {
-        Self {
-            root_drawables: self.root_drawables.clone(),
-            composite_children: self.composite_children.clone(),
-            composite_mask_sources: self.composite_mask_sources.clone(),
-        }
-    }
-
-    // Hand-written so the bevy extract refill (`clone_from` into a
-    // retained snapshot every frame) reuses existing allocations: the
-    // derived default would allocate a fresh Vec/HashMap each call.
-    // HashMap::clone_from drops and re-clones its values, so the nested
-    // child Vecs are clone_from'd per key to keep their buffers too.
-    fn clone_from(&mut self, source: &Self) {
-        self.root_drawables.clone_from(&source.root_drawables);
-        self.composite_children
-            .retain(|k, _| source.composite_children.contains_key(k));
-        for (k, v) in &source.composite_children {
-            self.composite_children.entry(*k).or_default().clone_from(v);
-        }
-        self.composite_mask_sources
-            .retain(|key, _| source.composite_mask_sources.contains_key(key));
-        for (key, value) in &source.composite_mask_sources {
-            match self.composite_mask_sources.entry(*key) {
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    let retained = entry.get_mut();
-                    retained.opacity = value.opacity;
-                    retained.mask_threshold = value.mask_threshold;
-                    retained.parts.clone_from(&value.parts);
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(value.clone());
-                }
-            }
-        }
-    }
 }
 
 impl RenderList {
