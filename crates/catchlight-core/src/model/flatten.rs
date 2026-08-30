@@ -442,6 +442,7 @@ impl Model {
             textures,
             texture_order,
             bindings,
+            animations: Vec::new(),
         })
     }
 

@@ -33,6 +33,10 @@
 //!   of the binding — a [`BindingKey`] names one or two params and its grid is
 //!   the product of their key positions — so a pose is a plain map
 //!   `ParamId -> f32` and nothing else carries a second dimension.
+//! - **An animation lane names a live param.** Animations are authored data
+//!   like everything else here, so [`Model::set_animations`] refuses a lane
+//!   over an unknown param and [`Model::delete_param`] drops the lanes that
+//!   named the param it removed.
 //! - **Sibling order is document state.** It is the draw order for equal z
 //!   order, so [`Model::reorder`] is an edit, not view state.
 //! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
@@ -71,7 +75,8 @@ use std::sync::{Arc, OnceLock};
 
 use crate::components::{BlendMode, MaskMode};
 use crate::formats::clm::{
-    self as clm, ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha, TextureEncoding,
+    self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha,
+    TextureEncoding,
 };
 use crate::formats::legacy::LegacyMeshGroup;
 use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, TexId};
@@ -173,6 +178,7 @@ pub struct Model {
     textures: HashMap<TexId, ModelTexture>,
     texture_order: Vec<TexId>,
     bindings: Vec<ModelBinding>,
+    animations: Vec<ClmAnimation>,
 }
 
 /// A welded part pair: two parts whose vertex pairs are pulled together after
@@ -660,6 +666,7 @@ impl Model {
             textures: HashMap::new(),
             texture_order: Vec::new(),
             bindings: Vec::new(),
+            animations: Vec::new(),
         }
     }
 
@@ -1056,6 +1063,11 @@ impl Model {
                 }
             }
         }
+        for lane in self.animations.iter_mut().flat_map(|a| &mut a.lanes) {
+            if &lane.param == old {
+                lane.param = new.clone();
+            }
+        }
         self.bump();
         Ok(())
     }
@@ -1298,6 +1310,9 @@ impl Model {
         }
         self.param_order.retain(|p| p != id);
         self.bindings.retain(|b| !b.key.params.contains(id));
+        for animation in &mut self.animations {
+            animation.lanes.retain(|lane| &lane.param != id);
+        }
         for node in self.nodes.values_mut() {
             if let ModelNodeKind::SimplePhysics(ph) = &mut node.kind {
                 for t in &mut ph.target_params {
@@ -1375,6 +1390,27 @@ impl Model {
         self.bump();
     }
 
+    /// The model's animations, in authored order.
+    pub fn animations(&self) -> &[ClmAnimation] {
+        &self.animations
+    }
+
+    /// Replace the animation list. Every lane must name a live param — an
+    /// animation is stored on the model, so a dangling lane would survive a
+    /// save the way no other cross-reference does.
+    pub fn set_animations(&mut self, animations: Vec<ClmAnimation>) -> Result<(), ModelError> {
+        if animations
+            .iter()
+            .flat_map(|a| &a.lanes)
+            .any(|lane| !self.params.contains_key(&lane.param))
+        {
+            return Err(ModelError::UnknownParam);
+        }
+        self.animations = animations;
+        self.bump();
+        Ok(())
+    }
+
     pub fn welds(&self) -> &[ModelWeld] {
         &self.welds
     }
@@ -1425,7 +1461,19 @@ impl Model {
                     self.bindings
                         .capacity()
                         .saturating_mul(std::mem::size_of::<ModelBinding>()),
+                )
+                .saturating_add(
+                    self.animations
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<ClmAnimation>()),
                 );
+        for lane in self.animations.iter().flat_map(|a| &a.lanes) {
+            bytes = bytes.saturating_add(
+                lane.keyframes
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<clm::ClmKeyframe>()),
+            );
+        }
         for weld in &self.welds {
             bytes = bytes.saturating_add(
                 weld.pairs
@@ -1725,6 +1773,54 @@ mod tests {
         BindingKey::new(r.param.clone(), r.part.clone(), BindingTarget::Deform)
     }
 
+    fn one_lane_animation(param: &ParamId) -> ClmAnimation {
+        ClmAnimation {
+            name: "blink".into(),
+            length: 10,
+            lanes: vec![crate::formats::clm::ClmLane {
+                param: param.clone(),
+                interpolation: InterpolateMode::Linear,
+                keyframes: vec![crate::formats::clm::ClmKeyframe {
+                    frame: 0,
+                    value: 1.0,
+                }],
+            }],
+            ..ClmAnimation::default()
+        }
+    }
+
+    /// An animation is stored on the model, so a lane naming a param that
+    /// isn't there would outlive the edit that removed it — the one
+    /// cross-reference a caller can hand in wholesale.
+    #[test]
+    fn an_animation_lane_must_name_a_live_param() {
+        let mut r = rig();
+        let stranger = ParamId::new("nobody").unwrap();
+
+        assert!(matches!(
+            r.model.set_animations(vec![one_lane_animation(&stranger)]),
+            Err(ModelError::UnknownParam)
+        ));
+        assert!(r.model.animations().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_param_drops_its_animation_lanes() {
+        let mut r = rig();
+        let param = r.param.clone();
+        r.model
+            .set_animations(vec![one_lane_animation(&param)])
+            .unwrap();
+
+        r.model.delete_param(&param).unwrap();
+
+        assert_eq!(r.model.animations().len(), 1, "the animation survives");
+        assert!(
+            r.model.animations()[0].lanes.is_empty(),
+            "its lane over the deleted param does not"
+        );
+    }
+
     /// Every derived object (puppet, render cache) rebakes off `generation`, so
     /// a mutating method that forgets to bump it is a stale-cache bug that no
     /// other test would see. This list is the API surface: a new mutating
@@ -1893,6 +1989,13 @@ mod tests {
             (
                 "set_physics",
                 Box::new(|r| r.model.set_physics(ClmPhysics::default())),
+            ),
+            (
+                "set_animations",
+                Box::new(|r| {
+                    let animation = one_lane_animation(&r.param);
+                    r.model.set_animations(vec![animation]).unwrap()
+                }),
             ),
             (
                 "set_welds",
@@ -2110,8 +2213,17 @@ mod tests {
         assert_eq!(r.model.welds()[0].a(), &new_node);
         assert!(r.model.to_clm_bytes().is_ok());
 
+        r.model
+            .set_animations(vec![one_lane_animation(&param)])
+            .unwrap();
+
         let new_param = ParamId::new("head-turn").unwrap();
         r.model.rename_param_id(&param, new_param.clone()).unwrap();
+        assert_eq!(
+            r.model.animations()[0].lanes[0].param,
+            new_param,
+            "the animation lane follows its param",
+        );
         assert_eq!(r.model.param_ids(), std::slice::from_ref(&new_param));
         assert_eq!(
             r.model.bindings().next().unwrap().params(),
