@@ -294,6 +294,9 @@ impl App {
     }
 
     fn adopt_session(&mut self, session: SessionId, title: String) {
+        // Before the session changes: the drag lives on the *old* session's
+        // puppet, and nothing else would ever take it off.
+        self.clear_scratch_deform();
         self.session = Some(session);
         self.title = title;
         self.pose.clear();
@@ -2585,12 +2588,21 @@ impl App {
         let (Some(session), Some(node)) = (self.session, self.scratch.take()) else {
             return;
         };
+        self.scratch_rev = self.scratch_rev.wrapping_add(1);
+        // A node that is gone took its puppet slot (and the drag on it) with
+        // it; asking the server to clear it would only be an error to report.
+        let editor = self.editor.clone();
+        if !editor
+            .with_model(session, |m| m.node(&node).is_some())
+            .unwrap_or(false)
+        {
+            return;
+        }
         self.send(Command::ScratchDeform {
             session,
             node,
             offsets: Vec::new(),
         });
-        self.scratch_rev = self.scratch_rev.wrapping_add(1);
     }
 
     /// Write `current cell offsets + deltas` back as the authored cell.
