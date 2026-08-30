@@ -50,9 +50,10 @@
 //! [`crate::components::Mask`] carries the source node's `NodeIdx` in its
 //! `source_uuid`, because the field is the legacy uuid namespace and a model
 //! has none; [`Puppet::node_for_uuid`] is the identity for that reason.
-//! **Animations**: a model stores none yet, so a caller hands the puppet the
-//! clips it can play ([`Puppet::set_animations`]) and the puppet owns only the
-//! play state. `.clm` v1 is where a model gains them.
+//! **Animations**: the puppet owns only the play state, and the clips are
+//! installed rather than baked — [`Puppet::set_animations_from`] takes the
+//! model's own, [`Puppet::set_animations`] takes a caller's, and a rebake
+//! keeps whichever is loaded.
 
 mod arena;
 mod bake;
@@ -785,12 +786,26 @@ impl Puppet {
         &self.animations
     }
 
-    /// Replace the animations this puppet can play. A model carries none of
-    /// its own yet — `.clm` v1 is where they land — so a caller supplies them.
+    /// Replace the animations this puppet can play with clips a caller built
+    /// by hand. [`Self::set_animations_from`] is the one that takes the
+    /// model's own.
     pub fn set_animations(&mut self, animations: Vec<PuppetAnimation>) {
         self.animations = animations;
         // Any play state indexes into the old list.
         self.play_state = None;
+    }
+
+    /// Take the model's own animations, in the form a puppet plays. A rebake
+    /// does not do this: the clips are the caller's to install, because a
+    /// caller may be playing ones the model does not carry.
+    pub fn set_animations_from(&mut self, model: &Model) {
+        self.set_animations(
+            model
+                .animations()
+                .iter()
+                .map(PuppetAnimation::from_clm)
+                .collect(),
+        );
     }
 
     /// Start playing the animation with this name, looping. False when no
@@ -814,6 +829,13 @@ impl Puppet {
 
     pub fn has_playing_animation(&self) -> bool {
         self.play_state.is_some()
+    }
+
+    /// The name of the animation playing right now, so a caller swapping one
+    /// puppet for another can carry the play state over.
+    pub fn playing_animation(&self) -> Option<&str> {
+        let state = self.play_state?;
+        Some(self.animations.get(state.index)?.name.as_str())
     }
 
     /// Advance playback by `dt` seconds and pose every lane's param at the
@@ -1329,5 +1351,76 @@ mod tests {
         let mut puppet = Puppet::new(&model);
         puppet.tick(&snapshot, 0.0);
         assert_eq!(puppet.model_identity(), snapshot.identity());
+    }
+
+    /// A model's own clips reach the puppet whole, and the puppet says which
+    /// one is playing — the two halves a caller needs to hand play state from
+    /// one puppet to another.
+    #[test]
+    fn a_models_clips_reach_the_puppet_and_name_themselves_while_playing() {
+        use crate::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+        use crate::id::Name;
+        use crate::id::SeededHex;
+        use crate::model::ModelParam;
+        use crate::params::InterpolateMode;
+
+        let mut model = Model::new();
+        let mut hex = SeededHex::new(9);
+        let param = model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("blink"),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    key_positions: vec![0.0, 1.0],
+                },
+                &mut hex,
+            )
+            .expect("add param");
+        model
+            .set_animations(vec![ClmAnimation {
+                name: "Blink".into(),
+                timestep: 1.0 / 60.0,
+                length: 4,
+                lead_in: -1,
+                lead_out: -1,
+                lanes: vec![ClmLane {
+                    param: param.clone(),
+                    interpolation: InterpolateMode::Linear,
+                    keyframes: vec![
+                        ClmKeyframe {
+                            frame: 0,
+                            value: 0.0,
+                        },
+                        ClmKeyframe {
+                            frame: 3,
+                            value: 1.0,
+                        },
+                    ],
+                }],
+            }])
+            .expect("install the clip");
+
+        let mut puppet = Puppet::new(&model);
+        assert!(
+            puppet.animations().is_empty(),
+            "clips are installed, not baked"
+        );
+        puppet.set_animations_from(&model);
+        assert_eq!(puppet.animations().len(), 1);
+        assert_eq!(puppet.playing_animation(), None, "nothing plays yet");
+
+        assert!(puppet.play_animation("Blink"));
+        assert_eq!(puppet.playing_animation(), Some("Blink"));
+        puppet.tick(&model, 3.0 / 60.0);
+        assert_eq!(
+            puppet.param_value(&param),
+            Some(1.0),
+            "the lane drove the param it names"
+        );
+
+        puppet.stop_animation();
+        assert_eq!(puppet.playing_animation(), None);
     }
 }

@@ -156,6 +156,35 @@ impl PuppetAnimation {
     pub(crate) fn loop_region(&self) -> (i32, i32) {
         loop_region(self.length, self.lead_in, self.lead_out)
     }
+
+    /// The play form of one of a model's clips. The wire type and this one
+    /// hold the same fields; they are separate only because one is what the
+    /// file stores and the other is what a puppet plays.
+    pub(crate) fn from_clm(clip: &crate::formats::clm::ClmAnimation) -> Self {
+        Self {
+            name: clip.name.clone(),
+            timestep: clip.timestep,
+            length: clip.length,
+            lead_in: clip.lead_in,
+            lead_out: clip.lead_out,
+            lanes: clip
+                .lanes
+                .iter()
+                .map(|lane| PuppetLane {
+                    param: lane.param.clone(),
+                    interpolation: lane.interpolation,
+                    keyframes: lane
+                        .keyframes
+                        .iter()
+                        .map(|k| Keyframe {
+                            frame: k.frame,
+                            value: k.value,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 impl Default for PuppetAnimation {
