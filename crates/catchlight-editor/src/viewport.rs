@@ -7,6 +7,12 @@
 //! camera, document revision or preview state changes; egui samples its current
 //! GPU contents.
 //!
+//! The live edit in progress is *not* passed in: a vertex drag is a scratch
+//! deform on the session's puppet, written through `Command::ScratchDeform`
+//! and held there until the gesture ends, so a render just draws whatever the
+//! puppet currently carries. Node previews are the exception, and only because
+//! nothing holds them: they are re-applied after each fold.
+//!
 //! **One renderer, one session's render cache.** A cache's slots name GPU
 //! state inside the renderer that prepared it, and the GUI keeps one renderer
 //! for every session it shows, so the cache is held beside the session it was
@@ -19,7 +25,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use catchlight_core::id::ParamId;
-use catchlight_core::{Model, Pose, Puppet, Vec2};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use catchlight_core::Vec2;
+use catchlight_core::{Model, Pose, Puppet};
 use catchlight_wgpu::{
     create_orthographic_camera_at, CompositePool, DrawableInfo, FramebufferSnapshotPool, Pipelines,
     PrepareOptions, RenderCache, RenderList, StencilTarget, WgpuRenderer,
@@ -140,10 +148,9 @@ impl ViewportRenderer {
 
     /// Render `puppet` into the offscreen target and return the egui texture id
     /// pointing at it. `isolate` limits drawing to the given core node ids
-    /// (mask sources ride inside each drawable and keep working).
-    /// `scratch_deform` is a live vertex drag: (core id, per-vertex local
-    /// deltas), applied through the deform stack's scratch source so it
-    /// composes with the pose like the committed value will.
+    /// (mask sources ride inside each drawable and keep working). A live
+    /// vertex drag is already on the puppet as its scratch deform, and
+    /// survives the tick below.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
         &mut self,
@@ -153,7 +160,6 @@ impl ViewportRenderer {
         puppet: &mut Puppet,
         pose: &[(ParamId, f32)],
         previews: &[NodePreview],
-        scratch_deform: Option<&(u32, Vec<(usize, Vec2)>)>,
         camera: &EditorCamera,
         width: u32,
         height: u32,
@@ -193,9 +199,6 @@ impl ViewportRenderer {
             // translate-children groups render at stale positions until the
             // commit rebakes the puppet.
             puppet.refold_with_node_edits(|edits| apply_previews(edits, previews));
-        }
-        if let Some((core, deltas)) = scratch_deform {
-            apply_scratch_deform(puppet, *core, deltas);
         }
         cache
             .refresh(&mut self.renderer, model, puppet)
@@ -284,24 +287,6 @@ impl ViewportRenderer {
             wgpu::FilterMode::Linear,
         );
     }
-}
-
-/// Write vertex-drag deltas into the part's scratch deform and re-combine, so
-/// the scratch deform stacks on the posed deform exactly like the committed
-/// keypoint will.
-fn apply_scratch_deform(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]) {
-    let id = catchlight_core::NodeIdx(core);
-    let Some(len) = puppet.combined_deform(id).map(<[Vec2]>::len) else {
-        return;
-    };
-    let mut offsets = vec![Vec2::ZERO; len];
-    for &(vertex, delta) in deltas {
-        if let Some(slot) = offsets.get_mut(vertex) {
-            *slot = delta;
-        }
-    }
-    puppet.set_scratch_deform(id, &offsets);
-    puppet.combine_deforms();
 }
 
 /// Write preview overrides over the frame the pose fold produced. The next
@@ -398,7 +383,6 @@ mod tests {
                             puppet,
                             pose,
                             &[],
-                            None,
                             &camera,
                             512,
                             512,
@@ -473,7 +457,6 @@ mod tests {
                             puppet,
                             &[],
                             &[],
-                            None,
                             &camera,
                             256,
                             256,
