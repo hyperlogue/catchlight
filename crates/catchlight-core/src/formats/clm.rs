@@ -34,6 +34,13 @@
 //!   something must find it, seam slots must be in mesh range, a weld's two
 //!   seams must hold the same slots, and a binding must name one or two
 //!   distinct params. The reader reports which Id in which field failed.
+//! - **A binding has to be one the runtime can fold.** A colour target
+//!   (`Opacity`, `Tint*`, `ScreenTint*`) on a mesh group has nowhere to land —
+//!   a mesh group is never drawn — and a deform cell holds one `[dx, dy]` per
+//!   mesh vertex, no more and no fewer. Both are refused on the way in, so a
+//!   model that loads is one every runtime evaluates the same way; the second
+//!   is refused on the way *out* too, so a bad refit is reported at save
+//!   rather than at the next open.
 //!
 //! This module also holds the leaf value types that are the same in memory and
 //! on the wire — meshes, transforms, authored physics, binding cells — so a

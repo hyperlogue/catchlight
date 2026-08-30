@@ -6,15 +6,19 @@
 //! obligations:
 //!
 //! - **Writing is total and deterministic.** A Model's tree is always valid
-//!   and its cross-references are always live, so the only thing
-//!   [`Model::to_clm_file`] can refuse is a weld whose end is not a part. The
-//!   orders it writes — nodes pre-order from the root, params, textures and
-//!   bindings in the Model's own order — are the Model's, so the same Model
-//!   always writes the same bytes.
+//!   and its cross-references are always live, so the only things
+//!   [`Model::to_clm_file`] can refuse are a weld whose end is not a part and
+//!   a deform cell whose length its node's mesh cannot take. The orders it
+//!   writes — nodes pre-order from the root, params, textures and bindings in
+//!   the Model's own order — are the Model's, so the same Model always writes
+//!   the same bytes.
 //! - **Reading trusts nothing.** Every Id in the file is resolved against what
 //!   the file itself declares, and a failure names the field and the Id that
 //!   dangled ([`ClmLoadError`]). What the reader accepts is exactly what the
-//!   Model's own invariants allow, so a loaded Model needs no repair pass.
+//!   Model's own invariants allow — including the two a Model built from a
+//!   file used to escape, a colour binding on a mesh group and a deform cell
+//!   sized to something other than the node's mesh — so a loaded Model needs
+//!   no repair pass.
 //!
 //! The weld/seam bridge (a Model still pairs vertex indices; the wire pairs
 //! seam slots) is documented in [`crate::formats::clm`], which owns it.
@@ -81,6 +85,21 @@ pub enum ClmLoadError {
         slot: String,
         vertex: u32,
         vertices: usize,
+    },
+    #[error(
+        "the {target} binding on node {node:?} targets a mesh group, which is never drawn and \
+         has no colour to fold it into"
+    )]
+    ColorOnMeshGroup { node: String, target: &'static str },
+    #[error(
+        "the deform binding on node {node:?} holds {got} offsets at cell {cell:?}, but the node's \
+         mesh takes {expected}"
+    )]
+    DeformCellShape {
+        node: String,
+        cell: [u32; 2],
+        got: usize,
+        expected: usize,
     },
     #[error("a weld names seam {seam:?} on node {node:?}, which carries no such seam")]
     UnknownSeam { node: String, seam: String },
@@ -184,16 +203,19 @@ impl Model {
             });
         }
 
-        let bindings = self
-            .bindings
-            .iter()
-            .map(|b| ClmBinding {
+        let mut bindings = Vec::with_capacity(self.bindings.len());
+        for b in &self.bindings {
+            // Caught here as well as on the way in, so a refit that sized a
+            // deform wrong is reported when the file is written rather than
+            // when someone tries to open it.
+            check_deform_cells(&b.key.node, self.deform_len(&b.key.node), &b.values)?;
+            bindings.push(ClmBinding {
                 params: b.key.params.iter().cloned().collect(),
                 node: b.key.node.clone(),
                 interpolate_mode: b.interpolate_mode(),
                 values: b.values.to_clm(),
-            })
-            .collect();
+            });
+        }
 
         let mut textures = Vec::with_capacity(self.texture_order.len());
         for id in &self.texture_order {
@@ -361,6 +383,23 @@ impl Model {
                     .into());
                 }
             }
+            let target = target_of(&b.values);
+            let kind = nodes.get(&b.node).map(|n| &n.kind);
+            if let BindingTarget::Scalar(t) = target {
+                if t.is_color() && matches!(kind, Some(ModelNodeKind::MeshGroup(_))) {
+                    return Err(ClmLoadError::ColorOnMeshGroup {
+                        node: b.node.to_string(),
+                        target: t.name(),
+                    }
+                    .into());
+                }
+            }
+            let vertices = nodes
+                .get(&b.node)
+                .and_then(ModelNode::mesh)
+                .map_or(0, |m| m.verts.len());
+            check_deform_cells(&b.node, vertices, &b.values)?;
+
             let key_params = match b.params.as_slice() {
                 [x] => BindingParams::One(x.clone()),
                 [x, y] if x != y => BindingParams::Two(x.clone(), y.clone()),
@@ -376,7 +415,7 @@ impl Model {
                 key: BindingKey {
                     params: key_params,
                     node: b.node.clone(),
-                    target: target_of(&b.values),
+                    target,
                 },
                 interpolate_mode: b.interpolate_mode,
                 values: b.values.clone().into(),
@@ -427,6 +466,33 @@ impl Model {
         let file = clm::decode_with_budget(bytes, budget)?;
         Self::from_clm_file_with_budget(&file, budget)
     }
+}
+
+/// A deform cell holds one `[dx, dy]` per mesh vertex, so its length is the
+/// node's flat vertex-array length and nothing else. The legacy runtime sized
+/// its grid from the *longest* authored cell and a [`Model`] sizes it from the
+/// mesh, so a file where the two disagree evaluates differently depending on
+/// which runtime reads it — refuse it rather than pick a winner.
+fn check_deform_cells(
+    node: &NodeId,
+    expected: usize,
+    values: &ClmBindingValues,
+) -> Result<(), ModelError> {
+    let Some(cells) = deform_cells(values) else {
+        return Ok(());
+    };
+    for cell in cells {
+        if cell.value.len() != expected {
+            return Err(ClmLoadError::DeformCellShape {
+                node: node.to_string(),
+                cell: [cell.x, cell.y],
+                got: cell.value.len(),
+                expected,
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn duplicate(kind: &'static str, id: &impl std::fmt::Display) -> ModelError {
@@ -1122,6 +1188,117 @@ mod tests {
         assert!(matches!(
             load_err(&file),
             ClmLoadError::DanglingParam { id, .. } if id == "gone"
+        ));
+    }
+
+    /// `Model::add_binding` refuses a colour target on a mesh group and the
+    /// legacy loader refuses a file carrying one, but a Model read from a file
+    /// used to accept it and the fold then dropped it silently. The reader is
+    /// where that hole closes.
+    #[test]
+    fn a_colour_binding_on_a_mesh_group_is_a_structured_error() {
+        for (values, target) in [
+            (ClmBindingValues::Opacity(ClmCells::default()), "opacity"),
+            (ClmBindingValues::TintR(ClmCells::default()), "tintr"),
+            (ClmBindingValues::TintG(ClmCells::default()), "tintg"),
+            (ClmBindingValues::TintB(ClmCells::default()), "tintb"),
+            (
+                ClmBindingValues::ScreenTintR(ClmCells::default()),
+                "screentintr",
+            ),
+            (
+                ClmBindingValues::ScreenTintG(ClmCells::default()),
+                "screentintg",
+            ),
+            (
+                ClmBindingValues::ScreenTintB(ClmCells::default()),
+                "screentintb",
+            ),
+        ] {
+            let mut file = sample().to_clm_file().unwrap();
+            let warp = node_named(&file, "Warp").id.clone();
+            file.doc.bindings[0].node = warp.clone();
+            file.doc.bindings[0].values = values;
+
+            assert_eq!(
+                load_err(&file),
+                ClmLoadError::ColorOnMeshGroup {
+                    node: warp.to_string(),
+                    target,
+                }
+            );
+        }
+    }
+
+    /// A non-colour target on a mesh group is exactly what a mesh group is
+    /// for, so the check has to be about colour and not about mesh groups.
+    #[test]
+    fn a_deform_binding_on_a_mesh_group_still_loads() {
+        let mut file = sample().to_clm_file().unwrap();
+        let warp = node_named(&file, "Warp").id.clone();
+        file.doc.bindings[0].node = warp;
+        file.doc.bindings[0].values = ClmBindingValues::Deform(ClmCells::default());
+
+        assert!(Model::from_clm_file(&file).is_ok());
+    }
+
+    /// The legacy runtime sized a deform grid from the longest authored cell
+    /// and a Model sizes it from the mesh, so a file where a cell and the mesh
+    /// disagree evaluates differently depending on who reads it.
+    #[test]
+    fn a_deform_cell_the_mesh_cannot_take_is_a_structured_error() {
+        let node = {
+            let file = sample().to_clm_file().unwrap();
+            node_named(&file, "Upper").id.clone()
+        };
+
+        for got in [6usize, 10] {
+            let mut file = sample().to_clm_file().unwrap();
+            match &mut file.doc.bindings[0].values {
+                ClmBindingValues::Deform(cells) => {
+                    for cell in &mut cells.cells {
+                        cell.value.resize(got, 0.0);
+                    }
+                }
+                other => panic!("expected a deform binding, got {other:?}"),
+            }
+
+            assert_eq!(
+                load_err(&file),
+                ClmLoadError::DeformCellShape {
+                    node: node.to_string(),
+                    cell: [0, 0],
+                    got,
+                    expected: 8,
+                }
+            );
+        }
+    }
+
+    /// And the writer refuses the same shape, so a bad refit is reported when
+    /// the file is saved rather than when someone next opens it.
+    #[test]
+    fn a_deform_cell_the_mesh_cannot_take_cannot_be_written() {
+        let mut m = sample();
+        let upper = m
+            .nodes_in_order()
+            .into_iter()
+            .find(|id| m.node(id).is_some_and(|n| n.name.as_str() == "Upper"))
+            .unwrap();
+        // A refit that returns the wrong length is the one way a Model can
+        // reach this state; `set_node_mesh` itself resizes correctly.
+        m.set_node_mesh_with(&upper, quad(0.0), |_, _, offsets| {
+            offsets.to_vec()[..2].to_vec()
+        })
+        .unwrap();
+
+        assert!(matches!(
+            m.to_clm_file(),
+            Err(ModelError::InvalidClm(ClmLoadError::DeformCellShape {
+                got: 2,
+                expected: 8,
+                ..
+            }))
         ));
     }
 
