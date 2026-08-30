@@ -42,7 +42,9 @@ use crate::inspector::{
 };
 use crate::io::{IoEvent, IoQueue};
 use crate::mesh_edit::{MeshEditOutcome, MeshEditState};
-use crate::params_panel::{ArmedInfo, BindingRow, ParamAction, ParamsPanel};
+use crate::params_panel::{
+    Armed, ArmedInfo, BindingAddr, BindingOp, BindingRow, ParamAction, ParamsPanel,
+};
 use crate::picking;
 use crate::tree_panel::{TreeAction, TreePanel};
 use crate::viewport::{NodePreview, ViewportRenderer};
@@ -90,13 +92,14 @@ pub struct App {
     /// The viewport rect from the last frame — focus math needs its aspect.
     last_viewport_rect: Option<egui::Rect>,
 
-    /// Recording state: the armed param — edits to TRS/z order/opacity write
-    /// binding keys at the closest keypoint instead of node state.
-    armed: Option<ParamId>,
+    /// Recording state: the armed param, or the pair on the pad — edits to
+    /// TRS/z order/opacity write binding keys at the closest keypoint instead
+    /// of node state.
+    armed: Option<Armed>,
     /// Snap pose drags to keypoints (the controller's default).
     snap: bool,
-    /// Keypoint clipboard: (param, node, target, cell) the value was taken at.
-    copied_cell: Option<(ParamId, NodeId, String, [u32; 2])>,
+    /// Keypoint clipboard: the binding and cell the value was taken at.
+    copied_cell: Option<(BindingParams, NodeId, String, [u32; 2])>,
     /// Per-vertex deform tool active (armed + Part selected).
     deform_mode: bool,
     deform_drag: Option<DeformDrag>,
@@ -135,8 +138,8 @@ pub struct App {
     armed_cache: Option<(ArmedCacheKey, ArmedInfo)>,
 }
 
-/// (doc rev, armed param, armed cell) — the inputs ArmedInfo derives from.
-type ArmedCacheKey = (u64, ParamId, [u32; 2]);
+/// (doc rev, armed params, armed cell) — the inputs ArmedInfo derives from.
+type ArmedCacheKey = (u64, Armed, [u32; 2]);
 
 /// An Id rename the author has asked for and not yet confirmed.
 ///
@@ -369,87 +372,183 @@ impl App {
 
     // ---- recording (armed param) ----
 
-    fn pose_of(&self, snap: &catchlight_editor_server::DocSnapshot, param: &ParamId) -> f32 {
-        let Some(info) = snap.params.iter().find(|p| &p.id == param) else {
-            return 0.0;
-        };
-        self.pose.get(&info.id).copied().unwrap_or(info.default)
-    }
-
-    /// The keypoint cell recording writes to: the key position nearest the
-    /// current pose. A param is a scalar, so the cell's y is always 0 — a
-    /// grid with a second axis belongs to a *binding* that names two params,
-    /// which this panel does not author.
-    fn armed_cell(
+    /// Which of a param's key positions the current pose sits nearest — the
+    /// index recording writes at along that param's axis.
+    fn key_index(
         &self,
         snap: &catchlight_editor_server::DocSnapshot,
-    ) -> Option<(ParamId, [u32; 2])> {
-        let param = self.armed.clone()?;
-        let info = snap.params.iter().find(|p| p.id == param)?;
-        let pose = self.pose_of(snap, &param);
+        param: &ParamId,
+    ) -> Option<u32> {
+        let info = snap.params.iter().find(|p| &p.id == param)?;
+        let pose = self.pose.get(&info.id).copied().unwrap_or(info.default);
         // Key positions are normalized 0..1; map the pose into that space.
         let normed = if (info.max - info.min).abs() > f32::EPSILON {
             ((pose - info.min) / (info.max - info.min)).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let cx = nearest_index(&info.key_positions, normed);
-        Some((param, [cx, 0]))
+        Some(nearest_index(&info.key_positions, normed))
     }
 
-    /// Rebuild the armed-param panel data only when (rev, param, cell) moved —
-    /// it walks every binding of the param, too heavy for every frame.
+    /// The binding the armed state names and the cell the pose lands on.
+    /// One param is one row (`y` is 0); a pad is the product of both.
+    fn armed_cell(
+        &self,
+        snap: &catchlight_editor_server::DocSnapshot,
+    ) -> Option<(BindingParams, [u32; 2])> {
+        let armed = self.armed.clone()?;
+        let cx = self.key_index(snap, armed.x())?;
+        match armed.y() {
+            Some(y) => {
+                let cy = self.key_index(snap, y)?;
+                Some((BindingParams::two(armed.x().clone(), y.clone()), [cx, cy]))
+            }
+            None => Some((BindingParams::one(armed.x().clone()), [cx, 0])),
+        }
+    }
+
+    /// The binding a recording on `node` writes into, and its cell.
+    ///
+    /// Arming one param normally authors a one-param binding. But an
+    /// inochi2d 2-D param imports as two params driving *two-param* bindings,
+    /// and a model may not hold a `One(p)` binding beside a `Two(p, q)` one —
+    /// the v0 flatten refuses the pair as unpairable. So when this param is
+    /// already half of a pair, recording joins that binding and fills the
+    /// partner's axis from the current pose, which is the only place the pose
+    /// exists: the server holds none.
+    fn record_target(
+        &self,
+        snap: &catchlight_editor_server::DocSnapshot,
+        node: &NodeId,
+    ) -> Option<(BindingParams, [u32; 2])> {
+        let (params, cell) = self.armed_cell(snap)?;
+        if params.param_y.is_some() {
+            return Some((params, cell));
+        }
+        let session = self.session?;
+        let armed = params.param.clone();
+        let node = node.clone();
+        let pair = self
+            .editor
+            .with_model(session, |m| {
+                let pair_of = |b: &catchlight_core::ModelBinding| match b.params() {
+                    catchlight_core::BindingParams::Two(x, y) => Some((x.clone(), y.clone())),
+                    catchlight_core::BindingParams::One(_) => None,
+                };
+                // This node's own pair first — a second pair elsewhere in the
+                // model would be a worse guess for this binding.
+                m.bindings_of_node(&node)
+                    .filter(|b| b.params().contains(&armed))
+                    .find_map(pair_of)
+                    .or_else(|| m.bindings_of_param(&armed).find_map(pair_of))
+            })
+            .ok()
+            .flatten();
+        match pair {
+            Some((x, y)) => {
+                let cx = self.key_index(snap, &x)?;
+                let cy = self.key_index(snap, &y)?;
+                Some((BindingParams::two(x, y), [cx, cy]))
+            }
+            None => Some((params, cell)),
+        }
+    }
+
+    /// Rebuild the armed panel data only when (rev, params, cell) moved — it
+    /// walks every binding of the armed params, too heavy for every frame.
     fn refresh_armed_cache(&mut self, snap: &Arc<catchlight_editor_server::DocSnapshot>) {
-        let Some(info) = self
-            .armed_cell(snap)
-            .map(|(param, cell)| (snap.rev, param, cell))
+        let Some(key) = self
+            .armed
+            .clone()
+            .zip(self.armed_cell(snap))
+            .map(|(armed, (_, cell))| (snap.rev, armed, cell))
         else {
             self.armed_cache = None;
             return;
         };
-        if self.armed_cache.as_ref().map(|(key, _)| key) == Some(&info) {
+        if self.armed_cache.as_ref().map(|(k, _)| k) == Some(&key) {
             return;
         }
-        self.armed_cache = self.armed_info(snap).map(|v| (info, v));
+        self.armed_cache = self.armed_info(snap).map(|v| (key, v));
     }
 
     fn armed_info(&self, snap: &Arc<catchlight_editor_server::DocSnapshot>) -> Option<ArmedInfo> {
         let session = self.session?;
-        let (param, cell) = self.armed_cell(snap)?;
-        let info = snap.params.iter().find(|p| p.id == param)?;
-        // A param is scalar, so its own grid is one row; a two-param binding
-        // has more, and this panel shows the armed param's row of it.
-        let (w, h) = (info.key_positions.len(), 1);
+        let armed = self.armed.clone()?;
+        let (_, cell) = self.armed_cell(snap)?;
+        // The armed grid: this param's key positions, by the pad partner's if
+        // there is one. A binding may span more than this — see below.
+        let axis_len = |param: &ParamId| {
+            snap.params
+                .iter()
+                .find(|p| &p.id == param)
+                .map_or(0, |p| p.key_positions.len())
+        };
+        let w = axis_len(armed.x());
+        let h = armed.y().map_or(1, axis_len);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        // Every binding's cell has to be read in the armed grid, and the two
+        // grids need not agree: a `One(x)` binding is constant along y, so it
+        // authors every row of its column; a `Two(x, y)` binding armed on x
+        // alone collapses onto the x axis.
+        let cells_of = |axis: Option<u8>, c: (u32, u32), len: usize| -> Vec<u32> {
+            match axis {
+                Some(0) => vec![c.0],
+                Some(_) => vec![c.1],
+                None => (0..len as u32).collect(),
+            }
+        };
         let editor = self.editor.clone();
-        let pid = param.clone();
+        let armed_for_model = armed.clone();
         let data = editor
             .with_model(session, |m| {
-                m.param(&pid)?;
+                for param in armed_for_model.iter() {
+                    m.param(param)?;
+                }
                 let mut authored_count = vec![0u32; w * h];
                 let mut rows = Vec::new();
-                for b in m.bindings_of_param(&pid) {
-                    let target = b.target();
-                    let mut mark = |x: u32, y: u32| {
-                        // A stray out-of-grid cell must not wrap into another
-                        // row's slot.
-                        if (x as usize) < w && (y as usize) < h {
-                            if let Some(slot) = authored_count.get_mut(y as usize * w + x as usize)
-                            {
-                                *slot += 1;
+                for b in m
+                    .bindings()
+                    .filter(|b| armed_for_model.iter().any(|p| b.params().contains(p)))
+                {
+                    let params = wire_params(b.params());
+                    let ax = b.params().axis_of(armed_for_model.x());
+                    let ay = armed_for_model.y().and_then(|y| b.params().axis_of(y));
+                    // Where this binding's own grid the pose lands on.
+                    let row_cell = [
+                        self.key_index(snap, &params.param).unwrap_or(0),
+                        params
+                            .param_y
+                            .as_ref()
+                            .and_then(|y| self.key_index(snap, y))
+                            .unwrap_or(0),
+                    ];
+                    let mut mark = |c: (u32, u32)| {
+                        for x in cells_of(ax, c, w) {
+                            for y in cells_of(ay, c, h) {
+                                if (x as usize) < w && (y as usize) < h {
+                                    if let Some(slot) =
+                                        authored_count.get_mut(y as usize * w + x as usize)
+                                    {
+                                        *slot += 1;
+                                    }
+                                }
                             }
                         }
                     };
                     let mut authored_at = false;
                     if let Some(cells) = catchlight_core::scalar_cells(b.values()) {
                         for c in cells {
-                            mark(c.x, c.y);
-                            authored_at |= [c.x, c.y] == cell;
+                            mark((c.x, c.y));
+                            authored_at |= [c.x, c.y] == row_cell;
                         }
                     }
                     if let Some(cells) = catchlight_core::deform_cells(b.values()) {
                         for c in cells {
-                            mark(c.x, c.y);
-                            authored_at |= [c.x, c.y] == cell;
+                            mark((c.x, c.y));
+                            authored_at |= [c.x, c.y] == row_cell;
                         }
                     }
                     rows.push(BindingRow {
@@ -458,9 +557,11 @@ impl App {
                             .node(b.node())
                             .map(|n| n.name.to_string())
                             .unwrap_or_else(|| "?".into()),
-                        target: target.name().to_string(),
+                        target: b.target().name().to_string(),
                         interpolate: interp_name(b.interpolate_mode()).to_string(),
                         authored_at_cell: authored_at,
+                        params,
+                        cell: row_cell,
                     });
                 }
                 let total = rows.len() as u32;
@@ -481,8 +582,9 @@ impl App {
             .ok()
             .flatten()?;
         Some(ArmedInfo {
-            param,
+            armed,
             cell,
+            grid: (w, h),
             cell_states: data.0,
             bindings: data.1,
         })
@@ -497,7 +599,7 @@ impl App {
     /// (the posed value is a sum/product over every binding).
     fn record_entries(
         &self,
-        param: &ParamId,
+        params: &BindingParams,
         cell: [u32; 2],
         node: &NodeId,
         patch: &NodePatch,
@@ -534,7 +636,8 @@ impl App {
         let key_at = |t: T| {
             editor
                 .with_model(session, |m| {
-                    m.scalar_value_at(&scalar_key(param, node, t), cell).ok()
+                    m.scalar_value_at(&binding_key(params, node, BindingTarget::Scalar(t)), cell)
+                        .ok()
                 })
                 .ok()
                 .flatten()
@@ -593,7 +696,7 @@ impl App {
             let armed = self
                 .editor
                 .doc_snapshot(session)
-                .and_then(|snap| self.armed_cell(&snap));
+                .and_then(|snap| self.record_target(&snap, &node));
             let rest = NodePatch {
                 translate: None,
                 rotate: None,
@@ -604,12 +707,12 @@ impl App {
             };
             let has_recordable = patch != rest;
             match armed {
-                Some((param, cell)) if has_recordable => {
-                    let entries = self.record_entries(&param, cell, &node, &patch);
+                Some((params, cell)) if has_recordable => {
+                    let entries = self.record_entries(&params, cell, &node, &patch);
                     if !entries.is_empty() {
                         self.send(Command::BindingKeys {
                             session,
-                            params: BindingParams::one(param),
+                            params,
                             node: node.clone(),
                             cell,
                             entries,
@@ -727,16 +830,18 @@ impl App {
                 }
             }
             Rename::Param { from, to } => {
-                if self.armed.as_ref() == Some(from) {
-                    self.armed = Some(to.clone());
-                }
+                self.armed = self.armed.take().map(|armed| match armed {
+                    Armed::One(p) => Armed::One(swap_param(p, from, to)),
+                    Armed::Two(x, y) => {
+                        Armed::Two(swap_param(x, from, to), swap_param(y, from, to))
+                    }
+                });
                 if let Some(value) = self.pose.remove(from) {
                     self.pose.insert(to.clone(), value);
                 }
-                if let Some((param, _, _, _)) = &mut self.copied_cell {
-                    if param == from {
-                        *param = to.clone();
-                    }
+                if let Some((params, _, _, _)) = &mut self.copied_cell {
+                    params.param = swap_param(params.param.clone(), from, to);
+                    params.param_y = params.param_y.take().map(|y| swap_param(y, from, to));
                 }
                 self.armed_cache = None;
             }
@@ -882,16 +987,15 @@ impl App {
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
     ) {
         let Some(session) = self.session else { return };
-        let armed_cell = snapshot.as_ref().and_then(|s| self.armed_cell(s));
         match action {
             ParamAction::Pose { param, value } => {
                 self.pose.insert(param, value);
             }
-            ParamAction::Arm(param) => {
-                if param.is_none() {
+            ParamAction::Arm(armed) => {
+                if armed.is_none() {
                     self.deform_mode = false;
                 }
-                self.armed = param;
+                self.armed = armed;
             }
             ParamAction::AddParam { name } => {
                 self.send(Command::ParamAdd {
@@ -902,6 +1006,34 @@ impl App {
                     default: 0.0,
                     key_positions: Vec::new(),
                 });
+            }
+            ParamAction::AddParamPair { name } => {
+                // Two scalars, opened on the pad. The pair is the pad's, and
+                // through it the binding's: neither param knows about the
+                // other, and either can be posed on its own track.
+                let base = if name.is_empty() { "param" } else { &name };
+                let pair: Vec<ParamId> = ["x", "y"]
+                    .iter()
+                    .filter_map(|axis| {
+                        match self.send(Command::ParamAdd {
+                            session,
+                            name: format!("{base}.{axis}"),
+                            min: -1.0,
+                            max: 1.0,
+                            default: 0.0,
+                            key_positions: Vec::new(),
+                        }) {
+                            Reply::Ok {
+                                body: ResponseBody::Param { param },
+                                ..
+                            } => Some(param),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                if let [x, y] = &pair[..] {
+                    self.armed = Some(Armed::Two(x.clone(), y.clone()));
+                }
             }
             ParamAction::RenameId(param) => {
                 self.begin_id_rename(RenameSubject::Param(param));
@@ -917,8 +1049,9 @@ impl App {
                 });
             }
             ParamAction::Delete(param) => {
-                if self.armed.as_ref() == Some(&param) {
+                if self.armed.as_ref().is_some_and(|a| a.contains(&param)) {
                     self.armed = None;
+                    self.deform_mode = false;
                 }
                 self.send(Command::ParamDelete { session, param });
             }
@@ -939,152 +1072,165 @@ impl App {
             ParamAction::Flip { param } => {
                 self.send(Command::ParamFlip { session, param });
             }
-            ParamAction::BindingUnset { node, target } => {
-                if let Some((param, cell)) = armed_cell {
-                    self.send(Command::BindingUnset {
+            ParamAction::Binding { row, op } => self.apply_binding_op(session, row, op, snapshot),
+        }
+    }
+
+    /// A binding-row action. The row names its own binding — one param or
+    /// two — so nothing here reconstructs a key from the armed param.
+    fn apply_binding_op(
+        &mut self,
+        session: SessionId,
+        row: BindingAddr,
+        op: BindingOp,
+        snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
+    ) {
+        let BindingAddr {
+            params,
+            node,
+            target,
+            cell,
+        } = row;
+        match op {
+            BindingOp::Unset => {
+                self.send(Command::BindingUnset {
+                    session,
+                    params,
+                    node,
+                    target,
+                    cell,
+                });
+            }
+            BindingOp::Reset => {
+                self.send(Command::BindingReset {
+                    session,
+                    params,
+                    node,
+                    target,
+                    cell,
+                });
+            }
+            BindingOp::Delete => {
+                self.send(Command::BindingDelete {
+                    session,
+                    params,
+                    node,
+                    target,
+                });
+            }
+            BindingOp::Interpolate(mode) => {
+                self.send(Command::BindingInterpolate {
+                    session,
+                    params,
+                    node,
+                    target,
+                    mode,
+                });
+            }
+            BindingOp::Invert => {
+                self.send(Command::BindingInvert {
+                    session,
+                    params,
+                    node,
+                    target,
+                });
+            }
+            BindingOp::Copy => {
+                self.copied_cell = Some((params, node, target, cell));
+                self.status = "keypoint copied".into();
+            }
+            BindingOp::Paste => {
+                self.paste_cell(session, params, node, target, cell, snapshot);
+            }
+        }
+    }
+
+    /// Paste the clipboard keypoint into `cell`. Within one node it is a
+    /// server-side copy; across nodes a deform has to be re-fitted onto the
+    /// target's topology first.
+    fn paste_cell(
+        &mut self,
+        session: SessionId,
+        params: BindingParams,
+        node: NodeId,
+        target: String,
+        cell: [u32; 2],
+        _snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
+    ) {
+        let Some((src_params, src_node, src_target, src_cell)) = self.copied_cell.clone() else {
+            return;
+        };
+        if src_params != params || src_target != target {
+            self.status = "paste needs the same params and target".into();
+            return;
+        }
+        if src_node == node {
+            self.send(Command::BindingCopyKey {
+                session,
+                params,
+                node,
+                target,
+                from: src_cell,
+                to: cell,
+            });
+            return;
+        }
+        let editor = self.editor.clone();
+        if target == "deform" {
+            let (src_id, dst_id) = (src_node.clone(), node.clone());
+            let src_key = binding_key(&params, &src_id, BindingTarget::Deform);
+            let refit = editor
+                .with_model(session, |m| {
+                    let src_mesh = m.node_mesh(&src_id)?.clone();
+                    let dst_verts = m.node_mesh(&dst_id)?.verts.clone();
+                    let src_offsets = m.deform_value_at(&src_key, src_cell).ok()?;
+                    Some(catchlight_editor_core::refit_deform_offsets(
+                        &src_mesh,
+                        &dst_verts,
+                        &src_offsets,
+                    ))
+                })
+                .ok()
+                .flatten();
+            match refit {
+                Some(offsets) => {
+                    self.send(Command::DeformVertices {
                         session,
-                        params: BindingParams::one(param),
+                        params,
                         node,
-                        target,
                         cell,
+                        offsets,
                     });
                 }
+                None => self.status = "paste: source or target has no mesh".into(),
             }
-            ParamAction::BindingReset { node, target } => {
-                if let Some((param, cell)) = armed_cell {
-                    self.send(Command::BindingReset {
-                        session,
-                        params: BindingParams::one(param),
-                        node,
-                        target,
-                        cell,
-                    });
+            return;
+        }
+        let target_name = target.clone();
+        let src_key = params.clone();
+        let value = editor
+            .with_model(session, |m| {
+                let t = BindingTarget::parse(&target_name)?;
+                if !matches!(t, BindingTarget::Scalar(_)) {
+                    return None;
                 }
+                m.scalar_value_at(&binding_key(&src_key, &src_node, t), src_cell)
+                    .ok()
+            })
+            .ok()
+            .flatten();
+        match value {
+            Some(value) => {
+                self.send(Command::BindingKey {
+                    session,
+                    params,
+                    node,
+                    target,
+                    cell,
+                    value,
+                });
             }
-            ParamAction::BindingDelete { node, target } => {
-                if let Some((param, _)) = armed_cell {
-                    self.send(Command::BindingDelete {
-                        session,
-                        params: BindingParams::one(param),
-                        node,
-                        target,
-                    });
-                }
-            }
-            ParamAction::BindingInterpolate { node, target, mode } => {
-                if let Some((param, _)) = armed_cell {
-                    self.send(Command::BindingInterpolate {
-                        session,
-                        params: BindingParams::one(param),
-                        node,
-                        target,
-                        mode,
-                    });
-                }
-            }
-            ParamAction::BindingInvert { node, target } => {
-                if let Some((param, _)) = armed_cell {
-                    self.send(Command::BindingInvert {
-                        session,
-                        params: BindingParams::one(param),
-                        node,
-                        target,
-                    });
-                }
-            }
-            ParamAction::CopyCell { node, target } => {
-                if let Some((param, cell)) = armed_cell {
-                    self.copied_cell = Some((param, node, target, cell));
-                    self.status = "keypoint copied".into();
-                }
-            }
-            ParamAction::PasteCell { node, target } => {
-                let Some((param, cell)) = armed_cell else {
-                    return;
-                };
-                let Some((src_param, src_node, src_target, src_cell)) = self.copied_cell.clone()
-                else {
-                    return;
-                };
-                if src_param != param || src_target != target {
-                    self.status = "paste needs the same param and target".into();
-                    return;
-                }
-                if src_node == node {
-                    self.send(Command::BindingCopyKey {
-                        session,
-                        params: BindingParams::one(param),
-                        node,
-                        target,
-                        from: src_cell,
-                        to: cell,
-                    });
-                    return;
-                }
-                // Cross-node paste: scalars carry over directly; deforms are
-                // re-fitted from the source mesh onto the target's topology.
-                let editor = self.editor.clone();
-                if target == "deform" {
-                    let (pid, src_id, dst_id) = (param.clone(), src_node.clone(), node.clone());
-                    let refit = editor
-                        .with_model(session, |m| {
-                            let src_mesh = m.node_mesh(&src_id)?.clone();
-                            let dst_verts = m.node_mesh(&dst_id)?.verts.clone();
-                            let src_offsets = m
-                                .deform_value_at(
-                                    &BindingKey::new(pid, src_id.clone(), BindingTarget::Deform),
-                                    src_cell,
-                                )
-                                .ok()?;
-                            Some(catchlight_editor_core::refit_deform_offsets(
-                                &src_mesh,
-                                &dst_verts,
-                                &src_offsets,
-                            ))
-                        })
-                        .ok()
-                        .flatten();
-                    match refit {
-                        Some(offsets) => {
-                            self.send(Command::DeformVertices {
-                                session,
-                                params: BindingParams::one(param),
-                                node,
-                                cell,
-                                offsets,
-                            });
-                        }
-                        None => self.status = "paste: source or target has no mesh".into(),
-                    }
-                } else {
-                    let (pid, src_id, target_name) =
-                        (param.clone(), src_node.clone(), target.clone());
-                    let value = editor
-                        .with_model(session, |m| {
-                            let BindingTarget::Scalar(t) = BindingTarget::parse(&target_name)?
-                            else {
-                                return None;
-                            };
-                            m.scalar_value_at(&scalar_key(&pid, &src_id, t), src_cell)
-                                .ok()
-                        })
-                        .ok()
-                        .flatten();
-                    match value {
-                        Some(value) => {
-                            self.send(Command::BindingKey {
-                                session,
-                                params: BindingParams::one(param),
-                                node,
-                                target,
-                                cell,
-                                value,
-                            });
-                        }
-                        None => self.status = "paste: source binding not found".into(),
-                    }
-                }
-            }
+            None => self.status = "paste: source binding not found".into(),
         }
     }
 }
@@ -1099,7 +1245,10 @@ impl eframe::App for App {
         // co-driving agent's delete) — recording must stop, not fall back to
         // document edits of posed values.
         if let (Some(armed), Some(snap)) = (self.armed.clone(), &snapshot) {
-            if !snap.params.iter().any(|p| p.id == armed) {
+            if !armed
+                .iter()
+                .all(|param| snap.params.iter().any(|p| p.id == *param))
+            {
                 self.armed = None;
                 self.deform_mode = false;
             }
@@ -2112,14 +2261,15 @@ impl App {
         deltas: &HashMap<usize, glam::Vec2>,
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
     ) {
-        let Some((param, cell)) = snapshot.as_ref().and_then(|s| self.armed_cell(s)) else {
-            return;
-        };
         let Some(node) = self.ref_of_core(core) else {
             return;
         };
+        let Some((params, cell)) = snapshot.as_ref().and_then(|s| self.record_target(s, &node))
+        else {
+            return;
+        };
         let editor = self.editor.clone();
-        let key = BindingKey::new(param.clone(), node.clone(), BindingTarget::Deform);
+        let key = binding_key(&params, &node, BindingTarget::Deform);
         let base = editor
             .with_model(session, |m| m.deform_value_at(&key, cell).ok())
             .ok()
@@ -2134,7 +2284,7 @@ impl App {
         }
         self.send(Command::DeformVertices {
             session,
-            params: BindingParams::one(param),
+            params,
             node,
             cell,
             offsets,
@@ -2670,9 +2820,21 @@ impl App {
     }
 }
 
-/// The binding a scalar target on one node is driven by, for one param.
-fn scalar_key(param: &ParamId, node: &NodeId, target: catchlight_core::ScalarTarget) -> BindingKey {
-    BindingKey::new(param.clone(), node.clone(), BindingTarget::Scalar(target))
+/// The binding one or two params drive `target` on `node` through — the wire
+/// spelling of a key, turned back into the model's.
+fn binding_key(params: &BindingParams, node: &NodeId, target: BindingTarget) -> BindingKey {
+    match &params.param_y {
+        Some(y) => BindingKey::pair(params.param.clone(), y.clone(), node.clone(), target),
+        None => BindingKey::new(params.param.clone(), node.clone(), target),
+    }
+}
+
+/// The wire spelling of a binding's params.
+fn wire_params(params: &catchlight_core::BindingParams) -> BindingParams {
+    match params {
+        catchlight_core::BindingParams::One(x) => BindingParams::one(x.clone()),
+        catchlight_core::BindingParams::Two(x, y) => BindingParams::two(x.clone(), y.clone()),
+    }
 }
 
 fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
@@ -2838,6 +3000,15 @@ fn interp_name(m: catchlight_core::interpolate::InterpolateMode) -> &'static str
         I::Stepped => "stepped",
         I::Linear => "linear",
         I::Cubic => "cubic",
+    }
+}
+
+/// `id`, with `from` replaced by `to`.
+fn swap_param(id: ParamId, from: &ParamId, to: &ParamId) -> ParamId {
+    if id == *from {
+        to.clone()
+    } else {
+        id
     }
 }
 
