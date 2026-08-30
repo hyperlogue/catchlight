@@ -744,7 +744,7 @@ struct PreparedPartDraw {
 #[derive(Copy, Clone)]
 struct PreparedMaskedPartDraw<'a> {
     draw: PreparedPartDraw,
-    mask_sources: &'a [crate::drawable_collector::MaskSourceData],
+    mask_sources: &'a [crate::collect::MaskSourceData],
 }
 
 /// Two masked draws share a mask-write pass only when their mask shapes
@@ -752,10 +752,10 @@ struct PreparedMaskedPartDraw<'a> {
 /// threshold — not the target part's own mesh or texture, which the
 /// masked draw rebinds per draw.
 fn same_mask_signature(
-    a_sources: &[crate::drawable_collector::MaskSourceData],
-    b_sources: &[crate::drawable_collector::MaskSourceData],
+    a_sources: &[crate::collect::MaskSourceData],
+    b_sources: &[crate::collect::MaskSourceData],
 ) -> bool {
-    use crate::drawable_collector::MaskSourceData;
+    use crate::collect::MaskSourceData;
 
     a_sources.len() == b_sources.len()
         && a_sources.iter().zip(b_sources).all(|(a, b)| match (a, b) {
@@ -2365,11 +2365,11 @@ impl WgpuRenderer {
     /// bound is unknown or a nested composite child appears.
     fn children_union_scissor(
         &self,
-        children: &[crate::drawable_collector::DrawableInfo],
+        children: &[crate::collect::DrawableInfo],
         width: u32,
         height: u32,
     ) -> Option<ScreenRect> {
-        use crate::drawable_collector::DrawableInfo;
+        use crate::collect::DrawableInfo;
         let mut acc: Option<[f32; 4]> = None;
         for c in children {
             let DrawableInfo::Part {
@@ -2754,7 +2754,7 @@ impl WgpuRenderer {
     fn prepare_composite_mask_textures(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        render_list: &crate::drawable_collector::RenderList,
+        render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
     ) {
         self.composite_mask_textures.clear();
@@ -2859,10 +2859,10 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         label: &str,
         stencil: &StencilTarget,
-        mask_sources: &[crate::drawable_collector::MaskSourceData],
+        mask_sources: &[crate::collect::MaskSourceData],
         base_offset: u64,
     ) {
-        use crate::drawable_collector::MaskSourceData;
+        use crate::collect::MaskSourceData;
 
         let stride = std::mem::size_of::<InstanceRaw>() as u64;
 
@@ -3035,12 +3035,12 @@ impl WgpuRenderer {
     fn record_mask_sources_stencil(
         &mut self,
         render_pass: &mut wgpu::RenderPass<'_>,
-        mask_sources: &[crate::drawable_collector::MaskSourceData],
+        mask_sources: &[crate::collect::MaskSourceData],
         base_offset: u64,
         ref_value: u32,
         bound_texture: &mut Option<u32>,
     ) {
-        use crate::drawable_collector::MaskSourceData;
+        use crate::collect::MaskSourceData;
 
         let stride = std::mem::size_of::<InstanceRaw>() as u64;
 
@@ -3231,7 +3231,7 @@ impl WgpuRenderer {
         let mut instance_data = std::mem::take(&mut self.instance_scratch);
         instance_data.clear();
         for m in mask_sources {
-            if let crate::drawable_collector::MaskSourceData::Part { transform, .. } = m {
+            if let crate::collect::MaskSourceData::Part { transform, .. } = m {
                 instance_data.push(InstanceRaw::from_transform(*transform));
             }
         }
@@ -4082,7 +4082,7 @@ impl WgpuRenderer {
         mesh_id: u32,
         texture_id: u32,
         transform: glam::Mat4,
-        mask_sources: &[crate::drawable_collector::MaskSourceData],
+        mask_sources: &[crate::collect::MaskSourceData],
         part_uniform_offset: u32,
         scissor: Option<ScreenRect>,
     ) -> RendererResult<()> {
@@ -4173,7 +4173,7 @@ impl WgpuRenderer {
         target_view: &wgpu::TextureView,
         stencil: &StencilTarget,
         blend_mode: BlendMode,
-        mask_sources: &[crate::drawable_collector::MaskSourceData],
+        mask_sources: &[crate::collect::MaskSourceData],
         part_uniform_offset: u32,
         scissor: Option<ScreenRect>,
     ) {
@@ -4198,10 +4198,10 @@ impl WgpuRenderer {
         let mut instance_data = std::mem::take(&mut self.instance_scratch);
         instance_data.clear();
         instance_data.extend(mask_sources.iter().filter_map(|source| match source {
-            crate::drawable_collector::MaskSourceData::Part { transform, .. } => {
+            crate::collect::MaskSourceData::Part { transform, .. } => {
                 Some(InstanceRaw::from_transform(*transform))
             }
-            crate::drawable_collector::MaskSourceData::Composite { .. } => None,
+            crate::collect::MaskSourceData::Composite { .. } => None,
         }));
         self.write_instances(base_offset, &instance_data);
         self.instance_scratch = instance_data;
@@ -4282,7 +4282,7 @@ impl WgpuRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render_list(
         &mut self,
-        render_list: &crate::drawable_collector::RenderList,
+        render_list: &crate::collect::RenderList,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         stencil: &StencilTarget,
@@ -4321,7 +4321,7 @@ impl WgpuRenderer {
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     pub fn render_list_ext(
         &mut self,
-        render_list: &crate::drawable_collector::RenderList,
+        render_list: &crate::collect::RenderList,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         stencil: &StencilTarget,
@@ -4360,7 +4360,7 @@ impl WgpuRenderer {
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     fn render_list_ext_inner(
         &mut self,
-        render_list: &crate::drawable_collector::RenderList,
+        render_list: &crate::collect::RenderList,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         stencil: &StencilTarget,
@@ -4371,7 +4371,7 @@ impl WgpuRenderer {
         height: u32,
         clear_color: Option<wgpu::Color>,
     ) -> RendererResult<RenderStats> {
-        use crate::drawable_collector::DrawableInfo;
+        use crate::collect::DrawableInfo;
 
         let span = tracing::trace_span!("render_list", drawn_parts = tracing::field::Empty);
         let _entered = span.enter();
@@ -4898,9 +4898,9 @@ impl WgpuRenderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         sink: &mut PartSink<'_, '_>,
-        children: &[crate::drawable_collector::DrawableInfo],
+        children: &[crate::collect::DrawableInfo],
     ) -> RendererResult<()> {
-        use crate::drawable_collector::DrawableInfo;
+        use crate::collect::DrawableInfo;
 
         let mut pending_parts: Vec<PreparedPartDraw> = Vec::new();
         let mut pending_masked: Vec<PreparedMaskedPartDraw> = Vec::new();
@@ -5003,15 +5003,15 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
         target: CompositeTarget<'_>,
-        drawable: &crate::drawable_collector::DrawableInfo,
-        render_list: &crate::drawable_collector::RenderList,
+        drawable: &crate::collect::DrawableInfo,
+        render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         mut snapshots: Option<&mut FramebufferSnapshotPool>,
         dst_in_shader_active: bool,
         width: u32,
         height: u32,
     ) -> RendererResult<bool> {
-        use crate::drawable_collector::DrawableInfo;
+        use crate::collect::DrawableInfo;
 
         let DrawableInfo::Composite {
             node_id,
@@ -5154,8 +5154,8 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
         target: &CompositeTexture,
-        children: &[crate::drawable_collector::DrawableInfo],
-        render_list: &crate::drawable_collector::RenderList,
+        children: &[crate::collect::DrawableInfo],
+        render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         snapshots: Option<&mut FramebufferSnapshotPool>,
         dst_in_shader_active: bool,
@@ -5249,15 +5249,15 @@ impl WgpuRenderer {
         stencil: &StencilTarget,
         sink: &mut PartSink<'_, '_>,
         target: &CompositeTexture,
-        children: &[crate::drawable_collector::DrawableInfo],
-        render_list: &crate::drawable_collector::RenderList,
+        children: &[crate::collect::DrawableInfo],
+        render_list: &crate::collect::RenderList,
         composites: &mut CompositePool,
         mut snapshots: Option<&mut FramebufferSnapshotPool>,
         dst_in_shader_active: bool,
         width: u32,
         height: u32,
     ) -> RendererResult<()> {
-        use crate::drawable_collector::DrawableInfo;
+        use crate::collect::DrawableInfo;
 
         let snapshots_live = snapshots.is_some();
         let is_barrier = |c: &DrawableInfo| match c {
@@ -5474,7 +5474,7 @@ mod tests {
     /// mesh/texture/mode/threshold — and ignores the target part itself.
     #[test]
     fn same_mask_signature_distinguishes_mask_shapes() {
-        use crate::drawable_collector::MaskSourceData;
+        use crate::collect::MaskSourceData;
         use catchlight_core::MaskMode;
 
         let src_t = |mesh: u32, tex: u32, mode, threshold: f32| MaskSourceData::Part {

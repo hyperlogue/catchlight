@@ -1,15 +1,68 @@
-//! Flattens a posed `LegacyPuppet` into the `RenderList` the renderer draws.
+//! Collects a posed runtime's drawables into the `RenderList` the renderer
+//! draws.
 //!
-//! **Z order: higher `z_order` draws in front.** `collect_drawables`
-//! accumulates `parent_z + node.z_order` down the tree and sorts ascending, so
-//! the last draw is the frontmost. `.inx` is authored the other way round,
-//! lower in front; the flip happens at import, never here.
+//! Invariants this module enforces:
+//!
+//! - **Z order: higher `z_order` draws in front.** The walk accumulates
+//!   `parent_z + node.z_order` down the tree and sorts ascending, so the last
+//!   draw is the frontmost. `.inx` is authored the other way round, lower in
+//!   front; the flip happens at import, never here.
+//! - **A disabled node hides its whole subtree**, so `enabled` is ANDed down
+//!   the tree rather than read per node.
+//! - **A pass-through composite is dropped, an isolating one is not.** See
+//!   [`Collector::composite_is_passthrough_group`]: only a composite whose
+//!   slot would change nothing is flattened away, and its parts then
+//!   interleave by z with the enclosing composite's. An isolating composite is
+//!   a drawable *of its enclosing composite*, never of the root, or the
+//!   outer's opacity, tint, blend and mask would not cover it.
+//! - **Opacity 0 culls everything but Darken**, whose `Min` blend ignores
+//!   blend factors and darkens even at zero alpha.
+//! - **One collector body, two runtimes.** [`DrawSource`] is what the walk
+//!   needs from a posed runtime: the tree, the evaluated transforms, and the
+//!   cache slots its resources landed in. The render cache implements it over
+//!   the new `Puppet`; the legacy entry points below implement it over a
+//!   `LegacyPuppet` until cl-32i.8 deletes them. Sharing the body is what
+//!   makes the two paths agree on pixels rather than by inspection.
+//!
+//! Everything the list names is a **slot** — a dense `u32` position in the
+//! render cache's mesh, texture or node tables — never an Id. A list is only
+//! meaningful against the cache it was collected from.
 
 use catchlight_core::{
-    BlendMode, CompositeData, GlobalTransforms, LegacyPuppet, MaskMode, NodeIdx, NodeKind,
+    BlendMode, CompositeData, GlobalTransforms, LegacyPuppet, MaskMode, Node, NodeIdx, NodeKind,
+    NodeTree,
 };
 use smallvec::SmallVec;
 use std::collections::HashMap;
+
+/// A slot that names nothing: used where a node has no mesh or no albedo, so
+/// the renderer's dense-table probe misses and the draw is skipped and
+/// counted, exactly as it is for a resource that failed to upload.
+pub(crate) const NO_SLOT: u32 = u32::MAX;
+
+/// What collecting needs from one posed runtime.
+///
+/// Deliberately narrow: the tree, the frame it evaluated, and where its
+/// resources live in the render cache. Nothing here can pose, tick or upload.
+pub(crate) trait DrawSource {
+    fn tree(&self) -> &NodeTree;
+    fn node(&self, idx: NodeIdx) -> Option<&Node>;
+    fn node_count(&self) -> usize;
+    /// The node's global transform from the last evaluated frame.
+    fn transform(&self, idx: NodeIdx) -> glam::Mat4;
+    /// Bumped whenever the tree's shape changes. The collector caches the
+    /// structural half of its pass-through verdict against it.
+    fn structure_revision(&self) -> u64;
+    /// Resolve what a baked mask names as its source.
+    fn mask_source(&self, source: u32) -> Option<NodeIdx>;
+    /// The cache slot holding this node's uploaded mesh, or [`NO_SLOT`].
+    fn mesh_slot(&self, idx: NodeIdx) -> u32;
+    /// The cache slot holding this part's albedo, or [`NO_SLOT`]. May name a
+    /// slot that was never uploaded; the renderer skips those.
+    fn texture_slot(&self, node: &Node) -> u32;
+    /// Whether `slot` names a texture this cache actually holds.
+    fn has_texture(&self, slot: u32) -> bool;
+}
 
 // SmallVec inline cap = 2 — typical part has 0 masks; rigs rarely exceed 2.
 pub type MaskSources = SmallVec<[MaskSourceData; 2]>;
@@ -232,52 +285,29 @@ impl RenderList {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct DrawableCollector {
-    cumul_z: Vec<f32>,
-    // enabled ANDed down the tree — a disabled node hides its whole subtree,
-    // because a disabled ancestor hides its entire subtree.
-    enabled_cum: Vec<bool>,
-    composite_ancestor: Vec<Option<NodeIdx>>,
-    // Per composite node: does it need its own offscreen slot, or is it a
-    // pass-through group whose Parts flatten into the enclosing composite?
-    // Indexed by NodeIdx; set when the composite is visited (pre-order), read
-    // by its descendants to find the nearest *isolating* composite.
-    composite_isolates: Vec<bool>,
-    // Cached structural half of the pass-through predicate, per composite
-    // NodeIdx slot (`None` until that composite is first visited). This half
-    // depends only on the tree shape and static blend/mask state, which
-    // survives across frames — only the param-driven half is re-checked each
-    // frame. Rebuilt wholesale when the puppet's compiled-node revision or
-    // node count changes.
-    static_passthrough: Vec<Option<bool>>,
-    static_passthrough_len: usize,
-    static_passthrough_revision: u64,
-}
-
 /// The structural half of the pass-through test — Normal blend, no mask, no
 /// nested Composite descendant, and every descendant Part on Normal blend.
-/// These change only through the puppet's compiled-node mutation APIs, which
-/// bump `node_revision`, so the collector caches this per composite between
-/// revisions and only walks the subtree once. See
-/// `DrawableCollector::composite_is_passthrough_group` for why pass-through
-/// groups flatten at all.
-fn composite_passthrough_static(
-    puppet: &LegacyPuppet,
+/// These change only with the tree's shape, which bumps
+/// [`DrawSource::structure_revision`], so the collector caches this per
+/// composite between revisions and only walks the subtree once. See
+/// [`Collector::composite_is_passthrough_group`] for why pass-through groups
+/// flatten at all.
+fn composite_passthrough_static<S: DrawSource + ?Sized>(
+    source: &S,
     node_id: NodeIdx,
     composite: &CompositeData,
 ) -> bool {
     if composite.blend_mode != BlendMode::Normal || !composite.masks.is_empty() {
         return false;
     }
-    let mut stack = puppet.tree().get_children(node_id);
+    let mut stack = source.tree().get_children(node_id);
     while let Some(id) = stack.pop() {
-        match puppet.get(id).map(|n| &n.kind) {
+        match source.node(id).map(|n| &n.kind) {
             Some(NodeKind::Composite(_)) => return false,
             Some(NodeKind::Part(part)) if part.blend_mode != BlendMode::Normal => return false,
             _ => {}
         }
-        stack.extend(puppet.tree().get_children(id));
+        stack.extend(source.tree().get_children(id));
     }
     true
 }
@@ -291,13 +321,12 @@ fn composite_passthrough_dynamic(composite: &CompositeData) -> bool {
         && composite.screen_tint == glam::Vec3::ZERO
 }
 
-fn collect_mask_sources(
+fn collect_mask_sources<S: DrawSource + ?Sized>(
     node_id: NodeIdx,
-    puppet: &LegacyPuppet,
-    transforms: &GlobalTransforms,
+    source: &S,
     composite_sources: &mut HashMap<u32, CompositeMaskSourceData>,
 ) -> MaskSources {
-    let Some(node) = puppet.get(node_id) else {
+    let Some(node) = source.node(node_id) else {
         return MaskSources::new();
     };
 
@@ -309,38 +338,39 @@ fn collect_mask_sources(
 
     let mut sources = MaskSources::new();
     for binding in masks {
-        let Some(mask_node_id) = puppet.node_for_uuid(binding.source_uuid) else {
+        let Some(mask_node_id) = source.mask_source(binding.source_uuid) else {
             continue;
         };
-        let Some(mask_node) = puppet.get(mask_node_id) else {
+        let Some(mask_node) = source.node(mask_node_id) else {
             continue;
         };
         match &mask_node.kind {
             NodeKind::Part(part) => sources.push(MaskSourceData::Part {
-                mesh_id: mask_node_id.0,
-                texture_id: part.albedo_texture.0,
-                transform: transforms.get(mask_node_id),
+                mesh_id: source.mesh_slot(mask_node_id),
+                texture_id: source.texture_slot(mask_node),
+                transform: source.transform(mask_node_id),
                 mode: binding.mode,
                 mask_threshold: part.mask_threshold,
             }),
             NodeKind::Composite(composite) => {
                 composite_sources.entry(mask_node_id.0).or_insert_with(|| {
                     let mut parts = Vec::new();
-                    let mut stack = puppet.tree().get_children(mask_node_id);
+                    let mut stack = source.tree().get_children(mask_node_id);
                     while let Some(descendant) = stack.pop() {
-                        if let Some(NodeKind::Part(part)) =
-                            puppet.get(descendant).map(|node| &node.kind)
-                        {
-                            if (part.albedo_texture.0 as usize) < puppet.textures().len() {
-                                parts.push(CompositeMaskPartData {
-                                    mesh_id: descendant.0,
-                                    texture_id: part.albedo_texture.0,
-                                    transform: transforms.get(descendant),
-                                    mask_threshold: part.mask_threshold,
-                                });
+                        if let Some(node) = source.node(descendant) {
+                            if let NodeKind::Part(part) = &node.kind {
+                                let texture_id = source.texture_slot(node);
+                                if source.has_texture(texture_id) {
+                                    parts.push(CompositeMaskPartData {
+                                        mesh_id: source.mesh_slot(descendant),
+                                        texture_id,
+                                        transform: source.transform(descendant),
+                                        mask_threshold: part.mask_threshold,
+                                    });
+                                }
                             }
                         }
-                        stack.extend(puppet.tree().get_children(descendant));
+                        stack.extend(source.tree().get_children(descendant));
                     }
                     CompositeMaskSourceData {
                         opacity: composite.opacity,
@@ -359,23 +389,41 @@ fn collect_mask_sources(
     sources
 }
 
-pub fn collect_drawables(puppet: &LegacyPuppet, transforms: &GlobalTransforms) -> RenderList {
-    let mut collector = DrawableCollector::default();
-    let mut render_list = RenderList::default();
-    collector.collect_into(puppet, transforms, &mut render_list);
-    render_list
+/// Per-frame scratch plus the cross-frame pass-through memo. One lives in the
+/// render cache; a caller that collects repeatedly reuses it so the memo pays
+/// off.
+#[derive(Debug, Default)]
+pub(crate) struct Collector {
+    cumul_z: Vec<f32>,
+    // enabled ANDed down the tree — a disabled node hides its whole subtree,
+    // because a disabled ancestor hides its entire subtree.
+    enabled_cum: Vec<bool>,
+    composite_ancestor: Vec<Option<NodeIdx>>,
+    // Per composite node: does it need its own offscreen slot, or is it a
+    // pass-through group whose Parts flatten into the enclosing composite?
+    // Indexed by NodeIdx; set when the composite is visited (pre-order), read
+    // by its descendants to find the nearest *isolating* composite.
+    composite_isolates: Vec<bool>,
+    // Cached structural half of the pass-through predicate, per composite
+    // NodeIdx slot (`None` until that composite is first visited). This half
+    // depends only on the tree shape and static blend/mask state, which
+    // survives across frames — only the param-driven half is re-checked each
+    // frame. Rebuilt wholesale when the source's structure revision or node
+    // count changes.
+    static_passthrough: Vec<Option<bool>>,
+    static_passthrough_len: usize,
+    static_passthrough_revision: u64,
 }
 
-impl DrawableCollector {
-    pub fn collect_into(
+impl Collector {
+    pub(crate) fn collect_into<S: DrawSource + ?Sized>(
         &mut self,
-        puppet: &LegacyPuppet,
-        transforms: &GlobalTransforms,
+        source: &S,
         render_list: &mut RenderList,
     ) {
         render_list.clear();
 
-        let n = puppet.len();
+        let n = source.node_count();
         self.cumul_z.resize(n, 0.0);
         self.cumul_z.fill(0.0);
         self.enabled_cum.resize(n, true);
@@ -386,8 +434,8 @@ impl DrawableCollector {
         self.composite_isolates.fill(false);
 
         // Unlike the per-frame buffers above, the structural pass-through
-        // cache persists until a compiled-node mutation invalidates it.
-        let revision = puppet.node_revision();
+        // cache persists until the tree's shape changes.
+        let revision = source.structure_revision();
         if self.static_passthrough_len != n || self.static_passthrough_revision != revision {
             self.static_passthrough.clear();
             self.static_passthrough.resize(n, None);
@@ -395,13 +443,13 @@ impl DrawableCollector {
             self.static_passthrough_revision = revision;
         }
 
-        puppet.tree().traverse_depth_first(|node_id| {
-            let Some(node) = puppet.get(node_id) else {
+        source.tree().traverse_depth_first(|node_id| {
+            let Some(node) = source.node(node_id) else {
                 return;
             };
             let slot = node_id.0 as usize;
 
-            let parent = puppet.tree().get_parent(node_id);
+            let parent = source.tree().get_parent(node_id);
 
             let parent_z = parent
                 .and_then(|p| self.cumul_z.get(p.0 as usize).copied())
@@ -422,7 +470,7 @@ impl DrawableCollector {
             // doesn't isolate, so its descendants attach to whatever
             // composite encloses the group, not to the group itself.
             let nearest_composite = parent.and_then(|p| {
-                let parent_node = puppet.get(p)?;
+                let parent_node = source.node(p)?;
                 let parent_isolates = self
                     .composite_isolates
                     .get(p.0 as usize)
@@ -445,11 +493,11 @@ impl DrawableCollector {
             // Opacity 0 contributes nothing for every blend mode except
             // Darken: BlendOperation::Min ignores blend factors, so a
             // zero-alpha src (rgb = 0 premultiplied) still darkens the
-            // destination. Mask sources are unaffected — they're
-            // resolved by UUID straight from the puppet, and the
-            // reference rasterizes masks without opacity. A culled
-            // Composite leaves its children in composite_children, but
-            // nothing renders them without the Composite drawable.
+            // destination. Mask sources are unaffected — they're resolved
+            // straight from the source runtime, and the reference
+            // rasterizes masks without opacity. A culled Composite leaves
+            // its children in composite_children, but nothing renders them
+            // without the Composite drawable.
             let culled = |opacity: f32, blend_mode: BlendMode| {
                 opacity == 0.0 && blend_mode != BlendMode::Darken
             };
@@ -461,7 +509,7 @@ impl DrawableCollector {
                     // and interleave there by z. A composite at the root, or
                     // one that genuinely isolates, keeps its own slot.
                     let isolates = nearest_composite.is_none()
-                        || !self.composite_is_passthrough_group(puppet, node_id, composite);
+                        || !self.composite_is_passthrough_group(source, node_id, composite);
                     if slot < self.composite_isolates.len() {
                         self.composite_isolates[slot] = isolates;
                     }
@@ -473,8 +521,7 @@ impl DrawableCollector {
                     }
                     let mask_sources = collect_mask_sources(
                         node_id,
-                        puppet,
-                        transforms,
+                        source,
                         &mut render_list.composite_mask_sources,
                     );
                     let info = DrawableInfo::Composite {
@@ -505,7 +552,8 @@ impl DrawableCollector {
                     }
                 }
                 NodeKind::Part(part) => {
-                    if part.albedo_texture.0 as usize >= puppet.textures().len() {
+                    let texture_id = source.texture_slot(node);
+                    if !source.has_texture(texture_id) {
                         return;
                     }
                     if culled(part.opacity, part.blend_mode) {
@@ -514,14 +562,13 @@ impl DrawableCollector {
 
                     let mask_sources = collect_mask_sources(
                         node_id,
-                        puppet,
-                        transforms,
+                        source,
                         &mut render_list.composite_mask_sources,
                     );
                     let info = DrawableInfo::Part {
-                        mesh_id: node_id.0,
-                        texture_id: part.albedo_texture.0,
-                        transform: transforms.get(node_id),
+                        mesh_id: source.mesh_slot(node_id),
+                        texture_id,
+                        transform: source.transform(node_id),
                         z_order: global_z,
                         blend_mode: part.blend_mode,
                         opacity: part.opacity,
@@ -569,9 +616,9 @@ impl DrawableCollector {
     /// (`composite_passthrough_static`, walked once per composite) and a
     /// per-frame param-driven half (`composite_passthrough_dynamic`), so the
     /// hot path never re-walks the subtree.
-    fn composite_is_passthrough_group(
+    fn composite_is_passthrough_group<S: DrawSource + ?Sized>(
         &mut self,
-        puppet: &LegacyPuppet,
+        source: &S,
         node_id: NodeIdx,
         composite: &CompositeData,
     ) -> bool {
@@ -579,7 +626,7 @@ impl DrawableCollector {
         let is_static = match self.static_passthrough.get(slot).copied().flatten() {
             Some(cached) => cached,
             None => {
-                let computed = composite_passthrough_static(puppet, node_id, composite);
+                let computed = composite_passthrough_static(source, node_id, composite);
                 if let Some(entry) = self.static_passthrough.get_mut(slot) {
                     *entry = Some(computed);
                 }
@@ -588,6 +635,82 @@ impl DrawableCollector {
         };
         is_static && composite_passthrough_dynamic(composite)
     }
+}
+
+/// A posed `LegacyPuppet` as a draw source. Mesh slots are node slots and
+/// texture slots are the puppet's own texture-table indices, which is what
+/// `WgpuRenderer::upload_puppet` keys its GPU state by.
+// legacy: removed by cl-32i.8
+pub(crate) struct LegacySource<'a> {
+    puppet: &'a LegacyPuppet,
+    transforms: &'a GlobalTransforms,
+}
+
+// legacy: removed by cl-32i.8
+impl DrawSource for LegacySource<'_> {
+    fn tree(&self) -> &NodeTree {
+        self.puppet.tree()
+    }
+
+    fn node(&self, idx: NodeIdx) -> Option<&Node> {
+        self.puppet.get(idx)
+    }
+
+    fn node_count(&self) -> usize {
+        self.puppet.len()
+    }
+
+    fn transform(&self, idx: NodeIdx) -> glam::Mat4 {
+        self.transforms.get(idx)
+    }
+
+    fn structure_revision(&self) -> u64 {
+        self.puppet.node_revision()
+    }
+
+    fn mask_source(&self, source: u32) -> Option<NodeIdx> {
+        self.puppet.node_for_uuid(source)
+    }
+
+    fn mesh_slot(&self, idx: NodeIdx) -> u32 {
+        idx.0
+    }
+
+    fn texture_slot(&self, node: &Node) -> u32 {
+        match &node.kind {
+            NodeKind::Part(part) => part.albedo_texture.0,
+            _ => NO_SLOT,
+        }
+    }
+
+    fn has_texture(&self, slot: u32) -> bool {
+        (slot as usize) < self.puppet.textures().len()
+    }
+}
+
+/// Per-frame collector state for a `LegacyPuppet`.
+// legacy: removed by cl-32i.8
+#[derive(Debug, Default)]
+pub struct DrawableCollector(Collector);
+
+impl DrawableCollector {
+    // legacy: removed by cl-32i.8
+    pub fn collect_into(
+        &mut self,
+        puppet: &LegacyPuppet,
+        transforms: &GlobalTransforms,
+        render_list: &mut RenderList,
+    ) {
+        self.0
+            .collect_into(&LegacySource { puppet, transforms }, render_list);
+    }
+}
+
+// legacy: removed by cl-32i.8
+pub fn collect_drawables(puppet: &LegacyPuppet, transforms: &GlobalTransforms) -> RenderList {
+    let mut render_list = RenderList::default();
+    DrawableCollector::default().collect_into(puppet, transforms, &mut render_list);
+    render_list
 }
 
 #[cfg(test)]
