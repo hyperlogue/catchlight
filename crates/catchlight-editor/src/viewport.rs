@@ -344,7 +344,7 @@ mod tests {
     fn posed_param_changes_rendered_pixels() {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/models/welded_seam.clp"
+            "/../../tests/models/welded_seam.clm"
         ))
         .unwrap();
         let editor = catchlight_editor_server::Editor::new();

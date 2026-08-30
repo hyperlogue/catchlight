@@ -17,7 +17,7 @@ use crate::components::{
     TextureId, Transform,
 };
 use crate::deform::DeformStack;
-use crate::formats::clp::{ClpIndices, ClpMesh};
+use crate::formats::clm::{ClmIndices, ClmMesh};
 use crate::id::{NodeId, ParamId};
 use crate::model::{BindingKey, BindingTarget, DenseGrid, Model, ModelNodeKind, ModelPhysics};
 use crate::params::InterpolateMode;
@@ -370,7 +370,7 @@ fn build_physics(ph: &ModelPhysics, transform: &Transform, g_scale: f32) -> Simp
     }
 }
 
-fn build_mesh(m: &ClpMesh) -> Mesh {
+fn build_mesh(m: &ClmMesh) -> Mesh {
     let vertices: Vec<Vec2> = m
         .verts
         .as_chunks::<2>()
@@ -386,8 +386,8 @@ fn build_mesh(m: &ClpMesh) -> Mesh {
         .map(|c| Vec2::new(c[0], c[1]))
         .collect();
     let indices = match &m.indices {
-        ClpIndices::U16(v) => MeshIndices::U16(v.clone()),
-        ClpIndices::U32(v) => MeshIndices::U32(v.clone()),
+        ClmIndices::U16(v) => MeshIndices::U16(v.clone()),
+        ClmIndices::U32(v) => MeshIndices::U32(v.clone()),
     };
     Mesh::new(vertices, uvs, indices, Vec2::from_array(m.origin))
 }

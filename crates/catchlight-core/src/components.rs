@@ -261,7 +261,7 @@ impl Default for CompositeData {
 
 /// A mesh group is never drawn (`drawable_collector` skips it), so it carries
 /// no colour at all — the fields a drawable has for it are absent here, and a
-/// `.clp` binding that drives colour on a mesh group is rejected at load; see
+/// `.clm` binding that drives colour on a mesh group is rejected at load; see
 /// [`crate::params::MeshGroupColorBindingError`].
 #[derive(Debug, Clone)]
 pub struct MeshGroupData {

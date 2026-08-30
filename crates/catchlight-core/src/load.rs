@@ -1,26 +1,26 @@
 //! Loading a model file into a [`LegacyPuppet`], dispatched by format.
 //!
-//! catchlight's first-class on-disk format is **`.clp`** (the editable source of
+//! catchlight's first-class on-disk format is **`.clm`** (the editable source of
 //! truth). The legacy `.inx` / `.inp` formats are kept only as a one-time import
-//! path — convert a model to `.clp` with `cargo xtask import` and load that. These
+//! path — convert a model to `.clm` with `cargo xtask import` and load that. These
 //! functions are byte-based (no filesystem), so they work on wasm too; callers
 //! read the bytes and tag the format from the file extension.
 
 use std::io::Cursor;
 use std::path::Path;
 
-use crate::formats::{clp, InxModel};
+use crate::formats::{legacy, InxModel};
 use crate::importer::{from_inx_model_downsampled, parse_inp};
 use crate::legacy_puppet::LegacyPuppet;
-use crate::{from_clp, ImportError};
+use crate::{from_legacy, ImportError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelFormat {
     /// catchlight's editable source-of-truth format.
-    Clp,
-    /// Legacy export (deprecated load path — import to `.clp` instead).
+    Clm,
+    /// Legacy export (deprecated load path — import to `.clm` instead).
     Inx,
-    /// Legacy puppet (deprecated load path — import to `.clp` instead).
+    /// Legacy puppet (deprecated load path — import to `.clm` instead).
     Inp,
 }
 
@@ -29,7 +29,7 @@ impl ModelFormat {
     /// any other extension.
     pub fn from_path(path: &Path) -> Option<ModelFormat> {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-            "clp" => Some(ModelFormat::Clp),
+            "clm" => Some(ModelFormat::Clm),
             "inx" => Some(ModelFormat::Inx),
             "inp" => Some(ModelFormat::Inp),
             _ => None,
@@ -42,8 +42,8 @@ impl ModelFormat {
     /// both report as [`ModelFormat::Inx`] (the parse path is identical).
     pub fn sniff(bytes: &[u8]) -> Option<ModelFormat> {
         const INX_MAGIC: &[u8] = b"TRNSRTS\0";
-        if bytes.starts_with(&clp::MAGIC[..]) {
-            Some(ModelFormat::Clp)
+        if bytes.starts_with(&legacy::MAGIC[..]) {
+            Some(ModelFormat::Clm)
         } else if bytes.starts_with(INX_MAGIC) {
             Some(ModelFormat::Inx)
         } else {
@@ -60,20 +60,20 @@ pub fn load_model(
     texture_halvings: u32,
 ) -> Result<LegacyPuppet, ImportError> {
     match format {
-        ModelFormat::Clp => {
-            let file = clp::decode(bytes)?;
-            from_clp(&file, texture_halvings)
+        ModelFormat::Clm => {
+            let file = legacy::decode(bytes)?;
+            from_legacy(&file, texture_halvings)
         }
         ModelFormat::Inx => {
             tracing::warn!(
-                "loading a .inx directly is deprecated; convert it to .clp with `cargo xtask import`"
+                "loading a .inx directly is deprecated; convert it to .clm with `cargo xtask import`"
             );
             let model = InxModel::parse(Cursor::new(bytes))?;
             from_inx_model_downsampled(&model, texture_halvings)
         }
         ModelFormat::Inp => {
             tracing::warn!(
-                "loading a .inp directly is deprecated; convert it to .clp with `cargo xtask import`"
+                "loading a .inp directly is deprecated; convert it to .clm with `cargo xtask import`"
             );
             // .inp is unused in-tree; the importer path ignores texture_halvings.
             parse_inp(bytes)
@@ -87,7 +87,10 @@ mod tests {
 
     #[test]
     fn sniff_detects_magics() {
-        assert_eq!(ModelFormat::sniff(&clp::MAGIC[..]), Some(ModelFormat::Clp));
+        assert_eq!(
+            ModelFormat::sniff(&legacy::MAGIC[..]),
+            Some(ModelFormat::Clm)
+        );
         assert_eq!(ModelFormat::sniff(b"TRNSRTS\0junk"), Some(ModelFormat::Inx));
         assert_eq!(ModelFormat::sniff(b"nope"), None);
         assert_eq!(ModelFormat::sniff(&[]), None);

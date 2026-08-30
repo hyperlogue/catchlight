@@ -11,7 +11,7 @@
 use std::sync::OnceLock;
 
 use crate::fill::derive_dense;
-use crate::formats::clp::{ClpBindingValues, ClpCell, ClpCells};
+use crate::formats::clm::{ClmBindingValues, ClmCell, ClmCells};
 use crate::params::InterpolateMode;
 
 use super::*;
@@ -247,8 +247,8 @@ impl ScalarTarget {
         }
     }
 
-    fn wrap(self, c: ClpCells<f32>) -> ClpBindingValues {
-        use ClpBindingValues as V;
+    fn wrap(self, c: ClmCells<f32>) -> ClmBindingValues {
+        use ClmBindingValues as V;
         match self {
             Self::Tx => V::TransformTX(c),
             Self::Ty => V::TransformTY(c),
@@ -271,8 +271,8 @@ impl ScalarTarget {
     }
 }
 
-pub fn target_of(v: &ClpBindingValues) -> BindingTarget {
-    use ClpBindingValues as V;
+pub fn target_of(v: &ClmBindingValues) -> BindingTarget {
+    use ClmBindingValues as V;
     BindingTarget::Scalar(match v {
         V::Deform(_) => return BindingTarget::Deform,
         V::TransformTX(_) => ScalarTarget::Tx,
@@ -295,8 +295,8 @@ pub fn target_of(v: &ClpBindingValues) -> BindingTarget {
     })
 }
 
-fn scalar_cells_mut(v: &mut ClpBindingValues) -> Option<&mut Vec<ClpCell<f32>>> {
-    use ClpBindingValues as V;
+fn scalar_cells_mut(v: &mut ClmBindingValues) -> Option<&mut Vec<ClmCell<f32>>> {
+    use ClmBindingValues as V;
     match v {
         V::Deform(_) => None,
         V::ZOrder(c)
@@ -319,8 +319,8 @@ fn scalar_cells_mut(v: &mut ClpBindingValues) -> Option<&mut Vec<ClpCell<f32>>> 
     }
 }
 
-pub fn scalar_cells(v: &ClpBindingValues) -> Option<&[ClpCell<f32>]> {
-    use ClpBindingValues as V;
+pub fn scalar_cells(v: &ClmBindingValues) -> Option<&[ClmCell<f32>]> {
+    use ClmBindingValues as V;
     match v {
         V::Deform(_) => None,
         V::ZOrder(c)
@@ -351,19 +351,19 @@ pub fn mask_mode_name(m: crate::components::MaskMode) -> &'static str {
     }
 }
 
-pub fn deform_cells(v: &ClpBindingValues) -> Option<&[ClpCell<Vec<f32>>]> {
+pub fn deform_cells(v: &ClmBindingValues) -> Option<&[ClmCell<Vec<f32>>]> {
     match v {
-        ClpBindingValues::Deform(c) => Some(&c.cells),
+        ClmBindingValues::Deform(c) => Some(&c.cells),
         _ => None,
     }
 }
 
-fn upsert<T>(cells: &mut Vec<ClpCell<T>>, cell: [u32; 2], value: T) {
+fn upsert<T>(cells: &mut Vec<ClmCell<T>>, cell: [u32; 2], value: T) {
     let [x, y] = cell;
     match cells.iter_mut().find(|c| c.x == x && c.y == y) {
         Some(cell) => cell.value = value,
         None => {
-            cells.push(ClpCell { x, y, value });
+            cells.push(ClmCell { x, y, value });
             cells.sort_by_key(|c| (c.y, c.x));
         }
     }
@@ -532,13 +532,13 @@ impl Model {
                 if !matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::MeshGroup(_)) {
                     return Err(ModelError::NotMeshed);
                 }
-                ClpBindingValues::Deform(ClpCells::default())
+                ClmBindingValues::Deform(ClmCells::default())
             }
             BindingTarget::Scalar(t) => {
                 if t.is_color() && matches!(kind, ModelNodeKind::MeshGroup(_)) {
                     return Err(ModelError::ColorOnMeshGroup);
                 }
-                t.wrap(ClpCells::default())
+                t.wrap(ClmCells::default())
             }
         };
         self.binding_grid(key)?;
@@ -587,7 +587,7 @@ impl Model {
         let binding = self.binding_mut(key)?;
         let [x, y] = cell;
         match binding.values_mut() {
-            ClpBindingValues::Deform(c) => c.cells.retain(|c| !(c.x == x && c.y == y)),
+            ClmBindingValues::Deform(c) => c.cells.retain(|c| !(c.x == x && c.y == y)),
             other => {
                 if let Some(cells) = scalar_cells_mut(other) {
                     cells.retain(|c| !(c.x == x && c.y == y));
@@ -613,7 +613,7 @@ impl Model {
         let target = key.target;
         let binding = self.binding_mut(key)?;
         match binding.values_mut() {
-            ClpBindingValues::Deform(c) => upsert(&mut c.cells, cell, vec![0.0; vcount]),
+            ClmBindingValues::Deform(c) => upsert(&mut c.cells, cell, vec![0.0; vcount]),
             other => {
                 let identity = match target {
                     BindingTarget::Scalar(t) => t.identity(),
@@ -652,7 +652,7 @@ impl Model {
     pub fn invert_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
         let binding = self.binding_mut(key)?;
         match binding.values_mut() {
-            ClpBindingValues::Deform(c) => {
+            ClmBindingValues::Deform(c) => {
                 for cell in &mut c.cells {
                     for v in &mut cell.value {
                         *v = -*v;
@@ -692,7 +692,7 @@ impl Model {
         let (w, h) = (w as usize, h as usize);
         let values = self.binding(key).map(|b| &b.values);
         match values.map(|v| &**v) {
-            Some(ClpBindingValues::Deform(c)) => {
+            Some(ClmBindingValues::Deform(c)) => {
                 let identity = vec![0.0f32; self.deform_len(&key.node)];
                 let authored: Vec<((u32, u32), Vec<f32>)> = c
                     .cells
@@ -775,7 +775,7 @@ impl Model {
                 }
                 let value = self.deform_value_at(key, from)?;
                 let binding = self.binding_mut(key)?;
-                if let ClpBindingValues::Deform(c) = binding.values_mut() {
+                if let ClmBindingValues::Deform(c) = binding.values_mut() {
                     upsert(&mut c.cells, to, value);
                 }
             }
@@ -810,7 +810,7 @@ impl Model {
         let was_unauthored = self.binding_is_unauthored(key);
         self.add_binding(key)?;
         let binding = self.binding_mut(key)?;
-        if let ClpBindingValues::Deform(c) = binding.values_mut() {
+        if let ClmBindingValues::Deform(c) = binding.values_mut() {
             upsert(&mut c.cells, cell, offsets);
         }
         self.bump();
@@ -994,7 +994,7 @@ impl Model {
                 continue;
             };
             let cells: &mut dyn CellCoords = match b.values_mut() {
-                ClpBindingValues::Deform(c) => &mut c.cells,
+                ClmBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
                     Some(cells) => cells,
                     None => continue,
@@ -1010,7 +1010,7 @@ impl Model {
                 continue;
             };
             let cells: &mut dyn CellCoords = match b.values_mut() {
-                ClpBindingValues::Deform(c) => &mut c.cells,
+                ClmBindingValues::Deform(c) => &mut c.cells,
                 other => match scalar_cells_mut(other) {
                     Some(cells) => cells,
                     None => continue,
@@ -1028,7 +1028,7 @@ trait CellCoords {
     fn drop_at(&mut self, axis: u8, coord: u32);
 }
 
-impl<T> CellCoords for Vec<ClpCell<T>> {
+impl<T> CellCoords for Vec<ClmCell<T>> {
     fn map_coords(&mut self, axis: u8, f: &dyn Fn(u32) -> u32) {
         for cell in self.iter_mut() {
             if axis == 0 {
@@ -1054,7 +1054,7 @@ impl<T> CellCoords for Vec<ClpCell<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::clp::{ClpIndices, ClpMesh};
+    use crate::formats::clm::{ClmIndices, ClmMesh};
     use crate::id::SeededHex;
 
     #[test]
@@ -1088,10 +1088,10 @@ mod tests {
                 &root,
                 ModelNode::new(
                     "q",
-                    ModelNodeKind::Part(ModelPart::new(ClpMesh {
+                    ModelNodeKind::Part(ModelPart::new(ClmMesh {
                         verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
                         uvs: vec![0.0; 8],
-                        indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+                        indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
                         origin: [0.0, 0.0],
                     })),
                 ),
@@ -1157,7 +1157,7 @@ mod tests {
         assert_eq!(cells_of(&r.m, &key), vec![(1, 0.0), (2, 60.0)]);
 
         assert!(r.m.set_binding_key(&key, [3, 0], 1.0).is_err());
-        assert!(r.m.to_clp_bytes().is_ok());
+        assert!(r.m.to_clm_bytes().is_ok());
     }
 
     #[test]
@@ -1214,7 +1214,7 @@ mod tests {
             .m
             .set_deform_vertices(&key, [0, 0], vec![1.0, 2.0])
             .is_err());
-        assert!(r.m.to_clp_bytes().is_ok());
+        assert!(r.m.to_clm_bytes().is_ok());
     }
 
     /// A binding is one param's control over one property of one node, so the
@@ -1307,7 +1307,7 @@ mod tests {
                 &root,
                 ModelNode::new(
                     "lattice",
-                    ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClpMesh::default())),
+                    ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClmMesh::default())),
                 ),
                 &mut r.hex,
             )

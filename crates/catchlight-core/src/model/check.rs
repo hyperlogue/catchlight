@@ -1,12 +1,12 @@
 //! Lints that surface rig problems an editor (or an agent) can self-correct on.
-//! These are warnings, not errors — the model still flattens to a `.clp`.
+//! These are warnings, not errors — the model still flattens to a `.clm`.
 //! Most are cosmetic; the exception is a colour binding on a mesh group, which
 //! flattens to a file `catchlight_core` then refuses to load (a mesh group is
 //! never drawn, so it has no colour for the binding to fold into).
 //! [`Model::add_binding`] refuses to author one, so only a file written by an
 //! older tool can still carry it.
 
-use crate::formats::clp::{ClpBindingValues, ClpIndices};
+use crate::formats::clm::{ClmBindingValues, ClmIndices};
 
 use super::*;
 use crate::model::binding::BindingTarget;
@@ -51,8 +51,8 @@ impl Model {
                         ));
                     }
                     let tris = match &mesh.indices {
-                        ClpIndices::U16(v) => v.len() / 3,
-                        ClpIndices::U32(v) => v.len() / 3,
+                        ClmIndices::U16(v) => v.len() / 3,
+                        ClmIndices::U32(v) => v.len() / 3,
                     };
                     if tris == 0 && p.albedo().is_some() {
                         out.push(warn(
@@ -126,8 +126,8 @@ fn warn(node: NodeId, message: String) -> CheckWarning {
     }
 }
 
-fn cells_outside(values: &ClpBindingValues, w: u32, h: u32) -> usize {
-    use ClpBindingValues::*;
+fn cells_outside(values: &ClmBindingValues, w: u32, h: u32) -> usize {
+    use ClmBindingValues::*;
     match values {
         Deform(c) => c.cells.iter().filter(|c| c.x >= w || c.y >= h).count(),
         ZOrder(c) | TransformTX(c) | TransformTY(c) | TransformSX(c) | TransformSY(c)
@@ -139,13 +139,13 @@ fn cells_outside(values: &ClpBindingValues, w: u32, h: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::formats::clp::ClpMesh;
+    use crate::formats::clm::ClmMesh;
     use crate::id::{Name, SeededHex};
     use crate::model::binding::ScalarTarget;
     use crate::model::*;
 
     /// The editor refuses to author a colour binding on a mesh group, but a
-    /// `.clp` written by an older tool can carry one — and the runtime will not
+    /// `.clm` written by an older tool can carry one — and the runtime will not
     /// load that model back, so `check` has to say so.
     #[test]
     fn check_flags_a_color_binding_on_a_mesh_group() {
@@ -157,7 +157,7 @@ mod tests {
                 &root,
                 ModelNode::new(
                     "lattice",
-                    ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClpMesh::default())),
+                    ModelNodeKind::MeshGroup(ModelMeshGroup::new(ClmMesh::default())),
                 ),
                 &mut hex,
             )
@@ -195,7 +195,7 @@ mod tests {
             Err(ModelError::ColorOnMeshGroup)
         ));
 
-        // ...so only a file can bring one in. Round-trip through `.clp` with
+        // ...so only a file can bring one in. Round-trip through `.clm` with
         // the opacity binding spliced into the param's binding list.
         let mut file = m.flatten().unwrap();
         let group_index = file
@@ -206,12 +206,12 @@ mod tests {
             .expect("the mesh group is in the arena") as u32;
         file.doc.params[0]
             .bindings
-            .push(crate::formats::clp::ClpBinding {
+            .push(crate::formats::legacy::LegacyBinding {
                 node: group_index,
                 interpolate_mode: crate::params::InterpolateMode::Linear,
-                values: crate::formats::clp::ClpBindingValues::Opacity(Default::default()),
+                values: crate::formats::clm::ClmBindingValues::Opacity(Default::default()),
             });
-        let m = Model::from_clp_file(&file).unwrap();
+        let m = Model::from_legacy(&file).unwrap();
 
         let warnings = m.check();
         let w = warnings

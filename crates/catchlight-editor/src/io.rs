@@ -59,18 +59,18 @@ impl IoQueue {
     }
 }
 
-/// Async `.clp` picker; the picked file's bytes arrive as [`IoEvent::Opened`].
+/// Async `.clm` picker; the picked file's bytes arrive as [`IoEvent::Opened`].
 #[cfg(target_arch = "wasm32")]
-pub fn pick_clp(queue: Arc<IoQueue>) {
+pub fn pick_clm(queue: Arc<IoQueue>) {
     wasm_bindgen_futures::spawn_local(async move {
         let Some(file) = rfd::AsyncFileDialog::new()
-            .add_filter("catchlight puppet", &["clp"])
+            .add_filter("catchlight puppet", &["clm"])
             .pick_file()
             .await
         else {
             return;
         };
-        let title = file.file_name().trim_end_matches(".clp").to_string();
+        let title = file.file_name().trim_end_matches(".clm").to_string();
         let bytes = file.read().await;
         queue.push(IoEvent::Opened { title, bytes });
     });
@@ -103,7 +103,7 @@ pub fn fetch_demo(queue: Arc<IoQueue>, url: &'static str) {
                 .rsplit('/')
                 .next()
                 .unwrap_or(url)
-                .trim_end_matches(".clp")
+                .trim_end_matches(".clm")
                 .to_string();
             queue.push(IoEvent::DemoLoaded { title, bytes });
         }
@@ -130,7 +130,7 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
 #[cfg(target_arch = "wasm32")]
 pub fn autosave_write(queue: Arc<IoQueue>, bytes: Vec<u8>) {
     wasm_bindgen_futures::spawn_local(async move {
-        match opfs_write("autosave.clp", &bytes).await {
+        match opfs_write("autosave.clm", &bytes).await {
             Ok(()) => queue.push(IoEvent::Status("autosaved".into())),
             Err(_) => queue.push(IoEvent::Error("autosave failed (no OPFS?)".into())),
         }
@@ -141,7 +141,7 @@ pub fn autosave_write(queue: Arc<IoQueue>, bytes: Vec<u8>) {
 #[cfg(target_arch = "wasm32")]
 pub fn autosave_probe(queue: Arc<IoQueue>) {
     wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(bytes) = opfs_read("autosave.clp").await {
+        if let Ok(bytes) = opfs_read("autosave.clm").await {
             if !bytes.is_empty() {
                 queue.push(IoEvent::AutosaveFound { bytes });
             }

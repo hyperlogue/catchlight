@@ -1,6 +1,6 @@
 //! Derive a binding's dense evaluation grid from its sparse authored cells.
 //!
-//! `.clp` stores only authored keypoint cells; the dense grid the runtime
+//! `.clm` stores only authored keypoint cells; the dense grid the runtime
 //! interpolates over (see `params.rs`) is a derived cache computed here, at
 //! load (runtime) or on document change (editor). This is the single fill
 //! implementation both sides call. Pixel stability depends on runtime and

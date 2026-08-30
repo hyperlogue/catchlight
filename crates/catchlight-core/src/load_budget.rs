@@ -204,11 +204,12 @@ impl LoadBudget {
 
 pub const MAX_PARAM_GRID_CELLS: u64 = 65_536;
 
-pub fn charge_clp_structure(
-    file: &crate::formats::clp::ClpFile,
+pub fn charge_legacy_structure(
+    file: &crate::formats::legacy::LegacyFile,
     budget: &mut LoadBudget,
 ) -> Result<(), LoadLimitError> {
-    use crate::formats::clp::{ClpBindingValues, ClpIndices, ClpNodeKind};
+    use crate::formats::clm::{ClmBindingValues, ClmIndices};
+    use crate::formats::legacy::LegacyNodeKind;
 
     budget.charge(LoadResource::Textures, file.textures.len() as u64)?;
     budget.charge(LoadResource::Nodes, file.doc.nodes.len() as u64)?;
@@ -219,21 +220,21 @@ pub fn charge_clp_structure(
 
     for node in &file.doc.nodes {
         let mesh = match &node.kind {
-            ClpNodeKind::Part(part) => Some(&part.mesh),
-            ClpNodeKind::MeshGroup(group) => Some(&group.mesh),
+            LegacyNodeKind::Part(part) => Some(&part.mesh),
+            LegacyNodeKind::MeshGroup(group) => Some(&group.mesh),
             _ => None,
         };
         let Some(mesh) = mesh else { continue };
         budget.charge(LoadResource::Vertices, (mesh.verts.len() / 2) as u64)?;
         let index_count = match &mesh.indices {
-            ClpIndices::U16(indices) => indices.len(),
-            ClpIndices::U32(indices) => indices.len(),
+            ClmIndices::U16(indices) => indices.len(),
+            ClmIndices::U32(indices) => indices.len(),
         };
         budget.charge(LoadResource::Indices, index_count as u64)?;
-        if matches!(node.kind, ClpNodeKind::MeshGroup(_)) {
+        if matches!(node.kind, LegacyNodeKind::MeshGroup(_)) {
             budget.charge(
                 LoadResource::MeshGroupBitmapCells,
-                clp_mesh_group_bitmap_cells(mesh),
+                mesh_group_bitmap_cells(mesh),
             )?;
         }
     }
@@ -258,28 +259,28 @@ pub fn charge_clp_structure(
                 continue;
             };
             let authored = match &binding.values {
-                ClpBindingValues::Deform(values) => values.cells.len(),
-                ClpBindingValues::ZOrder(values)
-                | ClpBindingValues::TransformTX(values)
-                | ClpBindingValues::TransformTY(values)
-                | ClpBindingValues::TransformSX(values)
-                | ClpBindingValues::TransformSY(values)
-                | ClpBindingValues::TransformRX(values)
-                | ClpBindingValues::TransformRY(values)
-                | ClpBindingValues::TransformRZ(values)
-                | ClpBindingValues::Opacity(values)
-                | ClpBindingValues::TintR(values)
-                | ClpBindingValues::TintG(values)
-                | ClpBindingValues::TintB(values)
-                | ClpBindingValues::ScreenTintR(values)
-                | ClpBindingValues::ScreenTintG(values)
-                | ClpBindingValues::ScreenTintB(values)
-                | ClpBindingValues::OutputScaleX(values)
-                | ClpBindingValues::OutputScaleY(values) => values.cells.len(),
+                ClmBindingValues::Deform(values) => values.cells.len(),
+                ClmBindingValues::ZOrder(values)
+                | ClmBindingValues::TransformTX(values)
+                | ClmBindingValues::TransformTY(values)
+                | ClmBindingValues::TransformSX(values)
+                | ClmBindingValues::TransformSY(values)
+                | ClmBindingValues::TransformRX(values)
+                | ClmBindingValues::TransformRY(values)
+                | ClmBindingValues::TransformRZ(values)
+                | ClmBindingValues::Opacity(values)
+                | ClmBindingValues::TintR(values)
+                | ClmBindingValues::TintG(values)
+                | ClmBindingValues::TintB(values)
+                | ClmBindingValues::ScreenTintR(values)
+                | ClmBindingValues::ScreenTintG(values)
+                | ClmBindingValues::ScreenTintB(values)
+                | ClmBindingValues::OutputScaleX(values)
+                | ClmBindingValues::OutputScaleY(values) => values.cells.len(),
             };
             budget.charge(LoadResource::BindingCells, cells)?;
             budget.charge(LoadResource::BindingCells, authored as u64)?;
-            if let ClpBindingValues::Deform(values) = &binding.values {
+            if let ClmBindingValues::Deform(values) = &binding.values {
                 let authored_vertices = values
                     .cells
                     .iter()
@@ -287,8 +288,8 @@ pub fn charge_clp_structure(
                     .max()
                     .unwrap_or(0);
                 let mesh_vertices = match &node.kind {
-                    ClpNodeKind::Part(part) => part.mesh.verts.len() / 2,
-                    ClpNodeKind::MeshGroup(group) => group.mesh.verts.len() / 2,
+                    LegacyNodeKind::Part(part) => part.mesh.verts.len() / 2,
+                    LegacyNodeKind::MeshGroup(group) => group.mesh.verts.len() / 2,
                     _ => 0,
                 };
                 budget.charge_product(
@@ -302,10 +303,10 @@ pub fn charge_clp_structure(
     Ok(())
 }
 
-fn clp_mesh_group_bitmap_cells(mesh: &crate::formats::clp::ClpMesh) -> u64 {
+fn mesh_group_bitmap_cells(mesh: &crate::formats::clm::ClmMesh) -> u64 {
     let index_count = match &mesh.indices {
-        crate::formats::clp::ClpIndices::U16(indices) => indices.len(),
-        crate::formats::clp::ClpIndices::U32(indices) => indices.len(),
+        crate::formats::clm::ClmIndices::U16(indices) => indices.len(),
+        crate::formats::clm::ClmIndices::U32(indices) => indices.len(),
     };
     if mesh.verts.len() < 2 || index_count < 3 || index_count / 3 + 1 > u16::MAX as usize {
         return 0;

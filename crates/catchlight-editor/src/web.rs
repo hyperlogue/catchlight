@@ -1,5 +1,5 @@
 //! Browser entry: mount the app on a canvas via eframe's `WebRunner`. The
-//! session engine (`Editor`) lives in the page; a staged `reference.clp` next to the
+//! session engine (`Editor`) lives in the page; a staged `reference.clm` next to the
 //! page is fetched as the initial document when present.
 
 use std::sync::Arc;
@@ -21,7 +21,7 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
             Box::new(move |cc| {
                 let app = App::new(editor, cc.egui_ctx.clone());
                 io::autosave_probe(app.io_queue());
-                io::fetch_demo(app.io_queue(), "reference.clp");
+                io::fetch_demo(app.io_queue(), "reference.clm");
                 Ok(Box::new(app) as Box<dyn eframe::App>)
             }),
         )

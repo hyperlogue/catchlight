@@ -6,12 +6,12 @@
 //! come out of alpha culling: triangles covering only fully-transparent texels
 //! are dropped, so the convex-hull fill never bridges disjoint shapes.
 //!
-//! Runtime and `.clp` never see any of this — they keep plain indexed triangle
+//! Runtime and `.clm` never see any of this — they keep plain indexed triangle
 //! lists; [`WorkingMesh::to_mesh`] flattens on Apply, and
 //! [`Model::set_mesh_with_refit`] re-fits existing deform bindings onto the
 //! new topology (triangle-affine interpolation over the old rest mesh).
 
-use catchlight_core::formats::clp::{ClpIndices, ClpMesh};
+use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
 use catchlight_core::id::NodeId;
@@ -59,7 +59,7 @@ impl WorkingMesh {
     /// Start from an existing mesh, seeding **every current triangle edge as a
     /// constraint** so the CDT preserves the current topology exactly until
     /// the user unpins.
-    pub fn from_mesh(mesh: &ClpMesh) -> Self {
+    pub fn from_mesh(mesh: &ClmMesh) -> Self {
         let vcount = (mesh.verts.len() / 2) as u32;
         let mut constraints: Vec<(u32, u32)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -80,8 +80,8 @@ impl WorkingMesh {
             }
         };
         match &mesh.indices {
-            ClpIndices::U16(v) => tris(&mut v.iter().map(|&i| i as u32)),
-            ClpIndices::U32(v) => tris(&mut v.iter().copied()),
+            ClmIndices::U16(v) => tris(&mut v.iter().map(|&i| i as u32)),
+            ClmIndices::U32(v) => tris(&mut v.iter().copied()),
         }
         Self {
             verts: mesh.verts.clone(),
@@ -252,10 +252,10 @@ impl WorkingMesh {
         Ok(tris)
     }
 
-    /// Flatten to the plain indexed triangle list runtime/`.clp` consume.
+    /// Flatten to the plain indexed triangle list runtime/`.clm` consume.
     /// UVs are re-derived from texture space; triangles covering only
     /// transparent texels are culled when an alpha mask is given.
-    pub fn to_mesh(&self, uv_map: &UvMap, alpha: Option<&AlphaMask>) -> Result<ClpMesh, MeshError> {
+    pub fn to_mesh(&self, uv_map: &UvMap, alpha: Option<&AlphaMask>) -> Result<ClmMesh, MeshError> {
         let tris = self.triangulate()?;
         let uvs: Vec<f32> = (0..self.vertex_count())
             .flat_map(|i| uv_map.uv(self.pos(i as u32)))
@@ -272,11 +272,11 @@ impl WorkingMesh {
         };
         let flat: Vec<u32> = kept.into_iter().flatten().collect();
         let indices = if self.vertex_count() <= u16::MAX as usize {
-            ClpIndices::U16(flat.iter().map(|&i| i as u16).collect())
+            ClmIndices::U16(flat.iter().map(|&i| i as u16).collect())
         } else {
-            ClpIndices::U32(flat)
+            ClmIndices::U32(flat)
         };
-        Ok(ClpMesh {
+        Ok(ClmMesh {
             verts: self.verts.clone(),
             uvs,
             indices,
@@ -801,15 +801,15 @@ fn point_segment_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 /// each new vertex takes the barycentric blend of the old offsets in the old
 /// rest triangle containing it (clamped to the nearest triangle outside).
 /// Re-fitting onto identical topology is the identity.
-pub fn refit_deform_offsets(old: &ClpMesh, new_verts: &[f32], old_offsets: &[f32]) -> Vec<f32> {
+pub fn refit_deform_offsets(old: &ClmMesh, new_verts: &[f32], old_offsets: &[f32]) -> Vec<f32> {
     let old_tris: Vec<[u32; 3]> = match &old.indices {
-        ClpIndices::U16(v) => v
+        ClmIndices::U16(v) => v
             .as_chunks::<3>()
             .0
             .iter()
             .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
             .collect(),
-        ClpIndices::U32(v) => v
+        ClmIndices::U32(v) => v
             .as_chunks::<3>()
             .0
             .iter()
@@ -905,11 +905,11 @@ pub trait ModelMeshExt {
     /// carried over by triangle-affine interpolation across the old rest mesh;
     /// [`Model::set_node_mesh_with`] validates the mesh and moves the cells and
     /// the mesh together.
-    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClpMesh) -> Result<(), ModelError>;
+    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClmMesh) -> Result<(), ModelError>;
 }
 
 impl ModelMeshExt for Model {
-    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClpMesh) -> Result<(), ModelError> {
+    fn set_mesh_with_refit(&mut self, node: &NodeId, mesh: ClmMesh) -> Result<(), ModelError> {
         self.set_node_mesh_with(node, mesh, |old, new, offsets| {
             refit_deform_offsets(old, &new.verts, offsets)
         })
@@ -920,11 +920,11 @@ impl ModelMeshExt for Model {
 mod tests {
     use super::*;
 
-    fn quad() -> ClpMesh {
-        ClpMesh {
+    fn quad() -> ClmMesh {
+        ClmMesh {
             verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
             uvs: vec![0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
-            indices: ClpIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
             origin: [0.0, 0.0],
         }
     }
@@ -1015,8 +1015,8 @@ mod tests {
         let uv_map = UvMap::from_texture_size(4.0, 4.0);
         let mesh = wm.to_mesh(&uv_map, Some(&alpha)).unwrap();
         let tri_count = match &mesh.indices {
-            ClpIndices::U16(v) => v.len() / 3,
-            ClpIndices::U32(v) => v.len() / 3,
+            ClmIndices::U16(v) => v.len() / 3,
+            ClmIndices::U32(v) => v.len() / 3,
         };
         // The right half's triangles are culled.
         assert!((2..8).contains(&tri_count), "got {tri_count} triangles");
@@ -1087,7 +1087,7 @@ mod tests {
         let mut new_mesh = quad();
         new_mesh.verts.extend_from_slice(&[0.0, 0.0]);
         new_mesh.uvs.extend_from_slice(&[0.5, 0.5]);
-        new_mesh.indices = ClpIndices::U16(vec![0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4]);
+        new_mesh.indices = ClmIndices::U16(vec![0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4]);
         m.set_mesh_with_refit(&part, new_mesh).unwrap();
 
         let b = m.binding(&key).unwrap();

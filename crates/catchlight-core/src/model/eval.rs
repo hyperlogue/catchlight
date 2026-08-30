@@ -227,7 +227,7 @@ impl Model {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::formats::clp::{ClpIndices, ClpMesh};
+    use crate::formats::clm::{ClmIndices, ClmMesh};
     use crate::id::{Name, SeededHex};
     use crate::model::{
         BindingParams, ModelNode, ModelNodeKind, ModelParam, ModelPart, ScalarTarget,
@@ -244,10 +244,10 @@ pub(super) mod tests {
                 &root,
                 ModelNode::new(
                     "part",
-                    ModelNodeKind::Part(ModelPart::new(ClpMesh {
+                    ModelNodeKind::Part(ModelPart::new(ClmMesh {
                         verts: vec![0.0, 0.0, 1.0, 0.0],
                         uvs: vec![0.0; 4],
-                        indices: ClpIndices::U16(Vec::new()),
+                        indices: ClmIndices::U16(Vec::new()),
                         origin: [0.0, 0.0],
                     })),
                 ),
@@ -370,7 +370,7 @@ pub(super) mod tests {
 mod memo_tests {
     use super::tests::*;
     use super::*;
-    use crate::formats::clp::{ClpIndices, ClpMesh};
+    use crate::formats::clm::{ClmIndices, ClmMesh};
     use crate::model::DenseGrid;
 
     /// The memo is only sound if everything the fill reads invalidates it: the
@@ -403,10 +403,10 @@ mod memo_tests {
         model
             .set_node_mesh(
                 &node,
-                ClpMesh {
+                ClmMesh {
                     verts: vec![0.0, 0.0, 1.0, 0.0, 2.0, 0.0],
                     uvs: vec![0.0; 6],
-                    indices: ClpIndices::U16(Vec::new()),
+                    indices: ClmIndices::U16(Vec::new()),
                     origin: [0.0, 0.0],
                 },
             )

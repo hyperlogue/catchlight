@@ -36,7 +36,7 @@ enum Cmd {
         #[command(subcommand)]
         action: SessionCmd,
     },
-    /// Save the session to a `.clp` (defaults to its existing file).
+    /// Save the session to a `.clm` (defaults to its existing file).
     Save { path: Option<String> },
     /// Export the editable JSON manifest + textures next to `path`.
     ExportManifest { path: String },
@@ -114,7 +114,7 @@ enum SessionCmd {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Open an existing `.clp`.
+    /// Open an existing `.clm`.
     Open { path: String },
     /// Build a puppet from a JSON manifest + its textures.
     Import { manifest: String },

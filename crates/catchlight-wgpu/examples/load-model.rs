@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! winit viewer for a `.clp` rig — the interactive way to look at one.
+//! winit viewer for a `.clm` rig — the interactive way to look at one.
 //!
 //! `--control` (or the `C` key) opens the egui panel of per-param sliders and
 //! stops animation playback.
@@ -536,7 +536,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let path = std::path::PathBuf::from(
-        path_arg.unwrap_or_else(|| "example_models/reference/reference.clp".to_string()),
+        path_arg.unwrap_or_else(|| "example_models/reference/reference.clm".to_string()),
     );
 
     println!("Loading model: {}", path.display());

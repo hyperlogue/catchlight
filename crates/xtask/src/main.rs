@@ -3,7 +3,7 @@
 //! Workspace build-automation tasks. Invoked as `cargo xtask <cmd>`.
 //!
 //! Commands:
-//!   cargo xtask import <model.inx|.inp> [-o <model.clp>]
+//!   cargo xtask import <model.inx|.inp> [-o <model.clm>]
 //!   cargo xtask gen-fixture <name>
 
 mod fixtures;
@@ -27,11 +27,11 @@ fn print_usage() {
     eprintln!("usage: cargo xtask <command>");
     eprintln!();
     eprintln!("commands:");
-    eprintln!("  import <model.inx|.inp> [-o <model.clp>]");
-    eprintln!("      One-time convert an INX/INP rig to catchlight's editable .clp");
-    eprintln!("      (default output: input path with a .clp extension).");
+    eprintln!("  import <model.inx|.inp> [-o <model.clm>]");
+    eprintln!("      One-time convert an INX/INP rig to catchlight's editable .clm");
+    eprintln!("      (default output: input path with a .clm extension).");
     eprintln!("  gen-fixture <name>");
-    eprintln!("      Rebuild a hand-authored test model into tests/models/<name>.clp.");
+    eprintln!("      Rebuild a hand-authored test model into tests/models/<name>.clm.");
     eprintln!(
         "      names: {}",
         fixtures::names().collect::<Vec<_>>().join(", ")
@@ -48,8 +48,8 @@ fn gen_fixture(args: &[String]) -> Result<()> {
 }
 
 fn import(args: &[String]) -> Result<()> {
-    use catchlight_core::formats::{clp, InxModel};
-    use catchlight_core::importer::from_inx_model_to_clp;
+    use catchlight_core::formats::{legacy, InxModel};
+    use catchlight_core::importer::from_inx_model_to_legacy;
 
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -72,8 +72,8 @@ fn import(args: &[String]) -> Result<()> {
         }
     }
     let input =
-        input.ok_or_else(|| anyhow!("usage: cargo xtask import <model.inx> [-o <out.clp>]"))?;
-    let output = output.unwrap_or_else(|| input.with_extension("clp"));
+        input.ok_or_else(|| anyhow!("usage: cargo xtask import <model.inx> [-o <out.clm>]"))?;
+    let output = output.unwrap_or_else(|| input.with_extension("clm"));
 
     let bytes = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
     let model = match input.extension().and_then(|e| e.to_str()) {
@@ -81,8 +81,8 @@ fn import(args: &[String]) -> Result<()> {
             .context("parsing .inp")?,
         _ => InxModel::parse(std::io::Cursor::new(&bytes)).context("parsing .inx")?,
     };
-    let file = from_inx_model_to_clp(&model).context("inx -> clp")?;
-    let encoded = clp::encode(&file.doc, &file.textures).context("encoding .clp")?;
+    let file = from_inx_model_to_legacy(&model).context("inx -> legacy")?;
+    let encoded = legacy::encode(&file.doc, &file.textures).context("encoding .clm")?;
     std::fs::write(&output, &encoded).with_context(|| format!("writing {}", output.display()))?;
 
     eprintln!(

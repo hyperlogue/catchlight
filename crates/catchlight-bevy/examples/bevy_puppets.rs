@@ -47,7 +47,7 @@ fn setup(mut commands: Commands) {
 
     let path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "example_models/reference/reference.clp".to_string());
+        .unwrap_or_else(|| "example_models/reference/reference.clm".to_string());
     let bytes = std::fs::read(&path).expect("read model");
     let format = ModelFormat::from_path(Path::new(&path)).expect("recognized model extension");
     let base = load_model(&bytes, format, 0).expect("load model");

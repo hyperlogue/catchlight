@@ -612,7 +612,7 @@ fn convert_binding(b: &SchemaBinding, puppet: &LegacyPuppet) -> Option<Binding> 
     // drops the binding. Treating absence as "" mirrors that.
     let kind = b.param_name.as_deref().unwrap_or("");
     // A mesh group is never drawn and carries no colour, so a colour binding on
-    // one has nowhere to land. Drop it here rather than write it out: the `.clp`
+    // one has nowhere to land. Drop it here rather than write it out: the `.clm`
     // loader rejects that shape outright.
     if source_binding_is_color(kind)
         && matches!(

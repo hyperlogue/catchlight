@@ -18,7 +18,7 @@ fn load_puppet(path: &Path) -> catchlight_core::LegacyPuppet {
 
 fn find_reference() -> Option<PathBuf> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../example_models/reference/reference.clp");
+        .join("../../example_models/reference/reference.clm");
     if path.is_file() {
         Some(path)
     } else {
@@ -61,7 +61,7 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
 #[test]
 #[ignore = "needs the reference rig at example_models/reference/"]
 fn deform_source_changes_pixels_end_to_end() {
-    let path = find_reference().expect("reference.clp missing or an unfetched LFS pointer");
+    let path = find_reference().expect("reference.clm missing or an unfetched LFS pointer");
 
     let baseline = pollster::block_on(render_with_test_deform(&path, Vec2::ZERO));
     let shifted = pollster::block_on(render_with_test_deform(&path, Vec2::new(500.0, 0.0)));

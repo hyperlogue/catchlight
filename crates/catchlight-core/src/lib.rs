@@ -21,7 +21,7 @@ pub use components::*;
 pub use deform::*;
 pub use id::*;
 pub use importer::{
-    from_clp, from_clp_cached, from_clp_with_budget, ImportError, TexturePrepCache,
+    from_legacy, from_legacy_cached, from_legacy_with_budget, ImportError, TexturePrepCache,
 };
 pub use legacy_puppet::*;
 pub use load::*;

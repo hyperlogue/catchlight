@@ -1,5 +1,5 @@
 //! Shared low-level framing for catchlight's binary model container
-//! (`.clp`). A fixed header — 8-byte magic, `format_version: u16`,
+//! (`.clm`). A fixed header — 8-byte magic, `format_version: u16`,
 //! `section_count: u32` — followed by a section table of
 //! `{ kind: u32, offset: u64, len: u32 }`, then the section payloads, all
 //! little-endian. Every count, length, and offset read from the file is
@@ -7,7 +7,7 @@
 //! file errors instead of panicking or over-allocating.
 //!
 //! Section *meaning* — which `kind` is Structure / Textures / Vendor — lives
-//! in the `.clp` layer; this module frames opaque byte sections and
+//! in the `.clm` layer; this module frames opaque byte sections and
 //! owns only the version word that layer branches on.
 
 use thiserror::Error;

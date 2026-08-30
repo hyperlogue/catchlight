@@ -286,7 +286,7 @@ impl HexSource for SeededHex {
 }
 
 /// Wraps a string this crate just built to the charset, for the Ids the
-/// crate mints itself: generated Ids and the ones the `.clp` bridge derives
+/// crate mints itself: generated Ids and the ones the `.clm` bridge derives
 /// from arena indices. Seam and slot Ids are always authored, so they have
 /// none. [`generated`] debug-asserts the charset, so a minter that drifts off
 /// it fails a test rather than writing a file.

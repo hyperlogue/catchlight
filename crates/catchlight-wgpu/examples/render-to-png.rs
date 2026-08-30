@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "example_models/reference/reference.clp".to_string());
+        .unwrap_or_else(|| "example_models/reference/reference.clm".to_string());
     let path = std::path::PathBuf::from(path);
 
     let output_path = std::env::args()

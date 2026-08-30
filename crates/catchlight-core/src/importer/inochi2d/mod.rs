@@ -3,7 +3,7 @@
 //! There are **two independent reflection paths** and they must stay in step:
 //!
 //! - `convert.rs` — `.inx` → `LegacyPuppet` (the legacy direct load).
-//! - `to_clp.rs` — `.inx` → `.clp` (what `cargo xtask import` runs).
+//! - `to_legacy.rs` — `.inx` → `.clm` (what `cargo xtask import` runs).
 //!
 //! `.inx` is authored **Y-down with lower `zsort` in front**; catchlight is
 //! **Y-up with higher `z_order` in front**. Both paths must negate exactly
@@ -21,13 +21,13 @@
 //! transform components.
 //!
 //! **Change one path, change the other.**
-//! `synthetic_model_reflects_identically_on_both_paths` (`from_clp.rs`) guards
+//! `synthetic_model_reflects_identically_on_both_paths` (`from_legacy.rs`) guards
 //! this on every checkout: it runs a hand-authored model through both paths,
 //! asserts they agree field for field, *and* asserts the absolute
 //! authored→runtime values with a non-reflected control beside every reflected
 //! field — agreement alone would pass if both paths forgot the same negation.
 //! The synthetic INX must therefore be authored in the **source** convention
-//! (Y-down, lower-zsort-in-front). `reference_clp_build_matches_inx_puppet`
+//! (Y-down, lower-zsort-in-front). `reference_legacy_build_matches_inx_puppet`
 //! runs the same comparison over the full private model, and is `#[ignore]`d
 //! unless that model is present.
 //!
@@ -40,16 +40,16 @@ pub(crate) mod alpha_crop;
 pub use alpha_crop::TexturePrepCache;
 pub(crate) mod convert;
 pub(crate) mod error;
-pub(crate) mod from_clp;
+pub(crate) mod from_legacy;
 pub(crate) mod schema;
-pub(crate) mod to_clp;
+pub(crate) mod to_legacy;
 
 #[cfg(test)]
 mod import_tests;
 
 pub use error::ImportError;
-pub use from_clp::{from_clp, from_clp_cached, from_clp_with_budget};
-pub use to_clp::from_inx_model_to_clp;
+pub use from_legacy::{from_legacy, from_legacy_cached, from_legacy_with_budget};
+pub use to_legacy::from_inx_model_to_legacy;
 
 use crate::formats::InxModel;
 use crate::legacy_puppet::LegacyPuppet;
