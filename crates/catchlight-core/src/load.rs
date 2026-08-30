@@ -1,4 +1,4 @@
-//! Loading a model file into a [`LegacyPuppet`], dispatched by format.
+//! Loading a model file into a [`Model`], dispatched by format.
 //!
 //! catchlight's first-class on-disk format is **`.clm`** (the editable source
 //! of truth). The legacy `.inx` / `.inp` formats are kept only as a one-time
@@ -6,18 +6,23 @@
 //! that. These functions are byte-based (no filesystem), so they work on wasm
 //! too; callers read the bytes and tag the format from the file extension.
 //!
-//! **The load path is `.clm` bytes -> [`Model`] -> legacy document -> puppet.**
-//! The file is only ever read into a Model — that is where the format's Ids,
-//! scalar params and seams are checked — and the runtime's dense arena is
-//! built from the Model's own arena projection
-//! (`crates/catchlight-core/src/model/legacy.rs`). Nothing reads a model file
-//! into a puppet directly, so there is one reader to keep honest.
+//! **The load path is `.clm` bytes -> [`Model`].** The file is only ever read
+//! into a Model — that is where the format's Ids, scalar params and seams are
+//! checked — and whatever animates or draws it is derived from there:
+//! [`crate::Puppet::new`] bakes the runtime's dense arena, and a render cache
+//! is prepared alongside it. Nothing reads a model file into anything else, so
+//! there is one reader to keep honest.
+//!
+//! [`load_model`] is the legacy runtime's entry, reaching the same Model and
+//! then projecting it back onto the arena document
+//! (`crates/catchlight-core/src/model/legacy.rs`). It dies with the legacy
+//! runtime; [`load_model_bytes`] is the one that stays.
 
 use std::io::Cursor;
 use std::path::Path;
 
 use crate::formats::{clm, InxModel};
-use crate::importer::{from_inx_model_downsampled, parse_inp};
+use crate::importer::{from_inx_model_downsampled, from_inx_model_to_legacy, parse_inp};
 use crate::legacy_puppet::LegacyPuppet;
 use crate::model::Model;
 use crate::{from_legacy, ImportError};
@@ -58,6 +63,25 @@ impl ModelFormat {
             None
         }
     }
+}
+
+/// Read model-file `bytes` of the given `format` into a [`Model`].
+///
+/// `.clm` is read directly; a legacy `.inx` / `.inp` goes through the
+/// importer's arena document, which is the one path either still has.
+/// Textures arrive source-encoded, exactly as the file stores them — a render
+/// cache is what decodes and downsamples them, so there is no texture budget
+/// here.
+pub fn load_model_bytes(bytes: &[u8], format: ModelFormat) -> Result<Model, ImportError> {
+    let inx = match format {
+        ModelFormat::Clm => return Ok(Model::from_clm_bytes(bytes)?),
+        ModelFormat::Inx => InxModel::parse(Cursor::new(bytes))?,
+        ModelFormat::Inp => crate::formats::parse_inp(Cursor::new(bytes))?,
+    };
+    tracing::warn!(
+        "loading a .inx/.inp directly is deprecated; convert it to .clm with `cargo xtask import`"
+    );
+    Ok(Model::from_legacy(&from_inx_model_to_legacy(&inx)?)?)
 }
 
 /// Build a [`LegacyPuppet`] from model-file `bytes` of the given `format`, downsampling
