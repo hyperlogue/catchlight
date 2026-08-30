@@ -28,7 +28,7 @@
 //!   *addon fragment*: every node names a parent, the ones the file does not
 //!   carry are its roots, and every other reference into a base — albedo, mask
 //!   source, physics target, binding param, weld end, animation lane — may
-//!   dangle for `Model::install` to resolve. The two shapes are disjoint on
+//!   dangle for [`Model::install`] to resolve. The two shapes are disjoint on
 //!   the wire (a complete model always has a parentless node and a fragment
 //!   never does), so a caller that does not know which it holds decodes once
 //!   and tries both readers against the same [`ClmFile`]; nothing else about
@@ -137,14 +137,14 @@ enum Shape {
     Base,
     /// An addon fragment. Every node names a parent; the ones the file does
     /// not carry are its roots, and every other reference into the base model
-    /// is left dangling for `Model::install` to resolve.
+    /// is left dangling for [`Model::install`] to resolve.
     Fragment,
 }
 
 impl Shape {
     /// Whether a reference this shape allows to leave the file may dangle.
     /// A binding's *node* never may, in either shape: an addon binds its own
-    /// nodes — see `crate::model::addon`.
+    /// nodes — see [`crate::model::addon`].
     fn allows_dangling(self) -> bool {
         matches!(self, Self::Fragment)
     }
@@ -290,7 +290,7 @@ impl Model {
 
     /// Read an **addon fragment**: a forest whose roots name absent parents,
     /// with every other reference into the base model left to dangle. See
-    /// `crate::model::addon` for what install then does with it.
+    /// [`crate::model::addon`] for what install then does with it.
     pub fn from_clm_file_fragment(file: &ClmFile) -> Result<Model, ModelError> {
         Self::from_clm_file_fragment_with_budget(file, &mut LoadBudget::default())
     }
@@ -819,7 +819,7 @@ fn read_seams(id: &NodeId, part: &ClmPart) -> Result<Vec<Seam>, ModelError> {
 /// A **fragment** may weld its own seam to a base part's, so an end naming a
 /// node the file does not carry is checked as far as it can be — the weights
 /// still have to name the resolvable end's slots exactly once — and
-/// `Model::install` finishes the job against the base.
+/// [`Model::install`] finishes the job against the base.
 fn read_weld(
     weld: &ClmWeld,
     seams: &HashMap<&NodeId, SeamTable>,
