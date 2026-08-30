@@ -23,7 +23,9 @@ pub enum DeformSource {
     /// weld records touch the part — the weld pass zeroes it on first touch
     /// each frame and accumulates (see `crate::weld::apply_welds`).
     Weld,
-    /// An external writer's scratch slot — the editor's live drag.
+    /// An external writer's scratch slot — the editor's live drag. The one
+    /// source a fold does not produce, and so the one [`DeformStack::reset`]
+    /// leaves alone: nothing else can reconstruct it.
     Scratch,
     Test,
 }
@@ -93,9 +95,21 @@ impl DeformStack {
         }
     }
 
+    /// Deactivate every source a fold produces, so the next one starts from
+    /// nothing.
+    ///
+    /// [`DeformSource::Scratch`] survives. Every other source is re-derived
+    /// from the model each fold, which is what makes dropping it safe; the
+    /// scratch slot is an edit in progress that only its writer holds, so a
+    /// fold that dropped it would delete state nothing can rebuild — and a
+    /// live drag would vanish on any frame that happened to fold (a driver
+    /// moving is enough). It goes when its writer clears it, or when the
+    /// model changes and the puppet rebakes the stack from scratch.
     pub fn reset(&mut self) {
         for slot in self.sources.iter_mut() {
-            slot.active = false;
+            if slot.source != DeformSource::Scratch {
+                slot.active = false;
+            }
         }
     }
 
@@ -339,6 +353,25 @@ mod tests {
         s.combine();
         assert_eq!(s.combined(), &[Vec2::ZERO, Vec2::ZERO]);
         assert!(!s.is_active());
+    }
+
+    /// A fold re-derives every source but the scratch one, so reset drops
+    /// every source but the scratch one. Otherwise the editor's live drag
+    /// would disappear on the next frame that folded for its own reasons.
+    #[test]
+    fn reset_keeps_the_scratch_source_and_drops_the_rest() {
+        let mut s = DeformStack::new(1);
+        s.set(DeformSource::Param(0), vec![Vec2::new(1.0, 0.0)])
+            .unwrap();
+        s.set(DeformSource::Scratch, vec![Vec2::new(0.0, 7.0)])
+            .unwrap();
+        s.reset();
+        s.combine();
+        assert_eq!(s.combined()[0], Vec2::new(0.0, 7.0));
+        // ...and it is the writer's to end.
+        s.clear_source(DeformSource::Scratch);
+        s.combine();
+        assert_eq!(s.combined()[0], Vec2::ZERO);
     }
 
     #[test]

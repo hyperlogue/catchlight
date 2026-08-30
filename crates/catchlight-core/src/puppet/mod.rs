@@ -507,8 +507,15 @@ impl Puppet {
     }
 
     /// Write the puppet's scratch deform — an edit in progress, shown live and
-    /// never part of the model. Cleared, like every other source, at the start
-    /// of the next tick's fold, so a live drag rewrites it per frame.
+    /// never part of the model.
+    ///
+    /// It outlives the folds that follow it: a tick re-derives every other
+    /// deform source from the model and drops what it does not produce, but
+    /// nothing but the writer holds this one. So a client writes it once per
+    /// pointer move rather than once per frame, and the drag survives a frame
+    /// that folds for its own reasons (a driver stepping, a pose moving).
+    /// It ends at [`Self::clear_scratch_deform`], or when the model changes
+    /// and [`Self::sync`] rebakes the stack.
     pub fn set_scratch_deform(&mut self, id: NodeIdx, offsets: &[Vec2]) -> bool {
         let Some(node) = self.arena.get_mut(id) else {
             return false;
@@ -1349,6 +1356,71 @@ mod tests {
             puppet.transforms().get(child_idx),
             at_rest,
             "a tick folds from the model, so the preview is gone",
+        );
+    }
+
+    /// A scratch deform is an edit in progress that only its writer holds, so
+    /// the folds that follow it must leave it alone — an editor writes it once
+    /// per pointer move, not once per frame, and a frame that folds for its
+    /// own reasons must not swallow the drag. It ends when the writer clears
+    /// it, or when the model moves and the puppet rebakes.
+    #[test]
+    fn a_scratch_deform_outlives_a_tick_and_dies_with_the_bake() {
+        use crate::formats::clm::{ClmIndices, ClmMesh};
+        use crate::id::SeededHex;
+        use crate::model::{ModelNode, ModelNodeKind, ModelPart};
+
+        let mut model = Model::new();
+        let mut hex = SeededHex::new(11);
+        let root = model.root().expect("a fresh model has one root").clone();
+        let part = model
+            .add_node(
+                &root,
+                ModelNode::new(
+                    "part",
+                    ModelNodeKind::Part(ModelPart::new(ClmMesh {
+                        verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0],
+                        uvs: vec![0.0; 6],
+                        indices: ClmIndices::U16(vec![0, 1, 2]),
+                        origin: [0.0, 0.0],
+                    })),
+                ),
+                &mut hex,
+            )
+            .expect("add part");
+
+        let mut puppet = Puppet::new(&model);
+        puppet.tick(&model, 0.0);
+        let idx = puppet.node_idx(&part).expect("part baked");
+
+        let drag = [Vec2::new(3.0, -4.0); 3];
+        assert!(puppet.set_scratch_deform(idx, &drag));
+        puppet.combine_deforms();
+        assert_eq!(puppet.combined_deform(idx), Some(&drag[..]));
+
+        puppet.tick(&model, 0.016);
+        assert_eq!(
+            puppet.combined_deform(idx),
+            Some(&drag[..]),
+            "a tick must not swallow an edit in progress",
+        );
+
+        // The writer's own clear ends it...
+        assert!(puppet.clear_scratch_deform(idx));
+        puppet.combine_deforms();
+        assert_eq!(puppet.combined_deform(idx), Some(&[Vec2::ZERO; 3][..]));
+
+        // ...and so does the model moving, which rebuilds the stack.
+        assert!(puppet.set_scratch_deform(idx, &drag));
+        puppet.combine_deforms();
+        model
+            .update_node(&part, |n| n.z_order = 1.0)
+            .expect("edit the part");
+        puppet.tick(&model, 0.0);
+        assert_eq!(
+            puppet.combined_deform(idx),
+            Some(&[Vec2::ZERO; 3][..]),
+            "a rebake starts from the model, so the drag is gone",
         );
     }
 
