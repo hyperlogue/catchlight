@@ -24,15 +24,14 @@
 //!   caller-owned `CompositePool`, so its allocation is the deepest
 //!   puppet's need, not the sum.
 
-use catchlight_core::{
-    load_model, GlobalTransforms, LegacyPuppet, Mesh, ModelFormat, Node, NodeKind, PartData,
-    PuppetTexture, Transform, Vec3,
-};
+mod common;
+
+use catchlight_core::{Mesh, Model, Vec3};
 use catchlight_wgpu::{
-    collect_drawables, create_headless_context, create_orthographic_camera, CompositePool,
-    FrameStats, FramebufferSnapshotPool, Pipelines, RenderList, RenderStats, StencilTarget,
-    WgpuRenderer,
+    create_headless_context, create_orthographic_camera, CompositePool, FrameStats,
+    FramebufferSnapshotPool, Pipelines, RenderList, RenderStats, StencilTarget, WgpuRenderer,
 };
+use common::{Rig, NO_ADAPTER};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,9 +41,6 @@ const H: u32 = 256;
 /// `height / zoom` at the zoom the visual-test baselines frame these
 /// models with, scaled to this viewport.
 const CAMERA_HEIGHT: f32 = 512.0;
-
-const NO_ADAPTER: &str =
-    "no Vulkan adapter for the headless context; see AGENTS.md, \"Native headless rendering\"";
 
 /// Initial buffer capacities in `WgpuRenderer::from_pipelines`. The
 /// reallocation test needs a frame above both; if either constant moves,
@@ -109,13 +105,14 @@ impl Stage {
         WgpuRenderer::from_pipelines(self.device.clone(), self.queue.clone(), self.shared.clone())
     }
 
-    /// Upload a puppet and frame it with the retained camera.
-    fn admit(&self, renderer: &mut WgpuRenderer, puppet: &LegacyPuppet) {
-        renderer.upload_puppet(puppet).expect("upload puppet");
+    /// Prepare a cache for `model` and aim the camera at it.
+    fn admit(&self, renderer: &mut WgpuRenderer, model: Model) -> Rig {
+        let rig = Rig::new(renderer, model);
         renderer.update_camera(create_orthographic_camera(
             CAMERA_HEIGHT,
             W as f32 / H as f32,
         ));
+        rig
     }
 
     /// Record one puppet's draw into `encoder`. No submit: the caller
@@ -150,10 +147,10 @@ impl Stage {
     fn frame(
         &mut self,
         renderer: &mut WgpuRenderer,
-        puppet: &LegacyPuppet,
+        rig: &mut Rig,
         composites: &mut CompositePool,
     ) -> (RenderStats, FrameStats) {
-        let render_list = build_render_list(renderer, puppet);
+        let render_list = rig.frame(renderer, 0.0);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -180,53 +177,36 @@ const CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-fn build_render_list(renderer: &mut WgpuRenderer, puppet: &LegacyPuppet) -> RenderList {
-    renderer.sync_deforms(puppet);
-    let mut transforms = GlobalTransforms::new();
-    puppet.compute_transforms(&mut transforms);
-    collect_drawables(puppet, &transforms)
-}
-
-fn solid_texture() -> PuppetTexture {
-    let rgba: Vec<u8> = (0..16).flat_map(|_| [220u8, 90, 40, 255]).collect();
-    PuppetTexture {
-        width: 4,
-        height: 4,
-        rgba: Arc::from(rgba),
-    }
-}
-
 /// `n` unmasked quads laid out on a grid inside the camera's view, all
 /// sampling one shared texture. One instance and one part-uniform slot
 /// each, so `n` is exactly what the frame's two buffers get sized for.
-fn grid_puppet(n: usize) -> LegacyPuppet {
-    let mut puppet = LegacyPuppet::new();
-    puppet.set_textures(vec![solid_texture()]);
-    let root = puppet.root();
+fn grid_model(n: usize) -> Model {
+    let mut build = common::Build::new();
+    let tex = build.texture(common::solid_texture(4, 4, [220, 90, 40, 255]));
+    let root = build.root();
     let cols = (n as f32).sqrt().ceil().max(1.0) as usize;
+    let mesh = common::mesh_to_clm(&Mesh::quad(6.0, 6.0));
     for i in 0..n {
-        let mut part = PartData {
-            mesh: Mesh::quad(6.0, 6.0),
-            ..Default::default()
-        };
-        part.opacity = 1.0;
-        part.tint = Vec3::ONE;
-        part.screen_tint = Vec3::ZERO;
         let col = (i % cols) as f32;
         let row = (i / cols) as f32;
         let span = cols as f32;
-        let node = Node {
-            kind: NodeKind::Part(Box::new(part)),
-            transform: Transform {
-                translation: Vec3::new((col - span / 2.0) * 8.0, (row - span / 2.0) * 8.0, 0.0),
-                ..Default::default()
-            },
-            z_order: i as f32,
-            ..Default::default()
-        };
-        puppet.insert_child(root, node, None);
+        let id = build.part(
+            &root,
+            &format!("part-{i}"),
+            i as f32,
+            mesh.clone(),
+            &tex,
+            |_| {},
+        );
+        build
+            .model
+            .update_node(&id, |node| {
+                node.transform.translation =
+                    [(col - span / 2.0) * 8.0, (row - span / 2.0) * 8.0, 0.0];
+            })
+            .expect("place the part");
     }
-    puppet
+    build.model
 }
 
 fn model_path(stem: &str) -> PathBuf {
@@ -235,11 +215,10 @@ fn model_path(stem: &str) -> PathBuf {
         .join(format!("{stem}.clm"))
 }
 
-fn load_test_model(stem: &str) -> LegacyPuppet {
+fn load_test_model(stem: &str) -> Model {
     let path = model_path(stem);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let format = ModelFormat::from_path(&path).expect("recognized model extension");
-    load_model(&bytes, format, 0).expect("load model")
+    Model::from_clm_bytes(&bytes).expect("load model")
 }
 
 // ---------------------------------------------------------------------
@@ -256,9 +235,9 @@ fn one_submit_per_frame_regardless_of_part_count() {
     // and mask sources, which split the frame across several reserve /
     // write sites. The queue-write counts must come out the same either
     // way — one per per-frame buffer, however many sites feed it.
-    let cases: Vec<(&str, LegacyPuppet)> = vec![
-        ("3 parts", grid_puppet(3)),
-        ("40 parts", grid_puppet(40)),
+    let cases: Vec<(&str, Model)> = vec![
+        ("3 parts", grid_model(3)),
+        ("40 parts", grid_model(40)),
         ("composite_masks.clm", load_test_model("composite_masks")),
         (
             "blend_modes_composite.clm",
@@ -266,12 +245,12 @@ fn one_submit_per_frame_regardless_of_part_count() {
         ),
     ];
 
-    for (label, puppet) in &cases {
+    for (label, model) in cases {
         let mut renderer = stage.renderer();
-        stage.admit(&mut renderer, puppet);
+        let mut rig = stage.admit(&mut renderer, model);
 
         let before = stage.submits;
-        let (stats, fs) = stage.frame(&mut renderer, puppet, &mut pool);
+        let (stats, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
 
         assert!(stats.drawn_parts > 0, "{label}: drew nothing");
         assert_eq!(
@@ -310,10 +289,12 @@ fn one_submit_per_frame_regardless_of_part_count() {
 
     // The grid cases must really have drawn every part, so the two
     // synthetic frames above aren't quietly filtering down to one draw.
-    let puppet = grid_puppet(40);
-    let mut renderer = stage.renderer();
-    stage.admit(&mut renderer, &puppet);
-    let (stats, _) = stage.frame(&mut renderer, &puppet, &mut pool);
+    let mut rig = {
+        let mut renderer = stage.renderer();
+        let rig = stage.admit(&mut renderer, grid_model(40));
+        (renderer, rig)
+    };
+    let (stats, _) = stage.frame(&mut rig.0, &mut rig.1, &mut pool);
     assert_eq!(stats.drawn_parts, 40);
 }
 
@@ -325,11 +306,10 @@ fn one_submit_per_frame_regardless_of_part_count() {
 fn no_buffer_grows_mid_frame_when_the_frame_fits() {
     let mut stage = Stage::new();
     let mut pool = CompositePool::new(W, H);
-    let puppet = grid_puppet(8);
     let mut renderer = stage.renderer();
-    stage.admit(&mut renderer, &puppet);
+    let mut rig = stage.admit(&mut renderer, grid_model(8));
 
-    let (_, fs) = stage.frame(&mut renderer, &puppet, &mut pool);
+    let (_, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
     assert_eq!(fs.instance_buffer_reallocs, 0);
     assert_eq!(fs.part_uniform_buffer_reallocs, 0);
     assert_eq!(
@@ -347,11 +327,10 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
 
     let mut stage = Stage::new();
     let mut pool = CompositePool::new(W, H);
-    let puppet = grid_puppet(parts);
     let mut renderer = stage.renderer();
-    stage.admit(&mut renderer, &puppet);
+    let mut rig = stage.admit(&mut renderer, grid_model(parts));
 
-    let (_, first) = stage.frame(&mut renderer, &puppet, &mut pool);
+    let (_, first) = stage.frame(&mut renderer, &mut rig, &mut pool);
     assert_eq!(
         first.instance_slots_budgeted, parts as u32,
         "one instance per unmasked part",
@@ -381,7 +360,7 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
 
     // Same frame again: the capacity from frame 1 must carry over.
     for round in 2..=3 {
-        let (_, again) = stage.frame(&mut renderer, &puppet, &mut pool);
+        let (_, again) = stage.frame(&mut renderer, &mut rig, &mut pool);
         assert_eq!(
             (
                 again.instance_buffer_reallocs,
@@ -395,11 +374,10 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
     }
 
     // …and a smaller frame afterwards must not shrink (i.e. reallocate) either.
-    let small = grid_puppet(4);
     let mut small_renderer = stage.renderer();
-    stage.admit(&mut small_renderer, &small);
-    stage.frame(&mut small_renderer, &small, &mut pool);
-    let (_, shrunk) = stage.frame(&mut renderer, &puppet, &mut pool);
+    let mut small = stage.admit(&mut small_renderer, grid_model(4));
+    stage.frame(&mut small_renderer, &mut small, &mut pool);
+    let (_, shrunk) = stage.frame(&mut renderer, &mut rig, &mut pool);
     assert_eq!(shrunk.instance_buffer_reallocs, 0);
     assert_eq!(shrunk.part_uniform_buffer_reallocs, 0);
     assert_eq!(shrunk.late_buffer_reallocs, 0);
@@ -420,10 +398,9 @@ fn every_reserved_slot_is_written_exactly_once() {
     // debug run of this test exercises it once per write; these
     // assertions cover the release build.
     for parts in [3usize, 7, 33] {
-        let puppet = grid_puppet(parts);
         let mut renderer = stage.renderer();
-        stage.admit(&mut renderer, &puppet);
-        let (_, fs) = stage.frame(&mut renderer, &puppet, &mut pool);
+        let mut rig = stage.admit(&mut renderer, grid_model(parts));
+        let (_, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
 
         assert!(
             fs.instance_slots_reserved > 0,
@@ -464,10 +441,9 @@ fn every_reserved_slot_is_written_exactly_once() {
 fn part_uniform_offsets_are_distinct_and_increasing() {
     let mut stage = Stage::new();
     let mut pool = CompositePool::new(W, H);
-    let puppet = grid_puppet(4);
     let mut renderer = stage.renderer();
-    stage.admit(&mut renderer, &puppet);
-    stage.frame(&mut renderer, &puppet, &mut pool);
+    let mut rig = stage.admit(&mut renderer, grid_model(4));
+    stage.frame(&mut renderer, &mut rig, &mut pool);
 
     // `write_part_uniform` hands back the dynamic offset it wrote at.
     // Draws bind these as distinct slots, so a repeat would make two
@@ -508,17 +484,15 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
         "nested_composite",
         "blend_modes_composite",
     ];
-    let puppets: Vec<LegacyPuppet> = stems.iter().map(|s| load_test_model(s)).collect();
-
     let mut stage = Stage::new();
 
     // Each model alone, each with its own pool.
     let mut alone = Vec::new();
-    for (stem, puppet) in stems.iter().zip(&puppets) {
+    for stem in stems.iter() {
         let mut pool = CompositePool::new(W, H);
         let mut renderer = stage.renderer();
-        stage.admit(&mut renderer, puppet);
-        let (_, fs) = stage.frame(&mut renderer, puppet, &mut pool);
+        let mut rig = stage.admit(&mut renderer, load_test_model(stem));
+        let (_, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
         let (peak, capacity, _, _) = pool.stats();
         assert_eq!(fs.late_buffer_reallocs, 0);
         println!("{stem}: composite pool peak={peak} capacity={capacity}");
@@ -538,19 +512,18 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
 
     // All three in one frame, one encoder, one submit, one pool.
     let mut pool = CompositePool::new(W, H);
-    let mut renderers: Vec<WgpuRenderer> = puppets
+    let mut scenes: Vec<(WgpuRenderer, Rig)> = stems
         .iter()
-        .map(|puppet| {
+        .map(|stem| {
             let mut r = stage.renderer();
-            stage.admit(&mut r, puppet);
-            r
+            let rig = stage.admit(&mut r, load_test_model(stem));
+            (r, rig)
         })
         .collect();
 
-    let lists: Vec<RenderList> = renderers
+    let lists: Vec<RenderList> = scenes
         .iter_mut()
-        .zip(&puppets)
-        .map(|(r, p)| build_render_list(r, p))
+        .map(|(r, rig)| rig.frame(r, 0.0))
         .collect();
 
     let mut encoder = stage
@@ -560,10 +533,10 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
         });
     // One camera-submit boundary for the whole frame: every renderer's
     // views live in the same submission.
-    for r in renderers.iter_mut() {
+    for (r, _) in scenes.iter_mut() {
         r.begin_camera_submit();
     }
-    for (i, (renderer, list)) in renderers.iter_mut().zip(&lists).enumerate() {
+    for (i, ((renderer, _), list)) in scenes.iter_mut().zip(&lists).enumerate() {
         // Only the first puppet clears; the rest compose onto it, which
         // is what makes them one frame rather than three.
         let clear = (i == 0).then_some(CLEAR);

@@ -5,12 +5,29 @@
 //! `--control` (or the `C` key) opens the egui panel of per-param sliders and
 //! stops animation playback.
 
-use catchlight_core::{load_model, GlobalTransforms, ModelFormat, Param};
-use catchlight_wgpu::{
-    collect_drawables, create_orthographic_camera_at, create_surface_context, SurfaceContext,
-    WgpuRenderer,
+use catchlight_core::{
+    formats::InxModel, importer::from_inx_model_to_legacy, Model, ModelFormat, ParamId, Puppet,
 };
+use catchlight_wgpu::{
+    collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
+    SurfaceContext, WgpuRenderer,
+};
+use std::path::Path;
 use std::sync::Arc;
+
+/// Load a model file into a [`Model`]. `.inx` goes through the importer's
+/// legacy-document conversion, which is the one path an `.inx` still has.
+fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    match ModelFormat::from_path(path) {
+        Some(ModelFormat::Clm) => Ok(Model::from_clm_bytes(&bytes)?),
+        Some(ModelFormat::Inx) => {
+            let inx = InxModel::parse(std::io::Cursor::new(bytes))?;
+            Ok(Model::from_legacy(&from_inx_model_to_legacy(&inx)?)?)
+        }
+        _ => Err(format!("unsupported model file: {}", path.display()).into()),
+    }
+}
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
@@ -27,13 +44,12 @@ const MAX_CAMERA_HEIGHT: f32 = 40000.0;
 /// back from the puppet, so they stay a stable, single source of truth even
 /// when physics overwrites its own target params on the frames it runs.
 struct ParamSlider {
-    uuid: u32,
+    param: ParamId,
     name: String,
-    is_vec2: bool,
-    min: glam::Vec2,
-    max: glam::Vec2,
-    default: glam::Vec2,
-    value: glam::Vec2,
+    min: f32,
+    max: f32,
+    default: f32,
+    value: f32,
 }
 
 fn param_group(name: &str) -> &str {
@@ -55,7 +71,7 @@ impl ControlUi {
         device: &wgpu::Device,
         output_format: wgpu::TextureFormat,
         window: &Window,
-        params: &[Param],
+        model: &Model,
     ) -> Self {
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -69,16 +85,19 @@ impl ControlUi {
         let egui_renderer =
             egui_wgpu::Renderer::new(device, output_format, egui_wgpu::RendererOptions::default());
 
-        let mut param_sliders: Vec<ParamSlider> = params
+        let mut param_sliders: Vec<ParamSlider> = model
+            .param_ids()
             .iter()
-            .map(|p| ParamSlider {
-                uuid: p.id,
-                name: p.name.clone(),
-                is_vec2: p.is_vec2,
-                min: p.min,
-                max: p.max,
-                default: p.defaults,
-                value: p.defaults,
+            .filter_map(|id| {
+                let p = model.param(id)?;
+                Some(ParamSlider {
+                    param: id.clone(),
+                    name: p.name.to_string(),
+                    min: p.min,
+                    max: p.max,
+                    default: p.default,
+                    value: p.default,
+                })
             })
             .collect();
         // Sorted so params sharing a "Group - Name" prefix land adjacent,
@@ -121,27 +140,10 @@ impl ControlUi {
                                 .show(ui, |ui| {
                                     for slider in group.iter_mut() {
                                         ui.label(&slider.name);
-                                        if slider.is_vec2 {
-                                            ui.add(
-                                                egui::Slider::new(
-                                                    &mut slider.value.x,
-                                                    slider.min.x..=slider.max.x,
-                                                )
-                                                .text("X"),
-                                            );
-                                            ui.add(
-                                                egui::Slider::new(
-                                                    &mut slider.value.y,
-                                                    slider.min.y..=slider.max.y,
-                                                )
-                                                .text("Y"),
-                                            );
-                                        } else {
-                                            ui.add(egui::Slider::new(
-                                                &mut slider.value.x,
-                                                slider.min.x..=slider.max.x,
-                                            ));
-                                        }
+                                        ui.add(egui::Slider::new(
+                                            &mut slider.value,
+                                            slider.min..=slider.max,
+                                        ));
                                     }
                                 });
                         }
@@ -204,13 +206,15 @@ struct App {
     surface: Option<SurfaceContext>,
     stencil: Option<catchlight_wgpu::StencilTarget>,
     composites: Option<catchlight_wgpu::CompositePool>,
-    puppet: catchlight_core::LegacyPuppet,
-    transforms: GlobalTransforms,
+    model: Model,
+    puppet: Puppet,
+    /// Built in `resumed`, alongside the renderer whose GPU state it names.
+    cache: Option<RenderCache>,
     start: std::time::Instant,
     last_frame: std::time::Instant,
-    /// Name of the first param with at least one Deform binding. If
-    /// present we sine-animate its value so the deform path is visible.
-    demo_param: Option<String>,
+    /// The first param with at least one deform binding. If present we
+    /// sine-animate its value so the deform path is visible.
+    demo_param: Option<ParamId>,
     // Camera state: world-space center the view is looking at, and
     // ortho camera height. Left-drag pans; scroll zooms.
     camera_center: glam::Vec2,
@@ -269,12 +273,17 @@ impl ApplicationHandler for App {
 
             let mut renderer = WgpuRenderer::new(device, queue, surface_ctx.render_format).await;
 
-            println!("Uploading puppet to GPU...");
-            match renderer.upload_puppet(&self.puppet) {
-                Ok((tex_count, mesh_count)) => {
-                    println!("Uploaded {} textures, {} meshes", tex_count, mesh_count);
+            println!("Preparing the render cache...");
+            match RenderCache::prepare(&mut renderer, &self.model, PrepareOptions::default()) {
+                Ok(cache) => {
+                    println!(
+                        "Uploaded {} textures, {} meshes",
+                        cache.texture_count(),
+                        cache.mesh_count()
+                    );
+                    self.cache = Some(cache);
                 }
-                Err(e) => eprintln!("Failed to upload puppet: {}", e),
+                Err(e) => eprintln!("Failed to prepare the render cache: {}", e),
             }
 
             let aspect = size.width as f32 / size.height as f32;
@@ -289,7 +298,7 @@ impl ApplicationHandler for App {
                 &renderer.device,
                 surface_ctx.render_format,
                 &window,
-                self.puppet.params(),
+                &self.model,
             ));
 
             self.renderer = Some(renderer);
@@ -394,9 +403,10 @@ impl ApplicationHandler for App {
                 self.update_camera();
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(surface_ctx), Some(renderer), Some(window)) = (
+                if let (Some(surface_ctx), Some(renderer), Some(cache), Some(window)) = (
                     self.surface.as_ref(),
                     self.renderer.as_mut(),
+                    self.cache.as_mut(),
                     self.window.as_ref(),
                 ) {
                     let now = std::time::Instant::now();
@@ -408,48 +418,35 @@ impl ApplicationHandler for App {
                         if let Some(control) = self.control.as_mut() {
                             let output = control.prepare(window);
                             for slider in &control.param_sliders {
-                                self.puppet.set_param_value(slider.uuid, slider.value);
+                                self.puppet.set_param_value(&slider.param, slider.value);
                             }
                             control_output = Some(output);
                         }
-                    } else if let Some(name) = &self.demo_param {
+                    } else if let Some(param) = &self.demo_param {
                         // Animate the first deform param so the param -> DeformStack
                         // -> GPU deform_buffer path shows on screen. A shallow
                         // 0..0.5 sine looks more like breathing than 0..1.0,
                         // which visibly over-deforms the reference rig's shoulders/body.
                         let t = self.start.elapsed().as_secs_f32();
                         let v = 0.25 + 0.25 * (t * std::f32::consts::TAU * 0.3).sin();
-                        self.puppet
-                            .set_param_value_by_name(name, glam::Vec2::new(v, v));
+                        self.puppet.set_param_value(param, v);
                     }
 
-                    // Control mode with physics off runs the manual per-frame
-                    // pipeline (AGENTS.md) minus its physics phase, so the pose
-                    // is exactly what the sliders say. Every other case defers
-                    // to `tick`, which still lets SimplePhysics respond to
-                    // whatever pose the sliders (or the demo animation) set.
-                    let manual_pose_only = self.control_enabled
-                        && !self.control.as_ref().is_some_and(|c| c.physics_enabled);
-                    if manual_pose_only {
-                        self.puppet.reset_dynamic_state();
-                        self.puppet.reset_deforms();
-                        self.puppet.apply_params();
-                        self.puppet.compute_transforms(&mut self.transforms);
-                        if self
-                            .puppet
-                            .apply_translate_children_filter(&self.transforms)
-                        {
-                            self.puppet.compute_transforms(&mut self.transforms);
-                        }
-                        self.puppet.propagate_mesh_group_deforms(&self.transforms);
-                        self.puppet.apply_welds(&self.transforms);
-                        self.puppet.combine_deforms();
-                    } else {
-                        self.puppet
-                            .tick(&mut self.transforms, glam::Mat4::IDENTITY, dt);
+                    // Control mode with physics off freezes the drivers, so
+                    // the pose is exactly what the sliders say. Every other
+                    // case leaves them running, so SimplePhysics still
+                    // responds to whatever the sliders (or the demo animation)
+                    // set.
+                    let physics = !self.control_enabled
+                        || self.control.as_ref().is_some_and(|c| c.physics_enabled);
+                    if self.puppet.physics_enabled() != physics {
+                        self.puppet.set_physics_enabled(physics);
                     }
-                    renderer.sync_deforms(&self.puppet);
-                    let render_list = collect_drawables(&self.puppet, &self.transforms);
+                    self.puppet.tick(&self.model, dt);
+                    if let Err(e) = cache.refresh(renderer, &self.model, &self.puppet) {
+                        eprintln!("Failed to refresh the render cache: {}", e);
+                    }
+                    let render_list = collect(cache, &self.puppet);
 
                     // wgpu 29: acquire returns None for any non-presentable
                     // state (lost/outdated/timeout/…); reconfigure and retry.
@@ -540,28 +537,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("Loading model: {}", path.display());
-    let bytes = std::fs::read(&path)?;
-    let format = ModelFormat::from_path(&path)
-        .ok_or_else(|| format!("unrecognized model extension: {}", path.display()))?;
-    let mut puppet = load_model(&bytes, format, 0)?;
+    let model = load_model_file(&path)?;
     println!(
         "Loaded {} textures, {} params",
-        puppet.textures().len(),
-        puppet.params().len()
+        model.texture_ids().len(),
+        model.param_ids().len()
     );
+    let mut puppet = Puppet::new(&model);
 
-    use catchlight_core::BindingValues;
-    let demo_param: Option<String> = puppet
-        .params()
+    use catchlight_core::BindingTarget;
+    // First param (in the model's own order) that any deform binding names.
+    let demo_param: Option<ParamId> = model
+        .param_ids()
         .iter()
-        .find(|p: &&Param| {
-            p.bindings
-                .iter()
-                .any(|b| matches!(b.values, BindingValues::Deform(_)))
+        .find(|id| {
+            model
+                .bindings_of_param(id)
+                .any(|b| b.target() == BindingTarget::Deform)
         })
-        .map(|p| p.name.clone());
-    if let Some(name) = &demo_param {
-        println!("Animating deform param: {}", name);
+        .cloned();
+    if let Some(param) = &demo_param {
+        let name = model
+            .param(param)
+            .map(|p| p.name.to_string())
+            .unwrap_or_default();
+        println!("Animating deform param: {name}");
     }
 
     // Synthesize a blink animation targeting every param whose name
@@ -569,14 +569,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // "Right Eye - Blink"). value=0 -> open, value=1 -> closed.
     // Sequence: 3s open -> quick close -> brief hold -> quick reopen.
     if puppet.animations().is_empty() {
-        use catchlight_core::{Animation, AnimationLane, InterpolateMode, Keyframe};
-        let blink_uuids: Vec<u32> = puppet
-            .params()
+        use catchlight_core::{InterpolateMode, Keyframe, PuppetAnimation, PuppetLane};
+        let blink_params: Vec<ParamId> = model
+            .param_ids()
             .iter()
-            .filter(|p| p.name.contains("Blink"))
-            .map(|p| p.id)
+            .filter(|id| {
+                model
+                    .param(id)
+                    .is_some_and(|p| p.name.as_str().contains("Blink"))
+            })
+            .cloned()
             .collect();
-        if !blink_uuids.is_empty() {
+        if !blink_params.is_empty() {
             let kfs = || -> Vec<Keyframe> {
                 // 60 fps timestep below; frame values become seconds * 60.
                 // Short cycle with noticeable closed phase so the blink
@@ -604,16 +608,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }, // 200ms reopen
                 ]
             };
-            let lanes = blink_uuids
+            let lanes = blink_params
                 .iter()
-                .map(|&uuid| AnimationLane {
-                    param_id: uuid,
-                    axis: catchlight_core::ParamAxis::X,
+                .map(|param| PuppetLane {
+                    param: param.clone(),
                     keyframes: kfs(),
                     interpolation: InterpolateMode::Linear,
                 })
                 .collect();
-            let anim = Animation {
+            let anim = PuppetAnimation {
                 name: "Blink".into(),
                 timestep: 1.0 / 60.0,
                 length: 102,
@@ -626,7 +629,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !control_enabled && puppet.play_animation("Blink") {
                 println!(
                     "Playing built-in animation: Blink ({} eye(s))",
-                    blink_uuids.len()
+                    blink_params.len()
                 );
             }
         }
@@ -642,8 +645,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         surface: None,
         stencil: None,
         composites: None,
+        model,
         puppet,
-        transforms: GlobalTransforms::new(),
+        cache: None,
         start: now,
         last_frame: now,
         demo_param,

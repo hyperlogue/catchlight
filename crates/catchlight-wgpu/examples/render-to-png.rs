@@ -6,10 +6,28 @@
 //! `compute_transforms` the output stays byte-identical through a regression
 //! in params, mesh groups or welds, so it is the hash-stability check.
 
-use catchlight_core::{load_model, ModelFormat};
-use catchlight_wgpu::{
-    collect_drawables, create_orthographic_camera, DrawableInfo, RenderContext, RenderList,
+use catchlight_core::{
+    formats::InxModel, importer::from_inx_model_to_legacy, Model, ModelFormat, Puppet,
 };
+use catchlight_wgpu::{
+    collect, create_orthographic_camera, DrawableInfo, PrepareOptions, RenderCache, RenderContext,
+    RenderList,
+};
+use std::path::Path;
+
+/// Load a model file into a [`Model`]. `.inx` goes through the importer's
+/// legacy-document conversion, which is the one path an `.inx` still has.
+fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    match ModelFormat::from_path(path) {
+        Some(ModelFormat::Clm) => Ok(Model::from_clm_bytes(&bytes)?),
+        Some(ModelFormat::Inx) => {
+            let inx = InxModel::parse(std::io::Cursor::new(bytes))?;
+            Ok(Model::from_legacy(&from_inx_model_to_legacy(&inx)?)?)
+        }
+        _ => Err(format!("unsupported model file: {}", path.display()).into()),
+    }
+}
 
 fn print_render_list(render_list: &RenderList) {
     println!(
@@ -112,18 +130,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(5000.0);
 
     println!("Loading model: {}", path.display());
-    let bytes = std::fs::read(&path)?;
-    let format = ModelFormat::from_path(&path)
-        .ok_or_else(|| format!("unrecognized model extension: {}", path.display()))?;
-    let mut puppet = load_model(&bytes, format, 0)?;
-    println!("Loaded {} textures", puppet.textures().len());
+    let model = load_model_file(&path)?;
+    println!("Loaded {} textures", model.texture_ids().len());
 
     println!("Render size: {}x{}", width, height);
     let mut ctx = RenderContext::new(width, height).await?;
 
-    println!("Uploading puppet to GPU...");
-    let (tex_count, mesh_count) = ctx.renderer.upload_puppet(&puppet)?;
-    println!("Uploaded {} textures, {} meshes", tex_count, mesh_count);
+    println!("Preparing the render cache...");
+    let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())?;
+    println!(
+        "Uploaded {} textures, {} meshes",
+        cache.texture_count(),
+        cache.mesh_count()
+    );
 
     // Set up camera
     let aspect = width as f32 / height as f32;
@@ -134,10 +153,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `tick` (not a bare compute_transforms) is what folds params, mesh-group
     // warps and welds — without it this renders the raw authored pose, and the
     // output hash stays byte-identical through a regression in any of them.
-    puppet.settle_physics();
-    puppet.tick(&mut ctx.transforms, glam::Mat4::IDENTITY, 0.0);
-    ctx.renderer.sync_deforms(&puppet);
-    let render_list = collect_drawables(&puppet, &ctx.transforms);
+    let mut puppet = Puppet::new(&model);
+    puppet.settle_physics(&model);
+    puppet.tick(&model, 0.0);
+    cache.refresh(&mut ctx.renderer, &model, &puppet)?;
+    let render_list = collect(&cache, &puppet);
     print_render_list(&render_list);
 
     // Stage 2: Render the RenderList to target.
