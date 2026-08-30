@@ -6,8 +6,7 @@
 //! lower in front; the flip happens at import, never here.
 
 use catchlight_core::{
-    BlendMode, CompositeData, GlobalTransforms, LegacyPuppet, MaskMode, MeshId, NodeIdx, NodeKind,
-    TextureId,
+    BlendMode, CompositeData, GlobalTransforms, LegacyPuppet, MaskMode, NodeIdx, NodeKind,
 };
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -15,17 +14,23 @@ use std::collections::HashMap;
 // SmallVec inline cap = 2 — typical part has 0 masks; rigs rarely exceed 2.
 pub type MaskSources = SmallVec<[MaskSourceData; 2]>;
 
+/// A mask source, with the render cache's slots for whatever the renderer
+/// has to rasterize.
+///
+/// `mesh_id` / `texture_id` / `node_id` are **render-cache slots, not Ids** —
+/// dense `u32` positions in the cache's own tables, meaningful only against
+/// the cache the drawables were collected from.
 #[derive(Debug, Clone)]
 pub enum MaskSourceData {
     Part {
-        mesh_id: MeshId,
-        texture_id: TextureId,
+        mesh_id: u32,
+        texture_id: u32,
         transform: glam::Mat4,
         mode: MaskMode,
         mask_threshold: f32,
     },
     Composite {
-        node_id: NodeIdx,
+        node_id: u32,
         mode: MaskMode,
     },
 }
@@ -44,8 +49,8 @@ impl MaskSourceData {
 
 #[derive(Debug, Clone)]
 pub struct CompositeMaskPartData {
-    pub mesh_id: MeshId,
-    pub texture_id: TextureId,
+    pub mesh_id: u32,
+    pub texture_id: u32,
     pub transform: glam::Mat4,
     pub mask_threshold: f32,
 }
@@ -57,11 +62,17 @@ pub struct CompositeMaskSourceData {
     pub parts: Vec<CompositeMaskPartData>,
 }
 
+/// One thing to draw, with the render cache's slots for its resources.
+///
+/// `mesh_id` / `texture_id` / `node_id` are **render-cache slots, not Ids**:
+/// dense `u32` positions in the cache's mesh, texture and node tables. The
+/// renderer indexes its GPU state by them and nothing outside a cache and the
+/// list collected from it can interpret them.
 #[derive(Debug, Clone)]
 pub enum DrawableInfo {
     Part {
-        mesh_id: MeshId,
-        texture_id: TextureId,
+        mesh_id: u32,
+        texture_id: u32,
         transform: glam::Mat4,
         z_order: f32,
         blend_mode: BlendMode,
@@ -72,7 +83,7 @@ pub enum DrawableInfo {
         mask_threshold: f32,
     },
     Composite {
-        node_id: NodeIdx,
+        node_id: u32,
         z_order: f32,
         blend_mode: BlendMode,
         opacity: f32,
@@ -102,8 +113,10 @@ impl DrawableInfo {
 #[derive(Debug, Default)]
 pub struct RenderList {
     pub root_drawables: Vec<DrawableInfo>,
-    pub composite_children: HashMap<NodeIdx, Vec<DrawableInfo>>,
-    pub composite_mask_sources: HashMap<NodeIdx, CompositeMaskSourceData>,
+    /// Keyed by the composite's own slot, the `node_id` of its
+    /// `DrawableInfo::Composite`.
+    pub composite_children: HashMap<u32, Vec<DrawableInfo>>,
+    pub composite_mask_sources: HashMap<u32, CompositeMaskSourceData>,
 }
 
 impl Clone for RenderList {
@@ -282,7 +295,7 @@ fn collect_mask_sources(
     node_id: NodeIdx,
     puppet: &LegacyPuppet,
     transforms: &GlobalTransforms,
-    composite_sources: &mut HashMap<NodeIdx, CompositeMaskSourceData>,
+    composite_sources: &mut HashMap<u32, CompositeMaskSourceData>,
 ) -> MaskSources {
     let Some(node) = puppet.get(node_id) else {
         return MaskSources::new();
@@ -304,14 +317,14 @@ fn collect_mask_sources(
         };
         match &mask_node.kind {
             NodeKind::Part(part) => sources.push(MaskSourceData::Part {
-                mesh_id: MeshId(mask_node_id.0),
-                texture_id: part.albedo_texture,
+                mesh_id: mask_node_id.0,
+                texture_id: part.albedo_texture.0,
                 transform: transforms.get(mask_node_id),
                 mode: binding.mode,
                 mask_threshold: part.mask_threshold,
             }),
             NodeKind::Composite(composite) => {
-                composite_sources.entry(mask_node_id).or_insert_with(|| {
+                composite_sources.entry(mask_node_id.0).or_insert_with(|| {
                     let mut parts = Vec::new();
                     let mut stack = puppet.tree().get_children(mask_node_id);
                     while let Some(descendant) = stack.pop() {
@@ -320,8 +333,8 @@ fn collect_mask_sources(
                         {
                             if (part.albedo_texture.0 as usize) < puppet.textures().len() {
                                 parts.push(CompositeMaskPartData {
-                                    mesh_id: MeshId(descendant.0),
-                                    texture_id: part.albedo_texture,
+                                    mesh_id: descendant.0,
+                                    texture_id: part.albedo_texture.0,
                                     transform: transforms.get(descendant),
                                     mask_threshold: part.mask_threshold,
                                 });
@@ -336,7 +349,7 @@ fn collect_mask_sources(
                     }
                 });
                 sources.push(MaskSourceData::Composite {
-                    node_id: mask_node_id,
+                    node_id: mask_node_id.0,
                     mode: binding.mode,
                 });
             }
@@ -465,7 +478,7 @@ impl DrawableCollector {
                         &mut render_list.composite_mask_sources,
                     );
                     let info = DrawableInfo::Composite {
-                        node_id,
+                        node_id: node_id.0,
                         z_order: global_z,
                         blend_mode: composite.blend_mode,
                         opacity: composite.opacity,
@@ -485,7 +498,7 @@ impl DrawableCollector {
                     match nearest_composite {
                         Some(c) => render_list
                             .composite_children
-                            .entry(c)
+                            .entry(c.0)
                             .or_default()
                             .push(info),
                         None => render_list.root_drawables.push(info),
@@ -506,8 +519,8 @@ impl DrawableCollector {
                         &mut render_list.composite_mask_sources,
                     );
                     let info = DrawableInfo::Part {
-                        mesh_id: MeshId(node_id.0),
-                        texture_id: part.albedo_texture,
+                        mesh_id: node_id.0,
+                        texture_id: part.albedo_texture.0,
                         transform: transforms.get(node_id),
                         z_order: global_z,
                         blend_mode: part.blend_mode,
@@ -521,7 +534,7 @@ impl DrawableCollector {
                     match nearest_composite {
                         Some(c) => render_list
                             .composite_children
-                            .entry(c)
+                            .entry(c.0)
                             .or_default()
                             .push(info),
                         None => render_list.root_drawables.push(info),
@@ -633,7 +646,7 @@ mod tests {
                     node_id,
                     mask_sources,
                     ..
-                } if *node_id == composite => Some(mask_sources),
+                } if *node_id == composite.0 => Some(mask_sources),
                 _ => None,
             })
             .expect("composite drawable");
@@ -645,7 +658,7 @@ mod tests {
                 mesh_id,
                 mode: MaskMode::DodgeMask,
                 ..
-            } if mesh_id == MeshId(mask_id.0)
+            } if mesh_id == mask_id.0
         ));
         assert_eq!(render_list.total_instance_count(), 3);
     }
@@ -689,12 +702,12 @@ mod tests {
 
         let source_data = render_list
             .composite_mask_sources
-            .get(&source)
+            .get(&source.0)
             .expect("composite mask source");
         assert_eq!(source_data.opacity, 0.75);
         assert_eq!(source_data.mask_threshold, 0.6);
         assert_eq!(source_data.parts.len(), 1);
-        assert_eq!(source_data.parts[0].mesh_id, MeshId(source_part.0));
+        assert_eq!(source_data.parts[0].mesh_id, source_part.0);
         assert_eq!(render_list.total_instance_count(), 3);
     }
 
@@ -736,7 +749,7 @@ mod tests {
         let render_list = collect_drawables(&puppet, &transforms);
 
         // Only the outer composite emits a drawable; inner is flattened away.
-        let composites: Vec<NodeIdx> = render_list
+        let composites: Vec<u32> = render_list
             .root_drawables
             .iter()
             .filter_map(|d| match d {
@@ -744,22 +757,22 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(composites, vec![outer]);
+        assert_eq!(composites, vec![outer.0]);
 
         // Both Parts are children of the outer composite, sorted ascending
         // by z (front-most last): z=0 behind, then z=10 front.
         let kids = render_list
             .composite_children
-            .get(&outer)
+            .get(&outer.0)
             .expect("outer composite children");
-        let kid_ids: Vec<MeshId> = kids
+        let kid_ids: Vec<u32> = kids
             .iter()
             .filter_map(|d| match d {
                 DrawableInfo::Part { mesh_id, .. } => Some(*mesh_id),
                 _ => None,
             })
             .collect();
-        assert_eq!(kid_ids, vec![MeshId(behind.0), MeshId(front.0)]);
+        assert_eq!(kid_ids, vec![behind.0, front.0]);
     }
 
     #[test]
@@ -804,14 +817,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            ids,
-            vec![
-                MeshId(behind.0),
-                MeshId(first_front.0),
-                MeshId(last_front.0)
-            ]
-        );
+        assert_eq!(ids, vec![behind.0, first_front.0, last_front.0]);
     }
 
     /// An inner Composite that isolates something — here a Multiply child,
@@ -846,7 +852,7 @@ mod tests {
         puppet.compute_transforms(&mut transforms);
         let render_list = collect_drawables(&puppet, &transforms);
 
-        let composites = |drawables: &[DrawableInfo]| -> Vec<NodeIdx> {
+        let composites = |drawables: &[DrawableInfo]| -> Vec<u32> {
             drawables
                 .iter()
                 .filter_map(|d| match d {
@@ -858,22 +864,22 @@ mod tests {
 
         assert_eq!(
             composites(&render_list.root_drawables),
-            vec![outer],
+            vec![outer.0],
             "only the outer composite is a root drawable"
         );
         let outer_kids = render_list
             .composite_children
-            .get(&outer)
+            .get(&outer.0)
             .expect("outer composite children");
         assert_eq!(
             composites(outer_kids),
-            vec![inner],
+            vec![inner.0],
             "the isolating nested composite is a child drawable of the outer"
         );
         assert!(
             render_list
                 .composite_children
-                .get(&inner)
+                .get(&inner.0)
                 .is_some_and(|kids| kids.len() == 1),
             "the inner composite keeps its own child list"
         );
@@ -904,7 +910,7 @@ mod tests {
         puppet.compute_transforms(&mut transforms);
         let render_list = collect_drawables(&puppet, &transforms);
 
-        let drawn: Vec<MeshId> = render_list
+        let drawn: Vec<u32> = render_list
             .root_drawables
             .iter()
             .filter_map(|d| match d {
@@ -913,8 +919,8 @@ mod tests {
             })
             .collect();
         assert_eq!(drawn.len(), 2);
-        assert!(drawn.contains(&MeshId(darken.0)));
-        assert!(drawn.contains(&MeshId(visible.0)));
+        assert!(drawn.contains(&darken.0));
+        assert!(drawn.contains(&visible.0));
     }
 
     /// The cached structural pass-through verdict must be re-evaluated when
@@ -938,7 +944,7 @@ mod tests {
         // Every Composite drawable in the list, wherever it is routed: the
         // question here is whether `inner` emits one at all, not where it
         // lands (`isolating_nested_composite_is_not_flattened` pins that).
-        let all_composites = |render_list: &RenderList| -> Vec<NodeIdx> {
+        let all_composites = |render_list: &RenderList| -> Vec<u32> {
             render_list
                 .root_drawables
                 .iter()
@@ -958,7 +964,7 @@ mod tests {
         collector.collect_into(&puppet, &transforms, &mut render_list);
         assert_eq!(
             all_composites(&render_list),
-            vec![outer],
+            vec![outer.0],
             "inner starts as a pass-through group and flattens into outer"
         );
 
@@ -974,7 +980,7 @@ mod tests {
         puppet.compute_transforms(&mut transforms);
         collector.collect_into(&puppet, &transforms, &mut render_list);
         assert!(
-            all_composites(&render_list).contains(&inner),
+            all_composites(&render_list).contains(&inner.0),
             "growth must invalidate the cache so inner isolates again, got {:?}",
             all_composites(&render_list)
         );
@@ -1002,7 +1008,7 @@ mod tests {
                 .iter()
                 .chain(list.composite_children.values().flatten())
                 .any(|drawable| {
-                    matches!(drawable, DrawableInfo::Composite { node_id, .. } if *node_id == inner)
+                    matches!(drawable, DrawableInfo::Composite { node_id, .. } if *node_id == inner.0)
                 })
         };
 

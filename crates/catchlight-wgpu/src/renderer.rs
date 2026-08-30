@@ -63,7 +63,7 @@
 //! per-invariant tests live in `crates/catchlight-wgpu/tests/`;
 //! `crates/visual-tests` covers the ones that do reach pixels.
 
-use catchlight_core::{BlendMode, MeshId, NodeIdx, PuppetTexture, TextureId};
+use catchlight_core::{BlendMode, PuppetTexture};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -721,8 +721,8 @@ struct CameraUniform {
 /// Per-draw resource references for the unmasked Part pipeline.
 #[derive(Copy, Clone, Debug)]
 struct PartDraw {
-    mesh_id: MeshId,
-    albedo: TextureId,
+    mesh_id: u32,
+    albedo: u32,
     transform: glam::Mat4,
     blend_mode: BlendMode,
 }
@@ -817,7 +817,7 @@ struct StencilPassState<'v> {
     // helper feeding this pass: bind-group state is pass-scoped in wgpu,
     // so a mask-source or part draw whose texture is already bound
     // (atlas pages make this the common case) can skip the rebind.
-    bound_texture: Option<TextureId>,
+    bound_texture: Option<u32>,
     // Scissor applied on every (re)open. Set only for a single-part slot
     // pass (dst-in-shader render), where the whole pass draws one part and
     // its rect is known up front; None everywhere else (the main pass and
@@ -1658,7 +1658,7 @@ pub struct WgpuRenderer {
     /// resident and zero-fills meshes that transition back to inactive.
     deform_uploaded: DenseMap<u64>,
     deform_still_active: DenseMap<()>,
-    deform_inactive_scratch: Vec<MeshId>,
+    deform_inactive_scratch: Vec<u32>,
     // Dirty deform byte ranges `[start, end)` collected each sync, then
     // sorted and coalesced so two far-apart meshes don't force one write
     // over the untouched span between them. Pooled across frames.
@@ -1679,7 +1679,7 @@ pub struct WgpuRenderer {
     // draw slice rather than references, so the renderer can own them.
     draw_filter_scratch: Vec<usize>,
     instance_scratch: Vec<InstanceRaw>,
-    composite_mask_textures: HashMap<NodeIdx, PreparedCompositeMask>,
+    composite_mask_textures: HashMap<u32, PreparedCompositeMask>,
 }
 
 /// Viewport-sized texture used for mask compositing. Shared across
@@ -2321,15 +2321,15 @@ impl WgpuRenderer {
     /// the full viewport.
     fn part_pixel_aabb(
         &self,
-        mesh_id: MeshId,
+        mesh_id: u32,
         model: glam::Mat4,
         width: u32,
         height: u32,
     ) -> Option<[f32; 4]> {
-        let local = self.mesh_buffers.get(mesh_id.0 as usize)?.local_bounds?;
+        let local = self.mesh_buffers.get(mesh_id as usize)?.local_bounds?;
         let pad = self
             .deform_max
-            .get(mesh_id.0 as usize)
+            .get(mesh_id as usize)
             .copied()
             .unwrap_or(0.0);
         let expanded = Aabb2 {
@@ -2348,7 +2348,7 @@ impl WgpuRenderer {
     /// signal "use the full viewport".
     fn part_scissor_rect(
         &self,
-        mesh_id: MeshId,
+        mesh_id: u32,
         model: glam::Mat4,
         width: u32,
         height: u32,
@@ -2417,7 +2417,7 @@ impl WgpuRenderer {
             };
             stack
                 .is_active()
-                .then(|| (MeshId(node_id.0), stack.generation(), stack.combined()))
+                .then(|| (node_id.0, stack.generation(), stack.combined()))
         });
         self.upload_deforms(active);
     }
@@ -2431,7 +2431,7 @@ impl WgpuRenderer {
         let active = snapshot
             .entries
             .iter()
-            .map(|e| (MeshId(e.node_id), e.generation, e.combined.as_slice()));
+            .map(|e| (e.node_id, e.generation, e.combined.as_slice()));
         self.upload_deforms(active);
     }
 
@@ -2440,10 +2440,7 @@ impl WgpuRenderer {
     /// vertex shader keeps reading a stale config's offsets), and flush the
     /// single touched byte range. The `generation` skips re-uploading a
     /// mesh whose deform is unchanged from the last sync.
-    fn upload_deforms<'a>(
-        &mut self,
-        active: impl Iterator<Item = (MeshId, u64, &'a [glam::Vec2])>,
-    ) {
+    fn upload_deforms<'a>(&mut self, active: impl Iterator<Item = (u32, u64, &'a [glam::Vec2])>) {
         // Coalesce dirty ranges only across gaps this small: below it,
         // one write over the untouched bytes beats a second write_buffer's
         // fixed overhead; above it, the copied span is pure waste.
@@ -2453,20 +2450,20 @@ impl WgpuRenderer {
         let mut ranges = std::mem::take(&mut self.deform_write_ranges);
         ranges.clear();
         for (mesh_id, generation, combined) in active {
-            let Some(buf) = self.mesh_buffers.get(mesh_id.0 as usize) else {
+            let Some(buf) = self.mesh_buffers.get(mesh_id as usize) else {
                 continue;
             };
             if combined.len() != buf.vert_count as usize {
                 tracing::warn!(
-                    node = mesh_id.0,
+                    node = mesh_id,
                     stack_len = combined.len(),
                     buffer_len = buf.vert_count,
                     "sync_deforms: deform length mismatch, skipping",
                 );
                 continue;
             }
-            if self.deform_uploaded.get(mesh_id.0 as usize).copied() == Some(generation) {
-                self.deform_still_active.insert(mesh_id.0 as usize, ());
+            if self.deform_uploaded.get(mesh_id as usize).copied() == Some(generation) {
+                self.deform_still_active.insert(mesh_id as usize, ());
                 continue;
             }
             let bytes: &[u8] = bytemuck::cast_slice(combined);
@@ -2474,36 +2471,36 @@ impl WgpuRenderer {
             let end = start + bytes.len();
             self.deform_upload_mirror[start..end].copy_from_slice(bytes);
             ranges.push((buf.deform_offset, buf.deform_offset + bytes.len() as u64));
-            self.deform_uploaded.insert(mesh_id.0 as usize, generation);
-            self.deform_still_active.insert(mesh_id.0 as usize, ());
+            self.deform_uploaded.insert(mesh_id as usize, generation);
+            self.deform_still_active.insert(mesh_id as usize, ());
             // Bounds padding: the largest per-axis local shift this deform
             // applies. Recomputed only on a real upload; the generation
             // memo-hit above keeps the cached value.
             let max_abs = combined
                 .iter()
                 .fold(0.0f32, |m, v| m.max(v.x.abs()).max(v.y.abs()));
-            self.deform_max.insert(mesh_id.0 as usize, max_abs);
+            self.deform_max.insert(mesh_id as usize, max_abs);
         }
 
         self.deform_inactive_scratch.clear();
         for i in self.deform_uploaded.keys() {
             if !self.deform_still_active.contains(i) {
-                self.deform_inactive_scratch.push(MeshId(i as u32));
+                self.deform_inactive_scratch.push(i as u32);
             }
         }
         for i in 0..self.deform_inactive_scratch.len() {
             let mesh_id = self.deform_inactive_scratch[i];
-            let Some(buf) = self.mesh_buffers.get(mesh_id.0 as usize) else {
-                self.deform_uploaded.remove(mesh_id.0 as usize);
-                self.deform_max.remove(mesh_id.0 as usize);
+            let Some(buf) = self.mesh_buffers.get(mesh_id as usize) else {
+                self.deform_uploaded.remove(mesh_id as usize);
+                self.deform_max.remove(mesh_id as usize);
                 continue;
             };
             let start = buf.deform_offset as usize;
             let end = start + buf.deform_size as usize;
             self.deform_upload_mirror[start..end].fill(0);
             ranges.push((buf.deform_offset, buf.deform_offset + buf.deform_size));
-            self.deform_uploaded.remove(mesh_id.0 as usize);
-            self.deform_max.remove(mesh_id.0 as usize);
+            self.deform_uploaded.remove(mesh_id as usize);
+            self.deform_max.remove(mesh_id as usize);
         }
 
         // Merge sorted ranges across sub-threshold gaps, then flush one
@@ -2584,7 +2581,7 @@ impl WgpuRenderer {
                 );
             }
 
-            let mesh_id = MeshId(node_id.0);
+            let mesh_id = node_id.0;
             match self.upload_mesh(mesh_id, mesh) {
                 Ok(()) => mesh_count += 1,
                 Err(err) => {
@@ -2606,12 +2603,12 @@ impl WgpuRenderer {
     /// vertex fetches for this mesh.
     pub fn upload_mesh(
         &mut self,
-        mesh_id: MeshId,
+        mesh_id: u32,
         mesh: &catchlight_core::Mesh,
     ) -> RendererResult<()> {
         if !mesh.uvs.is_empty() && mesh.vertices.len() != mesh.uvs.len() {
             return Err(RendererError::MeshVertexUvMismatch {
-                mesh_id: mesh_id.0,
+                mesh_id,
                 vertices: mesh.vertices.len(),
                 uvs: mesh.uvs.len(),
             });
@@ -2623,7 +2620,7 @@ impl WgpuRenderer {
             .find(|&i| (i as usize) >= vertex_count)
         {
             return Err(RendererError::MeshIndexOutOfBounds {
-                mesh_id: mesh_id.0,
+                mesh_id,
                 index: bad,
                 vertices: vertex_count,
             });
@@ -2665,7 +2662,7 @@ impl WgpuRenderer {
         let vertex_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("Vertex Buffer {}", mesh_id.0)),
+                label: Some(&format!("Vertex Buffer {mesh_id}")),
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
@@ -2685,7 +2682,7 @@ impl WgpuRenderer {
         let index_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("Index Buffer {}", mesh_id.0)),
+                label: Some(&format!("Index Buffer {mesh_id}")),
                 contents: mesh.indices.as_bytes(),
                 usage: wgpu::BufferUsages::INDEX,
             });
@@ -2707,15 +2704,15 @@ impl WgpuRenderer {
             local_bounds,
         };
 
-        self.mesh_buffers.insert(mesh_id.0 as usize, mesh_buffer);
+        self.mesh_buffers.insert(mesh_id as usize, mesh_buffer);
         Ok(())
     }
 
     /// Resolve the bind group used for a Part draw: the albedo Texture's
     /// own bind group (albedo + sampler). Returns None only if the albedo
     /// texture has not been uploaded.
-    fn part_bind_group(&self, albedo: TextureId) -> Option<&wgpu::BindGroup> {
-        self.textures.get(albedo.0 as usize).map(|t| &t.bind_group)
+    fn part_bind_group(&self, albedo: u32) -> Option<&wgpu::BindGroup> {
+        self.textures.get(albedo as usize).map(|t| &t.bind_group)
     }
 
     /// Uploads a canonical [`PuppetTexture`] straight to the GPU as
@@ -2723,12 +2720,8 @@ impl WgpuRenderer {
     /// to premultiplied LINEAR color encoded as sRGB bytes (byte =
     /// srgb_encode(linear * alpha); see `ModelTexture::decode` and the
     /// basic.wgsl header), so the upload needs no branching.
-    pub fn upload_texture(
-        &mut self,
-        texture_id: TextureId,
-        tex: &PuppetTexture,
-    ) -> RendererResult<()> {
-        if let Some(existing) = self.textures.get(texture_id.0 as usize) {
+    pub fn upload_texture(&mut self, texture_id: u32, tex: &PuppetTexture) -> RendererResult<()> {
+        if let Some(existing) = self.textures.get(texture_id as usize) {
             if existing.source.as_ref().is_some_and(|src| src.matches(tex)) {
                 return Ok(());
             }
@@ -2741,7 +2734,7 @@ impl WgpuRenderer {
             tex.width,
             tex.height,
             &self.shared,
-            &format!("Texture {}", texture_id.0),
+            &format!("Texture {texture_id}"),
         )?;
         // Mip generation for a freshly created texture submits its own
         // command buffer. Harmless where uploads belong (between frames),
@@ -2754,7 +2747,7 @@ impl WgpuRenderer {
             height: tex.height,
         });
 
-        self.textures.insert(texture_id.0 as usize, texture);
+        self.textures.insert(texture_id as usize, texture);
         Ok(())
     }
 
@@ -2766,7 +2759,7 @@ impl WgpuRenderer {
     ) {
         self.composite_mask_textures.clear();
         let mut source_ids: Vec<_> = render_list.composite_mask_sources.keys().copied().collect();
-        source_ids.sort_unstable_by_key(|id| id.0);
+        source_ids.sort_unstable();
 
         for node_id in source_ids {
             let Some(source) = render_list.composite_mask_sources.get(&node_id) else {
@@ -2818,13 +2811,13 @@ impl WgpuRenderer {
             let stride = std::mem::size_of::<InstanceRaw>() as u64;
             for (i, part) in source.parts.iter().enumerate() {
                 let (Some(mesh), Some(texture)) = (
-                    self.mesh_buffers.get(part.mesh_id.0 as usize),
-                    self.textures.get(part.texture_id.0 as usize),
+                    self.mesh_buffers.get(part.mesh_id as usize),
+                    self.textures.get(part.texture_id as usize),
                 ) else {
-                    if !self.mesh_buffers.contains(part.mesh_id.0 as usize) {
+                    if !self.mesh_buffers.contains(part.mesh_id as usize) {
                         self.current_stats.skipped_missing_mask_mesh += 1;
                     }
-                    if !self.textures.contains(part.texture_id.0 as usize) {
+                    if !self.textures.contains(part.texture_id as usize) {
                         self.current_stats.skipped_missing_mask_texture += 1;
                     }
                     continue;
@@ -2880,10 +2873,10 @@ impl WgpuRenderer {
                 ..
             } = m
             {
-                if !self.mesh_buffers.contains(mesh_id.0 as usize) {
+                if !self.mesh_buffers.contains(*mesh_id as usize) {
                     self.current_stats.skipped_missing_mask_mesh += 1;
                 }
-                if !self.textures.contains(texture_id.0 as usize) {
+                if !self.textures.contains(*texture_id as usize) {
                     self.current_stats.skipped_missing_mask_texture += 1;
                 }
             }
@@ -2956,8 +2949,8 @@ impl WgpuRenderer {
                     let off = base_offset + part_index as u64 * stride;
                     part_index += 1;
                     let (Some(mask_mesh), Some(mask_texture)) = (
-                        self.mesh_buffers.get(mesh_id.0 as usize),
-                        self.textures.get(texture_id.0 as usize),
+                        self.mesh_buffers.get(*mesh_id as usize),
+                        self.textures.get(*texture_id as usize),
                     ) else {
                         continue;
                     };
@@ -3045,7 +3038,7 @@ impl WgpuRenderer {
         mask_sources: &[crate::drawable_collector::MaskSourceData],
         base_offset: u64,
         ref_value: u32,
-        bound_texture: &mut Option<TextureId>,
+        bound_texture: &mut Option<u32>,
     ) {
         use crate::drawable_collector::MaskSourceData;
 
@@ -3058,10 +3051,10 @@ impl WgpuRenderer {
                 ..
             } = m
             {
-                if !self.mesh_buffers.contains(mesh_id.0 as usize) {
+                if !self.mesh_buffers.contains(*mesh_id as usize) {
                     self.current_stats.skipped_missing_mask_mesh += 1;
                 }
-                if !self.textures.contains(texture_id.0 as usize) {
+                if !self.textures.contains(*texture_id as usize) {
                     self.current_stats.skipped_missing_mask_texture += 1;
                 }
             }
@@ -3114,8 +3107,8 @@ impl WgpuRenderer {
                     let off = base_offset + part_index as u64 * stride;
                     part_index += 1;
                     let (Some(mask_mesh), Some(mask_texture)) = (
-                        self.mesh_buffers.get(mesh_id.0 as usize),
-                        self.textures.get(texture_id.0 as usize),
+                        self.mesh_buffers.get(*mesh_id as usize),
+                        self.textures.get(*texture_id as usize),
                     ) else {
                         continue;
                     };
@@ -3209,8 +3202,8 @@ impl WgpuRenderer {
         let mut valid = std::mem::take(&mut self.draw_filter_scratch);
         valid.clear();
         for (i, d) in draws.iter().enumerate() {
-            let has_mesh = self.mesh_buffers.contains(d.draw.draw.mesh_id.0 as usize);
-            let has_tex = self.textures.contains(d.draw.draw.albedo.0 as usize);
+            let has_mesh = self.mesh_buffers.contains(d.draw.draw.mesh_id as usize);
+            let has_tex = self.textures.contains(d.draw.draw.albedo as usize);
             if !has_mesh {
                 self.current_stats.skipped_missing_mesh += 1;
             }
@@ -3267,13 +3260,13 @@ impl WgpuRenderer {
         draws: &[PreparedMaskedPartDraw<'_>],
         valid: &[usize],
         parts_base: u64,
-        bound_texture: &mut Option<TextureId>,
+        bound_texture: &mut Option<u32>,
     ) -> RendererResult<()> {
         let stride = std::mem::size_of::<InstanceRaw>() as u64;
         let has_stencil = self.shared.has_stencil;
 
         let mut current_blend_mode: Option<BlendMode> = None;
-        let mut current_mesh: Option<MeshId> = None;
+        let mut current_mesh: Option<u32> = None;
         let mut pipeline_swaps = 0u32;
         let mut texture_binds = 0u32;
 
@@ -3301,7 +3294,7 @@ impl WgpuRenderer {
                 pipeline_swaps += 1;
             }
 
-            let mesh = self.mesh_buffers.get(part.mesh_id.0 as usize).unwrap();
+            let mesh = self.mesh_buffers.get(part.mesh_id as usize).unwrap();
             let key = part.albedo;
             if *bound_texture != Some(key) {
                 let part_bg = self
@@ -3428,7 +3421,7 @@ impl WgpuRenderer {
 
     pub fn upload_puppet_textures(&mut self, textures: &[PuppetTexture]) -> RendererResult<()> {
         for (i, texture) in textures.iter().enumerate() {
-            self.upload_texture(TextureId(i as u32), texture)?;
+            self.upload_texture(i as u32, texture)?;
         }
         self.textures.truncate(textures.len());
         Ok(())
@@ -3444,12 +3437,12 @@ impl WgpuRenderer {
         filtered.clear();
         for (i, p) in drawables.iter().enumerate() {
             let d = &p.draw;
-            let has_mesh = self.mesh_buffers.contains(d.mesh_id.0 as usize);
-            let has_tex = self.textures.contains(d.albedo.0 as usize);
+            let has_mesh = self.mesh_buffers.contains(d.mesh_id as usize);
+            let has_tex = self.textures.contains(d.albedo as usize);
             if !(has_mesh && has_tex) {
                 tracing::trace!(
-                    mesh_id = d.mesh_id.0,
-                    texture_id = d.albedo.0,
+                    mesh_id = d.mesh_id,
+                    texture_id = d.albedo,
                     has_mesh,
                     has_tex,
                     "dropping drawable with missing GPU resources",
@@ -3499,12 +3492,12 @@ impl WgpuRenderer {
         drawables: &[PreparedPartDraw],
         filtered: &[usize],
         base_offset: u64,
-        bound_texture: &mut Option<TextureId>,
+        bound_texture: &mut Option<u32>,
     ) {
         let stride = std::mem::size_of::<InstanceRaw>() as u64;
 
         let mut current_blend_mode: Option<BlendMode> = None;
-        let mut current_mesh: Option<MeshId> = None;
+        let mut current_mesh: Option<u32> = None;
         let mut pipeline_swaps = 0u32;
         let mut texture_binds = 0u32;
 
@@ -3525,7 +3518,7 @@ impl WgpuRenderer {
                 pipeline_swaps += 1;
             }
 
-            let mesh_buffer = self.mesh_buffers.get(d.mesh_id.0 as usize).unwrap();
+            let mesh_buffer = self.mesh_buffers.get(d.mesh_id as usize).unwrap();
             let off = base_offset + i as u64 * stride;
             let key = d.albedo;
             if *bound_texture != Some(key) {
@@ -4086,8 +4079,8 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         stencil: &StencilTarget,
         slot: &CompositeTexture,
-        mesh_id: MeshId,
-        texture_id: TextureId,
+        mesh_id: u32,
+        texture_id: u32,
         transform: glam::Mat4,
         mask_sources: &[crate::drawable_collector::MaskSourceData],
         part_uniform_offset: u32,
@@ -5482,11 +5475,11 @@ mod tests {
     #[test]
     fn same_mask_signature_distinguishes_mask_shapes() {
         use crate::drawable_collector::MaskSourceData;
-        use catchlight_core::{MaskMode, MeshId, NodeIdx, TextureId};
+        use catchlight_core::MaskMode;
 
         let src_t = |mesh: u32, tex: u32, mode, threshold: f32| MaskSourceData::Part {
-            mesh_id: MeshId(mesh),
-            texture_id: TextureId(tex),
+            mesh_id: mesh,
+            texture_id: tex,
             transform: glam::Mat4::IDENTITY,
             mode,
             mask_threshold: threshold,
@@ -5512,20 +5505,20 @@ mod tests {
         assert!(!same_mask_signature(&a, &[src(1, 1, MaskMode::DodgeMask)]));
 
         let composite = [MaskSourceData::Composite {
-            node_id: NodeIdx(7),
+            node_id: 7,
             mode: MaskMode::Mask,
         }];
         assert!(same_mask_signature(
             &composite,
             &[MaskSourceData::Composite {
-                node_id: NodeIdx(7),
+                node_id: 7,
                 mode: MaskMode::Mask,
             }]
         ));
         assert!(!same_mask_signature(
             &composite,
             &[MaskSourceData::Composite {
-                node_id: NodeIdx(8),
+                node_id: 8,
                 mode: MaskMode::Mask,
             }]
         ));
