@@ -23,8 +23,8 @@
 //! mip chain, so no mip footprint can straddle into another crop's texels.
 
 use super::error::ImportError;
-use crate::components::PuppetTexture;
-use crate::formats::ModelTexture;
+use crate::components::DecodedTexture;
+use crate::formats::EncodedTexture;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -75,10 +75,10 @@ impl Hash for TexturePrepKey {
 /// the current document, so revisions cannot accumulate stale texture data.
 #[derive(Default)]
 pub struct TexturePrepCache {
-    entries: std::collections::HashMap<TexturePrepKey, (PuppetTexture, Plan)>,
+    entries: std::collections::HashMap<TexturePrepKey, (DecodedTexture, Plan)>,
 }
 
-fn prep_key(tex: &ModelTexture, texture_halvings: u32) -> TexturePrepKey {
+fn prep_key(tex: &EncodedTexture, texture_halvings: u32) -> TexturePrepKey {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     tex.data.hash(&mut h);
     TexturePrepKey {
@@ -124,7 +124,7 @@ impl UvCrop {
 /// One decoded, cropped texture and the UV remap that goes with it.
 #[derive(Debug, Clone)]
 pub struct PreppedTexture {
-    pub texture: PuppetTexture,
+    pub texture: DecodedTexture,
     pub uv_crop: Option<UvCrop>,
 }
 
@@ -136,7 +136,7 @@ pub struct PreppedTexture {
 /// remapped through before they are drawn. Whoever owns those meshes applies
 /// it; the render cache rewrites the UVs it uploads.
 pub fn prepare_textures(
-    textures: &[ModelTexture],
+    textures: &[EncodedTexture],
     texture_halvings: u32,
     cache: Option<&mut TexturePrepCache>,
 ) -> Result<Vec<PreppedTexture>, ImportError> {
@@ -161,10 +161,10 @@ pub fn prepare_textures(
 /// Probe the memo, decode and crop the misses, and return the table beside
 /// the crop plans.
 fn prep_all(
-    textures: &[ModelTexture],
+    textures: &[EncodedTexture],
     texture_halvings: u32,
     mut cache: Option<&mut TexturePrepCache>,
-) -> Result<(Vec<PuppetTexture>, Vec<Plan>), ImportError> {
+) -> Result<(Vec<DecodedTexture>, Vec<Plan>), ImportError> {
     let keys: Vec<Option<TexturePrepKey>> = textures
         .iter()
         .map(|tex| cache.as_ref().map(|_| prep_key(tex, texture_halvings)))
@@ -175,7 +175,7 @@ fn prep_all(
     }
 
     // Probe the cache first so the expensive half runs only for misses.
-    let mut prepped: Vec<Option<(PuppetTexture, Plan)>> = keys
+    let mut prepped: Vec<Option<(DecodedTexture, Plan)>> = keys
         .iter()
         .map(|key| {
             let (Some(cache), Some(key)) = (cache.as_deref(), key.as_ref()) else {
@@ -199,7 +199,7 @@ fn prep_all(
         prepped[*i] = Some(entry);
     }
 
-    let (table, plans): (Vec<PuppetTexture>, Vec<Plan>) = prepped.into_iter().flatten().unzip();
+    let (table, plans): (Vec<DecodedTexture>, Vec<Plan>) = prepped.into_iter().flatten().unzip();
     // Albedo ids index this table positionally, so a dropped entry would
     // silently repoint every later part at the wrong texture. Filling by
     // index makes that impossible; this pins it, since the 1:1 property
@@ -217,9 +217,9 @@ fn prep_all(
 /// rayon degrades to a serial iterator there in any case.
 fn prep_textures(
     indices: &[usize],
-    textures: &[ModelTexture],
+    textures: &[EncodedTexture],
     texture_halvings: u32,
-) -> Result<Vec<(PuppetTexture, Plan)>, ImportError> {
+) -> Result<Vec<(DecodedTexture, Plan)>, ImportError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
@@ -238,9 +238,9 @@ fn prep_textures(
 }
 
 fn prep_one(
-    tex: &ModelTexture,
+    tex: &EncodedTexture,
     texture_halvings: u32,
-) -> Result<(PuppetTexture, Plan), ImportError> {
+) -> Result<(DecodedTexture, Plan), ImportError> {
     let decoded = decode_halved(tex, texture_halvings)?;
     let (src_w, src_h) = (decoded.width, decoded.height);
     Ok(match alpha_crop_rect(&decoded) {
@@ -255,7 +255,7 @@ fn prep_one(
         // A fully transparent texture becomes a 1x1 stand-in so the table
         // stays index-aligned with the source.
         None => (
-            PuppetTexture {
+            DecodedTexture {
                 width: 1,
                 height: 1,
                 rgba: vec![0u8; 4].into(),
@@ -272,7 +272,7 @@ fn prep_one(
 /// Bounding box of the opaque (alpha>0) texels, expanded by [`MARGIN`] and
 /// snapped to [`ALIGN`] so the box-filter footprints of mip levels 0..=4
 /// match the source's. `None` when the texture is fully transparent.
-fn alpha_crop_rect(tex: &PuppetTexture) -> Option<(i64, i64, u32, u32)> {
+fn alpha_crop_rect(tex: &DecodedTexture) -> Option<(i64, i64, u32, u32)> {
     let (w, h) = (tex.width as usize, tex.height as usize);
     let (mut minx, mut miny, mut maxx, mut maxy) = (usize::MAX, usize::MAX, 0usize, 0usize);
     let mut any = false;
@@ -301,10 +301,10 @@ fn alpha_crop_rect(tex: &PuppetTexture) -> Option<(i64, i64, u32, u32)> {
 /// Copy crop `(x, y, w, h)` (source-texel coords, origin may be negative) of
 /// `tex` into a fresh `w x h` texture, out-of-source texels left at the
 /// transparent zero-fill — the ClampToBorder equivalent.
-fn crop(tex: &PuppetTexture, x: i64, y: i64, w: u32, h: u32) -> PuppetTexture {
+fn crop(tex: &DecodedTexture, x: i64, y: i64, w: u32, h: u32) -> DecodedTexture {
     let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
     blit(&mut rgba, w, tex, [0, 0], [x, y], [w, h]);
-    PuppetTexture {
+    DecodedTexture {
         width: w,
         height: h,
         rgba: rgba.into(),
@@ -319,7 +319,7 @@ fn align_up(v: i64) -> i64 {
     (v + ALIGN - 1).div_euclid(ALIGN) * ALIGN
 }
 
-fn decode_halved(tex: &ModelTexture, halvings: u32) -> Result<PuppetTexture, ImportError> {
+fn decode_halved(tex: &EncodedTexture, halvings: u32) -> Result<DecodedTexture, ImportError> {
     let mut decoded = tex
         .decode()
         .map_err(|e| ImportError::TextureDecode(e.to_string()))?;
@@ -335,7 +335,7 @@ fn decode_halved(tex: &ModelTexture, halvings: u32) -> Result<PuppetTexture, Imp
 fn blit(
     out: &mut [u8],
     out_w: u32,
-    tex: &PuppetTexture,
+    tex: &DecodedTexture,
     dst: [u32; 2],
     src: [i64; 2],
     size: [u32; 2],
@@ -367,26 +367,26 @@ fn blit(
 mod tests {
     use super::*;
 
-    fn encoded_png(rgba: [u8; 4], premultiplied: bool) -> ModelTexture {
+    fn encoded_png(rgba: [u8; 4], premultiplied: bool) -> EncodedTexture {
         let image = image::RgbaImage::from_raw(1, 1, rgba.to_vec()).unwrap();
         let mut data = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgba8(image)
             .write_to(&mut data, image::ImageFormat::Png)
             .unwrap();
-        ModelTexture {
+        EncodedTexture {
             format: crate::formats::TextureFormat::Png,
             data: data.into_inner().into(),
             premultiplied,
         }
     }
 
-    fn tex(w: u32, h: u32, opaque: &[(u32, u32)]) -> PuppetTexture {
+    fn tex(w: u32, h: u32, opaque: &[(u32, u32)]) -> DecodedTexture {
         let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
         for &(x, y) in opaque {
             let i = ((y * w + x) * 4) as usize;
             rgba[i..i + 4].copy_from_slice(&[200, 100, 50, 255]);
         }
-        PuppetTexture {
+        DecodedTexture {
             width: w,
             height: h,
             rgba: rgba.into(),
@@ -413,7 +413,7 @@ mod tests {
         for (i, b) in rgba.iter_mut().enumerate() {
             *b = (i % 251) as u8;
         }
-        let source = PuppetTexture {
+        let source = DecodedTexture {
             width: 4,
             height: 4,
             rgba: rgba.clone().into(),
@@ -540,7 +540,7 @@ mod tests {
         image::DynamicImage::ImageRgba8(image)
             .write_to(&mut data, image::ImageFormat::Png)
             .unwrap();
-        let source = ModelTexture {
+        let source = EncodedTexture {
             format: crate::formats::TextureFormat::Png,
             data: data.into_inner().into(),
             premultiplied: false,

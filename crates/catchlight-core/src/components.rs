@@ -10,30 +10,20 @@ impl NodeIdx {
     }
 }
 
-/// Identifier for a GPU mesh buffer. Currently allocated one-per-Part
-/// from its NodeIdx, but kept as a distinct newtype so callers can't mix
-/// mesh_id and texture_id arguments, and so we can swap in a sharing
-/// strategy later without touching the renderer surface.
+/// A part's albedo, as a *position* in [`Model::texture_ids`](crate::Model::texture_ids). Not an Id: the
+/// model's own texture identity is a [`TexId`](crate::id::TexId) string, and
+/// this is where the bake found it, for a render cache to resolve.
+/// `u32::MAX` means the part draws no texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MeshId(pub u32);
+pub struct TextureIdx(pub u32);
 
-impl MeshId {
+impl TextureIdx {
     pub fn new(id: u32) -> Self {
         Self(id)
     }
 }
 
-/// Identifier for an entry in the puppet's texture table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextureId(pub u32);
-
-impl TextureId {
-    pub fn new(id: u32) -> Self {
-        Self(id)
-    }
-}
-
-/// Canonical texture representation in a puppet: pre-decoded bytes
+/// A decoded texture: pre-decoded bytes
 /// encoding premultiplied LINEAR colour, ready for any renderer to upload
 /// as `Rgba8UnormSrgb` (the sampler's decode then hands shaders
 /// premultiplied linear). The importer owns the conversion from source-file
@@ -44,7 +34,7 @@ impl TextureId {
 /// without a separate bleed pass: the filter mixes `(rgb*a, a)` with
 /// `(0, 0)` and the result is already premultiplied.
 #[derive(Debug, Clone)]
-pub struct PuppetTexture {
+pub struct DecodedTexture {
     pub width: u32,
     pub height: u32,
     /// RGBA8 premultiplied-linear encoded as sRGB bytes, tightly packed
@@ -52,16 +42,16 @@ pub struct PuppetTexture {
     pub rgba: Arc<[u8]>,
 }
 
-impl PuppetTexture {
+impl DecodedTexture {
     /// Half-resolution copy via the same linear-space box filter renderers
     /// use for mip generation, so importing at `halved()` resolution is
     /// texel-identical to sampling mip 1 of the full texture. Normalized
     /// UVs are unaffected. Used to right-size import resolution for
     /// deployments whose maximum on-screen sampling rate never reaches
     /// the authored texel density.
-    pub fn halved(&self) -> PuppetTexture {
+    pub fn halved(&self) -> DecodedTexture {
         let (width, height, rgba) = downsample_box_filter(&self.rgba, self.width, self.height);
-        PuppetTexture {
+        DecodedTexture {
             width,
             height,
             rgba: rgba.into(),
@@ -194,7 +184,7 @@ const _: () = assert!(
 #[derive(Debug, Clone)]
 pub struct PartData {
     pub mesh: Mesh,
-    pub albedo_texture: TextureId,
+    pub albedo_texture: TextureIdx,
     pub opacity: f32,
     pub base_opacity: f32,
     pub tint: Vec3,
@@ -211,7 +201,7 @@ impl Default for PartData {
     fn default() -> Self {
         Self {
             mesh: Mesh::default(),
-            albedo_texture: TextureId(0),
+            albedo_texture: TextureIdx(0),
             opacity: 1.0,
             base_opacity: 1.0,
             tint: Vec3::ONE,
@@ -257,10 +247,10 @@ impl Default for CompositeData {
     }
 }
 
-/// A mesh group is never drawn (`drawable_collector` skips it), so it carries
-/// no colour at all — the fields a drawable has for it are absent here, and a
-/// `.clm` binding that drives colour on a mesh group is rejected at load; see
-/// [`crate::interpolate::MeshGroupColorBindingError`].
+/// A mesh group is never drawn, so it carries no colour at all — the fields a
+/// drawable has for it are absent here, and a `.clm` binding that drives
+/// colour on a mesh group is rejected at load
+/// ([`ClmLoadError::ColorOnMeshGroup`](crate::model::ClmLoadError)).
 #[derive(Debug, Clone)]
 pub struct MeshGroupData {
     pub mesh: Mesh,

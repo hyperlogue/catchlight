@@ -1,7 +1,7 @@
 //! Direct-to-egui viewport.
 //!
 //! The puppet is rendered on eframe's own wgpu device into an offscreen texture
-//! and handed to egui by `TextureId` via `register_native_texture` — catchlight
+//! and handed to egui by `TextureIdx` via `register_native_texture` — catchlight
 //! and egui-wgpu share the one wgpu device, so there is no GPU→CPU→GPU
 //! readback. The same texture is re-rendered in place every time the pose,
 //! camera, document revision or preview state changes; egui samples its current
@@ -110,7 +110,7 @@ pub(crate) struct ViewportRenderer {
 
 impl ViewportRenderer {
     /// Build the renderer on eframe's device and register the (empty) target so
-    /// the GUI has a `TextureId` to show before the first render. Expensive
+    /// the GUI has a `TextureIdx` to show before the first render. Expensive
     /// (~18 pipelines); done once and reused across every session preview.
     pub(crate) fn new(rs: &RenderState, width: u32, height: u32) -> Self {
         let width = width.max(1);

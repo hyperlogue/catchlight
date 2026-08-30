@@ -252,7 +252,7 @@ impl RenderCache {
     /// Identity, not a lookup: a baked albedo is already a position in
     /// `Model::texture_ids()`, and so is a [`TexIdx`]. An unmapped part
     /// carries `u32::MAX` and lands out of range here.
-    fn tex_idx(&self, albedo: catchlight_core::TextureId) -> Option<TexIdx> {
+    fn tex_idx(&self, albedo: catchlight_core::TextureIdx) -> Option<TexIdx> {
         (albedo.0 < self.texture_count).then_some(TexIdx(albedo.0))
     }
 
@@ -276,7 +276,7 @@ impl RenderCache {
     fn rebuild(&mut self, renderer: &mut WgpuRenderer, model: &Model) -> RendererResult<()> {
         let _span = tracing::trace_span!("render_cache::rebuild").entered();
 
-        let textures: Vec<catchlight_core::formats::ModelTexture> = model
+        let textures: Vec<catchlight_core::formats::EncodedTexture> = model
             .texture_ids()
             .iter()
             .filter_map(|id| model.texture(id))

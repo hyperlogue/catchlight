@@ -5,7 +5,8 @@
 //! `Structure` (one CBOR document) and `Textures` (verbatim source-encoded
 //! bytes, never decoded or cropped).
 //!
-//! Invariants this module and its reader ([`Model::from_clm_bytes`]) enforce:
+//! Invariants this module and its reader
+//! ([`Model::from_clm_bytes`](crate::Model::from_clm_bytes)) enforce:
 //!
 //! - **Everything is keyed by Id.** A node's `parent`, a mask's `source`, a
 //!   binding's `node` and `params`, a physics node's `target_params`, a part's
@@ -145,9 +146,9 @@ impl Default for ClmIndices {
     }
 }
 
-/// Binding targets mirror the live [`crate::interpolate::BindingValues`]. Binding
-/// kinds the runtime doesn't fold (emissionStrength, unknown targets) are
-/// dropped at import. Each variant carries only the *authored* keypoint cells;
+/// The variant *is* the binding's target, so a binding cannot name one target
+/// and carry another's cells. Targets the runtime does not fold
+/// (emissionStrength, unknown ones) are dropped at import. Each variant carries only the *authored* keypoint cells;
 /// unauthored cells are derived, never stored — authored = present, so the
 /// editor's set/partial/unset state is the data shape itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

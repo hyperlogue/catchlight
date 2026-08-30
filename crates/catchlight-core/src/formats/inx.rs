@@ -2,7 +2,7 @@ use std::io::Read;
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::components::{srgb_encode_to_byte, PuppetTexture};
+use crate::components::{srgb_encode_to_byte, DecodedTexture};
 use crate::load_budget::{LoadBudget, LoadLimitError, LoadResource, MAX_TEXTURE_DIMENSION};
 
 use super::utils::{read_be_u32, read_n, read_u8, read_vec};
@@ -108,7 +108,7 @@ impl TextureFormat {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModelTexture {
+pub struct EncodedTexture {
     pub format: TextureFormat,
     pub data: Arc<[u8]>,
     /// `true` for premultiplied-in-sRGB on-disk bytes (every `.inx`
@@ -117,8 +117,8 @@ pub struct ModelTexture {
     pub premultiplied: bool,
 }
 
-impl ModelTexture {
-    /// Decode into the canonical [`PuppetTexture`] form: bytes encoding
+impl EncodedTexture {
+    /// Decode into the canonical [`DecodedTexture`] form: bytes encoding
     /// premultiplied LINEAR color, ready to upload as `Rgba8UnormSrgb`.
     /// The sampler then decodes sRGB→linear and returns premultiplied
     /// linear values; the shader treats the sample as premultiplied and
@@ -144,7 +144,7 @@ impl ModelTexture {
         reader.into_dimensions()
     }
 
-    pub fn decode(&self) -> Result<PuppetTexture, image::ImageError> {
+    pub fn decode(&self) -> Result<DecodedTexture, image::ImageError> {
         let img = image::load_from_memory_with_format(&self.data, self.format.to_image_format())?;
         let (width, height) = (img.width(), img.height());
         let mut rgba = img.into_rgba8().into_raw();
@@ -155,7 +155,7 @@ impl ModelTexture {
         } else {
             premultiply_linear_into_srgb_inplace(&mut rgba);
         }
-        Ok(PuppetTexture {
+        Ok(DecodedTexture {
             width,
             height,
             rgba: rgba.into(),
@@ -355,7 +355,7 @@ pub struct VendorData {
 #[derive(Debug, Clone)]
 pub struct InxModel {
     pub payload: serde_json::Value,
-    pub textures: Vec<ModelTexture>,
+    pub textures: Vec<EncodedTexture>,
     pub vendors: Vec<VendorData>,
 }
 
@@ -374,7 +374,7 @@ fn parse_payload<R: Read>(
 fn parse_texture<R: Read>(
     data: &mut R,
     budget: &mut LoadBudget,
-) -> Result<ModelTexture, InxParseError> {
+) -> Result<EncodedTexture, InxParseError> {
     let tex_length = read_be_u32(data)? as usize;
     check_size("texture", tex_length, MAX_TEXTURE_SIZE)?;
     budget.charge(LoadResource::EncodedBytes, tex_length as u64)?;
@@ -405,19 +405,19 @@ fn parse_texture<R: Read>(
         (raw.into(), width, height)
     };
     budget.check_texture_dimensions(width, height)?;
-    Ok(ModelTexture {
+    Ok(EncodedTexture {
         format,
         data: tex_data,
         premultiplied: true,
     })
 }
 
-fn placeholder_texture() -> Result<ModelTexture, InxParseError> {
+fn placeholder_texture() -> Result<EncodedTexture, InxParseError> {
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, 1))
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|e| InxParseError::TextureHeader(e.to_string()))?;
-    Ok(ModelTexture {
+    Ok(EncodedTexture {
         format: TextureFormat::Png,
         data: png.into(),
         premultiplied: true,
@@ -464,7 +464,7 @@ pub fn decode_texture_for_fuzz(encoding: u8, bytes: &[u8]) -> Result<Vec<u8>, In
 fn parse_textures<R: Read>(
     data: &mut R,
     budget: &mut LoadBudget,
-) -> Result<Vec<ModelTexture>, InxParseError> {
+) -> Result<Vec<EncodedTexture>, InxParseError> {
     let tex_sect = read_n::<_, 8>(data).map_err(|_| InxParseError::NoTexSect)?;
     if tex_sect != TEX_SECT {
         return Err(InxParseError::NoTexSect);

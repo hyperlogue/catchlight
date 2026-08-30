@@ -47,9 +47,9 @@
 //! Three things a puppet does not take from the model. **Textures**: nothing
 //! here decodes an image, so a part carries its albedo as an index into
 //! [`Model::texture_ids`] and the render cache resolves it. **Masks**: a baked
-//! [`crate::components::Mask`] carries the source node's `NodeIdx` in its
-//! `source_uuid`, because the field is the legacy uuid namespace and a model
-//! has none; [`Puppet::node_for_uuid`] is the identity for that reason.
+//! [`crate::components::Mask`] carries the `NodeIdx` the bake resolved the
+//! model's mask source Id to, and a mask whose source the model does not carry
+//! is dropped rather than baked as a dangling slot.
 //! **Animations**: the puppet owns only the play state, and the clips are
 //! installed rather than baked — [`Puppet::set_animations_from`] takes the
 //! model's own, [`Puppet::set_animations`] takes a caller's, and a rebake

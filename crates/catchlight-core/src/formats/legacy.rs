@@ -104,7 +104,7 @@ pub struct LegacyComposite {
 /// A mesh group deforms what is beneath it and is never drawn, so it stores no
 /// colour. Colour keys written by an older writer decode as unknown fields and
 /// are ignored; a *binding* aiming a colour target at a mesh group is rejected
-/// at load ([`crate::interpolate::MeshGroupColorBindingError`]).
+/// at load ([`ClmLoadError::ColorOnMeshGroup`](crate::model::ClmLoadError)).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegacyMeshGroup {
     pub mesh: ClmMesh,

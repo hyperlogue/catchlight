@@ -217,7 +217,7 @@ fn write_pulls(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{Mesh, MeshIndices, Node, PartData, TextureId, Transform};
+    use crate::components::{Mesh, MeshIndices, Node, PartData, TextureIdx, Transform};
     use crate::deform::DeformStack;
     use glam::Vec3;
 
@@ -266,7 +266,7 @@ mod tests {
         let part = PartData {
             deform_stack: DeformStack::new(verts.len()),
             mesh,
-            albedo_texture: TextureId(0),
+            albedo_texture: TextureIdx(0),
             ..PartData::default()
         };
         let node = Node {
