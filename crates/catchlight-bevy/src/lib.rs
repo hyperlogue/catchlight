@@ -29,7 +29,7 @@ mod prepare;
 mod update;
 
 pub use camera_controls::{CameraControls, CameraControlsPlugin};
-pub use catchlight_core::Puppet;
+pub use catchlight_core::LegacyPuppet;
 pub use components::{CatchlightCamera, CatchlightPuppet, PuppetDynamicState};
 pub use plugin::CatchlightPlugin;
 pub use prepare::CatchlightRenderState;

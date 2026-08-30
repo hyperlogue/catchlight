@@ -25,7 +25,7 @@
 //!   puppet's need, not the sum.
 
 use catchlight_core::{
-    load_model, GlobalTransforms, Mesh, ModelFormat, Node, NodeKind, PartData, Puppet,
+    load_model, GlobalTransforms, LegacyPuppet, Mesh, ModelFormat, Node, NodeKind, PartData,
     PuppetTexture, Transform, Vec3,
 };
 use catchlight_wgpu::{
@@ -110,7 +110,7 @@ impl Stage {
     }
 
     /// Upload a puppet and frame it with the retained camera.
-    fn admit(&self, renderer: &mut WgpuRenderer, puppet: &Puppet) {
+    fn admit(&self, renderer: &mut WgpuRenderer, puppet: &LegacyPuppet) {
         renderer.upload_puppet(puppet).expect("upload puppet");
         renderer.update_camera(create_orthographic_camera(
             CAMERA_HEIGHT,
@@ -150,7 +150,7 @@ impl Stage {
     fn frame(
         &mut self,
         renderer: &mut WgpuRenderer,
-        puppet: &Puppet,
+        puppet: &LegacyPuppet,
         composites: &mut CompositePool,
     ) -> (RenderStats, FrameStats) {
         let render_list = build_render_list(renderer, puppet);
@@ -180,7 +180,7 @@ const CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-fn build_render_list(renderer: &mut WgpuRenderer, puppet: &Puppet) -> RenderList {
+fn build_render_list(renderer: &mut WgpuRenderer, puppet: &LegacyPuppet) -> RenderList {
     renderer.sync_deforms(puppet);
     let mut transforms = GlobalTransforms::new();
     puppet.compute_transforms(&mut transforms);
@@ -199,8 +199,8 @@ fn solid_texture() -> PuppetTexture {
 /// `n` unmasked quads laid out on a grid inside the camera's view, all
 /// sampling one shared texture. One instance and one part-uniform slot
 /// each, so `n` is exactly what the frame's two buffers get sized for.
-fn grid_puppet(n: usize) -> Puppet {
-    let mut puppet = Puppet::new();
+fn grid_puppet(n: usize) -> LegacyPuppet {
+    let mut puppet = LegacyPuppet::new();
     puppet.set_textures(vec![solid_texture()]);
     let root = puppet.root();
     let cols = (n as f32).sqrt().ceil().max(1.0) as usize;
@@ -235,7 +235,7 @@ fn model_path(stem: &str) -> PathBuf {
         .join(format!("{stem}.clp"))
 }
 
-fn load_test_model(stem: &str) -> Puppet {
+fn load_test_model(stem: &str) -> LegacyPuppet {
     let path = model_path(stem);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let format = ModelFormat::from_path(&path).expect("recognized model extension");
@@ -256,7 +256,7 @@ fn one_submit_per_frame_regardless_of_part_count() {
     // and mask sources, which split the frame across several reserve /
     // write sites. The queue-write counts must come out the same either
     // way — one per per-frame buffer, however many sites feed it.
-    let cases: Vec<(&str, Puppet)> = vec![
+    let cases: Vec<(&str, LegacyPuppet)> = vec![
         ("3 parts", grid_puppet(3)),
         ("40 parts", grid_puppet(40)),
         ("composite_masks.clp", load_test_model("composite_masks")),
@@ -508,7 +508,7 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
         "nested_composite",
         "blend_modes_composite",
     ];
-    let puppets: Vec<Puppet> = stems.iter().map(|s| load_test_model(s)).collect();
+    let puppets: Vec<LegacyPuppet> = stems.iter().map(|s| load_test_model(s)).collect();
 
     let mut stage = Stage::new();
 

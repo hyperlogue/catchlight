@@ -8,8 +8,8 @@ use smallvec::SmallVec;
 
 use crate::components::{NodeIdx, NodeKind};
 use crate::deform::DeformSource;
+use crate::legacy_puppet::{GlobalTransforms, LegacyPuppet};
 use crate::meshgroup::{affine2_from_mat4, linear_mat2};
-use crate::puppet::{GlobalTransforms, Puppet};
 
 /// One welded pair of Parts. Puppet-global and canonical: each unordered
 /// `{a, b}` pair appears in at most one record, and the solve writes both
@@ -61,7 +61,7 @@ fn side(transforms: &GlobalTransforms, id: NodeIdx) -> Option<Side> {
 /// see the already-welded seam, matching nijilive. A record is skipped
 /// whole when either side is missing, not an enabled Part, or has a
 /// degenerate world transform.
-pub fn apply_welds(puppet: &mut Puppet, transforms: &GlobalTransforms) {
+pub fn apply_welds(puppet: &mut LegacyPuppet, transforms: &GlobalTransforms) {
     if puppet.welds().is_empty() {
         return;
     }
@@ -92,7 +92,7 @@ pub fn apply_welds(puppet: &mut Puppet, transforms: &GlobalTransforms) {
 }
 
 fn apply_one(
-    puppet: &mut Puppet,
+    puppet: &mut LegacyPuppet,
     transforms: &GlobalTransforms,
     weld: &Weld,
     cur_a: &mut Vec<Vec2>,
@@ -161,7 +161,7 @@ fn apply_one(
 /// earlier record already wrote it this frame — without disturbing the
 /// stack's combined/generation memo. False when the node isn't an enabled
 /// Part.
-fn read_current(puppet: &mut Puppet, id: NodeIdx, out: &mut Vec<Vec2>) -> bool {
+fn read_current(puppet: &mut LegacyPuppet, id: NodeIdx, out: &mut Vec<Vec2>) -> bool {
     let Some(node) = puppet.get_mut(id) else {
         return false;
     };
@@ -175,14 +175,14 @@ fn read_current(puppet: &mut Puppet, id: NodeIdx, out: &mut Vec<Vec2>) -> bool {
     true
 }
 
-fn part_verts(puppet: &Puppet, id: NodeIdx) -> Option<&[Vec2]> {
+fn part_verts(puppet: &LegacyPuppet, id: NodeIdx) -> Option<&[Vec2]> {
     match puppet.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(p)) => Some(&p.mesh.vertices),
         _ => None,
     }
 }
 
-fn part_origin(puppet: &Puppet, id: NodeIdx) -> Vec2 {
+fn part_origin(puppet: &LegacyPuppet, id: NodeIdx) -> Vec2 {
     match puppet.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(p)) => p.mesh.origin,
         _ => Vec2::ZERO,
@@ -190,7 +190,7 @@ fn part_origin(puppet: &Puppet, id: NodeIdx) -> Vec2 {
 }
 
 fn write_pulls(
-    puppet: &mut Puppet,
+    puppet: &mut LegacyPuppet,
     id: NodeIdx,
     side: &Side,
     verts: impl Iterator<Item = u32>,
@@ -225,8 +225,8 @@ mod tests {
     // Two single-triangle Parts sharing the seam edge x∈[0,10] at y=0:
     // part A above (apex +y), part B below (apex -y). Seam pairs:
     // A verts 0,1 ↔ B verts 0,1, coincident at rest.
-    fn two_part_puppet(offset_b: Vec2) -> (Puppet, NodeIdx, NodeIdx) {
-        let mut puppet = Puppet::new();
+    fn two_part_puppet(offset_b: Vec2) -> (LegacyPuppet, NodeIdx, NodeIdx) {
+        let mut puppet = LegacyPuppet::new();
         let a = insert_part(
             &mut puppet,
             Vec2::ZERO,
@@ -248,12 +248,12 @@ mod tests {
         (puppet, a, b)
     }
 
-    fn insert_part(puppet: &mut Puppet, translation: Vec2, verts: &[Vec2]) -> NodeIdx {
+    fn insert_part(puppet: &mut LegacyPuppet, translation: Vec2, verts: &[Vec2]) -> NodeIdx {
         insert_part_origin(puppet, translation, verts, Vec2::ZERO)
     }
 
     fn insert_part_origin(
-        puppet: &mut Puppet,
+        puppet: &mut LegacyPuppet,
         translation: Vec2,
         verts: &[Vec2],
         origin: Vec2,
@@ -287,7 +287,7 @@ mod tests {
         puppet.insert_child(root, node, None)
     }
 
-    fn weld_slot(puppet: &Puppet, id: NodeIdx) -> Vec<Vec2> {
+    fn weld_slot(puppet: &LegacyPuppet, id: NodeIdx) -> Vec<Vec2> {
         let Some(node) = puppet.get(id) else {
             return Vec::new();
         };
@@ -297,7 +297,7 @@ mod tests {
         p.deform_stack.combined().to_vec()
     }
 
-    fn run(puppet: &mut Puppet) {
+    fn run(puppet: &mut LegacyPuppet) {
         let mut transforms = GlobalTransforms::new();
         puppet.compute_transforms(&mut transforms);
         puppet.apply_welds(&transforms);
@@ -328,7 +328,7 @@ mod tests {
         // GPU draws v - origin. A origin-0 seam at (0,0)/(10,0) and B with
         // origin (3,0) and verts shifted by that origin meet on screen;
         // welding in raw verts would see B 3px to the right and pull.
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let a = insert_part(
             &mut puppet,
             Vec2::ZERO,
@@ -449,7 +449,7 @@ mod tests {
     // pull rotated by -90°.
     #[test]
     fn pull_maps_through_the_inverse_linear_part() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let a = insert_part(
             &mut puppet,
             Vec2::ZERO,

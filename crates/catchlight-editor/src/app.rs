@@ -451,7 +451,7 @@ impl App {
             return Vec::new();
         };
         let editor = self.editor.clone();
-        // Puppet working state = the pose *without* the gesture (previews are
+        // LegacyPuppet working state = the pose *without* the gesture (previews are
         // app-side overrides, never baked into the puppet between renders).
         let Ok(Some((pt, pr, ps, pz, pop))) = editor.with_puppet(session, |p| {
             p.get(catchlight_core::NodeIdx(core)).map(|n| {

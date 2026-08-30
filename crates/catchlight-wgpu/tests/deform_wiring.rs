@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 const W: u32 = 320;
 const H: u32 = 533;
 
-fn load_puppet(path: &Path) -> catchlight_core::Puppet {
+fn load_puppet(path: &Path) -> catchlight_core::LegacyPuppet {
     let bytes = std::fs::read(path).unwrap();
     let format = ModelFormat::from_path(path).expect("recognized model extension");
     load_model(&bytes, format, 0).expect("load model")

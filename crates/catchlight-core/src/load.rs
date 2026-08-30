@@ -1,4 +1,4 @@
-//! Loading a model file into a [`Puppet`], dispatched by format.
+//! Loading a model file into a [`LegacyPuppet`], dispatched by format.
 //!
 //! catchlight's first-class on-disk format is **`.clp`** (the editable source of
 //! truth). The legacy `.inx` / `.inp` formats are kept only as a one-time import
@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::formats::{clp, InxModel};
 use crate::importer::{from_inx_model_downsampled, parse_inp};
-use crate::puppet::Puppet;
+use crate::legacy_puppet::LegacyPuppet;
 use crate::{from_clp, ImportError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,13 +52,13 @@ impl ModelFormat {
     }
 }
 
-/// Build a [`Puppet`] from model-file `bytes` of the given `format`, downsampling
+/// Build a [`LegacyPuppet`] from model-file `bytes` of the given `format`, downsampling
 /// each texture by `texture_halvings` power-of-two steps (0 = full resolution).
 pub fn load_model(
     bytes: &[u8],
     format: ModelFormat,
     texture_halvings: u32,
-) -> Result<Puppet, ImportError> {
+) -> Result<LegacyPuppet, ImportError> {
     match format {
         ModelFormat::Clp => {
             let file = clp::decode(bytes)?;

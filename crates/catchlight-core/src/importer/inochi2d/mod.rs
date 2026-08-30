@@ -2,7 +2,7 @@
 //!
 //! There are **two independent reflection paths** and they must stay in step:
 //!
-//! - `convert.rs` — `.inx` → `Puppet` (the legacy direct load).
+//! - `convert.rs` — `.inx` → `LegacyPuppet` (the legacy direct load).
 //! - `to_clp.rs` — `.inx` → `.clp` (what `cargo xtask import` runs).
 //!
 //! `.inx` is authored **Y-down with lower `zsort` in front**; catchlight is
@@ -52,21 +52,21 @@ pub use from_clp::{from_clp, from_clp_cached, from_clp_with_budget};
 pub use to_clp::from_inx_model_to_clp;
 
 use crate::formats::InxModel;
-use crate::puppet::Puppet;
+use crate::legacy_puppet::LegacyPuppet;
 
-pub fn parse(bytes: &[u8]) -> Result<Puppet, ImportError> {
+pub fn parse(bytes: &[u8]) -> Result<LegacyPuppet, ImportError> {
     let model = InxModel::parse(std::io::Cursor::new(bytes))?;
     from_inx_model(&model)
 }
 
-pub fn parse_inp(bytes: &[u8]) -> Result<Puppet, ImportError> {
+pub fn parse_inp(bytes: &[u8]) -> Result<LegacyPuppet, ImportError> {
     let model = crate::formats::parse_inp(std::io::Cursor::new(bytes))?;
     from_inx_model(&model)
 }
 
 /// Import a puppet, cropping each texture to its opaque bounding box (see
 /// [`alpha_crop`]).
-pub fn from_inx_model(model: &InxModel) -> Result<Puppet, ImportError> {
+pub fn from_inx_model(model: &InxModel) -> Result<LegacyPuppet, ImportError> {
     from_inx_model_downsampled(model, 0)
 }
 
@@ -89,6 +89,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<Puppet, ImportError> {
 pub fn from_inx_model_downsampled(
     model: &InxModel,
     texture_halvings: u32,
-) -> Result<Puppet, ImportError> {
+) -> Result<LegacyPuppet, ImportError> {
     convert::schema_to_puppet(&model.payload, model.textures.clone(), texture_halvings)
 }

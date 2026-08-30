@@ -18,7 +18,7 @@
 use super::error::ImportError;
 use crate::components::{NodeIdx, NodeKind, PuppetTexture};
 use crate::formats::ModelTexture;
-use crate::puppet::Puppet;
+use crate::legacy_puppet::LegacyPuppet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -89,7 +89,7 @@ fn prep_key(tex: &ModelTexture, texture_halvings: u32) -> TexturePrepKey {
 /// The returned table is 1:1 with the source table, so albedo ids are left
 /// untouched.
 pub(crate) fn crop_textures(
-    puppet: &mut Puppet,
+    puppet: &mut LegacyPuppet,
     textures: &[ModelTexture],
     texture_halvings: u32,
 ) -> Result<Vec<PuppetTexture>, ImportError> {
@@ -97,7 +97,7 @@ pub(crate) fn crop_textures(
 }
 
 pub(crate) fn crop_textures_cached(
-    puppet: &mut Puppet,
+    puppet: &mut LegacyPuppet,
     textures: &[ModelTexture],
     texture_halvings: u32,
     mut cache: Option<&mut TexturePrepCache>,
@@ -403,7 +403,7 @@ mod tests {
         let straight = encoded_png([64, 0, 0, 128], false);
         let mut cache = TexturePrepCache::default();
         let straight_result = crop_textures_cached(
-            &mut Puppet::new(),
+            &mut LegacyPuppet::new(),
             std::slice::from_ref(&straight),
             0,
             Some(&mut cache),
@@ -412,15 +412,24 @@ mod tests {
 
         let mut premultiplied = straight.clone();
         premultiplied.premultiplied = true;
-        let premultiplied_result =
-            crop_textures_cached(&mut Puppet::new(), &[premultiplied], 0, Some(&mut cache))
-                .unwrap();
+        let premultiplied_result = crop_textures_cached(
+            &mut LegacyPuppet::new(),
+            &[premultiplied],
+            0,
+            Some(&mut cache),
+        )
+        .unwrap();
         assert_ne!(straight_result[0].rgba, premultiplied_result[0].rgba);
 
         let mut wrong_format = straight;
         wrong_format.format = crate::formats::TextureFormat::Tga;
         assert!(matches!(
-            crop_textures_cached(&mut Puppet::new(), &[wrong_format], 0, Some(&mut cache)),
+            crop_textures_cached(
+                &mut LegacyPuppet::new(),
+                &[wrong_format],
+                0,
+                Some(&mut cache)
+            ),
             Err(ImportError::TextureDecode(_))
         ));
     }
@@ -433,10 +442,10 @@ mod tests {
         let second_key = prep_key(&second, 0);
         let mut cache = TexturePrepCache::default();
 
-        crop_textures_cached(&mut Puppet::new(), &[first], 0, Some(&mut cache)).unwrap();
+        crop_textures_cached(&mut LegacyPuppet::new(), &[first], 0, Some(&mut cache)).unwrap();
         assert!(cache.entries.contains_key(&first_key));
 
-        crop_textures_cached(&mut Puppet::new(), &[second], 0, Some(&mut cache)).unwrap();
+        crop_textures_cached(&mut LegacyPuppet::new(), &[second], 0, Some(&mut cache)).unwrap();
         assert!(!cache.entries.contains_key(&first_key));
         assert!(cache.entries.contains_key(&second_key));
         assert_eq!(cache.entries.len(), 1);

@@ -15,7 +15,7 @@
 //! [`Model`](crate::Model) assigns indices only at the file edge
 //! (`crates/catchlight-core/src/model/flatten.rs`).
 //!
-//! The wire mirrors catchlight's *authored* `Puppet` model — no derived caches,
+//! The wire mirrors catchlight's *authored* `LegacyPuppet` model — no derived caches,
 //! no runtime state, nothing the runtime doesn't model (metadata, groups,
 //! automation, animations, cameras, emissive/bump, …). CBOR maps keyed by field
 //! name give additive evolution: a future field returns as `#[serde(default)]`

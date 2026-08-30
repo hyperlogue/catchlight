@@ -1,10 +1,10 @@
-//! Headless preview: build nothing, just render an already-built `Puppet` at a
+//! Headless preview: build nothing, just render an already-built `LegacyPuppet` at a
 //! pose to a PNG, reusing catchlight's production `render_list_ext` path.
 
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use catchlight_core::{GlobalTransforms, Puppet, Vec2};
+use catchlight_core::{GlobalTransforms, LegacyPuppet, Vec2};
 use catchlight_wgpu::{
     collect_drawables, create_headless_context, create_orthographic_camera, read_texture_to_rgba,
     CompositePool, FramebufferSnapshotPool, StencilTarget, WgpuRenderer,
@@ -34,7 +34,7 @@ impl PreviewRenderer {
 
     pub(super) fn render_png(
         &mut self,
-        puppet: &mut Puppet,
+        puppet: &mut LegacyPuppet,
         pose: &[(String, Vec2)],
         width: u32,
         height: u32,
@@ -53,7 +53,7 @@ impl PreviewRenderer {
     /// Render to tightly-packed RGBA8 bytes (the in-process viewport path).
     fn render_rgba(
         &mut self,
-        puppet: &mut Puppet,
+        puppet: &mut LegacyPuppet,
         pose: &[(String, Vec2)],
         width: u32,
         height: u32,

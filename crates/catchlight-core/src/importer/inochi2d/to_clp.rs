@@ -7,8 +7,8 @@
 //! `uuid`s are resolved to those indices — `binding.node` / `mask.source` to a
 //! node index, `SimplePhysics.target_param` to a param index — and then dropped;
 //! the array position is the only identity `.clp` keeps. References that don't
-//! resolve are dropped, exactly as the Puppet path drops them; duplicate uuids
-//! collapse to the first occurrence (the Puppet path's renumbering, for free).
+//! resolve are dropped, exactly as the LegacyPuppet path drops them; duplicate uuids
+//! collapse to the first occurrence (the LegacyPuppet path's renumbering, for free).
 //!
 //! Like [`super::convert`], this keeps only what catchlight models and drops the
 //! rest (meta, groups, automation, animations, cameras, emissive/bump slots,
@@ -60,7 +60,7 @@ pub fn from_inx_model_to_clp(model: &InxModel) -> Result<ClpFile, ImportError> {
     }
 
     // Params keep their array order; build a uuid → index map (first-wins, which
-    // is the Puppet path's duplicate-uuid renumbering).
+    // is the LegacyPuppet path's duplicate-uuid renumbering).
     let schema_params: Vec<SchemaParam> = obj
         .get("param")
         .and_then(|v| v.as_array())
@@ -150,7 +150,7 @@ fn parse_node_shallow(value: &serde_json::Value) -> SchemaNode {
 // Shorter-than-expected arrays fill the missing components individually,
 // matching `convert::convert_vec2` / `convert_vec3`. Falling back to the whole
 // default instead would snap a node with `"scale": [2.0]` to unit scale on this
-// path while the Puppet path reads (2.0, 1.0).
+// path while the LegacyPuppet path reads (2.0, 1.0).
 fn vec2_arr(v: &[f32], default: [f32; 2]) -> [f32; 2] {
     [
         v.first().copied().unwrap_or(default[0]),
@@ -253,7 +253,7 @@ fn convert_masks(masks: &[SchemaMask], node_index: &HashMap<u32, u32>) -> Vec<Cl
     masks
         .iter()
         .filter_map(|m| {
-            // Drop masks whose source node doesn't resolve, as the Puppet path does.
+            // Drop masks whose source node doesn't resolve, as the LegacyPuppet path does.
             let source = *node_index.get(&m.source?)?;
             Some(ClpMask {
                 source,
@@ -331,7 +331,7 @@ fn convert_simple_physics(s: &SchemaNode, param_index: &HashMap<u32, u32>) -> Cl
 fn convert_param(p: &SchemaParam, node_index: &HashMap<u32, u32>, nodes: &[ClpNode]) -> ClpParam {
     let is_vec2 = p.is_vec2.unwrap_or(false);
     // Resolve inochi2d's axis-point defaults here so the wire holds final axis
-    // stops (the same logic the Puppet path applies in convert.rs): absent axes
+    // stops (the same logic the LegacyPuppet path applies in convert.rs): absent axes
     // default to [0,1] on x and [0,1]/[0] on y (vec2/scalar), and a degenerate
     // empty axis collapses to a single stop so the param can still drive.
     let default_y = || if is_vec2 { vec![0.0, 1.0] } else { vec![0.0] };
@@ -373,13 +373,13 @@ fn convert_binding(
     axis_x: &[f32],
     axis_y: &[f32],
 ) -> Option<ClpBinding> {
-    // Drop bindings whose target node doesn't resolve, as the Puppet path does.
+    // Drop bindings whose target node doesn't resolve, as the LegacyPuppet path does.
     let node = *node_index.get(&b.node?)?;
     let values_json = b.values.as_ref()?;
     let kind = b.param_name.as_deref().unwrap_or("");
     // A mesh group is never drawn and carries no colour, so a colour binding on
     // one has nowhere to land — and writing it out would produce a `.clp` the
-    // loader rejects. The Puppet path drops the same shape.
+    // loader rejects. The LegacyPuppet path drops the same shape.
     if source_binding_is_color(kind)
         && matches!(
             nodes.get(node as usize).map(|n| &n.kind),
@@ -464,7 +464,7 @@ fn convert_binding_values(
         "outputScale.x" => ClpBindingValues::OutputScaleX(cells),
         "outputScale.y" => ClpBindingValues::OutputScaleY(cells),
         // emissionStrength and any unknown target are folded by no renderer path,
-        // so they're dropped here exactly as the Puppet importer drops them.
+        // so they're dropped here exactly as the LegacyPuppet importer drops them.
         _ => return None,
     })
 }
@@ -751,7 +751,7 @@ mod tests {
         let model = load_reference();
         let file = from_inx_model_to_clp(&model).unwrap();
         // The root "Puppet Body" composite authors propagate_meshgroup=false —
-        // the divergence the Puppet path hardcodes to true.
+        // the divergence the LegacyPuppet path hardcodes to true.
         assert!(
             file.doc.nodes.iter().any(|n| matches!(
                 &n.kind,

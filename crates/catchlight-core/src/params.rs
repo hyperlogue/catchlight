@@ -2,7 +2,7 @@
 //!
 //! **Param ids vs node ids.** `Param.id` and `AnimationLane { param_id, axis }`
 //! (the latter in `crate::animation`) are the param namespace. The **node**
-//! namespace is still spelled `uuid` (`Puppet::uuid_to_node`, `node_for_uuid`,
+//! namespace is still spelled `uuid` (`LegacyPuppet::uuid_to_node`, `node_for_uuid`,
 //! `insert_child(.., uuid: Option<u32>)`) and is a plain `u32` inherited from
 //! inochi2d — not a UUID. Several param write paths (`set_param_value`,
 //! `param_value`) also still name their argument `uuid`; it is a `Param.id`.
@@ -452,7 +452,7 @@ impl Param {
     /// Apply this parameter at `val` to every binding. Pushes Deform
     /// contributions into the target node's DeformStack; non-Deform
     /// binding kinds are parsed but not yet wired through here.
-    pub fn apply(&self, val: Vec2, puppet: &mut crate::puppet::Puppet) {
+    pub fn apply(&self, val: Vec2, puppet: &mut crate::legacy_puppet::LegacyPuppet) {
         self.apply_filtered(val, puppet, |_| true);
     }
 
@@ -462,7 +462,7 @@ impl Param {
     pub(crate) fn apply_filtered(
         &self,
         val: Vec2,
-        puppet: &mut crate::puppet::Puppet,
+        puppet: &mut crate::legacy_puppet::LegacyPuppet,
         include: impl Fn(&BindingValues) -> bool,
     ) {
         // A well-formed param has at least one point per axis (the
@@ -828,12 +828,12 @@ mod tests {
 
     #[test]
     fn apply_with_empty_axis_does_not_panic() {
-        use crate::puppet::Puppet;
+        use crate::legacy_puppet::LegacyPuppet;
         use crate::Node;
 
         // A malformed param with a zero-point x-axis must not panic when
         // apply indexes axis_points_x; it should no-op instead.
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let node = Node {
             z_order: 1.0,
             base_z_order: 1.0,
@@ -872,13 +872,13 @@ mod tests {
 
     #[test]
     fn apply_with_matrix_smaller_than_axes_clamps_without_panic() {
-        use crate::puppet::Puppet;
+        use crate::legacy_puppet::LegacyPuppet;
         use crate::Node;
 
         // 3 x-axis points but a 2-wide value matrix (dimension mismatch).
         // At the far end the bracket selects (1, 2); both must clamp to
         // the matrix width (1) instead of indexing out of bounds.
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let id = puppet.insert_child(puppet.root(), Node::default(), Some(4));
         let param = Param {
             id: 1,
@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn apply_cubic_curves_away_from_linear() {
-        use crate::puppet::Puppet;
+        use crate::legacy_puppet::LegacyPuppet;
         use crate::Node;
 
         // 1D param with a peaked value matrix [0, 1, 0]. Sampled at x=0.25
@@ -923,7 +923,7 @@ mod tests {
         // binding at the same point gives exactly 0.5. This pins that Cubic
         // is no longer silently linear.
         let build = |mode| {
-            let mut puppet = Puppet::new();
+            let mut puppet = LegacyPuppet::new();
             let id = puppet.insert_child(puppet.root(), Node::default(), Some(7));
             let param = Param {
                 id: 1,
@@ -967,9 +967,9 @@ mod tests {
     fn apply_skips_binding_when_corner_cells_are_zero() {
         use crate::components::{Mesh, MeshIndices, Node, NodeKind, PartData};
         use crate::deform::DeformStack;
-        use crate::puppet::Puppet;
+        use crate::legacy_puppet::LegacyPuppet;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let mesh = Mesh::new(
             vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)],
             vec![Vec2::ZERO; 3],
@@ -1054,9 +1054,9 @@ mod tests {
     fn apply_skips_zero_weight_nonzero_cells_on_axis_point() {
         use crate::components::{Node, NodeKind, PartData};
         use crate::deform::DeformStack;
-        use crate::puppet::Puppet;
+        use crate::legacy_puppet::LegacyPuppet;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let part_id = puppet.insert_child(
             puppet.root(),
             Node {
@@ -1124,10 +1124,10 @@ mod tests {
     #[test]
     fn tint_multiplies_screen_tint_adds_and_reset_prevents_drift() {
         use crate::components::{Node, NodeKind, PartData};
-        use crate::puppet::Puppet;
+        use crate::legacy_puppet::LegacyPuppet;
         use crate::Vec3;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let part_id = puppet.insert_child(
             puppet.root(),
             Node {
@@ -1178,7 +1178,7 @@ mod tests {
         };
         puppet.set_params(vec![param]);
 
-        let part_state = |p: &Puppet| -> (Vec3, Vec3) {
+        let part_state = |p: &LegacyPuppet| -> (Vec3, Vec3) {
             match &p.get(part_id).unwrap().kind {
                 NodeKind::Part(part) => (part.tint, part.screen_tint),
                 _ => panic!(),

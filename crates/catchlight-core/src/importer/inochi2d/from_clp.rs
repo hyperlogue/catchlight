@@ -1,15 +1,15 @@
-//! `.clp → Puppet` build: load the editable format into a runtime [`Puppet`]
+//! `.clp → LegacyPuppet` build: load the editable format into a runtime [`LegacyPuppet`]
 //! (the editor/preview path, and the structural inverse of [`super::to_clp`]).
 //!
 //! The flat arena makes this a linear fill — walk `nodes` in topological order
-//! and [`Puppet::insert_child`] each under its already-inserted parent — then
+//! and [`LegacyPuppet::insert_child`] each under its already-inserted parent — then
 //! reuse the inx path's mesh-group bake ([`bake_mesh_groups`]) and texture crop
-//! ([`crop_textures`]) so the result is the same `Puppet` an `.inx` load builds.
+//! ([`crop_textures`]) so the result is the same `LegacyPuppet` an `.inx` load builds.
 //!
 //! `.clp` carries no uuids, but the runtime is uuid-keyed (masks resolve a node
 //! by uuid, params/physics by uuid), so the build synthesizes `uuid = arena
 //! index`: node index → node uuid, param index → param uuid. The two are
-//! independent namespaces in `Puppet`, so the overlap is harmless. The one
+//! independent namespaces in `LegacyPuppet`, so the overlap is harmless. The one
 //! authored-vs-runtime transform redone here is the global g-scale fold into
 //! each SimplePhysics node's gravity (the `.clp` stores it authored/unscaled).
 
@@ -26,20 +26,20 @@ use crate::formats::clp::{
     TextureAlpha, TextureEncoding,
 };
 use crate::formats::{ModelTexture, TextureFormat};
+use crate::legacy_puppet::LegacyPuppet;
 use crate::load_budget::{charge_clp_structure, LoadBudget};
 use crate::meshgroup::MeshGroupAttachments;
 use crate::params::{
     Binding, BindingValues, DeformMatrix, Matrix, MeshGroupColorBindingError, Param,
 };
 use crate::physics::SimplePhysicsData;
-use crate::puppet::Puppet;
 
 use super::convert::{bake_mesh_groups, binding_is_all_zero};
 use super::error::ImportError;
 
-/// Build a runtime [`Puppet`] from a decoded [`ClpFile`], downsampling each
+/// Build a runtime [`LegacyPuppet`] from a decoded [`ClpFile`], downsampling each
 /// texture by `texture_halvings` power-of-two steps (0 = full resolution).
-pub fn from_clp(file: &ClpFile, texture_halvings: u32) -> Result<Puppet, ImportError> {
+pub fn from_clp(file: &ClpFile, texture_halvings: u32) -> Result<LegacyPuppet, ImportError> {
     from_clp_with_budget(file, texture_halvings, &mut LoadBudget::default())
 }
 
@@ -47,7 +47,7 @@ pub fn from_clp_with_budget(
     file: &ClpFile,
     texture_halvings: u32,
     budget: &mut LoadBudget,
-) -> Result<Puppet, ImportError> {
+) -> Result<LegacyPuppet, ImportError> {
     from_clp_impl(file, texture_halvings, None, budget)
 }
 
@@ -58,7 +58,7 @@ pub fn from_clp_cached(
     file: &ClpFile,
     texture_halvings: u32,
     cache: &mut super::alpha_crop::TexturePrepCache,
-) -> Result<Puppet, ImportError> {
+) -> Result<LegacyPuppet, ImportError> {
     from_clp_impl(
         file,
         texture_halvings,
@@ -72,7 +72,7 @@ fn from_clp_impl(
     texture_halvings: u32,
     cache: Option<&mut super::alpha_crop::TexturePrepCache>,
     budget: &mut LoadBudget,
-) -> Result<Puppet, ImportError> {
+) -> Result<LegacyPuppet, ImportError> {
     charge_clp_structure(file, budget)?;
     let doc = &file.doc;
     let model_textures = build_model_textures(&file.textures)?;
@@ -87,7 +87,7 @@ fn from_clp_impl(
     // as the inx path folds it (convert.rs).
     let g_scale = doc.physics.pixels_per_meter * doc.physics.gravity;
 
-    let mut puppet = Puppet::new();
+    let mut puppet = LegacyPuppet::new();
     // arena index → runtime NodeIdx. Topological order (`parent < self`)
     // guarantees a node's parent is already present, so this is a linear fill.
     let mut node_ids: Vec<NodeIdx> = Vec::with_capacity(doc.nodes.len());
@@ -735,7 +735,7 @@ mod tests {
         }
     }
 
-    /// `.inx → Puppet` and `.inx → .clp → Puppet` must build the same runtime
+    /// `.inx → LegacyPuppet` and `.inx → .clp → LegacyPuppet` must build the same runtime
     /// puppet. Both insert nodes in the same DFS pre-order, so `iter()` (slot
     /// order) aligns them node-for-node, and `NodeIdx` is the slot index, so
     /// binding targets compare directly too.
@@ -749,7 +749,7 @@ mod tests {
     /// Shared by [`reference_clp_build_matches_inx_puppet`] and
     /// [`synthetic_model_reflects_identically_on_both_paths`] so the model-gated
     /// test and the always-on one cannot check different things.
-    fn assert_puppets_match(inx_puppet: &Puppet, clp_puppet: &Puppet) {
+    fn assert_puppets_match(inx_puppet: &LegacyPuppet, clp_puppet: &LegacyPuppet) {
         assert_eq!(inx_puppet.len(), clp_puppet.len(), "node count");
         assert_eq!(
             inx_puppet.textures().len(),
@@ -952,7 +952,7 @@ mod tests {
         }
     }
 
-    fn node_named<'a>(puppet: &'a Puppet, name: &str) -> &'a Node {
+    fn node_named<'a>(puppet: &'a LegacyPuppet, name: &str) -> &'a Node {
         puppet
             .iter()
             .find(|(_, n)| n.name == name)
@@ -960,7 +960,7 @@ mod tests {
             .expect("node present")
     }
 
-    fn part_mesh<'a>(puppet: &'a Puppet, name: &str) -> &'a Mesh {
+    fn part_mesh<'a>(puppet: &'a LegacyPuppet, name: &str) -> &'a Mesh {
         match &node_named(puppet, name).kind {
             NodeKind::Part(p) => &p.mesh,
             other => {
@@ -986,8 +986,8 @@ mod tests {
     }
 
     /// The always-on half of the reflection guard: with no reference model in
-    /// the tree, this is what keeps `convert.rs` (inx → Puppet) and
-    /// `to_clp.rs` (inx → .clp → Puppet) negating the *same* set of fields.
+    /// the tree, this is what keeps `convert.rs` (inx → LegacyPuppet) and
+    /// `to_clp.rs` (inx → .clp → LegacyPuppet) negating the *same* set of fields.
     ///
     /// Agreement alone is not enough — both paths could forget the same
     /// negation — so the absolute assertions below pin the authored → runtime

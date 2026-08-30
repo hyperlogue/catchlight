@@ -89,7 +89,7 @@ that enforces them, not here. Add new ones there.
   slots, masking blends, resource sharing, WebGL fallbacks
 - `crates/catchlight-wgpu/src/drawable_collector.rs` — flattening and z order
 - `crates/catchlight-wgpu/src/lib.rs` — headless context, orthographic camera
-- `crates/catchlight-core/src/puppet.rs` — `tick`, its caches, `settle_physics`
+- `crates/catchlight-core/src/legacy_puppet.rs` — `tick`, its caches, `settle_physics`
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translateChildren`
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down frame
 - `crates/catchlight-core/src/params.rs` — param ids vs node ids

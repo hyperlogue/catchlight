@@ -83,7 +83,7 @@ fn setup(mut commands: Commands) {
     info!("{} puppets spawned", N);
 }
 
-fn build_blink_animation(puppet: &catchlight_core::Puppet) -> Option<Animation> {
+fn build_blink_animation(puppet: &catchlight_core::LegacyPuppet) -> Option<Animation> {
     let blink_uuids: Vec<u32> = puppet
         .params()
         .iter()

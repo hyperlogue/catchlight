@@ -1,4 +1,4 @@
-use catchlight_core::{DeformSource, GlobalTransforms, NodeKind, Puppet, Vec2};
+use catchlight_core::{DeformSource, GlobalTransforms, LegacyPuppet, NodeKind, Vec2};
 
 use crate::{
     create_headless_context, read_texture_to_rgba, CompositePool, FramebufferSnapshotPool,
@@ -106,7 +106,7 @@ impl RenderContext {
     }
 }
 
-pub fn apply_uniform_test_deform(puppet: &mut Puppet, shift: Vec2) {
+pub fn apply_uniform_test_deform(puppet: &mut LegacyPuppet, shift: Vec2) {
     let ids_and_lens: Vec<_> = puppet
         .iter()
         .filter_map(|(id, node)| match &node.kind {

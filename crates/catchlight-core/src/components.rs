@@ -33,7 +33,7 @@ impl TextureId {
     }
 }
 
-/// Canonical texture representation in a Puppet: pre-decoded bytes
+/// Canonical texture representation in a LegacyPuppet: pre-decoded bytes
 /// encoding premultiplied LINEAR colour, ready for any renderer to upload
 /// as `Rgba8UnormSrgb` (the sampler's decode then hands shaders
 /// premultiplied linear). The importer owns the conversion from source-file
@@ -147,9 +147,9 @@ pub(crate) fn srgb_encode_to_byte(linear: f32) -> u8 {
 
 /// Each node carries two transforms: `base_transform` / `base_z_order`
 /// are the loader-parsed values, set once and never mutated; `transform`
-/// / `z_order` are the per-frame working copies that `Puppet::
+/// / `z_order` are the per-frame working copies that `LegacyPuppet::
 /// reset_dynamic_state` resets to base at frame start and
-/// `Puppet::apply_params` additively modifies. Callers that don't use
+/// `LegacyPuppet::apply_params` additively modifies. Callers that don't use
 /// parameters see identical behavior: base == working at load, nothing
 /// changes between frames.
 #[derive(Debug, Clone)]

@@ -1,10 +1,10 @@
 use std::sync::{Arc, RwLock};
 
 use bevy::prelude::*;
-use catchlight_core::{GlobalTransforms, Puppet};
+use catchlight_core::{GlobalTransforms, LegacyPuppet};
 use catchlight_wgpu::{DrawableCollector, RenderList};
 
-/// Wraps a `catchlight_core::Puppet` as a Bevy component.
+/// Wraps a `catchlight_core::LegacyPuppet` as a Bevy component.
 ///
 /// The puppet lives behind `Arc<RwLock<>>` so:
 /// - Main-world `update_puppets` mutates it (and `state`) via the write lock.
@@ -32,7 +32,7 @@ use catchlight_wgpu::{DrawableCollector, RenderList};
 #[derive(Component)]
 #[require(Visibility)]
 pub struct CatchlightPuppet {
-    pub puppet: Arc<RwLock<Puppet>>,
+    pub puppet: Arc<RwLock<LegacyPuppet>>,
     pub state: Arc<RwLock<PuppetDynamicState>>,
 }
 
@@ -44,7 +44,7 @@ pub struct PuppetDynamicState {
 }
 
 impl CatchlightPuppet {
-    pub fn new(puppet: Puppet) -> Self {
+    pub fn new(puppet: LegacyPuppet) -> Self {
         Self {
             puppet: Arc::new(RwLock::new(puppet)),
             state: Arc::new(RwLock::new(PuppetDynamicState::default())),

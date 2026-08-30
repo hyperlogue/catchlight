@@ -204,7 +204,7 @@ struct App {
     surface: Option<SurfaceContext>,
     stencil: Option<catchlight_wgpu::StencilTarget>,
     composites: Option<catchlight_wgpu::CompositePool>,
-    puppet: catchlight_core::Puppet,
+    puppet: catchlight_core::LegacyPuppet,
     transforms: GlobalTransforms,
     start: std::time::Instant,
     last_frame: std::time::Instant,
