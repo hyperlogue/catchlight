@@ -8,8 +8,8 @@
 
 use super::to_legacy::from_inx_model_to_legacy;
 use crate::formats::clm::ClmIndices;
+use crate::formats::inx::InxModel;
 use crate::formats::legacy::{LegacyDocument, LegacyNodeKind};
-use crate::formats::InxModel;
 use crate::importer::ImportError;
 use serde_json::json;
 

@@ -9,8 +9,6 @@
 
 pub mod clm;
 pub mod container;
-mod inx;
+pub mod inx;
 pub mod legacy;
 mod utils;
-
-pub use inx::*;

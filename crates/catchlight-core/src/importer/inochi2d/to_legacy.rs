@@ -24,13 +24,14 @@ use crate::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
     TextureAlpha, TextureEncoding,
 };
+use crate::formats::inx::InxModel;
 use crate::formats::legacy::{
     LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
     LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture,
 };
-use crate::formats::{InxModel, TextureFormat};
 use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
+use crate::texture::TextureFormat;
 
 use super::error::ImportError;
 use super::schema::{
@@ -685,7 +686,7 @@ fn interp(s: Option<&str>) -> InterpolateMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::InxModel;
+    use crate::formats::inx::InxModel;
     use crate::model::{BindingTarget, ScalarTarget};
     use serde_json::json;
     /// A model authored in inochi2d's frame — Y-down, lower `zsort` in front —
