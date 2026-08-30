@@ -49,6 +49,16 @@ impl CatchlightModel {
         &self.model
     }
 
+    /// The model, to edit it — the editor's path, and a hot reload's.
+    ///
+    /// Copy-on-write: a model the render world is still holding is cloned
+    /// rather than mutated under it, so the frame in flight keeps the model it
+    /// started with. Every edit bumps the model's own generation, which is
+    /// what makes each puppet rebake and each render cache rebuild.
+    pub fn model_mut(&mut self) -> &mut Model {
+        Arc::make_mut(&mut self.model)
+    }
+
     /// The model behind its `Arc`, for a caller that has to hold it past the
     /// borrow of the asset — extraction into the render world, for one.
     /// Cloning it shares the model rather than copying it.

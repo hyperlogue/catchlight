@@ -10,7 +10,6 @@ use catchlight_wgpu::{
     RenderList, StencilTarget, WgpuRenderer,
 };
 
-use crate::asset::CatchlightModel;
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
 
 /// Single render-world resource that owns every piece of mutable
@@ -121,9 +120,14 @@ pub(crate) struct RendererKey {
 pub(crate) struct PuppetGpu {
     pub renderer: WgpuRenderer,
     pub cache: RenderCache,
-    /// The asset the cache was prepared from; a different id means the entity
-    /// swapped models and the cache has to be rebuilt.
-    pub model: AssetId<CatchlightModel>,
+    /// The model the cache was prepared from, held by pointer identity.
+    ///
+    /// Not the `AssetId`: an id survives its asset's *value* being replaced —
+    /// a hot reload, an `Assets::insert` — and the replacement is a different
+    /// model whose generation counter starts over, so neither the id nor the
+    /// generation would notice. A different `Arc` always means a different
+    /// model, and holding this one also keeps it alive for the frame.
+    pub model: Arc<Model>,
     /// What the cache was prepared with. Changing `CatchlightSettings`
     /// re-prepares, so a texture budget is live rather than fixed at load.
     pub options: PrepareOptions,
@@ -142,18 +146,12 @@ impl PuppetGpu {
     /// reading the live puppet safe: bevy's pipelined rendering may run the
     /// next main-world frame while the render world draws, and that frame
     /// overwrites the puppet's combined-deform buffers in place.
-    pub(crate) fn refresh(
-        &mut self,
-        model: &Model,
-        model_id: AssetId<CatchlightModel>,
-        puppet: &Puppet,
-        options: PrepareOptions,
-    ) {
-        if self.model != model_id || self.options != options {
+    pub(crate) fn refresh(&mut self, model: &Arc<Model>, puppet: &Puppet, options: PrepareOptions) {
+        if !Arc::ptr_eq(&self.model, model) || self.options != options {
             match RenderCache::prepare(&mut self.renderer, model, options) {
                 Ok(cache) => {
                     self.cache = cache;
-                    self.model = model_id;
+                    self.model = model.clone();
                     self.options = options;
                     self.collected = false;
                 }
@@ -289,7 +287,7 @@ pub(crate) fn prepare_puppets(
                 PuppetGpu {
                     renderer,
                     cache,
-                    model: ex.model_id,
+                    model: ex.model.clone(),
                     options,
                     render_list: RenderList::default(),
                     collected: false,

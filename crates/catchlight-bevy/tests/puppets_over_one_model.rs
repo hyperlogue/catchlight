@@ -370,3 +370,43 @@ fn the_asset_server_loads_a_clm_off_disk() {
         "and the entity animates what was loaded",
     );
 }
+
+#[test]
+fn replacing_the_asset_value_rebakes_the_puppet() {
+    // A hot reload, or an `Assets::insert` over a live id: the same handle,
+    // a different model. Nothing about the model says so — every model read
+    // out of a file starts at generation 0, so the generation gate a tick
+    // relies on cannot see the difference — which is why the asset event is
+    // what triggers the rebake.
+    let mut app = headless_app();
+    let handle = add_model(&mut app, fixture("welded_seam"));
+    let entity = spawn(&mut app, &handle);
+    app.update();
+    let before = puppet(&app, entity).len();
+
+    let replacement = fixture("composite_masks");
+    assert_eq!(
+        replacement.generation(),
+        app.world()
+            .resource::<Assets<CatchlightModel>>()
+            .get(&handle)
+            .unwrap()
+            .model()
+            .generation(),
+        "the premise: two different models at the same generation",
+    );
+    assert_ne!(replacement.node_count(), before, "and different trees");
+
+    let after_nodes = replacement.node_count();
+    app.world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .insert(&handle, CatchlightModel::new(replacement))
+        .expect("replace the model asset");
+    app.update();
+
+    assert_eq!(
+        puppet(&app, entity).len(),
+        after_nodes,
+        "the puppet rebaked against the replacement",
+    );
+}
