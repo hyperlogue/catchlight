@@ -1,12 +1,10 @@
 pub mod collect;
-pub mod deform_snapshot;
 pub mod headless;
 pub mod render_cache;
 pub mod renderer;
 
 pub use collect::*;
-pub use deform_snapshot::*;
-pub use headless::{apply_uniform_scratch_deform, apply_uniform_test_deform, RenderContext};
+pub use headless::{apply_uniform_scratch_deform, RenderContext};
 pub use render_cache::{collect, PrepareOptions, RenderCache};
 pub use renderer::*;
 

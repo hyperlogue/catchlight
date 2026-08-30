@@ -17,21 +17,18 @@
 //!   outer's opacity, tint, blend and mask would not cover it.
 //! - **Opacity 0 culls everything but Darken**, whose `Min` blend ignores
 //!   blend factors and darkens even at zero alpha.
-//! - **One collector body, two runtimes.** [`DrawSource`] is what the walk
-//!   needs from a posed runtime: the tree, the evaluated transforms, and the
-//!   cache slots its resources landed in. The render cache implements it over
-//!   the new `Puppet`; the legacy entry points below implement it over a
-//!   `LegacyPuppet` until cl-32i.8 deletes them. Sharing the body is what
-//!   makes the two paths agree on pixels rather than by inspection.
+//! - **The walk is behind [`DrawSource`].** It is what the walk needs from a
+//!   posed runtime: the tree, the evaluated transforms, and the cache slots
+//!   its resources landed in. The render cache is the one implementation; the
+//!   indirection is what let a second runtime be swapped in underneath while
+//!   the two paths were proved to agree on pixels, and what keeps this module
+//!   free of GPU types.
 //!
 //! Everything the list names is a **slot** — a dense `u32` position in the
 //! render cache's mesh, texture or node tables — never an Id. A list is only
 //! meaningful against the cache it was collected from.
 
-use catchlight_core::{
-    BlendMode, CompositeData, GlobalTransforms, LegacyPuppet, MaskMode, Node, NodeIdx, NodeKind,
-    NodeTree,
-};
+use catchlight_core::{BlendMode, CompositeData, MaskMode, Node, NodeIdx, NodeKind, NodeTree};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
@@ -635,80 +632,4 @@ impl Collector {
         };
         is_static && composite_passthrough_dynamic(composite)
     }
-}
-
-/// A posed `LegacyPuppet` as a draw source. Mesh slots are node slots and
-/// texture slots are the puppet's own texture-table indices, which is what
-/// `WgpuRenderer::upload_puppet` keys its GPU state by.
-// legacy: removed by cl-32i.8
-pub(crate) struct LegacySource<'a> {
-    puppet: &'a LegacyPuppet,
-    transforms: &'a GlobalTransforms,
-}
-
-// legacy: removed by cl-32i.8
-impl DrawSource for LegacySource<'_> {
-    fn tree(&self) -> &NodeTree {
-        self.puppet.tree()
-    }
-
-    fn node(&self, idx: NodeIdx) -> Option<&Node> {
-        self.puppet.get(idx)
-    }
-
-    fn node_count(&self) -> usize {
-        self.puppet.len()
-    }
-
-    fn transform(&self, idx: NodeIdx) -> glam::Mat4 {
-        self.transforms.get(idx)
-    }
-
-    fn structure_revision(&self) -> u64 {
-        self.puppet.node_revision()
-    }
-
-    fn mask_source(&self, source: u32) -> Option<NodeIdx> {
-        self.puppet.node_for_uuid(source)
-    }
-
-    fn mesh_slot(&self, idx: NodeIdx) -> u32 {
-        idx.0
-    }
-
-    fn texture_slot(&self, node: &Node) -> u32 {
-        match &node.kind {
-            NodeKind::Part(part) => part.albedo_texture.0,
-            _ => NO_SLOT,
-        }
-    }
-
-    fn has_texture(&self, slot: u32) -> bool {
-        (slot as usize) < self.puppet.textures().len()
-    }
-}
-
-/// Per-frame collector state for a `LegacyPuppet`.
-// legacy: removed by cl-32i.8
-#[derive(Debug, Default)]
-pub struct DrawableCollector(Collector);
-
-impl DrawableCollector {
-    // legacy: removed by cl-32i.8
-    pub fn collect_into(
-        &mut self,
-        puppet: &LegacyPuppet,
-        transforms: &GlobalTransforms,
-        render_list: &mut RenderList,
-    ) {
-        self.0
-            .collect_into(&LegacySource { puppet, transforms }, render_list);
-    }
-}
-
-// legacy: removed by cl-32i.8
-pub fn collect_drawables(puppet: &LegacyPuppet, transforms: &GlobalTransforms) -> RenderList {
-    let mut render_list = RenderList::default();
-    DrawableCollector::default().collect_into(puppet, transforms, &mut render_list);
-    render_list
 }
