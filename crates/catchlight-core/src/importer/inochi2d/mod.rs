@@ -38,7 +38,7 @@
 //! part UVs are rewritten. `atlas.rs` is gone.
 
 pub(crate) mod alpha_crop;
-pub use alpha_crop::TexturePrepCache;
+pub use alpha_crop::{prepare_textures, PreppedTexture, TexturePrepCache, UvCrop};
 pub(crate) mod convert;
 pub(crate) mod error;
 pub(crate) mod from_legacy;
