@@ -1,0 +1,192 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+//! A live vertex drag rides the presence path and the commit rides the
+//! document path. That split is what keeps the undo history usable: dragging
+//! a vertex emits a `ScratchDeform` per mouse move, and if those touched the
+//! model, one gesture would bury every earlier edit under a hundred
+//! indistinguishable snapshots (and blow the 256 MiB budget on any rig with
+//! real textures).
+
+use catchlight_editor_protocol::{
+    BindingParams, Command, NodeId, ParamId, Reply, Request, ResponseBody,
+};
+use catchlight_editor_server::Editor;
+
+fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
+    match ed.handle(Request { id, command }) {
+        Reply::Ok { body, .. } => body,
+        other => panic!("expected Ok, got {other:?}"),
+    }
+}
+
+fn welded_seam() -> Vec<u8> {
+    std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/models/welded_seam.clm"
+    ))
+    .expect("welded_seam.clm")
+}
+
+#[test]
+fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
+    let ed = Editor::new();
+    let session = ed.open_bytes("welded_seam", &welded_seam()).unwrap();
+
+    // Any meshed node and any param will do: the test is about which path the
+    // commands take, not about what they draw.
+    let (node, param, vertex_floats) = ed
+        .with_model(session, |model| {
+            let node: NodeId = model
+                .node_ids()
+                .find(|id| model.node_mesh(id).is_some_and(|m| !m.verts.is_empty()))
+                .cloned()
+                .expect("welded_seam has a meshed node");
+            let param: ParamId = model.param_ids().first().cloned().expect("a param");
+            let len = model.deform_len(&node);
+            (node, param, len)
+        })
+        .unwrap();
+
+    let status = |id: u64| match body(&ed, id, Command::Status { session }) {
+        ResponseBody::Status { status } => status,
+        other => panic!("{other:?}"),
+    };
+    let rev_before = status(1).rev;
+    assert_eq!(ed.history(session).unwrap(), (0, 0));
+
+    for i in 0..100u32 {
+        let nudge = i as f32 * 0.01;
+        let offsets: Vec<f32> = (0..vertex_floats)
+            .map(|v| nudge + v as f32 * 0.001)
+            .collect();
+        assert!(matches!(
+            ed.handle(Request {
+                id: 100 + i as u64,
+                command: Command::ScratchDeform {
+                    session,
+                    node: node.clone(),
+                    offsets,
+                },
+            }),
+            Reply::Ok { .. }
+        ));
+    }
+
+    assert_eq!(
+        ed.history(session).unwrap(),
+        (0, 0),
+        "a drag must not snapshot the model"
+    );
+    assert_eq!(
+        status(2).rev,
+        rev_before,
+        "a drag must not bump the revision"
+    );
+    assert!(!status(3).dirty, "a drag must not dirty the document");
+
+    // The commit — the same offsets, authored into a deform keypoint.
+    let offsets: Vec<f32> = (0..vertex_floats)
+        .map(|v| 0.99 + v as f32 * 0.001)
+        .collect();
+    assert!(matches!(
+        body(
+            &ed,
+            4,
+            Command::DeformVertices {
+                session,
+                params: BindingParams::one(param),
+                node: node.clone(),
+                cell: [0, 0],
+                offsets,
+            },
+        ),
+        ResponseBody::Empty
+    ));
+
+    assert_eq!(
+        ed.history(session).unwrap(),
+        (1, 0),
+        "the commit is exactly one undo entry"
+    );
+    assert!(status(5).rev > rev_before);
+    assert!(status(6).dirty);
+
+    // ...and undoing it once gets the whole gesture back.
+    assert!(matches!(
+        ed.handle(Request {
+            id: 7,
+            command: Command::Undo { session }
+        }),
+        Reply::Ok { .. }
+    ));
+    assert_eq!(ed.history(session).unwrap(), (0, 1));
+    assert!(matches!(
+        ed.handle(Request {
+            id: 8,
+            command: Command::Undo { session }
+        }),
+        Reply::Err { .. }
+    ));
+}
+
+/// A scratch deform has to match the node's mesh, and it has to name a node
+/// the model actually carries — the puppet would otherwise be handed offsets
+/// for the wrong vertex count.
+#[test]
+fn a_scratch_deform_is_checked_against_the_node_it_names() {
+    use catchlight_editor_protocol::ErrorCode;
+
+    let ed = Editor::new();
+    let session = ed.open_bytes("welded_seam", &welded_seam()).unwrap();
+    let node = ed
+        .with_model(session, |model| {
+            model
+                .node_ids()
+                .find(|id| model.node_mesh(id).is_some_and(|m| !m.verts.is_empty()))
+                .cloned()
+                .expect("a meshed node")
+        })
+        .unwrap();
+
+    assert!(matches!(
+        ed.handle(Request {
+            id: 1,
+            command: Command::ScratchDeform {
+                session,
+                node: NodeId::new("no-such-node").unwrap(),
+                offsets: vec![0.0, 0.0],
+            },
+        }),
+        Reply::Err {
+            code: ErrorCode::NoNode,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ed.handle(Request {
+            id: 2,
+            command: Command::ScratchDeform {
+                session,
+                node: node.clone(),
+                offsets: vec![0.0, 0.0, 0.0],
+            },
+        }),
+        Reply::Err {
+            code: ErrorCode::BadTarget,
+            ..
+        }
+    ));
+    // An empty list is how a drag ends: drop the scratch deform.
+    assert!(matches!(
+        ed.handle(Request {
+            id: 3,
+            command: Command::ScratchDeform {
+                session,
+                node,
+                offsets: Vec::new(),
+            },
+        }),
+        Reply::Ok { .. }
+    ));
+    assert_eq!(ed.history(session).unwrap(), (0, 0));
+}
