@@ -14,12 +14,14 @@
 //!   bump is the bug class `generation_bumps_on_every_mutating_method` exists
 //!   to catch.
 //! - **The tree is always valid.** One root, no cycles, no dangling
-//!   cross-reference: deleting a node also drops every mask and binding that
-//!   pointed into the removed subtree, and deleting a param or texture nulls
-//!   out whatever referenced it. Cross-references (a part's albedo, a mask's
-//!   source, a physics target, a weld's ends) are private and only reachable
-//!   through methods that check them, which is what makes
-//!   [`Model::to_clm_file`] total.
+//!   cross-reference: deleting a node drops every mask, binding and weld that
+//!   pointed into the removed subtree, deleting a seam drops the welds that
+//!   named it, and deleting a param or texture nulls out whatever referenced
+//!   it. Renaming rewrites instead — a node's new Id reaches its weld ends
+//!   like everything else. Cross-references (a part's albedo, a mask's source,
+//!   a physics target, a weld's ends) are private and only reachable through
+//!   methods that check them, which is what makes [`Model::to_clm_file`]
+//!   total.
 //! - **An Id is unique within the model and never changes on its own.** This
 //!   is where the uniqueness [`crate::id`] cannot check is enforced: a
 //!   generated Id is re-drawn until it is free, an author-chosen one is
