@@ -1,8 +1,16 @@
-//! Import-time per-texture alpha cropping: the importer's texture strategy.
+//! Per-texture alpha cropping: catchlight's texture strategy, applied
+//! wherever a model's encoded bytes are turned into uploadable images.
 //! Crops each texture to the bounding box of its opaque texels (plus a
 //! transparent mip skirt) and keeps it as its own table entry. Texture ids
 //! stay 1:1 with the source table, so only part UVs are rewritten, never
 //! albedo slots.
+//!
+//! Two entry points over one implementation. [`prepare_textures`] is the
+//! puppet-free one: it decodes and crops and hands back a [`UvCrop`] per
+//! texture for whoever owns the meshes to apply — that is what the render
+//! cache calls, because a `Model` keeps its textures encoded and its meshes
+//! authored against them. [`crop_textures`] is the legacy load path: it
+//! applies the remap to the `LegacyPuppet`'s own mesh copies in place.
 //!
 //! Why the *opaque* bbox and not the mesh-referenced *UV* bbox: on inochi2d
 //! models the UV bbox is dominated by transparent texels the mesh's vertices
@@ -84,10 +92,78 @@ fn prep_key(tex: &ModelTexture, texture_halvings: u32) -> TexturePrepKey {
     }
 }
 
-/// Decode `textures` (each halved `texture_halvings` times), crop each to its
-/// opaque bounding box, and rewrite every part's mesh UVs against its crop.
-/// The returned table is 1:1 with the source table, so albedo ids are left
-/// untouched.
+/// Where one texture's opaque crop sits inside the source image, as the UV
+/// remap a mesh authored against the uncropped texture needs.
+///
+/// `None` on a [`PreppedTexture`] means "no remap": either the texture was
+/// fully transparent (it became a 1x1 stand-in and nothing sampling it is
+/// visible) or it had no crop to apply.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UvCrop {
+    src_w: u32,
+    src_h: u32,
+    x: i64,
+    y: i64,
+    w: u32,
+    h: u32,
+}
+
+impl UvCrop {
+    /// Map a UV authored against the *source* texture onto the crop.
+    ///
+    /// In f64 because the source dimensions run to thousands of texels and
+    /// the crop is a small window inside them: doing this in f32 loses a
+    /// texel's worth of precision at the far edge of a 4k texture.
+    pub fn map(&self, uv: crate::Vec2) -> crate::Vec2 {
+        let (tw, th) = (self.src_w as f64, self.src_h as f64);
+        crate::Vec2::new(
+            ((uv.x as f64 * tw - self.x as f64) / self.w as f64) as f32,
+            ((uv.y as f64 * th - self.y as f64) / self.h as f64) as f32,
+        )
+    }
+}
+
+/// One decoded, cropped texture and the UV remap that goes with it.
+#[derive(Debug, Clone)]
+pub struct PreppedTexture {
+    pub texture: PuppetTexture,
+    pub uv_crop: Option<UvCrop>,
+}
+
+/// Decode `textures` (each halved `texture_halvings` times) and crop each to
+/// its opaque bounding box, without touching any runtime.
+///
+/// The returned table is 1:1 with `textures`, so albedo ids index it
+/// unchanged; each entry carries the [`UvCrop`] its parts' mesh UVs must be
+/// remapped through before they are drawn. Whoever owns those meshes applies
+/// it — the legacy load path rewrites the puppet's copy in place
+/// ([`crop_textures_cached`]), the render cache rewrites the UVs it uploads.
+pub fn prepare_textures(
+    textures: &[ModelTexture],
+    texture_halvings: u32,
+    cache: Option<&mut TexturePrepCache>,
+) -> Result<Vec<PreppedTexture>, ImportError> {
+    let (table, plans) = prep_all(textures, texture_halvings, cache)?;
+    Ok(table
+        .into_iter()
+        .zip(plans)
+        .map(|(texture, plan)| PreppedTexture {
+            texture,
+            uv_crop: plan.crop.map(|(x, y, w, h)| UvCrop {
+                src_w: plan.src_w,
+                src_h: plan.src_h,
+                x,
+                y,
+                w,
+                h,
+            }),
+        })
+        .collect())
+}
+
+/// Decode `textures`, crop each to its opaque bounding box, and rewrite every
+/// part's mesh UVs against its crop. The returned table is 1:1 with the source
+/// table, so albedo ids are left untouched.
 pub(crate) fn crop_textures(
     puppet: &mut LegacyPuppet,
     textures: &[ModelTexture],
@@ -100,8 +176,43 @@ pub(crate) fn crop_textures_cached(
     puppet: &mut LegacyPuppet,
     textures: &[ModelTexture],
     texture_halvings: u32,
-    mut cache: Option<&mut TexturePrepCache>,
+    cache: Option<&mut TexturePrepCache>,
 ) -> Result<Vec<PuppetTexture>, ImportError> {
+    let (table, plans) = prep_all(textures, texture_halvings, cache)?;
+
+    let part_ids: Vec<NodeIdx> = puppet
+        .iter()
+        .filter(|(_, n)| matches!(n.kind, NodeKind::Part(_)))
+        .map(|(id, _)| id)
+        .collect();
+    for id in part_ids {
+        let Some(node) = puppet.get_mut(id) else {
+            continue;
+        };
+        let NodeKind::Part(part) = &mut node.kind else {
+            continue;
+        };
+        let ti = part.albedo_texture.0 as usize;
+        let Some(plan) = plans.get(ti) else { continue };
+        let Some((cx, cy, cw, ch)) = plan.crop else {
+            continue;
+        };
+        let (tw, th) = (plan.src_w as f64, plan.src_h as f64);
+        for uv in &mut part.mesh.uvs {
+            uv.x = ((uv.x as f64 * tw - cx as f64) / cw as f64) as f32;
+            uv.y = ((uv.y as f64 * th - cy as f64) / ch as f64) as f32;
+        }
+    }
+    Ok(table)
+}
+
+/// The puppet-free half: probe the memo, decode and crop the misses, and
+/// return the table beside the crop plans.
+fn prep_all(
+    textures: &[ModelTexture],
+    texture_halvings: u32,
+    mut cache: Option<&mut TexturePrepCache>,
+) -> Result<(Vec<PuppetTexture>, Vec<Plan>), ImportError> {
     let keys: Vec<Option<TexturePrepKey>> = textures
         .iter()
         .map(|tex| cache.as_ref().map(|_| prep_key(tex, texture_halvings)))
@@ -142,31 +253,7 @@ pub(crate) fn crop_textures_cached(
     // index makes that impossible; this pins it, since the 1:1 property
     // stopped being local once the decode was split out to fan out.
     assert_eq!(table.len(), textures.len());
-
-    let part_ids: Vec<NodeIdx> = puppet
-        .iter()
-        .filter(|(_, n)| matches!(n.kind, NodeKind::Part(_)))
-        .map(|(id, _)| id)
-        .collect();
-    for id in part_ids {
-        let Some(node) = puppet.get_mut(id) else {
-            continue;
-        };
-        let NodeKind::Part(part) = &mut node.kind else {
-            continue;
-        };
-        let ti = part.albedo_texture.0 as usize;
-        let Some(plan) = plans.get(ti) else { continue };
-        let Some((cx, cy, cw, ch)) = plan.crop else {
-            continue;
-        };
-        let (tw, th) = (plan.src_w as f64, plan.src_h as f64);
-        for uv in &mut part.mesh.uvs {
-            uv.x = ((uv.x as f64 * tw - cx as f64) / cw as f64) as f32;
-            uv.y = ((uv.y as f64 * th - cy as f64) / ch as f64) as f32;
-        }
-    }
-    Ok(table)
+    Ok((table, plans))
 }
 
 /// Decode and crop the textures at `indices`.
@@ -495,5 +582,68 @@ mod tests {
         assert!((0.0..=1.0).contains(&ox) && (0.0..=1.0).contains(&oy));
         let (gx, gy) = remap(0.0, 0.0);
         assert!(gx < 0.0 && gy < 0.0);
+    }
+
+    /// The two entry points must agree texel for texel: whatever
+    /// `crop_textures` writes into a part's mesh, `prepare_textures` +
+    /// [`UvCrop::map`] must produce for the same UV. This is what lets the
+    /// render cache and the legacy load path sample the same texels.
+    #[test]
+    fn the_puppet_free_prep_remaps_uvs_exactly_as_the_in_place_one() {
+        use crate::components::{Mesh, MeshIndices, Node, PartData};
+        use crate::Vec2;
+
+        // A 64x64 PNG with one opaque texel, so the crop is a real window
+        // rather than the whole image.
+        let mut image = image::RgbaImage::new(64, 64);
+        image.put_pixel(40, 33, image::Rgba([10, 20, 30, 255]));
+        let mut data = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut data, image::ImageFormat::Png)
+            .unwrap();
+        let source = ModelTexture {
+            format: crate::formats::TextureFormat::Png,
+            data: data.into_inner().into(),
+            premultiplied: false,
+        };
+
+        let uvs = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(40.5 / 64.0, 33.5 / 64.0),
+            Vec2::new(1.0, 1.0),
+        ];
+        let mut puppet = LegacyPuppet::new();
+        puppet.insert_child(
+            puppet.root(),
+            Node {
+                kind: NodeKind::Part(Box::new(PartData {
+                    mesh: Mesh::new(
+                        vec![Vec2::ZERO; 3],
+                        uvs.clone(),
+                        MeshIndices::U16(vec![0, 1, 2]),
+                        Vec2::ZERO,
+                    ),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            Some(1),
+        );
+
+        let in_place = crop_textures(&mut puppet, std::slice::from_ref(&source), 0).unwrap();
+        let rewritten = puppet
+            .iter()
+            .find_map(|(_, n)| match &n.kind {
+                NodeKind::Part(p) => Some(p.mesh.uvs.clone()),
+                _ => None,
+            })
+            .unwrap();
+
+        let prepped = prepare_textures(std::slice::from_ref(&source), 0, None).unwrap();
+        assert_eq!(prepped.len(), 1);
+        assert_eq!(prepped[0].texture.rgba, in_place[0].rgba);
+        let crop = prepped[0].uv_crop.expect("an opaque texel means a crop");
+        let mapped: Vec<Vec2> = uvs.iter().map(|&uv| crop.map(uv)).collect();
+        assert_eq!(mapped, rewritten);
     }
 }
