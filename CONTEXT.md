@@ -23,7 +23,7 @@ _Avoid_: document
 **Id**:
 The identity of a node, param or texture: a string, chosen by the author or
 generated, that never changes on its own and is stored with the model. A
-generated Id carries the kind and the parent it was created under —
+generated node Id carries the kind and the parent it was created under —
 `head/part-3f9a2c1e`, say; that prefix is a reading aid, not a path, and
 stays as-is when the node moves. Only the author renames an Id, and renaming
 breaks any addon that referenced the old one.
@@ -111,10 +111,10 @@ and whether what the source covers is kept or cut away.
 _Avoid_: mask binding
 
 **Seam**:
-A named set of slots on a part, each filled by one of the part's vertices, so
-that welds can refer to vertices by slot. Whoever owns the part fills its
-seams; re-authoring the mesh empties every slot, and the author must fill
-them again.
+A named set of slots on a part, each filled by one of the part's vertices or
+left unfilled, so that welds can refer to vertices by slot. Whoever owns the
+part fills its seams; re-authoring the mesh empties every slot, and the author
+must fill them again.
 _Avoid_: vertex ref
 
 **Weld**:
@@ -129,7 +129,8 @@ the key positions along it. Bindings read a param's current value.
 _Avoid_: parameter, axis
 
 **Key position**:
-A value of a param at which bindings may hold authored cells.
+A position along a param, normalized 0..1 across its range, at which
+bindings may hold authored cells.
 _Avoid_: axis point
 
 **Binding**:
@@ -211,8 +212,9 @@ refreshed from a puppet every frame, rebuilt when the model changes. Never
 authoritative.
 
 **Animation**:
-A named, timed sequence of param values with a length, an optional lead-in
-played once, and a body that repeats.
+A named, timed sequence of param values with a length in frames: an optional
+lead-in played once, then the body between it and an optional lead-out,
+repeated.
 
 **Lane**:
 One animation's track over a single param.
