@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use catchlight_clm::{diff, patch, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
+use catchlight_clm::{diff, fragment, patch, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
 use catchlight_core::formats::clm::TextureAlpha;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -97,6 +97,36 @@ enum Cmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// Cut subtrees out as an addon.
+    Extract {
+        /// The .clm to cut from.
+        file: PathBuf,
+        /// The node ids to cut, with their subtrees.
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// Where to write the addon.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Install an addon into a base model.
+    Merge {
+        /// The base model.
+        base: PathBuf,
+        /// The addon, which must be a fragment.
+        addon: PathBuf,
+        /// Where to write the merged model.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Print what an addon needs from a base model, one requirement per line
+    /// as kind, id, seam, field, owner, separated by tabs.
+    Requirements {
+        /// The addon .clm.
+        addon: PathBuf,
+        /// Print a JSON array instead.
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare two model files by id.
     Diff { a: PathBuf, b: PathBuf },
 }
@@ -150,6 +180,24 @@ fn run() -> Result<i32, Error> {
                 out.as_deref(),
             )?;
             println!("{replaced}");
+        }
+        Cmd::Extract { file, ids, out } => {
+            let extracted = fragment::extract(&file, &ids, &out)?;
+            println!("{extracted}");
+        }
+        Cmd::Merge { base, addon, out } => {
+            let merged = fragment::merge(&base, &addon, &out)?;
+            println!("{merged}");
+        }
+        Cmd::Requirements { addon, json } => {
+            let requirements = fragment::requirements(&addon)?;
+            if json {
+                println!("{}", fragment::render_json(&requirements));
+            } else {
+                for requirement in &requirements {
+                    println!("{}", fragment::render_line(requirement));
+                }
+            }
         }
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;

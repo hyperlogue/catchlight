@@ -73,6 +73,7 @@
 
 pub mod diff;
 pub mod file;
+pub mod fragment;
 pub mod patch;
 pub mod texture;
 
