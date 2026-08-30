@@ -2583,6 +2583,285 @@ mod tests {
 
     /// A rejected edit must leave every derived object alone, so it must not
     /// move the generation either.
+
+    /// Two welded parts: `collar` on `part` and `hem` on `other`, each holding
+    /// slots `l` and `r`, filled and welded.
+    fn welded_rig() -> Rig {
+        let mut r = rig();
+        let (part, other) = (r.part.clone(), r.other.clone());
+        for (node, s, verts) in [
+            (&part, seam("collar"), [0u32, 1]),
+            (&other, seam("hem"), [2, 3]),
+        ] {
+            for (id, vertex) in [(slot("l"), verts[0]), (slot("r"), verts[1])] {
+                r.model.slot_add(node, &s, id.clone()).unwrap();
+                r.model.slot_fill(node, &s, &id, vertex).unwrap();
+            }
+        }
+        r.model
+            .set_welds(vec![ModelWeld::new(
+                (part, seam("collar")),
+                (other, seam("hem")),
+                vec![(slot("l"), 1.0), (slot("r"), 0.25)],
+            )])
+            .unwrap();
+        r
+    }
+
+    /// The point of naming vertices by slot: a mesh edit invalidates which
+    /// vertex a slot meant, so the edit empties every slot on the part and
+    /// hands them back. The weld survives it, covering the slots that still
+    /// resolve.
+    #[test]
+    fn re_meshing_a_part_empties_its_slots_and_reports_them() {
+        let mut r = welded_rig();
+        let (part, other) = (r.part.clone(), r.other.clone());
+        assert_eq!(
+            r.model.welds()[0].resolve(&r.model),
+            vec![
+                ModelWeldPair {
+                    a_vert: 0,
+                    b_vert: 2,
+                    weight: 1.0
+                },
+                ModelWeldPair {
+                    a_vert: 1,
+                    b_vert: 3,
+                    weight: 0.25
+                },
+            ]
+        );
+
+        let emptied = r.model.set_node_mesh(&part, quad()).unwrap();
+        assert_eq!(
+            emptied,
+            vec![(seam("collar"), slot("l")), (seam("collar"), slot("r"))],
+        );
+        assert_eq!(
+            r.model.unfilled_slots(),
+            vec![
+                (part.clone(), seam("collar"), slot("l")),
+                (part.clone(), seam("collar"), slot("r")),
+            ],
+        );
+        assert!(
+            r.model
+                .seams(&other)
+                .unwrap()
+                .iter()
+                .flat_map(Seam::slots)
+                .all(|s| s.vertex().is_some()),
+            "the far part's slots are none of this edit's business",
+        );
+
+        let weld = &r.model.welds()[0];
+        assert_eq!(weld.weights().len(), 2, "the weld itself is untouched");
+        assert!(
+            weld.resolve(&r.model).is_empty(),
+            "an unfilled slot is skipped, not guessed at",
+        );
+
+        r.model
+            .slot_fill(&part, &seam("collar"), &slot("r"), 3)
+            .unwrap();
+        assert_eq!(
+            r.model.welds()[0].resolve(&r.model),
+            vec![ModelWeldPair {
+                a_vert: 3,
+                b_vert: 3,
+                weight: 0.25
+            }],
+            "a half-repaired seam solves the slots it has",
+        );
+        assert!(r.model.to_clm_bytes().is_ok());
+    }
+
+    /// Welded seams hold one slot set between them, so adding or removing a
+    /// slot at one end reaches every seam the welds chain to. Without that a
+    /// single edit could leave a weld `.clm` cannot express.
+    #[test]
+    fn a_welded_seam_shares_its_slot_set_along_the_chain() {
+        let mut r = welded_rig();
+        let (part, other) = (r.part.clone(), r.other.clone());
+        let third = r.node("third", part_kind());
+        r.model.seam_add(&third, seam("cuff")).unwrap();
+        for id in [slot("l"), slot("r")] {
+            r.model.slot_add(&third, &seam("cuff"), id).unwrap();
+        }
+        let mut welds = r.model.welds().to_vec();
+        welds.push(ModelWeld::new(
+            (other.clone(), seam("hem")),
+            (third.clone(), seam("cuff")),
+            vec![(slot("l"), 0.5), (slot("r"), 0.5)],
+        ));
+        r.model.set_welds(welds).unwrap();
+
+        let chain = [
+            (part.clone(), seam("collar")),
+            (other.clone(), seam("hem")),
+            (third.clone(), seam("cuff")),
+        ];
+        r.model.slot_add(&part, &seam("collar"), slot("m")).unwrap();
+        for (node, s) in &chain {
+            let found = r.model.seam(node, s).unwrap();
+            assert_eq!(found.slots().len(), 3, "{s} did not gain the slot");
+            assert_eq!(
+                found.slot(&slot("m")).unwrap().vertex(),
+                None,
+                "a slot starts unfilled wherever it lands",
+            );
+        }
+        for w in r.model.welds() {
+            assert_eq!(w.weights().last(), Some(&(slot("m"), DEFAULT_SLOT_WEIGHT)));
+        }
+        assert!(
+            r.model.to_clm_bytes().is_ok(),
+            "the file can express what the edit produced",
+        );
+
+        r.model
+            .slot_delete(&third, &seam("cuff"), &slot("l"))
+            .unwrap();
+        for (node, s) in &chain {
+            assert!(
+                r.model.seam(node, s).unwrap().slot(&slot("l")).is_none(),
+                "{s} kept a slot the chain dropped",
+            );
+        }
+        for w in r.model.welds() {
+            assert!(!w.weights().iter().any(|(s, _)| s == &slot("l")));
+        }
+        assert!(r.model.to_clm_bytes().is_ok());
+    }
+
+    #[test]
+    fn seam_edits_are_checked_before_they_land() {
+        let mut r = rig();
+        let (part, composite) = (r.part.clone(), r.composite.clone());
+        let ghost = NodeId::new("ghost").unwrap();
+
+        assert!(matches!(
+            r.model.seam_add(&composite, seam("collar")),
+            Err(ModelError::NotAPart)
+        ));
+        assert!(matches!(
+            r.model.seam_add(&ghost, seam("collar")),
+            Err(ModelError::UnknownNode)
+        ));
+        assert!(matches!(
+            r.model.seam_add(&part, seam("collar")),
+            Err(ModelError::DuplicateSeam(id)) if id == "collar"
+        ));
+        assert!(matches!(
+            r.model.slot_add(&part, &seam("ghost"), slot("l")),
+            Err(ModelError::UnknownSeam)
+        ));
+
+        r.model.slot_add(&part, &seam("collar"), slot("l")).unwrap();
+        assert!(matches!(
+            r.model.slot_add(&part, &seam("collar"), slot("l")),
+            Err(ModelError::DuplicateSlot(id)) if id == "l"
+        ));
+        assert!(matches!(
+            r.model.slot_fill(&part, &seam("collar"), &slot("ghost"), 0),
+            Err(ModelError::UnknownSlot)
+        ));
+        assert!(
+            matches!(
+                r.model.slot_fill(&part, &seam("collar"), &slot("l"), 4),
+                Err(ModelError::IndexOutOfRange)
+            ),
+            "the rig's part draws a quad, so vertex 4 is off the end",
+        );
+
+        r.model
+            .slot_fill(&part, &seam("collar"), &slot("l"), 3)
+            .unwrap();
+        let filled = |m: &Model| {
+            m.seam(&part, &seam("collar"))
+                .unwrap()
+                .slot(&slot("l"))
+                .unwrap()
+                .vertex()
+        };
+        assert_eq!(filled(&r.model), Some(3));
+        r.model
+            .slot_clear(&part, &seam("collar"), &slot("l"))
+            .unwrap();
+        assert_eq!(filled(&r.model), None);
+
+        assert!(matches!(
+            r.model.slot_delete(&part, &seam("collar"), &slot("ghost")),
+            Err(ModelError::UnknownSlot)
+        ));
+        assert!(
+            r.model.seams(&composite).is_none(),
+            "only a part carries seams",
+        );
+    }
+
+    #[test]
+    fn a_weld_needs_two_seams_holding_the_same_slots() {
+        let mut r = welded_rig();
+        let (part, other) = (r.part.clone(), r.other.clone());
+        let weld = |weights: Vec<(SlotId, f32)>| {
+            vec![ModelWeld::new(
+                (part.clone(), seam("collar")),
+                (other.clone(), seam("hem")),
+                weights,
+            )]
+        };
+
+        r.model.seam_add(&part, seam("solo")).unwrap();
+        r.model.slot_add(&part, &seam("solo"), slot("l")).unwrap();
+        assert!(
+            matches!(
+                r.model.set_welds(vec![ModelWeld::new(
+                    (part.clone(), seam("solo")),
+                    (other.clone(), seam("hem")),
+                    vec![(slot("l"), 1.0)],
+                )]),
+                Err(ModelError::WeldSlotMismatch)
+            ),
+            "one end holds a slot the other does not",
+        );
+        assert!(
+            matches!(
+                r.model.set_welds(weld(vec![(slot("l"), 1.0)])),
+                Err(ModelError::WeldSlotMismatch)
+            ),
+            "a shared slot with no weight has nothing to solve to",
+        );
+        assert!(
+            matches!(
+                r.model
+                    .set_welds(weld(vec![(slot("l"), 1.0), (slot("l"), 0.5)])),
+                Err(ModelError::WeldSlotMismatch)
+            ),
+            "one slot, two weights",
+        );
+        assert!(
+            matches!(
+                r.model
+                    .set_welds(weld(vec![(slot("l"), 1.0), (slot("ghost"), 0.5)])),
+                Err(ModelError::WeldSlotMismatch)
+            ),
+            "a weight for a slot neither seam holds",
+        );
+        assert_eq!(
+            r.model.welds().len(),
+            1,
+            "a refused weld list leaves the old one in place",
+        );
+
+        r.model.seam_delete(&other, &seam("hem")).unwrap();
+        assert!(
+            r.model.welds().is_empty(),
+            "deleting a seam takes the welds that named it, the way deleting a \
+             node takes the masks that named it",
+        );
+    }
+
     #[test]
     fn a_rejected_edit_leaves_the_generation_alone() {
         let mut r = rig();
