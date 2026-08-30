@@ -1,8 +1,7 @@
 use crate::config::{default_models, Config, ModelSpec, Thresholds};
 use crate::diff::{diff_images, Metrics};
 use crate::render::{
-    camera_matrix, load_puppet, prepare_puppet, render_one_to_rgba, CachedPuppet, RenderContext,
-    CLEAR_COLOR,
+    camera_matrix, prepare_puppet, render_one_to_rgba, CachedModel, RenderContext, CLEAR_COLOR,
 };
 use crate::{baseline_path, baselines_root, failures_root, repo_root};
 use anyhow::{anyhow, Context, Result};
@@ -33,11 +32,11 @@ struct HarnessInner {
     device: wgpu::Device,
     queue: wgpu::Queue,
     /// Render context per puppet *instance* (each carries its own renderer so
-    /// `MeshId`s from different puppets don't collide in
-    /// `WgpuRenderer.mesh_buffers`, and so two instances of one model in a
-    /// single frame don't overwrite each other's instance buffer). Keyed by
-    /// model stem for the single-puppet path, and by stem + frame position
-    /// for multi-puppet frames. Populated lazily on first use.
+    /// two render caches never overwrite each other's mesh and texture slots,
+    /// and so two instances of one model in a single frame don't overwrite
+    /// each other's instance buffer). Keyed by model stem for the
+    /// single-puppet path, and by stem + frame position for multi-puppet
+    /// frames. Populated lazily on first use.
     contexts: HashMap<String, ContextSlot>,
     models: HashMap<String, ModelSpec>,
     thresholds: Thresholds,
@@ -46,7 +45,7 @@ struct HarnessInner {
 struct ContextSlot {
     spec: ModelSpec,
     ctx: RenderContext,
-    cached: CachedPuppet,
+    cached: CachedModel,
 }
 
 impl SharedHarness {
@@ -102,7 +101,7 @@ impl HarnessInner {
                 .get(model_stem)
                 .cloned()
                 .ok_or_else(|| anyhow!("unknown model '{model_stem}'"))?;
-            let (puppet, defaults) = load_puppet(&spec.path, spec.texture_halvings)?;
+            let cached = CachedModel::load(&spec.path, spec.texture_halvings)?;
             let renderer = WgpuRenderer::from_pipelines(
                 self.device.clone(),
                 self.queue.clone(),
@@ -110,13 +109,6 @@ impl HarnessInner {
             );
             let ctx = RenderContext::with_renderer(renderer, spec.width, spec.height)
                 .map_err(|error| anyhow!("create render context: {error}"))?;
-            let pristine = puppet.clone();
-            let cached = CachedPuppet {
-                puppet,
-                pristine,
-                param_defaults: defaults,
-                uploaded: false,
-            };
             self.contexts
                 .insert(slot_key.to_string(), ContextSlot { spec, ctx, cached });
         }
