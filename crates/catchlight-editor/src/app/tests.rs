@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::inspector::PhysicsPatch;
 
 fn welded_seam() -> Vec<u8> {
     std::fs::read(concat!(

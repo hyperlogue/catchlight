@@ -38,7 +38,7 @@ use crate::camera::EditorCamera;
 use crate::gizmo::{Gizmo, GizmoEvent, GizmoMode, GizmoTarget};
 use crate::inspector::{
     inspector_ui, DrawableProps, InspectorAction, InspectorContext, InspectorData, InspectorKind,
-    MaskRow, PhysicsPatch,
+    MaskRow,
 };
 use crate::io::{IoEvent, IoQueue};
 use crate::mesh_edit::{MeshEditOutcome, MeshEditState};
