@@ -922,6 +922,30 @@ impl Puppet {
         self.physics_enabled
     }
 
+    /// Put a driver's pendulum at `bob` and stop it there, instead of leaving
+    /// it hanging under its anchor.
+    ///
+    /// `bob` is a position in the frame the drivers integrate in — model
+    /// units, **Y down** — and both the angular and the spring velocity are
+    /// zeroed, so this is a displacement, not a throw. The next tick releases
+    /// the pendulum from there; an untouched driver instead snaps straight
+    /// down under its world anchor on its first tick, which is the state a
+    /// freshly baked puppet is in.
+    ///
+    /// `false` when `node` is not a `SimplePhysics` node.
+    pub fn place_driver(&mut self, node: NodeIdx, bob: Vec2) -> bool {
+        let Some(NodeKind::SimplePhysics(p)) = self.arena.get_mut(node).map(|n| &mut n.kind) else {
+            return false;
+        };
+        p.bob = bob;
+        p.spring_vel = Vec2::ZERO;
+        p.d_angle = 0.0;
+        // The anchor snap is a *first tick* behaviour; a caller that placed
+        // the bob deliberately must not have it undone.
+        p.anchor_initialized = true;
+        true
+    }
+
     /// Advance every driver by `dt` seconds against `transforms`, then write
     /// each one's state into its target params.
     fn tick_physics(&mut self, transforms: &GlobalTransforms, dt: f32) -> bool {

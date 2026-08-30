@@ -1,23 +1,30 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Deterministic fingerprint of the SimplePhysics *driver* over time.
 //!
 //! The physics unit tests assert endpoints ("settles within X of rest") and
 //! the GPU visual baselines only capture the settled pose — neither pins the
 //! transient (overshoot, oscillation frequency, decay shape). A driver change
 //! that converges to the same rest but along a different curve passes both yet
-//! is a real regression. This drives the puppet's `tick_physics` + reads the
-//! mapped `param_value` each frame, comparing the whole trajectory against a
-//! committed baseline with per-sample tolerance. It is CPU-only and
-//! deterministic, so unlike the GPU baselines it is safe to gate CI.
+//! is a real regression. This ticks a puppet and reads the driver's two target
+//! params each frame, comparing the whole trajectory against a committed
+//! baseline with per-sample tolerance. It is CPU-only and deterministic, so
+//! unlike the GPU baselines it is safe to gate CI.
+//!
+//! The rig is one driver on its own under the root, so the anchor is the
+//! origin and every sampled number is the driver's: the model exists to carry
+//! the authored pendulum and the two params it writes.
 //!
 //! Regenerate after an intentional physics change:
 //!   UPDATE_PHYSICS_BASELINE=1 cargo test -p catchlight-core --test physics_trajectory
 
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode, SimplePhysicsData};
-use catchlight_core::{GlobalTransforms, LegacyPuppet, Node, NodeKind, Vec2};
+use catchlight_core::formats::clm::ClmPhysics;
+use catchlight_core::id::SeededHex;
+use catchlight_core::model::{ModelNode, ModelNodeKind, ModelParam, ModelPhysics};
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
+use catchlight_core::{Model, Name, ParamId, Puppet, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-const TARGET_UUID: u32 = 42;
 const DT: f32 = 1.0 / 60.0;
 const FRAMES: usize = 300;
 const SAMPLE_EVERY: usize = 5;
@@ -26,70 +33,108 @@ const SAMPLE_EVERY: usize = 5;
 // integrator, mapping, or output scaling shifts the curve by far more.
 const TOL: f32 = 2e-3;
 
-/// Drive one SimplePhysics node through the puppet's per-frame physics path
-/// and record the mapped param output (`AngleLength`/`XY` etc.) at a fixed
-/// cadence. Goes through `tick_physics` (anchor from world transform, map
-/// mode, output scale, param write), not the integrator in isolation.
-fn run_scenario(data: SimplePhysicsData) -> Vec<[f32; 2]> {
-    let mut puppet = LegacyPuppet::new();
-    let node = Node {
-        kind: NodeKind::SimplePhysics(Box::new(data)),
-        ..Default::default()
-    };
-    puppet.insert_child(puppet.root(), node, None);
+/// The authored pendulum plus where its bob starts. The bob is a *runtime*
+/// position — the model has no field for it, because a model describes a
+/// pendulum and not the swing it happens to be mid-way through — so the
+/// scenario places it on the baked puppet.
+struct Scenario {
+    driver: ModelPhysics,
+    bob: Vec2,
+}
 
-    let mut transforms = GlobalTransforms::new();
-    puppet.compute_transforms(&mut transforms);
+/// A model carrying one driver aimed at two params, and a puppet with the
+/// scenario's bob already in place.
+///
+/// Model-level physics is set to `1.0 * 1.0` so the node's own `gravity` is
+/// the effective one: the bake folds `pixels_per_meter * gravity` into every
+/// driver, and these scenarios name the folded number directly.
+fn rig(scenario: Scenario) -> (Model, Puppet, [ParamId; 2]) {
+    let mut hex = SeededHex::new(11);
+    let mut model = Model::new();
+    model.set_physics(ClmPhysics {
+        pixels_per_meter: 1.0,
+        gravity: 1.0,
+    });
+    let params = ["out.x", "out.y"].map(|name| {
+        model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated(name),
+                    min: -1000.0,
+                    max: 1000.0,
+                    default: 0.0,
+                    key_positions: vec![0.0, 1.0],
+                },
+                &mut hex,
+            )
+            .expect("add param")
+    });
+    let root = model.root().expect("a fresh model has one root").clone();
+    let node = model
+        .add_node(
+            &root,
+            ModelNode::new("driver", ModelNodeKind::SimplePhysics(scenario.driver)),
+            &mut hex,
+        )
+        .expect("add driver");
+    model
+        .set_physics_targets(&node, [Some(params[0].clone()), Some(params[1].clone())])
+        .expect("aim the driver");
 
+    let mut puppet = Puppet::new(&model);
+    let idx = puppet.node_idx(&node).expect("the driver baked");
+    assert!(puppet.place_driver(idx, scenario.bob), "placed the bob");
+    (model, puppet, params)
+}
+
+/// Drive one SimplePhysics node through a puppet's per-frame physics path and
+/// record the mapped param output (`AngleLength`/`XY` etc.) at a fixed
+/// cadence. Goes through `tick` (anchor from world transform, map mode,
+/// output scale, param write), not the integrator in isolation.
+fn run_scenario(scenario: Scenario) -> Vec<[f32; 2]> {
+    let (model, mut puppet, params) = rig(scenario);
     let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
     for f in 0..FRAMES {
-        puppet.tick_physics(&transforms, DT);
+        puppet.tick(&model, DT);
         if f % SAMPLE_EVERY == 0 {
-            let v = puppet.param_value(TARGET_UUID).unwrap_or(Vec2::ZERO);
-            samples.push([v.x, v.y]);
+            samples.push([
+                puppet.param_value(&params[0]).unwrap_or(0.0),
+                puppet.param_value(&params[1]).unwrap_or(0.0),
+            ]);
         }
     }
     samples
 }
 
 /// Rigid pendulum released ~53° off vertical, lightly damped: many visible
-/// oscillations decaying toward rest. `anchor_initialized: true` keeps the
-/// hand-set perturbed bob (the first tick would otherwise snap it to the
-/// world anchor).
-fn rigid_perturbed() -> SimplePhysicsData {
-    SimplePhysicsData {
-        kind: PendulumKind::RigidPendulum,
-        map_mode: PhysicsParamMapMode::AngleLength,
-        target_param_id: Some(TARGET_UUID),
-        gravity: 981.0,
-        length: 100.0,
-        angle_damping: 0.05,
+/// oscillations decaying toward rest.
+fn rigid_perturbed() -> Scenario {
+    let mut driver = ModelPhysics::new(PendulumKind::RigidPendulum);
+    driver.map_mode = PhysicsParamMapMode::AngleLength;
+    driver.gravity = 981.0;
+    driver.length = 100.0;
+    driver.angle_damping = 0.05;
+    Scenario {
+        driver,
         bob: Vec2::new(80.0, 60.0),
-        anchor: Vec2::ZERO,
-        anchor_initialized: true,
-        ..Default::default()
     }
 }
 
 /// Spring pendulum displaced both radially (stretched) and laterally, mapped
 /// through `XY` with a non-unit `output_scale` so the mapping and scaling are
 /// part of the fingerprint, not just the integrator.
-fn spring_stretched() -> SimplePhysicsData {
-    SimplePhysicsData {
-        kind: PendulumKind::SpringPendulum,
-        map_mode: PhysicsParamMapMode::XY,
-        target_param_id: Some(TARGET_UUID),
-        gravity: 981.0,
-        length: 100.0,
-        frequency: 1.0,
-        angle_damping: 0.1,
-        length_damping: 0.1,
-        output_scale: Vec2::new(1.5, 0.75),
+fn spring_stretched() -> Scenario {
+    let mut driver = ModelPhysics::new(PendulumKind::SpringPendulum);
+    driver.map_mode = PhysicsParamMapMode::XY;
+    driver.gravity = 981.0;
+    driver.length = 100.0;
+    driver.frequency = 1.0;
+    driver.angle_damping = 0.1;
+    driver.length_damping = 0.1;
+    driver.output_scale = [1.5, 0.75];
+    Scenario {
+        driver,
         bob: Vec2::new(25.0, 135.0),
-        spring_vel: Vec2::ZERO,
-        anchor: Vec2::ZERO,
-        anchor_initialized: true,
-        ..Default::default()
     }
 }
 
@@ -97,22 +142,46 @@ fn spring_stretched() -> SimplePhysicsData {
 /// several of them. The two scenarios above are soft enough to fit a frame
 /// in one step, so without this the multi-step loop — the part the adaptive
 /// substep rewrote — has no trajectory gate at all.
-fn spring_stiff() -> SimplePhysicsData {
-    SimplePhysicsData {
-        kind: PendulumKind::SpringPendulum,
-        map_mode: PhysicsParamMapMode::XY,
-        target_param_id: Some(TARGET_UUID),
-        gravity: 981.0,
-        length: 100.0,
-        frequency: 30.0,
-        angle_damping: 0.1,
-        length_damping: 0.1,
+fn spring_stiff() -> Scenario {
+    let mut driver = ModelPhysics::new(PendulumKind::SpringPendulum);
+    driver.map_mode = PhysicsParamMapMode::XY;
+    driver.gravity = 981.0;
+    driver.length = 100.0;
+    driver.frequency = 30.0;
+    driver.angle_damping = 0.1;
+    driver.length_damping = 0.1;
+    Scenario {
+        driver,
         bob: Vec2::new(25.0, 135.0),
-        spring_vel: Vec2::ZERO,
-        anchor: Vec2::ZERO,
-        anchor_initialized: true,
-        ..Default::default()
     }
+}
+
+/// The placement the trajectories above are built on, on its own: a driver
+/// left alone hangs straight down under its anchor on its first tick, and one
+/// that was placed swings from where it was put instead. Without this the
+/// whole fingerprint could be a pendulum at rest.
+#[test]
+fn a_placed_pendulum_swings_and_an_untouched_one_hangs() {
+    let (model, mut puppet, params) = rig(rigid_perturbed());
+    puppet.tick(&model, DT);
+    let placed = puppet.param_value(&params[0]).expect("angle written");
+    assert!(
+        placed.abs() > 0.1,
+        "a placed pendulum is off vertical: {placed}"
+    );
+
+    let mut hanging = Puppet::new(&model);
+    hanging.tick(&model, DT);
+    let at_rest = hanging.param_value(&params[0]).expect("angle written");
+    assert!(
+        at_rest.abs() < 1e-6,
+        "an untouched driver hangs under its anchor: {at_rest}"
+    );
+
+    assert!(
+        !hanging.place_driver(hanging.root(), Vec2::ZERO),
+        "the root is not a driver"
+    );
 }
 
 fn current_trajectories() -> BTreeMap<String, Vec<[f32; 2]>> {
