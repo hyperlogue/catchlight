@@ -115,6 +115,9 @@ pub enum RendererError {
 
     #[error("a single GPU submission cannot contain more than {limit} camera views per renderer")]
     TooManyCameraViews { limit: u32 },
+
+    #[error("preparing a model's textures: {0}")]
+    TexturePrep(String),
 }
 
 pub type RendererResult<T> = Result<T, RendererError>;
@@ -2440,7 +2443,10 @@ impl WgpuRenderer {
     /// vertex shader keeps reading a stale config's offsets), and flush the
     /// single touched byte range. The `generation` skips re-uploading a
     /// mesh whose deform is unchanged from the last sync.
-    fn upload_deforms<'a>(&mut self, active: impl Iterator<Item = (u32, u64, &'a [glam::Vec2])>) {
+    pub(crate) fn upload_deforms<'a>(
+        &mut self,
+        active: impl Iterator<Item = (u32, u64, &'a [glam::Vec2])>,
+    ) {
         // Coalesce dirty ranges only across gaps this small: below it,
         // one write over the untouched bytes beats a second write_buffer's
         // fixed overhead; above it, the copied span is pure waste.
