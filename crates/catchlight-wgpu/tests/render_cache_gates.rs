@@ -169,21 +169,22 @@ fn refreshing_with_a_puppet_from_another_generation_is_a_programmer_error() {
     });
 }
 
-/// Two models built the same way sit at the same generation, so the
-/// generation gate alone would let a cache prepared from one be refreshed
-/// against the other and never notice. The model identity is what catches it.
+/// Two models that have not been edited since they were built sit at the same
+/// generation — every loader hands one back at 0 — so the generation gate
+/// alone would let a cache prepared from one be refreshed against the other
+/// and never notice. The model identity is what catches it.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "prepared from a different model")]
 fn refreshing_a_cache_against_another_model_is_a_programmer_error() {
     pollster::block_on(async {
         let mut ctx = context().await;
-        let (prepared_from, _) = one_quad_model();
-        let (other, _) = one_quad_model();
+        let prepared_from = Model::new();
+        let other = Model::new();
         assert_eq!(
             prepared_from.generation(),
             other.generation(),
-            "the two models are indistinguishable by generation",
+            "two unedited models are indistinguishable by generation",
         );
         let mut cache =
             RenderCache::prepare(&mut ctx.renderer, &prepared_from, PrepareOptions::default())

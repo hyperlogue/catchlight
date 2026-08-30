@@ -1173,7 +1173,8 @@ impl Puppet {
 mod tests {
     use super::*;
 
-    /// Two freshly built models sit at the same generation, so the generation
+    /// Two models that have not been edited since they were built sit at the
+    /// same generation — every loader hands one back at 0 — so the generation
     /// gate alone would let a puppet tick against the wrong one and read a
     /// tree that is not the one it baked. The identity is what catches it.
     #[test]

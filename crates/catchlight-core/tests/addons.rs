@@ -472,10 +472,10 @@ fn an_addon_installed_between_two_ticks_keeps_the_pose() {
     let generation = puppet.baked_generation();
 
     model.install(&addon).unwrap();
-    assert_eq!(
+    assert_ne!(
         model.generation(),
-        generation + 1,
-        "one install is one rebake"
+        generation,
+        "an install moves the model out from under the puppet"
     );
     puppet.tick(&model, 1.0 / 60.0);
 

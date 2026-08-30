@@ -10,9 +10,12 @@
 //! - **Nothing mutates a Model except its own methods.** Every field is
 //!   private and every mutating method bumps [`Model::generation`], so a
 //!   derived object (a puppet, a render cache) can hold the last generation it
-//!   baked against and rebake when it moved. A mutation path that forgets to
-//!   bump is the bug class `generation_bumps_on_every_mutating_method` exists
-//!   to catch.
+//!   baked against and rebake when it moved. The number comes from a
+//!   process-wide clock, never from the model's own count, because undo
+//!   restores an older model wholesale: a per-model counter would reissue a
+//!   number a derived object had already baked against. A mutation path that
+//!   forgets to bump is the bug class
+//!   `generation_bumps_on_every_mutating_method` exists to catch.
 //! - **Two models are told apart by [`Model::identity`], not by the
 //!   generation.** Every constructed model draws a nonce from a process-wide
 //!   counter; a clone keeps it, because an undo snapshot is the same model.
@@ -817,6 +820,13 @@ fn next_identity() -> u64 {
     NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Hands out [`Model::generation`] values. Process-wide, because a generation
+/// is a logical clock rather than a per-model edit count: undo restores an
+/// *older* model, generation and all, so a per-model counter would hand the
+/// same number to two different states of one model and a derived object
+/// baked against the first would silently accept the second.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 impl Model {
     /// A new model with a single `Group` root named "Root", at Id `root`.
     pub fn new() -> Self {
@@ -861,8 +871,12 @@ impl Model {
     /// The one place a mutation is recorded. Every `&mut self` method calls it
     /// on success — and only on success, so a rejected edit leaves derived
     /// objects alone.
+    ///
+    /// The new value comes from [`NEXT_GENERATION`], so it is one this process
+    /// has never handed out: `baked == current` then really does mean "the
+    /// same state", even after an undo walked the model backwards.
     fn bump(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 
     // ---- tree ----
@@ -2365,6 +2379,33 @@ mod tests {
         let model = Model::new();
         let snapshot = model.clone();
         assert_eq!(model.identity(), snapshot.identity());
+    }
+
+    /// Undo restores an older model, generation and all, and the next edit
+    /// walks forward from there. A per-model counter would reissue the
+    /// generation of the state that was undone, and a puppet or render cache
+    /// still holding it would accept a model with different contents. The
+    /// process-wide clock is what makes "the same number" mean "the same
+    /// state".
+    #[test]
+    fn editing_forward_from_a_restored_snapshot_never_reuses_a_generation() {
+        let mut model = Model::new();
+        let snapshot = model.clone();
+
+        model.set_physics(ClmPhysics::default());
+        let undone = model.generation();
+
+        // The undo.
+        model = snapshot;
+        assert_ne!(model.generation(), undone);
+
+        // A *different* edit, forward from the restored state.
+        model.set_physics(ClmPhysics::default());
+        assert_ne!(
+            model.generation(),
+            undone,
+            "a state that was undone must not get its generation back",
+        );
     }
 
     /// Every derived object (puppet, render cache) rebakes off `generation`, so
