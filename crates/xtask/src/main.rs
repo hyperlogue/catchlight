@@ -48,8 +48,7 @@ fn gen_fixture(args: &[String]) -> Result<()> {
 }
 
 fn import(args: &[String]) -> Result<()> {
-    use catchlight_core::Model;
-    use catchlight_import_inochi2d::{from_inx_model_to_legacy, InxModel};
+    use catchlight_import_inochi2d::{import_inx_model, InxModel};
 
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -79,18 +78,16 @@ fn import(args: &[String]) -> Result<()> {
     // `.inx` and `.inp` share one container; the extension is only a label.
     let model = InxModel::parse(std::io::Cursor::new(&bytes))
         .with_context(|| format!("parsing {}", input.display()))?;
-    let file = from_inx_model_to_legacy(&model).context("inx -> legacy")?;
-    let encoded = Model::from_legacy(&file)
-        .and_then(|m| m.to_clm_bytes())
-        .context("legacy -> .clm")?;
+    let imported = import_inx_model(&model).context("importing")?;
+    let encoded = imported.to_clm_bytes().context("writing .clm")?;
     std::fs::write(&output, &encoded).with_context(|| format!("writing {}", output.display()))?;
 
     eprintln!(
         "imported {} -> {} ({} nodes, {} textures, {:.2} MB)",
         input.display(),
         output.display(),
-        file.doc.nodes.len(),
-        file.textures.len(),
+        imported.node_count(),
+        imported.texture_ids().len(),
         encoded.len() as f64 / 1e6,
     );
     Ok(())

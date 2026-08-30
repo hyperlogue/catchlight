@@ -5,10 +5,20 @@
 //! `catchlight_core::load_model` reads `.clm` and nothing else — an `.inx` is
 //! converted once, with `cargo xtask import`, and the `.clm` is what ships.
 //!
-//! Two halves. [`inx`] is the container reader: `TRNSRTS\0` framing, the JSON
+//! Three parts. [`inx`] is the container reader: `TRNSRTS\0` framing, the JSON
 //! payload, the texture table (PNG, TGA, or BC7 DDS decoded to PNG) and the
-//! opaque vendor sections. [`from_inx_model_to_legacy`] is the reflection:
-//! the inochi2d document read into the shape catchlight stores.
+//! opaque vendor sections. `reflect.rs` turns inochi2d's JSON into the values
+//! catchlight stores. `to_clm.rs` assembles them into a `.clm` document and
+//! mints its Ids, and [`import_inx_model`] reads that back through
+//! [`Model::from_clm_file`](catchlight_core::Model::from_clm_file) — so an
+//! import that succeeds has been through the same reader a `.clm` off disk
+//! goes through, and what it returns can be written and opened again.
+//!
+//! **Ids come from position, not from inochi2d.** `.inx` identifies
+//! everything by a `uuid` that catchlight does not keep, so the import mints
+//! `root`, `node-<i>`, `param-<i>` (`param-<i>.x` / `.y` for a 2-D param) and
+//! `tex-<i>` from each thing's place in the flattening. Deterministic, so two
+//! imports of one `.inx` agree about what an addon would be naming.
 //!
 //! **One reflection.** `.inx` is authored **Y-down with lower `zsort` in
 //! front**; catchlight is **Y-up with higher `z_order` in front**. There is a
@@ -52,7 +62,6 @@ pub(crate) mod read;
 pub(crate) mod reflect;
 pub(crate) mod schema;
 pub(crate) mod to_clm;
-pub(crate) mod to_legacy;
 
 #[cfg(test)]
 mod import_tests;
@@ -60,4 +69,3 @@ mod import_tests;
 pub use error::ImportError;
 pub use inx::{parse_inp, InpModel, InpParseError, InxModel, InxParseError, VendorData};
 pub use to_clm::{from_inx_model, import_inx_bytes, import_inx_model};
-pub use to_legacy::from_inx_model_to_legacy;

@@ -7,34 +7,41 @@
 //! offending part dropped or defaulted — and these pin which half that is.
 
 use crate::inx::InxModel;
-use crate::to_legacy::from_inx_model_to_legacy;
+use crate::to_clm::from_inx_model;
 use crate::ImportError;
-use catchlight_core::formats::clm::ClmIndices;
-use catchlight_core::formats::legacy::{LegacyDocument, LegacyNodeKind};
+use catchlight_core::formats::clm::{ClmDocument, ClmIndices, ClmNode, ClmNodeKind};
+use catchlight_core::{NodeId, TexId};
 use serde_json::json;
 
 /// Read one node tree, given as the `.inx` payload's `nodes` value.
-fn doc(nodes: serde_json::Value) -> LegacyDocument {
+fn doc(nodes: serde_json::Value) -> ClmDocument {
     try_doc(nodes).expect("import")
 }
 
-fn try_doc(nodes: serde_json::Value) -> Result<LegacyDocument, ImportError> {
+fn try_doc(nodes: serde_json::Value) -> Result<ClmDocument, ImportError> {
     let model = InxModel {
         payload: json!({ "nodes": nodes }),
         textures: Vec::new(),
         vendors: Vec::new(),
     };
-    from_inx_model_to_legacy(&model).map(|f| f.doc)
+    from_inx_model(&model).map(|f| f.doc)
 }
 
-fn node_named<'a>(
-    doc: &'a LegacyDocument,
-    name: &str,
-) -> &'a catchlight_core::formats::legacy::LegacyNode {
+fn node_named<'a>(doc: &'a ClmDocument, name: &str) -> &'a ClmNode {
     doc.nodes
         .iter()
         .find(|n| n.name == name)
         .unwrap_or_else(|| panic!("no node named {name}"))
+}
+
+/// The Id the flattening's node `i` is minted with.
+fn node(i: usize) -> NodeId {
+    NodeId::new(if i == 0 {
+        "root".to_string()
+    } else {
+        format!("node-{i}")
+    })
+    .unwrap()
 }
 
 #[test]
@@ -61,8 +68,9 @@ fn a_whole_container_reads_into_one_node() {
     data.extend_from_slice(&0u32.to_be_bytes());
 
     let model = InxModel::parse(std::io::Cursor::new(data.as_slice())).expect("parse");
-    let file = from_inx_model_to_legacy(&model).expect("import");
+    let file = from_inx_model(&model).expect("import");
     assert_eq!(file.doc.nodes.len(), 1);
+    assert_eq!(file.doc.nodes[0].id, node(0));
     assert_eq!(file.doc.nodes[0].name, "Root");
     assert_eq!(file.doc.nodes[0].parent, None);
 }
@@ -85,25 +93,26 @@ fn mask_threshold_parses_when_present_and_defaults_to_half() {
     };
 
     let d = doc(tree(json!(0.25), "Part"));
-    let LegacyNodeKind::Part(part) = &node_named(&d, "target").kind else {
+    let ClmNodeKind::Part(part) = &node_named(&d, "target").kind else {
         panic!("expected Part");
     };
     assert_eq!(part.mask_threshold, 0.25);
 
     let d = doc(tree(serde_json::Value::Null, "Part"));
-    let LegacyNodeKind::Part(part) = &node_named(&d, "target").kind else {
+    let ClmNodeKind::Part(part) = &node_named(&d, "target").kind else {
         panic!("expected Part");
     };
     assert_eq!(part.mask_threshold, 0.5, "an absent threshold is half");
 
     let d = doc(tree(json!(0.8), "Composite"));
-    let LegacyNodeKind::Composite(comp) = &node_named(&d, "target").kind else {
+    let ClmNodeKind::Composite(comp) = &node_named(&d, "target").kind else {
         panic!("expected Composite");
     };
     assert_eq!(comp.mask_threshold, 0.8);
     assert_eq!(comp.masks.len(), 1);
-    // Masks name a node index, and `source` sits at index 1 of the flattening.
-    assert_eq!(comp.masks[0].source, 1);
+    // A mask names its source by Id, and `source` sits at index 1 of the
+    // flattening.
+    assert_eq!(comp.masks[0].source, node(1));
     assert_eq!(
         comp.masks[0].mode,
         catchlight_core::components::MaskMode::DodgeMask
@@ -126,11 +135,11 @@ fn a_mask_whose_source_is_not_there_is_dropped() {
              ]}
         ]
     }));
-    let LegacyNodeKind::Part(part) = &node_named(&d, "P").kind else {
+    let ClmNodeKind::Part(part) = &node_named(&d, "P").kind else {
         panic!("expected Part");
     };
     assert_eq!(part.masks.len(), 1, "only the resolvable mask survives");
-    assert_eq!(part.masks[0].source, 1);
+    assert_eq!(part.masks[0].source, node(1));
 }
 
 #[test]
@@ -154,11 +163,12 @@ fn a_duplicate_uuid_does_not_shadow_the_first_node() {
         textures: Vec::new(),
         vendors: Vec::new(),
     };
-    let doc = from_inx_model_to_legacy(&model).expect("import").doc;
+    let doc = from_inx_model(&model).expect("import").doc;
     assert_eq!(doc.nodes.len(), 2);
     assert_eq!(doc.nodes[0].name, "First");
     assert_eq!(
-        doc.params[0].bindings[0].node, 0,
+        doc.bindings[0].node,
+        node(0),
         "the binding resolves to the first claimant of uuid 99"
     );
 }
@@ -188,10 +198,10 @@ fn a_deeply_nested_tree_does_not_overflow() {
         vendors: Vec::new(),
     };
 
-    let d = from_inx_model_to_legacy(&model).expect("import").doc;
+    let d = from_inx_model(&model).expect("import").doc;
     assert_eq!(d.nodes.len(), DEPTH + 1);
-    for (i, node) in d.nodes.iter().enumerate().skip(1) {
-        assert_eq!(node.parent, Some(i as u32 - 1), "node {i}'s parent");
+    for (i, n) in d.nodes.iter().enumerate().skip(1) {
+        assert_eq!(n.parent, Some(node(i - 1)), "node {i}'s parent");
     }
     // `serde_json::Value`'s Drop is recursive, so dropping a 5_000-deep value
     // overflows the stack. Leaking it here is deliberate: the test is about
@@ -204,7 +214,7 @@ fn an_empty_object_reads_as_one_default_node() {
     let d = doc(json!({}));
     assert_eq!(d.nodes.len(), 1);
     assert_eq!(d.nodes[0].name, "");
-    assert!(matches!(d.nodes[0].kind, LegacyNodeKind::Group));
+    assert!(matches!(d.nodes[0].kind, ClmNodeKind::Group));
 }
 
 #[test]
@@ -226,7 +236,7 @@ fn fields_of_the_wrong_json_type_fall_through_to_defaults() {
     }));
     assert!(d.nodes[0].enabled);
     assert_eq!(d.nodes[0].z_order, 0.0);
-    let LegacyNodeKind::Composite(comp) = &d.nodes[0].kind else {
+    let ClmNodeKind::Composite(comp) = &d.nodes[0].kind else {
         panic!("expected Composite");
     };
     assert_eq!(comp.tint, [1.0, 1.0, 1.0]);
@@ -236,7 +246,7 @@ fn fields_of_the_wrong_json_type_fall_through_to_defaults() {
 #[test]
 fn an_unmodelled_node_type_becomes_a_group() {
     let d = doc(json!({"type": "NotARealNodeType"}));
-    assert!(matches!(d.nodes[0].kind, LegacyNodeKind::Group));
+    assert!(matches!(d.nodes[0].kind, ClmNodeKind::Group));
 }
 
 #[test]
@@ -252,10 +262,10 @@ fn a_part_naming_a_texture_that_is_not_there_still_loads() {
         "textures": [999999],
         "mesh": {"verts": [0.0, 0.0], "uvs": [0.0, 0.0], "indices": [0]}
     }));
-    let LegacyNodeKind::Part(part) = &d.nodes[0].kind else {
+    let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
         panic!("expected Part");
     };
-    assert_eq!(part.albedo, 999999);
+    assert_eq!(part.albedo, Some(TexId::new("tex-999999").unwrap()));
 }
 
 #[test]
@@ -265,7 +275,7 @@ fn a_mesh_with_an_odd_coordinate_count_keeps_the_pairs_it_has() {
         "textures": [0],
         "mesh": {"verts": [0.0, 1.0, 2.0, 3.0, 4.0], "uvs": [0.0, 0.0, 1.0, 1.0], "indices": [0, 1]}
     }));
-    let LegacyNodeKind::Part(part) = &d.nodes[0].kind else {
+    let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
         panic!("expected Part");
     };
     // The trailing lone coordinate is not a vertex; the pairs before it are.
