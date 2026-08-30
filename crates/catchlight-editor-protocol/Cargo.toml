@@ -7,6 +7,10 @@ repository.workspace = true
 description = "Wire types for the catchlight editor: transport-agnostic request/reply/event over newline-delimited JSON"
 
 [dependencies]
+# For the Id types: the wire names a node, param or texture by the same
+# validated string the model file stores, so there is one definition of what
+# an Id is rather than two that can drift.
+catchlight-core = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]

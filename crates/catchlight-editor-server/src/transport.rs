@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use catchlight_editor_protocol::{Reply, Request};
+use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 
 use super::Editor;
 
@@ -26,6 +26,7 @@ pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
                 &mut stream,
                 &Reply::Err {
                     id: 0,
+                    code: ErrorCode::Io,
                     message: "too many editor connections".into(),
                 },
             );
@@ -160,6 +161,7 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
                     &mut writer,
                     &Reply::Err {
                         id: 0,
+                        code: ErrorCode::BadRequest,
                         message: err.to_string(),
                     },
                 );
@@ -172,8 +174,14 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
         }
         let reply = match serde_json::from_slice::<Request>(&line) {
             Ok(req) => editor.handle(req),
+            // A command that does not parse — an Id outside the charset, an
+            // unknown `cmd`, a missing field — is still answered against the
+            // id the client is blocked on, if the line carries a readable
+            // one. Without that a client waiting for its own reply waits
+            // forever.
             Err(e) => Reply::Err {
-                id: 0,
+                id: serde_json::from_slice::<RequestId>(&line).map_or(0, |r| r.id),
+                code: ErrorCode::BadRequest,
                 message: format!("bad request: {e}"),
             },
         };

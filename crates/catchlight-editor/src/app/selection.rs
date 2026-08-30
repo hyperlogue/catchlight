@@ -1,31 +1,33 @@
 use super::*;
-use catchlight_core::id::NodeId;
 
-/// Rev-gated three-way mapping: Model `NodeRef` ⇄ legacy arena index ⇄ core
-/// (puppet) node id. `from_legacy` stamps the arena index as each node's uuid, which
-/// is what makes the core↔arena direction recoverable.
+/// Rev-gated mapping between a node's Id — what the document, the protocol
+/// and every panel name it by — and the compact `NodeIdx` a puppet addresses
+/// it by, which exists only inside that puppet.
 pub(super) struct NodeMapping {
     rev: u64,
-    refs: Vec<NodeRef>,
+    /// Document order, which is also `parent_of`'s index space.
+    order: Vec<NodeId>,
+    /// Parallel to `order`: the puppet slot, or `u32::MAX` if the puppet does
+    /// not carry the node.
     core_of: Vec<u32>,
     parent_of: Vec<Option<usize>>,
-    arena_of_ref: HashMap<u64, usize>,
-    arena_of_core: HashMap<u32, usize>,
+    pos_of_id: HashMap<NodeId, usize>,
+    pos_of_core: HashMap<u32, usize>,
 }
 
 impl App {
-    pub(super) fn primary(&self) -> Option<NodeRef> {
-        self.selection.last().copied()
+    pub(super) fn primary(&self) -> Option<NodeId> {
+        self.selection.last().cloned()
     }
 
-    /// Rebuild the ref⇄arena⇄core mapping when the document revision moves.
+    /// Rebuild the Id⇄puppet-slot mapping when the document revision moves.
     pub(super) fn ensure_mapping(&mut self, rev: u64) {
         if self.mapping.as_ref().is_some_and(|m| m.rev == rev) {
             return;
         }
         let Some(session) = self.session else { return };
         let editor = self.editor.clone();
-        let base = editor.with_model(session, |m, ref_map| {
+        let base = editor.with_model(session, |m| {
             let order = m.nodes_in_order();
             let pos: HashMap<&NodeId, usize> =
                 order.iter().enumerate().map(|(i, id)| (id, i)).collect();
@@ -37,18 +39,25 @@ impl App {
                         .and_then(|p| pos.get(p).copied())
                 })
                 .collect();
-            let refs: Vec<NodeRef> = order.iter().map(|id| ref_map.node(id)).collect();
-            (refs, parent_of)
+            (order, parent_of)
         });
-        let Ok((refs, parent_of)) = base else { return };
+        let Ok((order, parent_of)) = base else { return };
+        // Asked of the puppet by Id rather than derived from position: the
+        // puppet's bake order and the model's document order agree today, and
+        // nothing promises they always will.
         let core_of = editor.with_puppet(session, |_model, p| {
-            (0..refs.len())
-                .map(|i| p.node_for_uuid(i as u32).map(|id| id.0).unwrap_or(u32::MAX))
+            order
+                .iter()
+                .map(|id| p.node_idx(id).map(|idx| idx.0).unwrap_or(u32::MAX))
                 .collect::<Vec<u32>>()
         });
         let Ok(core_of) = core_of else { return };
-        let arena_of_ref = refs.iter().enumerate().map(|(i, r)| (r.0, i)).collect();
-        let arena_of_core = core_of
+        let pos_of_id = order
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+        let pos_of_core = core_of
             .iter()
             .enumerate()
             .filter(|(_, &c)| c != u32::MAX)
@@ -56,30 +65,30 @@ impl App {
             .collect();
         self.mapping = Some(NodeMapping {
             rev,
-            refs,
+            order,
             core_of,
             parent_of,
-            arena_of_ref,
-            arena_of_core,
+            pos_of_id,
+            pos_of_core,
         });
     }
 
-    pub(super) fn core_of_ref(&self, r: NodeRef) -> Option<u32> {
+    pub(super) fn core_of_ref(&self, id: &NodeId) -> Option<u32> {
         let m = self.mapping.as_ref()?;
-        let i = *m.arena_of_ref.get(&r.0)?;
+        let i = *m.pos_of_id.get(id)?;
         let c = *m.core_of.get(i)?;
         (c != u32::MAX).then_some(c)
     }
 
-    pub(super) fn ref_of_core(&self, core: u32) -> Option<NodeRef> {
+    pub(super) fn ref_of_core(&self, core: u32) -> Option<NodeId> {
         let m = self.mapping.as_ref()?;
-        let i = *m.arena_of_core.get(&core)?;
-        m.refs.get(i).copied()
+        let i = *m.pos_of_core.get(&core)?;
+        m.order.get(i).cloned()
     }
 
     /// Core ids of the isolated subtree (drawing filter), if isolation is on.
     pub(super) fn isolate_set(&self, root: &TreeNode) -> Option<HashSet<u32>> {
-        let iso = self.isolated?;
+        let iso = self.isolated.as_ref()?;
         let sub = find_subtree(root, iso)?;
         let mut out = HashSet::new();
         collect_refs(sub, &mut |r| {
@@ -102,22 +111,16 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub(super) fn select(
-        &mut self,
-        node: NodeRef,
-        additive: bool,
-        range: bool,
-        visible: &[NodeRef],
-    ) {
+    pub(super) fn select(&mut self, node: NodeId, additive: bool, range: bool, visible: &[NodeId]) {
         if range {
-            if let Some(&anchor) = self.selection.last() {
-                let a = visible.iter().position(|&r| r == anchor);
-                let b = visible.iter().position(|&r| r == node);
+            if let Some(anchor) = self.selection.last() {
+                let a = visible.iter().position(|r| r == anchor);
+                let b = visible.iter().position(|r| *r == node);
                 if let (Some(a), Some(b)) = (a, b) {
                     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-                    for &r in &visible[lo..=hi] {
-                        if !self.selection.contains(&r) {
-                            self.selection.push(r);
+                    for r in &visible[lo..=hi] {
+                        if !self.selection.contains(r) {
+                            self.selection.push(r.clone());
                         }
                     }
                     return;
@@ -125,7 +128,7 @@ impl App {
             }
         }
         if additive {
-            if let Some(pos) = self.selection.iter().position(|&r| r == node) {
+            if let Some(pos) = self.selection.iter().position(|r| *r == node) {
                 self.selection.remove(pos);
             } else {
                 self.selection.push(node);
@@ -140,7 +143,7 @@ impl App {
         let cores: Vec<u32> = self
             .selection
             .iter()
-            .filter_map(|&r| self.core_of_ref(r))
+            .filter_map(|r| self.core_of_ref(r))
             .collect();
         if cores.is_empty() {
             return;
@@ -177,7 +180,7 @@ impl App {
         let cores: Vec<u32> = self
             .selection
             .iter()
-            .filter_map(|&r| self.core_of_ref(r))
+            .filter_map(|r| self.core_of_ref(r))
             .collect();
         let Some(viewport) = self.viewport.as_ref() else {
             return;
@@ -207,12 +210,12 @@ impl App {
     pub(super) fn gizmo_target(&self) -> Option<GizmoTarget> {
         let session = self.session?;
         let primary = self.primary()?;
-        let core = self.core_of_ref(primary)?;
+        let core = self.core_of_ref(&primary)?;
         let mapping = self.mapping.as_ref()?;
-        let arena = *mapping.arena_of_ref.get(&primary.0)?;
+        let at = *mapping.pos_of_id.get(&primary)?;
         let parent_core = mapping
             .parent_of
-            .get(arena)
+            .get(at)
             .copied()
             .flatten()
             .and_then(|pi| mapping.core_of.get(pi).copied())
@@ -240,8 +243,8 @@ impl App {
                 .flatten()?
         } else {
             self.editor
-                .with_model(session, |model, refs| {
-                    model.node(refs.node_id(primary)?).map(|n| {
+                .with_model(session, |model| {
+                    model.node(&primary).map(|n| {
                         (
                             n.transform.translation,
                             n.transform.rotation,

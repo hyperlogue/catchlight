@@ -1,67 +1,68 @@
-//! Parameters panel: per-param pose controllers (full-width 1D track, 2D pad
-//! with a value dot), the arm toggle, and the armed param's recording view
-//! with keypoint dots and the bindings list.
+//! Parameters panel: a full-width track per param with a value handle, the
+//! arm toggle, and the armed param's recording view with keypoint dots and
+//! the bindings list.
 //! Pure UI over snapshot data — emits [`ParamAction`]s the app applies.
+//!
+//! A param is a scalar, so every controller here is one track. Authoring two
+//! params jointly is a *binding* that names both, and the pad that edits one
+//! is a view over any two params rather than a property of either — which is
+//! why there is no 2-D controller in this file.
 
-use catchlight_editor_protocol::{NodeRef, ParamInfo, ParamRef};
+use catchlight_editor_protocol::{NodeId, ParamId, ParamInfo};
 use eframe::egui;
 
 pub(crate) enum ParamAction {
     Pose {
-        name: String,
-        value: [f32; 2],
-    },
-    Arm(Option<ParamRef>),
-    AddParam {
-        name: String,
-        vec2: bool,
-    },
-    Rename {
-        param: ParamRef,
-        name: String,
-    },
-    Delete(ParamRef),
-    AxisInsert {
-        param: ParamRef,
-        axis: u8,
+        param: ParamId,
         value: f32,
     },
-    AxisDelete {
-        param: ParamRef,
-        axis: u8,
+    Arm(Option<ParamId>),
+    AddParam {
+        name: String,
+    },
+    Rename {
+        param: ParamId,
+        name: String,
+    },
+    Delete(ParamId),
+    KeyInsert {
+        param: ParamId,
+        value: f32,
+    },
+    KeyDelete {
+        param: ParamId,
         index: u32,
     },
     Flip {
-        param: ParamRef,
-        axis: u8,
+        param: ParamId,
     },
     BindingUnset {
-        node: NodeRef,
+        node: NodeId,
         target: String,
     },
     BindingReset {
-        node: NodeRef,
+        node: NodeId,
         target: String,
     },
     BindingDelete {
-        node: NodeRef,
+        node: NodeId,
         target: String,
     },
     BindingInterpolate {
-        node: NodeRef,
+        node: NodeId,
         target: String,
         mode: String,
     },
     BindingInvert {
-        node: NodeRef,
+        node: NodeId,
         target: String,
     },
     CopyCell {
-        node: NodeRef,
+        node: NodeId,
         target: String,
     },
     PasteCell {
-        node: NodeRef,
+        node: NodeId,
         target: String,
     },
 }
@@ -69,14 +70,14 @@ pub(crate) enum ParamAction {
 /// Authored-state of each grid cell for the armed param: 0 = none of the
 /// bindings author it, 1 = some, 2 = all.
 pub(crate) struct ArmedInfo {
-    pub param: ParamRef,
+    pub param: ParamId,
     pub cell: [u32; 2],
     pub cell_states: Vec<u8>,
     pub bindings: Vec<BindingRow>,
 }
 
 pub(crate) struct BindingRow {
-    pub node: NodeRef,
+    pub node: NodeId,
     pub node_name: String,
     pub target: String,
     pub interpolate: String,
@@ -85,7 +86,7 @@ pub(crate) struct BindingRow {
 
 pub(crate) struct ParamsPanel<'a> {
     pub params: &'a [ParamInfo],
-    pub pose: &'a dyn Fn(&str) -> [f32; 2],
+    pub pose: &'a dyn Fn(&ParamId) -> f32,
     pub armed: Option<&'a ArmedInfo>,
     pub snap: &'a mut bool,
     pub can_paste: bool,
@@ -103,16 +104,8 @@ impl ParamsPanel<'_> {
                     .unwrap_or_else(|| "param".to_string());
                 ui.text_edit_singleline(&mut name);
                 ui.ctx().data_mut(|d| d.insert_temp(id, name.clone()));
-                if ui.button("add 1D").clicked() {
-                    self.actions.push(ParamAction::AddParam {
-                        name: name.clone(),
-                        vec2: false,
-                    });
-                    ui.close();
-                }
-                if ui.button("add 2D").clicked() {
-                    self.actions
-                        .push(ParamAction::AddParam { name, vec2: true });
+                if ui.button("add").clicked() {
+                    self.actions.push(ParamAction::AddParam { name });
                     ui.close();
                 }
             });
@@ -128,14 +121,14 @@ impl ParamsPanel<'_> {
     /// bindings list (the left panel replaces the node tree with this).
     pub(crate) fn show_recording(&mut self, ui: &mut egui::Ui) {
         let Some(armed) = self.armed else { return };
-        let Some(p) = self.params.iter().find(|p| p.param == armed.param) else {
+        let Some(p) = self.params.iter().find(|p| p.id == armed.param) else {
             return;
         };
         ui.label(format!(
             "{} @ ({}, {})",
             p.name, armed.cell[0], armed.cell[1]
         ));
-        self.controller(ui, p, armed);
+        self.line_1d(ui, p, Some(armed));
         ui.separator();
         ui.label("Bindings");
         // Binding rows are wider than the panel; scroll them sideways without
@@ -146,8 +139,8 @@ impl ParamsPanel<'_> {
     }
 
     fn param_row(&mut self, ui: &mut egui::Ui, p: &ParamInfo) {
-        let armed_here = self.armed.map(|a| a.param) == Some(p.param);
-        let value = (self.pose)(&p.name);
+        let armed_here = self.armed.map(|a| &a.param) == Some(&p.id);
+        let value = (self.pose)(&p.id);
         ui.horizontal(|ui| {
             let arm = ui
                 .selectable_label(armed_here, "⏺")
@@ -156,15 +149,11 @@ impl ParamsPanel<'_> {
                 self.actions.push(ParamAction::Arm(if armed_here {
                     None
                 } else {
-                    Some(p.param)
+                    Some(p.id.clone())
                 }));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak(if p.vec2 {
-                    format!("{:.2}, {:.2}", value[0], value[1])
-                } else {
-                    format!("{:.2}", value[0])
-                });
+                ui.weak(format!("{value:.2}"));
                 // Name fills the space left of the readout, left-aligned.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let label = ui.add(
@@ -172,22 +161,20 @@ impl ParamsPanel<'_> {
                             .truncate()
                             .sense(egui::Sense::click()),
                     );
-                    let label = label.on_hover_text(&p.name);
+                    // The Id is what everything else addresses the param by,
+                    // and two params may share a name — so the hover says it.
+                    let label = label.on_hover_text(format!("{}\n{}", p.name, p.id));
                     label.context_menu(|ui| self.param_menu(ui, p));
                 });
             });
         });
-        let armed = self.armed.filter(|a| a.param == p.param);
-        if p.vec2 {
-            self.pad_2d(ui, p, armed);
-        } else {
-            self.line_1d(ui, p, armed);
-        }
+        let armed = self.armed.filter(|a| a.param == p.id);
+        self.line_1d(ui, p, armed);
         ui.add_space(6.0);
     }
 
     fn param_menu(&mut self, ui: &mut egui::Ui, p: &ParamInfo) {
-        let id = ui.id().with(("rename", p.param.0));
+        let id = ui.id().with(("rename", p.id.as_str()));
         let mut name: String = ui
             .ctx()
             .data_mut(|d| d.get_temp(id))
@@ -196,7 +183,7 @@ impl ParamsPanel<'_> {
             ui.text_edit_singleline(&mut name);
             if ui.button("rename").clicked() {
                 self.actions.push(ParamAction::Rename {
-                    param: p.param,
+                    param: p.id.clone(),
                     name: name.clone(),
                 });
                 ui.close();
@@ -204,103 +191,52 @@ impl ParamsPanel<'_> {
         });
         ui.ctx().data_mut(|d| d.insert_temp(id, name));
 
-        let value = (self.pose)(&p.name);
+        let value = (self.pose)(&p.id);
         // Menu labels speak param values; the wire speaks normalized 0..1.
         if ui
-            .button(format!("insert X axis point at {:.3}", value[0]))
+            .button(format!("insert key position at {value:.3}"))
             .clicked()
         {
-            self.actions.push(ParamAction::AxisInsert {
-                param: p.param,
-                axis: 0,
-                value: norm(value[0], p.min[0], p.max[0]),
+            self.actions.push(ParamAction::KeyInsert {
+                param: p.id.clone(),
+                value: norm(value, p.min, p.max),
             });
             ui.close();
         }
-        if p.vec2
-            && ui
-                .button(format!("insert Y axis point at {:.3}", value[1]))
-                .clicked()
-        {
-            self.actions.push(ParamAction::AxisInsert {
-                param: p.param,
-                axis: 1,
-                value: norm(value[1], p.min[1], p.max[1]),
-            });
-            ui.close();
-        }
-        let denorm = |t: f32, min: f32, max: f32| min + t * (max - min);
-        if let Some(i) = nearest_interior(&p.axis_points_x, norm(value[0], p.min[0], p.max[0])) {
+        let denorm = |t: f32| p.min + t * (p.max - p.min);
+        if let Some(i) = nearest_interior(&p.key_positions, norm(value, p.min, p.max)) {
             if ui
                 .button(format!(
-                    "delete X axis point {:.3}",
-                    denorm(p.axis_points_x[i], p.min[0], p.max[0])
+                    "delete key position {:.3}",
+                    denorm(p.key_positions[i])
                 ))
                 .clicked()
             {
-                self.actions.push(ParamAction::AxisDelete {
-                    param: p.param,
-                    axis: 0,
+                self.actions.push(ParamAction::KeyDelete {
+                    param: p.id.clone(),
                     index: i as u32,
                 });
                 ui.close();
             }
         }
-        if p.vec2 {
-            if let Some(i) = nearest_interior(&p.axis_points_y, norm(value[1], p.min[1], p.max[1]))
-            {
-                if ui
-                    .button(format!(
-                        "delete Y axis point {:.3}",
-                        denorm(p.axis_points_y[i], p.min[1], p.max[1])
-                    ))
-                    .clicked()
-                {
-                    self.actions.push(ParamAction::AxisDelete {
-                        param: p.param,
-                        axis: 1,
-                        index: i as u32,
-                    });
-                    ui.close();
-                }
-            }
-        }
         ui.separator();
-        if ui.button("flip X (mirror keypoints)").clicked() {
+        if ui.button("flip (mirror keypoints)").clicked() {
             self.actions.push(ParamAction::Flip {
-                param: p.param,
-                axis: 0,
-            });
-            ui.close();
-        }
-        if p.vec2 && ui.button("flip Y (mirror keypoints)").clicked() {
-            self.actions.push(ParamAction::Flip {
-                param: p.param,
-                axis: 1,
+                param: p.id.clone(),
             });
             ui.close();
         }
         ui.separator();
         if ui.button("delete param").clicked() {
-            self.actions.push(ParamAction::Delete(p.param));
+            self.actions.push(ParamAction::Delete(p.id.clone()));
             ui.close();
         }
     }
 
-    /// The armed param's controller: the same widgets as the list rows, with
-    /// the authored-state dots.
-    fn controller(&mut self, ui: &mut egui::Ui, p: &ParamInfo, armed: &ArmedInfo) {
-        if p.vec2 {
-            self.pad_2d(ui, p, Some(armed));
-        } else {
-            self.line_1d(ui, p, Some(armed));
-        }
-    }
-
-    /// Full-width 1D track: axis-point ticks and a draggable value handle.
+    /// Full-width track: key-position ticks and a draggable value handle.
     /// When armed, ticks become authored-state dots.
     fn line_1d(&mut self, ui: &mut egui::Ui, p: &ParamInfo, armed: Option<&ArmedInfo>) {
-        let value = (self.pose)(&p.name);
+        let value = (self.pose)(&p.id);
         let (rect, resp) = ui.allocate_exact_size(
             egui::vec2(ui.available_width().max(120.0), 24.0),
             egui::Sense::click_and_drag(),
@@ -317,7 +253,7 @@ impl ParamsPanel<'_> {
         );
         // `t` is normalized 0..1 — the space axis points live in.
         let at = |t: f32| egui::pos2(track.left() + t.clamp(0.0, 1.0) * track.width(), cy);
-        for (xi, &ax) in p.axis_points_x.iter().enumerate() {
+        for (xi, &ax) in p.key_positions.iter().enumerate() {
             let pos = at(ax);
             match armed {
                 Some(a) => dot(
@@ -336,77 +272,13 @@ impl ParamsPanel<'_> {
                 }
             }
         }
-        handle(&paint, at(norm(value[0], p.min[0], p.max[0])));
+        handle(&paint, at(norm(value, p.min, p.max)));
         if let Some(pos) = drag_pos(&resp) {
             let t = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
-            let t = self.maybe_snap(t, &p.axis_points_x);
+            let t = self.maybe_snap(t, &p.key_positions);
             self.actions.push(ParamAction::Pose {
-                name: p.name.clone(),
-                value: [p.min[0] + t * (p.max[0] - p.min[0]), value[1]],
-            });
-        }
-    }
-
-    /// Full-width 2D pad: grid lines at the axis points and a circle pointer
-    /// at the current value. When armed, intersections show authored-state
-    /// dots.
-    fn pad_2d(&mut self, ui: &mut egui::Ui, p: &ParamInfo, armed: Option<&ArmedInfo>) {
-        let value = (self.pose)(&p.name);
-        let w = ui.available_width().max(120.0);
-        let (rect, resp) =
-            ui.allocate_exact_size(egui::vec2(w, w.min(220.0)), egui::Sense::click_and_drag());
-        let paint = ui.painter_at(rect);
-        let vis = ui.visuals();
-        paint.rect(
-            rect,
-            4.0,
-            vis.extreme_bg_color,
-            egui::Stroke::new(1.0_f32, vis.widgets.inactive.bg_fill),
-            egui::StrokeKind::Inside,
-        );
-        // Inset so edge grid lines, dots, and the pointer stay inside the frame.
-        let grid = rect.shrink(HANDLE_R + 4.0);
-        // `t` is normalized 0..1 — the space axis points live in.
-        let sx = |t: f32| grid.left() + t.clamp(0.0, 1.0) * grid.width();
-        let sy = |t: f32| grid.bottom() - t.clamp(0.0, 1.0) * grid.height();
-        let grid_stroke = egui::Stroke::new(1.0_f32, vis.widgets.inactive.bg_fill);
-        for &ax in &p.axis_points_x {
-            paint.vline(sx(ax), grid.y_range(), grid_stroke);
-        }
-        for &ay in &p.axis_points_y {
-            paint.hline(grid.x_range(), sy(ay), grid_stroke);
-        }
-        if let Some(a) = armed {
-            for (yi, &ay) in p.axis_points_y.iter().enumerate() {
-                for (xi, &ax) in p.axis_points_x.iter().enumerate() {
-                    let state = a
-                        .cell_states
-                        .get(yi * p.axis_points_x.len() + xi)
-                        .copied()
-                        .unwrap_or(0);
-                    let is_cell = a.cell == [xi as u32, yi as u32];
-                    dot(&paint, egui::pos2(sx(ax), sy(ay)), state, is_cell, vis);
-                }
-            }
-        }
-        handle(
-            &paint,
-            egui::pos2(
-                sx(norm(value[0], p.min[0], p.max[0])),
-                sy(norm(value[1], p.min[1], p.max[1])),
-            ),
-        );
-        if let Some(pos) = drag_pos(&resp) {
-            let tx = ((pos.x - grid.left()) / grid.width()).clamp(0.0, 1.0);
-            let ty = ((grid.bottom() - pos.y) / grid.height()).clamp(0.0, 1.0);
-            let tx = self.maybe_snap(tx, &p.axis_points_x);
-            let ty = self.maybe_snap(ty, &p.axis_points_y);
-            self.actions.push(ParamAction::Pose {
-                name: p.name.clone(),
-                value: [
-                    p.min[0] + tx * (p.max[0] - p.min[0]),
-                    p.min[1] + ty * (p.max[1] - p.min[1]),
-                ],
+                param: p.id.clone(),
+                value: p.min + t * (p.max - p.min),
             });
         }
     }
@@ -416,14 +288,14 @@ impl ParamsPanel<'_> {
             ui.horizontal(|ui| {
                 let mark = if row.authored_at_cell { "●" } else { "○" };
                 ui.label(format!("{mark} {} · {}", row.node_name, row.target));
-                egui::ComboBox::from_id_salt(("interp", row.node.0, &row.target))
+                egui::ComboBox::from_id_salt(("interp", row.node.as_str(), &row.target))
                     .selected_text(&row.interpolate)
                     .width(70.0)
                     .show_ui(ui, |ui| {
                         for mode in ["nearest", "stepped", "linear", "cubic"] {
                             if ui.button(mode).clicked() {
                                 self.actions.push(ParamAction::BindingInterpolate {
-                                    node: row.node,
+                                    node: row.node.clone(),
                                     target: row.target.clone(),
                                     mode: mode.into(),
                                 });
@@ -437,7 +309,7 @@ impl ParamsPanel<'_> {
                     .clicked()
                 {
                     self.actions.push(ParamAction::BindingReset {
-                        node: row.node,
+                        node: row.node.clone(),
                         target: row.target.clone(),
                     });
                 }
@@ -447,19 +319,19 @@ impl ParamsPanel<'_> {
                     .clicked()
                 {
                     self.actions.push(ParamAction::BindingUnset {
-                        node: row.node,
+                        node: row.node.clone(),
                         target: row.target.clone(),
                     });
                 }
                 if ui.small_button("copy").clicked() {
                     self.actions.push(ParamAction::CopyCell {
-                        node: row.node,
+                        node: row.node.clone(),
                         target: row.target.clone(),
                     });
                 }
                 if self.can_paste && ui.small_button("paste").clicked() {
                     self.actions.push(ParamAction::PasteCell {
-                        node: row.node,
+                        node: row.node.clone(),
                         target: row.target.clone(),
                     });
                 }
@@ -469,7 +341,7 @@ impl ParamsPanel<'_> {
                     .clicked()
                 {
                     self.actions.push(ParamAction::BindingInvert {
-                        node: row.node,
+                        node: row.node.clone(),
                         target: row.target.clone(),
                     });
                 }
@@ -479,7 +351,7 @@ impl ParamsPanel<'_> {
                     .clicked()
                 {
                     self.actions.push(ParamAction::BindingDelete {
-                        node: row.node,
+                        node: row.node.clone(),
                         target: row.target.clone(),
                     });
                 }
@@ -490,7 +362,7 @@ impl ParamsPanel<'_> {
         }
     }
 
-    /// Snap a normalized 0..1 coordinate to the nearest axis point.
+    /// Snap a normalized 0..1 coordinate to the nearest key position.
     fn maybe_snap(&self, t: f32, points: &[f32]) -> f32 {
         if !*self.snap {
             return t;
@@ -555,8 +427,8 @@ fn dot(
     }
 }
 
-/// Nearest interior axis-point index to `v` (endpoints excluded — they define
-/// the range and can't be deleted).
+/// Nearest interior key-position index to `v` (endpoints excluded — they
+/// define the range and can't be deleted).
 fn nearest_interior(points: &[f32], v: f32) -> Option<usize> {
     if points.len() <= 2 {
         return None;

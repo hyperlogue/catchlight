@@ -5,7 +5,7 @@
 //! check the node actually moves (and returns to rest at the other keypoint).
 
 use catchlight_editor_protocol::{
-    BindingKeyEntry, Command, NodeKindArg, Reply, Request, ResponseBody,
+    BindingKeyEntry, BindingParams, Command, NodeKindArg, Reply, Request, ResponseBody,
 };
 use catchlight_editor_server::Editor;
 
@@ -29,7 +29,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
     let session = ed.open_bytes("welded_seam", &bytes).expect("open");
 
     let root = match body(&ed, 1, Command::NodeTree { session }) {
-        ResponseBody::Tree { root } => root.node,
+        ResponseBody::Tree { root } => root.id,
         other => panic!("{other:?}"),
     };
     let node = match body(
@@ -52,12 +52,10 @@ fn recorded_binding_moves_the_rebaked_puppet() {
         Command::ParamAdd {
             session,
             name: "probe-param".into(),
-            vec2: false,
-            min: [0.0, 0.0],
-            max: [1.0, 1.0],
-            defaults: [0.0, 0.0],
-            axis_x: Vec::new(),
-            axis_y: Vec::new(),
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            key_positions: Vec::new(),
         },
     ) {
         ResponseBody::Param { param } => param,
@@ -70,8 +68,8 @@ fn recorded_binding_moves_the_rebaked_puppet() {
         4,
         Command::BindingKeys {
             session,
-            param,
-            node,
+            params: BindingParams::one(param.clone()),
+            node: node.clone(),
             cell: [1, 0],
             entries: vec![BindingKeyEntry {
                 target: "tx".into(),
@@ -82,16 +80,9 @@ fn recorded_binding_moves_the_rebaked_puppet() {
 
     let x_at = |pose: f32| -> f32 {
         ed.with_puppet(session, |model, puppet| {
-            let param = model
-                .param_ids()
-                .iter()
-                .find(|id| {
-                    model
-                        .param(id)
-                        .is_some_and(|p| p.name.as_str() == "probe-param")
-                })
-                .cloned()
-                .expect("param exists on the rebaked puppet");
+            // The Id the ParamAdd reply handed back still names the param
+            // after the model has been edited and the puppet rebaked.
+            assert!(model.param(&param).is_some(), "the param survived");
             puppet.set_param_value(&param, pose);
             puppet.tick(model, 0.0);
             let order = puppet.tree().with_dfs_order(|o| o.to_vec());
@@ -121,8 +112,8 @@ fn recorded_binding_moves_the_rebaked_puppet() {
         5,
         Command::BindingUnset {
             session,
-            param,
-            node,
+            params: BindingParams::one(param.clone()),
+            node: node.clone(),
             target: "tx".into(),
             cell: [1, 0],
         },

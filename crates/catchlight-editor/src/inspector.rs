@@ -7,7 +7,7 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
-use catchlight_editor_protocol::{NodePatch, NodeRef, ParamRef, TexRef};
+use catchlight_editor_protocol::{NodeId, NodePatch, ParamId, TexId};
 use eframe::egui;
 
 pub(crate) struct InspectorData {
@@ -39,7 +39,7 @@ pub(crate) enum InspectorKind {
     Group,
     Part {
         props: DrawableProps,
-        albedo: Option<TexRef>,
+        albedo: Option<TexId>,
         vert_count: usize,
         tri_count: usize,
     },
@@ -56,7 +56,10 @@ pub(crate) enum InspectorKind {
         kind: PendulumKind,
         map_mode: PhysicsParamMapMode,
         local_only: bool,
-        target_param: Option<ParamRef>,
+        /// The param the driver's angle writes. The model holds a second
+        /// (length) target this panel does not show; setting one from here
+        /// clears it, exactly as it always has.
+        target_param: Option<ParamId>,
         gravity: f32,
         length: f32,
         frequency: f32,
@@ -74,7 +77,7 @@ pub(crate) enum InspectorAction {
     Commit(NodePatch),
     PhysicsCommit(PhysicsPatch),
     MaskAdd {
-        source: NodeRef,
+        source: NodeId,
         mode: MaskMode,
     },
     MaskSetMode {
@@ -97,7 +100,7 @@ pub(crate) struct PhysicsPatch {
     pub kind: Option<String>,
     pub map_mode: Option<String>,
     pub local_only: Option<bool>,
-    pub target_param: Option<ParamRef>,
+    pub target_param: Option<ParamId>,
     pub clear_target_param: bool,
     pub gravity: Option<f32>,
     pub length: Option<f32>,
@@ -110,15 +113,15 @@ pub(crate) struct PhysicsPatch {
 /// Candidate lists the inspector needs: parts (mask sources) and params
 /// (physics targets).
 pub(crate) struct InspectorContext<'a> {
-    pub parts: &'a [(NodeRef, String)],
-    pub params: &'a [(ParamRef, String)],
+    pub parts: &'a [(NodeId, String)],
+    pub params: &'a [(ParamId, String)],
 }
 
 pub(crate) fn inspector_ui(
     ui: &mut egui::Ui,
     data: &InspectorData,
     ctx: &InspectorContext<'_>,
-    textures: &[(TexRef, String)],
+    textures: &[(TexId, String)],
 ) -> Vec<InspectorAction> {
     let mut out = Vec::new();
 
@@ -189,7 +192,7 @@ pub(crate) fn inspector_ui(
                     out.push(InspectorAction::ModelMesh);
                 }
             });
-            texture_combo(ui, *albedo, textures, &mut out);
+            texture_combo(ui, albedo.as_ref(), textures, &mut out);
             drawable_props_ui(ui, props, ctx, &mut out);
         }
         InspectorKind::Composite {
@@ -260,7 +263,7 @@ pub(crate) fn inspector_ui(
                 *kind,
                 *map_mode,
                 *local_only,
-                *target_param,
+                target_param.clone(),
                 *gravity,
                 *length,
                 *frequency,
@@ -344,7 +347,7 @@ fn drawable_props_ui(
                 for (part, name) in ctx.parts {
                     if ui.button(name).clicked() {
                         out.push(InspectorAction::MaskAdd {
-                            source: *part,
+                            source: part.clone(),
                             mode: MaskMode::Mask,
                         });
                         ui.close();
@@ -360,7 +363,7 @@ fn physics_ui(
     kind: PendulumKind,
     map_mode: PhysicsParamMapMode,
     local_only: bool,
-    target_param: Option<ParamRef>,
+    target_param: Option<ParamId>,
     gravity: f32,
     length: f32,
     frequency: f32,
@@ -430,7 +433,8 @@ fn physics_ui(
     }
 
     let target_label = target_param
-        .and_then(|t| ctx.params.iter().find(|(p, _)| *p == t))
+        .as_ref()
+        .and_then(|t| ctx.params.iter().find(|(p, _)| p == t))
         .map(|(_, n)| n.clone())
         .unwrap_or_else(|| "(none)".into());
     egui::ComboBox::from_label("target param")
@@ -446,7 +450,7 @@ fn physics_ui(
             for (p, name) in ctx.params {
                 if ui.button(name).clicked() {
                     out.push(InspectorAction::PhysicsCommit(PhysicsPatch {
-                        target_param: Some(*p),
+                        target_param: Some(p.clone()),
                         ..Default::default()
                     }));
                     ui.close();
@@ -503,12 +507,12 @@ fn physics_ui(
 
 fn texture_combo(
     ui: &mut egui::Ui,
-    current: Option<TexRef>,
-    textures: &[(TexRef, String)],
+    current: Option<&TexId>,
+    textures: &[(TexId, String)],
     out: &mut Vec<InspectorAction>,
 ) {
     let label = current
-        .and_then(|c| textures.iter().find(|(t, _)| *t == c))
+        .and_then(|c| textures.iter().find(|(t, _)| t == c))
         .map(|(_, n)| n.clone())
         .unwrap_or_else(|| "(no texture)".into());
     egui::ComboBox::from_label("albedo")
@@ -517,7 +521,7 @@ fn texture_combo(
             for (t, name) in textures {
                 if ui.button(name).clicked() {
                     out.push(InspectorAction::Commit(NodePatch {
-                        texture: Some(*t),
+                        texture: Some(t.clone()),
                         ..Default::default()
                     }));
                     ui.close();

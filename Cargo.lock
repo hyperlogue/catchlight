@@ -1604,6 +1604,7 @@ dependencies = [
 name = "catchlight-editor-protocol"
 version = "0.1.0"
 dependencies = [
+ "catchlight-core",
  "serde",
  "serde_json",
 ]

@@ -4,51 +4,51 @@
 
 use std::collections::HashSet;
 
-use catchlight_editor_protocol::{NodeKindArg, NodeRef, TreeNode};
+use catchlight_editor_protocol::{NodeId, NodeKindArg, TreeNode};
 use eframe::egui;
 
 pub(crate) enum TreeAction {
     Select {
-        node: NodeRef,
+        node: NodeId,
         additive: bool,
         range: bool,
     },
     /// Reparent `node` under `parent` (appended), in one undo step.
     DropInto {
-        node: NodeRef,
-        parent: NodeRef,
+        node: NodeId,
+        parent: NodeId,
     },
     /// Insert `node` at `index` among `parent`'s children, in one undo step.
     DropBefore {
-        node: NodeRef,
-        parent: NodeRef,
+        node: NodeId,
+        parent: NodeId,
         index: u32,
     },
     AddChild {
-        parent: NodeRef,
+        parent: NodeId,
         kind: NodeKindArg,
     },
     AddPhysics {
-        parent: NodeRef,
+        parent: NodeId,
     },
-    Duplicate(NodeRef),
-    Delete(NodeRef),
+    Duplicate(NodeId),
+    Delete(NodeId),
     SetEnabled {
-        node: NodeRef,
+        node: NodeId,
         enabled: bool,
     },
-    Isolate(Option<NodeRef>),
-    Focus(NodeRef),
+    Isolate(Option<NodeId>),
+    Focus(NodeId),
 }
 
 pub(crate) struct TreePanel<'a> {
-    pub selection: &'a HashSet<u64>,
-    pub isolated: Option<NodeRef>,
+    pub selection: &'a HashSet<NodeId>,
+    pub isolated: Option<NodeId>,
     pub filter: &'a str,
-    pub collapsed: &'a mut HashSet<u64>,
+    pub collapsed: &'a mut HashSet<NodeId>,
     pub actions: Vec<TreeAction>,
     /// Rows in display order — the range-select universe.
-    pub visible: Vec<NodeRef>,
+    pub visible: Vec<NodeId>,
 }
 
 impl TreePanel<'_> {
@@ -74,7 +74,7 @@ impl TreePanel<'_> {
         &mut self,
         ui: &mut egui::Ui,
         node: &TreeNode,
-        parent: Option<NodeRef>,
+        parent: Option<NodeId>,
         index_in_parent: usize,
         depth: usize,
         filtering: bool,
@@ -82,8 +82,8 @@ impl TreePanel<'_> {
         if filtering && !self.matches(node) {
             return;
         }
-        let collapsed = !filtering && self.collapsed.contains(&node.node.0);
-        self.visible.push(node.node);
+        let collapsed = !filtering && self.collapsed.contains(&node.id);
+        self.visible.push(node.id.clone());
 
         let row = ui
             .horizontal(|ui| {
@@ -97,9 +97,9 @@ impl TreePanel<'_> {
                         .clicked()
                     {
                         if collapsed {
-                            self.collapsed.remove(&node.node.0);
+                            self.collapsed.remove(&node.id);
                         } else {
-                            self.collapsed.insert(node.node.0);
+                            self.collapsed.insert(node.id.clone());
                         }
                     }
                 }
@@ -110,13 +110,13 @@ impl TreePanel<'_> {
                     .clicked()
                 {
                     self.actions.push(TreeAction::SetEnabled {
-                        node: node.node,
+                        node: node.id.clone(),
                         enabled: !node.enabled,
                     });
                 }
 
-                let selected = self.selection.contains(&node.node.0);
-                let isolated_here = self.isolated == Some(node.node);
+                let selected = self.selection.contains(&node.id);
+                let isolated_here = self.isolated.as_ref() == Some(&node.id);
                 let label = format!(
                     "{}{} · {}",
                     if isolated_here { "🔍 " } else { "" },
@@ -133,9 +133,9 @@ impl TreePanel<'_> {
                     .selectable_label(selected, label)
                     .interact(egui::Sense::click_and_drag());
                 if !is_root {
-                    label_resp.dnd_set_drag_payload(node.node);
+                    label_resp.dnd_set_drag_payload(node.id.clone());
                     if label_resp.dragged() {
-                        egui::Area::new(egui::Id::new(("tree-drag-ghost", node.node.0)))
+                        egui::Area::new(egui::Id::new(("tree-drag-ghost", node.id.as_str())))
                             .fixed_pos(
                                 ui.ctx()
                                     .pointer_interact_pos()
@@ -152,7 +152,7 @@ impl TreePanel<'_> {
                 if label_resp.clicked() {
                     let mods = ui.input(|i| i.modifiers);
                     self.actions.push(TreeAction::Select {
-                        node: node.node,
+                        node: node.id.clone(),
                         additive: mods.ctrl || mods.command,
                         range: mods.shift,
                     });
@@ -160,11 +160,11 @@ impl TreePanel<'_> {
                 self.context_menu(&label_resp, node, is_root);
                 if !is_root {
                     self.drop_target(ui, &label_resp, node, parent, index_in_parent);
-                } else if let Some(payload) = label_resp.dnd_release_payload::<NodeRef>() {
-                    if *payload != node.node {
+                } else if let Some(payload) = label_resp.dnd_release_payload::<NodeId>() {
+                    if *payload != node.id {
                         self.actions.push(TreeAction::DropInto {
-                            node: *payload,
-                            parent: node.node,
+                            node: (*payload).clone(),
+                            parent: node.id.clone(),
                         });
                     }
                 }
@@ -175,7 +175,7 @@ impl TreePanel<'_> {
 
         if !collapsed {
             for (i, child) in node.children.iter().enumerate() {
-                self.node_row(ui, child, Some(node.node), i, depth + 1, filtering);
+                self.node_row(ui, child, Some(node.id.clone()), i, depth + 1, filtering);
             }
         }
     }
@@ -185,7 +185,7 @@ impl TreePanel<'_> {
         ui: &egui::Ui,
         resp: &egui::Response,
         node: &TreeNode,
-        parent: Option<NodeRef>,
+        parent: Option<NodeId>,
         index_in_parent: usize,
     ) {
         let (Some(parent), Some(pos)) = (parent, ui.ctx().pointer_hover_pos()) else {
@@ -200,8 +200,8 @@ impl TreePanel<'_> {
             DropZone::Into
         };
 
-        if let Some(payload) = resp.dnd_hover_payload::<NodeRef>() {
-            if *payload != node.node {
+        if let Some(payload) = resp.dnd_hover_payload::<NodeId>() {
+            if *payload != node.id {
                 let paint = ui.painter();
                 let stroke = egui::Stroke::new(2.0_f32, ui.visuals().selection.bg_fill);
                 match zone {
@@ -217,22 +217,23 @@ impl TreePanel<'_> {
                 }
             }
         }
-        if let Some(payload) = resp.dnd_release_payload::<NodeRef>() {
-            if *payload == node.node {
+        if let Some(payload) = resp.dnd_release_payload::<NodeId>() {
+            if *payload == node.id {
                 return;
             }
+            let dragged = (*payload).clone();
             match zone {
                 DropZone::Into => self.actions.push(TreeAction::DropInto {
-                    node: *payload,
-                    parent: node.node,
+                    node: dragged,
+                    parent: node.id.clone(),
                 }),
                 DropZone::Before => self.actions.push(TreeAction::DropBefore {
-                    node: *payload,
+                    node: dragged,
                     parent,
                     index: index_in_parent as u32,
                 }),
                 DropZone::After => self.actions.push(TreeAction::DropBefore {
-                    node: *payload,
+                    node: dragged,
                     parent,
                     index: index_in_parent as u32 + 1,
                 }),
@@ -251,40 +252,42 @@ impl TreePanel<'_> {
                 ] {
                     if ui.button(label).clicked() {
                         self.actions.push(TreeAction::AddChild {
-                            parent: node.node,
+                            parent: node.id.clone(),
                             kind,
                         });
                         ui.close();
                     }
                 }
                 if ui.button("SimplePhysics").clicked() {
-                    self.actions
-                        .push(TreeAction::AddPhysics { parent: node.node });
+                    self.actions.push(TreeAction::AddPhysics {
+                        parent: node.id.clone(),
+                    });
                     ui.close();
                 }
             });
             if !is_root {
                 if ui.button("Duplicate").clicked() {
-                    self.actions.push(TreeAction::Duplicate(node.node));
+                    self.actions.push(TreeAction::Duplicate(node.id.clone()));
                     ui.close();
                 }
                 if ui.button("Delete").clicked() {
-                    self.actions.push(TreeAction::Delete(node.node));
+                    self.actions.push(TreeAction::Delete(node.id.clone()));
                     ui.close();
                 }
             }
             ui.separator();
-            if self.isolated == Some(node.node) {
+            if self.isolated.as_ref() == Some(&node.id) {
                 if ui.button("Show all (un-isolate)").clicked() {
                     self.actions.push(TreeAction::Isolate(None));
                     ui.close();
                 }
             } else if ui.button("Isolate subtree").clicked() {
-                self.actions.push(TreeAction::Isolate(Some(node.node)));
+                self.actions
+                    .push(TreeAction::Isolate(Some(node.id.clone())));
                 ui.close();
             }
             if ui.button("Focus in viewport").clicked() {
-                self.actions.push(TreeAction::Focus(node.node));
+                self.actions.push(TreeAction::Focus(node.id.clone()));
                 ui.close();
             }
         });

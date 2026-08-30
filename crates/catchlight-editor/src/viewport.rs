@@ -18,8 +18,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use catchlight_core::{GlobalTransforms, Model, Puppet, Vec2};
-use catchlight_editor_server::pose_by_name;
+use catchlight_core::id::ParamId;
+use catchlight_core::{GlobalTransforms, Model, Pose, Puppet, Vec2};
 use catchlight_wgpu::{
     create_orthographic_camera_at, CompositePool, DrawableInfo, FramebufferSnapshotPool, Pipelines,
     PrepareOptions, RenderCache, RenderList, StencilTarget, WgpuRenderer,
@@ -156,7 +156,7 @@ impl ViewportRenderer {
         session: u64,
         model: &Model,
         puppet: &mut Puppet,
-        pose: &[(String, Vec2)],
+        pose: &[(ParamId, f32)],
         previews: &[NodePreview],
         scratch_deform: Option<&(u32, Vec<(usize, Vec2)>)>,
         camera: &EditorCamera,
@@ -188,7 +188,9 @@ impl ViewportRenderer {
             return Err(anyhow!("render cache unavailable"));
         };
 
-        puppet.apply_pose(&pose_by_name(model, pose));
+        // Params are scalar and the GUI holds their Ids, so the pose needs
+        // no name resolution: it *is* the pose the model evaluates.
+        puppet.apply_pose(&pose.iter().cloned().collect::<Pose>());
         puppet.tick(model, 0.0);
         if !previews.is_empty() {
             // Re-fold with the preview in place: the tc filter and MG deform
@@ -380,7 +382,18 @@ mod tests {
             height: 600.0,
         };
 
-        let mut shot = |pose: &[(String, Vec2)]| -> Vec<u8> {
+        let pull = editor
+            .with_model(session, |model| {
+                model
+                    .param_ids()
+                    .iter()
+                    .find(|id| model.param(id).is_some_and(|p| p.name.as_str() == "pull"))
+                    .cloned()
+            })
+            .unwrap()
+            .expect("welded_seam has a `pull` param");
+
+        let mut shot = |pose: &[(ParamId, f32)]| -> Vec<u8> {
             editor
                 .with_puppet(session, |model, puppet| {
                     viewport
@@ -405,9 +418,9 @@ mod tests {
         };
 
         let rest = shot(&[]);
-        let posed = shot(&[("pull".into(), Vec2::new(1.0, 0.0))]);
+        let posed = shot(&[(pull.clone(), 1.0)]);
         assert_ne!(rest, posed, "posing pull must change the render");
-        let back = shot(&[("pull".into(), Vec2::new(0.0, 0.0))]);
+        let back = shot(&[(pull, 0.0)]);
         if let Ok(dir) = std::env::var("VIEWPORT_TEST_DUMP") {
             for (name, img) in [("rest", &rest), ("posed", &posed), ("back", &back)] {
                 image::save_buffer(
