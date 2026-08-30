@@ -451,9 +451,10 @@ impl App {
             return Vec::new();
         };
         let editor = self.editor.clone();
-        // LegacyPuppet working state = the pose *without* the gesture (previews are
-        // app-side overrides, never baked into the puppet between renders).
-        let Ok(Some((pt, pr, ps, pz, pop))) = editor.with_puppet(session, |p| {
+        // The puppet's working state = the pose *without* the gesture
+        // (previews are app-side overrides, never folded into the puppet
+        // between renders).
+        let Ok(Some((pt, pr, ps, pz, pop))) = editor.with_puppet(session, |_model, p| {
             p.get(catchlight_core::NodeIdx(core)).map(|n| {
                 let op = match &n.kind {
                     catchlight_core::NodeKind::Part(part) => part.opacity,
@@ -1470,20 +1471,17 @@ impl App {
                 .iter()
                 .map(|(name, v)| (name.clone(), Vec2::new(v[0], v[1])))
                 .collect();
-            // The puppet is built from a flattened `.clm`, which re-pairs
-            // `<n>.x` / `<n>.y` into one 2-D param (cl-32i.14 removes both).
-            let pose = self.editor.fold_pose(session, &pose).unwrap_or(pose);
             let editor = self.editor.clone();
             let camera = self.camera;
             let previews = self.previews.clone();
             let scratch_deform = self.scratch_deform.clone();
-            let upload_key = (session.0, rev);
             if let Some(viewport) = self.viewport.as_mut() {
-                match editor.with_puppet(session, |puppet| {
+                match editor.with_puppet(session, |model, puppet| {
                     viewport.render(
                         &render_state,
+                        session.0,
+                        model,
                         puppet,
-                        upload_key,
                         &pose,
                         &previews,
                         scratch_deform.as_ref(),
@@ -1701,7 +1699,7 @@ impl App {
         };
         let m = viewport.transforms.get(catchlight_core::NodeIdx(core));
         self.editor
-            .with_puppet(session, |p| {
+            .with_puppet(session, |_model, p| {
                 let Some(node) = p.get(catchlight_core::NodeIdx(core)) else {
                     return Vec::new();
                 };
@@ -2143,7 +2141,7 @@ impl App {
         // to the keypoint), so display the puppet's working state.
         if self.armed.is_some() {
             if let Some(core) = self.core_of_ref(primary) {
-                if let Ok(Some((t, r, s, z, op))) = editor.with_puppet(session, |p| {
+                if let Ok(Some((t, r, s, z, op))) = editor.with_puppet(session, |_model, p| {
                     p.get(catchlight_core::NodeIdx(core)).map(|n| {
                         let op = match &n.kind {
                             catchlight_core::NodeKind::Part(part) => Some(part.opacity),

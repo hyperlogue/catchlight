@@ -1,10 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Regression for the GUI recording flow: add a param, record a key via
-//! BindingKeys at a keypoint, then pose the param on the rebuilt puppet and
+//! BindingKeys at a keypoint, then pose the param on the rebaked puppet and
 //! check the node actually moves (and returns to rest at the other keypoint).
 
-use catchlight_core::GlobalTransforms;
 use catchlight_editor_protocol::{
     BindingKeyEntry, Command, NodeKindArg, Reply, Request, ResponseBody,
 };
@@ -18,7 +17,7 @@ fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
 }
 
 #[test]
-fn recorded_binding_moves_the_rebuilt_puppet() {
+fn recorded_binding_moves_the_rebaked_puppet() {
     // Any rig will do: the test authors its own node, param and binding, and
     // only needs a document to open.
     let bytes = std::fs::read(concat!(
@@ -82,19 +81,26 @@ fn recorded_binding_moves_the_rebuilt_puppet() {
     );
 
     let x_at = |pose: f32| -> f32 {
-        ed.with_puppet(session, |puppet| {
-            assert!(
-                puppet.set_param_value_by_name("probe-param", glam::vec2(pose, 0.0)),
-                "param exists on rebuilt puppet"
-            );
-            let mut transforms = GlobalTransforms::new();
-            puppet.tick(&mut transforms, glam::Mat4::IDENTITY, 0.0);
+        ed.with_puppet(session, |model, puppet| {
+            let param = model
+                .param_ids()
+                .iter()
+                .find(|id| {
+                    model
+                        .param(id)
+                        .is_some_and(|p| p.name.as_str() == "probe-param")
+                })
+                .cloned()
+                .expect("param exists on the rebaked puppet");
+            puppet.set_param_value(&param, pose);
+            puppet.tick(model, 0.0);
             let order = puppet.tree().with_dfs_order(|o| o.to_vec());
             let id = order
                 .into_iter()
                 .find(|&id| puppet.get(id).is_some_and(|n| n.name == "probe"))
                 .expect("probe node");
-            transforms
+            puppet
+                .transforms()
                 .get(id)
                 .transform_point3(glam::vec3(0.0, 0.0, 0.0))
                 .x

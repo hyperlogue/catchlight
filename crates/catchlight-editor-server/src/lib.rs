@@ -28,9 +28,8 @@ use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, TexId};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::Vec2;
 use catchlight_core::{
-    from_legacy_cached, BindingKey, BindingTarget, LegacyPuppet, Model, ModelComposite, ModelError,
-    ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
-    ScalarTarget, TexturePrepCache,
+    BindingKey, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup, ModelNode,
+    ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, Pose, Puppet, ScalarTarget,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_editor_core::{Manifest, ModelManifestExt as _, TextureData};
@@ -95,16 +94,13 @@ struct Session {
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     history_bytes: usize,
-    /// Lazily (re)built from `model` for preview; invalidated on every edit.
-    puppet: Option<LegacyPuppet>,
-    puppet_dirty: bool,
+    /// Lazily baked from `model` for preview. Rebaked by its own generation
+    /// gate on the next use after an edit, so nothing has to invalidate it.
+    puppet: Option<Puppet>,
     /// rev-gated document view for in-process observers (the GUI).
     snapshot: Option<Arc<DocSnapshot>>,
     /// Latest shared view state — its own path, never touches the model/rev.
     presence: Option<Presence>,
-    /// Texture decode/crop memo across puppet rebuilds — the rebuild runs on
-    /// every edit and must not re-decode unchanged textures.
-    tex_cache: TexturePrepCache,
 }
 
 struct HistoryEntry {
@@ -133,16 +129,13 @@ impl Session {
             redo: Vec::new(),
             history_bytes: 0,
             puppet: None,
-            puppet_dirty: true,
             snapshot: None,
             presence: None,
-            tex_cache: TexturePrepCache::default(),
         }
     }
 
     fn touch(&mut self) {
         self.rev += 1;
-        self.puppet_dirty = true;
     }
 
     fn node_id(&self, handle: NodeRef) -> Result<NodeId, EditorError> {
@@ -269,21 +262,22 @@ impl Session {
         self.rev != self.saved_rev
     }
 
-    fn puppet(&mut self) -> Result<&mut LegacyPuppet, EditorError> {
-        if self.puppet.is_none() || self.puppet_dirty {
-            let file = self.model.to_legacy()?;
-            let mut built = from_legacy_cached(&file, 0, &mut self.tex_cache)
-                .map_err(|e| EditorError::Preview(e.to_string()))?;
+    /// The session's puppet and the model it animates, baked on first use and
+    /// rebaked by [`Puppet::sync`] when the model has moved since.
+    fn puppet(&mut self) -> (&Model, &mut Puppet) {
+        // Destructured so the model and the puppet are two borrows of two
+        // fields rather than one of the session.
+        let Self { model, puppet, .. } = self;
+        let puppet = puppet.get_or_insert_with(|| {
+            let mut built = Puppet::new(model);
             // Frozen physics keeps the authoring preview deterministic (the
             // dt=0 tick can't integrate anyway) and lets physics-driven
             // params be posed by hand.
             built.set_physics_enabled(false);
-            self.puppet = Some(built);
-            self.puppet_dirty = false;
-        }
-        self.puppet
-            .as_mut()
-            .ok_or_else(|| EditorError::Preview("puppet build failed".into()))
+            built
+        });
+        puppet.sync(model);
+        (model, puppet)
     }
 }
 
@@ -457,7 +451,7 @@ impl Editor {
                 // multi-step commands can fail midway through mutating.
                 session.model = snapshot;
                 session.rev = before;
-                session.puppet_dirty = true;
+                session.puppet = None;
             }
         }
         result
@@ -502,8 +496,7 @@ impl Editor {
         presence
     }
 
-    /// Fold a pose keyed by this session's scalar param names into the 2-D
-    /// names the preview puppet has. See [`fold_pose`].
+    /// [`fold_pose`] against this session's model.
     pub fn fold_pose(
         &self,
         id: SessionId,
@@ -512,17 +505,19 @@ impl Editor {
         self.with_model(id, |model, _| fold_pose(model, pose))
     }
 
-    /// Run `f` with the session's built puppet, rebuilding it lazily if the
-    /// document changed. The in-process GUI viewport renders it on eframe's own
-    /// wgpu device (no readback); the puppet never leaves the session lock.
+    /// Run `f` with the session's model and the puppet animating it, baking
+    /// the puppet lazily and rebaking it if the model changed. The in-process
+    /// GUI viewport renders them on eframe's own wgpu device (no readback);
+    /// neither leaves the session lock.
     pub fn with_puppet<R>(
         &self,
         id: SessionId,
-        f: impl FnOnce(&mut LegacyPuppet) -> R,
+        f: impl FnOnce(&Model, &mut Puppet) -> R,
     ) -> Result<R, EditorError> {
         let session = self.session(id)?;
         let mut s = lock(&session);
-        Ok(f(s.puppet()?))
+        let (model, puppet) = s.puppet();
+        Ok(f(model, puppet))
     }
 
     fn dispatch(&self, cmd: Command) -> Result<ResponseBody, EditorError> {
@@ -1366,22 +1361,26 @@ impl Editor {
                 .join("catchlight-editor")
                 .join(format!("preview-{}-{seq}.png", session.0)),
         };
-        let pose: Vec<(String, Vec2)> = params
+        let named: Vec<(String, Vec2)> = params
             .into_iter()
             .map(|p| (p.name, Vec2::new(p.x, p.y)))
             .collect();
-        let pose = self.fold_pose(session, &pose)?;
 
         let handle = self.session(session)?;
-        let (mut puppet, rev) = {
+        // The model is cloned rather than borrowed so the session lock is not
+        // held across the GPU render; a clone is a shallow copy sharing every
+        // heavy leaf, and it carries the same identity and generation, so the
+        // puppet and the cache accept it as the model they were built from.
+        let (model, mut puppet, rev) = {
             let mut s = lock(&handle);
-            s.puppet()?;
+            s.puppet();
             let puppet = s
                 .puppet
                 .take()
                 .ok_or_else(|| EditorError::Preview("puppet build failed".into()))?;
-            (puppet, s.rev)
+            (s.model.clone(), puppet, s.rev)
         };
+        let pose = pose_by_name(&model, &named);
 
         let render_result = (|| {
             let mut prev = lock(&self.preview);
@@ -1393,6 +1392,8 @@ impl Editor {
                 .as_mut()
                 .ok_or_else(|| EditorError::Preview("renderer unavailable".into()))?;
             pr.render_png(
+                session,
+                &model,
                 &mut puppet,
                 &pose,
                 width,
@@ -1407,7 +1408,6 @@ impl Editor {
             let mut s = lock(&handle);
             if s.rev == rev && s.puppet.is_none() {
                 s.puppet = Some(puppet);
-                s.puppet_dirty = false;
             }
         }
         render_result?;
@@ -1437,11 +1437,47 @@ use transport::{
     MAX_SOCKET_CONNECTIONS,
 };
 
-/// v0 bridge (cl-32i.14): the preview puppet is built by flattening the model
-/// to `.clm`, which puts a `<n>.x` / `<n>.y` param pair back together as one
-/// 2-D param named `<n>`. A pose keyed by the model's scalar param names has
-/// to be folded the same way or it would name a param the puppet does not
-/// have. Params that are not half of a pair pass straight through.
+/// The pose `named` describes, keyed by Id.
+///
+/// The protocol still names params — its handles are Ids only for nodes,
+/// params and textures, and a pose is not one (cl-32i.12 changes that). A
+/// model's params are scalar, so a name that was one 2-D param upstream is
+/// looked up as the split pair `<n>.x` / `<n>.y` and takes both components;
+/// a name that resolves directly takes `x` and ignores `y`. A name that
+/// resolves to nothing is dropped, exactly as posing an unknown param by name
+/// always was.
+pub fn pose_by_name(model: &Model, named: &[(String, Vec2)]) -> Pose {
+    let id_of = |name: &str| {
+        model
+            .param_ids()
+            .iter()
+            .find(|id| model.param(id).is_some_and(|p| p.name.as_str() == name))
+            .cloned()
+    };
+    let mut pose = Pose::new();
+    for (name, value) in named {
+        if let Some(id) = id_of(name) {
+            pose.set(id, value.x);
+            continue;
+        }
+        if let Some(id) = id_of(&format!("{name}.x")) {
+            pose.set(id, value.x);
+        }
+        if let Some(id) = id_of(&format!("{name}.y")) {
+            pose.set(id, value.y);
+        }
+    }
+    pose
+}
+
+/// Legacy 2-D re-pairing: fold a pose keyed by a model's scalar param names
+/// into the `<n>` names the *legacy* runtime's 2-D params carry, pairing
+/// `<n>.x` with `<n>.y` and passing everything else through.
+///
+/// Nothing in the tree calls this any more — the preview poses the model's
+/// own scalar params through [`pose_by_name`] — and it is kept, unchanged,
+/// only for a client still speaking the old shape. cl-32i.12 decides its
+/// fate with the rest of the protocol.
 pub fn fold_pose(model: &Model, pose: &[(String, Vec2)]) -> Vec<(String, Vec2)> {
     let value_of = |name: &str| pose.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
     let ids = model.param_ids();
@@ -2178,6 +2214,60 @@ mod tests {
             }
             other => panic!("preview failed: {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Preview request names params the way a person does, and the model's
+    /// params are scalar, so the name has to resolve against the model rather
+    /// than against a re-paired 2-D bridge. Pixels are what says it landed: a
+    /// preview that quietly rendered at rest would still write a valid PNG.
+    #[test]
+    fn a_preview_honours_the_pose_it_is_given() {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/models/welded_seam.clm"
+        ))
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("catchlight-posed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ed = Editor::new();
+        let s = ed.open_bytes("welded_seam", &bytes).unwrap();
+        let shot = |id: u64, name: &str, params: Vec<ParamValue>| -> Vec<u8> {
+            let out = dir.join(format!("{name}.png"));
+            match ed.handle(req(
+                id,
+                Command::Preview {
+                    session: s,
+                    params,
+                    // welded_seam spans 300x240 world units, well inside the
+                    // default 2000-unit camera.
+                    size: Some([256, 256]),
+                    out: Some(out.display().to_string()),
+                },
+            )) {
+                Reply::Ok {
+                    body: ResponseBody::Preview { .. },
+                    ..
+                } => std::fs::read(&out).unwrap(),
+                other => panic!("preview failed: {other:?}"),
+            }
+        };
+
+        let rest = shot(1, "rest", Vec::new());
+        let posed = shot(
+            2,
+            "posed",
+            vec![ParamValue {
+                name: "pull".into(),
+                x: 1.0,
+                y: 0.0,
+            }],
+        );
+        let back = shot(3, "back", Vec::new());
+
+        assert_ne!(rest, posed, "posing pull must change the preview");
+        assert_eq!(rest, back, "leaving pull out must render it at its default");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

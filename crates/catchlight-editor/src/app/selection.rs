@@ -41,7 +41,7 @@ impl App {
             (refs, parent_of)
         });
         let Ok((refs, parent_of)) = base else { return };
-        let core_of = editor.with_puppet(session, |p| {
+        let core_of = editor.with_puppet(session, |_model, p| {
             (0..refs.len())
                 .map(|i| p.node_for_uuid(i as u32).map(|id| id.0).unwrap_or(u32::MAX))
                 .collect::<Vec<u32>>()
@@ -96,7 +96,9 @@ impl App {
         };
         let transforms = &viewport.transforms;
         self.editor
-            .with_puppet(session, |p| picking::pick_all(p, transforms, world))
+            .with_puppet(session, |model, p| {
+                picking::pick_all(model, p, transforms, world)
+            })
             .unwrap_or_default()
     }
 
@@ -149,7 +151,9 @@ impl App {
         let transforms = &viewport.transforms;
         let bounds = self
             .editor
-            .with_puppet(session, |p| picking::world_bounds(p, transforms, &cores))
+            .with_puppet(session, |_model, p| {
+                picking::world_bounds(p, transforms, &cores)
+            })
             .ok()
             .flatten();
         if let Some((min, max)) = bounds {
@@ -181,7 +185,9 @@ impl App {
         let transforms = &viewport.transforms;
         let bounds = self
             .editor
-            .with_puppet(session, |p| picking::world_bounds(p, transforms, &cores))
+            .with_puppet(session, |_model, p| {
+                picking::world_bounds(p, transforms, &cores)
+            })
             .ok()
             .flatten();
         if let Some((min, max)) = bounds {
@@ -221,7 +227,7 @@ impl App {
         // Recording edits the *posed* value; document edits start from base.
         let (translation, rotation, scale) = if self.armed.is_some() {
             self.editor
-                .with_puppet(session, |p| {
+                .with_puppet(session, |_model, p| {
                     p.get(catchlight_core::NodeIdx(core)).map(|n| {
                         (
                             n.transform.translation.to_array(),

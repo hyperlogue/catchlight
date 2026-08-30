@@ -6,15 +6,23 @@
 //! readback. The same texture is re-rendered in place every time the pose,
 //! camera, document revision or preview state changes; egui samples its current
 //! GPU contents.
+//!
+//! **One renderer, one session's render cache.** A cache's slots name GPU
+//! state inside the renderer that prepared it, and the GUI keeps one renderer
+//! for every session it shows, so the cache is held beside the session it was
+//! prepared for and re-prepared when the shown session changes. Within one
+//! session a model edit is the cache's own business: `refresh` rebuilds when
+//! the model's generation moved.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use catchlight_core::{GlobalTransforms, LegacyPuppet, Vec2};
+use catchlight_core::{GlobalTransforms, Model, Puppet, Vec2};
+use catchlight_editor_server::pose_by_name;
 use catchlight_wgpu::{
-    collect_drawables, create_orthographic_camera_at, CompositePool, DrawableInfo,
-    FramebufferSnapshotPool, Pipelines, RenderList, StencilTarget, WgpuRenderer,
+    create_orthographic_camera_at, CompositePool, DrawableInfo, FramebufferSnapshotPool, Pipelines,
+    PrepareOptions, RenderCache, RenderList, StencilTarget, WgpuRenderer,
 };
 use eframe::egui;
 use eframe::egui_wgpu::RenderState;
@@ -43,9 +51,10 @@ pub(crate) struct NodePreview {
     pub opacity: Option<f32>,
 }
 
-/// Isolate is a part filter. Composite slots stay only while they still
-/// have something to blit — dropping them would leave their Parts in
-/// `composite_children` with nothing walking that map.
+/// Isolate is a part filter, over the *mesh* slots a render list names its
+/// parts by. Composite slots stay only while they still have something to
+/// blit — dropping them would leave their Parts in `composite_children` with
+/// nothing walking that map.
 fn retain_isolated(render_list: &mut RenderList, allowed: &HashSet<u32>) {
     let keep_part = |d: &DrawableInfo| match d {
         DrawableInfo::Part { mesh_id, .. } => allowed.contains(mesh_id),
@@ -81,10 +90,13 @@ fn retain_isolated(render_list: &mut RenderList, allowed: &HashSet<u32>) {
 
 pub(crate) struct ViewportRenderer {
     renderer: WgpuRenderer,
-    /// (session, rev) the puppet buffers were last uploaded for — mesh and
-    /// texture uploads only happen when the document actually changed; pose,
-    /// camera and preview changes reuse them.
-    uploaded: Option<(u64, u64)>,
+    /// The session this cache was prepared for, and the cache. A model edit
+    /// within the session is the cache's own generation gate; a different
+    /// session needs its own slots in this renderer, so it re-prepares.
+    cache: Option<(u64, RenderCache)>,
+    /// The transforms the last render evaluated, copied out of the puppet so
+    /// the GUI can read them (picking, gizmo placement, selection bounds)
+    /// without taking the session lock.
     pub transforms: GlobalTransforms,
     target: wgpu::Texture,
     view: wgpu::TextureView,
@@ -118,7 +130,7 @@ impl ViewportRenderer {
         );
         Self {
             renderer,
-            uploaded: None,
+            cache: None,
             transforms: GlobalTransforms::new(),
             target,
             view,
@@ -141,8 +153,9 @@ impl ViewportRenderer {
     pub(crate) fn render(
         &mut self,
         rs: &RenderState,
-        puppet: &mut LegacyPuppet,
-        upload_key: (u64, u64),
+        session: u64,
+        model: &Model,
+        puppet: &mut Puppet,
         pose: &[(String, Vec2)],
         previews: &[NodePreview],
         scratch_deform: Option<&(u32, Vec<(usize, Vec2)>)>,
@@ -157,35 +170,50 @@ impl ViewportRenderer {
             self.resize(rs, width, height);
         }
 
-        if self.uploaded != Some(upload_key) {
-            self.renderer
-                .upload_puppet(puppet)
-                .map_err(|e| anyhow!("upload: {e}"))?;
-            self.uploaded = Some(upload_key);
+        if !matches!(&self.cache, Some((held, _)) if *held == session) {
+            // The editor edits, so the decode memo earns its copy: a rebuild
+            // after a keystroke re-uploads without re-decoding.
+            let cache = RenderCache::prepare(
+                &mut self.renderer,
+                model,
+                PrepareOptions {
+                    texture_halvings: 0,
+                    memoize_textures: true,
+                },
+            )
+            .map_err(|e| anyhow!("prepare: {e}"))?;
+            self.cache = Some((session, cache));
         }
-        puppet.apply_pose_overlay(pose);
-        puppet.tick(&mut self.transforms, glam::Mat4::IDENTITY, 0.0);
+        let Some((_, cache)) = self.cache.as_mut() else {
+            return Err(anyhow!("render cache unavailable"));
+        };
+
+        puppet.apply_pose(&pose_by_name(model, pose));
+        puppet.tick(model, 0.0);
         if !previews.is_empty() {
-            // Re-fold the transform-dependent pipeline stages with the preview
-            // in place (the manual tick tail from AGENTS.md): the tc filter
-            // and MG deform propagation must see the previewed transforms, or
-            // children of translate-children groups render at stale positions
-            // until the commit rebuilds the puppet.
-            puppet.reset_dynamic_state();
-            puppet.reset_deforms();
-            puppet.apply_params();
-            apply_previews(puppet, previews);
-            puppet.compute_transforms(&mut self.transforms);
-            puppet.apply_translate_children_filter(&self.transforms);
-            puppet.compute_transforms(&mut self.transforms);
-            puppet.propagate_mesh_group_deforms(&self.transforms);
-            puppet.apply_welds(&self.transforms);
-            puppet.combine_deforms();
+            // Re-fold with the preview in place: the tc filter and MG deform
+            // propagation must see the previewed transforms, or children of
+            // translate-children groups render at stale positions until the
+            // commit rebakes the puppet.
+            puppet.refold_with_node_edits(|edits| apply_previews(edits, previews));
         }
         if let Some((core, deltas)) = scratch_deform {
             apply_scratch_deform(puppet, *core, deltas);
         }
-        self.renderer.sync_deforms(puppet);
+        self.transforms.clone_from(puppet.transforms());
+        cache
+            .refresh(&mut self.renderer, model, puppet)
+            .map_err(|e| anyhow!("refresh: {e}"))?;
+        let mut render_list = catchlight_wgpu::collect(cache, puppet);
+        if let Some(allowed) = isolate {
+            // `isolate` names nodes; a render list names its parts by mesh
+            // slot, and the two numberings are not the same.
+            let allowed: HashSet<u32> = allowed
+                .iter()
+                .filter_map(|&node| cache.mesh_slot_of_node(node))
+                .collect();
+            retain_isolated(&mut render_list, &allowed);
+        }
         let aspect = width as f32 / height as f32;
         self.renderer.begin_camera_submit();
         self.renderer.update_camera(create_orthographic_camera_at(
@@ -193,10 +221,6 @@ impl ViewportRenderer {
             aspect,
             camera.center,
         ));
-        let mut render_list = collect_drawables(puppet, &self.transforms);
-        if let Some(allowed) = isolate {
-            retain_isolated(&mut render_list, allowed);
-        }
 
         let mut encoder =
             self.renderer
@@ -266,33 +290,31 @@ impl ViewportRenderer {
     }
 }
 
-/// Write vertex-drag deltas into the part's scratch deform source and
-/// re-combine, so the scratch deform stacks on the posed deform exactly like the
-/// committed keypoint will.
-fn apply_scratch_deform(puppet: &mut LegacyPuppet, core: u32, deltas: &[(usize, Vec2)]) {
-    use catchlight_core::deform::DeformSource;
-    let _ = puppet.update_deform_source(
-        catchlight_core::NodeIdx(core),
-        DeformSource::Scratch,
-        |buf| {
-            buf.fill(Vec2::ZERO);
-            for &(vertex, delta) in deltas {
-                if let Some(slot) = buf.get_mut(vertex) {
-                    *slot = delta;
-                }
-            }
-        },
-    );
+/// Write vertex-drag deltas into the part's scratch deform and re-combine, so
+/// the scratch deform stacks on the posed deform exactly like the committed
+/// keypoint will.
+fn apply_scratch_deform(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]) {
+    let id = catchlight_core::NodeIdx(core);
+    let Some(len) = puppet.combined_deform(id).map(<[Vec2]>::len) else {
+        return;
+    };
+    let mut offsets = vec![Vec2::ZERO; len];
+    for &(vertex, delta) in deltas {
+        if let Some(slot) = offsets.get_mut(vertex) {
+            *slot = delta;
+        }
+    }
+    puppet.set_scratch_deform(id, &offsets);
     puppet.combine_deforms();
 }
 
-/// Write preview overrides into the puppet's post-`tick` working state.
-/// `tick` starts from base state every frame, so previews never accumulate.
-fn apply_previews(puppet: &mut LegacyPuppet, previews: &[NodePreview]) {
+/// Write preview overrides over the frame the pose fold produced. The next
+/// fold starts from the model's authored values, so previews never accumulate.
+fn apply_previews(edits: &mut catchlight_core::NodeEdits<'_>, previews: &[NodePreview]) {
     for pv in previews {
         let id = catchlight_core::NodeIdx(pv.core_id);
         if pv.translation.is_some() || pv.rotation.is_some() || pv.scale.is_some() {
-            let _ = puppet.update_node_transform(id, |transform| {
+            edits.transform(id, |transform| {
                 if let Some(t) = pv.translation {
                     transform.translation = glam::Vec3::from_array(t);
                 }
@@ -305,10 +327,10 @@ fn apply_previews(puppet: &mut LegacyPuppet, previews: &[NodePreview]) {
             });
         }
         if let Some(z) = pv.z_order {
-            puppet.set_node_z_order(id, z);
+            edits.set_z_order(id, z);
         }
         if let Some(op) = pv.opacity {
-            puppet.set_node_opacity(id, op);
+            edits.set_opacity(id, op);
         }
     }
 }
@@ -358,14 +380,15 @@ mod tests {
             height: 600.0,
         };
 
-        let mut shot = |rev: u64, pose: &[(String, Vec2)]| -> Vec<u8> {
+        let mut shot = |pose: &[(String, Vec2)]| -> Vec<u8> {
             editor
-                .with_puppet(session, |puppet| {
+                .with_puppet(session, |model, puppet| {
                     viewport
                         .render(
                             &rs,
+                            session.0,
+                            model,
                             puppet,
-                            (1, rev),
                             pose,
                             &[],
                             None,
@@ -381,10 +404,10 @@ mod tests {
             pollster::block_on(read_texture_to_rgba(&device, &queue, &texture, w, h)).unwrap()
         };
 
-        let rest = shot(1, &[]);
-        let posed = shot(1, &[("pull".into(), Vec2::new(1.0, 0.0))]);
+        let rest = shot(&[]);
+        let posed = shot(&[("pull".into(), Vec2::new(1.0, 0.0))]);
         assert_ne!(rest, posed, "posing pull must change the render");
-        let back = shot(1, &[("pull".into(), Vec2::new(0.0, 0.0))]);
+        let back = shot(&[("pull".into(), Vec2::new(0.0, 0.0))]);
         if let Ok(dir) = std::env::var("VIEWPORT_TEST_DUMP") {
             for (name, img) in [("rest", &rest), ("posed", &posed), ("back", &back)] {
                 image::save_buffer(
@@ -398,6 +421,72 @@ mod tests {
             }
         }
         assert_eq!(rest, back, "returning to rest must restore the render");
+    }
+
+    /// Isolate names *nodes*, while a render list names its parts by mesh
+    /// slot, and the two numberings are not the same: mesh slots are dense
+    /// and skip every node without one. Isolating each part in turn has to
+    /// draw that part — passing a node slot through as a mesh slot draws the
+    /// wrong part for some and nothing at all for the last.
+    #[test]
+    fn isolating_each_part_in_turn_draws_it() {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/models/welded_seam.clm"
+        ))
+        .unwrap();
+        let editor = catchlight_editor_server::Editor::new();
+        let session = editor.open_bytes("welded_seam", &bytes).unwrap();
+        let rs = render_state();
+        let mut viewport = ViewportRenderer::new(&rs, 256, 256);
+        let camera = EditorCamera {
+            center: Vec2::ZERO,
+            height: 600.0,
+        };
+
+        let parts: Vec<u32> = editor
+            .with_puppet(session, |_model, puppet| {
+                puppet
+                    .iter()
+                    .filter(|(_, node)| matches!(node.kind, catchlight_core::NodeKind::Part(_)))
+                    .map(|(idx, _)| idx.0)
+                    .collect()
+            })
+            .unwrap();
+        assert_eq!(parts.len(), 2, "welded_seam is two parts");
+
+        let mut shot = |isolate: Option<&HashSet<u32>>| -> Vec<u8> {
+            editor
+                .with_puppet(session, |model, puppet| {
+                    viewport
+                        .render(
+                            &rs,
+                            session.0,
+                            model,
+                            puppet,
+                            &[],
+                            &[],
+                            None,
+                            &camera,
+                            256,
+                            256,
+                            isolate,
+                        )
+                        .unwrap();
+                })
+                .unwrap();
+            let (device, queue, texture, w, h) = viewport.snapshot_source();
+            pollster::block_on(read_texture_to_rgba(&device, &queue, &texture, w, h)).unwrap()
+        };
+
+        let blank = shot(Some(&HashSet::new()));
+        let both = shot(None);
+        assert_ne!(both, blank, "the model draws something to begin with");
+        for &part in &parts {
+            let only = shot(Some(&HashSet::from([part])));
+            assert_ne!(only, blank, "isolating node slot {part} drew nothing");
+            assert_ne!(only, both, "isolating node slot {part} drew everything");
+        }
     }
 
     fn dummy_part(id: u32) -> DrawableInfo {
