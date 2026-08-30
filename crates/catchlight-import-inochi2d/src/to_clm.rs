@@ -78,6 +78,18 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         })
         .unwrap_or_default();
 
+    // An inochi2d clip has no `.clm` counterpart yet, so it is dropped. Say
+    // so rather than losing it in silence: `ClmAnimation` exists on the wire,
+    // and carrying these across is a decision waiting on a rig to test it
+    // against.
+    if obj.get("animations").is_some_and(|a| match a {
+        serde_json::Value::Object(map) => !map.is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        _ => false,
+    }) {
+        tracing::warn!("dropping this model's animations: the import does not carry them yet");
+    }
+
     // Flatten the node tree, recording each node's parent position and a
     // uuid → position map for resolving cross-references.
     let mut flat: Vec<(SchemaNode, Option<u32>)> = Vec::new();

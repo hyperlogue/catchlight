@@ -36,7 +36,7 @@
 //! Rotation Y and scale are **not** reflected, and neither are the non-Y
 //! transform components.
 //!
-//! `the_import_reflects_exactly_the_y_bearing_fields` (`to_legacy.rs`) guards
+//! `the_import_reflects_exactly_the_y_bearing_fields` (`to_clm.rs`) guards
 //! this on every checkout: it runs a hand-authored model through the reader
 //! and asserts the absolute authored→imported values, with a non-reflected
 //! control beside every reflected field — so a missing negation and a doubled
@@ -55,6 +55,12 @@
 //! model unchanged; decoding, the alpha crop and the UV remap belong to
 //! [`catchlight_core::texture`], which every model goes through whether it
 //! was imported or authored.
+//!
+//! **What is dropped**, because catchlight does not model it: meta, groups,
+//! automation, cameras, emissive and bump texture slots, `emissionStrength`,
+//! and a source node's `uuid`. Animations are dropped too, with a warning —
+//! `.clm` has a section for them and carrying them across is an open
+//! decision, not a limit of the format.
 
 pub(crate) mod error;
 pub mod inx;
