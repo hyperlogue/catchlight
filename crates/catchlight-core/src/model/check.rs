@@ -1,10 +1,11 @@
 //! Lints that surface rig problems an editor (or an agent) can self-correct on.
 //! These are warnings, not errors, and most are cosmetic. Three are not:
 //!
-//! - A **colour binding on a mesh group** flattens to a file `catchlight_core`
-//!   then refuses to load (a mesh group is never drawn, so it has no colour
-//!   for the binding to fold into). [`Model::add_binding`] refuses to author
-//!   one, so only a file written by an older tool can still carry it.
+//! - A **colour binding on a mesh group** cannot be written and cannot be
+//!   loaded (a mesh group is never drawn, so it has no colour for the binding
+//!   to fold into). [`Model::add_binding`] refuses to author one and the
+//!   `.clm` reader refuses a file carrying one, so the one way in is
+//!   [`Model::update_node`] swapping a bound node's whole kind.
 //! - A **weld naming a seam its part no longer carries**, or **two seams
 //!   holding different slots**, cannot be written at all: [`Model::to_clm_file`]
 //!   refuses. The seam methods keep both out — but [`Model::update_node`] can
@@ -292,9 +293,10 @@ mod tests {
         assert!(matches!(m.to_clm_file(), Err(ModelError::UnknownSeam)));
     }
 
-    /// The editor refuses to author a colour binding on a mesh group, but a
-    /// `.clm` written by an older tool can carry one — and the runtime will not
-    /// load that model back, so `check` has to say so.
+    /// The editor refuses to author a colour binding on a mesh group and the
+    /// `.clm` reader refuses a file carrying one — but `update_node` can turn
+    /// a legitimately bound part *into* a mesh group, and the model then
+    /// cannot be saved at all, so `check` has to say so.
     #[test]
     fn check_flags_a_color_binding_on_a_mesh_group() {
         let mut hex = SeededHex::new(9);
@@ -343,23 +345,29 @@ mod tests {
             Err(ModelError::ColorOnMeshGroup)
         ));
 
-        // ...so only a file can bring one in. Round-trip through `.clm` with
-        // the opacity binding spliced into the param's binding list.
-        let mut file = m.to_legacy().unwrap();
-        let group_index = file
-            .doc
-            .nodes
-            .iter()
-            .position(|n| n.name == "lattice")
-            .expect("the mesh group is in the arena") as u32;
-        file.doc.params[0]
-            .bindings
-            .push(crate::formats::legacy::LegacyBinding {
-                node: group_index,
-                interpolate_mode: crate::interpolate::InterpolateMode::Linear,
-                values: crate::formats::clm::ClmBindingValues::Opacity(Default::default()),
-            });
-        let m = Model::from_legacy(&file).unwrap();
+        // ...so the way in is a part that legitimately carries one becoming a
+        // mesh group afterwards.
+        let part = m
+            .add_node(
+                &root,
+                ModelNode::new("skin", ModelNodeKind::Part(ModelPart::new(quad()))),
+                &mut hex,
+            )
+            .unwrap();
+        m.add_binding(&BindingKey::new(
+            m.param_ids()[0].clone(),
+            part.clone(),
+            BindingTarget::Scalar(ScalarTarget::Opacity),
+        ))
+        .unwrap();
+        m.update_node(&part, |n| {
+            n.kind = ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()))
+        })
+        .unwrap();
+        assert!(
+            m.to_clm_file().is_err() || Model::from_clm_bytes(&m.to_clm_bytes().unwrap()).is_err(),
+            "a model in this state cannot make the round trip"
+        );
 
         let warnings = m.check();
         let w = warnings
