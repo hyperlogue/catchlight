@@ -84,7 +84,7 @@ impl Build {
     }
 
     pub fn root(&self) -> NodeId {
-        self.model.root().clone()
+        self.model.root().expect("a complete model").clone()
     }
 
     pub fn texture(&mut self, texture: ModelTexture) -> TexId {
