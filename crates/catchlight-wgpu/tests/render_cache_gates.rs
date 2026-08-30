@@ -168,3 +168,28 @@ fn refreshing_with_a_puppet_from_another_generation_is_a_programmer_error() {
         let _ = cache.refresh(&mut ctx.renderer, &model, &puppet);
     });
 }
+
+/// Two models built the same way sit at the same generation, so the
+/// generation gate alone would let a cache prepared from one be refreshed
+/// against the other and never notice. The model identity is what catches it.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "prepared from a different model")]
+fn refreshing_a_cache_against_another_model_is_a_programmer_error() {
+    pollster::block_on(async {
+        let mut ctx = context().await;
+        let (prepared_from, _) = one_quad_model();
+        let (other, _) = one_quad_model();
+        assert_eq!(
+            prepared_from.generation(),
+            other.generation(),
+            "the two models are indistinguishable by generation",
+        );
+        let mut cache =
+            RenderCache::prepare(&mut ctx.renderer, &prepared_from, PrepareOptions::default())
+                .expect("prepare");
+        let puppet = Puppet::new(&other);
+
+        let _ = cache.refresh(&mut ctx.renderer, &other, &puppet);
+    });
+}

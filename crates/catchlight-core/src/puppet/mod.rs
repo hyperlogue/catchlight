@@ -23,9 +23,10 @@
 //!   compares it first and rebakes when it moved. Nothing else may assume the
 //!   arena still matches the model — which is also what makes installing an
 //!   addon between two frames cost one rebake and no caller changes. The
-//!   counter is per model, so ticking one puppet against *two different*
-//!   models that happen to share a generation is the one thing the gate cannot
-//!   catch: a puppet animates the model it was built from.
+//!   counter says nothing about *which* model it counts, so a puppet also
+//!   records [`Model::identity`] and `debug_assert!`s it on every call that
+//!   takes a `&Model`: a puppet animates the model it was built from, and two
+//!   models sitting at the same generation are otherwise indistinguishable.
 //! - **A rebake carries the pose and the drivers, by Id.** Param values,
 //!   driver contributions and every `SimplePhysics` runtime field are saved
 //!   against `ParamId` / `NodeId`, the arena is rebuilt, and they are put back
@@ -141,6 +142,8 @@ impl Located {
 /// binding grid with the original through `Arc` and copies only the frame.
 #[derive(Clone)]
 pub struct Puppet {
+    /// The `Model::identity` of the model this puppet animates.
+    model_identity: u64,
     /// The `Model::generation` this puppet is baked against.
     baked_generation: u64,
     arena: Arena,
@@ -196,6 +199,7 @@ impl Puppet {
     /// Bake `model` and record the generation it was baked at.
     pub fn new(model: &Model) -> Self {
         let mut puppet = Self {
+            model_identity: model.identity(),
             baked_generation: model.generation(),
             arena: Arena::new(),
             transforms: GlobalTransforms::new(),
@@ -230,9 +234,24 @@ impl Puppet {
         self.baked_generation
     }
 
+    /// The [`Model::identity`] of the model this puppet animates.
+    pub fn model_identity(&self) -> u64 {
+        self.model_identity
+    }
+
     /// Rebake if `model` moved since the last bake, carrying the pose and the
     /// drivers across by Id.
+    ///
+    /// `model` must be the model this puppet was built from — a puppet
+    /// animates one model, and handing it another is a programmer error the
+    /// identity check catches.
     pub fn sync(&mut self, model: &Model) {
+        debug_assert_eq!(
+            self.model_identity,
+            model.identity(),
+            "a puppet was driven against a model it was not built from; \
+             a puppet animates the model it was baked from",
+        );
         if self.baked_generation == model.generation() {
             return;
         }
@@ -1147,5 +1166,35 @@ impl Puppet {
             hi,
             frac: frac(normed, p.key_positions[lo], p.key_positions[hi]),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two freshly built models sit at the same generation, so the generation
+    /// gate alone would let a puppet tick against the wrong one and read a
+    /// tree that is not the one it baked. The identity is what catches it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a puppet was driven against a model it was not built from")]
+    fn ticking_against_another_model_at_the_same_generation_is_a_programmer_error() {
+        let a = Model::new();
+        let b = Model::new();
+        assert_eq!(a.generation(), b.generation());
+        let mut puppet = Puppet::new(&a);
+        puppet.tick(&b, 0.0);
+    }
+
+    /// The negative: a clone is the same model, because that is what an undo
+    /// snapshot is. Restoring one must not invalidate a puppet.
+    #[test]
+    fn a_clone_of_the_model_still_drives_the_puppet() {
+        let model = Model::new();
+        let snapshot = model.clone();
+        let mut puppet = Puppet::new(&model);
+        puppet.tick(&snapshot, 0.0);
+        assert_eq!(puppet.model_identity(), snapshot.identity());
     }
 }

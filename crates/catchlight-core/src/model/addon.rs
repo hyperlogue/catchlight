@@ -563,6 +563,9 @@ impl Model {
             .collect();
 
         Model {
+            // Extracting builds a model of its own, so it draws its own
+            // identity: a puppet of the base model is not a puppet of this.
+            identity: super::next_identity(),
             generation: 0,
             physics: self.physics,
             welds: self

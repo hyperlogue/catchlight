@@ -16,11 +16,13 @@
 //!   `Model::generation()` when it prepares; `refresh` compares it and rebuilds
 //!   when it moved. A rebuild is currently the whole cache — per-node
 //!   revisions are a later change, and only if profiling asks for one.
-//! - **A puppet and a model handed to `refresh` together must agree.** The
-//!   puppet's `baked_generation()` is the model's generation at its last bake,
-//!   so a mismatch means the caller ticked against one model and refreshed
-//!   against another. It is a programmer error and `debug_assert!`ed, not
-//!   silently patched: the two would disagree about what a `NodeIdx` names.
+//! - **A cache, a puppet and a model handed to `refresh` together must
+//!   agree.** All three carry the model's identity and its generation: the
+//!   identity says they are the same model at all, the generation says they
+//!   are the same *state* of it. A mismatch means the caller ticked against
+//!   one model and refreshed against another. It is a programmer error and
+//!   `debug_assert!`ed, not silently patched: the two would disagree about
+//!   what a `NodeIdx` names.
 //! - **The Idx arena is this crate's, and it is dense.** A `NodeIdx` is a
 //!   node's position in the model's pre-order walk, which is exactly the
 //!   puppet's arena order, so the two index each other with no lookup. A
@@ -76,6 +78,8 @@ pub struct PrepareOptions {
 /// Prepared from a [`Model`], refreshed from a [`Puppet`], collected into a
 /// [`RenderList`]. Owns no simulation and no authored data.
 pub struct RenderCache {
+    /// The `Model::identity` of the model this cache is derived from.
+    identity: u64,
     /// The `Model::generation` this cache was last built from.
     generation: u64,
     options: PrepareOptions,
@@ -100,6 +104,7 @@ pub struct RenderCache {
 impl std::fmt::Debug for RenderCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenderCache")
+            .field("identity", &self.identity)
             .field("generation", &self.generation)
             .field("options", &self.options)
             .field("nodes", &self.node_ids.len())
@@ -121,6 +126,7 @@ impl RenderCache {
         options: PrepareOptions,
     ) -> RendererResult<Self> {
         let mut cache = Self {
+            identity: model.identity(),
             generation: model.generation(),
             options,
             node_ids: Vec::new(),
@@ -136,6 +142,11 @@ impl RenderCache {
     /// The `Model::generation` this cache was last built from.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The [`Model::identity`] of the model this cache is derived from.
+    pub fn model_identity(&self) -> u64 {
+        self.identity
     }
 
     /// How many textures this cache uploaded.
@@ -162,6 +173,18 @@ impl RenderCache {
         model: &Model,
         puppet: &Puppet,
     ) -> RendererResult<()> {
+        debug_assert_eq!(
+            self.identity,
+            model.identity(),
+            "refreshed a cache prepared from a different model; \
+             a cache is derived from the model it was prepared from",
+        );
+        debug_assert_eq!(
+            puppet.model_identity(),
+            model.identity(),
+            "refreshed a cache with a puppet built from a different model; \
+             tick the puppet against the model you refresh with",
+        );
         debug_assert_eq!(
             puppet.baked_generation(),
             model.generation(),
