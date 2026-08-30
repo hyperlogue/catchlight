@@ -38,7 +38,7 @@ use crate::camera::EditorCamera;
 use crate::gizmo::{Gizmo, GizmoEvent, GizmoMode, GizmoTarget};
 use crate::inspector::{
     inspector_ui, DrawableProps, InspectorAction, InspectorContext, InspectorData, InspectorKind,
-    MaskRow,
+    MaskRow, PhysicsPatch,
 };
 use crate::io::{IoEvent, IoQueue};
 use crate::mesh_edit::{MeshEditOutcome, MeshEditState};
@@ -2773,8 +2773,8 @@ impl App {
                     kind: p.kind,
                     map_mode: p.map_mode,
                     local_only: p.local_only,
-                    target_params: p.target_param.map(|t| vec![t]),
-                    clear_target_params: p.clear_target_param,
+                    target_params: p.target_params,
+                    clear_target_params: p.clear_target_params,
                     gravity: p.gravity,
                     length: p.length,
                     frequency: p.frequency,
@@ -2878,7 +2878,7 @@ fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
-            target_param: ph.target_params()[0].clone(),
+            target_params: ph.target_params().clone(),
             gravity: ph.gravity,
             length: ph.length,
             frequency: ph.frequency,

@@ -493,3 +493,69 @@ fn adding_two_params_makes_two_scalars_on_one_pad() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A driver writes two params, and the inspector edits both. Setting the
+/// second must not clear the first: the pair travels as one list, so a panel
+/// that sent only what changed would detach the other every time.
+#[test]
+fn the_physics_inspector_aims_a_driver_at_both_of_its_params() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let root = editor
+        .with_model(session, |m| m.root().cloned())
+        .unwrap()
+        .expect("a root");
+    let angle = add_param(&mut app, session, "swing.angle");
+    let length = add_param(&mut app, session, "swing.length");
+    let node = match app.send(Command::PhysicsAdd {
+        session,
+        parent: root,
+        name: Some("Pendulum".into()),
+        kind: "rigid".into(),
+        target_params: Vec::new(),
+        length: None,
+        gravity: None,
+        frequency: None,
+        angle_damping: None,
+        length_damping: None,
+    }) {
+        Reply::Ok {
+            body: ResponseBody::Node { node },
+            ..
+        } => node,
+        other => panic!("{other:?}"),
+    };
+    app.selection = vec![node.clone()];
+
+    let targets = |editor: &Editor| {
+        editor
+            .with_model(session, |m| match m.node(&node).map(|n| &n.kind) {
+                Some(catchlight_core::ModelNodeKind::SimplePhysics(ph)) => {
+                    ph.target_params().clone()
+                }
+                _ => panic!("not a physics node"),
+            })
+            .unwrap()
+    };
+
+    app.apply_inspector_action(InspectorAction::PhysicsCommit(PhysicsPatch {
+        target_params: Some(vec![angle.clone()]),
+        ..Default::default()
+    }));
+    assert_eq!(targets(&editor), [Some(angle.clone()), None]);
+
+    app.apply_inspector_action(InspectorAction::PhysicsCommit(PhysicsPatch {
+        target_params: Some(vec![angle.clone(), length.clone()]),
+        ..Default::default()
+    }));
+    assert_eq!(
+        targets(&editor),
+        [Some(angle), Some(length)],
+        "the second target must not cost the first",
+    );
+
+    app.apply_inspector_action(InspectorAction::PhysicsCommit(PhysicsPatch {
+        clear_target_params: true,
+        ..Default::default()
+    }));
+    assert_eq!(targets(&editor), [None, None]);
+}
