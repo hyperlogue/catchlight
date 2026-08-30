@@ -9,6 +9,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::id::ParamId;
+use crate::params::InterpolateMode;
+
 /// Alpha convention of a texture's stored bytes. The compile/preview step
 /// normalizes either representation to premultiplied linear color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,4 +125,55 @@ pub struct ClmCell<T> {
     pub x: u32,
     pub y: u32,
     pub value: T,
+}
+
+/// A named, timed sequence of param values: a length in frames, a lead-in
+/// played once, and a body that repeats.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClmAnimation {
+    #[serde(default)]
+    pub name: String,
+    /// Seconds per frame.
+    pub timestep: f32,
+    /// Length in frames.
+    pub length: i32,
+    /// Frame where the lead-in ends / looping restarts. -1 (or any value
+    /// outside `(0, length - 1)`) means the loop region starts at 0.
+    pub lead_in: i32,
+    /// Frame where the lead-out starts / looping wraps. -1 (or any value
+    /// outside `(0, length - 1)`) means the loop region ends at `length`.
+    pub lead_out: i32,
+    #[serde(default)]
+    pub lanes: Vec<ClmLane>,
+}
+
+impl Default for ClmAnimation {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            timestep: 1.0 / 60.0,
+            length: 0,
+            lead_in: -1,
+            lead_out: -1,
+            lanes: Vec::new(),
+        }
+    }
+}
+
+/// One animation's track over a single param. Params are scalar, so a lane
+/// names one and carries no axis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClmLane {
+    pub param: ParamId,
+    pub interpolation: InterpolateMode,
+    #[serde(default)]
+    pub keyframes: Vec<ClmKeyframe>,
+}
+
+/// A value the author set on a lane at one frame. `frame` is an integer frame
+/// index rather than a time; the animation's `timestep` converts it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClmKeyframe {
+    pub frame: i32,
+    pub value: f32,
 }
