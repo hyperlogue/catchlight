@@ -27,6 +27,7 @@ use super::arena::Arena;
 
 /// One param, flattened to the numbers the fold needs: where a value sits in
 /// `[min, max]` and which key positions bracket it.
+#[derive(Clone)]
 pub(super) struct BakedParam {
     pub(super) id: ParamId,
     pub(super) min: f32,
@@ -37,6 +38,7 @@ pub(super) struct BakedParam {
 
 /// One binding, resolved against the arena: which slot it writes, which param
 /// slots index its grid, and the grid itself.
+#[derive(Clone)]
 pub(super) struct BakedBinding {
     pub(super) node: NodeIdx,
     pub(super) target: BindingTarget,
