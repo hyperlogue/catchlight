@@ -59,10 +59,10 @@ pub(crate) enum InspectorKind {
         kind: PendulumKind,
         map_mode: PhysicsParamMapMode,
         local_only: bool,
-        /// The param the driver's angle writes. The model holds a second
-        /// (length) target this panel does not show; setting one from here
-        /// clears it, exactly as it always has.
-        target_param: Option<ParamId>,
+        /// The two params the driver writes. Which is which is the map mode's
+        /// business — a pendulum's output is one Vec2, and the mode says
+        /// whether its components are (angle, length) or (x, y).
+        target_params: [Option<ParamId>; 2],
         gravity: f32,
         length: f32,
         frequency: f32,
@@ -105,8 +105,11 @@ pub(crate) struct PhysicsPatch {
     pub kind: Option<String>,
     pub map_mode: Option<String>,
     pub local_only: Option<bool>,
-    pub target_param: Option<ParamId>,
-    pub clear_target_param: bool,
+    /// Both of the driver's targets, in order. The wire takes a list, so a
+    /// hole in the middle is not expressible — hence `target_slot_1_enabled`
+    /// in the UI below.
+    pub target_params: Option<Vec<ParamId>>,
+    pub clear_target_params: bool,
     pub gravity: Option<f32>,
     pub length: Option<f32>,
     pub frequency: Option<f32>,
@@ -275,7 +278,7 @@ pub(crate) fn inspector_ui(
             kind,
             map_mode,
             local_only,
-            target_param,
+            target_params,
             gravity,
             length,
             frequency,
@@ -290,7 +293,7 @@ pub(crate) fn inspector_ui(
                 *kind,
                 *map_mode,
                 *local_only,
-                target_param.clone(),
+                target_params.clone(),
                 *gravity,
                 *length,
                 *frequency,
@@ -390,7 +393,7 @@ fn physics_ui(
     kind: PendulumKind,
     map_mode: PhysicsParamMapMode,
     local_only: bool,
-    target_param: Option<ParamId>,
+    target_params: [Option<ParamId>; 2],
     gravity: f32,
     length: f32,
     frequency: f32,
@@ -459,31 +462,67 @@ fn physics_ui(
         }));
     }
 
-    let target_label = target_param
-        .as_ref()
-        .and_then(|t| ctx.params.iter().find(|(p, _)| p == t))
-        .map(|(_, n)| n.clone())
-        .unwrap_or_else(|| "(none)".into());
-    egui::ComboBox::from_label("target param")
-        .selected_text(target_label)
-        .show_ui(ui, |ui| {
-            if ui.button("(none)").clicked() {
-                out.push(InspectorAction::PhysicsCommit(PhysicsPatch {
-                    clear_target_param: true,
-                    ..Default::default()
-                }));
-                ui.close();
+    // A driver writes both components of its output, and the map mode names
+    // them. Setting one keeps the other: the command carries the whole pair.
+    let slot_labels = match map_mode {
+        PhysicsParamMapMode::XY => ["x param", "y param"],
+        PhysicsParamMapMode::YX => ["y param", "x param"],
+        PhysicsParamMapMode::AngleLength => ["angle param", "length param"],
+        PhysicsParamMapMode::LengthAngle => ["length param", "angle param"],
+    };
+    let name_of = |t: &Option<ParamId>| {
+        t.as_ref()
+            .and_then(|t| ctx.params.iter().find(|(p, _)| p == t))
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "(none)".into())
+    };
+    let set_slot = |slot: usize, param: Option<ParamId>| {
+        let mut pair = target_params.clone();
+        pair[slot] = param;
+        // The wire carries a list, so trailing empties just shorten it — and
+        // a hole before a filled slot cannot be sent at all, which is why the
+        // second combo waits for the first.
+        let list: Vec<ParamId> = pair.iter().flatten().cloned().collect();
+        if list.is_empty() {
+            PhysicsPatch {
+                clear_target_params: true,
+                ..Default::default()
             }
-            for (p, name) in ctx.params {
-                if ui.button(name).clicked() {
-                    out.push(InspectorAction::PhysicsCommit(PhysicsPatch {
-                        target_param: Some(p.clone()),
-                        ..Default::default()
-                    }));
-                    ui.close();
-                }
+        } else {
+            PhysicsPatch {
+                target_params: Some(list),
+                ..Default::default()
+            }
+        }
+    };
+    for (slot, label) in slot_labels.iter().enumerate() {
+        // Slot 1 needs slot 0 filled: `target_params` travels as a list.
+        let enabled = slot == 0 || target_params[0].is_some();
+        ui.add_enabled_ui(enabled, |ui| {
+            let combo = egui::ComboBox::from_label(*label)
+                .selected_text(name_of(&target_params[slot]))
+                .show_ui(ui, |ui| {
+                    if ui.button("(none)").clicked() {
+                        out.push(InspectorAction::PhysicsCommit(set_slot(slot, None)));
+                        ui.close();
+                    }
+                    for (p, name) in ctx.params {
+                        if ui.button(name).on_hover_text(p.as_str()).clicked() {
+                            out.push(InspectorAction::PhysicsCommit(set_slot(
+                                slot,
+                                Some(p.clone()),
+                            )));
+                            ui.close();
+                        }
+                    }
+                });
+            if !enabled {
+                combo
+                    .response
+                    .on_hover_text("the driver writes its first output first");
             }
         });
+    }
 
     let mut phys_drag = |ui: &mut egui::Ui, label: &str, v: f32, write: fn(f32) -> PhysicsPatch| {
         let mut val = v;
