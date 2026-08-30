@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use catchlight_core::{GlobalTransforms, NodeIdx, Puppet, Vec2};
+use catchlight_core::{GlobalTransforms, LegacyPuppet, NodeIdx, Vec2};
 use catchlight_wgpu::{
     collect_drawables, create_orthographic_camera_at, CompositePool, DrawableInfo,
     FramebufferSnapshotPool, Pipelines, RenderList, StencilTarget, WgpuRenderer,
@@ -141,7 +141,7 @@ impl ViewportRenderer {
     pub(crate) fn render(
         &mut self,
         rs: &RenderState,
-        puppet: &mut Puppet,
+        puppet: &mut LegacyPuppet,
         upload_key: (u64, u64),
         pose: &[(String, Vec2)],
         previews: &[NodePreview],
@@ -269,7 +269,7 @@ impl ViewportRenderer {
 /// Write vertex-drag deltas into the part's scratch deform source and
 /// re-combine, so the scratch deform stacks on the posed deform exactly like the
 /// committed keypoint will.
-fn apply_scratch_deform(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]) {
+fn apply_scratch_deform(puppet: &mut LegacyPuppet, core: u32, deltas: &[(usize, Vec2)]) {
     use catchlight_core::deform::DeformSource;
     let _ = puppet.update_deform_source(
         catchlight_core::NodeIdx(core),
@@ -288,7 +288,7 @@ fn apply_scratch_deform(puppet: &mut Puppet, core: u32, deltas: &[(usize, Vec2)]
 
 /// Write preview overrides into the puppet's post-`tick` working state.
 /// `tick` starts from base state every frame, so previews never accumulate.
-fn apply_previews(puppet: &mut Puppet, previews: &[NodePreview]) {
+fn apply_previews(puppet: &mut LegacyPuppet, previews: &[NodePreview]) {
     for pv in previews {
         let id = catchlight_core::NodeIdx(pv.core_id);
         if pv.translation.is_some() || pv.rotation.is_some() || pv.scale.is_some() {

@@ -2394,7 +2394,7 @@ impl WgpuRenderer {
 
     pub fn upload_puppet(
         &mut self,
-        puppet: &catchlight_core::Puppet,
+        puppet: &catchlight_core::LegacyPuppet,
     ) -> RendererResult<(usize, usize)> {
         let _span = tracing::trace_span!("upload_puppet").entered();
         let texture_count = puppet.textures().len();
@@ -2405,8 +2405,8 @@ impl WgpuRenderer {
 
     /// For every Part/MeshGroup with an active DeformStack, push the
     /// combined per-vertex deform into its GPU deform_buffer. Call
-    /// after `Puppet::combine_deforms()` and before `render_list()`.
-    pub fn sync_deforms(&mut self, puppet: &catchlight_core::Puppet) {
+    /// after `LegacyPuppet::combine_deforms()` and before `render_list()`.
+    pub fn sync_deforms(&mut self, puppet: &catchlight_core::LegacyPuppet) {
         let _span = tracing::trace_span!("sync_deforms").entered();
         use catchlight_core::NodeKind;
         let active = puppet.iter_deform_nodes().filter_map(|(node_id, node)| {
@@ -2556,7 +2556,7 @@ impl WgpuRenderer {
     /// bevy prepare step log the error and drop the whole upload).
     pub fn upload_puppet_meshes(
         &mut self,
-        puppet: &catchlight_core::Puppet,
+        puppet: &catchlight_core::LegacyPuppet,
     ) -> RendererResult<usize> {
         use catchlight_core::NodeKind;
         let mut mesh_count = 0;

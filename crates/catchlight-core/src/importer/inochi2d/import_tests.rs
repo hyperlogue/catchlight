@@ -1,12 +1,12 @@
 use super::from_inx_model;
 use crate::components::*;
 use crate::formats::InxModel;
-use crate::puppet::Puppet;
+use crate::legacy_puppet::LegacyPuppet;
 use std::io::Cursor;
 
-fn parse_node_json(json: &str) -> Puppet {
+fn parse_node_json(json: &str) -> LegacyPuppet {
     let value: serde_json::Value = serde_json::from_str(json).unwrap();
-    let mut puppet = Puppet::new();
+    let mut puppet = LegacyPuppet::new();
     let root = puppet.root();
     super::convert::test_support::load_subtree(&value, root, &mut puppet).expect("load_subtree");
     puppet
@@ -174,7 +174,7 @@ fn load_deeply_nested_tree_does_not_overflow() {
         value = wrap(value);
     }
 
-    let mut puppet = Puppet::new();
+    let mut puppet = LegacyPuppet::new();
     let root = puppet.root();
     super::convert::test_support::load_subtree(&value, root, &mut puppet).expect("load_subtree");
     assert_eq!(puppet.len(), DEPTH + 2);
@@ -273,9 +273,9 @@ fn mesh_with_odd_vertex_coordinate_count_drops_trailing_entry() {
     assert_eq!(part.mesh.vertices.len(), 2);
 }
 
-fn try_parse_node_json(json: &str) -> Result<Puppet, super::ImportError> {
+fn try_parse_node_json(json: &str) -> Result<LegacyPuppet, super::ImportError> {
     let value: serde_json::Value = serde_json::from_str(json).unwrap();
-    let mut puppet = Puppet::new();
+    let mut puppet = LegacyPuppet::new();
     let root = puppet.root();
     super::convert::test_support::load_subtree(&value, root, &mut puppet)?;
     Ok(puppet)

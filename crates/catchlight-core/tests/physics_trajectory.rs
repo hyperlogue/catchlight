@@ -13,7 +13,7 @@
 //!   UPDATE_PHYSICS_BASELINE=1 cargo test -p catchlight-core --test physics_trajectory
 
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode, SimplePhysicsData};
-use catchlight_core::{GlobalTransforms, Node, NodeKind, Puppet, Vec2};
+use catchlight_core::{GlobalTransforms, LegacyPuppet, Node, NodeKind, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -31,7 +31,7 @@ const TOL: f32 = 2e-3;
 /// cadence. Goes through `tick_physics` (anchor from world transform, map
 /// mode, output scale, param write), not the integrator in isolation.
 fn run_scenario(data: SimplePhysicsData) -> Vec<[f32; 2]> {
-    let mut puppet = Puppet::new();
+    let mut puppet = LegacyPuppet::new();
     let node = Node {
         kind: NodeKind::SimplePhysics(Box::new(data)),
         ..Default::default()

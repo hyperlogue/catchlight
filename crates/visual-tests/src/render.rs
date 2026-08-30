@@ -1,6 +1,6 @@
 use crate::config::{Camera, Config, ParamSetting};
 use anyhow::{Context, Result};
-use catchlight_core::{load_model, ModelFormat, Puppet};
+use catchlight_core::{load_model, LegacyPuppet, ModelFormat};
 use catchlight_wgpu::{collect_drawables, create_orthographic_camera_at, RenderList};
 use std::path::Path;
 
@@ -19,18 +19,21 @@ pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 };
 
 pub struct CachedPuppet {
-    pub puppet: Puppet,
+    pub puppet: LegacyPuppet,
     /// Pristine clone captured at load time. Cloned-into `puppet` before
     /// each config so SimplePhysics persistent state (anchor_initialized,
     /// d_angle, spring_vel, pendulum) starts identical regardless of any
     /// previous config's settle outcome — otherwise the harness is
     /// ordering-dependent.
-    pub pristine: Puppet,
+    pub pristine: LegacyPuppet,
     pub param_defaults: Vec<(u32, glam::Vec2)>,
     pub uploaded: bool,
 }
 
-pub fn load_puppet(path: &Path, texture_halvings: u32) -> Result<(Puppet, Vec<(u32, glam::Vec2)>)> {
+pub fn load_puppet(
+    path: &Path,
+    texture_halvings: u32,
+) -> Result<(LegacyPuppet, Vec<(u32, glam::Vec2)>)> {
     let bytes = std::fs::read(path).with_context(|| format!("opening {}", path.display()))?;
     let format = ModelFormat::from_path(path)
         .with_context(|| format!("unrecognized model extension: {}", path.display()))?;

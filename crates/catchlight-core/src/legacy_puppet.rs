@@ -1,6 +1,6 @@
-//! The `Puppet`: node tree, params, deforms, and the per-frame pipeline.
+//! The `LegacyPuppet`: node tree, params, deforms, and the per-frame pipeline.
 //!
-//! **The per-frame pipeline is `Puppet::tick`**, not a bare
+//! **The per-frame pipeline is `LegacyPuppet::tick`**, not a bare
 //! `compute_transforms`. Semantically it is: fold animations → pose the
 //! physics anchors and step the drivers → apply params → compute transforms →
 //! apply `translateChildren` mesh-group filters and recompute → propagate
@@ -87,7 +87,7 @@ fn resolve_contributions(
 }
 
 /// Computed global transforms for all nodes in a puppet.
-/// Vec<Mat4> indexed by NodeIdx.0; aligns with the dense Puppet node
+/// Vec<Mat4> indexed by NodeIdx.0; aligns with the dense LegacyPuppet node
 /// storage so point lookups are a bounds check + index rather than
 /// a hash probe, and the DFS walk in compute_transforms_with_root
 /// writes through contiguous memory.
@@ -136,7 +136,7 @@ impl Default for GlobalTransforms {
 }
 
 #[derive(Clone)]
-pub struct Puppet {
+pub struct LegacyPuppet {
     // Dense storage indexed by NodeIdx.0. Every NodeIdx allocated via
     // `allocate_id` is sequential and never removed, so NodeIdx doubles
     // as the slot index -- no HashMap<NodeIdx,_> indirection, full-node
@@ -252,7 +252,7 @@ pub struct Puppet {
     node_revision: u64,
 }
 
-impl Puppet {
+impl LegacyPuppet {
     pub fn new() -> Self {
         let root_id = NodeIdx::new(0);
         let tree = NodeTree::new(root_id);
@@ -676,7 +676,11 @@ impl Puppet {
     /// writes its current `param_value()` into the puppet's
     /// param_values map. A subsequent `apply_params` call then folds
     /// that value into target node deforms / transforms.
-    pub fn tick_physics(&mut self, transforms: &crate::puppet::GlobalTransforms, dt: f32) -> bool {
+    pub fn tick_physics(
+        &mut self,
+        transforms: &crate::legacy_puppet::GlobalTransforms,
+        dt: f32,
+    ) -> bool {
         let _span = tracing::trace_span!("tick_physics").entered();
         for i in 0..self.physics_node_ids.len() {
             let id = self.physics_node_ids[i];
@@ -772,7 +776,7 @@ impl Puppet {
     /// frozen load pose.
     fn physics_anchor(
         &self,
-        transforms: &crate::puppet::GlobalTransforms,
+        transforms: &crate::legacy_puppet::GlobalTransforms,
         id: NodeIdx,
     ) -> Option<crate::Vec2> {
         let node = self.nodes.get(id.0 as usize)?;
@@ -798,7 +802,7 @@ impl Puppet {
     /// which is insertion order and carries no meaning.
     fn write_physics_param_outputs(
         &mut self,
-        transforms: &crate::puppet::GlobalTransforms,
+        transforms: &crate::legacy_puppet::GlobalTransforms,
     ) -> bool {
         self.physics_update_scratch.clear();
         for i in 0..self.physics_node_ids.len() {
@@ -1285,7 +1289,7 @@ impl Puppet {
         &mut self,
         binding_include: impl Fn(&crate::params::BindingValues) -> bool + Copy,
     ) {
-        // Move params out temporarily so apply() can take &mut Puppet.
+        // Move params out temporarily so apply() can take &mut LegacyPuppet.
         // `param_values` stays parallel to `params`, so index positionally
         // — no per-param hash on this twice-a-frame hot path.
         let params = std::mem::take(&mut self.params);
@@ -1691,7 +1695,7 @@ impl Puppet {
     }
 }
 
-impl Default for Puppet {
+impl Default for LegacyPuppet {
     fn default() -> Self {
         Self::new()
     }
@@ -1705,13 +1709,13 @@ mod tests {
 
     #[test]
     fn create_puppet() {
-        let puppet = Puppet::new();
+        let puppet = LegacyPuppet::new();
         assert!(puppet.get(puppet.root()).is_some());
     }
 
     #[test]
     fn compute_transforms_single_node() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
 
         let root = puppet.root();
         if let Some(node) = puppet.get_mut(root) {
@@ -1729,7 +1733,7 @@ mod tests {
 
     #[test]
     fn replacing_base_transform_refreshes_the_cached_matrix() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let root = puppet.root();
         let mut transforms = GlobalTransforms::new();
         puppet.compute_transforms(&mut transforms);
@@ -1752,7 +1756,7 @@ mod tests {
     fn replacing_base_transform_rebakes_mesh_group_attachments() {
         use crate::{deform::DeformStack, Mesh, MeshGroupData, MeshIndices, PartData};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let group = puppet.insert_child(
             puppet.root(),
             Node {
@@ -1796,7 +1800,7 @@ mod tests {
             translation: Vec3::new(x, 2.0, 0.0),
             ..Default::default()
         };
-        let weights = |puppet: &Puppet| {
+        let weights = |puppet: &LegacyPuppet| {
             let NodeKind::MeshGroup(group) = &puppet.get(group).expect("mesh group").kind else {
                 panic!("not a mesh group");
             };
@@ -1814,7 +1818,7 @@ mod tests {
     fn replacing_node_kind_rebuilds_kind_registries() {
         use crate::{deform::DeformStack, PartData};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let id = puppet.insert_child(puppet.root(), Node::default(), None);
         assert!(puppet.iter_deform_nodes().all(|(node_id, _)| node_id != id));
         assert!(!puppet.has_simple_physics());
@@ -1838,7 +1842,7 @@ mod tests {
 
     #[test]
     fn replacing_physics_kind_retires_its_param_contribution() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let target_uuid = 77;
         puppet.set_param_value(target_uuid, Vec2::ZERO);
         let physics = puppet.insert_child(
@@ -1862,7 +1866,7 @@ mod tests {
 
     #[test]
     fn compute_transforms_hierarchy() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
 
         let root = puppet.root();
         if let Some(node) = puppet.get_mut(root) {
@@ -1884,7 +1888,7 @@ mod tests {
 
     #[test]
     fn compute_transforms_with_rotation_and_scale() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
 
         let root = puppet.root();
         if let Some(node) = puppet.get_mut(root) {
@@ -1904,7 +1908,7 @@ mod tests {
     fn lock_to_root_skips_parent_chain() {
         use crate::Node;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let root = puppet.root();
 
         let mut parent = Node::default();
@@ -1930,7 +1934,7 @@ mod tests {
     fn lock_to_root_with_external_root_matrix() {
         use crate::Node;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let root = puppet.root();
 
         let mut parent = Node::default();
@@ -1958,7 +1962,7 @@ mod tests {
         use crate::params::{Binding, BindingValues, DeformMatrix, InterpolateMode, Param};
         use crate::{Mesh, MeshIndices, Node, NodeKind, PartData};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let mesh = Mesh::new(
             vec![Vec2::ZERO, Vec2::ZERO, Vec2::ZERO],
             vec![Vec2::ZERO; 3],
@@ -2018,7 +2022,7 @@ mod tests {
         use crate::animation::{Animation, AnimationLane, Keyframe};
         use crate::params::InterpolateMode;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
 
         // Lane: axis 0 (x) of param 5, keyframes (0, 0.0) -> (60, 1.0)
         // at 60 fps timestep (1s total). After 0.5s, expect 0.5 on x.
@@ -2073,7 +2077,7 @@ mod tests {
         use crate::animation::{Animation, AnimationLane, Keyframe};
         use crate::params::InterpolateMode;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_animations(vec![Animation {
             name: "glide".into(),
             timestep: 1.0,
@@ -2111,7 +2115,7 @@ mod tests {
         use crate::animation::{Animation, AnimationLane, Keyframe};
         use crate::params::InterpolateMode;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         // Identity ramp 0..60 so the param value reads back the frame
         // (value = frame / 60).
         let anim = Animation {
@@ -2163,7 +2167,7 @@ mod tests {
     fn shrinking_animations_clears_stale_play_state() {
         use crate::animation::Animation;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_animations(vec![Animation {
             name: "a".into(),
             ..Default::default()
@@ -2184,7 +2188,7 @@ mod tests {
         use crate::animation::{Animation, AnimationLane, Keyframe};
         use crate::params::InterpolateMode;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let anim = Animation {
             name: "y".into(),
             timestep: 1.0 / 60.0,
@@ -2224,7 +2228,7 @@ mod tests {
         use crate::params::{Binding, BindingValues, InterpolateMode, Matrix, Param};
         use crate::Node;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let node_id = puppet.insert_child(puppet.root(), Node::default(), Some(5));
 
         let param = Param {
@@ -2248,7 +2252,7 @@ mod tests {
         };
         puppet.set_params(vec![param]);
 
-        let tx_at = |puppet: &mut Puppet, v: f32| {
+        let tx_at = |puppet: &mut LegacyPuppet, v: f32| {
             puppet.set_param_value(1, Vec2::new(v, 0.0));
             puppet.reset_dynamic_state();
             puppet.apply_params();
@@ -2270,7 +2274,7 @@ mod tests {
         use crate::params::Param;
         use crate::Node;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.insert_child(puppet.root(), Node::default(), None);
         puppet.set_params(vec![
             Param {
@@ -2307,7 +2311,7 @@ mod tests {
         use crate::params::{Binding, BindingValues, InterpolateMode, Matrix, Param};
         use crate::Node;
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let mut node = Node::default();
         node.transform.translation = Vec3::new(100.0, 0.0, 0.0);
         node.transform.scale = Vec2::new(1.0, 1.0);
@@ -2379,7 +2383,7 @@ mod tests {
         use crate::params::{Binding, BindingValues, InterpolateMode, Matrix, Param};
         use crate::{Node, NodeKind, PartData};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let part = PartData {
             opacity: 1.0,
             base_opacity: 1.0,
@@ -2443,7 +2447,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Mesh, MeshIndices, Node, NodeKind, PartData};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
 
         // Target part: 2 vertices, DeformStack of length 2.
         let mesh = Mesh::new(
@@ -2562,7 +2566,7 @@ mod tests {
         // Pendulum frozen mid-tilt (dt=0 ticks don't integrate): bob
         // (60, 80) on the rest circle maps through XY to (0.6, 0.2).
         // Param 1 multiplies outputScale.x by 1 -> 2 across its range.
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let phys_id = puppet.insert_child(
             puppet.root(),
             Node {
@@ -2627,7 +2631,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let parent = puppet.insert_child(puppet.root(), Node::default(), None);
         let phys_id = puppet.insert_child(
             parent,
@@ -2688,7 +2692,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         // `upstream` makes uuid 100 a *driver* param (a physics target),
         // included in the anchor pose at its last-frame value.
         puppet.insert_child(
@@ -2753,9 +2757,9 @@ mod tests {
 
     /// One param (uuid 1) whose committed base is `base`, ready for
     /// contributions from arbitrary sources.
-    fn contribution_puppet(base: Vec2) -> Puppet {
+    fn contribution_puppet(base: Vec2) -> LegacyPuppet {
         use crate::params::Param;
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_params(vec![Param {
             id: 1,
             name: "p".into(),
@@ -2852,7 +2856,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let phys = puppet.insert_child(
             puppet.root(),
             Node {
@@ -2897,7 +2901,7 @@ mod tests {
         use crate::physics::SimplePhysicsData;
         use crate::{Node, NodeKind};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.insert_child(
             puppet.root(),
             Node {
@@ -2945,7 +2949,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.insert_child(
             puppet.root(),
             Node {
@@ -3037,8 +3041,8 @@ mod tests {
         use crate::physics::{PendulumKind, PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
-        fn build() -> (Puppet, u32) {
-            let mut puppet = Puppet::new();
+        fn build() -> (LegacyPuppet, u32) {
+            let mut puppet = LegacyPuppet::new();
             let target_uuid = 77;
             let data = SimplePhysicsData {
                 kind: PendulumKind::SpringPendulum,
@@ -3105,7 +3109,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let anchor = Vec2::new(0.0, 0.0);
         let length = 100.0;
         let data = SimplePhysicsData {
@@ -3152,8 +3156,8 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind, Transform};
 
-        fn build(local_only: bool) -> (Puppet, NodeIdx) {
-            let mut puppet = Puppet::new();
+        fn build(local_only: bool) -> (LegacyPuppet, NodeIdx) {
+            let mut puppet = LegacyPuppet::new();
             let parent_t = Transform {
                 translation: Vec3::new(1000.0, 0.0, 0.0),
                 ..Default::default()
@@ -3216,12 +3220,12 @@ mod tests {
     // Build a puppet whose SimplePhysics driver settles at rest and whose
     // target param drives both a Deform and an Opacity binding on a Part.
     // Returns (puppet, part_id).
-    fn settling_physics_puppet() -> (Puppet, NodeIdx) {
+    fn settling_physics_puppet() -> (LegacyPuppet, NodeIdx) {
         use crate::params::{Binding, BindingValues, DeformMatrix, InterpolateMode, Matrix, Param};
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Mesh, MeshIndices, Node, NodeKind, PartData};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let mesh = Mesh::new(
             vec![Vec2::ZERO; 2],
             vec![Vec2::ZERO; 2],
@@ -3300,7 +3304,7 @@ mod tests {
         (puppet, part_id)
     }
 
-    fn part_deform(puppet: &Puppet, id: NodeIdx) -> (Vec<Vec2>, u64) {
+    fn part_deform(puppet: &LegacyPuppet, id: NodeIdx) -> (Vec<Vec2>, u64) {
         match &puppet.get(id).unwrap().kind {
             crate::NodeKind::Part(p) => (
                 p.deform_stack.combined().to_vec(),
@@ -3310,7 +3314,7 @@ mod tests {
         }
     }
 
-    fn part_opacity(puppet: &Puppet, id: NodeIdx) -> f32 {
+    fn part_opacity(puppet: &LegacyPuppet, id: NodeIdx) -> f32 {
         match &puppet.get(id).unwrap().kind {
             crate::NodeKind::Part(p) => p.opacity,
             _ => panic!("node isn't a Part"),
@@ -3397,7 +3401,7 @@ mod tests {
         use crate::physics::{PhysicsParamMapMode, SimplePhysicsData};
         use crate::{Node, NodeKind};
 
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let parent = puppet.insert_child(puppet.root(), Node::default(), None);
         // World-anchored so the parent's translation feeds the world anchor.
         puppet.insert_child(

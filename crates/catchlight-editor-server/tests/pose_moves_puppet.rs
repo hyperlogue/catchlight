@@ -46,7 +46,7 @@ fn posing_a_param_changes_the_ticked_state() {
 }
 
 fn state_signature(
-    puppet: &catchlight_core::Puppet,
+    puppet: &catchlight_core::LegacyPuppet,
     transforms: &GlobalTransforms,
 ) -> Vec<[i64; 2]> {
     let mut sig = Vec::new();

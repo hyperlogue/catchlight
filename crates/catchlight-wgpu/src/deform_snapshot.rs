@@ -1,4 +1,4 @@
-use catchlight_core::{NodeKind, Puppet, Vec2};
+use catchlight_core::{LegacyPuppet, NodeKind, Vec2};
 
 /// Frozen copy of every active node's combined deform, taken while the
 /// puppet is not being mutated. The renderer uploads from this
@@ -22,8 +22,8 @@ pub struct DeformEntry {
 
 impl DeformSnapshot {
     /// Build a fresh snapshot of `puppet`'s active deforms. Call after
-    /// `Puppet::combine_deforms()`.
-    pub fn from_puppet(puppet: &Puppet) -> Self {
+    /// `LegacyPuppet::combine_deforms()`.
+    pub fn from_puppet(puppet: &LegacyPuppet) -> Self {
         let mut snap = Self::default();
         snap.refill_from_puppet(puppet);
         snap
@@ -34,7 +34,7 @@ impl DeformSnapshot {
     /// deform set is near-constant frame to frame, so a caller that keeps
     /// one snapshot per puppet and refills it each frame allocates nothing
     /// steady-state.
-    pub fn refill_from_puppet(&mut self, puppet: &Puppet) {
+    pub fn refill_from_puppet(&mut self, puppet: &LegacyPuppet) {
         let mut count = 0;
         for (node_id, node) in puppet.iter_deform_nodes() {
             let stack = match &node.kind {
@@ -74,7 +74,9 @@ impl DeformSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catchlight_core::{DeformSource, DeformStack, Mesh, MeshIndices, Node, PartData, Puppet};
+    use catchlight_core::{
+        DeformSource, DeformStack, LegacyPuppet, Mesh, MeshIndices, Node, PartData,
+    };
 
     // A Part whose deform stack is pre-activated with a uniform shift, so
     // is_active() is true and combined() == the shift (no param machinery).
@@ -117,7 +119,7 @@ mod tests {
 
     #[test]
     fn captures_only_active_stacks() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let active_id = puppet.insert_child(puppet.root(), shifted_part(8.0), Some(10));
         let _inactive_id = puppet.insert_child(puppet.root(), inactive_part(), Some(11));
 
@@ -130,7 +132,7 @@ mod tests {
 
     #[test]
     fn refill_reuses_and_truncates() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         let id = puppet.insert_child(puppet.root(), shifted_part(8.0), Some(20));
 
         let mut snap = DeformSnapshot::default();

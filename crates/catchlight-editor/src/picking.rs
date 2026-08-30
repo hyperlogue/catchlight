@@ -2,13 +2,17 @@
 //! already live on the CPU, so a point test is a tree walk + point-in-triangle
 //! — no renderer involvement.
 
-use catchlight_core::{BlendMode, GlobalTransforms, MeshIndices, NodeKind, PartData, Puppet};
+use catchlight_core::{BlendMode, GlobalTransforms, LegacyPuppet, MeshIndices, NodeKind, PartData};
 use glam::Vec2;
 
 /// Core node ids of the Parts whose deformed mesh contains `world`,
 /// front-most first (higher cumulative z order renders in front; ties go to the
 /// later-drawn node).
-pub(crate) fn pick_all(puppet: &Puppet, transforms: &GlobalTransforms, world: Vec2) -> Vec<u32> {
+pub(crate) fn pick_all(
+    puppet: &LegacyPuppet,
+    transforms: &GlobalTransforms,
+    world: Vec2,
+) -> Vec<u32> {
     let mut hits: Vec<(f32, usize, u32)> = Vec::new();
     let mut visit = 0usize;
     // (id, parent cumulative z); children pushed in reverse for draw order.
@@ -109,7 +113,7 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
 
 /// World-space AABB over the deformed Parts of the given subtrees.
 pub(crate) fn world_bounds(
-    puppet: &Puppet,
+    puppet: &LegacyPuppet,
     transforms: &GlobalTransforms,
     roots: &[u32],
 ) -> Option<(Vec2, Vec2)> {
@@ -140,7 +144,7 @@ pub(crate) fn world_bounds(
 mod tests {
     use super::*;
     use catchlight_core::{
-        CompositeData, DeformStack, Mesh, MeshIndices, Node, PartData, Puppet, PuppetTexture,
+        CompositeData, DeformStack, LegacyPuppet, Mesh, MeshIndices, Node, PartData, PuppetTexture,
         TextureId,
     };
 
@@ -177,7 +181,7 @@ mod tests {
 
     #[test]
     fn opacity_zero_composite_does_not_hit_children() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![white_tex()]);
         let c = CompositeData {
             opacity: 0.0,
@@ -202,7 +206,7 @@ mod tests {
 
     #[test]
     fn pick_uses_origin_shifted_vertices() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![white_tex()]);
         let origin = Vec2::new(10.0, 0.0);
         puppet.insert_child(puppet.root(), triangle_part(origin), None);
@@ -221,7 +225,7 @@ mod tests {
 
     #[test]
     fn pick_prefers_higher_z_and_later_equal_z_nodes() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![white_tex()]);
         let root = puppet.root();
         let behind = puppet.insert_child(

@@ -4,7 +4,7 @@ use bevy::render::{sync_world::RenderEntity, Extract};
 use crate::components::{CatchlightCamera, CatchlightPuppet};
 use std::sync::{Arc, RwLock};
 
-use catchlight_core::Puppet;
+use catchlight_core::LegacyPuppet;
 use catchlight_wgpu::{DeformSnapshot, RenderList};
 
 /// Render-world snapshot of a `CatchlightPuppet`, retained across frames
@@ -17,11 +17,11 @@ use catchlight_wgpu::{DeformSnapshot, RenderList};
 /// puppet during the frame, so the next main-world frame can recompute
 /// deforms — which overwrite the live `DeformStack::combined` buffers in
 /// place — concurrently with rendering (bevy pipelined rendering). The
-/// `Arc<RwLock<Puppet>>` is retained only for the one-time `upload_puppet`
+/// `Arc<RwLock<LegacyPuppet>>` is retained only for the one-time `upload_puppet`
 /// (static meshes + textures, read once when the renderer is created).
 #[derive(Component)]
 pub struct ExtractedPuppet {
-    pub puppet: Arc<RwLock<Puppet>>,
+    pub puppet: Arc<RwLock<LegacyPuppet>>,
     pub render_list: Option<RenderList>,
     // On wasm prepare reads the live puppet instead (no pipelined
     // rendering), so the snapshot is only filled and read on native.

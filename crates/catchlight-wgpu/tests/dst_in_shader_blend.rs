@@ -11,8 +11,8 @@
 //! shader, which samples sRGB textures as linear).
 
 use catchlight_core::{
-    BlendMode, GlobalTransforms, Mesh, Node, NodeKind, PartData, Puppet, PuppetTexture, TextureId,
-    Vec3,
+    BlendMode, GlobalTransforms, LegacyPuppet, Mesh, Node, NodeKind, PartData, PuppetTexture,
+    TextureId, Vec3,
 };
 use catchlight_wgpu::{
     collect_drawables, create_headless_context, FramebufferSnapshotPool, WgpuRenderer,
@@ -52,11 +52,11 @@ fn solid_texture(r: u8, g: u8, b: u8, a: u8) -> PuppetTexture {
     }
 }
 
-fn make_puppet(blend: BlendMode, src_rgba: [u8; 4]) -> Puppet {
+fn make_puppet(blend: BlendMode, src_rgba: [u8; 4]) -> LegacyPuppet {
     // One Part covering the full viewport. The mesh is a quad in world
     // units that matches the orthographic camera below; uvs span [0,1]
     // so the Part samples its solid-color texture at every fragment.
-    let mut puppet = Puppet::new();
+    let mut puppet = LegacyPuppet::new();
     puppet.set_textures(vec![solid_texture(
         src_rgba[0],
         src_rgba[1],
@@ -87,7 +87,7 @@ async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4
 
 /// Render any puppet through `render_list_ext` (snapshot pool wired)
 /// onto a solid background and read back the pixels.
-async fn render_puppet(puppet: &Puppet, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
+async fn render_puppet(puppet: &LegacyPuppet, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -165,8 +165,8 @@ async fn render_puppet(puppet: &Puppet, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
 /// both children of one Normal Composite. Higher z_order draws last
 /// (in front), so the burn part blends against the pad where they overlap
 /// and against the composite's transparent clear elsewhere.
-fn make_nested_burn_puppet(pad_rgba: [u8; 4], src_rgba: [u8; 4]) -> Puppet {
-    let mut puppet = Puppet::new();
+fn make_nested_burn_puppet(pad_rgba: [u8; 4], src_rgba: [u8; 4]) -> LegacyPuppet {
+    let mut puppet = LegacyPuppet::new();
     puppet.set_textures(vec![
         solid_texture(pad_rgba[0], pad_rgba[1], pad_rgba[2], pad_rgba[3]),
         solid_texture(src_rgba[0], src_rgba[1], src_rgba[2], src_rgba[3]),

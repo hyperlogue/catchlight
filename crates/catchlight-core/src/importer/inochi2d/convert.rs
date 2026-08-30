@@ -8,11 +8,11 @@ use crate::{
     },
     deform::DeformStack,
     formats::ModelTexture,
+    legacy_puppet::LegacyPuppet,
     load_budget::MAX_PARAM_GRID_CELLS,
     meshgroup::MeshGroupAttachments,
     params::{Binding, BindingValues, DeformMatrix, InterpolateMode, Matrix, Param},
     physics::{PendulumKind, PhysicsParamMapMode, SimplePhysicsData},
-    puppet::Puppet,
 };
 
 use super::error::ImportError;
@@ -42,7 +42,7 @@ pub(crate) mod test_support {
     pub(crate) fn load_subtree(
         root: &serde_json::Value,
         parent: NodeIdx,
-        puppet: &mut Puppet,
+        puppet: &mut LegacyPuppet,
     ) -> Result<NodeIdx, ImportError> {
         super::load_subtree(root, parent, puppet, DEFAULT_GRAVITY_SCALE)
     }
@@ -52,7 +52,7 @@ pub(super) fn schema_to_puppet(
     payload: &serde_json::Value,
     textures: Vec<ModelTexture>,
     texture_halvings: u32,
-) -> Result<Puppet, ImportError> {
+) -> Result<LegacyPuppet, ImportError> {
     let root_obj = payload
         .as_object()
         .ok_or_else(|| ImportError::InvalidFieldType {
@@ -61,7 +61,7 @@ pub(super) fn schema_to_puppet(
             got: json_type(payload).to_string(),
         })?;
 
-    let mut puppet = Puppet::new();
+    let mut puppet = LegacyPuppet::new();
 
     // Puppet-level physics multipliers feed into each SimplePhysics node's
     // effective gravity (inochi2d does this in `getGravity()` at sim time;
@@ -128,7 +128,7 @@ fn json_type(v: &serde_json::Value) -> &'static str {
 pub(crate) fn load_subtree(
     root: &serde_json::Value,
     parent: NodeIdx,
-    puppet: &mut Puppet,
+    puppet: &mut LegacyPuppet,
     g_scale: f32,
 ) -> Result<NodeIdx, ImportError> {
     let root_id = parse_and_insert_value(root, parent, puppet, g_scale)?;
@@ -159,7 +159,7 @@ fn push_children_rev<'a>(
 fn parse_and_insert_value(
     value: &serde_json::Value,
     parent: NodeIdx,
-    puppet: &mut Puppet,
+    puppet: &mut LegacyPuppet,
     g_scale: f32,
 ) -> Result<NodeIdx, ImportError> {
     let mut node = parse_node_shallow(value)?;
@@ -193,7 +193,7 @@ fn parse_node_shallow(value: &serde_json::Value) -> Result<SchemaNode, ImportErr
 fn insert_node(
     schema: SchemaNode,
     parent: NodeIdx,
-    puppet: &mut Puppet,
+    puppet: &mut LegacyPuppet,
     g_scale: f32,
 ) -> Result<NodeIdx, ImportError> {
     let uuid = schema.uuid;
@@ -479,13 +479,13 @@ fn convert_vec3(src: &[f32], default: Vec3) -> Vec3 {
     )
 }
 
-pub(crate) fn bake_mesh_groups(puppet: &mut Puppet) {
+pub(crate) fn bake_mesh_groups(puppet: &mut LegacyPuppet) {
     let mg_ids: Vec<NodeIdx> = puppet
         .iter()
         .filter(|(_, n)| matches!(n.kind, NodeKind::MeshGroup(_)))
         .map(|(id, _)| id)
         .collect();
-    let mut transforms = crate::puppet::GlobalTransforms::new();
+    let mut transforms = crate::legacy_puppet::GlobalTransforms::new();
     puppet.compute_transforms(&mut transforms);
     for id in mg_ids {
         let baked = crate::meshgroup::bake_mesh_group_attachments(puppet, &transforms, id);
@@ -513,7 +513,7 @@ fn convert_interpolate_mode(s: Option<&str>) -> InterpolateMode {
     }
 }
 
-fn convert_params_from_json(vals: &[serde_json::Value], puppet: &Puppet) -> Vec<Param> {
+fn convert_params_from_json(vals: &[serde_json::Value], puppet: &LegacyPuppet) -> Vec<Param> {
     let mut params: Vec<Param> = vals
         .iter()
         .filter_map(|v| {
@@ -527,7 +527,7 @@ fn convert_params_from_json(vals: &[serde_json::Value], puppet: &Puppet) -> Vec<
     // resolves uuid references first-match, so a later duplicate is never
     // driven and forever evaluates at its own defaults. Renumbering it to
     // a fresh uuid that nothing references reproduces exactly that, while
-    // keeping Puppet's uuid-keyed param storage sound.
+    // keeping LegacyPuppet's uuid-keyed param storage sound.
     // `used` holds every original uuid up front (plus each fresh
     // assignment), so a fresh uuid can never collide with a not-yet-walked
     // entry — without this, a `next` that wraps past u32::MAX could steal
@@ -554,7 +554,7 @@ fn convert_params_from_json(vals: &[serde_json::Value], puppet: &Puppet) -> Vec<
     params
 }
 
-fn convert_param(p: &SchemaParam, puppet: &Puppet) -> Option<Param> {
+fn convert_param(p: &SchemaParam, puppet: &LegacyPuppet) -> Option<Param> {
     let id = p.uuid?;
     let name = p.name.clone().unwrap_or_default();
     // Inochi2D 0.8.6: is_vec2 defaults to false (scalar param).
@@ -605,7 +605,7 @@ fn convert_param(p: &SchemaParam, puppet: &Puppet) -> Option<Param> {
     })
 }
 
-fn convert_binding(b: &SchemaBinding, puppet: &Puppet) -> Option<Binding> {
+fn convert_binding(b: &SchemaBinding, puppet: &LegacyPuppet) -> Option<Binding> {
     let node_uuid = b.node?;
     let node = puppet.node_for_uuid(node_uuid)?;
     // Missing param_name falls through the match below to `_ => None`, which

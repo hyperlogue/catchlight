@@ -28,8 +28,8 @@ use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, TexId};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::Vec2;
 use catchlight_core::{
-    from_clp_cached, BindingKey, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup,
-    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, Puppet,
+    from_clp_cached, BindingKey, BindingTarget, LegacyPuppet, Model, ModelComposite, ModelError,
+    ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
     ScalarTarget, TexturePrepCache,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -96,7 +96,7 @@ struct Session {
     redo: Vec<HistoryEntry>,
     history_bytes: usize,
     /// Lazily (re)built from `model` for preview; invalidated on every edit.
-    puppet: Option<Puppet>,
+    puppet: Option<LegacyPuppet>,
     puppet_dirty: bool,
     /// rev-gated document view for in-process observers (the GUI).
     snapshot: Option<Arc<DocSnapshot>>,
@@ -269,7 +269,7 @@ impl Session {
         self.rev != self.saved_rev
     }
 
-    fn puppet(&mut self) -> Result<&mut Puppet, EditorError> {
+    fn puppet(&mut self) -> Result<&mut LegacyPuppet, EditorError> {
         if self.puppet.is_none() || self.puppet_dirty {
             let file = self.model.flatten()?;
             let mut built = from_clp_cached(&file, 0, &mut self.tex_cache)
@@ -516,7 +516,7 @@ impl Editor {
     pub fn with_puppet<R>(
         &self,
         id: SessionId,
-        f: impl FnOnce(&mut Puppet) -> R,
+        f: impl FnOnce(&mut LegacyPuppet) -> R,
     ) -> Result<R, EditorError> {
         let session = self.session(id)?;
         let mut s = lock(&session);

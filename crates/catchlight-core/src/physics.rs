@@ -8,7 +8,7 @@
 //! describes does not change with frame rate or substep count. Applying
 //! damping per step would make 60 Hz and 144 Hz render different hair.
 //!
-//! **Physics drivers work in a Y-down frame.** `Puppet::physics_anchor` flips
+//! **Physics drivers work in a Y-down frame.** `LegacyPuppet::physics_anchor` flips
 //! Y going in and `write_physics_param_outputs` conjugates `world_inverse` by
 //! the same flip coming out, matching the reference pendulum's
 //! gravity-toward-+Y convention.
@@ -117,7 +117,7 @@ pub struct SimplePhysicsData {
     pub output_scale: Vec2,
     /// Per-frame multiplicative factor driven by `outputScale.x/.y`
     /// param bindings. Reset to (1, 1) each frame by
-    /// `Puppet::reset_dynamic_state`, then multiplied into `output_scale`
+    /// `LegacyPuppet::reset_dynamic_state`, then multiplied into `output_scale`
     /// when the parameter value is read.
     pub offset_output_scale: Vec2,
     /// Bob position. For `RigidPendulum` the bob is recomputed each

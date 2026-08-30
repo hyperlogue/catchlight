@@ -1,4 +1,4 @@
-//! Flattens a posed `Puppet` into the `RenderList` the renderer draws.
+//! Flattens a posed `LegacyPuppet` into the `RenderList` the renderer draws.
 //!
 //! **Z order: higher `z_order` draws in front.** `collect_drawables`
 //! accumulates `parent_z + node.z_order` down the tree and sorts ascending, so
@@ -6,7 +6,7 @@
 //! lower in front; the flip happens at import, never here.
 
 use catchlight_core::{
-    BlendMode, CompositeData, GlobalTransforms, MaskMode, MeshId, NodeIdx, NodeKind, Puppet,
+    BlendMode, CompositeData, GlobalTransforms, LegacyPuppet, MaskMode, MeshId, NodeIdx, NodeKind,
     TextureId,
 };
 use smallvec::SmallVec;
@@ -250,7 +250,7 @@ pub struct DrawableCollector {
 /// `DrawableCollector::composite_is_passthrough_group` for why pass-through
 /// groups flatten at all.
 fn composite_passthrough_static(
-    puppet: &Puppet,
+    puppet: &LegacyPuppet,
     node_id: NodeIdx,
     composite: &CompositeData,
 ) -> bool {
@@ -280,7 +280,7 @@ fn composite_passthrough_dynamic(composite: &CompositeData) -> bool {
 
 fn collect_mask_sources(
     node_id: NodeIdx,
-    puppet: &Puppet,
+    puppet: &LegacyPuppet,
     transforms: &GlobalTransforms,
     composite_sources: &mut HashMap<NodeIdx, CompositeMaskSourceData>,
 ) -> MaskSources {
@@ -346,7 +346,7 @@ fn collect_mask_sources(
     sources
 }
 
-pub fn collect_drawables(puppet: &Puppet, transforms: &GlobalTransforms) -> RenderList {
+pub fn collect_drawables(puppet: &LegacyPuppet, transforms: &GlobalTransforms) -> RenderList {
     let mut collector = DrawableCollector::default();
     let mut render_list = RenderList::default();
     collector.collect_into(puppet, transforms, &mut render_list);
@@ -356,7 +356,7 @@ pub fn collect_drawables(puppet: &Puppet, transforms: &GlobalTransforms) -> Rend
 impl DrawableCollector {
     pub fn collect_into(
         &mut self,
-        puppet: &Puppet,
+        puppet: &LegacyPuppet,
         transforms: &GlobalTransforms,
         render_list: &mut RenderList,
     ) {
@@ -558,7 +558,7 @@ impl DrawableCollector {
     /// hot path never re-walks the subtree.
     fn composite_is_passthrough_group(
         &mut self,
-        puppet: &Puppet,
+        puppet: &LegacyPuppet,
         node_id: NodeIdx,
         composite: &CompositeData,
     ) -> bool {
@@ -580,7 +580,9 @@ impl DrawableCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catchlight_core::{CompositeData, Mask, MaskMode, Node, PartData, Puppet, PuppetTexture};
+    use catchlight_core::{
+        CompositeData, LegacyPuppet, Mask, MaskMode, Node, PartData, PuppetTexture,
+    };
 
     fn one_pixel_texture() -> PuppetTexture {
         PuppetTexture {
@@ -599,7 +601,7 @@ mod tests {
 
     #[test]
     fn composite_masks_are_collected_and_counted() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
 
         let mask_id = puppet.insert_child(puppet.root(), part_node(), Some(7));
@@ -650,7 +652,7 @@ mod tests {
 
     #[test]
     fn composite_mask_sources_retain_descendant_part_shapes() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
 
         let source = puppet.insert_child(
@@ -705,7 +707,7 @@ mod tests {
     /// inner composite hoists to root and paints on top of the bangs.
     #[test]
     fn passthrough_nested_composite_flattens_into_enclosing() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
 
         let composite_node = |data: CompositeData| Node {
@@ -762,7 +764,7 @@ mod tests {
 
     #[test]
     fn drawable_order_is_low_to_high_and_stable_for_equal_z() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
         let root = puppet.root();
         let first_front = puppet.insert_child(
@@ -822,7 +824,7 @@ mod tests {
     /// `root_drawables` would render it straight to the framebuffer at root z.
     #[test]
     fn isolating_nested_composite_is_not_flattened() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
         let composite_node = || Node {
             kind: NodeKind::Composite(Box::default()),
@@ -882,7 +884,7 @@ mod tests {
     /// still darkens), so the collector culls all but Darken.
     #[test]
     fn opacity_zero_drawables_are_culled_except_darken() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
 
         let part_with = |opacity: f32, blend_mode| Node {
@@ -922,7 +924,7 @@ mod tests {
     /// must invalidate the cache so the second frame stops flattening it.
     #[test]
     fn static_passthrough_cache_invalidates_when_puppet_grows() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
         let composite_node = || Node {
             kind: NodeKind::Composite(Box::<CompositeData>::default()),
@@ -980,7 +982,7 @@ mod tests {
 
     #[test]
     fn static_passthrough_cache_tracks_blend_and_mask_mutations() {
-        let mut puppet = Puppet::new();
+        let mut puppet = LegacyPuppet::new();
         puppet.set_textures(vec![one_pixel_texture()]);
         let composite_node = || Node {
             kind: NodeKind::Composite(Box::<CompositeData>::default()),

@@ -5,6 +5,7 @@ pub mod fill;
 pub mod formats;
 pub mod id;
 pub mod importer;
+pub mod legacy_puppet;
 pub mod load;
 pub mod load_budget;
 pub(crate) mod meshgroup;
@@ -12,7 +13,6 @@ pub mod model;
 pub mod node;
 pub mod params;
 pub mod physics;
-pub mod puppet;
 pub mod weld;
 
 pub use animation::*;
@@ -22,6 +22,7 @@ pub use id::*;
 pub use importer::{
     from_clp, from_clp_cached, from_clp_with_budget, ImportError, TexturePrepCache,
 };
+pub use legacy_puppet::*;
 pub use load::*;
 pub use load_budget::*;
 pub use model::{
@@ -33,7 +34,6 @@ pub use model::{
 pub use node::*;
 pub use params::*;
 pub use physics::*;
-pub use puppet::*;
 pub use weld::{Weld, WeldPair};
 
 pub type Vec2 = glam::Vec2;
