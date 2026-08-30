@@ -1,32 +1,289 @@
-//! Per-texture alpha cropping: catchlight's texture strategy, applied
-//! wherever a model's encoded bytes are turned into uploadable images.
-//! Crops each texture to the bounding box of its opaque texels (plus a
-//! transparent mip skirt) and keeps it as its own table entry. Texture ids
-//! stay 1:1 with the source table, so only part UVs are rewritten, never
-//! albedo slots.
+//! A model's textures, from the bytes it stores to the images a renderer
+//! uploads.
 //!
-//! One entry point: [`prepare_textures`] decodes and crops and hands back a
-//! [`UvCrop`] per texture for whoever owns the meshes to apply. That is what
-//! the render cache calls, because a `Model` keeps its textures encoded and
-//! its meshes authored against them, and applying the remap to the meshes it
-//! uploads is the render cache's own business.
+//! A [`Model`](crate::Model) keeps every texture exactly as its author
+//! supplied it — encoded, never re-encoded — so something has to decode them,
+//! and that is [`prepare_textures`]. It is the whole texture strategy in one
+//! entry point: decode, convert into the canonical premultiplied-linear
+//! encoding, and crop each image to the bounding box of its *opaque* texels
+//! (plus a transparent mip skirt), handing back a [`UvCrop`] per texture for
+//! whoever owns the meshes to apply. The render cache is what calls it; the
+//! table it returns stays 1:1 with the model's texture order, so albedo slots
+//! never move and only part UVs are rewritten.
 //!
-//! Why the *opaque* bbox and not the mesh-referenced *UV* bbox: on inochi2d
+//! Why the *opaque* bbox and not the mesh-referenced *UV* bbox: on imported
 //! models the UV bbox is dominated by transparent texels the mesh's vertices
 //! straddle but never show (on the reference model it comes out ~12% opaque).
 //! The opaque bbox is ~4x tighter — reference model ~158 MB -> ~56 MB.
 //!
 //! Sampling stays correct because premultiplied storage plus a transparent
 //! ClampToBorder make taps past the opaque region read transparent, and the
-//! [`MARGIN`] skirt reproduces the source texture's mip neighborhood so
+//! 16-texel skirt reproduces the source texture's mip neighborhood so
 //! box-filtered levels 0..=4 match. Each crop is its own texture with its own
 //! mip chain, so no mip footprint can straddle into another crop's texels.
 
-use super::error::ImportError;
-use crate::components::DecodedTexture;
-use crate::formats::EncodedTexture;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+use crate::components::{srgb_encode_to_byte, DecodedTexture};
+
+/// Why a texture could not be prepared.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TextureError {
+    #[error("texture decode failed: {0}")]
+    Decode(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextureFormat {
+    Png,
+    Tga,
+}
+
+impl TextureFormat {
+    pub fn to_image_format(self) -> image::ImageFormat {
+        match self {
+            TextureFormat::Png => image::ImageFormat::Png,
+            TextureFormat::Tga => image::ImageFormat::Tga,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EncodedTexture {
+    pub format: TextureFormat,
+    pub data: Arc<[u8]>,
+    /// `true` for premultiplied-in-sRGB on-disk bytes (every `.inx`
+    /// texture); `false` for editor-authored straight-alpha. Decides whether
+    /// `decode` un-premultiplies before re-premultiplying into linear.
+    pub premultiplied: bool,
+}
+
+impl EncodedTexture {
+    /// Decode into the canonical [`DecodedTexture`] form: bytes encoding
+    /// premultiplied LINEAR color, ready to upload as `Rgba8UnormSrgb`.
+    /// The sampler then decodes sRGB→linear and returns premultiplied
+    /// linear values; the shader treats the sample as premultiplied and
+    /// runs all blend / tint math in linear space.
+    ///
+    /// The inx/inp on-disk convention pre-multiplies RGB by alpha in
+    /// sRGB byte space (`byte = srgb_encode(linear) * α`). To convert
+    /// to "premultiplied linear, encoded as sRGB byte" we
+    /// (1) unpremultiply in sRGB byte space → straight sRGB bytes,
+    /// (2) decode each channel sRGB→linear, multiply by α, encode
+    ///     linear→sRGB byte back into the buffer.
+    ///
+    /// Premultiplied storage handles alpha-edge bilinear correctly
+    /// without an explicit alpha-bleed pass: at an edge, the filter
+    /// mixes `(rgb·α, α)` with `(0, 0)` and the resulting gradient is
+    /// already premultiplied.
+    /// Width/height from the image header alone — no pixel decode. Lets
+    /// the importer plan every texture crop before paying
+    /// for any full decode.
+    pub fn dimensions(&self) -> Result<(u32, u32), image::ImageError> {
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(&self.data[..]));
+        reader.set_format(self.format.to_image_format());
+        reader.into_dimensions()
+    }
+
+    pub fn decode(&self) -> Result<DecodedTexture, image::ImageError> {
+        let img = image::load_from_memory_with_format(&self.data, self.format.to_image_format())?;
+        let (width, height) = (img.width(), img.height());
+        let mut rgba = img.into_rgba8().into_raw();
+        // Both conventions converge on premultiplied-linear; only a
+        // premultiplied-sRGB source needs unwinding to straight first.
+        if self.premultiplied {
+            premultiplied_srgb_to_premultiplied_linear_inplace(&mut rgba);
+        } else {
+            premultiply_linear_into_srgb_inplace(&mut rgba);
+        }
+        Ok(DecodedTexture {
+            width,
+            height,
+            rgba: rgba.into(),
+        })
+    }
+}
+
+/// Every `(channel byte, alpha byte)` pair's final value under the inx
+/// conversion. Indexed `alpha * 256 + channel`.
+static PREMULTIPLY_SRGB_LUT: std::sync::OnceLock<Box<[u8; 65536]>> = std::sync::OnceLock::new();
+
+fn premultiply_srgb_lut() -> &'static [u8; 65536] {
+    PREMULTIPLY_SRGB_LUT.get_or_init(|| {
+        let decode = crate::components::srgb_decode_table();
+        let mut table = Box::new([0u8; 65536]);
+        for a in 1..=255usize {
+            let inv = 255.0 / a as f32;
+            let af = a as f32 / 255.0;
+            for c in 0..256usize {
+                table[a * 256 + c] = if a == 255 {
+                    c as u8
+                } else {
+                    let straight = (c as f32 * inv).round().min(255.0) as u8;
+                    srgb_encode_to_byte(decode[straight as usize] * af)
+                };
+            }
+        }
+        table
+    })
+}
+
+/// Convert premultiplied-in-sRGB bytes straight to the
+/// premultiplied-linear encoding, in one pass.
+///
+/// Composing [`unpremultiply_srgb_inplace`] with
+/// [`premultiply_linear_into_srgb_inplace`] gives the same bytes, but each
+/// output depends only on its own channel and alpha, so the composition is
+/// a pure function of two bytes and tabulates completely. That turns the
+/// per-pixel divide, `powf` pair, and second sweep over the buffer into one
+/// indexed read — and the second sweep is most of the cost, because the
+/// overwhelming majority of an atlas is fully transparent or fully opaque
+/// and does no arithmetic either way.
+pub fn premultiplied_srgb_to_premultiplied_linear_inplace(rgba: &mut [u8]) {
+    debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
+    let lut = premultiply_srgb_lut();
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let a = px[3] as usize;
+        if a == 0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            continue;
+        }
+        if a == 255 {
+            continue;
+        }
+        let row = &lut[a * 256..a * 256 + 256];
+        for c in &mut px[..3] {
+            *c = row[*c as usize];
+        }
+    }
+}
+
+/// Undo premultiplication in sRGB byte space on an RGBA8 buffer.
+/// For each pixel: `straight = round((rgb * 255) / α)`, computed in
+/// f32 so partial-alpha pixels don't lose precision to integer
+/// division. Pixels with α=0 are left as `(0, 0, 0, 0)`.
+pub fn unpremultiply_srgb_inplace(rgba: &mut [u8]) {
+    debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let a = px[3];
+        if a == 0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            continue;
+        }
+        if a == 255 {
+            continue;
+        }
+        let inv = 255.0 / a as f32;
+        for c in &mut px[..3] {
+            *c = (*c as f32 * inv).round().min(255.0) as u8;
+        }
+    }
+}
+
+/// Convert straight-alpha sRGB-encoded RGBA to bytes encoding
+/// premultiplied LINEAR color: for each channel, `srgb_decode(rgb)`,
+/// multiply by `α`, `srgb_encode` back to byte. Alpha is unchanged.
+/// α=0 pixels emit `(0, 0, 0, 0)`; α=255 pixels are unchanged
+/// (premultiply by 1 is a no-op).
+///
+/// Result is suitable for upload as `Rgba8UnormSrgb`: the sampler
+/// decodes sRGB→linear and returns premultiplied linear values, which
+/// the shader can blend / tint directly without re-multiplying by α.
+pub fn premultiply_linear_into_srgb_inplace(rgba: &mut [u8]) {
+    debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
+    let decode = crate::components::srgb_decode_table();
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let a = px[3];
+        if a == 0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            continue;
+        }
+        if a == 255 {
+            continue;
+        }
+        let af = a as f32 / 255.0;
+        for c in &mut px[..3] {
+            let premul = decode[*c as usize] * af;
+            *c = srgb_encode_to_byte(premul);
+        }
+    }
+}
+
+/// Edge-bleed (a.k.a. alpha bleed / edge padding): for every α=0 pixel,
+/// copy the RGB of the nearest α>0 pixel, leaving α=0 untouched. Without
+/// this, bilinear texture filtering at a Part's alpha boundary mixes
+/// `(rgb, 1)` with `(0, 0)` and produces a darkening colour shift that
+/// shows up as faint mesh-edge halos on top of underlying parts. The imported
+/// format gets the same effect for free because it stores premultiplied bytes:
+/// at the boundary the filter mixes `rgb·α` with `0` and the gradient is
+/// already premultiplied. Catchlight stores straight-alpha so we have to
+/// stage the boundary RGB manually.
+///
+/// BFS from every α>0 pixel; each α=0 neighbour reached for the first
+/// time copies the source's RGB. O(W·H), runs once per texture at load.
+pub fn alpha_bleed_inplace(rgba: &mut [u8], width: u32, height: u32) {
+    let w = width as usize;
+    let h = height as usize;
+    debug_assert_eq!(rgba.len(), w * h * 4);
+    if w == 0 || h == 0 {
+        return;
+    }
+
+    // `seen[i]` is true when pixel i has α>0, OR has already been bled
+    // from a neighbour. Doubles as the "in queue" marker.
+    let mut seen = vec![false; w * h];
+    let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    for i in 0..(w * h) {
+        if rgba[i * 4 + 3] > 0 {
+            seen[i] = true;
+            queue.push_back(i as u32);
+        }
+    }
+
+    while let Some(idx) = queue.pop_front() {
+        let idx = idx as usize;
+        let x = idx % w;
+        let y = idx / w;
+        let r = rgba[idx * 4];
+        let g = rgba[idx * 4 + 1];
+        let b = rgba[idx * 4 + 2];
+        let visit = |nx: usize,
+                     ny: usize,
+                     queue: &mut std::collections::VecDeque<u32>,
+                     seen: &mut [bool],
+                     rgba: &mut [u8]| {
+            let ni = ny * w + nx;
+            if seen[ni] {
+                return;
+            }
+            seen[ni] = true;
+            rgba[ni * 4] = r;
+            rgba[ni * 4 + 1] = g;
+            rgba[ni * 4 + 2] = b;
+            // alpha stays 0 — the pixel is still invisible
+            queue.push_back(ni as u32);
+        };
+        if x > 0 {
+            visit(x - 1, y, &mut queue, &mut seen, rgba);
+        }
+        if x + 1 < w {
+            visit(x + 1, y, &mut queue, &mut seen, rgba);
+        }
+        if y > 0 {
+            visit(x, y - 1, &mut queue, &mut seen, rgba);
+        }
+        if y + 1 < h {
+            visit(x, y + 1, &mut queue, &mut seen, rgba);
+        }
+    }
+}
 
 /// Transparent skirt around the opaque bbox, in texels. The renderer
 /// box-filters each texture's own mip chain, so the skirt only has to feed the
@@ -52,7 +309,7 @@ struct Plan {
 
 #[derive(Clone, PartialEq, Eq)]
 struct TexturePrepKey {
-    format: crate::formats::TextureFormat,
+    format: TextureFormat,
     premultiplied: bool,
     texture_halvings: u32,
     content_hash: u64,
@@ -139,7 +396,7 @@ pub fn prepare_textures(
     textures: &[EncodedTexture],
     texture_halvings: u32,
     cache: Option<&mut TexturePrepCache>,
-) -> Result<Vec<PreppedTexture>, ImportError> {
+) -> Result<Vec<PreppedTexture>, TextureError> {
     let (table, plans) = prep_all(textures, texture_halvings, cache)?;
     Ok(table
         .into_iter()
@@ -164,7 +421,7 @@ fn prep_all(
     textures: &[EncodedTexture],
     texture_halvings: u32,
     mut cache: Option<&mut TexturePrepCache>,
-) -> Result<(Vec<DecodedTexture>, Vec<Plan>), ImportError> {
+) -> Result<(Vec<DecodedTexture>, Vec<Plan>), TextureError> {
     let keys: Vec<Option<TexturePrepKey>> = textures
         .iter()
         .map(|tex| cache.as_ref().map(|_| prep_key(tex, texture_halvings)))
@@ -219,7 +476,7 @@ fn prep_textures(
     indices: &[usize],
     textures: &[EncodedTexture],
     texture_halvings: u32,
-) -> Result<Vec<(DecodedTexture, Plan)>, ImportError> {
+) -> Result<Vec<(DecodedTexture, Plan)>, TextureError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
@@ -240,7 +497,7 @@ fn prep_textures(
 fn prep_one(
     tex: &EncodedTexture,
     texture_halvings: u32,
-) -> Result<(DecodedTexture, Plan), ImportError> {
+) -> Result<(DecodedTexture, Plan), TextureError> {
     let decoded = decode_halved(tex, texture_halvings)?;
     let (src_w, src_h) = (decoded.width, decoded.height);
     Ok(match alpha_crop_rect(&decoded) {
@@ -319,10 +576,10 @@ fn align_up(v: i64) -> i64 {
     (v + ALIGN - 1).div_euclid(ALIGN) * ALIGN
 }
 
-fn decode_halved(tex: &EncodedTexture, halvings: u32) -> Result<DecodedTexture, ImportError> {
+fn decode_halved(tex: &EncodedTexture, halvings: u32) -> Result<DecodedTexture, TextureError> {
     let mut decoded = tex
         .decode()
-        .map_err(|e| ImportError::TextureDecode(e.to_string()))?;
+        .map_err(|e| TextureError::Decode(e.to_string()))?;
     for _ in 0..halvings {
         decoded = decoded.halved();
     }
@@ -364,6 +621,7 @@ fn blit(
 }
 
 #[cfg(test)]
+#[allow(clippy::identity_op)]
 mod tests {
     use super::*;
 
@@ -374,7 +632,7 @@ mod tests {
             .write_to(&mut data, image::ImageFormat::Png)
             .unwrap();
         EncodedTexture {
-            format: crate::formats::TextureFormat::Png,
+            format: TextureFormat::Png,
             data: data.into_inner().into(),
             premultiplied,
         }
@@ -453,10 +711,10 @@ mod tests {
         );
 
         let mut wrong_format = straight;
-        wrong_format.format = crate::formats::TextureFormat::Tga;
+        wrong_format.format = TextureFormat::Tga;
         assert!(matches!(
             prepare_textures(&[wrong_format], 0, Some(&mut cache)),
-            Err(ImportError::TextureDecode(_))
+            Err(TextureError::Decode(_))
         ));
     }
 
@@ -541,7 +799,7 @@ mod tests {
             .write_to(&mut data, image::ImageFormat::Png)
             .unwrap();
         let source = EncodedTexture {
-            format: crate::formats::TextureFormat::Png,
+            format: TextureFormat::Png,
             data: data.into_inner().into(),
             premultiplied: false,
         };
@@ -577,5 +835,140 @@ mod tests {
         assert!((0.0..=1.0).contains(&inside.x) && (0.0..=1.0).contains(&inside.y));
         let corner = crop.map(Vec2::ZERO);
         assert!(corner.x < 0.0 && corner.y < 0.0);
+    }
+
+    #[test]
+    fn fused_premultiply_matches_the_two_pass_composition() {
+        // The fused table replaces unpremultiply-then-premultiply, so it
+        // has to agree on every input it can ever see — and it can see all
+        // of them, since each output channel depends only on its own byte
+        // and the pixel's alpha. Exhaustive, not sampled.
+        let mut fused: Vec<u8> = Vec::with_capacity(256 * 256 * 4);
+        for a in 0..256usize {
+            for c in 0..256usize {
+                fused.extend_from_slice(&[c as u8, c as u8, c as u8, a as u8]);
+            }
+        }
+        let mut two_pass = fused.clone();
+        unpremultiply_srgb_inplace(&mut two_pass);
+        premultiply_linear_into_srgb_inplace(&mut two_pass);
+        premultiplied_srgb_to_premultiplied_linear_inplace(&mut fused);
+
+        for (i, (f, t)) in fused
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(two_pass.as_chunks::<4>().0)
+            .enumerate()
+        {
+            assert_eq!(f, t, "channel {} alpha {}", i % 256, i / 256);
+        }
+    }
+
+    #[test]
+    fn unpremultiply_srgb_recovers_straight_alpha() {
+        // Pixel layout: opaque (α=255), fully transparent (α=0),
+        // half-alpha grey, tiny-alpha saturated color.
+        let mut px = [
+            200, 100, 50, 255, // fully opaque: untouched
+            123, 234, 89, 0, // α=0: rgb zeroed
+            64, 64, 64, 128, // α≈0.5: premul 0.5 byte → straight ≈ 0.5 sRGB = 128
+            10, 5, 2, 20, // α≈8%: premul 10/20 → straight ≈ 0.5 sRGB = 128
+        ];
+        unpremultiply_srgb_inplace(&mut px);
+        assert_eq!(&px[0..4], &[200, 100, 50, 255]);
+        assert_eq!(&px[4..8], &[0, 0, 0, 0]);
+        // (64 * 255 / 128).round() = 127.5 → banker's/half-away-up 128.
+        assert!((px[4 + 4] as i32 - 127).abs() <= 1);
+        assert!((px[5 + 4] as i32 - 127).abs() <= 1);
+        assert!((px[6 + 4] as i32 - 127).abs() <= 1);
+        assert_eq!(px[7 + 4], 128);
+        // α=20: inv = 12.75. 10*12.75 = 127.5; 5*12.75 = 63.75; 2*12.75 = 25.5.
+        assert!((px[12] as i32 - 128).abs() <= 1);
+        assert!((px[13] as i32 - 64).abs() <= 1);
+        assert!((px[14] as i32 - 26).abs() <= 1);
+        assert_eq!(px[15], 20);
+    }
+
+    #[test]
+    fn unpremultiply_srgb_clamps_noise() {
+        // Slightly-invalid asset where rgb > alpha (impossible in a
+        // correct premultiply). The clamp to 255 must hold.
+        let mut px = [200u8, 100, 50, 10];
+        unpremultiply_srgb_inplace(&mut px);
+        assert_eq!(px, [255, 255, 255, 10]);
+    }
+
+    #[test]
+    fn premultiply_linear_zeros_transparent_keeps_opaque_unchanged() {
+        let mut px = [
+            200, 100, 50, 255, // opaque: untouched (premultiply by 1)
+            200, 100, 50, 0, // α=0: rgb zeroed
+        ];
+        premultiply_linear_into_srgb_inplace(&mut px);
+        assert_eq!(&px[0..4], &[200, 100, 50, 255]);
+        assert_eq!(&px[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn premultiply_linear_half_alpha_matches_linear_premul_then_encode() {
+        // sRGB byte 188 ≈ linear 0.5026. Premul by α=128/255≈0.502 →
+        // linear 0.2523. srgb_encode → byte ≈ 138 (linear premul,
+        // not the byte-space premul which would give 188*0.5=94).
+        let mut px = [188u8, 188, 188, 128];
+        premultiply_linear_into_srgb_inplace(&mut px);
+        for (c, &v) in px[..3].iter().enumerate() {
+            assert!(
+                (v as i32 - 138).abs() <= 1,
+                "channel {} = {}, expected ~138",
+                c,
+                v,
+            );
+        }
+        assert_eq!(px[3], 128, "alpha unchanged");
+    }
+
+    #[test]
+    fn alpha_bleed_extends_visible_rgb_into_transparent_neighbors() {
+        // 3x3 with a single visible (red, opaque) centre pixel and an
+        // 8-pixel transparent ring around it. After bleed, every ring
+        // pixel must hold the centre's RGB (alpha still 0).
+        let mut rgba = vec![0u8; 3 * 3 * 4];
+        // centre at (1, 1)
+        rgba[(1 * 3 + 1) * 4] = 220;
+        rgba[(1 * 3 + 1) * 4 + 1] = 30;
+        rgba[(1 * 3 + 1) * 4 + 2] = 60;
+        rgba[(1 * 3 + 1) * 4 + 3] = 255;
+
+        alpha_bleed_inplace(&mut rgba, 3, 3);
+
+        for i in 0..9 {
+            let r = rgba[i * 4];
+            let g = rgba[i * 4 + 1];
+            let b = rgba[i * 4 + 2];
+            let a = rgba[i * 4 + 3];
+            assert_eq!((r, g, b), (220, 30, 60), "pixel {} RGB", i);
+            if i == 4 {
+                assert_eq!(a, 255, "centre alpha");
+            } else {
+                assert_eq!(a, 0, "ring pixel {} alpha", i);
+            }
+        }
+    }
+
+    #[test]
+    fn alpha_bleed_no_op_when_fully_opaque_or_fully_transparent() {
+        // Fully opaque buffer: no α=0 pixels, nothing to bleed into.
+        let mut opaque = vec![10u8, 20, 30, 255, 40, 50, 60, 255];
+        let snapshot = opaque.clone();
+        alpha_bleed_inplace(&mut opaque, 2, 1);
+        assert_eq!(opaque, snapshot);
+
+        // Fully transparent buffer: no α>0 source — every pixel stays
+        // at its initial RGB (the BFS queue is empty so the function
+        // exits immediately).
+        let mut blank = vec![0u8; 2 * 1 * 4];
+        alpha_bleed_inplace(&mut blank, 2, 1);
+        assert_eq!(blank, vec![0u8; 8]);
     }
 }

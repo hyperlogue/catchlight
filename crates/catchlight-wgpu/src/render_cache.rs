@@ -276,7 +276,7 @@ impl RenderCache {
     fn rebuild(&mut self, renderer: &mut WgpuRenderer, model: &Model) -> RendererResult<()> {
         let _span = tracing::trace_span!("render_cache::rebuild").entered();
 
-        let textures: Vec<catchlight_core::formats::EncodedTexture> = model
+        let textures: Vec<catchlight_core::EncodedTexture> = model
             .texture_ids()
             .iter()
             .filter_map(|id| model.texture(id))

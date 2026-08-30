@@ -16,7 +16,8 @@
 use std::io::Cursor;
 use std::path::Path;
 
-use crate::formats::{clm, InxModel};
+use crate::formats::clm;
+use crate::formats::inx::InxModel;
 use crate::importer::from_inx_model_to_legacy;
 use crate::model::Model;
 use crate::ImportError;
@@ -70,7 +71,7 @@ pub fn load_model(bytes: &[u8], format: ModelFormat) -> Result<Model, ImportErro
     let inx = match format {
         ModelFormat::Clm => return Ok(Model::from_clm_bytes(bytes)?),
         ModelFormat::Inx => InxModel::parse(Cursor::new(bytes))?,
-        ModelFormat::Inp => crate::formats::parse_inp(Cursor::new(bytes))?,
+        ModelFormat::Inp => crate::formats::inx::parse_inp(Cursor::new(bytes))?,
     };
     tracing::warn!(
         "loading a .inx/.inp directly is deprecated; convert it to .clm with `cargo xtask import`"

@@ -48,7 +48,7 @@ fn gen_fixture(args: &[String]) -> Result<()> {
 }
 
 fn import(args: &[String]) -> Result<()> {
-    use catchlight_core::formats::InxModel;
+    use catchlight_core::formats::inx::InxModel;
     use catchlight_core::importer::from_inx_model_to_legacy;
     use catchlight_core::Model;
 
@@ -78,7 +78,7 @@ fn import(args: &[String]) -> Result<()> {
 
     let bytes = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
     let model = match input.extension().and_then(|e| e.to_str()) {
-        Some("inp") => catchlight_core::formats::parse_inp(std::io::Cursor::new(&bytes))
+        Some("inp") => catchlight_core::formats::inx::parse_inp(std::io::Cursor::new(&bytes))
             .context("parsing .inp")?,
         _ => InxModel::parse(std::io::Cursor::new(&bytes)).context("parsing .inx")?,
     };

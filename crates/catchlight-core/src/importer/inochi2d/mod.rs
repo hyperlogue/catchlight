@@ -32,13 +32,11 @@
 //! takes. `.inx` is untrusted input, so the node walk carries its own stack
 //! rather than recursing.
 //!
-//! **Texture strategy is `alpha_crop.rs` and nothing else.** It crops each
-//! texture to the aligned bounding box of its *opaque* texels plus a 16-texel
-//! transparent mip skirt, keeping texture ids 1:1 with the source table so only
-//! part UVs are rewritten. `atlas.rs` is gone.
+//! **Textures are carried verbatim.** The bytes an `.inx` stores land in the
+//! model unchanged; decoding, the alpha crop and the UV remap belong to
+//! [`crate::texture`], which every model goes through whether it was imported
+//! or authored.
 
-pub(crate) mod alpha_crop;
-pub use alpha_crop::{prepare_textures, PreppedTexture, TexturePrepCache, UvCrop};
 pub(crate) mod error;
 pub(crate) mod schema;
 pub(crate) mod to_legacy;

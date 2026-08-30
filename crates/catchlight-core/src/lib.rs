@@ -13,16 +13,14 @@ pub mod model;
 pub mod node;
 pub mod physics;
 pub mod puppet;
+pub mod texture;
 pub mod weld;
 
 pub use animation::*;
 pub use components::*;
 pub use deform::*;
 pub use id::*;
-pub use importer::{
-    from_inx_model_to_legacy, prepare_textures, ImportError, PreppedTexture, TexturePrepCache,
-    UvCrop,
-};
+pub use importer::{from_inx_model_to_legacy, ImportError};
 pub use interpolate::*;
 pub use load::*;
 pub use load_budget::*;
@@ -37,6 +35,10 @@ pub use model::{
 pub use node::*;
 pub use physics::*;
 pub use puppet::*;
+pub use texture::{
+    prepare_textures, EncodedTexture, PreppedTexture, TextureError, TextureFormat,
+    TexturePrepCache, UvCrop,
+};
 pub use weld::{Weld, WeldPair};
 
 pub type Vec2 = glam::Vec2;

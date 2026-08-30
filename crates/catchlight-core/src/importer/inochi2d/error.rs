@@ -1,4 +1,4 @@
-use crate::formats::InxParseError;
+use crate::formats::inx::InxParseError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
