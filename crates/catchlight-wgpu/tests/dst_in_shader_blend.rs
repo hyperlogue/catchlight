@@ -5,25 +5,27 @@
 //! computes the blend per-channel). Inverse is *not* — it's a plain
 //! fixed-function blend (`OneMinusDst` / `OneMinusSrcAlpha`), included here
 //! only as the fixed-function counter-case.
-//! Each test builds a synthetic single-Part puppet on a known
+//! Each test builds a synthetic single-Part model on a known
 //! background, runs it through `render_list_ext`, and checks a center
 //! pixel against the math computed in linear color space (matching the
 //! shader, which samples sRGB textures as linear).
+//!
+//! The centre pixel is what every assertion reads: alpha-cropping surrounds
+//! each texture with a transparent skirt and remaps the UVs onto the crop, so
+//! the quad's own edge fragments straddle the boundary while its middle
+//! samples the authored texel exactly.
 
-use catchlight_core::{
-    BlendMode, GlobalTransforms, LegacyPuppet, Mesh, Node, NodeKind, PartData, PuppetTexture,
-    TextureId, Vec3,
-};
+mod common;
+
+use catchlight_core::{BlendMode, Model, ModelComposite, ModelNodeKind};
 use catchlight_wgpu::{
-    collect_drawables, create_headless_context, FramebufferSnapshotPool, WgpuRenderer,
+    collect, create_headless_context, FramebufferSnapshotPool, PrepareOptions, RenderCache,
+    WgpuRenderer,
 };
-use std::sync::Arc;
+use common::NO_ADAPTER;
 
 const W: u32 = 8;
 const H: u32 = 8;
-
-const NO_ADAPTER: &str =
-    "no Vulkan adapter for the headless context; see AGENTS.md, \"Native headless rendering\"";
 
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -43,51 +45,26 @@ fn linear_to_srgb_u8(c: f32) -> u8 {
     (s * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-fn solid_texture(r: u8, g: u8, b: u8, a: u8) -> PuppetTexture {
-    let rgba: Vec<u8> = (0..16).flat_map(|_| [r, g, b, a]).collect();
-    PuppetTexture {
-        width: 4,
-        height: 4,
-        rgba: Arc::from(rgba),
-    }
-}
-
-fn make_puppet(blend: BlendMode, src_rgba: [u8; 4]) -> LegacyPuppet {
+fn make_model(blend: BlendMode, src_rgba: [u8; 4]) -> Model {
     // One Part covering the full viewport. The mesh is a quad in world
     // units that matches the orthographic camera below; uvs span [0,1]
     // so the Part samples its solid-color texture at every fragment.
-    let mut puppet = LegacyPuppet::new();
-    puppet.set_textures(vec![solid_texture(
-        src_rgba[0],
-        src_rgba[1],
-        src_rgba[2],
-        src_rgba[3],
-    )]);
-    let mesh = Mesh::quad(2.0, 2.0); // matches orthographic [-1,1] world bounds
-    let mut part = PartData {
-        mesh,
-        blend_mode: blend,
-        ..Default::default()
-    };
-    part.opacity = 1.0;
-    part.tint = Vec3::ONE;
-    part.screen_tint = Vec3::ZERO;
-    let part_node = Node {
-        kind: NodeKind::Part(Box::new(part)),
-        ..Default::default()
-    };
-    let root = puppet.root();
-    puppet.insert_child(root, part_node, None);
-    puppet
+    let mut build = common::Build::new();
+    let tex = build.texture(common::solid_texture(4, 4, src_rgba));
+    let root = build.root();
+    build.part(&root, "quad", 0.0, common::quad(2.0, 2.0), &tex, |part| {
+        part.blend_mode = blend;
+    });
+    build.model
 }
 
 async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4]) -> Vec<u8> {
-    render_puppet(&make_puppet(blend, src_rgba_u8), bg_rgba_u8).await
+    render_model(make_model(blend, src_rgba_u8), bg_rgba_u8).await
 }
 
-/// Render any puppet through `render_list_ext` (snapshot pool wired)
+/// Render any model through `render_list_ext` (snapshot pool wired)
 /// onto a solid background and read back the pixels.
-async fn render_puppet(puppet: &LegacyPuppet, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
+async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -107,17 +84,14 @@ async fn render_puppet(puppet: &LegacyPuppet, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let mut renderer = WgpuRenderer::new(device, queue, format).await;
-    renderer.upload_puppet(puppet).expect("upload");
+    let mut rig = common::Rig::new(&mut renderer, model);
 
     // Orthographic camera matching the quad's [-1,1] world bounds, so
     // the part covers the entire framebuffer.
     let view_proj = glam::Mat4::orthographic_rh(-1.0, 1.0, 1.0, -1.0, -1000.0, 1000.0);
     renderer.update_camera(view_proj);
-    renderer.sync_deforms(puppet);
 
-    let mut transforms = GlobalTransforms::new();
-    puppet.compute_transforms(&mut transforms);
-    let render_list = collect_drawables(puppet, &transforms);
+    let render_list = rig.frame(&mut renderer, 0.0);
     let stencil =
         catchlight_wgpu::StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, W, H);
     let mut composites = catchlight_wgpu::CompositePool::new(W, H);
@@ -165,56 +139,27 @@ async fn render_puppet(puppet: &LegacyPuppet, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
 /// both children of one Normal Composite. Higher z_order draws last
 /// (in front), so the burn part blends against the pad where they overlap
 /// and against the composite's transparent clear elsewhere.
-fn make_nested_burn_puppet(pad_rgba: [u8; 4], src_rgba: [u8; 4]) -> LegacyPuppet {
-    let mut puppet = LegacyPuppet::new();
-    puppet.set_textures(vec![
-        solid_texture(pad_rgba[0], pad_rgba[1], pad_rgba[2], pad_rgba[3]),
-        solid_texture(src_rgba[0], src_rgba[1], src_rgba[2], src_rgba[3]),
-    ]);
-    let root = puppet.root();
-    let comp_id = puppet.insert_child(
-        root,
-        Node {
-            kind: NodeKind::Composite(Box::default()),
-            ..Default::default()
-        },
-        None,
+fn make_nested_burn_model(pad_rgba: [u8; 4], src_rgba: [u8; 4]) -> Model {
+    let mut build = common::Build::new();
+    let pad_tex = build.texture(common::solid_texture(4, 4, pad_rgba));
+    let burn_tex = build.texture(common::solid_texture(4, 4, src_rgba));
+    let root = build.root();
+    let comp = build.node(
+        &root,
+        "composite",
+        0.0,
+        ModelNodeKind::Composite(ModelComposite::new()),
     );
-    let mut pad = PartData {
-        mesh: Mesh::quad(1.0, 2.0),
-        ..Default::default()
-    };
-    pad.opacity = 1.0;
-    pad.tint = Vec3::ONE;
-    pad.screen_tint = Vec3::ZERO;
-    puppet.insert_child(
-        comp_id,
-        Node {
-            kind: NodeKind::Part(Box::new(pad)),
-            ..Default::default()
-        },
-        None,
+    build.part(&comp, "pad", 0.0, common::quad(1.0, 2.0), &pad_tex, |_| {});
+    build.part(
+        &comp,
+        "burn",
+        1.0,
+        common::quad(2.0, 2.0),
+        &burn_tex,
+        |part| part.blend_mode = BlendMode::ColorBurn,
     );
-    let mut burn = PartData {
-        mesh: Mesh::quad(2.0, 2.0),
-        blend_mode: BlendMode::ColorBurn,
-        ..Default::default()
-    };
-    burn.albedo_texture = TextureId(1);
-    burn.opacity = 1.0;
-    burn.tint = Vec3::ONE;
-    burn.screen_tint = Vec3::ZERO;
-    puppet.insert_child(
-        comp_id,
-        Node {
-            kind: NodeKind::Part(Box::new(burn)),
-            z_order: 1.0,
-            base_z_order: 1.0,
-            ..Default::default()
-        },
-        None,
-    );
-    puppet
+    build.model
 }
 
 fn pixel_at(buf: &[u8], x: usize, y: usize) -> [u8; 4] {
@@ -360,8 +305,8 @@ fn color_burn_inside_composite_blends_against_composite_content() {
     let pad = [200u8, 200, 200, 255];
     let src = [230u8, 180, 150, 255];
 
-    let puppet = make_nested_burn_puppet(pad, src);
-    let pixels = pollster::block_on(render_puppet(&puppet, bg));
+    let model = make_nested_burn_model(pad, src);
+    let pixels = pollster::block_on(render_model(model, bg));
 
     let s = [
         srgb_to_linear(230.0 / 255.0),
@@ -405,7 +350,7 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
     // Re-render via the legacy `render_list` (no snapshot pool) — that
     // path falls back to Normal OVER blend for Overlay so the part
     // simply paints its solid color.
-    let puppet = make_puppet(BlendMode::Overlay, src);
+    let model = make_model(BlendMode::Overlay, src);
     let fallback_center = pollster::block_on(async {
         let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -425,14 +370,17 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut renderer = WgpuRenderer::new(device, queue, format).await;
-        renderer.upload_puppet(&puppet).unwrap();
+        let mut cache = RenderCache::prepare(&mut renderer, &model, PrepareOptions::default())
+            .expect("prepare the render cache");
         renderer.update_camera(glam::Mat4::orthographic_rh(
             -1.0, 1.0, 1.0, -1.0, -1000.0, 1000.0,
         ));
-        renderer.sync_deforms(&puppet);
-        let mut transforms = GlobalTransforms::new();
-        puppet.compute_transforms(&mut transforms);
-        let render_list = collect_drawables(&puppet, &transforms);
+        let mut puppet = catchlight_core::Puppet::new(&model);
+        puppet.tick(&model, 0.0);
+        cache
+            .refresh(&mut renderer, &model, &puppet)
+            .expect("refresh the render cache");
+        let render_list = collect(&cache, &puppet);
         let stencil = catchlight_wgpu::StencilTarget::new_for_pipelines(
             &renderer.shared,
             &renderer.device,

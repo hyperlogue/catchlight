@@ -1,20 +1,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use catchlight_core::{load_model, GlobalTransforms, ModelFormat, Vec2};
+mod common;
+
+use catchlight_core::{Model, Vec2};
 use catchlight_wgpu::{
-    apply_uniform_test_deform, collect_drawables, create_headless_context,
-    create_orthographic_camera, RenderContext, WgpuRenderer,
+    apply_uniform_scratch_deform, collect, create_headless_context, create_orthographic_camera,
+    RenderContext, WgpuRenderer,
 };
+use common::{Rig, NO_ADAPTER};
 use std::path::{Path, PathBuf};
 
 const W: u32 = 320;
 const H: u32 = 533;
-
-fn load_puppet(path: &Path) -> catchlight_core::LegacyPuppet {
-    let bytes = std::fs::read(path).unwrap();
-    let format = ModelFormat::from_path(path).expect("recognized model extension");
-    load_model(&bytes, format, 0).expect("load model")
-}
 
 fn find_reference() -> Option<PathBuf> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,23 +24,24 @@ fn find_reference() -> Option<PathBuf> {
 }
 
 async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
-    let mut puppet = load_puppet(path);
+    let model = Model::from_clm_bytes(&std::fs::read(path).unwrap()).expect("load model");
 
-    if shift != Vec2::ZERO {
-        apply_uniform_test_deform(&mut puppet, shift);
-    }
-
-    let (device, queue) = create_headless_context().await.expect("headless");
+    let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm).await;
     let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
-    ctx.renderer.upload_puppet(&puppet).expect("upload");
+    let mut rig = Rig::new(&mut ctx.renderer, model);
     ctx.renderer
         .update_camera(create_orthographic_camera(5000.0, W as f32 / H as f32));
-    ctx.renderer.sync_deforms(&puppet);
 
-    let mut transforms = GlobalTransforms::new();
-    puppet.compute_transforms(&mut transforms);
-    let render_list = collect_drawables(&puppet, &transforms);
+    rig.puppet.compute_transforms();
+    if shift != Vec2::ZERO {
+        apply_uniform_scratch_deform(&mut rig.puppet, shift);
+    }
+    rig.cache
+        .refresh(&mut ctx.renderer, &rig.model, &rig.puppet)
+        .expect("refresh the render cache");
+
+    let render_list = collect(&rig.cache, &rig.puppet);
     ctx.render(
         &render_list,
         Some(wgpu::Color {
