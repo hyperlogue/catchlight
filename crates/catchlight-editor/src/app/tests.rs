@@ -285,6 +285,19 @@ fn renaming_a_param_id_carries_the_recording_state() {
         .unwrap());
 }
 
+/// Nudge one vertex of the open mesh editor's working mesh — what makes an
+/// Apply an actual mesh edit rather than a no-op leave.
+fn edit_working_mesh(app: &mut App) {
+    let mesh = app.mesh_edit.as_mut().expect("the mode is open");
+    let mut working = mesh.working.clone();
+    let p = working.pos(0);
+    working
+        .move_vertex(0, [p[0] + 1.0, p[1]])
+        .expect("move a vertex");
+    mesh.replace_working(working);
+    assert!(!mesh.matches_document(), "the working mesh has moved");
+}
+
 fn add_param(app: &mut App, session: SessionId, name: &str) -> ParamId {
     match app.send(Command::ParamAdd {
         session,
@@ -594,6 +607,7 @@ fn a_mesh_edit_empties_a_seam_and_the_gate_holds_until_it_is_refilled() {
     app.selection = vec![node.clone()];
     app.enter_mesh_edit();
     assert!(app.mesh_edit.is_some(), "the mode opened");
+    edit_working_mesh(&mut app);
     app.apply_mesh_edit();
 
     let blocked = app.commit_block();
@@ -629,6 +643,14 @@ fn a_mesh_edit_empties_a_seam_and_the_gate_holds_until_it_is_refilled() {
     }
     assert!(app.commit_block().is_empty(), "the gate clears on refill");
     assert!(!app.blocked_from_saving());
+
+    // Leaving the mode must not re-mesh the part: the working mesh is the
+    // document's again, and applying it would empty every slot just refilled.
+    app.apply_mesh_edit();
+    assert!(
+        app.commit_block().is_empty(),
+        "a second Apply must not undo the repair",
+    );
 }
 
 /// The other way out: deleting the seam. A weld that named it goes with it,
@@ -639,6 +661,7 @@ fn deleting_the_seam_is_the_other_way_past_the_commit_gate() {
     let node = first_meshed_node(&editor, session);
     app.selection = vec![node.clone()];
     app.enter_mesh_edit();
+    edit_working_mesh(&mut app);
     app.apply_mesh_edit();
     assert!(!app.commit_block().is_empty());
 
