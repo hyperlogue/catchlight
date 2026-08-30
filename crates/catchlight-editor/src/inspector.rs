@@ -11,6 +11,9 @@ use catchlight_editor_protocol::{NodeId, NodePatch, ParamId, TexId};
 use eframe::egui;
 
 pub(crate) struct InspectorData {
+    /// What the file, the protocol and any addon name this node by.
+    pub id: NodeId,
+    /// What a person reads. Free to repeat; nothing is addressed by it.
     pub name: String,
     pub enabled: bool,
     pub lock_to_root: bool,
@@ -93,6 +96,8 @@ pub(crate) enum InspectorAction {
     },
     /// Enter mesh edit mode on the inspected node.
     ModelMesh,
+    /// Open the Id-rename prompt for the inspected node.
+    RenameId,
 }
 
 #[derive(Default)]
@@ -125,9 +130,31 @@ pub(crate) fn inspector_ui(
 ) -> Vec<InspectorAction> {
     let mut out = Vec::new();
 
-    // Name commits on focus loss / enter, not per keystroke.
+    // The Id first, because it is the one thing here that is not free to
+    // change: everything outside this model — a file, an addon, a recorded
+    // command — names the node by it. The Name below is only a label.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("id").weak());
+        ui.add(egui::Label::new(egui::RichText::new(data.id.as_str()).monospace()).truncate())
+            .on_hover_text(data.id.as_str());
+        if ui
+            .small_button("✎")
+            .on_hover_text("change the Id — breaks any addon that names it")
+            .clicked()
+        {
+            out.push(InspectorAction::RenameId);
+        }
+    });
+
+    // Name commits on focus loss / enter, not per keystroke. It never touches
+    // the Id: two nodes may share a name, and nothing is addressed by one.
     let mut name = data.name.clone();
-    let name_resp = ui.text_edit_singleline(&mut name);
+    let name_resp = ui
+        .horizontal(|ui| {
+            ui.label(egui::RichText::new("name").weak());
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY))
+        })
+        .inner;
     if name_resp.lost_focus() && name != data.name {
         out.push(InspectorAction::Commit(NodePatch {
             name: Some(name),

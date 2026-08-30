@@ -20,10 +20,13 @@ pub(crate) enum ParamAction {
     AddParam {
         name: String,
     },
+    /// Relabel: free, repeatable, and it never touches the Id.
     Rename {
         param: ParamId,
         name: String,
     },
+    /// Open the Id-rename prompt (a confirmation the app owns).
+    RenameId(ParamId),
     Delete(ParamId),
     KeyInsert {
         param: ParamId,
@@ -190,6 +193,16 @@ impl ParamsPanel<'_> {
             }
         });
         ui.ctx().data_mut(|d| d.insert_temp(id, name));
+        ui.label(egui::RichText::new(format!("id: {}", p.id)).weak().small());
+        if ui
+            .button("rename Id…")
+            .on_hover_text("what addons, bindings and the file name this param by")
+            .clicked()
+        {
+            self.actions.push(ParamAction::RenameId(p.id.clone()));
+            ui.close();
+        }
+        ui.separator();
 
         let value = (self.pose)(&p.id);
         // Menu labels speak param values; the wire speaks normalized 0..1.
