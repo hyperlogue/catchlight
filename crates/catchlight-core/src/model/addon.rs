@@ -1291,10 +1291,13 @@ mod tests {
         // Reparenting one root under another takes it off the root list.
         addon.reparent(&copy, &hat).unwrap();
         assert_eq!(addon.roots(), [sway.clone(), hat.clone()]);
-        assert_eq!(addon.node(&hat).unwrap().children(), [copy.clone()]);
+        assert_eq!(
+            addon.node(&hat).unwrap().children(),
+            std::slice::from_ref(&copy)
+        );
 
         addon.delete_node(&sway).unwrap();
-        assert_eq!(addon.roots(), [hat.clone()]);
+        assert_eq!(addon.roots(), std::slice::from_ref(&hat));
 
         // Two hats now, so install renames nothing and both arrive.
         let mut m = b.m.clone();
