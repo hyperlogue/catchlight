@@ -91,11 +91,26 @@ impl Default for ClmPhysics {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClmTransform {
     pub translation: [f32; 3],
     pub rotation: [f32; 3],
     pub scale: [f32; 2],
+}
+
+/// The **identity** transform, not the all-zero one. `ClmNode::transform` is
+/// `#[serde(default)]` and the `.inx` reader falls back here for a node with
+/// no transform block, so a derived `Default` would give those nodes a zero
+/// scale — a singular matrix that collapses the node and everything under it,
+/// rather than the "nothing was said, so nothing moves" the absent key means.
+impl Default for ClmTransform {
+    fn default() -> Self {
+        Self {
+            translation: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: [1.0, 1.0],
+        }
+    }
 }
 
 /// Mesh vertices and UVs as flat `[x, y, x, y, …]` arrays (not `Vec2` structs):
