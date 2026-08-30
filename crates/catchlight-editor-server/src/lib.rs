@@ -91,9 +91,7 @@ struct Session {
     file: Option<PathBuf>,
     rev: u64,
     saved_rev: u64,
-    undo: Vec<HistoryEntry>,
-    redo: Vec<HistoryEntry>,
-    history_bytes: usize,
+    history: History,
     /// Lazily baked from `model` for preview. Rebaked by its own generation
     /// gate on the next use after an edit, so nothing has to invalidate it.
     puppet: Option<Puppet>,
@@ -103,15 +101,133 @@ struct Session {
     presence: Option<Presence>,
 }
 
-struct HistoryEntry {
-    model: Model,
-    bytes: usize,
+/// The undo and redo stacks, and the budget that bounds them.
+///
+/// A snapshot is a shallow clone: texture payloads, meshes and binding grids
+/// ride behind an `Arc` and are copied only when something edits them. So a
+/// budget that charged every snapshot [`Model::estimated_size_bytes`] would
+/// bill one rig's textures once per undo step and collapse the history of any
+/// model bigger than a fraction of the cap.
+///
+/// **Each distinct texture payload is therefore counted once for the whole
+/// history.** `Arc::as_ptr` identifies the allocation and the ledger below
+/// counts how many snapshots hold it. Everything else is charged per
+/// snapshot: a `Model` does not expose the sharing of its meshes and binding
+/// grids, so those are over-counted. Over-counting is the safe side — the
+/// history trims sooner than it strictly must, never later.
+#[derive(Default)]
+struct History {
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// Every texture payload held anywhere in the two stacks:
+    /// allocation address -> (bytes, how many snapshots hold it).
+    textures: HashMap<usize, (usize, usize)>,
+    /// The sum of every snapshot's `own_bytes`.
+    own_bytes: usize,
 }
 
-impl HistoryEntry {
-    fn new(model: Model) -> Self {
-        let bytes = model.estimated_size_bytes();
-        Self { model, bytes }
+struct Snapshot {
+    model: Model,
+    /// What this snapshot holds that is not a texture payload.
+    own_bytes: usize,
+}
+
+/// One entry per distinct texture payload: its allocation and its bytes.
+fn texture_payloads(model: &Model) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for id in model.texture_ids() {
+        if let Some(texture) = model.texture(id) {
+            // The address of the `Vec` inside the `Arc`, not of its buffer:
+            // two empty textures share a dangling buffer pointer but never an
+            // allocation.
+            let at = Arc::as_ptr(&texture.data) as usize;
+            if !out.iter().any(|&(seen, _)| seen == at) {
+                out.push((at, texture.data.capacity()));
+            }
+        }
+    }
+    out
+}
+
+impl History {
+    fn snapshot(model: Model) -> Snapshot {
+        let shared: usize = texture_payloads(&model)
+            .iter()
+            .fold(0, |bytes, &(_, len)| bytes.saturating_add(len));
+        let own_bytes = model.estimated_size_bytes().saturating_sub(shared);
+        Snapshot { model, own_bytes }
+    }
+
+    /// What the history holds, shared payloads counted once.
+    fn bytes(&self) -> usize {
+        self.textures
+            .values()
+            .fold(self.own_bytes, |bytes, &(len, _)| bytes.saturating_add(len))
+    }
+
+    fn hold(&mut self, snapshot: &Snapshot) {
+        self.own_bytes = self.own_bytes.saturating_add(snapshot.own_bytes);
+        for (at, len) in texture_payloads(&snapshot.model) {
+            let entry = self.textures.entry(at).or_insert((len, 0));
+            entry.1 += 1;
+        }
+    }
+
+    fn release(&mut self, snapshot: &Snapshot) {
+        self.own_bytes = self.own_bytes.saturating_sub(snapshot.own_bytes);
+        for (at, _) in texture_payloads(&snapshot.model) {
+            if let std::collections::hash_map::Entry::Occupied(mut held) = self.textures.entry(at) {
+                held.get_mut().1 -= 1;
+                if held.get().1 == 0 {
+                    held.remove();
+                }
+            }
+        }
+    }
+
+    fn push_undo(&mut self, model: Model) {
+        while let Some(dropped) = self.redo.pop() {
+            self.release(&dropped);
+        }
+        let snapshot = Self::snapshot(model);
+        self.hold(&snapshot);
+        self.undo.push(snapshot);
+    }
+
+    /// Swap `current` for the newest undo snapshot, pushing what it replaced
+    /// onto the redo stack.
+    fn undo(&mut self, current: &mut Model) -> Result<(), EditorError> {
+        let previous = self.undo.pop().ok_or(EditorError::NothingToUndo)?;
+        self.release(&previous);
+        let replaced = Self::snapshot(std::mem::replace(current, previous.model));
+        self.hold(&replaced);
+        self.redo.push(replaced);
+        Ok(())
+    }
+
+    fn redo(&mut self, current: &mut Model) -> Result<(), EditorError> {
+        let next = self.redo.pop().ok_or(EditorError::NothingToRedo)?;
+        self.release(&next);
+        let replaced = Self::snapshot(std::mem::replace(current, next.model));
+        self.hold(&replaced);
+        self.undo.push(replaced);
+        Ok(())
+    }
+
+    /// Drop the oldest snapshots until the history fits. The newest is always
+    /// kept: an editor that cannot undo the last edit is worse than one that
+    /// remembers nothing.
+    fn trim(&mut self, max_depth: usize, max_bytes: usize) {
+        while self.undo.len() > max_depth
+            || (self.bytes() > max_bytes && self.undo.len() + self.redo.len() > 1)
+        {
+            let removed = if self.undo.is_empty() {
+                self.redo.remove(0)
+            } else {
+                self.undo.remove(0)
+            };
+            self.release(&removed);
+        }
     }
 }
 
@@ -125,9 +241,7 @@ impl Session {
             file,
             rev: 0,
             saved_rev: 0,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            history_bytes: 0,
+            history: History::default(),
             puppet: None,
             snapshot: None,
             presence: None,
@@ -207,55 +321,22 @@ impl Session {
     }
 
     fn push_undo(&mut self, snapshot: Model) {
-        self.history_bytes = self.history_bytes.saturating_sub(
-            self.redo
-                .iter()
-                .fold(0usize, |bytes, entry| bytes.saturating_add(entry.bytes)),
-        );
-        self.redo.clear();
-        let entry = HistoryEntry::new(snapshot);
-        self.history_bytes = self.history_bytes.saturating_add(entry.bytes);
-        self.undo.push(entry);
-        self.trim_history();
+        self.history.push_undo(snapshot);
+        self.history.trim(UNDO_DEPTH, UNDO_BYTES);
     }
 
     fn undo(&mut self) -> Result<(), EditorError> {
-        let prev = self.undo.pop().ok_or(EditorError::NothingToUndo)?;
-        self.history_bytes = self.history_bytes.saturating_sub(prev.bytes);
-        let current = HistoryEntry::new(std::mem::replace(&mut self.model, prev.model));
-        self.history_bytes = self.history_bytes.saturating_add(current.bytes);
-        self.redo.push(current);
-        self.trim_history();
+        self.history.undo(&mut self.model)?;
+        self.history.trim(UNDO_DEPTH, UNDO_BYTES);
         self.touch();
         Ok(())
     }
 
     fn redo(&mut self) -> Result<(), EditorError> {
-        let next = self.redo.pop().ok_or(EditorError::NothingToRedo)?;
-        self.history_bytes = self.history_bytes.saturating_sub(next.bytes);
-        let current = HistoryEntry::new(std::mem::replace(&mut self.model, next.model));
-        self.history_bytes = self.history_bytes.saturating_add(current.bytes);
-        self.undo.push(current);
-        self.trim_history();
+        self.history.redo(&mut self.model)?;
+        self.history.trim(UNDO_DEPTH, UNDO_BYTES);
         self.touch();
         Ok(())
-    }
-
-    fn trim_history(&mut self) {
-        self.trim_history_to(UNDO_DEPTH, UNDO_BYTES);
-    }
-
-    fn trim_history_to(&mut self, max_depth: usize, max_bytes: usize) {
-        while self.undo.len() > max_depth
-            || (self.history_bytes > max_bytes && self.undo.len() + self.redo.len() > 1)
-        {
-            let removed = if self.undo.is_empty() {
-                self.redo.remove(0)
-            } else {
-                self.undo.remove(0)
-            };
-            self.history_bytes = self.history_bytes.saturating_sub(removed.bytes);
-        }
     }
 
     fn dirty(&self) -> bool {
@@ -362,7 +443,7 @@ impl Editor {
     pub fn history(&self, id: SessionId) -> Result<(usize, usize), EditorError> {
         let session = self.session(id)?;
         let s = lock(&session);
-        Ok((s.undo.len(), s.redo.len()))
+        Ok((s.history.undo.len(), s.history.redo.len()))
     }
 
     /// Is the session dirty (unsaved edits since the last save/save_bytes)?
@@ -1909,34 +1990,122 @@ mod tests {
         assert!(!result.unwrap().unwrap());
     }
 
+    fn named_model(name: &str) -> Model {
+        let mut model = Model::new();
+        let root = model.root().unwrap().clone();
+        model
+            .update_node(&root, |n| n.name = Name::truncated(name))
+            .unwrap();
+        model
+    }
+
+    fn root_name(model: &Model) -> String {
+        model
+            .node(model.root().unwrap())
+            .unwrap()
+            .name
+            .as_str()
+            .to_string()
+    }
+
     #[test]
     fn history_byte_budget_keeps_the_newest_snapshot() {
-        let mut session = Session::new(Model::new(), "history".into(), None);
+        let mut history = History::default();
         for name in ["first", "second", "third"] {
-            let mut model = Model::new();
-            let root = model.root().unwrap().clone();
-            model
-                .update_node(&root, |n| n.name = Name::truncated(name))
-                .unwrap();
-            let entry = HistoryEntry::new(model);
-            session.history_bytes = session.history_bytes.saturating_add(entry.bytes);
-            session.undo.push(entry);
+            history.push_undo(named_model(name));
         }
-        let newest_bytes = session.undo.last().unwrap().bytes;
+        let newest_bytes = history.undo.last().unwrap().own_bytes;
 
-        session.trim_history_to(UNDO_DEPTH, newest_bytes);
+        history.trim(UNDO_DEPTH, newest_bytes);
 
-        assert_eq!(session.undo.len(), 1);
-        assert_eq!(
-            session.undo[0]
-                .model
-                .node(session.undo[0].model.root().unwrap())
-                .unwrap()
-                .name
-                .as_str(),
-            "third"
+        assert_eq!(history.undo.len(), 1);
+        assert_eq!(root_name(&history.undo[0].model), "third");
+        assert_eq!(history.bytes(), newest_bytes);
+    }
+
+    /// An undo snapshot is a shallow clone, so 64 of them hold one rig's
+    /// textures once, not 64 times. Charging each snapshot the full
+    /// `estimated_size_bytes` would bill them 64 times and collapse the
+    /// history of any model whose textures approach the cap.
+    #[test]
+    fn a_texture_shared_by_every_snapshot_is_counted_once() {
+        let mut model = Model::new();
+        let mut hex = SeededHex::new(7);
+        model
+            .add_texture(
+                ModelTexture {
+                    encoding: TextureEncoding::Png,
+                    alpha: TextureAlpha::Straight,
+                    data: Arc::new(vec![0u8; 4 * 1024 * 1024]),
+                },
+                &mut hex,
+            )
+            .unwrap();
+        let one = History::snapshot(model.clone());
+        let payload = one
+            .model
+            .texture(&model.texture_ids()[0])
+            .unwrap()
+            .data
+            .capacity();
+        assert!(one.own_bytes < payload, "the payload is not charged twice");
+
+        let mut history = History::default();
+        for _ in 0..8 {
+            history.push_undo(model.clone());
+        }
+
+        let bytes = history.bytes();
+        assert!(
+            bytes > payload,
+            "the shared payload is counted: {bytes} <= {payload}"
         );
-        assert_eq!(session.history_bytes, newest_bytes);
+        assert!(
+            bytes < payload + 8 * one.own_bytes + payload,
+            "the shared payload is counted once, not eight times: {bytes}"
+        );
+
+        // One snapshot still holds the payload, so it is still counted...
+        history.trim(1, usize::MAX);
+        assert_eq!(history.undo.len(), 1);
+        assert!(history.bytes() > payload);
+
+        // ...and once none does, it stops being counted at all.
+        history.trim(0, usize::MAX);
+        assert!(history.undo.is_empty());
+        assert_eq!(history.bytes(), 0);
+    }
+
+    /// Undo, redo and trimming all move snapshots between the stacks; the
+    /// ledger has to follow them or it drifts.
+    #[test]
+    fn the_history_budget_tracks_undo_and_redo() {
+        // Same-length names so the three snapshots weigh the same and the
+        // totals below are exact rather than approximate.
+        let mut history = History::default();
+        let mut current = named_model("ccc");
+        history.push_undo(named_model("aaa"));
+        history.push_undo(named_model("bbb"));
+        let full = history.bytes();
+
+        history.undo(&mut current).unwrap();
+        assert_eq!(root_name(&current), "bbb");
+        assert_eq!(history.bytes(), full, "a snapshot moved, none was created");
+
+        history.redo(&mut current).unwrap();
+        assert_eq!(root_name(&current), "ccc");
+        assert_eq!(history.bytes(), full);
+
+        // A fresh edit discards the redo stack and stops counting it.
+        history.undo(&mut current).unwrap();
+        assert_eq!(history.redo.len(), 1);
+        history.push_undo(named_model("ddd"));
+        assert!(history.redo.is_empty());
+        assert_eq!(history.bytes(), full);
+
+        history.trim(1, usize::MAX);
+        assert_eq!(history.undo.len(), 1);
+        assert_eq!(history.bytes(), history.undo[0].own_bytes);
     }
 
     #[test]
