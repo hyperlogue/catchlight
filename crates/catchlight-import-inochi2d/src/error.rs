@@ -8,6 +8,14 @@ pub enum ImportError {
     #[error("invalid .clm file: {0}")]
     Model(#[from] catchlight_core::model::ModelError),
 
+    /// An Id this crate minted was not an Id. Unreachable: every Id it mints
+    /// is `root` / `node-<i>` / `param-<i>[.x|.y]` / `tex-<i>`, all inside the
+    /// charset. Carried rather than unwrapped because the minting rule and the
+    /// charset live in two crates, and a change to either should surface as an
+    /// error rather than a panic.
+    #[error("generated an invalid id: {0}")]
+    Id(#[from] catchlight_core::id::IdError),
+
     #[error("failed to decode payload JSON: {0}")]
     Json(#[from] serde_json::Error),
 

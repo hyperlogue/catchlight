@@ -49,7 +49,9 @@
 pub(crate) mod error;
 pub mod inx;
 pub(crate) mod read;
+pub(crate) mod reflect;
 pub(crate) mod schema;
+pub(crate) mod to_clm;
 pub(crate) mod to_legacy;
 
 #[cfg(test)]
@@ -57,4 +59,5 @@ mod import_tests;
 
 pub use error::ImportError;
 pub use inx::{parse_inp, InpModel, InpParseError, InxModel, InxParseError, VendorData};
+pub use to_clm::{from_inx_model, import_inx_bytes, import_inx_model};
 pub use to_legacy::from_inx_model_to_legacy;
