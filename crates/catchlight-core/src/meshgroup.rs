@@ -14,8 +14,8 @@ use glam::{Affine2, Mat2, Mat4, Vec2, Vec4};
 use crate::{
     components::{checked_affine_inverse, Mesh, MeshIndices, NodeIdx, NodeKind},
     deform::DeformSource,
-    legacy_puppet::{GlobalTransforms, LegacyPuppet},
     node::NodeTree,
+    puppet::{Arena, GlobalTransforms},
 };
 use std::collections::HashMap;
 
@@ -257,7 +257,7 @@ fn find_triangle_strict_hint(
 /// those children directly to the outer MG would apply its deform twice.
 /// Descendants without a mesh, under a `translateChildren=true` MG, receive a
 /// Node-level shift through `apply_translate_children_filter` instead.
-fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, puppet: &LegacyPuppet) -> Vec<NodeIdx> {
+fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, puppet: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeIdx> = tree.get_children(root);
     while let Some(id) = stack.pop() {
@@ -283,7 +283,7 @@ fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, puppet: &LegacyPuppet
     out
 }
 
-fn drawable_mesh_vertices(puppet: &LegacyPuppet, id: NodeIdx) -> Option<&[Vec2]> {
+fn drawable_mesh_vertices(puppet: &Arena, id: NodeIdx) -> Option<&[Vec2]> {
     match puppet.get(id).map(|n| &n.kind)? {
         NodeKind::Part(p) => Some(&p.mesh.vertices),
         NodeKind::MeshGroup(mg) => Some(&mg.mesh.vertices),
@@ -291,7 +291,7 @@ fn drawable_mesh_vertices(puppet: &LegacyPuppet, id: NodeIdx) -> Option<&[Vec2]>
     }
 }
 
-fn drawable_mesh_origin(puppet: &LegacyPuppet, id: NodeIdx) -> Vec2 {
+fn drawable_mesh_origin(puppet: &Arena, id: NodeIdx) -> Vec2 {
     match puppet.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(p)) => p.mesh.origin,
         Some(NodeKind::MeshGroup(mg)) => mg.mesh.origin,
@@ -341,7 +341,7 @@ pub(crate) fn affine2_from_mat4(m: Mat4) -> Affine2 {
 /// param drives those MGs. `transforms` is the puppet's load-time
 /// GlobalTransforms; callers should compute it immediately before baking.
 pub(crate) fn bake_mesh_group_attachments(
-    puppet: &LegacyPuppet,
+    puppet: &Arena,
     transforms: &GlobalTransforms,
     mesh_group_id: NodeIdx,
 ) -> MeshGroupAttachments {
@@ -363,7 +363,7 @@ pub(crate) fn bake_mesh_group_attachments(
 
     let mg_mesh = &mg.mesh;
     let mg_local = local_positions(mg_mesh);
-    for child_id in descendant_meshed_nodes(puppet.tree(), mesh_group_id, puppet) {
+    for child_id in descendant_meshed_nodes(&puppet.tree, mesh_group_id, puppet) {
         let Some(child_verts) = drawable_mesh_vertices(puppet, child_id) else {
             continue;
         };
@@ -402,11 +402,7 @@ pub(crate) fn bake_mesh_group_attachments(
 /// SimplePhysics nodes at the ends without descending past them. Nested MGs
 /// receive vertex deformation through `descendant_meshed_nodes`; applying a
 /// Node-level shift to them too would double the deform.
-fn translate_children_targets(
-    tree: &NodeTree,
-    mg_id: NodeIdx,
-    puppet: &LegacyPuppet,
-) -> Vec<NodeIdx> {
+fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, puppet: &Arena) -> Vec<NodeIdx> {
     // Descend only through Parts and Composites: the stop condition
     // halts descent at (but still includes) everything else, so a nested
     // MG or a collected Node never has its subtree walked. The retain
@@ -433,8 +429,8 @@ fn translate_children_targets(
 /// stack, so the outer must propagate before the inner combines and
 /// pushes to its own children — deform flows outer → inner → Part in
 /// a single pass.
-fn mesh_group_pre_order(puppet: &LegacyPuppet) -> Vec<NodeIdx> {
-    puppet.tree().with_dfs_order(|dfs| {
+fn mesh_group_pre_order(puppet: &Arena) -> Vec<NodeIdx> {
+    puppet.tree.with_dfs_order(|dfs| {
         dfs.iter()
             .copied()
             .filter(|id| {
@@ -451,7 +447,7 @@ fn mesh_group_pre_order(puppet: &LegacyPuppet) -> Vec<NodeIdx> {
 // Caller is responsible for putting the Vec back via
 // `restore_mg_pre_order_cache`. This avoids a per-frame clone while
 // keeping the hot-path borrow of LegacyPuppet mutable.
-fn take_mg_pre_order(puppet: &mut LegacyPuppet) -> Vec<NodeIdx> {
+fn take_mg_pre_order(puppet: &mut Arena) -> Vec<NodeIdx> {
     if puppet.mg_pre_order_cache.is_none() {
         puppet.mg_pre_order_cache = Some(mesh_group_pre_order(puppet));
     }
@@ -477,10 +473,7 @@ fn take_mg_pre_order(puppet: &mut LegacyPuppet) -> Vec<NodeIdx> {
 ///   any prior Node(mg_id) source) into MG-local, find the triangle at
 ///   runtime, sample the deformed MG triangle there, transform back to
 ///   child-local, and emit the absolute-replacement delta.
-pub(crate) fn propagate_mesh_group_deforms(
-    puppet: &mut LegacyPuppet,
-    transforms: &GlobalTransforms,
-) {
+pub(crate) fn propagate_mesh_group_deforms(puppet: &mut Arena, transforms: &GlobalTransforms) {
     let _span = tracing::debug_span!("propagate_mesh_group_deforms").entered();
     let order = take_mg_pre_order(puppet);
 
@@ -615,7 +608,7 @@ pub(crate) fn propagate_mesh_group_deforms(
 /// sources are intentionally ignored because this filter uses the MG's own
 /// parameter-driven deformation, not an outer MG's contribution.
 pub(crate) fn apply_translate_children_filter(
-    puppet: &mut LegacyPuppet,
+    puppet: &mut Arena,
     transforms: &GlobalTransforms,
 ) -> bool {
     let _span = tracing::trace_span!("apply_translate_children_filter").entered();
@@ -643,7 +636,7 @@ pub(crate) fn apply_translate_children_filter(
         }
 
         targets.clear();
-        targets.extend(translate_children_targets(puppet.tree(), mg_id, puppet));
+        targets.extend(translate_children_targets(&puppet.tree, mg_id, puppet));
         if targets.is_empty() {
             continue;
         }
@@ -654,7 +647,7 @@ pub(crate) fn apply_translate_children_filter(
         };
 
         for &target_id in &targets {
-            let parent_id = match puppet.tree().get_parent(target_id) {
+            let parent_id = match puppet.tree.get_parent(target_id) {
                 Some(p) => p,
                 None => continue,
             };
@@ -763,7 +756,7 @@ pub(crate) fn apply_translate_children_filter(
 }
 
 fn propagate_static_to_child(
-    puppet: &mut LegacyPuppet,
+    puppet: &mut Arena,
     mg_id: NodeIdx,
     child_id: NodeIdx,
     scratch: &mut Vec<Vec2>,
@@ -832,7 +825,7 @@ fn propagate_static_to_child(
 
 #[allow(clippy::too_many_arguments)]
 fn propagate_dynamic_to_child(
-    puppet: &mut LegacyPuppet,
+    puppet: &mut Arena,
     mg_id: NodeIdx,
     child_id: NodeIdx,
     scratch: &mut Vec<Vec2>,
@@ -1001,7 +994,7 @@ mod tests {
     fn non_propagating_composite_halts_mesh_group_descent() {
         use crate::components::{CompositeData, Node};
 
-        let mut puppet = LegacyPuppet::new();
+        let mut puppet = Arena::new();
         let root = puppet.root();
         let mg_id = puppet.insert_child(
             root,
@@ -1009,7 +1002,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::default()),
                 ..Default::default()
             },
-            None,
         );
 
         let mut with_composite = |propagate: bool| {
@@ -1022,7 +1014,6 @@ mod tests {
                     })),
                     ..Default::default()
                 },
-                None,
             );
             puppet.insert_child(
                 comp_id,
@@ -1030,13 +1021,12 @@ mod tests {
                     kind: NodeKind::Part(Box::default()),
                     ..Default::default()
                 },
-                None,
             )
         };
         let opted_out_part = with_composite(false);
         let normal_part = with_composite(true);
 
-        let reached = descendant_meshed_nodes(puppet.tree(), mg_id, &puppet);
+        let reached = descendant_meshed_nodes(&puppet.tree, mg_id, &puppet);
         assert!(
             reached.contains(&normal_part),
             "a propagating Composite must not stop the walk"
@@ -1115,7 +1105,7 @@ mod tests {
     fn propagate_sets_deform_source_node_on_child() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
 
-        let mut puppet = LegacyPuppet::new();
+        let mut puppet = Arena::new();
         let mg_mesh = Mesh::new(
             vec![
                 Vec2::new(0.0, 0.0),
@@ -1138,7 +1128,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(mg)),
                 ..Default::default()
             },
-            None,
         );
 
         let child_mesh = Mesh::new(
@@ -1158,7 +1147,6 @@ mod tests {
                 kind: NodeKind::Part(Box::new(part)),
                 ..Default::default()
             },
-            None,
         );
 
         // Bake the attachments and install them.
@@ -1210,7 +1198,7 @@ mod tests {
     fn dynamic_mg_matches_static_when_child_has_no_prior_deform() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
 
-        let mut puppet = LegacyPuppet::new();
+        let mut puppet = Arena::new();
         let mg_mesh = Mesh::new(
             vec![
                 Vec2::new(0.0, 0.0),
@@ -1234,7 +1222,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(mg)),
                 ..Default::default()
             },
-            None,
         );
 
         let part = PartData {
@@ -1253,7 +1240,6 @@ mod tests {
                 kind: NodeKind::Part(Box::new(part)),
                 ..Default::default()
             },
-            None,
         );
 
         let mut tx = GlobalTransforms::new();
@@ -1297,8 +1283,8 @@ mod tests {
     fn dynamic_mg_attenuates_child_param_deform() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
 
-        fn build(dynamic: bool) -> (LegacyPuppet, NodeIdx) {
-            let mut puppet = LegacyPuppet::new();
+        fn build(dynamic: bool) -> (Arena, NodeIdx) {
+            let mut puppet = Arena::new();
             let mg_mesh = Mesh::new(
                 vec![
                     Vec2::new(0.0, 0.0),
@@ -1322,7 +1308,6 @@ mod tests {
                     kind: NodeKind::MeshGroup(Box::new(mg)),
                     ..Default::default()
                 },
-                None,
             );
 
             let part = PartData {
@@ -1341,7 +1326,6 @@ mod tests {
                     kind: NodeKind::Part(Box::new(part)),
                     ..Default::default()
                 },
-                None,
             );
 
             let mut tx = GlobalTransforms::new();
@@ -1426,7 +1410,7 @@ mod tests {
         // under the inner. Driving both MGs must compose: the outer
         // pushes into the inner's stack, and the inner pushes its
         // combined (own + outer) deform to the Part.
-        let mut puppet = LegacyPuppet::new();
+        let mut puppet = Arena::new();
 
         let quad = || {
             Mesh::new(
@@ -1453,7 +1437,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(outer)),
                 ..Default::default()
             },
-            None,
         );
 
         let inner = MeshGroupData {
@@ -1467,7 +1450,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(inner)),
                 ..Default::default()
             },
-            None,
         );
 
         let part = PartData {
@@ -1486,7 +1468,6 @@ mod tests {
                 kind: NodeKind::Part(Box::new(part)),
                 ..Default::default()
             },
-            None,
         );
 
         // Descent stops at the nested MG but binds it: the outer holds
@@ -1593,7 +1574,7 @@ mod tests {
     fn dynamic_outer_mg_deform_reaches_part_through_nested_mg() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
 
-        let mut puppet = LegacyPuppet::new();
+        let mut puppet = Arena::new();
 
         let quad = || {
             Mesh::new(
@@ -1621,7 +1602,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(outer)),
                 ..Default::default()
             },
-            None,
         );
 
         let inner = MeshGroupData {
@@ -1635,7 +1615,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(inner)),
                 ..Default::default()
             },
-            None,
         );
 
         let part = PartData {
@@ -1654,7 +1633,6 @@ mod tests {
                 kind: NodeKind::Part(Box::new(part)),
                 ..Default::default()
             },
-            None,
         );
 
         let mut tx = GlobalTransforms::new();
@@ -1715,7 +1693,7 @@ mod tests {
         // (0,0) child-local should therefore bind to triangle 0 (or 1)
         // with the center barycentric — the pre-fix code compared
         // child-local (0,0) to MG quad and fell off to an edge fallback.
-        let mut puppet = LegacyPuppet::new();
+        let mut puppet = Arena::new();
 
         let mg_mesh = Mesh::new(
             vec![
@@ -1747,7 +1725,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(mg)),
                 ..Default::default()
             },
-            None,
         );
 
         // Child Part at (5,5) relative to MG, with a single vertex at
@@ -1776,7 +1753,6 @@ mod tests {
                 kind: NodeKind::Part(Box::new(child_part)),
                 ..Default::default()
             },
-            None,
         );
 
         let mut tx = GlobalTransforms::new();
@@ -1832,7 +1808,7 @@ mod tests {
         // relative to MG. MG-local offset (1, 0) should come out as
         // (0, -1) in child-local (rotation inverse), so that after the
         // child's own local→world rotation, the world delta matches.
-        let mut puppet = LegacyPuppet::new();
+        let mut puppet = Arena::new();
 
         let mg_mesh = Mesh::new(
             vec![
@@ -1856,7 +1832,6 @@ mod tests {
                 kind: NodeKind::MeshGroup(Box::new(mg)),
                 ..Default::default()
             },
-            None,
         );
 
         // Child vertex (5, -5) child-local. After +90° z-rotation, it
@@ -1887,7 +1862,6 @@ mod tests {
                 kind: NodeKind::Part(Box::new(child_part)),
                 ..Default::default()
             },
-            None,
         );
 
         let mut tx = GlobalTransforms::new();
