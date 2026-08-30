@@ -28,8 +28,8 @@ use std::sync::Arc;
 use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_core::{BindingKey, BindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
-    BindingKeyEntry, BindingParams, Command, NodeId, NodePatch, ParamId, ParamInfo, Reply, Request,
-    ResponseBody, SessionId, TexId, TreeNode,
+    BindingKeyEntry, BindingParams, Command, NodeId, NodePatch, ParamId, ParamInfo, Rename, Reply,
+    Request, ResponseBody, SessionId, TexId, TreeNode,
 };
 use catchlight_editor_server::Editor;
 use eframe::egui;
@@ -129,12 +129,53 @@ pub struct App {
     rev_changed_at: f64,
     /// A previous session's autosave waiting for the user's restore decision.
     pending_restore: Option<Vec<u8>>,
+    /// An Id rename waiting to be confirmed. See [`IdRename`].
+    id_rename: Option<IdRename>,
     /// Rev-gated cache of the armed param's panel data.
     armed_cache: Option<(ArmedCacheKey, ArmedInfo)>,
 }
 
 /// (doc rev, armed param, armed cell) — the inputs ArmedInfo derives from.
 type ArmedCacheKey = (u64, ParamId, [u32; 2]);
+
+/// An Id rename the author has asked for and not yet confirmed.
+///
+/// An Id is what an addon names this model's nodes and params by, and there
+/// are no aliases: changing one breaks every addon that referenced it, exactly
+/// as deleting it would. So it is never a side effect of relabelling — a Name
+/// is edited in place, an Id only through this prompt.
+struct IdRename {
+    subject: RenameSubject,
+    /// What the author is typing. Parsed against the Id charset on confirm.
+    to: String,
+    /// Why the last confirm was refused, if it was.
+    error: Option<String>,
+}
+
+/// What an [`IdRename`] renames, typed so the old Id is never re-parsed.
+enum RenameSubject {
+    Node(NodeId),
+    Param(ParamId),
+    Texture(TexId),
+}
+
+impl RenameSubject {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Node(_) => "node",
+            Self::Param(_) => "param",
+            Self::Texture(_) => "texture",
+        }
+    }
+
+    fn from(&self) -> &str {
+        match self {
+            Self::Node(id) => id.as_str(),
+            Self::Param(id) => id.as_str(),
+            Self::Texture(id) => id.as_str(),
+        }
+    }
+}
 
 /// Everything the rendered viewport image depends on; a change re-renders.
 #[derive(Clone, PartialEq)]
@@ -213,6 +254,7 @@ impl App {
             last_rev_seen: 0,
             rev_changed_at: 0.0,
             pending_restore: None,
+            id_rename: None,
             armed_cache: None,
         }
     }
@@ -267,6 +309,7 @@ impl App {
         self.previews.clear();
         self.thumbs.clear();
         self.camera = EditorCamera::default();
+        self.id_rename = None;
         self.status = format!("session {}", session.0);
     }
 
@@ -605,6 +648,153 @@ impl App {
         });
     }
 
+    // ---- ids ----
+
+    /// Open the Id-rename prompt. Nothing is sent until it is confirmed.
+    fn begin_id_rename(&mut self, subject: RenameSubject) {
+        self.id_rename = Some(IdRename {
+            to: subject.from().to_string(),
+            subject,
+            error: None,
+        });
+    }
+
+    /// Send the confirmed rename, and follow the thing that was renamed: the
+    /// selection, the isolate filter and the armed param all name it by the
+    /// Id that just stopped existing.
+    fn confirm_id_rename(&mut self) {
+        let Some(session) = self.session else { return };
+        let Some(mut pending) = self.id_rename.take() else {
+            return;
+        };
+        let rename = match &pending.subject {
+            RenameSubject::Node(from) => NodeId::new(&pending.to).map(|to| Rename::Node {
+                from: from.clone(),
+                to,
+            }),
+            RenameSubject::Param(from) => ParamId::new(&pending.to).map(|to| Rename::Param {
+                from: from.clone(),
+                to,
+            }),
+            RenameSubject::Texture(from) => TexId::new(&pending.to).map(|to| Rename::Texture {
+                from: from.clone(),
+                to,
+            }),
+        };
+        let rename = match rename {
+            Ok(rename) => rename,
+            Err(e) => {
+                pending.error = Some(e.to_string());
+                self.id_rename = Some(pending);
+                return;
+            }
+        };
+        if let Reply::Err { message, .. } = self.send(Command::RenameId {
+            session,
+            rename: rename.clone(),
+        }) {
+            pending.error = Some(message);
+            self.id_rename = Some(pending);
+            return;
+        }
+        self.follow_rename(&rename);
+    }
+
+    /// Re-point the client-side state that names what was just renamed.
+    fn follow_rename(&mut self, rename: &Rename) {
+        match rename {
+            Rename::Node { from, to } => {
+                for node in &mut self.selection {
+                    if node == from {
+                        *node = to.clone();
+                    }
+                }
+                if self.isolated.as_ref() == Some(from) {
+                    self.isolated = Some(to.clone());
+                }
+                if self.collapsed.remove(from) {
+                    self.collapsed.insert(to.clone());
+                }
+                if let Some(mesh) = &mut self.mesh_edit {
+                    if mesh.node == *from {
+                        mesh.node = to.clone();
+                    }
+                }
+                if let Some((_, node, _, _)) = &mut self.copied_cell {
+                    if node == from {
+                        *node = to.clone();
+                    }
+                }
+            }
+            Rename::Param { from, to } => {
+                if self.armed.as_ref() == Some(from) {
+                    self.armed = Some(to.clone());
+                }
+                if let Some(value) = self.pose.remove(from) {
+                    self.pose.insert(to.clone(), value);
+                }
+                if let Some((param, _, _, _)) = &mut self.copied_cell {
+                    if param == from {
+                        *param = to.clone();
+                    }
+                }
+                self.armed_cache = None;
+            }
+            Rename::Texture { .. } => {}
+        }
+    }
+
+    /// The confirmation itself. Says what a rename costs before it happens,
+    /// because nothing undoes it for an addon author downstream.
+    fn id_rename_modal(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &mut self.id_rename else {
+            return;
+        };
+        let kind = pending.subject.kind();
+        let from = pending.subject.from().to_string();
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("id-rename")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading(format!("Rename {kind} Id"));
+            ui.label(
+                egui::RichText::new(
+                    "An addon reaches into this model by Id, and there are no \
+                     aliases — renaming one breaks every addon that named it, \
+                     exactly as deleting it would. Names are the free ones.",
+                )
+                .weak(),
+            );
+            ui.add_space(6.0);
+            ui.label(format!("from: {from}"));
+            ui.horizontal(|ui| {
+                ui.label("to:");
+                let edit = ui
+                    .add(egui::TextEdit::singleline(&mut pending.to).desired_width(f32::INFINITY));
+                if edit.changed() {
+                    pending.error = None;
+                }
+                confirm |= edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            });
+            if let Some(error) = &pending.error {
+                ui.colored_label(egui::Color32::from_rgb(240, 120, 120), error);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let unchanged = pending.to == from || pending.to.is_empty();
+                confirm |= ui
+                    .add_enabled(!unchanged, egui::Button::new("Rename — break addons"))
+                    .clicked();
+                cancel |= ui.button("Cancel").clicked();
+            });
+        });
+        if cancel {
+            self.id_rename = None;
+        } else if confirm {
+            self.confirm_id_rename();
+        }
+    }
+
     // ---- mesh edit mode ----
 
     fn enter_mesh_edit(&mut self) {
@@ -712,6 +902,9 @@ impl App {
                     default: 0.0,
                     key_positions: Vec::new(),
                 });
+            }
+            ParamAction::RenameId(param) => {
+                self.begin_id_rename(RenameSubject::Param(param));
             }
             ParamAction::Rename { param, name } => {
                 self.send(Command::ParamSet {
@@ -1080,6 +1273,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.viewport_ui(ui, frame, rev, &snapshot);
         });
+        self.id_rename_modal(&ui.ctx().clone());
 
         if let Some(src) = mesh_copy {
             self.mesh_copy_into_working(src);
@@ -2119,11 +2313,24 @@ impl App {
                             .thumbs
                             .entry(key)
                             .or_insert_with(|| thumb_texture(ui.ctx(), &format!("tex{i}"), data));
+                        // A texture has no Name — an Id is all it is called,
+                        // so the Id is what the tile shows.
                         let resp = ui
-                            .add(egui::Button::image(egui::load::SizedTexture::new(
-                                handle.id(),
-                                egui::vec2(56.0, 56.0),
-                            )))
+                            .vertical(|ui| {
+                                let resp =
+                                    ui.add(egui::Button::image(egui::load::SizedTexture::new(
+                                        handle.id(),
+                                        egui::vec2(56.0, 56.0),
+                                    )));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(tid.as_str()).small().weak(),
+                                    )
+                                    .truncate(),
+                                );
+                                resp
+                            })
+                            .inner
                             .on_hover_text(format!("{tid} — click to assign to selected part"));
                         if resp.clicked() {
                             if let Some(node) = selected_part.clone() {
@@ -2136,6 +2343,20 @@ impl App {
                                     },
                                 });
                             }
+                        }
+                        let mut rename = None;
+                        resp.context_menu(|ui| {
+                            if ui
+                                .button("Rename Id…")
+                                .on_hover_text("what parts and addons name this texture by")
+                                .clicked()
+                            {
+                                rename = Some(tid.clone());
+                                ui.close();
+                            }
+                        });
+                        if let Some(tid) = rename {
+                            self.begin_id_rename(RenameSubject::Texture(tid));
                         }
                     }
                 });
@@ -2364,6 +2585,7 @@ impl App {
                     },
                 });
             }
+            TreeAction::RenameId(node) => self.begin_id_rename(RenameSubject::Node(node)),
             TreeAction::Isolate(node) => self.isolated = node,
             TreeAction::Focus(node) => {
                 self.selection = vec![node];
@@ -2443,6 +2665,7 @@ impl App {
                 });
             }
             InspectorAction::ModelMesh => self.enter_mesh_edit(),
+            InspectorAction::RenameId => self.begin_id_rename(RenameSubject::Node(primary)),
         }
     }
 }
@@ -2454,6 +2677,7 @@ fn scalar_key(param: &ParamId, node: &NodeId, target: catchlight_core::ScalarTar
 
 fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
     let n = model.node(node)?;
+    let id = node.clone();
     let kind = match &n.kind {
         ModelNodeKind::Group => InspectorKind::Group,
         ModelNodeKind::Part(p) => InspectorKind::Part {
@@ -2502,6 +2726,7 @@ fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
         },
     };
     Some(InspectorData {
+        id,
         name: n.name.to_string(),
         enabled: n.enabled,
         lock_to_root: n.lock_to_root,

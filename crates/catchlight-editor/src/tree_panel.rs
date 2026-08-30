@@ -1,6 +1,11 @@
 //! Node tree panel: selection, filter, drag-and-drop reparent/reorder, and the
 //! per-node context menu. Pure UI — it emits [`TreeAction`]s the app applies
 //! through the command dispatch, so the tree can never mutate state itself.
+//!
+//! Rows read a node's **Name** — that is what a label is for, and two nodes
+//! may share one. The **Id** the file and any addon name it by is on the row's
+//! hover and in the inspector; changing it is [`TreeAction::RenameId`], never
+//! a side effect of relabelling.
 
 use std::collections::HashSet;
 
@@ -39,6 +44,8 @@ pub(crate) enum TreeAction {
     },
     Isolate(Option<NodeId>),
     Focus(NodeId),
+    /// Open the Id-rename prompt (a confirmation the app owns).
+    RenameId(NodeId),
 }
 
 pub(crate) struct TreePanel<'a> {
@@ -131,7 +138,8 @@ impl TreePanel<'_> {
                 // the drag arbitration instead of selecting the node.
                 let label_resp = ui
                     .selectable_label(selected, label)
-                    .interact(egui::Sense::click_and_drag());
+                    .interact(egui::Sense::click_and_drag())
+                    .on_hover_text(format!("{}\n{}", node.name, node.id));
                 if !is_root {
                     label_resp.dnd_set_drag_payload(node.id.clone());
                     if label_resp.dragged() {
@@ -288,6 +296,15 @@ impl TreePanel<'_> {
             }
             if ui.button("Focus in viewport").clicked() {
                 self.actions.push(TreeAction::Focus(node.id.clone()));
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .button("Rename Id…")
+                .on_hover_text("what addons and the file name this node by")
+                .clicked()
+            {
+                self.actions.push(TreeAction::RenameId(node.id.clone()));
                 ui.close();
             }
         });
