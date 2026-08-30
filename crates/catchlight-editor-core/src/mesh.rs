@@ -21,6 +21,31 @@ use catchlight_core::{Model, ModelError};
 /// (coincident points would merge in the triangulation and corrupt indexing).
 const MIN_VERTEX_DISTANCE: f32 = 1e-3;
 
+/// Why a [`WorkingMesh`] op was refused. These are the mesh tool's own
+/// rejections, not a [`ModelError`]: a working mesh is not in a model yet, and
+/// the tool's whole promise is that a state it accepted can always be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum MeshError {
+    /// The index names no vertex of this mesh.
+    #[error("no vertex at that index")]
+    NoSuchVertex,
+    /// The position is not finite, or sits on top of another vertex —
+    /// coincident points merge in the triangulation and corrupt indexing.
+    #[error("a vertex cannot land on another vertex")]
+    Coincident,
+    /// A constraint edge would cross one already pinned. Touching at a shared
+    /// endpoint is fine; crossing is what the triangulation cannot represent.
+    #[error("constraint edges may not cross")]
+    ConstraintCross,
+    /// The texture has no pixel above the alpha threshold, so there is no
+    /// shape to mesh.
+    #[error("the texture is empty above the alpha threshold")]
+    NothingToMesh,
+    /// The triangulator refused the point set.
+    #[error("triangulation failed")]
+    Triangulation,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WorkingMesh {
     /// Flat `[x, y, …]` rest positions in node-local space.
@@ -74,14 +99,14 @@ impl WorkingMesh {
     }
 
     /// Add a vertex; rejected when it lands on an existing vertex.
-    pub fn add_vertex(&mut self, pos: [f32; 2]) -> Result<u32, ModelError> {
+    pub fn add_vertex(&mut self, pos: [f32; 2]) -> Result<u32, MeshError> {
         if !pos[0].is_finite() || !pos[1].is_finite() {
-            return Err(ModelError::CellOutOfRange);
+            return Err(MeshError::Coincident);
         }
         for i in 0..self.vertex_count() {
             let p = self.pos(i as u32);
             if dist2(p, pos) < MIN_VERTEX_DISTANCE * MIN_VERTEX_DISTANCE {
-                return Err(ModelError::CellOutOfRange);
+                return Err(MeshError::Coincident);
             }
         }
         self.verts.extend_from_slice(&pos);
@@ -90,16 +115,16 @@ impl WorkingMesh {
 
     /// Move a vertex; rejected when the move would make constraint edges cross
     /// or stack the vertex onto another.
-    pub fn move_vertex(&mut self, i: u32, pos: [f32; 2]) -> Result<(), ModelError> {
+    pub fn move_vertex(&mut self, i: u32, pos: [f32; 2]) -> Result<(), MeshError> {
         if i as usize >= self.vertex_count() {
-            return Err(ModelError::IndexOutOfRange);
+            return Err(MeshError::NoSuchVertex);
         }
         if !pos[0].is_finite() || !pos[1].is_finite() {
-            return Err(ModelError::CellOutOfRange);
+            return Err(MeshError::Coincident);
         }
         for j in 0..self.vertex_count() as u32 {
             if j != i && dist2(self.pos(j), pos) < MIN_VERTEX_DISTANCE * MIN_VERTEX_DISTANCE {
-                return Err(ModelError::CellOutOfRange);
+                return Err(MeshError::Coincident);
             }
         }
         // Every constraint incident to `i` (at its new position) must stay
@@ -112,7 +137,7 @@ impl WorkingMesh {
                     continue;
                 }
                 if segments_cross(seg.0, seg.1, self.pos(c), self.pos(d)) {
-                    return Err(ModelError::ConstraintCross);
+                    return Err(MeshError::ConstraintCross);
                 }
             }
         }
@@ -147,13 +172,13 @@ impl WorkingMesh {
 
     /// Pin an edge as a constraint. Rejected when it would cross an existing
     /// constraint (touching at a shared endpoint is fine).
-    pub fn add_constraint(&mut self, a: u32, b: u32) -> Result<(), ModelError> {
+    pub fn add_constraint(&mut self, a: u32, b: u32) -> Result<(), MeshError> {
         let n = self.vertex_count() as u32;
         if a >= n || b >= n {
-            return Err(ModelError::IndexOutOfRange);
+            return Err(MeshError::NoSuchVertex);
         }
         if a == b {
-            return Err(ModelError::ConstraintCross);
+            return Err(MeshError::ConstraintCross);
         }
         let key = (a.min(b), a.max(b));
         if self.constraints.contains(&key) {
@@ -164,7 +189,7 @@ impl WorkingMesh {
                 continue;
             }
             if segments_cross(self.pos(a), self.pos(b), self.pos(c), self.pos(d)) {
-                return Err(ModelError::ConstraintCross);
+                return Err(MeshError::ConstraintCross);
             }
         }
         self.constraints.push(key);
@@ -183,7 +208,7 @@ impl WorkingMesh {
 
     /// Derived triangulation (the live "triangulate preview"). Stored state is
     /// always triangulable — the ops above refuse to persist a crossing set.
-    pub fn triangulate(&self) -> Result<Vec<[u32; 3]>, ModelError> {
+    pub fn triangulate(&self) -> Result<Vec<[u32; 3]>, MeshError> {
         let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
             ConstrainedDelaunayTriangulation::new();
         let mut handles = Vec::with_capacity(self.vertex_count());
@@ -191,7 +216,7 @@ impl WorkingMesh {
             let p = self.pos(i as u32);
             let h = cdt
                 .insert(Point2::new(p[0] as f64, p[1] as f64))
-                .map_err(|_| ModelError::CellOutOfRange)?;
+                .map_err(|_| MeshError::Triangulation)?;
             handles.push(h);
         }
         // Reverse map: spade vertex index -> our vertex index. Coincident
@@ -230,11 +255,7 @@ impl WorkingMesh {
     /// Flatten to the plain indexed triangle list runtime/`.clp` consume.
     /// UVs are re-derived from texture space; triangles covering only
     /// transparent texels are culled when an alpha mask is given.
-    pub fn to_mesh(
-        &self,
-        uv_map: &UvMap,
-        alpha: Option<&AlphaMask>,
-    ) -> Result<ClpMesh, ModelError> {
+    pub fn to_mesh(&self, uv_map: &UvMap, alpha: Option<&AlphaMask>) -> Result<ClpMesh, MeshError> {
         let tris = self.triangulate()?;
         let uvs: Vec<f32> = (0..self.vertex_count())
             .flat_map(|i| uv_map.uv(self.pos(i as u32)))
@@ -460,7 +481,7 @@ pub fn contour_automesh(
     knobs: &ContourKnobs,
     uv_map: &UvMap,
     origin: [f32; 2],
-) -> Result<WorkingMesh, ModelError> {
+) -> Result<WorkingMesh, MeshError> {
     let (w, h) = (alpha.width as i64, alpha.height as i64);
     let mut solid = vec![false; (w * h) as usize];
     for y in 0..h {
@@ -531,7 +552,7 @@ pub fn grid_automesh(
     rows: u32,
     uv_map: &UvMap,
     origin: [f32; 2],
-) -> Result<WorkingMesh, ModelError> {
+) -> Result<WorkingMesh, MeshError> {
     let (w, h) = (alpha.width as i64, alpha.height as i64);
     let mut min = [i64::MAX, i64::MAX];
     let mut max = [i64::MIN, i64::MIN];
@@ -544,7 +565,7 @@ pub fn grid_automesh(
         }
     }
     if min[0] > max[0] {
-        return Err(ModelError::CellOutOfRange);
+        return Err(MeshError::NothingToMesh);
     }
     // One texel of margin so boundary texels stay inside the outer cells.
     let min = [(min[0] - 1) as f32, (min[1] - 1) as f32];
@@ -926,7 +947,7 @@ mod tests {
         // The other diagonal (1,3) crosses the seeded (0,2).
         assert!(matches!(
             wm.add_constraint(1, 3),
-            Err(ModelError::ConstraintCross)
+            Err(MeshError::ConstraintCross)
         ));
         // Unpinning the first diagonal makes room.
         wm.remove_constraint(0, 2);
@@ -948,7 +969,7 @@ mod tests {
         // quad's right edge (1,2) — rejected.
         assert!(matches!(
             wm.move_vertex(v, [2.0, 0.0]),
-            Err(ModelError::ConstraintCross)
+            Err(MeshError::ConstraintCross)
         ));
         // A harmless move is fine.
         wm.move_vertex(v, [-2.0, -1.2]).unwrap();
