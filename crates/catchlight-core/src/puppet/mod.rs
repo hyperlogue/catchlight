@@ -136,6 +136,10 @@ impl Located {
 
 /// A model being animated: its pose, its drivers' state and the frame its last
 /// tick produced.
+///
+/// Cloning one is how a caller forks an animation — the clone shares every
+/// binding grid with the original through `Arc` and copies only the frame.
+#[derive(Clone)]
 pub struct Puppet {
     /// The `Model::generation` this puppet is baked against.
     baked_generation: u64,
