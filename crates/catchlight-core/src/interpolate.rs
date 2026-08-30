@@ -3,7 +3,8 @@
 //! A binding holds a value at each of its params' key positions; a pose lands
 //! between them. [`InterpolateMode`] is the rule the author picked for that,
 //! and the free functions here are the one implementation of it — shared by
-//! [`crate::model::eval`] (what a Model reports at a pose) and
+//! [`Model::eval_scalar`](crate::Model::eval_scalar) (what a model reports at
+//! a pose) and
 //! [`crate::puppet::Puppet`]'s fold (what a tick evaluates), so the two can
 //! never drift.
 

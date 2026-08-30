@@ -21,7 +21,7 @@ pub enum DeformSource {
     Node(NodeIdx),
     /// All weld pulls on this part, summed. One slot regardless of how many
     /// weld records touch the part — the weld pass zeroes it on first touch
-    /// each frame and accumulates (see [`crate::weld::apply_welds`]).
+    /// each frame and accumulates (see `crate::weld::apply_welds`).
     Weld,
     /// An external writer's scratch slot — the editor's live drag.
     Scratch,

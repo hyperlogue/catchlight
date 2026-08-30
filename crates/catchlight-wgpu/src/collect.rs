@@ -293,8 +293,8 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
     };
 
     let mut sources = MaskSources::new();
-    for binding in masks {
-        let mask_node_id = binding.source;
+    for mask in masks {
+        let mask_node_id = mask.source;
         let Some(mask_node) = source.node(mask_node_id) else {
             continue;
         };
@@ -303,7 +303,7 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                 mesh_id: source.mesh_slot(mask_node_id),
                 texture_id: source.texture_slot(mask_node),
                 transform: source.transform(mask_node_id),
-                mode: binding.mode,
+                mode: mask.mode,
                 mask_threshold: part.mask_threshold,
             }),
             NodeKind::Composite(composite) => {
@@ -334,7 +334,7 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                 });
                 sources.push(MaskSourceData::Composite {
                     node_id: mask_node_id.0,
-                    mode: binding.mode,
+                    mode: mask.mode,
                 });
             }
             NodeKind::MeshGroup(_) | NodeKind::Group | NodeKind::SimplePhysics(_) => {}

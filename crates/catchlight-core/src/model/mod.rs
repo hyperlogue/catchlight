@@ -209,16 +209,15 @@ pub struct ModelTexture {
     pub data: Arc<Vec<u8>>,
 }
 
-impl From<&ModelTexture> for crate::formats::ModelTexture {
+impl From<&ModelTexture> for crate::formats::EncodedTexture {
     /// The decoder's view of a source-encoded texture, for
     /// [`crate::prepare_textures`].
     ///
     /// Copies the bytes: the two types disagree about `Arc<Vec<u8>>` versus
     /// `Arc<[u8]>`, and reconciling that is `.clm`'s call, not a reason to
-    /// grow a second decode path here. The legacy load path pays the same
-    /// copy.
+    /// grow a second decode path here.
     fn from(tex: &ModelTexture) -> Self {
-        crate::formats::ModelTexture {
+        crate::formats::EncodedTexture {
             format: match tex.encoding {
                 TextureEncoding::Png => crate::formats::TextureFormat::Png,
                 TextureEncoding::Tga => crate::formats::TextureFormat::Tga,

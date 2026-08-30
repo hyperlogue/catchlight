@@ -14,7 +14,7 @@ use glam::{Vec2, Vec3};
 
 use crate::components::{
     CompositeData, Mask, Mesh, MeshGroupData, MeshIndices, Node, NodeIdx, NodeKind, PartData,
-    TextureId, Transform,
+    TextureIdx, Transform,
 };
 use crate::deform::DeformStack;
 use crate::formats::clm::{ClmIndices, ClmMesh};
@@ -298,7 +298,7 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
             let deform_stack = DeformStack::new(mesh.vertices.len());
             NodeKind::Part(Box::new(PartData {
                 mesh,
-                albedo_texture: TextureId(
+                albedo_texture: TextureIdx(
                     p.albedo()
                         .and_then(|t| model.texture_ids().iter().position(|x| x == t))
                         .map(|i| i as u32)

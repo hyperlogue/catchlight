@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use catchlight_core::{Mesh, MeshIndices, PuppetTexture, Vec2};
+use catchlight_core::{DecodedTexture, Mesh, MeshIndices, Vec2};
 use catchlight_wgpu::{create_headless_context, RendererError, WgpuRenderer};
 
 async fn make_renderer() -> WgpuRenderer {
@@ -78,7 +78,7 @@ fn upload_mesh_rejects_out_of_bounds_index() {
 #[test]
 fn upload_texture_rejects_zero_dimensions() {
     let mut r = pollster::block_on(make_renderer());
-    let texture = PuppetTexture {
+    let texture = DecodedTexture {
         width: 0,
         height: 1,
         rgba: Vec::new().into(),
@@ -99,7 +99,7 @@ fn upload_texture_rejects_device_limit_overflow() {
     let mut r = pollster::block_on(make_renderer());
     let limit = r.device.limits().max_texture_dimension_2d;
     let oversized = limit.checked_add(1).expect("finite GPU dimension limit");
-    let texture = PuppetTexture {
+    let texture = DecodedTexture {
         width: oversized,
         height: 1,
         rgba: Vec::new().into(),
@@ -118,7 +118,7 @@ fn upload_texture_rejects_device_limit_overflow() {
 #[test]
 fn upload_texture_rejects_rgba_length_mismatch() {
     let mut r = pollster::block_on(make_renderer());
-    let texture = PuppetTexture {
+    let texture = DecodedTexture {
         width: 2,
         height: 2,
         rgba: vec![0; 15].into(),

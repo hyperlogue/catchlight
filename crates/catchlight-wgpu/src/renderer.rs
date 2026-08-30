@@ -63,7 +63,7 @@
 //! per-invariant tests live in `crates/catchlight-wgpu/tests/`;
 //! `crates/visual-tests` covers the ones that do reach pixels.
 
-use catchlight_core::{BlendMode, PuppetTexture};
+use catchlight_core::{BlendMode, DecodedTexture};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -897,7 +897,7 @@ struct TextureSource {
 }
 
 impl TextureSource {
-    fn matches(&self, texture: &PuppetTexture) -> bool {
+    fn matches(&self, texture: &DecodedTexture) -> bool {
         self.width == texture.width
             && self.height == texture.height
             && std::sync::Arc::ptr_eq(&self.rgba, &texture.rgba)
@@ -1533,7 +1533,7 @@ fn camera_slot_offset(slot: u32, stride: u64) -> RendererResult<u64> {
 }
 
 /// Dense `Vec<Option<V>>` keyed by a small integer id. MeshId and
-/// TextureId are puppet-slot / texture-table indices probed several
+/// TextureIdx are puppet-slot / texture-table indices probed several
 /// times per drawable per frame; indexing a vector avoids the default
 /// SipHash `HashMap` on that hot path. Grows to the largest id inserted
 /// — ids come from real puppets (no adversarial sparsity), so the
@@ -2626,12 +2626,12 @@ impl WgpuRenderer {
         self.textures.get(albedo as usize).map(|t| &t.bind_group)
     }
 
-    /// Uploads a canonical [`PuppetTexture`] straight to the GPU as
+    /// Uploads a canonical [`DecodedTexture`] straight to the GPU as
     /// `Rgba8UnormSrgb`. The importer has already normalised the bytes
     /// to premultiplied LINEAR color encoded as sRGB bytes (byte =
     /// srgb_encode(linear * alpha); see `ModelTexture::decode` and the
     /// basic.wgsl header), so the upload needs no branching.
-    pub fn upload_texture(&mut self, texture_id: u32, tex: &PuppetTexture) -> RendererResult<()> {
+    pub fn upload_texture(&mut self, texture_id: u32, tex: &DecodedTexture) -> RendererResult<()> {
         if let Some(existing) = self.textures.get(texture_id as usize) {
             if existing.source.as_ref().is_some_and(|src| src.matches(tex)) {
                 return Ok(());
@@ -5280,7 +5280,7 @@ mod tests {
         pixels_to_scissor, project_aabb_to_pixels, renders_as_over, same_mask_signature, Aabb2,
         RendererError, ScreenRect, TextureSource, CAMERA_RING_SLOTS,
     };
-    use catchlight_core::{BlendMode, PuppetTexture};
+    use catchlight_core::{BlendMode, DecodedTexture};
     use std::sync::Arc;
 
     #[test]
@@ -5292,12 +5292,12 @@ mod tests {
             height: 2,
         };
 
-        assert!(source.matches(&PuppetTexture {
+        assert!(source.matches(&DecodedTexture {
             width: 1,
             height: 2,
             rgba: rgba.clone(),
         }));
-        assert!(!source.matches(&PuppetTexture {
+        assert!(!source.matches(&DecodedTexture {
             width: 2,
             height: 1,
             rgba,
