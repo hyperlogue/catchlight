@@ -7,8 +7,26 @@
 
 use std::path::PathBuf;
 
-use catchlight_clm::{diff, patch, Error, EXIT_DIFFERS, EXIT_ERROR};
-use clap::{Parser, Subcommand};
+use catchlight_clm::{diff, patch, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
+use catchlight_core::formats::clm::TextureAlpha;
+use clap::{Parser, Subcommand, ValueEnum};
+
+/// `--alpha`: what the replacement bytes mean by their alpha channel. The
+/// bytes cannot say, so only the person doing the swap can.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AlphaArg {
+    Premultiplied,
+    Straight,
+}
+
+impl AlphaArg {
+    fn alpha(self) -> TextureAlpha {
+        match self {
+            Self::Premultiplied => TextureAlpha::PremultipliedSrgb,
+            Self::Straight => TextureAlpha::Straight,
+        }
+    }
+}
 
 const AFTER_HELP: &str = "\
 Ids:
@@ -63,6 +81,22 @@ enum Cmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// Swap a texture's source bytes for another image's.
+    ReplaceTexture {
+        /// The .clm to edit.
+        file: PathBuf,
+        /// The texture id whose bytes to replace.
+        tex_id: String,
+        /// The image file. Its encoding comes from its signature, or its
+        /// extension when the bytes carry none.
+        image: PathBuf,
+        /// The alpha convention of the new bytes. Defaults to the slot's.
+        #[arg(long, value_enum)]
+        alpha: Option<AlphaArg>,
+        /// Write here instead of over the input.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Compare two model files by id.
     Diff { a: PathBuf, b: PathBuf },
 }
@@ -100,6 +134,22 @@ fn run() -> Result<i32, Error> {
             } else {
                 println!("{change} (unchanged)");
             }
+        }
+        Cmd::ReplaceTexture {
+            file,
+            tex_id,
+            image,
+            alpha,
+            out,
+        } => {
+            let replaced = texture::run(
+                &file,
+                &tex_id,
+                &image,
+                alpha.map(AlphaArg::alpha),
+                out.as_deref(),
+            )?;
+            println!("{replaced}");
         }
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;
