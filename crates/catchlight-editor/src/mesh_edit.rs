@@ -2,13 +2,33 @@
 //! its own snapshot undo stack. The document is untouched until Apply, which
 //! flattens the CDT (alpha-culled) into one `MeshSet` command — the document
 //! undo sees a single step, and the deform re-fit rides in it server-side.
+//!
+//! Invariants this module carries:
+//!
+//! - **A seam names vertices of the mesh the document holds, so the seam tool
+//!   is only reachable while the working mesh still is that mesh** — on entry,
+//!   or straight after an Apply. Filling a slot from an edited working mesh
+//!   would point it at an index the document does not have yet, which is
+//!   exactly the mistake seams exist to prevent.
+//!
+//! - **Seam and weld edits are document edits.** Unlike everything else in
+//!   this mode they bump the revision the moment they are made, so they land
+//!   on the *document's* undo stack, not the mode's; the seam panel offers its
+//!   own undo button for that reason.
+//!
+//! - **Apply does not leave the mode when it emptied a slot.** Re-meshing a
+//!   part empties every seam slot on it (which vertex fills a slot is a claim
+//!   about the mesh that just went away), and the author is the only one who
+//!   can say where they go now — so Apply hands the mode straight to the seam
+//!   tool with the list. [`crate::app::App`] holds the commit gate that keeps
+//!   the model from being saved half-repaired.
 
 use std::collections::HashSet;
 
 use catchlight_editor_core::{
     contour_automesh, grid_automesh, AlphaMask, ContourKnobs, UvMap, WorkingMesh,
 };
-use catchlight_editor_protocol::NodeId;
+use catchlight_editor_protocol::{NodeId, SeamAddr, SeamId, SeamInfo, SlotId, WeldInfo};
 use eframe::egui;
 
 use crate::camera::EditorCamera;
@@ -19,6 +39,68 @@ pub(crate) enum MeshTool {
     Point,
     /// Pin / unpin constraint edges between two picked vertices.
     Connect,
+    /// Name vertices as seam slots, and weld a seam to another part's.
+    /// Only reachable while the working mesh is the document's.
+    Seam,
+}
+
+/// What the mesh editor asks the app to do. The app owns every command; this
+/// module owns no session.
+pub(crate) enum MeshEditAction {
+    Apply,
+    Cancel,
+    /// Replace the working mesh with another node's topology.
+    CopyFrom(NodeId),
+    Seam(SeamAction),
+}
+
+/// A seam or weld edit. Each is one document command, so each is one undo
+/// entry — unlike the working-mesh edits around them.
+pub(crate) enum SeamAction {
+    AddSeam(SeamId),
+    DeleteSeam(SeamId),
+    AddSlot {
+        seam: SeamId,
+        slot: SlotId,
+    },
+    DeleteSlot {
+        seam: SeamId,
+        slot: SlotId,
+    },
+    ClearSlot {
+        seam: SeamId,
+        slot: SlotId,
+    },
+    /// Point a slot at one of the part's vertices — the click in the viewport.
+    FillSlot {
+        seam: SeamId,
+        slot: SlotId,
+        vertex: u32,
+    },
+    /// Pair this part's seam with another part's, slot by slot.
+    Weld {
+        seam: SeamId,
+        other: SeamAddr,
+    },
+    /// One slot's share of the point its two welded vertices meet at.
+    SetWeight {
+        seam: SeamId,
+        other: SeamAddr,
+        slot: SlotId,
+        weight: f32,
+    },
+    /// The document's undo, not the mode's.
+    Undo,
+}
+
+/// What the seam panel reads: this part's seams, the welds naming any of
+/// them, and the seams elsewhere in the model a weld could reach.
+#[derive(Default)]
+pub(crate) struct SeamView {
+    pub seams: Vec<SeamInfo>,
+    pub welds: Vec<WeldInfo>,
+    /// (node, node name, seam) for every seam on another part.
+    pub others: Vec<(NodeId, String, SeamId)>,
 }
 
 pub(crate) struct MeshEditState {
@@ -43,6 +125,16 @@ pub(crate) struct MeshEditState {
     drag: Option<VertDrag>,
     marquee: Option<egui::Pos2>,
     connect_from: Option<u32>,
+    /// The working mesh has been edited since it last matched the document's.
+    /// While it has, a vertex index here names nothing the document holds, so
+    /// the seam tool is out.
+    edited: bool,
+    /// The slot the next viewport click fills.
+    armed_slot: Option<(SeamId, SlotId)>,
+    /// What the last Apply emptied and nobody has refilled — the prompt.
+    pub emptied: Vec<(SeamId, SlotId)>,
+    /// Drained by the app once per frame.
+    pub actions: Vec<MeshEditAction>,
     pub status: String,
 }
 
@@ -51,12 +143,6 @@ struct VertDrag {
     mirror: Option<u32>,
     start_pos: [f32; 2],
     start_world: glam::Vec2,
-}
-
-pub(crate) enum MeshEditOutcome {
-    Continue,
-    Apply,
-    Cancel,
 }
 
 const AXIS_SNAP: f32 = 4.0;
@@ -90,10 +176,33 @@ impl MeshEditState {
             drag: None,
             marquee: None,
             connect_from: None,
+            edited: false,
+            armed_slot: None,
+            emptied: Vec::new(),
+            actions: Vec::new(),
             status: String::new(),
         };
         s.retriangulate();
         s
+    }
+
+    /// Re-seat the mode on the document's mesh — what Apply does when it
+    /// emptied slots the author has to refill before the model can be saved.
+    pub(crate) fn reseat(&mut self, working: WorkingMesh, emptied: Vec<(SeamId, SlotId)>) {
+        self.working = working;
+        self.undo.clear();
+        self.redo.clear();
+        self.selection.clear();
+        self.edited = false;
+        self.armed_slot = None;
+        self.emptied = emptied;
+        self.tool = MeshTool::Seam;
+        self.retriangulate();
+    }
+
+    /// Is the working mesh still the one the document holds?
+    pub(crate) fn matches_document(&self) -> bool {
+        !self.edited
     }
 
     fn retriangulate(&mut self) {
@@ -101,6 +210,7 @@ impl MeshEditState {
     }
 
     fn snapshot(&mut self) {
+        self.edited = true;
         self.undo.push(self.working.clone());
         if self.undo.len() > 64 {
             self.undo.remove(0);
@@ -222,8 +332,9 @@ impl MeshEditState {
         camera: &EditorCamera,
     ) -> bool {
         let mods = ui.input(|i| i.modifiers);
-        // Keyboard: delete + nudge.
-        if !ui.ctx().egui_wants_keyboard_input() {
+        // Keyboard: delete + nudge. Not while the seam tool is up — it is the
+        // one tool that must leave the mesh exactly as the document has it.
+        if !ui.ctx().egui_wants_keyboard_input() && self.tool != MeshTool::Seam {
             if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
                 && !self.selection.is_empty()
             {
@@ -284,7 +395,7 @@ impl MeshEditState {
                         self.marquee = Some(pos);
                     }
                 }
-                MeshTool::Connect => {}
+                MeshTool::Connect | MeshTool::Seam => {}
             }
             return true;
         }
@@ -373,6 +484,26 @@ impl MeshEditState {
                         }
                     }
                 },
+                MeshTool::Seam => {
+                    // The click that fills a slot. Vertex indices here are the
+                    // document's, because the seam tool only runs while the
+                    // working mesh is the document's mesh.
+                    match (self.armed_slot.clone(), self.vertex_at(rect, camera, pos)) {
+                        (Some((seam, slot)), Some(vertex)) => {
+                            self.armed_slot = None;
+                            self.actions
+                                .push(MeshEditAction::Seam(SeamAction::FillSlot {
+                                    seam,
+                                    slot,
+                                    vertex,
+                                }));
+                        }
+                        (Some(_), None) => {
+                            self.status = "click a vertex to fill the slot".into();
+                        }
+                        (None, _) => {}
+                    }
+                }
                 MeshTool::Connect => {
                     if let Some(v) = self.vertex_at(rect, camera, pos) {
                         match self.connect_from.take() {
@@ -470,25 +601,24 @@ impl MeshEditState {
         }
     }
 
-    /// The mode's tool panel (drawn in place of the node tree). Returns
-    /// Apply/Cancel when the user is done.
+    /// The mode's tool panel (drawn in place of the node tree). Pushes what
+    /// the author asked for into [`Self::actions`], which the app drains.
     pub(crate) fn panel_ui(
         &mut self,
         ui: &mut egui::Ui,
         copy_sources: &[(NodeId, String)],
-    ) -> (MeshEditOutcome, Option<NodeId>) {
-        let mut outcome = MeshEditOutcome::Continue;
-        let mut copy_from = None;
+        seams: &SeamView,
+    ) {
         ui.horizontal(|ui| {
             let can_apply = !self.tris.is_empty();
             if ui
                 .add_enabled(can_apply, egui::Button::new("✔ Apply"))
                 .clicked()
             {
-                outcome = MeshEditOutcome::Apply;
+                self.actions.push(MeshEditAction::Apply);
             }
             if ui.button("✖ Cancel").clicked() {
-                outcome = MeshEditOutcome::Cancel;
+                self.actions.push(MeshEditAction::Cancel);
             }
         });
         ui.separator();
@@ -497,12 +627,37 @@ impl MeshEditState {
                 if ui.selectable_label(self.tool == tool, label).clicked() {
                     self.tool = tool;
                     self.connect_from = None;
+                    self.armed_slot = None;
                 }
+            }
+            // A slot names a vertex of the mesh the document holds, so the
+            // seam tool waits for the edits to land.
+            let seam_ok = self.matches_document();
+            let seam = ui.add_enabled(
+                seam_ok,
+                egui::Button::new("Seams").selected(self.tool == MeshTool::Seam),
+            );
+            if seam.clicked() {
+                self.tool = MeshTool::Seam;
+                self.connect_from = None;
+            }
+            if !seam_ok {
+                seam.on_hover_text(
+                    "apply the mesh first — a seam names vertices of the mesh \
+                     the document holds",
+                );
             }
             ui.separator();
             ui.checkbox(&mut self.mirror_x, "mirror X");
             ui.checkbox(&mut self.mirror_y, "mirror Y");
         });
+        if self.tool == MeshTool::Seam {
+            self.seam_panel(ui, seams);
+            if !self.status.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(240, 170, 60), &self.status);
+            }
+            return;
+        }
         ui.horizontal(|ui| {
             if ui.button("⟲ undo").clicked() {
                 self.undo();
@@ -599,6 +754,7 @@ impl MeshEditState {
                 }
             }
         });
+        let mut copy_from = None;
         if !copy_sources.is_empty() {
             ui.menu_button("Copy mesh from…", |ui| {
                 egui::ScrollArea::vertical()
@@ -616,6 +772,193 @@ impl MeshEditState {
         if !self.status.is_empty() {
             ui.colored_label(egui::Color32::from_rgb(240, 170, 60), &self.status);
         }
-        (outcome, copy_from)
+        if let Some(node) = copy_from {
+            self.actions.push(MeshEditAction::CopyFrom(node));
+        }
+    }
+
+    /// The seam and weld tool. Every button here is one document command, so
+    /// every one of them is its own undo entry.
+    fn seam_panel(&mut self, ui: &mut egui::Ui, view: &SeamView) {
+        if !self.emptied.is_empty() {
+            ui.colored_label(
+                egui::Color32::from_rgb(240, 170, 60),
+                format!(
+                    "{} slot(s) emptied by the new mesh — refill them, or \
+                     delete the seam. The model will not save until you do.",
+                    self.emptied.len()
+                ),
+            );
+            ui.separator();
+        }
+        ui.horizontal(|ui| {
+            let id = ui.id().with("new-seam");
+            let mut name: String = ui
+                .ctx()
+                .data_mut(|d| d.get_temp(id))
+                .unwrap_or_else(|| "seam".to_string());
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(90.0));
+            ui.ctx().data_mut(|d| d.insert_temp(id, name.clone()));
+            if ui.button("＋ seam").clicked() {
+                match SeamId::new(&name) {
+                    Ok(seam) => self
+                        .actions
+                        .push(MeshEditAction::Seam(SeamAction::AddSeam(seam))),
+                    Err(e) => self.status = format!("seam id: {e}"),
+                }
+            }
+            if ui
+                .button("⟲ undo")
+                .on_hover_text("seam edits are document edits — this is the document's undo")
+                .clicked()
+            {
+                self.actions.push(MeshEditAction::Seam(SeamAction::Undo));
+            }
+        });
+        if view.seams.is_empty() {
+            ui.label("(no seams on this part)");
+        }
+        for seam in &view.seams {
+            self.seam_row(ui, seam, view);
+        }
+    }
+
+    fn seam_row(&mut self, ui: &mut egui::Ui, seam: &SeamInfo, view: &SeamView) {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong(seam.id.as_str());
+            if ui
+                .small_button("✕ seam")
+                .on_hover_text("delete the seam, and every weld that named it")
+                .clicked()
+            {
+                self.actions
+                    .push(MeshEditAction::Seam(SeamAction::DeleteSeam(
+                        seam.id.clone(),
+                    )));
+            }
+        });
+        for slot in &seam.slots {
+            let armed = self
+                .armed_slot
+                .as_ref()
+                .is_some_and(|(s, l)| *s == seam.id && *l == slot.id);
+            ui.horizontal(|ui| {
+                let filled = match slot.vertex {
+                    Some(v) => format!("{} → v{v}", slot.id),
+                    None => format!("{} → (unfilled)", slot.id),
+                };
+                if slot.vertex.is_none() {
+                    ui.colored_label(egui::Color32::from_rgb(240, 170, 60), filled);
+                } else {
+                    ui.label(filled);
+                }
+                if ui
+                    .selectable_label(armed, "pick")
+                    .on_hover_text("then click a vertex in the viewport")
+                    .clicked()
+                {
+                    self.armed_slot = if armed {
+                        None
+                    } else {
+                        Some((seam.id.clone(), slot.id.clone()))
+                    };
+                }
+                if ui.small_button("clear").clicked() {
+                    self.actions
+                        .push(MeshEditAction::Seam(SeamAction::ClearSlot {
+                            seam: seam.id.clone(),
+                            slot: slot.id.clone(),
+                        }));
+                }
+                if ui
+                    .small_button("✕")
+                    .on_hover_text("remove the slot — from this seam and every seam welded to it")
+                    .clicked()
+                {
+                    self.actions
+                        .push(MeshEditAction::Seam(SeamAction::DeleteSlot {
+                            seam: seam.id.clone(),
+                            slot: slot.id.clone(),
+                        }));
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            let id = ui.id().with(("new-slot", seam.id.as_str()));
+            let mut name: String = ui
+                .ctx()
+                .data_mut(|d| d.get_temp(id))
+                .unwrap_or_else(|| format!("s{}", seam.slots.len()));
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(70.0));
+            ui.ctx().data_mut(|d| d.insert_temp(id, name.clone()));
+            if ui
+                .button("＋ slot")
+                .on_hover_text("reaches every seam welded to this one — a weld pairs slot by slot")
+                .clicked()
+            {
+                match SlotId::new(&name) {
+                    Ok(slot) => self.actions.push(MeshEditAction::Seam(SeamAction::AddSlot {
+                        seam: seam.id.clone(),
+                        slot,
+                    })),
+                    Err(e) => self.status = format!("slot id: {e}"),
+                }
+            }
+        });
+        self.weld_row(ui, seam, view);
+    }
+
+    /// The welds naming this seam, and the menu that makes one.
+    fn weld_row(&mut self, ui: &mut egui::Ui, seam: &SeamInfo, view: &SeamView) {
+        let here = |addr: &SeamAddr| addr.node == self.node && addr.seam == seam.id;
+        for weld in view.welds.iter().filter(|w| here(&w.a) || here(&w.b)) {
+            let other = if here(&weld.a) { &weld.b } else { &weld.a };
+            let name = view
+                .others
+                .iter()
+                .find(|(n, _, s)| *n == other.node && *s == other.seam)
+                .map(|(_, name, _)| name.clone())
+                .unwrap_or_else(|| other.node.to_string());
+            ui.label(format!("welded to {name} · {}", other.seam));
+            for w in &weld.weights {
+                let mut weight = w.weight;
+                let resp = ui.add(
+                    egui::Slider::new(&mut weight, 0.0..=1.0)
+                        .text(w.slot.as_str())
+                        .clamping(egui::SliderClamping::Always),
+                );
+                if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                    self.actions
+                        .push(MeshEditAction::Seam(SeamAction::SetWeight {
+                            seam: seam.id.clone(),
+                            other: other.clone(),
+                            slot: w.slot.clone(),
+                            weight,
+                        }));
+                }
+            }
+        }
+        if view.others.is_empty() {
+            return;
+        }
+        ui.menu_button("weld to…", |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    for (node, name, other) in &view.others {
+                        if ui.button(format!("{name} · {other}")).clicked() {
+                            self.actions.push(MeshEditAction::Seam(SeamAction::Weld {
+                                seam: seam.id.clone(),
+                                other: SeamAddr {
+                                    node: node.clone(),
+                                    seam: other.clone(),
+                                },
+                            }));
+                            ui.close();
+                        }
+                    }
+                });
+        });
     }
 }
