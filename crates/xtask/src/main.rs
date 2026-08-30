@@ -48,7 +48,7 @@ fn gen_fixture(args: &[String]) -> Result<()> {
 }
 
 fn import(args: &[String]) -> Result<()> {
-    use catchlight_import_inochi2d::{import_inx_model, InxModel};
+    use catchlight_import_inochi2d::import_inx_bytes;
 
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -76,9 +76,8 @@ fn import(args: &[String]) -> Result<()> {
 
     let bytes = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
     // `.inx` and `.inp` share one container; the extension is only a label.
-    let model = InxModel::parse(std::io::Cursor::new(&bytes))
-        .with_context(|| format!("parsing {}", input.display()))?;
-    let imported = import_inx_model(&model).context("importing")?;
+    let imported =
+        import_inx_bytes(&bytes).with_context(|| format!("importing {}", input.display()))?;
     let encoded = imported.to_clm_bytes().context("writing .clm")?;
     std::fs::write(&output, &encoded).with_context(|| format!("writing {}", output.display()))?;
 
