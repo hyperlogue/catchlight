@@ -1,9 +1,33 @@
 //! Bevy integration for catchlight.
 //!
-//! Adds `CatchlightPlugin` which plugs a puppet renderer into Bevy's
-//! render graph. Spawn a `CatchlightPuppet` component on an entity with a
-//! `Transform` and a `GlobalTransform` and it will render on every
+//! Adds `CatchlightPlugin`. Load a model as a `CatchlightModel` asset, spawn a
+//! `CatchlightPuppet` component holding its `Handle` on an entity with a
+//! `Transform` and a `GlobalTransform`, and it renders on every
 //! `CatchlightCamera` in the scene, atomic at the entity's z.
+//!
+//! **Who owns what.** The three types the runtime is split into land in three
+//! places, and the split is the reason the integration is shaped this way:
+//!
+//! - the **model** is an asset (`CatchlightModel`), shared: two entities
+//!   holding one handle animate one model, loaded and decoded once;
+//! - the **puppet** is a component (`CatchlightPuppet`), owned by its entity,
+//!   ticked in the main world against the asset, with the entity's
+//!   `GlobalTransform` as the rig's root;
+//! - the **render cache** is render-world state, one per (entity, view
+//!   format), prepared from the model and refreshed from the puppet.
+//!
+//! Bevy's stages carry catchlight's: **extract** is `RenderCache::refresh`
+//! plus the collect (the main world is paused there, which is the only moment
+//! the live puppet may be read), and **prepare** is `RenderCache::prepare`
+//! (the uploads that survive a frame, kept out of the sync point). A puppet
+//! that appears on one frame therefore draws from the next.
+//!
+//! **A cache is per entity, not per model.** A renderer holds one puppet's
+//! deforms — a deform lives at a byte range decided by its mesh slot, and every
+//! draw in a frame goes into one submit, so a second puppet's upload would
+//! overwrite the first's before either drew. Sharing the GPU copy of a model
+//! between puppets needs a per-puppet deform region inside `catchlight-wgpu`.
+//! What is shared today is the model itself, which is where the textures live.
 //!
 //! **One wgpu across the whole workspace.** `catchlight-bevy` hands bevy's
 //! render world a `Device`, `Queue` and `Arc<Pipelines>` built by
@@ -20,6 +44,7 @@
 //! `multiple-versions` is at `warn` because these duplicates are the decision,
 //! not a defect.
 
+mod asset;
 mod camera_controls;
 mod components;
 mod extract;
@@ -28,8 +53,10 @@ mod plugin;
 mod prepare;
 mod update;
 
+pub use asset::{model_from_bytes, CatchlightModel, CatchlightModelLoader, ModelAssetError};
 pub use camera_controls::{CameraControls, CameraControlsPlugin};
-pub use catchlight_core::LegacyPuppet;
-pub use components::{CatchlightCamera, CatchlightPuppet, PuppetDynamicState};
-pub use plugin::CatchlightPlugin;
+pub use catchlight_core::{Model, Pose, Puppet};
+pub use components::{CatchlightCamera, CatchlightPuppet};
+pub use extract::ExtractedPuppet;
+pub use plugin::{CatchlightPlugin, CatchlightSettings};
 pub use prepare::CatchlightRenderState;

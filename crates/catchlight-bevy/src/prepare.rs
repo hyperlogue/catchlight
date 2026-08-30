@@ -4,10 +4,13 @@ use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
 use bevy::render::renderer::{RenderAdapter, RenderDevice, RenderQueue};
 use bevy::render::view::ViewTarget;
+use catchlight_core::{Model, Puppet};
 use catchlight_wgpu::{
-    CompositePool, FramebufferSnapshotPool, Pipelines, StencilTarget, WgpuRenderer,
+    CompositePool, FrameStats, FramebufferSnapshotPool, Pipelines, PrepareOptions, RenderCache,
+    RenderList, StencilTarget, WgpuRenderer,
 };
 
+use crate::asset::CatchlightModel;
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
 
 /// Single render-world resource that owns every piece of mutable
@@ -33,8 +36,8 @@ impl CatchlightRenderState {
         };
         let mut total_ns: u64 = 0;
         let mut got_any = false;
-        for renderer in inner.renderers.values_mut() {
-            if let Some(frame) = renderer.process_gpu_frame() {
+        for gpu in inner.gpus.values_mut() {
+            if let Some(frame) = gpu.renderer.process_gpu_frame() {
                 got_any = true;
                 let frame_ns: u64 = frame
                     .iter()
@@ -45,6 +48,44 @@ impl CatchlightRenderState {
             }
         }
         got_any.then_some(total_ns)
+    }
+
+    /// The drawables the last extraction collected for one render-world
+    /// entity, in the first view format it has GPU state for.
+    ///
+    /// `None` until a cache has been prepared *and* collected into — the one
+    /// frame after a puppet appears — and `None` for a main-world entity: the
+    /// key is the paired `RenderEntity`. A clone, meant for tests and
+    /// debugging rather than for the frame.
+    pub fn collected_drawables(&self, render_entity: Entity) -> Option<RenderList> {
+        let inner = self.inner.lock().ok()?;
+        inner
+            .gpus
+            .iter()
+            .find(|(key, gpu)| key.entity == render_entity && gpu.collected)
+            .map(|(_, gpu)| gpu.render_list.clone())
+    }
+
+    /// What the render node last recorded for one render-world entity: the
+    /// tallies `catchlight-wgpu` keeps for the most recent `render_list_ext`
+    /// call on that puppet's renderer. Zeroed until it has drawn once.
+    ///
+    /// Like [`Self::collected_drawables`], the key is the paired
+    /// `RenderEntity`, and this is for tests and debug overlays.
+    pub fn frame_stats(&self, render_entity: Entity) -> Option<FrameStats> {
+        let inner = self.inner.lock().ok()?;
+        inner
+            .gpus
+            .iter()
+            .find(|(key, _)| key.entity == render_entity)
+            .map(|(_, gpu)| gpu.renderer.frame_stats())
+    }
+
+    /// How many render caches are resident: one per puppet per view format.
+    /// Two puppets of one model hold two, which is what a renderer's single
+    /// deform buffer forces; see the module doc of `crate::lib`.
+    pub fn resident_caches(&self) -> usize {
+        self.inner.lock().map(|inner| inner.gpus.len()).unwrap_or(0)
     }
 }
 
@@ -62,6 +103,73 @@ pub(crate) struct FormatResources {
 pub(crate) struct RendererKey {
     pub entity: Entity,
     pub format: wgpu::TextureFormat,
+}
+
+/// One puppet's GPU state for one view format: the renderer that holds it, the
+/// render cache naming its slots, and the drawables the last extract collected.
+///
+/// **One cache, one renderer, one puppet.** The first half is
+/// `catchlight-wgpu`'s own rule: a cache's slots name state inside the renderer
+/// that prepared it. The second half is bevy's: a renderer holds exactly one
+/// puppet's deforms, because a deform lives at a byte range decided by its mesh
+/// slot and every draw in a frame is recorded into one submit, so a second
+/// puppet's upload would overwrite the first's before either draws. Two
+/// entities animating one model therefore share the `Model` (one asset, one
+/// `Arc`, one decode) and hold a cache each. Sharing the *GPU* copy needs a
+/// per-puppet deform region in `catchlight-wgpu`, which is a renderer change,
+/// not a bevy one.
+pub(crate) struct PuppetGpu {
+    pub renderer: WgpuRenderer,
+    pub cache: RenderCache,
+    /// The asset the cache was prepared from; a different id means the entity
+    /// swapped models and the cache has to be rebuilt.
+    pub model: AssetId<CatchlightModel>,
+    /// What the cache was prepared with. Changing `CatchlightSettings`
+    /// re-prepares, so a texture budget is live rather than fixed at load.
+    pub options: PrepareOptions,
+    /// Refilled by extraction, drawn by the render node. Empty until the first
+    /// extract after this cache was prepared.
+    pub render_list: RenderList,
+    /// Whether `render_list` has been collected against the current cache.
+    pub collected: bool,
+}
+
+impl PuppetGpu {
+    /// Rebuild the cache when the entity swapped models, then push this
+    /// frame's deforms at the GPU and collect the drawables to draw.
+    ///
+    /// Runs at extract time, with the main world paused, which is what makes
+    /// reading the live puppet safe: bevy's pipelined rendering may run the
+    /// next main-world frame while the render world draws, and that frame
+    /// overwrites the puppet's combined-deform buffers in place.
+    pub(crate) fn refresh(
+        &mut self,
+        model: &Model,
+        model_id: AssetId<CatchlightModel>,
+        puppet: &Puppet,
+        options: PrepareOptions,
+    ) {
+        if self.model != model_id || self.options != options {
+            match RenderCache::prepare(&mut self.renderer, model, options) {
+                Ok(cache) => {
+                    self.cache = cache;
+                    self.model = model_id;
+                    self.options = options;
+                    self.collected = false;
+                }
+                Err(error) => {
+                    tracing::error!("catchlight: preparing a swapped model failed: {error}");
+                    return;
+                }
+            }
+        }
+        if let Err(error) = self.cache.refresh(&mut self.renderer, model, puppet) {
+            tracing::error!("catchlight: refreshing the render cache failed: {error}");
+            return;
+        }
+        self.cache.collect_into(puppet, &mut self.render_list);
+        self.collected = true;
+    }
 }
 
 /// Get-or-build the resources for one `ViewTarget` main-texture format
@@ -103,17 +211,34 @@ fn unique_formats(
 #[derive(Default)]
 pub(crate) struct CatchlightRenderInner {
     /// Per-puppet GPU state, keyed by render-world entity and view format.
-    pub renderers: HashMap<RendererKey, WgpuRenderer>,
+    pub gpus: HashMap<RendererKey, PuppetGpu>,
     pub(crate) formats: HashMap<wgpu::TextureFormat, FormatResources>,
     pub size: (u32, u32),
+    /// What the main world's `CatchlightSettings` asked for, copied in at
+    /// extract so both extraction and preparation build caches the same way.
+    pub(crate) options: PrepareOptions,
     pub(crate) missing_format_warned: bool,
     pub(crate) camera_overflow_warned: bool,
     // Reused across frames so GC doesn't allocate a fresh HashSet every tick.
     live_scratch: HashSet<Entity>,
 }
 
-/// Prepare system: upload new puppets and sync deforms for existing ones.
-// Invariant: render-state Mutex and per-puppet RwLocks are only poisoned on panic, treated as fatal.
+impl CatchlightRenderInner {
+    /// The view formats pipelines have been built for. Extraction walks these
+    /// to find the caches an entity has.
+    pub(crate) fn formats(&self) -> Vec<wgpu::TextureFormat> {
+        self.formats.keys().copied().collect()
+    }
+}
+
+/// Prepare system: build a renderer and a render cache for every puppet that
+/// does not have one yet, and drop the ones whose entity is gone.
+///
+/// Preparing here rather than at extract is what keeps the GPU uploads out of
+/// the frame's sync point, at the cost of one frame: a puppet that appears on
+/// frame N gets its cache at the end of frame N and its first collected
+/// drawables at frame N+1's extract, so it draws from N+1 on.
+// Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
 #[allow(clippy::unwrap_used)]
 pub(crate) fn prepare_puppets(
     device: Res<RenderDevice>,
@@ -124,6 +249,7 @@ pub(crate) fn prepare_puppets(
     views: Query<&ViewTarget, With<ExtractedCatchlightCamera>>,
 ) {
     let mut inner = state.inner.lock().unwrap();
+    let options = inner.options;
 
     let view_formats = unique_formats(views.iter().map(ViewTarget::main_texture_format));
     let pipelines: Vec<_> = view_formats
@@ -143,35 +269,32 @@ pub(crate) fn prepare_puppets(
                 entity,
                 format: *format,
             };
-            let renderer = match inner.renderers.entry(key) {
-                std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    let mut renderer = WgpuRenderer::from_pipelines(
-                        device.wgpu_device().clone(),
-                        (**queue.0).clone(),
-                        pipelines.clone(),
-                    );
-                    let puppet = ex.puppet.read().unwrap();
-                    if let Err(err) = renderer.upload_puppet(&puppet) {
-                        tracing::error!("catchlight upload_puppet failed: {}", err);
-                        continue;
-                    }
-                    v.insert(renderer)
+            if inner.gpus.contains_key(&key) {
+                continue;
+            }
+            let mut renderer = WgpuRenderer::from_pipelines(
+                device.wgpu_device().clone(),
+                (**queue.0).clone(),
+                pipelines.clone(),
+            );
+            let cache = match RenderCache::prepare(&mut renderer, &ex.model, options) {
+                Ok(cache) => cache,
+                Err(error) => {
+                    tracing::error!("catchlight: preparing the render cache failed: {error}");
+                    continue;
                 }
             };
-
-            // Native extraction freezes deforms before pipelined rendering.
-            // Wasm prepare runs before rendering on the same thread, so it
-            // reads the live puppet and avoids the snapshot copy.
-            if ex.visible {
-                #[cfg(not(target_arch = "wasm32"))]
-                renderer.sync_deforms_snapshot(&ex.deforms);
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let puppet = ex.puppet.read().unwrap();
-                    renderer.sync_deforms(&puppet);
-                }
-            }
+            inner.gpus.insert(
+                key,
+                PuppetGpu {
+                    renderer,
+                    cache,
+                    model: ex.model_id,
+                    options,
+                    render_list: RenderList::default(),
+                    collected: false,
+                },
+            );
         }
     }
 
@@ -179,14 +302,11 @@ pub(crate) fn prepare_puppets(
     // `CatchlightPuppet` removed — SyncComponentPlugin despawns the
     // render-world entity, so the puppet drops out of `extracted`).
     let CatchlightRenderInner {
-        renderers,
-        live_scratch,
-        ..
+        gpus, live_scratch, ..
     } = &mut *inner;
     live_scratch.clear();
     live_scratch.extend(extracted.iter().map(|(e, _)| e));
-    renderers
-        .retain(|key, _| live_scratch.contains(&key.entity) && view_formats.contains(&key.format));
+    gpus.retain(|key, _| live_scratch.contains(&key.entity) && view_formats.contains(&key.format));
 
     // Close the previous frame's GPU-profiler queries — exactly once per
     // frame, not once per CatchlightCamera. end_frame maps the timestamp
@@ -195,9 +315,9 @@ pub(crate) fn prepare_puppets(
     // this frame's render node has not recorded queries yet. Doing it here
     // keeps the per-view render node to recording + resolving only. GPU
     // timing for the overlay therefore trails by one frame.
-    for renderer in renderers.values_mut() {
-        renderer.end_gpu_frame();
-        renderer.begin_camera_submit();
+    for gpu in gpus.values_mut() {
+        gpu.renderer.end_gpu_frame();
+        gpu.renderer.begin_camera_submit();
     }
 }
 

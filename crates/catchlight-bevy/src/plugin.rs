@@ -1,20 +1,35 @@
+use bevy::asset::AssetApp;
 use bevy::core_pipeline::{Core2d, Core2dSystems};
 use bevy::prelude::*;
 use bevy::render::sync_component::SyncComponentPlugin;
 use bevy::render::{ExtractSchedule, Render, RenderApp, RenderSystems};
 use bevy::transform::TransformSystems;
+use catchlight_wgpu::PrepareOptions;
 
+use crate::asset::{CatchlightModel, CatchlightModelLoader};
 use crate::components::{CatchlightCamera, CatchlightPuppet};
 use crate::extract::{extract_cameras, extract_puppets};
 use crate::node::catchlight_2d_pass;
 use crate::prepare::{prepare_puppets, CatchlightRenderState};
 use crate::update::update_puppets;
 
+/// How a model reaches the GPU. A render-side budget, not a model property:
+/// changing it re-prepares every cache on the next frame.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatchlightSettings {
+    /// Texture downsampling and the decode memo. See
+    /// [`PrepareOptions`](catchlight_wgpu::PrepareOptions).
+    pub prepare: PrepareOptions,
+}
+
 /// Add this plugin to enable catchlight puppet rendering.
 pub struct CatchlightPlugin;
 
 impl Plugin for CatchlightPlugin {
     fn build(&self, app: &mut App) {
+        app.init_asset::<CatchlightModel>()
+            .init_asset_loader::<CatchlightModelLoader>()
+            .init_resource::<CatchlightSettings>();
         // After transform propagation: update_puppets bakes
         // `GlobalTransform.to_matrix()` into the puppet's root matrix, and
         // propagation runs in PostUpdate — running earlier would bake a
