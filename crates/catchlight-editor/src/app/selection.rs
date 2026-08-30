@@ -1,113 +1,76 @@
 use super::*;
 
-/// Rev-gated mapping between a node's Id — what the document, the protocol
-/// and every panel name it by — and the compact `NodeIdx` a puppet addresses
-/// it by, which exists only inside that puppet.
-pub(super) struct NodeMapping {
-    rev: u64,
-    /// Document order, which is also `parent_of`'s index space.
-    order: Vec<NodeId>,
-    /// Parallel to `order`: the puppet slot, or `u32::MAX` if the puppet does
-    /// not carry the node.
-    core_of: Vec<u32>,
-    parent_of: Vec<Option<usize>>,
-    pos_of_id: HashMap<NodeId, usize>,
-    pos_of_core: HashMap<u32, usize>,
-}
-
+/// Selection, and the reads that need the puppet's evaluated frame.
+///
+/// **Every read of a transform goes through the session lock.** The puppet
+/// owns the frame the viewport last drew; picking, the gizmo, the vertex
+/// tools and the selection overlay all ask it inside a [`Editor::with_puppet`]
+/// closure rather than against a copy taken at render time. A second copy on
+/// the GUI side is one more thing to invalidate, and it was only ever a copy
+/// of `puppet.transforms()`.
+///
+/// What makes reading it safe is the *rev gate*, not a copy: `App::rendered_rev`
+/// says which document revision the last render evaluated, and the tools sit
+/// out any frame where that is older than the session's. Right after an edit
+/// the puppet has rebaked but not been ticked, so its frame describes a pose
+/// nobody has recomputed yet.
 impl App {
     pub(super) fn primary(&self) -> Option<NodeId> {
         self.selection.last().cloned()
     }
 
-    /// Rebuild the Id⇄puppet-slot mapping when the document revision moves.
-    pub(super) fn ensure_mapping(&mut self, rev: u64) {
-        if self.mapping.as_ref().is_some_and(|m| m.rev == rev) {
-            return;
-        }
-        let Some(session) = self.session else { return };
-        let editor = self.editor.clone();
-        let base = editor.with_model(session, |m| {
-            let order = m.nodes_in_order();
-            let pos: HashMap<&NodeId, usize> =
-                order.iter().enumerate().map(|(i, id)| (id, i)).collect();
-            let parent_of: Vec<Option<usize>> = order
-                .iter()
-                .map(|id| {
-                    m.node(id)
-                        .and_then(|n| n.parent())
-                        .and_then(|p| pos.get(p).copied())
-                })
-                .collect();
-            (order, parent_of)
-        });
-        let Ok((order, parent_of)) = base else { return };
-        // Asked of the puppet by Id rather than derived from position: the
-        // puppet's bake order and the model's document order agree today, and
-        // nothing promises they always will.
-        let core_of = editor.with_puppet(session, |_model, p| {
-            order
-                .iter()
-                .map(|id| p.node_idx(id).map(|idx| idx.0).unwrap_or(u32::MAX))
-                .collect::<Vec<u32>>()
-        });
-        let Ok(core_of) = core_of else { return };
-        let pos_of_id = order
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (id.clone(), i))
-            .collect();
-        let pos_of_core = core_of
-            .iter()
-            .enumerate()
-            .filter(|(_, &c)| c != u32::MAX)
-            .map(|(i, &c)| (c, i))
-            .collect();
-        self.mapping = Some(NodeMapping {
-            rev,
-            order,
-            core_of,
-            parent_of,
-            pos_of_id,
-            pos_of_core,
-        });
-    }
-
+    /// The puppet slot a node occupies. Node Ids are what everything else
+    /// names a node by; a slot exists only inside the puppet, and only the
+    /// tools that read its evaluated frame use one.
     pub(super) fn core_of_ref(&self, id: &NodeId) -> Option<u32> {
-        let m = self.mapping.as_ref()?;
-        let i = *m.pos_of_id.get(id)?;
-        let c = *m.core_of.get(i)?;
-        (c != u32::MAX).then_some(c)
+        let session = self.session?;
+        self.editor
+            .with_puppet(session, |_model, p| p.node_idx(id).map(|idx| idx.0))
+            .ok()
+            .flatten()
     }
 
     pub(super) fn ref_of_core(&self, core: u32) -> Option<NodeId> {
-        let m = self.mapping.as_ref()?;
-        let i = *m.pos_of_core.get(&core)?;
-        m.order.get(i).cloned()
+        let session = self.session?;
+        self.editor
+            .with_puppet(session, |_model, p| {
+                p.node_id(catchlight_core::NodeIdx(core)).cloned()
+            })
+            .ok()
+            .flatten()
+    }
+
+    /// The node's world matrix in the frame the puppet last evaluated.
+    pub(super) fn node_world(&self, core: u32) -> glam::Mat4 {
+        let Some(session) = self.session else {
+            return glam::Mat4::IDENTITY;
+        };
+        self.editor
+            .with_puppet(session, |_model, p| {
+                p.transforms().get(catchlight_core::NodeIdx(core))
+            })
+            .unwrap_or(glam::Mat4::IDENTITY)
     }
 
     /// Core ids of the isolated subtree (drawing filter), if isolation is on.
     pub(super) fn isolate_set(&self, root: &TreeNode) -> Option<HashSet<u32>> {
+        let session = self.session?;
         let iso = self.isolated.as_ref()?;
         let sub = find_subtree(root, iso)?;
-        let mut out = HashSet::new();
-        collect_refs(sub, &mut |r| {
-            if let Some(c) = self.core_of_ref(r) {
-                out.insert(c);
-            }
-        });
-        Some(out)
+        let mut ids = Vec::new();
+        collect_refs(sub, &mut |r| ids.push(r));
+        self.editor
+            .with_puppet(session, |_model, p| {
+                ids.iter()
+                    .filter_map(|id| p.node_idx(id).map(|idx| idx.0))
+                    .collect()
+            })
+            .ok()
     }
 
     pub(super) fn pick(&mut self, session: SessionId, world: glam::Vec2) -> Vec<u32> {
-        let Some(viewport) = self.viewport.as_ref() else {
-            return Vec::new();
-        };
-        let transforms = &viewport.transforms;
         self.editor
-            .with_puppet(session, |model, p| {
-                picking::pick_all(model, p, transforms, world)
-            })
+            .with_puppet(session, |model, p| picking::pick_all(model, p, world))
             .unwrap_or_default()
     }
 
@@ -138,28 +101,24 @@ impl App {
         }
     }
 
-    pub(super) fn focus_selected(&mut self) {
-        let Some(session) = self.session else { return };
-        let cores: Vec<u32> = self
-            .selection
-            .iter()
-            .filter_map(|r| self.core_of_ref(r))
-            .collect();
-        if cores.is_empty() {
-            return;
-        }
-        let Some(viewport) = self.viewport.as_ref() else {
-            return;
-        };
-        let transforms = &viewport.transforms;
-        let bounds = self
-            .editor
+    /// World-space bounds of the whole selection, from the puppet's frame.
+    fn selection_bounds(&self, session: SessionId) -> Option<(glam::Vec2, glam::Vec2)> {
+        let selection = self.selection.clone();
+        self.editor
             .with_puppet(session, |_model, p| {
-                picking::world_bounds(p, transforms, &cores)
+                let cores: Vec<u32> = selection
+                    .iter()
+                    .filter_map(|r| p.node_idx(r).map(|idx| idx.0))
+                    .collect();
+                picking::world_bounds(p, &cores)
             })
             .ok()
-            .flatten();
-        if let Some((min, max)) = bounds {
+            .flatten()
+    }
+
+    pub(super) fn focus_selected(&mut self) {
+        let Some(session) = self.session else { return };
+        if let Some((min, max)) = self.selection_bounds(session) {
             let rect = self.last_viewport_rect.unwrap_or(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(16.0, 9.0),
@@ -177,23 +136,7 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
-        let cores: Vec<u32> = self
-            .selection
-            .iter()
-            .filter_map(|r| self.core_of_ref(r))
-            .collect();
-        let Some(viewport) = self.viewport.as_ref() else {
-            return;
-        };
-        let transforms = &viewport.transforms;
-        let bounds = self
-            .editor
-            .with_puppet(session, |_model, p| {
-                picking::world_bounds(p, transforms, &cores)
-            })
-            .ok()
-            .flatten();
-        if let Some((min, max)) = bounds {
+        if let Some((min, max)) = self.selection_bounds(session) {
             let a = self.camera.world_to_screen(rect, min);
             let b = self.camera.world_to_screen(rect, max);
             let sel_rect = egui::Rect::from_two_pos(a, b);
@@ -210,57 +153,44 @@ impl App {
     pub(super) fn gizmo_target(&self) -> Option<GizmoTarget> {
         let session = self.session?;
         let primary = self.primary()?;
-        let core = self.core_of_ref(&primary)?;
-        let mapping = self.mapping.as_ref()?;
-        let at = *mapping.pos_of_id.get(&primary)?;
-        let parent_core = mapping
-            .parent_of
-            .get(at)
-            .copied()
+        // Recording edits the *posed* value, so the handle sits on the
+        // puppet's frame; a document edit starts from the model's own.
+        let armed = self.armed.is_some();
+        self.editor
+            .with_puppet(session, |model, p| {
+                let core = p.node_idx(&primary)?;
+                let m = p.transforms().get(core);
+                let origin = m.transform_point3(glam::vec3(0.0, 0.0, 0.0)).truncate();
+                let parent_world = model
+                    .node(&primary)
+                    .and_then(|n| n.parent())
+                    .and_then(|parent| p.node_idx(parent))
+                    .map(|parent| p.transforms().get(parent))
+                    .unwrap_or(glam::Mat4::IDENTITY);
+                let (translation, rotation, scale) = if armed {
+                    let n = p.get(core)?;
+                    (
+                        n.transform.translation.to_array(),
+                        n.transform.rotation.to_array(),
+                        n.transform.scale.to_array(),
+                    )
+                } else {
+                    let n = model.node(&primary)?;
+                    (
+                        n.transform.translation,
+                        n.transform.rotation,
+                        n.transform.scale,
+                    )
+                };
+                Some(GizmoTarget {
+                    origin_world: origin,
+                    parent_world,
+                    translation,
+                    rotation,
+                    scale,
+                })
+            })
+            .ok()
             .flatten()
-            .and_then(|pi| mapping.core_of.get(pi).copied())
-            .filter(|&c| c != u32::MAX);
-        let viewport = self.viewport.as_ref()?;
-        let m = viewport.transforms.get(catchlight_core::NodeIdx(core));
-        let origin = m.transform_point3(glam::vec3(0.0, 0.0, 0.0)).truncate();
-        let parent_world = parent_core
-            .map(|c| viewport.transforms.get(catchlight_core::NodeIdx(c)))
-            .unwrap_or(glam::Mat4::IDENTITY);
-
-        // Recording edits the *posed* value; document edits start from base.
-        let (translation, rotation, scale) = if self.armed.is_some() {
-            self.editor
-                .with_puppet(session, |_model, p| {
-                    p.get(catchlight_core::NodeIdx(core)).map(|n| {
-                        (
-                            n.transform.translation.to_array(),
-                            n.transform.rotation.to_array(),
-                            n.transform.scale.to_array(),
-                        )
-                    })
-                })
-                .ok()
-                .flatten()?
-        } else {
-            self.editor
-                .with_model(session, |model| {
-                    model.node(&primary).map(|n| {
-                        (
-                            n.transform.translation,
-                            n.transform.rotation,
-                            n.transform.scale,
-                        )
-                    })
-                })
-                .ok()
-                .flatten()?
-        };
-        Some(GizmoTarget {
-            origin_world: origin,
-            parent_world,
-            translation,
-            rotation,
-            scale,
-        })
     }
 }

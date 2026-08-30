@@ -1,21 +1,19 @@
 //! CPU picking against the deformed puppet: every Part's post-deform vertices
 //! already live on the CPU, so a point test is a tree walk + point-in-triangle
 //! — no renderer involvement.
+//!
+//! The transforms are the puppet's own (`Puppet::transforms`), never a copy
+//! passed in: a click has to hit what the last frame drew, and the puppet is
+//! what drew it.
 
-use catchlight_core::{
-    BlendMode, GlobalTransforms, MeshIndices, Model, NodeKind, PartData, Puppet,
-};
+use catchlight_core::{BlendMode, MeshIndices, Model, NodeKind, PartData, Puppet};
 use glam::Vec2;
 
 /// Core node ids of the Parts whose deformed mesh contains `world`,
 /// front-most first (higher cumulative z order renders in front; ties go to the
 /// later-drawn node).
-pub(crate) fn pick_all(
-    model: &Model,
-    puppet: &Puppet,
-    transforms: &GlobalTransforms,
-    world: Vec2,
-) -> Vec<u32> {
+pub(crate) fn pick_all(model: &Model, puppet: &Puppet, world: Vec2) -> Vec<u32> {
+    let transforms = puppet.transforms();
     let mut hits: Vec<(f32, usize, u32)> = Vec::new();
     let mut visit = 0usize;
     // (id, parent cumulative z); children pushed in reverse for draw order.
@@ -115,11 +113,8 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
 }
 
 /// World-space AABB over the deformed Parts of the given subtrees.
-pub(crate) fn world_bounds(
-    puppet: &Puppet,
-    transforms: &GlobalTransforms,
-    roots: &[u32],
-) -> Option<(Vec2, Vec2)> {
+pub(crate) fn world_bounds(puppet: &Puppet, roots: &[u32]) -> Option<(Vec2, Vec2)> {
+    let transforms = puppet.transforms();
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
     let mut any = false;
@@ -242,9 +237,8 @@ mod tests {
         let comp = rig.composite(0.0);
         rig.part(&comp, Vec2::ZERO, 0.0);
         let puppet = rig.puppet();
-        let tx = puppet.transforms().clone();
         assert!(
-            pick_all(&rig.model, &puppet, &tx, Vec2::ZERO).is_empty(),
+            pick_all(&rig.model, &puppet, Vec2::ZERO).is_empty(),
             "culled composite children must not steal clicks"
         );
     }
@@ -256,14 +250,13 @@ mod tests {
         let root = rig.root.clone();
         rig.part(&root, origin, 0.0);
         let puppet = rig.puppet();
-        let tx = puppet.transforms().clone();
         assert_eq!(
-            pick_all(&rig.model, &puppet, &tx, Vec2::ZERO).len(),
+            pick_all(&rig.model, &puppet, Vec2::ZERO).len(),
             1,
             "GPU draws v - origin; a click at local 0 must hit"
         );
         assert!(
-            pick_all(&rig.model, &puppet, &tx, origin).is_empty(),
+            pick_all(&rig.model, &puppet, origin).is_empty(),
             "unshifted verts would hit here and miss the pixels"
         );
     }
@@ -276,10 +269,9 @@ mod tests {
         let first_front = rig.part(&root, Vec2::ZERO, 2.0);
         let last_front = rig.part(&root, Vec2::ZERO, 2.0);
         let puppet = rig.puppet();
-        let tx = puppet.transforms().clone();
 
         assert_eq!(
-            pick_all(&rig.model, &puppet, &tx, Vec2::ZERO),
+            pick_all(&rig.model, &puppet, Vec2::ZERO),
             vec![
                 slot(&puppet, &last_front),
                 slot(&puppet, &first_front),

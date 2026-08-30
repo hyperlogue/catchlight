@@ -34,8 +34,6 @@ use crate::viewport::{NodePreview, ViewportRenderer};
 
 mod selection;
 
-use selection::NodeMapping;
-
 pub struct App {
     editor: Arc<Editor>,
     session: Option<SessionId>,
@@ -50,9 +48,10 @@ pub struct App {
     texture_id: Option<egui::TextureId>,
     /// Signature the viewport texture was last rendered at.
     rendered: Option<RenderSig>,
-    /// Document rev the viewport (and its transforms) last rendered. Pick,
-    /// gizmo and vertex tools only run when this matches the current rev —
-    /// after an edit, one render pass must refresh the transforms first.
+    /// Document rev the last render evaluated. Pick, gizmo and vertex tools
+    /// read the puppet's frame and only run when this matches the current rev:
+    /// right after an edit the puppet has rebaked but nothing has ticked it,
+    /// so its frame describes a pose nobody has recomputed yet.
     rendered_rev: u64,
 
     camera: EditorCamera,
@@ -68,7 +67,6 @@ pub struct App {
     isolated: Option<NodeId>,
     /// Live gesture previews, applied to puppet working state each render.
     previews: Vec<NodePreview>,
-    mapping: Option<NodeMapping>,
     thumbs: HashMap<usize, egui::TextureHandle>,
     /// Parts under the cursor at the last right-click (the picker menu).
     ctx_hits: Vec<(NodeId, String)>,
@@ -169,7 +167,6 @@ impl App {
             filter: String::new(),
             isolated: None,
             previews: Vec::new(),
-            mapping: None,
             thumbs: HashMap::new(),
             ctx_hits: Vec::new(),
             last_viewport_rect: None,
@@ -242,7 +239,6 @@ impl App {
         self.collapsed.clear();
         self.isolated = None;
         self.previews.clear();
-        self.mapping = None;
         self.thumbs.clear();
         self.camera = EditorCamera::default();
         self.status = format!("session {}", session.0);
@@ -617,11 +613,7 @@ impl App {
                 })
             })
             .unwrap_or_else(|| catchlight_editor_core::UvMap::from_texture_size(1024.0, 1024.0));
-        let node_world = self
-            .viewport
-            .as_ref()
-            .map(|v| v.transforms.get(catchlight_core::NodeIdx(core)))
-            .unwrap_or(glam::Mat4::IDENTITY);
+        let node_world = self.node_world(core);
         let working = catchlight_editor_core::WorkingMesh::from_mesh(&mesh);
         self.deform_mode = false;
         self.mesh_edit = Some(MeshEditState::new(
@@ -884,9 +876,6 @@ impl eframe::App for App {
 
         let snapshot = self.session.and_then(|s| self.editor.doc_snapshot(s));
         let rev = snapshot.as_ref().map(|s| s.rev).unwrap_or(0);
-        if self.session.is_some() {
-            self.ensure_mapping(rev);
-        }
         // The armed param can vanish under us (undo of its ParamAdd, a
         // co-driving agent's delete) — recording must stop, not fall back to
         // document edits of posed values.
@@ -1304,9 +1293,9 @@ impl App {
             self.deform_drag = None;
             self.scratch_deform = None;
         }
-        // The transforms picking/gizmo/vertex tools read come from the last
-        // render; after an edit they describe the old puppet until one render
-        // pass runs, so interactive tools sit out that frame.
+        // The frame picking/gizmo/vertex tools read is the puppet's, and one
+        // render pass has to tick it after an edit before it describes the
+        // current document — so interactive tools sit out that frame.
         let transforms_fresh = self.rendered_rev == rev && self.viewport.is_some();
         let isolate = snapshot.as_ref().and_then(|s| self.isolate_set(&s.root));
 
@@ -1320,9 +1309,9 @@ impl App {
             // Pan owns the pointer / transforms are one frame stale — the
             // tools sit this frame out.
         } else if self.mesh_edit.is_some() {
-            // The captured core id must follow the rev-gated mapping —
-            // structural edits renumber the puppet arena; a deleted node
-            // cancels the mode.
+            // The captured core id is re-resolved from the node's Id every
+            // frame — structural edits renumber the puppet arena; a deleted
+            // node cancels the mode.
             let resolved = self
                 .mesh_edit
                 .as_ref()
@@ -1331,12 +1320,10 @@ impl App {
             match resolved {
                 Some(core) => {
                     let camera = self.camera;
+                    let node_world = self.node_world(core);
                     if let Some(mesh) = &mut self.mesh_edit {
                         mesh.core = core;
-                        if let Some(viewport) = self.viewport.as_ref() {
-                            mesh.node_world =
-                                viewport.transforms.get(catchlight_core::NodeIdx(core));
-                        }
+                        mesh.node_world = node_world;
                         gizmo_consumed = mesh.interact(ui, rect, &resp, &camera);
                     }
                 }
@@ -1673,12 +1660,9 @@ impl App {
 
     /// Deformed world-space vertex positions of the primary Part.
     fn part_world_verts(&self, session: SessionId, core: u32) -> Vec<glam::Vec2> {
-        let Some(viewport) = self.viewport.as_ref() else {
-            return Vec::new();
-        };
-        let m = viewport.transforms.get(catchlight_core::NodeIdx(core));
         self.editor
             .with_puppet(session, |_model, p| {
+                let m = p.transforms().get(catchlight_core::NodeIdx(core));
                 let Some(node) = p.get(catchlight_core::NodeIdx(core)) else {
                     return Vec::new();
                 };
@@ -1793,12 +1777,8 @@ impl App {
             if captured.is_empty() {
                 return false;
             }
-            let Some(viewport) = self.viewport.as_ref() else {
-                return false;
-            };
-            let Some(node_inv) = catchlight_core::checked_affine_inverse(
-                viewport.transforms.get(catchlight_core::NodeIdx(core)),
-            ) else {
+            let Some(node_inv) = catchlight_core::checked_affine_inverse(self.node_world(core))
+            else {
                 self.status = "cannot deform a node under a singular transform".into();
                 return true;
             };
