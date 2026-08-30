@@ -9,7 +9,7 @@ Catchlight is heavily inspired by
 [inochi2d](https://github.com/Inochi2D/inochi2d) and
 [inox2d](https://github.com/Inochi2D/inox2d). Both serve as the reference for
 catchlight's model format and rendering semantics, and the project began as an
-attempt to show inochi2d puppets on WebGPU.
+attempt to show inochi2d models on WebGPU.
 
 ## License
 
