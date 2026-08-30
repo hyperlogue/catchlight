@@ -160,6 +160,21 @@ impl RenderCache {
         self.mesh_of_node.iter().flatten().count()
     }
 
+    /// The mesh slot the node at arena slot `node` uploaded into — the number
+    /// a [`RenderList`]'s `mesh_id` carries for that node's part.
+    ///
+    /// Mesh slots are dense and node slots are not, so a caller that knows a
+    /// node and wants to find it in a render list has to come through here.
+    /// `None` for a node with no mesh, an empty mesh, or one that failed to
+    /// upload — none of which appear in a render list either.
+    pub fn mesh_slot_of_node(&self, node: u32) -> Option<u32> {
+        self.mesh_of_node
+            .get(node as usize)
+            .copied()
+            .flatten()
+            .map(|mesh| mesh.0)
+    }
+
     /// Push one evaluated frame at the GPU: the puppet's combined deforms, for
     /// every node whose deform stack is active. A node whose stack has not
     /// moved since the last refresh is skipped by the renderer's

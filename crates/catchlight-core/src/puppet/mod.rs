@@ -116,6 +116,52 @@ fn resolve_contributions(entries: &[Contribution], slot: u32, base: f32) -> f32 
     }
 }
 
+/// A live edit to node properties, handed to the closure
+/// [`Puppet::refold_with_node_edits`] takes.
+///
+/// It reaches only the three properties a gesture drags — the transform, the
+/// z order and the opacity — and it writes into the puppet's own evaluated
+/// frame, never into the model. Anything more belongs in a model edit.
+pub struct NodeEdits<'a> {
+    arena: &'a mut Arena,
+}
+
+impl NodeEdits<'_> {
+    /// Edit the node's transform in place. `false` when the arena has no such
+    /// node.
+    pub fn transform(&mut self, id: NodeIdx, edit: impl FnOnce(&mut crate::Transform)) -> bool {
+        let Some(node) = self.arena.get_mut(id) else {
+            return false;
+        };
+        edit(&mut node.transform);
+        self.arena.mark_transform_dirty(id);
+        true
+    }
+
+    /// `false` when the arena has no such node.
+    pub fn set_z_order(&mut self, id: NodeIdx, z_order: f32) -> bool {
+        let Some(node) = self.arena.get_mut(id) else {
+            return false;
+        };
+        node.z_order = z_order;
+        true
+    }
+
+    /// `false` when the arena has no such node, or when the node is not one
+    /// that carries an opacity (only parts and composites do).
+    pub fn set_opacity(&mut self, id: NodeIdx, opacity: f32) -> bool {
+        let Some(node) = self.arena.get_mut(id) else {
+            return false;
+        };
+        match &mut node.kind {
+            NodeKind::Part(part) => part.opacity = opacity,
+            NodeKind::Composite(composite) => composite.opacity = opacity,
+            _ => return false,
+        }
+        true
+    }
+}
+
 /// Where a pose puts one param on its own key positions.
 #[derive(Debug, Clone, Copy)]
 struct Located {
@@ -498,6 +544,42 @@ impl Puppet {
             _ => return false,
         }
         true
+    }
+
+    /// Re-evaluate the current frame with a live edit to node properties on
+    /// top of the pose — the transform half of an edit in progress, shown
+    /// live and never part of the model, exactly as a scratch deform is its
+    /// per-vertex half.
+    ///
+    /// This is not a tick: no driver steps and no animation advances. The
+    /// bindings are folded again from the model's authored values, `edit`
+    /// writes over what they produced, and then everything that reads a
+    /// transform is redone — the transform walk, the `translate_children`
+    /// filter, mesh-group propagation, welds and the deform combine. Doing
+    /// them again is the point: a previewed transform has to move the
+    /// children of a translate-children group and the mesh groups above them,
+    /// or the frame shows a node in its new place and its dependents in their
+    /// old one.
+    ///
+    /// The edit lives until the next fold. [`Self::tick`] starts from the
+    /// model's authored values, so a preview never accumulates and nothing has
+    /// to undo it.
+    pub fn refold_with_node_edits(&mut self, edit: impl FnOnce(&mut NodeEdits<'_>)) {
+        let _span = tracing::trace_span!("refold_with_node_edits").entered();
+        self.reset_frame();
+        self.apply_params();
+        edit(&mut NodeEdits {
+            arena: &mut self.arena,
+        });
+        let mut out = std::mem::take(&mut self.transforms);
+        self.arena.compute_transforms(&mut out);
+        if self.arena.apply_translate_children_filter(&out) {
+            self.arena.compute_transforms(&mut out);
+        }
+        self.arena.propagate_mesh_group_deforms(&out);
+        self.arena.apply_welds(&out);
+        self.arena.combine_deforms();
+        self.transforms = out;
     }
 
     // ---- the pose ---------------------------------------------------------
@@ -1186,6 +1268,56 @@ mod tests {
         assert_eq!(a.generation(), b.generation());
         let mut puppet = Puppet::new(&a);
         puppet.tick(&b, 0.0);
+    }
+
+    /// A live node edit has to reach everything downstream of the node, not
+    /// just the node: an editor dragging a group must show its children
+    /// following. And it has to be *only* live — the next tick folds from the
+    /// model's authored values, so nothing has to undo it.
+    #[test]
+    fn a_live_node_edit_moves_the_subtree_and_the_next_tick_folds_it_away() {
+        use crate::id::SeededHex;
+        use crate::model::{ModelNode, ModelNodeKind};
+
+        let mut model = Model::new();
+        let mut hex = SeededHex::new(3);
+        let root = model.root().expect("a fresh model has one root").clone();
+        let parent = model
+            .add_node(
+                &root,
+                ModelNode::new("parent", ModelNodeKind::Group),
+                &mut hex,
+            )
+            .expect("add parent");
+        let child = model
+            .add_node(
+                &parent,
+                ModelNode::new("child", ModelNodeKind::Group),
+                &mut hex,
+            )
+            .expect("add child");
+
+        let mut puppet = Puppet::new(&model);
+        puppet.tick(&model, 0.0);
+        let parent_idx = puppet.node_idx(&parent).expect("parent baked");
+        let child_idx = puppet.node_idx(&child).expect("child baked");
+        let at_rest = puppet.transforms().get(child_idx);
+
+        puppet.refold_with_node_edits(|edits| {
+            assert!(edits.transform(parent_idx, |t| t.translation.x += 25.0));
+        });
+        let previewed = puppet.transforms().get(child_idx);
+        assert!(
+            (previewed.w_axis.x - at_rest.w_axis.x - 25.0).abs() < 1e-4,
+            "the child must follow its previewed parent",
+        );
+
+        puppet.tick(&model, 0.0);
+        assert_eq!(
+            puppet.transforms().get(child_idx),
+            at_rest,
+            "a tick folds from the model, so the preview is gone",
+        );
     }
 
     /// The negative: a clone is the same model, because that is what an undo
