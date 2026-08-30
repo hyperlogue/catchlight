@@ -1,10 +1,18 @@
 //! Lints that surface rig problems an editor (or an agent) can self-correct on.
-//! These are warnings, not errors — the model still flattens to a `.clm`.
-//! Most are cosmetic; the exception is a colour binding on a mesh group, which
-//! flattens to a file `catchlight_core` then refuses to load (a mesh group is
-//! never drawn, so it has no colour for the binding to fold into).
-//! [`Model::add_binding`] refuses to author one, so only a file written by an
-//! older tool can still carry it.
+//! These are warnings, not errors, and most are cosmetic. Three are not:
+//!
+//! - A **colour binding on a mesh group** flattens to a file `catchlight_core`
+//!   then refuses to load (a mesh group is never drawn, so it has no colour
+//!   for the binding to fold into). [`Model::add_binding`] refuses to author
+//!   one, so only a file written by an older tool can still carry it.
+//! - A **weld naming a seam its part no longer carries**, or **two seams
+//!   holding different slots**, cannot be written at all: [`Model::to_clm_file`]
+//!   refuses. The seam methods keep both out — but [`Model::update_node`] can
+//!   swap a welded part's whole kind, which takes its seams with it.
+//! - A **weld over an unfilled slot** saves and loads; it just does not hold
+//!   that slot pair together. This is the state a mesh edit leaves behind, and
+//!   the one an editor should keep in front of the author until it is
+//!   repaired.
 
 use crate::formats::clm::{ClmBindingValues, ClmIndices};
 
@@ -115,6 +123,59 @@ impl Model {
                 });
             }
         }
+
+        for weld in self.welds() {
+            let ends = [weld.a(), weld.b()];
+            let (Some(a), Some(b)) = (
+                self.seam(&ends[0].0, &ends[0].1),
+                self.seam(&ends[1].0, &ends[1].1),
+            ) else {
+                for end in ends {
+                    if self.seam(&end.0, &end.1).is_none() {
+                        out.push(CheckWarning {
+                            node: Some(end.0.clone()),
+                            message: format!(
+                                "a weld names seam {:?} on node {:?}, which carries no such \
+                                 seam (the model no longer saves)",
+                                end.1.as_str(),
+                                end.0.as_str(),
+                            ),
+                        });
+                    }
+                }
+                continue;
+            };
+            if a.slots().len() != b.slots().len()
+                || !a.slots().iter().all(|s| b.slot(s.id()).is_some())
+            {
+                out.push(CheckWarning {
+                    node: Some(ends[0].0.clone()),
+                    message: format!(
+                        "the weld between seam {:?} and seam {:?} pairs two seams holding \
+                         different slots (the model no longer saves)",
+                        ends[0].1.as_str(),
+                        ends[1].1.as_str(),
+                    ),
+                });
+                continue;
+            }
+            for (end, seam) in ends.into_iter().zip([a, b]) {
+                for slot in seam.slots().iter().filter(|s| s.vertex().is_none()) {
+                    out.push(CheckWarning {
+                        node: Some(end.0.clone()),
+                        message: format!(
+                            "slot {:?} of seam {:?} on node {:?} is unfilled, so the weld \
+                             skips it — a mesh edit empties a part's slots and they have to \
+                             be refilled",
+                            slot.id().as_str(),
+                            end.1.as_str(),
+                            end.0.as_str(),
+                        ),
+                    });
+                }
+            }
+        }
+
         out
     }
 }
@@ -139,10 +200,91 @@ fn cells_outside(values: &ClmBindingValues, w: u32, h: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::formats::clm::ClmMesh;
-    use crate::id::{Name, SeededHex};
+    use crate::formats::clm::{ClmIndices, ClmMesh};
+    use crate::id::{Name, NodeId, SeamId, SeededHex, SlotId};
     use crate::model::binding::ScalarTarget;
     use crate::model::*;
+
+    /// Two welded quads under the root, seams `collar` and `hem`, slots `l`
+    /// and `r`, everything filled.
+    fn welded() -> (Model, NodeId, NodeId) {
+        let mut hex = SeededHex::new(4);
+        let mut m = Model::new();
+        let root = m.root().clone();
+        let mut part = |m: &mut Model, name: &str, seam: &str, verts: [u32; 2]| {
+            let id = m
+                .add_node(
+                    &root,
+                    ModelNode::new(name, ModelNodeKind::Part(ModelPart::new(quad()))),
+                    &mut hex,
+                )
+                .unwrap();
+            m.seam_add(&id, SeamId::new(seam).unwrap()).unwrap();
+            for (slot, vertex) in ["l", "r"].into_iter().zip(verts) {
+                let (seam, slot) = (SeamId::new(seam).unwrap(), SlotId::new(slot).unwrap());
+                m.slot_add(&id, &seam, slot.clone()).unwrap();
+                m.slot_fill(&id, &seam, &slot, vertex).unwrap();
+            }
+            id
+        };
+        let upper = part(&mut m, "upper", "collar", [0, 1]);
+        let lower = part(&mut m, "lower", "hem", [2, 3]);
+        m.set_welds(vec![ModelWeld::new(
+            (upper.clone(), SeamId::new("collar").unwrap()),
+            (lower.clone(), SeamId::new("hem").unwrap()),
+            vec![
+                (SlotId::new("l").unwrap(), 1.0),
+                (SlotId::new("r").unwrap(), 0.5),
+            ],
+        )])
+        .unwrap();
+        (m, upper, lower)
+    }
+
+    fn quad() -> ClmMesh {
+        ClmMesh {
+            verts: vec![-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0],
+            uvs: vec![0.0; 8],
+            indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            origin: [0.0, 0.0],
+        }
+    }
+
+    /// The state a mesh edit leaves behind: the weld still saves and loads, it
+    /// just holds nothing, and the author has to be told.
+    #[test]
+    fn check_flags_a_weld_whose_slot_is_unfilled() {
+        let (mut m, upper, _) = welded();
+        assert!(!m.check().iter().any(|w| w.message.contains("unfilled")));
+
+        m.set_node_mesh(&upper, quad()).unwrap();
+        let unfilled: Vec<CheckWarning> = m
+            .check()
+            .into_iter()
+            .filter(|w| w.message.contains("is unfilled"))
+            .collect();
+        assert_eq!(unfilled.len(), 2, "both of the re-meshed part's slots");
+        assert!(unfilled.iter().all(|w| w.node.as_ref() == Some(&upper)));
+        assert!(m.to_clm_bytes().is_ok(), "an unfilled slot still saves");
+    }
+
+    /// Swapping a welded part's kind is the one edit that can strand a weld,
+    /// and a stranded weld stops the model from saving at all.
+    #[test]
+    fn check_flags_a_weld_whose_seam_is_gone() {
+        let (mut m, upper, _) = welded();
+        m.update_node(&upper, |n| n.kind = ModelNodeKind::Group)
+            .unwrap();
+
+        let w = m
+            .check()
+            .into_iter()
+            .find(|w| w.message.contains("carries no such seam"))
+            .expect("a weld naming a seam that is gone is flagged");
+        assert_eq!(w.node.as_ref(), Some(&upper));
+        assert!(w.message.contains("collar"), "{}", w.message);
+        assert!(matches!(m.to_clm_file(), Err(ModelError::UnknownSeam)));
+    }
 
     /// The editor refuses to author a colour binding on a mesh group, but a
     /// `.clm` written by an older tool can carry one — and the runtime will not
