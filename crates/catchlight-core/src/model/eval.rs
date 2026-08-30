@@ -238,7 +238,7 @@ pub(super) mod tests {
     pub(super) fn rig() -> (Model, BindingKey, ParamId, ParamId) {
         let mut hex = SeededHex::new(13);
         let mut model = Model::new();
-        let root = model.root().clone();
+        let root = model.root().unwrap().clone();
         let node = model
             .add_node(
                 &root,
@@ -345,7 +345,7 @@ pub(super) mod tests {
         let node = model
             .nodes_in_order()
             .into_iter()
-            .find(|id| id != model.root())
+            .find(|id| Some(id) != model.root())
             .unwrap();
         let key = BindingKey::new(x.clone(), node, BindingTarget::Scalar(ScalarTarget::ZOrder));
         model.set_binding_key(&key, [0, 0], -2.0).unwrap();

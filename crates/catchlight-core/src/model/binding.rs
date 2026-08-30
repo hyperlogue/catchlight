@@ -1079,7 +1079,7 @@ mod tests {
     fn rig() -> Rig {
         let mut hex = SeededHex::new(5);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let group = m
             .add_node(&root, ModelNode::new("g", ModelNodeKind::Group), &mut hex)
             .unwrap();
@@ -1301,7 +1301,7 @@ mod tests {
     #[test]
     fn a_colour_binding_cannot_be_authored_on_a_mesh_group() {
         let mut r = rig();
-        let root = r.m.root().clone();
+        let root = r.m.root().unwrap().clone();
         let group =
             r.m.add_node(
                 &root,

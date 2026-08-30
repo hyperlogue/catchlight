@@ -124,6 +124,7 @@ impl Model {
             }
         }
 
+        let fragment = self.is_fragment();
         for weld in self.welds() {
             let ends = [weld.a(), weld.b()];
             let (Some(a), Some(b)) = (
@@ -131,6 +132,11 @@ impl Model {
                 self.seam(&ends[1].0, &ends[1].1),
             ) else {
                 for end in ends {
+                    // In a fragment, an end on a node that is not here is a
+                    // weld into the base: a requirement, not a broken weld.
+                    if fragment && self.node(&end.0).is_none() {
+                        continue;
+                    }
                     if self.seam(&end.0, &end.1).is_none() {
                         out.push(CheckWarning {
                             node: Some(end.0.clone()),
@@ -210,7 +216,7 @@ mod tests {
     fn welded() -> (Model, NodeId, NodeId) {
         let mut hex = SeededHex::new(4);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let mut part = |m: &mut Model, name: &str, seam: &str, verts: [u32; 2]| {
             let id = m
                 .add_node(
@@ -293,7 +299,7 @@ mod tests {
     fn check_flags_a_color_binding_on_a_mesh_group() {
         let mut hex = SeededHex::new(9);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let group = m
             .add_node(
                 &root,

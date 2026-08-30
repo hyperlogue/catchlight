@@ -269,7 +269,7 @@ impl ModelManifestExt for Model {
             let mut still = Vec::new();
             for mn in pending {
                 let parent = match &mn.parent {
-                    None => Some(m.root().clone()),
+                    None => m.root().cloned(),
                     Some(pid) => resolved.get(pid.as_str()).cloned(),
                 };
                 let Some(parent) = parent else {
@@ -380,12 +380,12 @@ impl ModelManifestExt for Model {
 
         let mut nodes = Vec::new();
         for id in &order {
-            if id == self.root() {
+            if Some(id) == self.root() {
                 continue;
             }
             let Some(n) = self.node(id) else { continue };
             let parent = match n.parent() {
-                Some(p) if p == self.root() => None,
+                Some(p) if Some(p) == self.root() => None,
                 Some(p) => node_name.get(p).cloned(),
                 None => None,
             };
@@ -758,7 +758,7 @@ mod tests {
     #[test]
     fn check_flags_untextured_part_and_physics_without_target() {
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         m.add_node(
             &root,
             ModelNode::new(

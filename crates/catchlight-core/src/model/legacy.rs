@@ -130,6 +130,10 @@ impl Model {
     /// remap every cross-reference. Total for a valid model except for what the
     /// arena genuinely cannot hold — see the module doc.
     pub fn to_legacy(&self) -> Result<LegacyFile, ModelError> {
+        // The arena has one root and no way to name a node it does not hold.
+        if self.is_fragment() {
+            return Err(ModelError::Fragment);
+        }
         let order = self.nodes_in_order();
         let node_index: HashMap<&NodeId, u32> = order
             .iter()
@@ -460,7 +464,7 @@ impl Model {
             physics: doc.physics,
             welds,
             nodes,
-            root,
+            roots: vec![root],
             params,
             param_order,
             textures,
@@ -656,7 +660,7 @@ mod tests {
                 &mut hex,
             )
             .unwrap();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let part = m
             .add_node(
                 &root,
@@ -732,7 +736,7 @@ mod tests {
         let a = Model::from_legacy(&file).unwrap();
         let b = Model::from_legacy(&file).unwrap();
 
-        assert_eq!(a.root().as_str(), "root");
+        assert_eq!(a.root().unwrap().as_str(), "root");
         assert_eq!(
             a.nodes_in_order()
                 .iter()
@@ -917,7 +921,7 @@ mod tests {
     fn reparent_rejects_cycles_and_root() {
         let mut hex = SeededHex::new(4);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let a = m
             .add_node(&root, ModelNode::new("A", ModelNodeKind::Group), &mut hex)
             .unwrap();

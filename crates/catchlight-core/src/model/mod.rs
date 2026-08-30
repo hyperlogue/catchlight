@@ -13,8 +13,14 @@
 //!   baked against and rebake when it moved. A mutation path that forgets to
 //!   bump is the bug class `generation_bumps_on_every_mutating_method` exists
 //!   to catch.
-//! - **The tree is always valid.** One root, no cycles, no dangling
-//!   cross-reference: deleting a node drops every mask, binding and weld that
+//! - **The tree is always valid, for the shape the model is.** A *complete*
+//!   model has one root and its parent is `None`; an *addon fragment* has
+//!   [`Model::roots`] naming parents it does not carry, and its other
+//!   references into a base model are meant to dangle until
+//!   `Model::install` resolves them — `model::addon` is where that lives, and
+//!   [`Model::is_fragment`] is which shape this is. Neither shape has a
+//!   cycle, and no reference that resolves inside the model may dangle:
+//!   deleting a node drops every mask, binding and weld that
 //!   pointed into the removed subtree, deleting a seam drops the welds that
 //!   named it, and deleting a param or texture nulls out whatever referenced
 //!   it. Renaming rewrites instead — a node's new Id reaches its weld ends
@@ -125,6 +131,8 @@ pub enum ModelError {
     InvalidLegacyParent { node: usize, parent: u32 },
     #[error("cannot reparent a node under itself or a descendant")]
     Cycle,
+    #[error("this needs a complete model; an addon fragment has no single root")]
+    Fragment,
     #[error("the root node cannot be {0}")]
     Root(&'static str),
     #[error("binding cell is outside the param's key grid")]
@@ -218,7 +226,10 @@ pub struct Model {
     physics: ClmPhysics,
     welds: Vec<ModelWeld>,
     nodes: HashMap<NodeId, ModelNode>,
-    root: NodeId,
+    /// The nodes whose parent this model does not carry, in document order.
+    /// A complete model has exactly one and its `parent` is `None`; a
+    /// fragment has one or more, each naming a base node that is absent.
+    roots: Vec<NodeId>,
     params: HashMap<ParamId, ModelParam>,
     param_order: Vec<ParamId>,
     textures: HashMap<TexId, ModelTexture>,
@@ -798,7 +809,7 @@ impl Model {
             physics: ClmPhysics::default(),
             welds: Vec::new(),
             nodes,
-            root,
+            roots: vec![root],
             params: HashMap::new(),
             param_order: Vec::new(),
             textures: HashMap::new(),
@@ -824,8 +835,62 @@ impl Model {
 
     // ---- tree ----
 
-    pub fn root(&self) -> &NodeId {
-        &self.root
+    /// The single root of a complete model, or `None` for a fragment —
+    /// which has [`Self::roots`] instead, each naming an absent parent.
+    pub fn root(&self) -> Option<&NodeId> {
+        match self.roots.as_slice() {
+            [only] if self.nodes.get(only).is_some_and(|n| n.parent.is_none()) => Some(only),
+            _ => None,
+        }
+    }
+
+    /// The nodes at the top of this model's tree, in document order: the ones
+    /// whose parent it does not carry. One for a complete model, one or more
+    /// for a fragment.
+    pub fn roots(&self) -> &[NodeId] {
+        &self.roots
+    }
+
+    /// Whether this is an addon fragment rather than a complete model: a
+    /// forest whose roots name parents it does not carry, instead of the one
+    /// root that has no parent at all. See [`crate::model::addon`].
+    pub fn is_fragment(&self) -> bool {
+        self.root().is_none()
+    }
+
+    /// The ordered list `id` sits in — its parent's children, or the model's
+    /// own root list when the parent is not in this model.
+    fn siblings_of(&self, id: &NodeId) -> Option<&[NodeId]> {
+        match self.nodes.get(id)?.parent.as_ref() {
+            Some(p) if self.nodes.contains_key(p) => Some(&self.nodes.get(p)?.children),
+            _ => Some(&self.roots),
+        }
+    }
+
+    fn siblings_mut(&mut self, id: &NodeId) -> Result<&mut Vec<NodeId>, ModelError> {
+        let parent = self
+            .nodes
+            .get(id)
+            .ok_or(ModelError::UnknownNode)?
+            .parent
+            .clone();
+        match parent {
+            Some(p) if self.nodes.contains_key(&p) => self
+                .nodes
+                .get_mut(&p)
+                .map(|n| &mut n.children)
+                .ok_or(ModelError::UnknownNode),
+            _ => Ok(&mut self.roots),
+        }
+    }
+
+    /// Append `child` where its parent's children are kept, or to the root
+    /// list when the parent is not in this model.
+    fn attach_child(&mut self, parent: &NodeId, child: NodeId) {
+        match self.nodes.get_mut(parent) {
+            Some(p) => p.children.push(child),
+            None => self.roots.push(child),
+        }
     }
 
     pub fn node(&self, id: &NodeId) -> Option<&ModelNode> {
@@ -860,7 +925,7 @@ impl Model {
     /// them in, and the order the arena bridge assigns indices in.
     pub fn nodes_in_order(&self) -> Vec<NodeId> {
         let mut out = Vec::with_capacity(self.nodes.len());
-        let mut stack = vec![self.root.clone()];
+        let mut stack: Vec<NodeId> = self.roots.iter().rev().cloned().collect();
         while let Some(id) = stack.pop() {
             if let Some(n) = self.nodes.get(&id) {
                 for child in n.children.iter().rev() {
@@ -908,9 +973,7 @@ impl Model {
         node.parent = Some(parent.clone());
         node.children.clear();
         self.nodes.insert(id.clone(), node);
-        if let Some(p) = self.nodes.get_mut(parent) {
-            p.children.push(id);
-        }
+        self.attach_child(parent, id);
         self.bump();
         Ok(())
     }
@@ -918,7 +981,7 @@ impl Model {
     /// Remove a node and its whole subtree, then drop every mask and binding
     /// that pointed into the removed set so the model stays referentially valid.
     pub fn delete_node(&mut self, id: &NodeId) -> Result<(), ModelError> {
-        if id == &self.root {
+        if self.root() == Some(id) {
             return Err(ModelError::Root("deleted"));
         }
         if !self.nodes.contains_key(id) {
@@ -930,6 +993,7 @@ impl Model {
                 p.children.retain(|c| c != id);
             }
         }
+        self.roots.retain(|r| !removed.contains(r));
         for r in &removed {
             self.nodes.remove(r);
         }
@@ -949,7 +1013,7 @@ impl Model {
     /// or creating a cycle. The node keeps its Id, parent prefix and all: the
     /// prefix records where a node was created, not where it lives.
     pub fn reparent(&mut self, id: &NodeId, new_parent: &NodeId) -> Result<(), ModelError> {
-        if id == &self.root {
+        if self.root() == Some(id) {
             return Err(ModelError::Root("reparented"));
         }
         if !self.nodes.contains_key(id) || !self.nodes.contains_key(new_parent) {
@@ -959,14 +1023,12 @@ impl Model {
             return Err(ModelError::Cycle);
         }
         let old_parent = self.nodes.get(id).and_then(|n| n.parent.clone());
-        if let Some(op) = old_parent {
-            if let Some(p) = self.nodes.get_mut(&op) {
-                p.children.retain(|c| c != id);
-            }
+        match old_parent.and_then(|op| self.nodes.get_mut(&op)) {
+            Some(p) => p.children.retain(|c| c != id),
+            // A fragment root: its parent is not here to detach it from.
+            None => self.roots.retain(|r| r != id),
         }
-        if let Some(p) = self.nodes.get_mut(new_parent) {
-            p.children.push(id.clone());
-        }
+        self.attach_child(new_parent, id.clone());
         if let Some(n) = self.nodes.get_mut(id) {
             n.parent = Some(new_parent.clone());
         }
@@ -978,23 +1040,17 @@ impl Model {
     /// Sibling order is draw-list order for equal z order, so this is a document
     /// edit, not view state.
     pub fn reorder(&mut self, id: &NodeId, index: usize) -> Result<(), ModelError> {
-        if id == &self.root {
+        if self.root() == Some(id) {
             return Err(ModelError::Root("reordered"));
         }
-        let parent = self
-            .nodes
-            .get(id)
-            .and_then(|n| n.parent.clone())
-            .ok_or(ModelError::UnknownNode)?;
-        let p = self.nodes.get_mut(&parent).ok_or(ModelError::UnknownNode)?;
-        let cur = p
-            .children
+        let siblings = self.siblings_mut(id)?;
+        let cur = siblings
             .iter()
             .position(|c| c == id)
             .ok_or(ModelError::UnknownNode)?;
-        let moved = p.children.remove(cur);
-        let index = index.min(p.children.len());
-        p.children.insert(index, moved);
+        let moved = siblings.remove(cur);
+        let index = index.min(siblings.len());
+        siblings.insert(index, moved);
         self.bump();
         Ok(())
     }
@@ -1009,7 +1065,7 @@ impl Model {
         id: &NodeId,
         hex: &mut impl HexSource,
     ) -> Result<NodeId, ModelError> {
-        if id == &self.root {
+        if self.root() == Some(id) {
             return Err(ModelError::Root("duplicated"));
         }
         let parent = self
@@ -1049,9 +1105,7 @@ impl Model {
                 hex,
             )?;
             self.nodes.insert(new_id.clone(), copy);
-            if let Some(p) = self.nodes.get_mut(&new_parent) {
-                p.children.push(new_id.clone());
-            }
+            self.attach_child(&new_parent, new_id.clone());
             map.insert(old.clone(), new_id);
         }
 
@@ -1085,9 +1139,8 @@ impl Model {
 
         let new_root = map.get(id).ok_or(ModelError::UnknownNode)?.clone();
         let pos = self
-            .nodes
-            .get(&parent)
-            .and_then(|p| p.children.iter().position(|c| c == id))
+            .siblings_of(id)
+            .and_then(|s| s.iter().position(|c| c == id))
             .ok_or(ModelError::UnknownNode)?;
         // reorder bumps the generation for the whole duplicate.
         self.reorder(&new_root, pos + 1)?;
@@ -1149,8 +1202,10 @@ impl Model {
                 w.b.0 = new.clone();
             }
         }
-        if &self.root == old {
-            self.root = new;
+        for r in &mut self.roots {
+            if r == old {
+                *r = new.clone();
+            }
         }
         self.bump();
         Ok(())
@@ -1779,19 +1834,33 @@ impl Model {
     /// part carries; the two seams must hold the same slots, and the weights
     /// must name each of those slots exactly once. A slot either end leaves
     /// unfilled is fine — [`ModelWeld::resolve`] skips it.
+    ///
+    /// In a **fragment**, an end naming a node the fragment does not carry is
+    /// a weld into the base model: only the end this model can see is
+    /// validated, and `Model::install` checks the other against the base.
     pub fn set_welds(&mut self, welds: Vec<ModelWeld>) -> Result<(), ModelError> {
+        let fragment = self.is_fragment();
         for w in &welds {
-            let a = self.weld_end(&w.a)?;
-            let b = self.weld_end(&w.b)?;
-            if a.slots.len() != b.slots.len()
-                || !a.slots.iter().all(|s| b.slot(&s.id).is_some())
-                || w.weights.len() != a.slots.len()
-            {
-                return Err(ModelError::WeldSlotMismatch);
+            let ends = [
+                self.weld_end(&w.a, fragment)?,
+                self.weld_end(&w.b, fragment)?,
+            ];
+            if let [Some(a), Some(b)] = ends {
+                if a.slots.len() != b.slots.len()
+                    || !a.slots.iter().all(|s| b.slot(&s.id).is_some())
+                {
+                    return Err(ModelError::WeldSlotMismatch);
+                }
+            }
+            for seam in ends.into_iter().flatten() {
+                if w.weights.len() != seam.slots.len() {
+                    return Err(ModelError::WeldSlotMismatch);
+                }
             }
             let mut seen = HashSet::with_capacity(w.weights.len());
             for (slot, _) in w.weights.iter() {
-                if a.slot(slot).is_none() || !seen.insert(slot) {
+                let known = ends.into_iter().flatten().all(|s| s.slot(slot).is_some());
+                if !known || !seen.insert(slot) {
                     return Err(ModelError::WeldSlotMismatch);
                 }
             }
@@ -1802,14 +1871,21 @@ impl Model {
     }
 
     /// The seam one end of a weld names, or why it does not name one.
-    fn weld_end(&self, end: &(NodeId, SeamId)) -> Result<&Seam, ModelError> {
+    /// `Ok(None)` is a fragment's end reaching into the base model.
+    fn weld_end(
+        &self,
+        end: &(NodeId, SeamId),
+        fragment: bool,
+    ) -> Result<Option<&Seam>, ModelError> {
         match self.node(&end.0).map(|n| &n.kind) {
             Some(ModelNodeKind::Part(p)) => p
                 .seams
                 .iter()
                 .find(|s| s.id == end.1)
+                .map(Some)
                 .ok_or(ModelError::UnknownSeam),
             Some(_) => Err(ModelError::NotAPart),
+            None if fragment => Ok(None),
             None => Err(ModelError::UnknownNode),
         }
     }
@@ -1947,6 +2023,11 @@ impl Model {
     /// Every cross-reference a node about to join the model carries has to
     /// name something this model actually has.
     fn check_node_refs(&self, node: &ModelNode) -> Result<(), ModelError> {
+        // A fragment's cross-references are supposed to dangle into a base;
+        // `Model::install` is where they are resolved.
+        if self.is_fragment() {
+            return Ok(());
+        }
         if let ModelNodeKind::Part(p) = &node.kind {
             if p.albedo
                 .as_ref()
@@ -2114,7 +2195,7 @@ mod tests {
     fn rig() -> Rig {
         let mut hex = SeededHex::new(7);
         let mut model = Model::new();
-        let root = model.root().clone();
+        let root = model.root().unwrap().clone();
         let tex = model
             .add_texture(
                 ModelTexture {
@@ -2986,7 +3067,7 @@ mod tests {
         let new_root = NodeId::new("body").unwrap();
         let old_root = r.root.clone();
         r.model.rename_node_id(&old_root, new_root.clone()).unwrap();
-        assert_eq!(r.model.root(), &new_root);
+        assert_eq!(r.model.root(), Some(&new_root));
         assert!(r.model.to_clm_bytes().is_ok());
     }
 
@@ -3041,7 +3122,7 @@ mod tests {
             }
         };
         let mut model = Model::new();
-        let root = model.root().clone();
+        let root = model.root().unwrap().clone();
         let a = model
             .add_node(&root, ModelNode::new("a", ModelNodeKind::Group), &mut hex)
             .unwrap();
@@ -3067,7 +3148,7 @@ mod tests {
     #[test]
     fn an_author_chosen_id_cannot_collide() {
         let mut model = Model::new();
-        let root = model.root().clone();
+        let root = model.root().unwrap().clone();
         let chosen = NodeId::new("head").unwrap();
         model
             .add_node_with_id(
@@ -3090,7 +3171,7 @@ mod tests {
     fn reorder_moves_within_siblings_and_clamps() {
         let mut hex = SeededHex::new(1);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let mut add = |m: &mut Model, name: &str| {
             m.add_node(&root, ModelNode::new(name, ModelNodeKind::Group), &mut hex)
                 .unwrap()
@@ -3098,7 +3179,7 @@ mod tests {
         let a = add(&mut m, "a");
         let b = add(&mut m, "b");
         let c = add(&mut m, "c");
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
 
         m.reorder(&c, 0).unwrap();
         assert_eq!(
@@ -3172,7 +3253,7 @@ mod tests {
     fn duplicate_copies_bindings_and_remaps_internal_masks() {
         let mut hex = SeededHex::new(3);
         let mut m = Model::new();
-        let root = m.root().clone();
+        let root = m.root().unwrap().clone();
         let group = m
             .add_node(&root, ModelNode::new("g", ModelNodeKind::Group), &mut hex)
             .unwrap();
@@ -3408,7 +3489,7 @@ mod tests_support {
         let positions: Vec<f32> = (0..keys).map(|i| i as f32 / (keys - 1) as f32).collect();
         let mut hex = SeededHex::new(11);
         let mut model = Model::new();
-        let root = model.root().clone();
+        let root = model.root().unwrap().clone();
         let mut param = |name: &str, model: &mut Model| {
             model
                 .add_param(

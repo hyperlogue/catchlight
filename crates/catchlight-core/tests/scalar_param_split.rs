@@ -234,7 +234,7 @@ fn evaluating_the_wrong_target_is_none() {
 
     let missing = BindingKey::new(
         model.param_ids()[0].clone(),
-        model.root().clone(),
+        model.root().unwrap().clone(),
         BindingTarget::Scalar(ScalarTarget::Tx),
     );
     assert!(model.eval_scalar(&missing, &Pose::new()).is_none());
