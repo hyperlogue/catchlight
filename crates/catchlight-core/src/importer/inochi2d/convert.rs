@@ -30,24 +30,6 @@ const DEFAULT_PUPPET_GRAVITY: f32 = 9.8;
 const DEFAULT_PUPPET_PIXELS_PER_METER: f32 = 1000.0;
 const DEFAULT_GRAVITY_SCALE: f32 = DEFAULT_PUPPET_GRAVITY * DEFAULT_PUPPET_PIXELS_PER_METER;
 
-#[cfg(test)]
-pub(crate) mod test_support {
-    use super::*;
-
-    /// Test entry into the recursive node walker. Production callers go
-    /// through `schema_to_puppet` which seeds `g_scale` from the root
-    /// JSON's `physics` block; tests stub it to inochi2d defaults so
-    /// loaded SimplePhysics nodes get the same gravity they would in
-    /// the reference runtime.
-    pub(crate) fn load_subtree(
-        root: &serde_json::Value,
-        parent: NodeIdx,
-        puppet: &mut LegacyPuppet,
-    ) -> Result<NodeIdx, ImportError> {
-        super::load_subtree(root, parent, puppet, DEFAULT_GRAVITY_SCALE)
-    }
-}
-
 pub(super) fn schema_to_puppet(
     payload: &serde_json::Value,
     textures: Vec<ModelTexture>,

@@ -115,23 +115,31 @@ pub fn from_inx_model_to_legacy(model: &InxModel) -> Result<LegacyFile, ImportEr
 }
 
 /// DFS pre-order flatten: append this node (parsed shallow) with its parent
-/// index, map its uuid → index, then recurse into children. Pre-order keeps
+/// index, map its uuid → index, then descend into children. Pre-order keeps
 /// `parent < self` and preserves sibling order.
+///
+/// The descent carries its own stack. `.inx` is untrusted input and its node
+/// tree is unbounded in depth, so recursing here would let a deep enough file
+/// overflow the thread's stack instead of loading or erroring — and this is
+/// the only path a `.inx` still has.
 fn flatten(
-    value: &serde_json::Value,
-    parent: Option<u32>,
+    root: &serde_json::Value,
+    root_parent: Option<u32>,
     flat: &mut Vec<(SchemaNode, Option<u32>)>,
     node_index: &mut HashMap<u32, u32>,
 ) {
-    let idx = flat.len() as u32;
-    let schema = parse_node_shallow(value);
-    if let Some(uuid) = schema.uuid {
-        node_index.entry(uuid).or_insert(idx);
-    }
-    flat.push((schema, parent));
-    if let Some(children) = value.get("children").and_then(|c| c.as_array()) {
-        for child in children {
-            flatten(child, Some(idx), flat, node_index);
+    // Children are pushed in reverse so the top of the stack is always the
+    // next node in document order.
+    let mut stack: Vec<(&serde_json::Value, Option<u32>)> = vec![(root, root_parent)];
+    while let Some((value, parent)) = stack.pop() {
+        let idx = flat.len() as u32;
+        let schema = parse_node_shallow(value);
+        if let Some(uuid) = schema.uuid {
+            node_index.entry(uuid).or_insert(idx);
+        }
+        flat.push((schema, parent));
+        if let Some(children) = value.get("children").and_then(|c| c.as_array()) {
+            stack.extend(children.iter().rev().map(|child| (child, Some(idx))));
         }
     }
 }
@@ -677,6 +685,193 @@ fn interp(s: Option<&str>) -> InterpolateMode {
 mod tests {
     use super::*;
     use crate::formats::InxModel;
+    use crate::model::{BindingTarget, ScalarTarget};
+    use serde_json::json;
+    /// A model authored in inochi2d's frame — Y-down, lower `zsort` in front —
+    /// touching every field the import must reflect, plus controls on fields
+    /// it must leave alone. Values are asymmetric and non-zero so a *missing*
+    /// negation and a *doubled* one both change the result.
+    ///
+    /// No textures: an empty table means the alpha crop rewrites no UVs, so
+    /// the authored UVs stay comparable against the literals below.
+    fn reflection_fixture() -> InxModel {
+        InxModel {
+            payload: json!({
+                "nodes": {
+                    "uuid": 1,
+                    "name": "root",
+                    "type": "Node",
+                    "zsort": 0.0,
+                    "transform": {
+                        "trans": [0.0, 0.0, 0.0],
+                        "rot": [0.0, 0.0, 0.0],
+                        "scale": [1.0, 1.0]
+                    },
+                    "children": [
+                        {
+                            "uuid": 2,
+                            // Lower source zsort => nearer the viewer in the
+                            // source convention, so this must come out with
+                            // the *higher* base_z_order.
+                            "zsort": 1.0,
+                            "name": "front",
+                            "type": "Part",
+                            "transform": {
+                                // x and z must survive; y must flip.
+                                "trans": [7.0, 10.0, 3.0],
+                                // rot x and z flip; rot y must survive.
+                                "rot": [0.25, 0.5, 0.75],
+                                "scale": [2.0, 3.0]
+                            },
+                            "textures": [0],
+                            "mesh": {
+                                "verts": [1.0, 2.0, -4.0, 6.0, 8.0, -3.0],
+                                "uvs": [0.0, 0.0, 1.0, 0.25, 0.5, 1.0],
+                                "indices": [0, 1, 2],
+                                "origin": [1.5, 2.5]
+                            },
+                            "children": []
+                        },
+                        {
+                            "uuid": 3,
+                            "zsort": 5.0,
+                            "name": "back",
+                            "type": "Part",
+                            "transform": {
+                                "trans": [-2.0, -12.0, 0.0],
+                                "rot": [-1.5, 2.0, -0.5],
+                                "scale": [1.0, 1.0]
+                            },
+                            "textures": [0],
+                            "mesh": {
+                                "verts": [0.0, 0.0, 4.0, -9.0, -7.0, 11.0],
+                                "uvs": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+                                "indices": [0, 1, 2],
+                                "origin": [0.0, -6.0]
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                "param": [{
+                    "uuid": 100,
+                    "name": "reflect",
+                    "is_vec2": false,
+                    "min": [0.0, 0.0],
+                    "max": [1.0, 1.0],
+                    "defaults": [0.0, 0.0],
+                    // 2 x-axis points, 1 y-axis point: `values` is [x][y], so
+                    // each binding is a 2-long outer array of 1-long columns.
+                    "axis_points": [[0.0, 1.0], [0.0]],
+                    "bindings": [
+                        // --- reflected targets ---
+                        {"node": 2, "param_name": "deform", "values": [
+                            [[[3.0, 5.0], [-1.0, 2.0], [0.0, 7.0]]],
+                            [[[2.0, -4.0], [6.0, 1.0], [-8.0, 0.0]]]
+                        ]},
+                        {"node": 2, "param_name": "transform.t.y", "values": [[10.0], [-20.0]]},
+                        {"node": 2, "param_name": "transform.r.x", "values": [[0.25], [-0.5]]},
+                        {"node": 3, "param_name": "transform.r.z", "values": [[1.5], [-2.5]]},
+                        {"node": 3, "param_name": "zSort", "values": [[-3.0], [4.0]]},
+                        // --- controls: must come through untouched ---
+                        {"node": 3, "param_name": "transform.t.x", "values": [[11.0], [-22.0]]},
+                        {"node": 3, "param_name": "transform.r.y", "values": [[0.75], [-1.25]]},
+                        {"node": 3, "param_name": "transform.s.y", "values": [[2.0], [0.5]]},
+                        {"node": 3, "param_name": "opacity", "values": [[0.25], [0.75]]}
+                    ]
+                }]
+            }),
+            textures: Vec::new(),
+            vendors: Vec::new(),
+        }
+    }
+
+    /// The reflection guard. `.inx` is authored Y-down with lower `zsort` in
+    /// front and catchlight is Y-up with higher `z_order` in front, so this
+    /// reader negates a specific set of fields — and only that set. Every
+    /// reflected field below is asserted against its authored value with a
+    /// non-reflected control beside it, so a missing negation and a doubled
+    /// one both fail here.
+    #[test]
+    fn the_import_reflects_exactly_the_y_bearing_fields() {
+        let doc = from_inx_model_to_legacy(&reflection_fixture()).unwrap().doc;
+        let front = &doc.nodes[1];
+        let back = &doc.nodes[2];
+        assert_eq!(front.name, "front");
+        assert_eq!(back.name, "back");
+
+        // zsort: source lower-is-front becomes catchlight higher-is-front.
+        assert_eq!(front.z_order, -1.0, "front z order");
+        assert_eq!(back.z_order, -5.0, "back z order");
+        assert!(
+            front.z_order > back.z_order,
+            "the node authored nearer the viewer must sort in front"
+        );
+
+        // Transform: translation y flips (x, z do not); rotation x and z flip
+        // (rotation y and scale do not).
+        assert_eq!(front.transform.translation, [7.0, -10.0, 3.0]);
+        assert_eq!(front.transform.rotation, [-0.25, 0.5, -0.75]);
+        assert_eq!(front.transform.scale, [2.0, 3.0]);
+        assert_eq!(back.transform.translation, [-2.0, 12.0, 0.0]);
+        assert_eq!(back.transform.rotation, [1.5, 2.0, 0.5]);
+
+        // Mesh: vertex and origin y flip, uvs are texture space and do not.
+        let mesh = |n: &LegacyNode| match &n.kind {
+            LegacyNodeKind::Part(p) => p.mesh.clone(),
+            other => panic!("expected a Part, got {other:?}"),
+        };
+        let front_mesh = mesh(front);
+        assert_eq!(front_mesh.verts, vec![1.0, -2.0, -4.0, -6.0, 8.0, 3.0]);
+        assert_eq!(
+            front_mesh.uvs,
+            vec![0.0, 0.0, 1.0, 0.25, 0.5, 1.0],
+            "uvs are texture space and are never reflected"
+        );
+        assert_eq!(front_mesh.origin, [1.5, -2.5]);
+        assert_eq!(mesh(back).origin, [0.0, 6.0]);
+
+        // Bindings, in authored order.
+        assert_eq!(doc.params.len(), 1, "param count");
+        let bindings = &doc.params[0].bindings;
+        assert_eq!(bindings.len(), 9, "binding count");
+
+        let deform =
+            crate::model::deform_cells(&bindings[0].values).expect("binding 0 is the deform");
+        assert_eq!(
+            deform.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
+            vec![
+                vec![3.0, -5.0, -1.0, -2.0, 0.0, -7.0],
+                vec![2.0, 4.0, 6.0, -1.0, -8.0, 0.0],
+            ],
+            "deform offsets: x survives, y flips"
+        );
+
+        let scalar = |i: usize, target: ScalarTarget| -> Vec<f32> {
+            assert_eq!(
+                crate::model::target_of(&bindings[i].values),
+                BindingTarget::Scalar(target),
+                "binding {i} target"
+            );
+            crate::model::scalar_cells(&bindings[i].values)
+                .expect("a scalar binding")
+                .iter()
+                .map(|c| c.value)
+                .collect()
+        };
+
+        // Reflected scalar targets.
+        assert_eq!(scalar(1, ScalarTarget::Ty), vec![-10.0, 20.0]);
+        assert_eq!(scalar(2, ScalarTarget::Rx), vec![-0.25, 0.5]);
+        assert_eq!(scalar(3, ScalarTarget::Rz), vec![-1.5, 2.5]);
+        assert_eq!(scalar(4, ScalarTarget::ZOrder), vec![3.0, -4.0]);
+
+        // Controls: over-negation shows up here.
+        assert_eq!(scalar(5, ScalarTarget::Tx), vec![11.0, -22.0]);
+        assert_eq!(scalar(6, ScalarTarget::Ry), vec![0.75, -1.25]);
+        assert_eq!(scalar(7, ScalarTarget::Sy), vec![2.0, 0.5]);
+        assert_eq!(scalar(8, ScalarTarget::Opacity), vec![0.25, 0.75]);
+    }
 
     /// The full reference model. No such model ships in the tree yet, so
     /// every test that needs one is `#[ignore]`d; drop a model at this path and
