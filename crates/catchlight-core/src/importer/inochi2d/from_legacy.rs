@@ -1364,11 +1364,15 @@ mod tests {
     }
 
     /// A mesh group is never drawn, so it has no colour for an `Opacity` /
-    /// `Tint*` / `ScreenTint*` binding to fold into. Such a file is refused,
-    /// naming the param, the node and the target — dropping the binding
-    /// silently would hide a broken model.
+    /// `Tint*` / `ScreenTint*` binding to fold into. This build refuses such a
+    /// document, naming the param, the node and the target — dropping the
+    /// binding silently would hide a broken model.
+    ///
+    /// A *file* no longer gets this far: the `.clm` reader refuses the same
+    /// shape first (`color_binding_on_a_mesh_group_is_refused_before_the_build`
+    /// below), so this pins the arena build's own rule, which dies with it.
     #[test]
-    fn color_binding_on_a_mesh_group_is_refused_at_load() {
+    fn color_binding_on_a_mesh_group_is_refused_by_the_build() {
         use ClmBindingValues as V;
         let cases = [
             (V::Opacity(one_cell(0.25)), "opacity"),
@@ -1381,14 +1385,10 @@ mod tests {
         ];
         for (values, target) in cases {
             let file = colored_mesh_group_file(values);
-            // Through the encoded bytes, so the refusal covers a file on disk.
-            let bytes = crate::Model::from_legacy(&file)
-                .and_then(|m| m.to_clm_bytes())
-                .unwrap();
-            let err = match crate::load::load_model(&bytes, crate::load::ModelFormat::Clm, 0) {
+            let err = match from_legacy(&file, 0) {
                 Err(ImportError::MeshGroupColorBinding(err)) => err,
                 Err(other) => panic!("{target}: expected MeshGroupColorBinding, got {other:?}"),
-                Ok(_) => panic!("{target}: a colour binding on a mesh group must not load"),
+                Ok(_) => panic!("{target}: a colour binding on a mesh group must not build"),
             };
             assert_eq!(
                 err,
@@ -1398,6 +1398,24 @@ mod tests {
                     target,
                 }
             );
+        }
+    }
+
+    /// And the file never reaches the build: `.clm` bytes go through a Model,
+    /// whose reader refuses the same shape by Id.
+    #[test]
+    fn color_binding_on_a_mesh_group_is_refused_before_the_build() {
+        let file = colored_mesh_group_file(ClmBindingValues::Opacity(one_cell(0.25)));
+        let bytes = crate::Model::from_legacy(&file)
+            .and_then(|m| m.to_clm_bytes())
+            .unwrap();
+
+        match crate::load::load_model(&bytes, crate::load::ModelFormat::Clm, 0) {
+            Err(ImportError::Model(crate::ModelError::InvalidClm(
+                crate::model::ClmLoadError::ColorOnMeshGroup { target, .. },
+            ))) => assert_eq!(target, "opacity"),
+            Err(other) => panic!("expected ColorOnMeshGroup, got {other:?}"),
+            Ok(_) => panic!("a colour binding on a mesh group must not load"),
         }
     }
 
