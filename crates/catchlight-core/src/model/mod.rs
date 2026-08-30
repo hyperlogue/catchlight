@@ -2581,9 +2581,6 @@ mod tests {
         }
     }
 
-    /// A rejected edit must leave every derived object alone, so it must not
-    /// move the generation either.
-
     /// Two welded parts: `collar` on `part` and `hem` on `other`, each holding
     /// slots `l` and `r`, filled and welded.
     fn welded_rig() -> Rig {
@@ -2862,6 +2859,8 @@ mod tests {
         );
     }
 
+    /// A rejected edit must leave every derived object alone, so it must not
+    /// move the generation either.
     #[test]
     fn a_rejected_edit_leaves_the_generation_alone() {
         let mut r = rig();
