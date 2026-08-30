@@ -1,10 +1,10 @@
+pub mod collect;
 pub mod deform_snapshot;
-pub mod drawable_collector;
 pub mod headless;
 pub mod renderer;
 
+pub use collect::*;
 pub use deform_snapshot::*;
-pub use drawable_collector::*;
 pub use headless::{apply_uniform_test_deform, RenderContext};
 pub use renderer::*;
 
