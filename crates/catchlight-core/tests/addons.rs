@@ -501,10 +501,15 @@ fn an_addon_installed_between_two_ticks_keeps_the_pose() {
 /// animated on its own.
 #[test]
 fn a_puppet_of_a_fragment_holds_nothing() {
-    let (_, addon, _, _) = puppet_rig();
-    let puppet = Puppet::new(&addon);
+    let (_, addon, param, _) = puppet_rig();
+    let mut puppet = Puppet::new(&addon);
     assert_eq!(puppet.len(), 1, "just the arena's own empty root slot");
     assert!(puppet.param_ids().next().is_none());
+    // And it is inert rather than broken: ticking it does nothing at all.
+    puppet.set_param_value(&param, 0.5);
+    puppet.settle_physics(&addon);
+    puppet.tick(&addon, 1.0 / 60.0);
+    assert_eq!(puppet.len(), 1);
 }
 
 /// The `.clm` shapes are disjoint, so a tool that does not know which it has
