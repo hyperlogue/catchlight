@@ -662,7 +662,7 @@ impl Pipelines {
         };
         // Linear mip filtering is trilinear; the default `Nearest`
         // point-selects a single mip and shows banding when a texture is
-        // sampled at fractional mip levels (e.g. the reference rig's face_zoom configs
+        // sampled at fractional mip levels (e.g. the reference model's face_zoom configs
         // rendering large eye textures at moderate zoom-out).
         //
         // Anisotropy 8 balances oblique-texture quality and sampling cost.

@@ -4,7 +4,7 @@
 //! document path. That split is what keeps the undo history usable: dragging
 //! a vertex emits a `ScratchDeform` per mouse move, and if those touched the
 //! model, one gesture would bury every earlier edit under a hundred
-//! indistinguishable snapshots (and blow the 256 MiB budget on any rig with
+//! indistinguishable snapshots (and blow the 256 MiB budget on any model with
 //! real textures).
 
 use catchlight_editor_protocol::{

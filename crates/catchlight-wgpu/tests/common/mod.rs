@@ -65,7 +65,7 @@ pub fn mesh_to_clm(mesh: &Mesh) -> ClmMesh {
 pub struct Build {
     pub model: Model,
     /// Public so a test can keep minting Ids after the model has moved into
-    /// a [`Rig`] — an edit between frames is a case worth writing.
+    /// a [`Scene`] — an edit between frames is a case worth writing.
     pub hex: SeededHex,
 }
 
@@ -130,13 +130,13 @@ impl Build {
 
 /// A model, its puppet and the cache that holds its GPU state: the three
 /// things every render needs.
-pub struct Rig {
+pub struct Scene {
     pub model: Model,
     pub puppet: Puppet,
     pub cache: RenderCache,
 }
 
-impl Rig {
+impl Scene {
     /// Prepare `model` against `renderer` and build a puppet for it.
     pub fn new(renderer: &mut WgpuRenderer, model: Model) -> Self {
         let cache = RenderCache::prepare(renderer, &model, PrepareOptions::default())

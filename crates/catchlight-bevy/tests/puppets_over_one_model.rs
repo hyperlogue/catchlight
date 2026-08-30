@@ -165,7 +165,7 @@ fn swapping_the_model_rebases_the_puppet_and_keeps_the_pose() {
     let param = deform_param(&model);
     let posed = model.param(&param).unwrap().max;
 
-    // The same rig, moved sideways: a different model with the same param
+    // The same model, moved sideways: a different model with the same param
     // Ids, so the pose has somewhere to land and the rebase is observable.
     let mut moved = fixture("welded_seam");
     let root = moved

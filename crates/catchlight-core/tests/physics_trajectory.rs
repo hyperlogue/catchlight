@@ -10,7 +10,7 @@
 //! baseline with per-sample tolerance. It is CPU-only and deterministic, so
 //! unlike the GPU baselines it is safe to gate CI.
 //!
-//! The rig is one driver on its own under the root, so the anchor is the
+//! The fixture is one driver on its own under the root, so the anchor is the
 //! origin and every sampled number is the driver's: the model exists to carry
 //! the authored pendulum and the two params it writes.
 //!
@@ -48,7 +48,7 @@ struct Scenario {
 /// Model-level physics is set to `1.0 * 1.0` so the node's own `gravity` is
 /// the effective one: the bake folds `pixels_per_meter * gravity` into every
 /// driver, and these scenarios name the folded number directly.
-fn rig(scenario: Scenario) -> (Model, Puppet, [ParamId; 2]) {
+fn fixture(scenario: Scenario) -> (Model, Puppet, [ParamId; 2]) {
     let mut hex = SeededHex::new(11);
     let mut model = Model::new();
     model.set_physics(ClmPhysics {
@@ -92,7 +92,7 @@ fn rig(scenario: Scenario) -> (Model, Puppet, [ParamId; 2]) {
 /// cadence. Goes through `tick` (anchor from world transform, map mode,
 /// output scale, param write), not the integrator in isolation.
 fn run_scenario(scenario: Scenario) -> Vec<[f32; 2]> {
-    let (model, mut puppet, params) = rig(scenario);
+    let (model, mut puppet, params) = fixture(scenario);
     let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
     for f in 0..FRAMES {
         puppet.tick(&model, DT);
@@ -162,7 +162,7 @@ fn spring_stiff() -> Scenario {
 /// whole fingerprint could be a pendulum at rest.
 #[test]
 fn a_placed_pendulum_swings_and_an_untouched_one_hangs() {
-    let (model, mut puppet, params) = rig(rigid_perturbed());
+    let (model, mut puppet, params) = fixture(rigid_perturbed());
     puppet.tick(&model, DT);
     let placed = puppet.param_value(&params[0]).expect("angle written");
     assert!(

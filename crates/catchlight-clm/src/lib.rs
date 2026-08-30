@@ -29,7 +29,7 @@
 //!    surface"*. Putting a cross-platform, product-adjacent utility inside the
 //!    client of that socket blurs the exact boundary that decision exists to
 //!    keep sharp. It is also the seat AGENTS.md reserves for the one CLI the
-//!    removed inspection examples (`mip-compare`, `param-sweep`, `rig-dump`)
+//!    removed inspection examples
 //!    are meant to come back as: they, too, are read-only questions about a
 //!    `.clm` on disk.
 //!

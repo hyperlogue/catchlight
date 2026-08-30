@@ -31,7 +31,7 @@ use catchlight_wgpu::{
     create_headless_context, create_orthographic_camera, CompositePool, FrameStats,
     FramebufferSnapshotPool, Pipelines, RenderList, RenderStats, StencilTarget, WgpuRenderer,
 };
-use common::{Rig, NO_ADAPTER};
+use common::{Scene, NO_ADAPTER};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -106,13 +106,13 @@ impl Stage {
     }
 
     /// Prepare a cache for `model` and aim the camera at it.
-    fn admit(&self, renderer: &mut WgpuRenderer, model: Model) -> Rig {
-        let rig = Rig::new(renderer, model);
+    fn admit(&self, renderer: &mut WgpuRenderer, model: Model) -> Scene {
+        let scene = Scene::new(renderer, model);
         renderer.update_camera(create_orthographic_camera(
             CAMERA_HEIGHT,
             W as f32 / H as f32,
         ));
-        rig
+        scene
     }
 
     /// Record one puppet's draw into `encoder`. No submit: the caller
@@ -147,10 +147,10 @@ impl Stage {
     fn frame(
         &mut self,
         renderer: &mut WgpuRenderer,
-        rig: &mut Rig,
+        scene: &mut Scene,
         composites: &mut CompositePool,
     ) -> (RenderStats, FrameStats) {
-        let render_list = rig.frame(renderer, 0.0);
+        let render_list = scene.frame(renderer, 0.0);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -247,10 +247,10 @@ fn one_submit_per_frame_regardless_of_part_count() {
 
     for (label, model) in cases {
         let mut renderer = stage.renderer();
-        let mut rig = stage.admit(&mut renderer, model);
+        let mut scene = stage.admit(&mut renderer, model);
 
         let before = stage.submits;
-        let (stats, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
+        let (stats, fs) = stage.frame(&mut renderer, &mut scene, &mut pool);
 
         assert!(stats.drawn_parts > 0, "{label}: drew nothing");
         assert_eq!(
@@ -289,12 +289,12 @@ fn one_submit_per_frame_regardless_of_part_count() {
 
     // The grid cases must really have drawn every part, so the two
     // synthetic frames above aren't quietly filtering down to one draw.
-    let mut rig = {
+    let mut scene = {
         let mut renderer = stage.renderer();
-        let rig = stage.admit(&mut renderer, grid_model(40));
-        (renderer, rig)
+        let scene = stage.admit(&mut renderer, grid_model(40));
+        (renderer, scene)
     };
-    let (stats, _) = stage.frame(&mut rig.0, &mut rig.1, &mut pool);
+    let (stats, _) = stage.frame(&mut scene.0, &mut scene.1, &mut pool);
     assert_eq!(stats.drawn_parts, 40);
 }
 
@@ -307,9 +307,9 @@ fn no_buffer_grows_mid_frame_when_the_frame_fits() {
     let mut stage = Stage::new();
     let mut pool = CompositePool::new(W, H);
     let mut renderer = stage.renderer();
-    let mut rig = stage.admit(&mut renderer, grid_model(8));
+    let mut scene = stage.admit(&mut renderer, grid_model(8));
 
-    let (_, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
+    let (_, fs) = stage.frame(&mut renderer, &mut scene, &mut pool);
     assert_eq!(fs.instance_buffer_reallocs, 0);
     assert_eq!(fs.part_uniform_buffer_reallocs, 0);
     assert_eq!(
@@ -328,9 +328,9 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
     let mut stage = Stage::new();
     let mut pool = CompositePool::new(W, H);
     let mut renderer = stage.renderer();
-    let mut rig = stage.admit(&mut renderer, grid_model(parts));
+    let mut scene = stage.admit(&mut renderer, grid_model(parts));
 
-    let (_, first) = stage.frame(&mut renderer, &mut rig, &mut pool);
+    let (_, first) = stage.frame(&mut renderer, &mut scene, &mut pool);
     assert_eq!(
         first.instance_slots_budgeted, parts as u32,
         "one instance per unmasked part",
@@ -360,7 +360,7 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
 
     // Same frame again: the capacity from frame 1 must carry over.
     for round in 2..=3 {
-        let (_, again) = stage.frame(&mut renderer, &mut rig, &mut pool);
+        let (_, again) = stage.frame(&mut renderer, &mut scene, &mut pool);
         assert_eq!(
             (
                 again.instance_buffer_reallocs,
@@ -377,7 +377,7 @@ fn no_buffer_grows_mid_frame_when_the_frame_outgrows_capacity() {
     let mut small_renderer = stage.renderer();
     let mut small = stage.admit(&mut small_renderer, grid_model(4));
     stage.frame(&mut small_renderer, &mut small, &mut pool);
-    let (_, shrunk) = stage.frame(&mut renderer, &mut rig, &mut pool);
+    let (_, shrunk) = stage.frame(&mut renderer, &mut scene, &mut pool);
     assert_eq!(shrunk.instance_buffer_reallocs, 0);
     assert_eq!(shrunk.part_uniform_buffer_reallocs, 0);
     assert_eq!(shrunk.late_buffer_reallocs, 0);
@@ -399,8 +399,8 @@ fn every_reserved_slot_is_written_exactly_once() {
     // assertions cover the release build.
     for parts in [3usize, 7, 33] {
         let mut renderer = stage.renderer();
-        let mut rig = stage.admit(&mut renderer, grid_model(parts));
-        let (_, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
+        let mut scene = stage.admit(&mut renderer, grid_model(parts));
+        let (_, fs) = stage.frame(&mut renderer, &mut scene, &mut pool);
 
         assert!(
             fs.instance_slots_reserved > 0,
@@ -442,8 +442,8 @@ fn part_uniform_offsets_are_distinct_and_increasing() {
     let mut stage = Stage::new();
     let mut pool = CompositePool::new(W, H);
     let mut renderer = stage.renderer();
-    let mut rig = stage.admit(&mut renderer, grid_model(4));
-    stage.frame(&mut renderer, &mut rig, &mut pool);
+    let mut scene = stage.admit(&mut renderer, grid_model(4));
+    stage.frame(&mut renderer, &mut scene, &mut pool);
 
     // `write_part_uniform` hands back the dynamic offset it wrote at.
     // Draws bind these as distinct slots, so a repeat would make two
@@ -491,8 +491,8 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
     for stem in stems.iter() {
         let mut pool = CompositePool::new(W, H);
         let mut renderer = stage.renderer();
-        let mut rig = stage.admit(&mut renderer, load_test_model(stem));
-        let (_, fs) = stage.frame(&mut renderer, &mut rig, &mut pool);
+        let mut scene = stage.admit(&mut renderer, load_test_model(stem));
+        let (_, fs) = stage.frame(&mut renderer, &mut scene, &mut pool);
         let (peak, capacity, _, _) = pool.stats();
         assert_eq!(fs.late_buffer_reallocs, 0);
         println!("{stem}: composite pool peak={peak} capacity={capacity}");
@@ -512,18 +512,18 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
 
     // All three in one frame, one encoder, one submit, one pool.
     let mut pool = CompositePool::new(W, H);
-    let mut scenes: Vec<(WgpuRenderer, Rig)> = stems
+    let mut scenes: Vec<(WgpuRenderer, Scene)> = stems
         .iter()
         .map(|stem| {
             let mut r = stage.renderer();
-            let rig = stage.admit(&mut r, load_test_model(stem));
-            (r, rig)
+            let scene = stage.admit(&mut r, load_test_model(stem));
+            (r, scene)
         })
         .collect();
 
     let lists: Vec<RenderList> = scenes
         .iter_mut()
-        .map(|(r, rig)| rig.frame(r, 0.0))
+        .map(|(r, scene)| scene.frame(r, 0.0))
         .collect();
 
     let mut encoder = stage

@@ -28,7 +28,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("commands:");
     eprintln!("  import <model.inx|.inp> [-o <model.clm>]");
-    eprintln!("      One-time convert an INX/INP rig to catchlight's editable .clm");
+    eprintln!("      One-time convert an INX/INP model to catchlight's editable .clm");
     eprintln!("      (default output: input path with a .clm extension).");
     eprintln!("  gen-fixture <name>");
     eprintln!("      Rebuild a hand-authored test model into tests/models/<name>.clm.");

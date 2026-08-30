@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Print a `.clm` rig's render list and write a PNG of it. Import an
+//! Print a `.clm` model's render list and write a PNG of it. Import an
 //! `.inx` with `cargo xtask import` first.
 //!
 //! It runs the full `settle_physics` + `tick` pipeline on purpose: with a bare
@@ -17,7 +17,7 @@ use std::path::Path;
 /// Read a `.clm` off disk. The format dispatch lives in the core; this is
 /// only the filesystem half, which the core deliberately does not have.
 ///
-/// `.clm` is the only model file catchlight loads. Convert an inochi2d rig
+/// `.clm` is the only model file catchlight loads. Convert an inochi2d model
 /// once with `cargo xtask import <model.inx>` and open the `.clm` it writes.
 fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;

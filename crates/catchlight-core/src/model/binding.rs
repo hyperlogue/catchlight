@@ -1083,7 +1083,7 @@ mod tests {
     }
 
     /// A model with one group, one quad part and one 3-keypoint param.
-    struct Rig {
+    struct Fixture {
         m: Model,
         hex: SeededHex,
         group: NodeId,
@@ -1091,7 +1091,7 @@ mod tests {
         param: ParamId,
     }
 
-    fn rig() -> Rig {
+    fn fixture() -> Fixture {
         let mut hex = SeededHex::new(5);
         let mut m = Model::new();
         let root = m.root().unwrap().clone();
@@ -1125,7 +1125,7 @@ mod tests {
                 &mut hex,
             )
             .unwrap();
-        Rig {
+        Fixture {
             m,
             hex,
             group,
@@ -1134,7 +1134,7 @@ mod tests {
         }
     }
 
-    impl Rig {
+    impl Fixture {
         fn tx(&self, node: &NodeId) -> BindingKey {
             BindingKey::new(
                 self.param.clone(),
@@ -1158,7 +1158,7 @@ mod tests {
 
     #[test]
     fn set_unset_reset_key_roundtrip() {
-        let mut r = rig();
+        let mut r = fixture();
         let key = r.tx(&r.group.clone());
 
         r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
@@ -1177,7 +1177,7 @@ mod tests {
 
     #[test]
     fn copy_key_takes_derived_values() {
-        let mut r = rig();
+        let mut r = fixture();
         let key = r.tx(&r.group.clone());
         r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
         r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
@@ -1191,7 +1191,7 @@ mod tests {
 
     #[test]
     fn invert_and_delete_binding() {
-        let mut r = rig();
+        let mut r = fixture();
         let key = BindingKey::new(
             r.param.clone(),
             r.group.clone(),
@@ -1211,7 +1211,7 @@ mod tests {
 
     #[test]
     fn deform_from_transform_writes_offsets() {
-        let mut r = rig();
+        let mut r = fixture();
         let key = r.deform(&r.part.clone());
         r.m.set_deform_from_transform(&key, [2, 0], [10.0, 0.0], 0.0, [1.0, 1.0])
             .unwrap();
@@ -1236,7 +1236,7 @@ mod tests {
     /// key has to reject an operation aimed at the wrong kind of value.
     #[test]
     fn the_key_target_decides_which_operations_apply() {
-        let mut r = rig();
+        let mut r = fixture();
         let deform = r.deform(&r.part.clone());
         let scalar = r.tx(&r.part.clone());
 
@@ -1256,7 +1256,7 @@ mod tests {
 
     #[test]
     fn axis_ops_remap_authored_cells() {
-        let mut r = rig();
+        let mut r = fixture();
         let key = r.tx(&r.group.clone());
         r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
         r.m.set_binding_key(&key, [2, 0], 60.0).unwrap();
@@ -1295,7 +1295,7 @@ mod tests {
 
     #[test]
     fn param_flip_mirrors_key_positions_and_cells() {
-        let mut r = rig();
+        let mut r = fixture();
         r.m.key_move(&r.param, 1, 0.75).unwrap();
         let key = r.tx(&r.group.clone());
         r.m.set_binding_key(&key, [0, 0], -60.0).unwrap();
@@ -1315,7 +1315,7 @@ mod tests {
     /// land and the runtime refuses to load the file it would flatten to.
     #[test]
     fn a_colour_binding_cannot_be_authored_on_a_mesh_group() {
-        let mut r = rig();
+        let mut r = fixture();
         let root = r.m.root().unwrap().clone();
         let group =
             r.m.add_node(
@@ -1364,7 +1364,7 @@ mod tests {
 
     #[test]
     fn the_binding_index_survives_every_edit_that_moves_a_binding() {
-        let mut r = rig();
+        let mut r = fixture();
         let (group, part, param) = (r.group.clone(), r.part.clone(), r.param.clone());
 
         r.m.add_binding(&r.tx(&group)).unwrap();

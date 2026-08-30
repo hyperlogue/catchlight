@@ -11,7 +11,7 @@
 //!   or slot travels as its [`NodeId`] / [`ParamId`] / [`TexId`] /
 //!   [`SeamId`] / [`SlotId`] — the same string the model file stores, not a
 //!   per-session handle. So a reference survives the session that minted it,
-//!   an addon can be written against a rig by reading its tree, and two
+//!   an addon can be written against a model by reading its tree, and two
 //!   clients editing one session mean the same node by the same word. The
 //!   Id types validate on the way in, so a string outside the charset
 //!   (`[A-Za-z0-9_./-]`, no leading `.` or `/`) never reaches the server: it

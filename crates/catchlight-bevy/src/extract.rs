@@ -19,7 +19,7 @@ use crate::prepare::{CatchlightRenderState, RendererKey};
 #[derive(Component)]
 pub struct ExtractedPuppet {
     /// The model this entity animates. An `Arc`, so extraction copies a
-    /// pointer rather than a rig.
+    /// pointer rather than a model.
     pub model: Arc<Model>,
     /// Which asset it came from. For a reader asking what a render entity
     /// draws — staleness is decided by the model's own identity, not by this,
