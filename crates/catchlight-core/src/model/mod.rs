@@ -139,8 +139,6 @@ pub enum ModelError {
     WrongTarget,
     #[error("index out of range")]
     IndexOutOfRange,
-    #[error("constraint edges may not cross")]
-    ConstraintCross,
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
     #[error(".clp codec: {0}")]
