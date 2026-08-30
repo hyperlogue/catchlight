@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use catchlight_core::id::ParamId;
-use catchlight_core::{GlobalTransforms, Model, Pose, Puppet, Vec2};
+use catchlight_core::{Model, Pose, Puppet, Vec2};
 use catchlight_wgpu::{
     create_orthographic_camera_at, CompositePool, DrawableInfo, FramebufferSnapshotPool, Pipelines,
     PrepareOptions, RenderCache, RenderList, StencilTarget, WgpuRenderer,
@@ -94,10 +94,6 @@ pub(crate) struct ViewportRenderer {
     /// within the session is the cache's own generation gate; a different
     /// session needs its own slots in this renderer, so it re-prepares.
     cache: Option<(u64, RenderCache)>,
-    /// The transforms the last render evaluated, copied out of the puppet so
-    /// the GUI can read them (picking, gizmo placement, selection bounds)
-    /// without taking the session lock.
-    pub transforms: GlobalTransforms,
     target: wgpu::Texture,
     view: wgpu::TextureView,
     stencil: StencilTarget,
@@ -131,7 +127,6 @@ impl ViewportRenderer {
         Self {
             renderer,
             cache: None,
-            transforms: GlobalTransforms::new(),
             target,
             view,
             stencil,
@@ -202,7 +197,6 @@ impl ViewportRenderer {
         if let Some((core, deltas)) = scratch_deform {
             apply_scratch_deform(puppet, *core, deltas);
         }
-        self.transforms.clone_from(puppet.transforms());
         cache
             .refresh(&mut self.renderer, model, puppet)
             .map_err(|e| anyhow!("refresh: {e}"))?;
