@@ -86,7 +86,7 @@ fn workspace_root() -> PathBuf {
 /// level halves exactly and the box filter never hits the odd-dimension
 /// edge-clamp in `mip_downsample.wgsl`.
 const CHECKER_TEXELS: u32 = 512;
-/// The two quads: node name, half-width, and world x, in puppet units.
+/// The two quads: node name, half-width, and world x, in model units.
 /// Rendered at the model's `default_zoom` of 0.25 they cover 128 and 64
 /// pixels, so the same [`CHECKER_TEXELS`]-wide texture lands at 4 and 8 texels
 /// per pixel; the x offsets keep them from overlapping.
@@ -190,7 +190,7 @@ fn quad_part(albedo: u32, half: f32) -> LegacyPart {
 
 // --- composite_blit_uniforms -----------------------------------------------
 
-/// Half-width of one cell's back quad, in puppet units, and how far its
+/// Half-width of one cell's back quad, in model units, and how far its
 /// translucent front quad is offset from it.
 const CELL_HALF: f32 = 45.0;
 const CELL_FRONT_OFFSET: f32 = 25.0;
@@ -373,7 +373,7 @@ fn gradient_texture() -> LegacyTexture {
 
 const COLS: usize = 3;
 const ROWS: usize = 3;
-/// Half the width of each grid, in puppet units.
+/// Half the width of each grid, in model units.
 const HALF_W: f32 = 150.0;
 /// Height of each grid, measured from the shared seam.
 const PART_H: f32 = 120.0;

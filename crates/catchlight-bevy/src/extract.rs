@@ -53,8 +53,8 @@ impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
 /// read it**. Under bevy's pipelined rendering the next main-world frame runs
 /// while the render world draws, and a tick overwrites the puppet's combined
 /// deforms in place — so a later read would race. Doing it here also means the
-/// render world never holds a puppet, and the frozen per-frame copy the old
-/// path needed (a `DeformSnapshot`) is gone with it.
+/// render world never holds a puppet, so nothing needs a frozen per-frame copy
+/// of the frame's deforms.
 // Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
 #[allow(clippy::unwrap_used)]
 pub(crate) fn extract_puppets(
