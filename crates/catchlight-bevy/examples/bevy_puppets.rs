@@ -142,7 +142,7 @@ fn first_deform_param(model: &Model) -> Option<ParamId> {
         .cloned()
 }
 
-/// A blink over every param whose *name* contains "Blink" (the reference rig:
+/// A blink over every param whose *name* contains "Blink" (the reference model:
 /// "Left Eye - Blink" and "Right Eye - Blink"), resolved to `ParamId`s against
 /// the model. value=0 -> open, value=1 -> closed.
 fn build_blink_animation(model: &Model) -> Option<ClmAnimation> {

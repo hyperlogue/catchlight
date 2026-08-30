@@ -933,7 +933,7 @@ pub const PUPPET_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba
 ///
 /// The CPU alternative walks ~1.33x the base pixel count per texture
 /// through an sRGB decode/encode per channel, single-threaded, before the
-/// first frame can draw — the largest remaining slice of a rig's load
+/// first frame can draw — the largest remaining slice of a model's load
 /// time after PNG decode, and unlike PNG decode it has a direct GPU
 /// analogue.
 pub fn generate_mips(
@@ -4307,7 +4307,7 @@ impl WgpuRenderer {
             dst_in_shader_present && target_color_texture.is_some() && snapshots.is_some();
         if dst_in_shader_present && !dst_in_shader_active {
             // Once per process: legacy `render_list` callers hit this on
-            // every frame (the reference rig carries ColorBurn parts), and a per-frame
+            // every frame (the reference model carries ColorBurn parts), and a per-frame
             // warn would drown the log.
             static FALLBACK_WARNED: std::sync::Once = std::sync::Once::new();
             FALLBACK_WARNED.call_once(|| {

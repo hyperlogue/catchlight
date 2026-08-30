@@ -26,7 +26,7 @@
 //!   snapshot is taken.
 //!
 //! - **The undo budget counts shared bytes once.** See [`History`]: 64
-//!   snapshots of one rig hold its textures once, not 64 times.
+//!   snapshots of one model hold its textures once, not 64 times.
 //!
 //! - **One render cache per previewed session.** See [`preview`]: a cache's
 //!   slots name GPU state inside the one warm renderer, so switching the
@@ -171,7 +171,7 @@ struct Session {
 /// A snapshot is a shallow clone: texture payloads, meshes and binding grids
 /// ride behind an `Arc` and are copied only when something edits them. So a
 /// budget that charged every snapshot [`Model::estimated_size_bytes`] would
-/// bill one rig's textures once per undo step and collapse the history of any
+/// bill one model's textures once per undo step and collapse the history of any
 /// model bigger than a fraction of the cap.
 ///
 /// **Each distinct texture payload is therefore counted once for the whole
@@ -2185,7 +2185,7 @@ mod tests {
         assert_eq!(history.bytes(), newest_bytes);
     }
 
-    /// An undo snapshot is a shallow clone, so 64 of them hold one rig's
+    /// An undo snapshot is a shallow clone, so 64 of them hold one model's
     /// textures once, not 64 times. Charging each snapshot the full
     /// `estimated_size_bytes` would bill them 64 times and collapse the
     /// history of any model whose textures approach the cap.

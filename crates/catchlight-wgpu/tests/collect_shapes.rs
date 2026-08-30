@@ -24,7 +24,7 @@ use catchlight_wgpu::{
     collect, create_headless_context, DrawableInfo, MaskSourceData, PrepareOptions, RenderCache,
     RenderList, WgpuRenderer,
 };
-use common::{Build, Rig, NO_ADAPTER};
+use common::{Build, Scene, NO_ADAPTER};
 use std::path::PathBuf;
 
 async fn renderer() -> WgpuRenderer {
@@ -33,22 +33,23 @@ async fn renderer() -> WgpuRenderer {
 }
 
 /// A model, its puppet and its cache, with one frame already collected.
-fn framed(model: Model) -> (Rig, RenderList) {
+fn framed(model: Model) -> (Scene, RenderList) {
     pollster::block_on(async {
         let mut renderer = renderer().await;
-        let mut rig = Rig::new(&mut renderer, model);
-        let list = rig.frame(&mut renderer, 0.0);
-        (rig, list)
+        let mut scene = Scene::new(&mut renderer, model);
+        let list = scene.frame(&mut renderer, 0.0);
+        (scene, list)
     })
 }
 
-fn node_slot(rig: &Rig, id: &NodeId) -> u32 {
-    rig.puppet.node_idx(id).expect("node is baked").0
+fn node_slot(scene: &Scene, id: &NodeId) -> u32 {
+    scene.puppet.node_idx(id).expect("node is baked").0
 }
 
-fn mesh_slot(rig: &Rig, id: &NodeId) -> u32 {
-    rig.cache
-        .mesh_slot_of_node(node_slot(rig, id))
+fn mesh_slot(scene: &Scene, id: &NodeId) -> u32 {
+    scene
+        .cache
+        .mesh_slot_of_node(node_slot(scene, id))
         .expect("the node's mesh uploaded")
 }
 
@@ -127,9 +128,9 @@ fn a_part_mask_source_is_collected_with_its_mode() {
         .model
         .mask_add(&comp, &source, MaskMode::DodgeMask)
         .expect("mask the composite with a part");
-    let (rig, list) = framed(build.model);
+    let (scene, list) = framed(build.model);
 
-    let comp_slot = node_slot(&rig, &comp);
+    let comp_slot = node_slot(&scene, &comp);
     let mask_sources = list
         .root_drawables
         .iter()
@@ -144,7 +145,7 @@ fn a_part_mask_source_is_collected_with_its_mode() {
         .expect("the masked composite is a root drawable");
 
     assert_eq!(mask_sources.len(), 1);
-    let expected = mesh_slot(&rig, &source);
+    let expected = mesh_slot(&scene, &source);
     assert!(
         matches!(
             mask_sources[0],
@@ -187,10 +188,10 @@ fn a_composite_mask_source_keeps_its_descendant_parts() {
         _ => panic!("CompositeMaskSource is a composite"),
     };
 
-    let (rig, list) = framed(model);
+    let (scene, list) = framed(model);
     let data = list
         .composite_mask_sources
-        .get(&node_slot(&rig, &source))
+        .get(&node_slot(&scene, &source))
         .expect("the composite mask source is collected under its node slot");
 
     assert_eq!(data.opacity, opacity, "the composite's own opacity");
@@ -200,7 +201,7 @@ fn a_composite_mask_source_keeps_its_descendant_parts() {
     // promise.
     let mut shapes: Vec<u32> = data.parts.iter().map(|p| p.mesh_id).collect();
     shapes.sort_unstable();
-    let mut expected = vec![mesh_slot(&rig, &left), mesh_slot(&rig, &center)];
+    let mut expected = vec![mesh_slot(&scene, &left), mesh_slot(&scene, &center)];
     expected.sort_unstable();
     assert_eq!(
         shapes, expected,
@@ -227,20 +228,20 @@ fn passthrough_nested_composite_flattens_into_enclosing() {
     let front = part(&mut build, &outer, "front", 10.0, &tex, |_| {});
     let inner = composite(&mut build, &outer, "inner", 0.0);
     let behind = part(&mut build, &inner, "behind", 0.0, &tex, |_| {});
-    let (rig, list) = framed(build.model);
+    let (scene, list) = framed(build.model);
 
     assert_eq!(
         composites(&list.root_drawables),
-        vec![node_slot(&rig, &outer)],
+        vec![node_slot(&scene, &outer)],
         "only the outer composite emits a drawable; inner is flattened away",
     );
     let kids = list
         .composite_children
-        .get(&node_slot(&rig, &outer))
+        .get(&node_slot(&scene, &outer))
         .expect("outer composite children");
     assert_eq!(
         parts(kids),
-        vec![mesh_slot(&rig, &behind), mesh_slot(&rig, &front)],
+        vec![mesh_slot(&scene, &behind), mesh_slot(&scene, &front)],
         "both parts are the outer's children, ascending by z",
     );
 }
@@ -253,14 +254,14 @@ fn drawable_order_is_low_to_high_and_stable_for_equal_z() {
     let first_front = part(&mut build, &root, "first_front", 2.0, &tex, |_| {});
     let behind = part(&mut build, &root, "behind", -1.0, &tex, |_| {});
     let last_front = part(&mut build, &root, "last_front", 2.0, &tex, |_| {});
-    let (rig, list) = framed(build.model);
+    let (scene, list) = framed(build.model);
 
     assert_eq!(
         parts(&list.root_drawables),
         vec![
-            mesh_slot(&rig, &behind),
-            mesh_slot(&rig, &first_front),
-            mesh_slot(&rig, &last_front),
+            mesh_slot(&scene, &behind),
+            mesh_slot(&scene, &first_front),
+            mesh_slot(&scene, &last_front),
         ],
     );
 }
@@ -283,9 +284,9 @@ fn isolating_nested_composite_is_not_flattened() {
     part(&mut build, &inner, "multiply", 0.0, &tex, |p| {
         p.blend_mode = BlendMode::Multiply;
     });
-    let (rig, list) = framed(build.model);
+    let (scene, list) = framed(build.model);
 
-    let (outer_slot, inner_slot) = (node_slot(&rig, &outer), node_slot(&rig, &inner));
+    let (outer_slot, inner_slot) = (node_slot(&scene, &outer), node_slot(&scene, &inner));
     assert_eq!(
         composites(&list.root_drawables),
         vec![outer_slot],
@@ -326,12 +327,12 @@ fn opacity_zero_drawables_are_culled_except_darken() {
     let visible = part(&mut build, &root, "visible", 0.0, &tex, |p| {
         p.opacity = 0.5;
     });
-    let (rig, list) = framed(build.model);
+    let (scene, list) = framed(build.model);
 
     let drawn = parts(&list.root_drawables);
     assert_eq!(drawn.len(), 2);
-    assert!(drawn.contains(&mesh_slot(&rig, &darken)));
-    assert!(drawn.contains(&mesh_slot(&rig, &visible)));
+    assert!(drawn.contains(&mesh_slot(&scene, &darken)));
+    assert!(drawn.contains(&mesh_slot(&scene, &visible)));
 }
 
 /// The cached structural pass-through verdict must be re-evaluated when the
@@ -354,15 +355,16 @@ fn growing_a_composite_re_evaluates_the_passthrough_verdict() {
 
     pollster::block_on(async {
         let mut renderer = renderer().await;
-        let mut rig = Rig::new(&mut renderer, build.model);
+        let mut scene = Scene::new(&mut renderer, build.model);
         let mut list = RenderList::default();
 
-        rig.puppet.tick(&rig.model, 0.0);
-        rig.cache
-            .refresh(&mut renderer, &rig.model, &rig.puppet)
+        scene.puppet.tick(&scene.model, 0.0);
+        scene
+            .cache
+            .refresh(&mut renderer, &scene.model, &scene.puppet)
             .expect("refresh");
-        rig.cache.collect_into(&rig.puppet, &mut list);
-        let outer_slot = node_slot(&rig, &outer);
+        scene.cache.collect_into(&scene.puppet, &mut list);
+        let outer_slot = node_slot(&scene, &outer);
         assert_eq!(
             all_composites(&list),
             vec![outer_slot],
@@ -372,7 +374,7 @@ fn growing_a_composite_re_evaluates_the_passthrough_verdict() {
         // Grow the tree: a Multiply Part under inner makes it isolating.
         let mut multiply = ModelPart::new(common::quad(1.0, 1.0));
         multiply.blend_mode = BlendMode::Multiply;
-        let added = rig
+        let added = scene
             .model
             .add_node(
                 &inner,
@@ -380,16 +382,18 @@ fn growing_a_composite_re_evaluates_the_passthrough_verdict() {
                 &mut hex,
             )
             .expect("add the multiply part");
-        rig.model
+        scene
+            .model
             .set_part_albedo(&added, Some(tex.clone()))
             .expect("albedo");
 
-        rig.puppet.tick(&rig.model, 0.0);
-        rig.cache
-            .refresh(&mut renderer, &rig.model, &rig.puppet)
+        scene.puppet.tick(&scene.model, 0.0);
+        scene
+            .cache
+            .refresh(&mut renderer, &scene.model, &scene.puppet)
             .expect("refresh");
-        rig.cache.collect_into(&rig.puppet, &mut list);
-        let inner_slot = node_slot(&rig, &inner);
+        scene.cache.collect_into(&scene.puppet, &mut list);
+        let inner_slot = node_slot(&scene, &inner);
         assert!(
             all_composites(&list).contains(&inner_slot),
             "growth must re-evaluate the verdict so inner isolates again, got {:?}",
@@ -412,20 +416,22 @@ fn editing_a_composites_blend_or_masks_re_routes_it() {
 
     pollster::block_on(async {
         let mut renderer = renderer().await;
-        let mut rig = Rig::new(&mut renderer, build.model);
+        let mut scene = Scene::new(&mut renderer, build.model);
         let mut list = RenderList::default();
-        let inner_slot = node_slot(&rig, &inner);
+        let inner_slot = node_slot(&scene, &inner);
 
-        let mut emits_inner = |rig: &mut Rig, renderer: &mut WgpuRenderer| -> bool {
-            rig.puppet.tick(&rig.model, 0.0);
-            rig.cache
-                .refresh(renderer, &rig.model, &rig.puppet)
+        let mut emits_inner = |scene: &mut Scene, renderer: &mut WgpuRenderer| -> bool {
+            scene.puppet.tick(&scene.model, 0.0);
+            scene
+                .cache
+                .refresh(renderer, &scene.model, &scene.puppet)
                 .expect("refresh");
-            rig.cache.collect_into(&rig.puppet, &mut list);
+            scene.cache.collect_into(&scene.puppet, &mut list);
             all_composites(&list).contains(&inner_slot)
         };
-        let set_blend = |rig: &mut Rig, mode: BlendMode| {
-            rig.model
+        let set_blend = |scene: &mut Scene, mode: BlendMode| {
+            scene
+                .model
                 .update_node(&inner, |n| {
                     if let ModelNodeKind::Composite(c) = &mut n.kind {
                         c.blend_mode = mode;
@@ -434,21 +440,22 @@ fn editing_a_composites_blend_or_masks_re_routes_it() {
                 .expect("set the inner composite's blend mode");
         };
 
-        assert!(!emits_inner(&mut rig, &mut renderer), "starts flattened");
+        assert!(!emits_inner(&mut scene, &mut renderer), "starts flattened");
 
-        set_blend(&mut rig, BlendMode::Multiply);
-        assert!(emits_inner(&mut rig, &mut renderer), "multiply isolates");
+        set_blend(&mut scene, BlendMode::Multiply);
+        assert!(emits_inner(&mut scene, &mut renderer), "multiply isolates");
 
-        set_blend(&mut rig, BlendMode::Normal);
-        assert!(!emits_inner(&mut rig, &mut renderer), "back to flattened");
+        set_blend(&mut scene, BlendMode::Normal);
+        assert!(!emits_inner(&mut scene, &mut renderer), "back to flattened");
 
-        rig.model
+        scene
+            .model
             .mask_add(&inner, &source, MaskMode::Mask)
             .expect("mask the inner composite");
-        assert!(emits_inner(&mut rig, &mut renderer), "a mask isolates");
+        assert!(emits_inner(&mut scene, &mut renderer), "a mask isolates");
 
-        rig.model.mask_delete(&inner, 0).expect("drop the mask");
-        assert!(!emits_inner(&mut rig, &mut renderer), "flattened again");
+        scene.model.mask_delete(&inner, 0).expect("drop the mask");
+        assert!(!emits_inner(&mut scene, &mut renderer), "flattened again");
     });
 }
 
@@ -465,15 +472,16 @@ fn collect_and_collect_into_produce_the_same_list() {
 
     pollster::block_on(async {
         let mut renderer = renderer().await;
-        let mut rig = Rig::new(&mut renderer, build.model);
-        rig.puppet.tick(&rig.model, 0.0);
-        rig.cache
-            .refresh(&mut renderer, &rig.model, &rig.puppet)
+        let mut scene = Scene::new(&mut renderer, build.model);
+        scene.puppet.tick(&scene.model, 0.0);
+        scene
+            .cache
+            .refresh(&mut renderer, &scene.model, &scene.puppet)
             .expect("refresh");
 
-        let allocated = collect(&rig.cache, &rig.puppet);
+        let allocated = collect(&scene.cache, &scene.puppet);
         let mut reused = RenderList::default();
-        rig.cache.collect_into(&rig.puppet, &mut reused);
+        scene.cache.collect_into(&scene.puppet, &mut reused);
 
         assert_eq!(
             composites(&allocated.root_drawables),

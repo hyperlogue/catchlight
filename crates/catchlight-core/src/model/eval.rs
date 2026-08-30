@@ -235,7 +235,7 @@ pub(super) mod tests {
 
     /// A part driven by two params, each with key positions at 0 / 0.5 / 1 over
     /// the range [0, 1].
-    pub(super) fn rig() -> (Model, BindingKey, ParamId, ParamId) {
+    pub(super) fn fixture() -> (Model, BindingKey, ParamId, ParamId) {
         let mut hex = SeededHex::new(13);
         let mut model = Model::new();
         let root = model.root().unwrap().clone();
@@ -284,7 +284,7 @@ pub(super) mod tests {
     /// independently and the middle is the bilinear blend of all four.
     #[test]
     fn a_two_param_deform_binding_is_bilinear_over_its_grid() {
-        let (mut model, key, x, y) = rig();
+        let (mut model, key, x, y) = fixture();
         model
             .set_deform_vertices(&key, [0, 0], vec![0.0, 0.0, 0.0, 0.0])
             .unwrap();
@@ -323,7 +323,7 @@ pub(super) mod tests {
     /// the pair is a grid, not two independent contributions.
     #[test]
     fn each_param_drives_its_own_axis() {
-        let (mut model, key, x, y) = rig();
+        let (mut model, key, x, y) = fixture();
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();
@@ -341,7 +341,7 @@ pub(super) mod tests {
     /// axis collapsed.
     #[test]
     fn a_one_param_scalar_binding_is_linear() {
-        let (mut model, _, x, _) = rig();
+        let (mut model, _, x, _) = fixture();
         let node = model
             .nodes_in_order()
             .into_iter()
@@ -378,7 +378,7 @@ mod memo_tests {
     /// deform's identity is sized to.
     #[test]
     fn the_dense_grid_is_rebuilt_when_what_it_came_from_moves() {
-        let (mut model, key, x, _) = rig();
+        let (mut model, key, x, _) = fixture();
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();
@@ -422,7 +422,7 @@ mod memo_tests {
     /// reach the other's.
     #[test]
     fn a_snapshot_keeps_the_grid_it_was_taken_with() {
-        let (mut model, key, x, _) = rig();
+        let (mut model, key, x, _) = fixture();
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();
@@ -445,7 +445,7 @@ mod memo_tests {
     /// every cell — so a reader never has to special-case one.
     #[test]
     fn an_unauthored_binding_derives_the_identity_grid() {
-        let (mut model, key, _, _) = rig();
+        let (mut model, key, _, _) = fixture();
         model.add_binding(&key).unwrap();
         match &**model.binding_dense(&key).unwrap() {
             DenseGrid::Deform(cells) => {

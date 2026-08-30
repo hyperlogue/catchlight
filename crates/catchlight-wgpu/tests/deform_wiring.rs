@@ -7,7 +7,7 @@ use catchlight_wgpu::{
     apply_uniform_scratch_deform, collect, create_headless_context, create_orthographic_camera,
     RenderContext, WgpuRenderer,
 };
-use common::{Rig, NO_ADAPTER};
+use common::{Scene, NO_ADAPTER};
 use std::path::{Path, PathBuf};
 
 const W: u32 = 320;
@@ -29,19 +29,20 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
     let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
     let renderer = WgpuRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm).await;
     let mut ctx = RenderContext::with_renderer(renderer, W, H).expect("render context");
-    let mut rig = Rig::new(&mut ctx.renderer, model);
+    let mut scene = Scene::new(&mut ctx.renderer, model);
     ctx.renderer
         .update_camera(create_orthographic_camera(5000.0, W as f32 / H as f32));
 
-    rig.puppet.compute_transforms();
+    scene.puppet.compute_transforms();
     if shift != Vec2::ZERO {
-        apply_uniform_scratch_deform(&mut rig.puppet, shift);
+        apply_uniform_scratch_deform(&mut scene.puppet, shift);
     }
-    rig.cache
-        .refresh(&mut ctx.renderer, &rig.model, &rig.puppet)
+    scene
+        .cache
+        .refresh(&mut ctx.renderer, &scene.model, &scene.puppet)
         .expect("refresh the render cache");
 
-    let render_list = collect(&rig.cache, &rig.puppet);
+    let render_list = collect(&scene.cache, &scene.puppet);
     ctx.render(
         &render_list,
         Some(wgpu::Color {
@@ -57,7 +58,7 @@ async fn render_with_test_deform(path: &Path, shift: Vec2) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "needs the reference rig at example_models/reference/"]
+#[ignore = "needs the reference model at example_models/reference/"]
 fn deform_source_changes_pixels_end_to_end() {
     let path = find_reference().expect("reference.clm missing or an unfetched LFS pointer");
 

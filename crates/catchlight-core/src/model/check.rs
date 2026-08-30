@@ -1,4 +1,4 @@
-//! Lints that surface rig problems an editor (or an agent) can self-correct on.
+//! Lints that surface model problems an editor (or an agent) can self-correct on.
 //! These are warnings, not errors, and most are cosmetic. Three are not:
 //!
 //! - A **colour binding on a mesh group** cannot be written and cannot be

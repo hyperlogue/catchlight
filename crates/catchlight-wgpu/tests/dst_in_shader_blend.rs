@@ -84,14 +84,14 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let mut renderer = WgpuRenderer::new(device, queue, format).await;
-    let mut rig = common::Rig::new(&mut renderer, model);
+    let mut scene = common::Scene::new(&mut renderer, model);
 
     // Orthographic camera matching the quad's [-1,1] world bounds, so
     // the part covers the entire framebuffer.
     let view_proj = glam::Mat4::orthographic_rh(-1.0, 1.0, 1.0, -1.0, -1000.0, 1000.0);
     renderer.update_camera(view_proj);
 
-    let render_list = rig.frame(&mut renderer, 0.0);
+    let render_list = scene.frame(&mut renderer, 0.0);
     let stencil =
         catchlight_wgpu::StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, W, H);
     let mut composites = catchlight_wgpu::CompositePool::new(W, H);

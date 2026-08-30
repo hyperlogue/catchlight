@@ -12,7 +12,7 @@
 //!   holding one handle animate one model, loaded and decoded once;
 //! - the **puppet** is a component (`CatchlightPuppet`), owned by its entity,
 //!   ticked in the main world against the asset, with the entity's
-//!   `GlobalTransform` as the rig's root;
+//!   `GlobalTransform` as the model's root;
 //! - the **render cache** is render-world state, one per (entity, view
 //!   format), prepared from the model and refreshed from the puppet.
 //!

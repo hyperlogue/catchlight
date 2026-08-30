@@ -60,7 +60,7 @@ enum Cmd {
     ExportManifest { path: String },
     /// Print a one-line summary of the session.
     Status,
-    /// List rig problems (untextured parts, bad meshes, unfilled slots, …).
+    /// List model problems (untextured parts, bad meshes, unfilled slots, …).
     Check,
     /// Node tree operations.
     Node {

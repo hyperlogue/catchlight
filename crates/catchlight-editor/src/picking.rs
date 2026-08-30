@@ -151,14 +151,14 @@ mod tests {
     /// A model builder for the picking tests: the texture is never decoded
     /// here (a part is culled by whether its albedo slot resolves at all), so
     /// its bytes are a placeholder rather than a real image.
-    struct Rig {
+    struct Fixture {
         model: catchlight_core::Model,
         hex: SeededHex,
         tex: TexId,
         root: NodeId,
     }
 
-    impl Rig {
+    impl Fixture {
         fn new() -> Self {
             let mut model = catchlight_core::Model::new();
             let mut hex = SeededHex::new(7);
@@ -233,45 +233,45 @@ mod tests {
 
     #[test]
     fn opacity_zero_composite_does_not_hit_children() {
-        let mut rig = Rig::new();
-        let comp = rig.composite(0.0);
-        rig.part(&comp, Vec2::ZERO, 0.0);
-        let puppet = rig.puppet();
+        let mut fixture = Fixture::new();
+        let comp = fixture.composite(0.0);
+        fixture.part(&comp, Vec2::ZERO, 0.0);
+        let puppet = fixture.puppet();
         assert!(
-            pick_all(&rig.model, &puppet, Vec2::ZERO).is_empty(),
+            pick_all(&fixture.model, &puppet, Vec2::ZERO).is_empty(),
             "culled composite children must not steal clicks"
         );
     }
 
     #[test]
     fn pick_uses_origin_shifted_vertices() {
-        let mut rig = Rig::new();
+        let mut fixture = Fixture::new();
         let origin = Vec2::new(10.0, 0.0);
-        let root = rig.root.clone();
-        rig.part(&root, origin, 0.0);
-        let puppet = rig.puppet();
+        let root = fixture.root.clone();
+        fixture.part(&root, origin, 0.0);
+        let puppet = fixture.puppet();
         assert_eq!(
-            pick_all(&rig.model, &puppet, Vec2::ZERO).len(),
+            pick_all(&fixture.model, &puppet, Vec2::ZERO).len(),
             1,
             "GPU draws v - origin; a click at local 0 must hit"
         );
         assert!(
-            pick_all(&rig.model, &puppet, origin).is_empty(),
+            pick_all(&fixture.model, &puppet, origin).is_empty(),
             "unshifted verts would hit here and miss the pixels"
         );
     }
 
     #[test]
     fn pick_prefers_higher_z_and_later_equal_z_nodes() {
-        let mut rig = Rig::new();
-        let root = rig.root.clone();
-        let behind = rig.part(&root, Vec2::ZERO, -1.0);
-        let first_front = rig.part(&root, Vec2::ZERO, 2.0);
-        let last_front = rig.part(&root, Vec2::ZERO, 2.0);
-        let puppet = rig.puppet();
+        let mut fixture = Fixture::new();
+        let root = fixture.root.clone();
+        let behind = fixture.part(&root, Vec2::ZERO, -1.0);
+        let first_front = fixture.part(&root, Vec2::ZERO, 2.0);
+        let last_front = fixture.part(&root, Vec2::ZERO, 2.0);
+        let puppet = fixture.puppet();
 
         assert_eq!(
-            pick_all(&rig.model, &puppet, Vec2::ZERO),
+            pick_all(&fixture.model, &puppet, Vec2::ZERO),
             vec![
                 slot(&puppet, &last_front),
                 slot(&puppet, &first_front),

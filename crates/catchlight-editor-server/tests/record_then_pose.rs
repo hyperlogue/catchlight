@@ -18,7 +18,7 @@ fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
 
 #[test]
 fn recorded_binding_moves_the_rebaked_puppet() {
-    // Any rig will do: the test authors its own node, param and binding, and
+    // Any model will do: the test authors its own node, param and binding, and
     // only needs a document to open.
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),

@@ -1,12 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! What a tick evaluates, pinned against a committed baseline.
 //!
-//! Each rig here is a synthetic model exercising one part of the pipeline the
+//! Each fixture here is a synthetic model exercising one part of the pipeline the
 //! committed `.clm` fixtures do not reach: mesh groups in every
 //! `dynamic` x `translate_children` combination, two-param bindings in all
 //! four interpolation modes, two params deforming one node, welds, chained
 //! physics drivers, a `translate_children` group over a `local_only` driver,
-//! and a playing animation. For a grid of poses (plus, where a rig has
+//! and a playing animation. For a grid of poses (plus, where a fixture has
 //! drivers, a settle and a run of simulated frames) the whole evaluated frame
 //! — every node's global transform, z order, enabled flag, colour and
 //! combined deform — is compared against
@@ -58,19 +58,19 @@ type Frame = Vec<Vec<f32>>;
 type Baseline = BTreeMap<String, Frame>;
 
 // ---------------------------------------------------------------------------
-// Driving one rig
+// Driving one fixture
 // ---------------------------------------------------------------------------
 
-struct Rig {
-    file: RigFile,
+struct Fixture {
+    file: FixtureFile,
     model: Model,
     puppet: Puppet,
     /// Baked index of each document node, in document order.
     nodes: Vec<NodeIdx>,
 }
 
-impl Rig {
-    fn load(file: RigFile) -> Rig {
+impl Fixture {
+    fn load(file: FixtureFile) -> Fixture {
         let model = Model::from_clm_file(&file.file).expect("model build");
         let puppet = Puppet::new(&model);
         let nodes = file
@@ -80,7 +80,7 @@ impl Rig {
             .iter()
             .map(|n| puppet.node_idx(&n.id).expect("baked node"))
             .collect();
-        Rig {
+        Fixture {
             file,
             model,
             puppet,
@@ -156,10 +156,10 @@ fn colour(kind: &NodeKind) -> Option<(f32, [f32; 3], [f32; 3])> {
     }
 }
 
-/// Poses to drive a rig through: everything at rest, everything at each
+/// Poses to drive a fixture through: everything at rest, everything at each
 /// extreme and at the middle, then each param swept on its own so a binding
 /// that only one param reaches is still exercised.
-fn pose_grid(file: &RigFile) -> Vec<Vec<(f32, f32)>> {
+fn pose_grid(file: &FixtureFile) -> Vec<Vec<(f32, f32)>> {
     let params = &file.slots;
     let at = |k: usize| -> Vec<(f32, f32)> {
         params
@@ -187,39 +187,39 @@ fn pose_grid(file: &RigFile) -> Vec<Vec<(f32, f32)>> {
     poses
 }
 
-/// Run one rig's whole schedule into `out`.
+/// Run one fixture's whole schedule into `out`.
 ///
-/// A rig with no drivers is ticked twice per pose and the second frame has to
+/// A fixture with no drivers is ticked twice per pose and the second frame has to
 /// equal the first — that is the memo that lets an unchanged pose skip the
-/// fold, and it is a property rather than a captured number. A rig with
+/// fold, and it is a property rather than a captured number. A fixture with
 /// drivers moves between the two ticks by design, so both frames are captured
 /// instead, and a settle plus a simulated run follows.
-fn capture(label: &str, file: RigFile, out: &mut Baseline) {
-    let mut rig = Rig::load(file);
-    let drivers = rig.has_drivers();
+fn capture(label: &str, file: FixtureFile, out: &mut Baseline) {
+    let mut fixture = Fixture::load(file);
+    let drivers = fixture.has_drivers();
 
-    for (k, pose) in pose_grid(&rig.file).into_iter().enumerate() {
-        rig.pose(&pose);
-        rig.tick();
-        let first = rig.frame();
+    for (k, pose) in pose_grid(&fixture.file).into_iter().enumerate() {
+        fixture.pose(&pose);
+        fixture.tick();
+        let first = fixture.frame();
         out.insert(format!("{label} pose {k}"), first.clone());
-        rig.tick();
+        fixture.tick();
         if drivers {
-            out.insert(format!("{label} pose {k} (second tick)"), rig.frame());
+            out.insert(format!("{label} pose {k} (second tick)"), fixture.frame());
         } else {
             compare(
                 &format!("{label} pose {k}: an unchanged pose re-evaluates the same"),
                 &first,
-                &rig.frame(),
+                &fixture.frame(),
             );
         }
     }
 
     if drivers {
-        let mut rig = Rig::load(rig.file);
-        rig.puppet.settle_physics(&rig.model);
-        rig.tick();
-        let settled = rig.frame();
+        let mut fixture = Fixture::load(fixture.file);
+        fixture.puppet.settle_physics(&fixture.model);
+        fixture.tick();
+        let settled = fixture.frame();
         out.insert(format!("{label} settled"), settled.clone());
 
         // Settling leaves the pendulums at the fixed point of the rest pose,
@@ -228,11 +228,11 @@ fn capture(label: &str, file: RigFile, out: &mut Baseline) {
         // overwrites whatever was posed. Displacing each bob is what makes
         // the frames below a swing decaying back to rest, which is the
         // transient nothing else in the suite pins.
-        rig.kick_drivers();
+        fixture.kick_drivers();
         for frame in 0..90 {
-            rig.tick();
+            fixture.tick();
             if frame % SAMPLE_EVERY == 0 {
-                out.insert(format!("{label} frame {frame}"), rig.frame());
+                out.insert(format!("{label} frame {frame}"), fixture.frame());
             }
         }
         assert_ne!(
@@ -270,7 +270,7 @@ fn current() -> Baseline {
     ] {
         capture(
             &format!("two_param {mode:?}"),
-            two_param_rig(mode),
+            two_param_fixture(mode),
             &mut out,
         );
     }
@@ -283,14 +283,18 @@ fn current() -> Baseline {
         for tc in [false, true] {
             capture(
                 &format!("mesh group dynamic={dynamic} tc={tc}"),
-                mesh_group_rig(dynamic, tc),
+                mesh_group_fixture(dynamic, tc),
                 &mut out,
             );
         }
     }
-    capture("welds", weld_rig(), &mut out);
-    capture("chained physics", chained_physics_rig(), &mut out);
-    capture("tc over local driver", tc_over_local_driver_rig(), &mut out);
+    capture("welds", weld_fixture(), &mut out);
+    capture("chained physics", chained_physics_fixture(), &mut out);
+    capture(
+        "tc over local driver",
+        tc_over_local_driver_fixture(),
+        &mut out,
+    );
     animation_frames(&mut out);
     out
 }
@@ -298,8 +302,8 @@ fn current() -> Baseline {
 /// A clip the puppet plays, sampled over 120 frames: the loop region, the
 /// lead-in and the keyframe interpolator, all reaching bindings.
 fn animation_frames(out: &mut Baseline) {
-    let mut rig = Rig::load(animation_rig());
-    rig.puppet.set_animations(vec![Animation {
+    let mut fixture = Fixture::load(animation_fixture());
+    fixture.puppet.set_animations(vec![Animation {
         name: "Blink".into(),
         timestep: 1.0 / 60.0,
         length: 31,
@@ -324,25 +328,33 @@ fn animation_frames(out: &mut Baseline) {
             interpolation: InterpolateMode::Linear,
         }],
     }]);
-    assert!(rig.puppet.play_animation("Blink"));
-    assert_eq!(rig.puppet.playing_animation(), Some("Blink"));
+    assert!(fixture.puppet.play_animation("Blink"));
+    assert_eq!(fixture.puppet.playing_animation(), Some("Blink"));
 
     let mut moved = false;
     for frame in 0..120 {
-        rig.tick();
+        fixture.tick();
         if frame % SAMPLE_EVERY == 0 {
-            out.insert(format!("animation frame {frame}"), rig.frame());
+            out.insert(format!("animation frame {frame}"), fixture.frame());
         }
-        if rig.puppet.transforms().get(rig.nodes[1]).w_axis.y.abs() > 1e-3 {
+        if fixture
+            .puppet
+            .transforms()
+            .get(fixture.nodes[1])
+            .w_axis
+            .y
+            .abs()
+            > 1e-3
+        {
             moved = true;
         }
     }
     assert!(moved, "the lane actually drove the binding");
 
-    rig.puppet.stop_animation();
-    assert!(!rig.puppet.has_playing_animation());
-    rig.tick();
-    out.insert("animation stopped".into(), rig.frame());
+    fixture.puppet.stop_animation();
+    assert!(!fixture.puppet.has_playing_animation());
+    fixture.tick();
+    out.insert("animation stopped".into(), fixture.frame());
 }
 
 fn baseline_path() -> PathBuf {
@@ -350,7 +362,7 @@ fn baseline_path() -> PathBuf {
 }
 
 #[test]
-fn every_rig_evaluates_the_frame_it_always_has() -> Result<(), Box<dyn std::error::Error>> {
+fn every_fixture_evaluates_the_frame_it_always_has() -> Result<(), Box<dyn std::error::Error>> {
     let current = current();
     let path = baseline_path();
 
@@ -391,10 +403,10 @@ fn every_rig_evaluates_the_frame_it_always_has() -> Result<(), Box<dyn std::erro
 }
 
 // ---------------------------------------------------------------------------
-// Authoring a rig
+// Authoring a fixture
 // ---------------------------------------------------------------------------
 //
-// The rigs author the `.clm` document directly and mint the Ids an import
+// The fixtures author the `.clm` document directly and mint the Ids an import
 // would: `root` / `node-<i>` by position, `param-<i>` per source param, or
 // `param-<i>.x` / `param-<i>.y` for one the pose schedule drives on two axes.
 // That second shape is why [`Slot`] exists — a model has only scalar params,
@@ -410,15 +422,15 @@ struct Slot {
     defaults: [f32; 2],
 }
 
-/// A rig: the document a [`Model`] is read from, and the slots that pose it.
-struct RigFile {
+/// A fixture: the document a [`Model`] is read from, and the slots that pose it.
+struct FixtureFile {
     file: ClmFile,
     slots: Vec<Slot>,
 }
 
-/// One rig param before it is split: `vec2` means two scalar params, `.x` and
+/// One fixture param before it is split: `vec2` means two scalar params, `.x` and
 /// `.y`, the way an import splits a 2-D inochi2d param.
-struct RigParam {
+struct FixtureParam {
     name: &'static str,
     vec2: bool,
     min: [f32; 2],
@@ -429,9 +441,15 @@ struct RigParam {
     bindings: Vec<ClmBinding>,
 }
 
-impl RigParam {
-    fn scalar(name: &'static str, min: f32, max: f32, default: f32, keys: Vec<f32>) -> RigParam {
-        RigParam {
+impl FixtureParam {
+    fn scalar(
+        name: &'static str,
+        min: f32,
+        max: f32,
+        default: f32,
+        keys: Vec<f32>,
+    ) -> FixtureParam {
+        FixtureParam {
             name,
             vec2: false,
             min: [min, 0.0],
@@ -450,8 +468,8 @@ impl RigParam {
         defaults: [f32; 2],
         keys_x: Vec<f32>,
         keys_y: Vec<f32>,
-    ) -> RigParam {
-        RigParam {
+    ) -> FixtureParam {
+        FixtureParam {
             name,
             vec2: true,
             min,
@@ -463,7 +481,7 @@ impl RigParam {
         }
     }
 
-    fn driving(mut self, bindings: Vec<ClmBinding>) -> RigParam {
+    fn driving(mut self, bindings: Vec<ClmBinding>) -> FixtureParam {
         self.bindings = bindings;
         self
     }
@@ -586,7 +604,11 @@ fn cells<T>(entries: Vec<(u32, u32, T)>) -> ClmCells<T> {
 
 /// Number the nodes by position, split every 2-D param into its `.x` / `.y`
 /// pair, and lift the bindings out from under their params.
-fn file(nodes: Vec<ClmNode>, rig_params: Vec<RigParam>, welds: Vec<ClmWeld>) -> RigFile {
+fn file(
+    nodes: Vec<ClmNode>,
+    fixture_params: Vec<FixtureParam>,
+    welds: Vec<ClmWeld>,
+) -> FixtureFile {
     let nodes: Vec<ClmNode> = nodes
         .into_iter()
         .enumerate()
@@ -599,7 +621,7 @@ fn file(nodes: Vec<ClmNode>, rig_params: Vec<RigParam>, welds: Vec<ClmWeld>) -> 
     let mut params = Vec::new();
     let mut bindings = Vec::new();
     let mut slots = Vec::new();
-    for (i, p) in rig_params.into_iter().enumerate() {
+    for (i, p) in fixture_params.into_iter().enumerate() {
         let ids = if p.vec2 { two(i) } else { one(i) };
         params.push(ClmParam {
             id: ids[0].clone(),
@@ -632,7 +654,7 @@ fn file(nodes: Vec<ClmNode>, rig_params: Vec<RigParam>, welds: Vec<ClmWeld>) -> 
         });
     }
 
-    RigFile {
+    FixtureFile {
         file: ClmFile {
             doc: ClmDocument {
                 nodes,
@@ -650,7 +672,7 @@ fn file(nodes: Vec<ClmNode>, rig_params: Vec<RigParam>, welds: Vec<ClmWeld>) -> 
 /// A part under a group, driven by one 2-D param whose deform binding is
 /// authored at scattered cells of a 3x3 grid, plus scalar bindings on every
 /// other target the runtime folds.
-fn two_param_rig(mode: InterpolateMode) -> RigFile {
+fn two_param_fixture(mode: InterpolateMode) -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         at(
@@ -684,7 +706,7 @@ fn two_param_rig(mode: InterpolateMode) -> RigFile {
     ];
     let d = |x: u32, y: u32, v: Vec<f32>| (x, y, v);
     let b = |node: usize, values: ClmBindingValues| binding(node, mode, two(0), values);
-    let params = vec![RigParam::pair(
+    let params = vec![FixtureParam::pair(
         "Head",
         [-1.0, -2.0],
         [1.0, 2.0],
@@ -728,13 +750,13 @@ fn two_param_rig(mode: InterpolateMode) -> RigFile {
 
 /// Two one-param bindings on one node, from different params — one deform
 /// slot per binding.
-fn two_params_deforming_one_node() -> RigFile {
+fn two_params_deforming_one_node() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         node(Some(0), "Body", ClmNodeKind::Part(part(quad(5.0, 5.0)))),
     ];
     let param = |i: usize, name: &'static str, values: Vec<f32>| {
-        RigParam::scalar(name, 0.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
+        FixtureParam::scalar(name, 0.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
             1,
             InterpolateMode::Linear,
             one(i),
@@ -750,7 +772,7 @@ fn two_params_deforming_one_node() -> RigFile {
 
 /// A mesh group over two parts, keyed by a param: the descent, the attachment
 /// bake and the `translate_children` filter all have to land the same.
-fn mesh_group_rig(dynamic: bool, translate_children: bool) -> RigFile {
+fn mesh_group_fixture(dynamic: bool, translate_children: bool) -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         node(
@@ -780,7 +802,7 @@ fn mesh_group_rig(dynamic: bool, translate_children: bool) -> RigFile {
         binding(node, InterpolateMode::Linear, one(0), values)
     };
     let params = vec![
-        RigParam::scalar("Warp", -1.0, 1.0, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
+        FixtureParam::scalar("Bend", -1.0, 1.0, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
             b(
                 1,
                 ClmBindingValues::Deform(cells(vec![
@@ -803,7 +825,7 @@ fn mesh_group_rig(dynamic: bool, translate_children: bool) -> RigFile {
 
 /// Two parts welded seam to seam, each with its own deform binding, so the
 /// weld pass has something to pull together.
-fn weld_rig() -> RigFile {
+fn weld_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         at(
@@ -823,7 +845,7 @@ fn weld_rig() -> RigFile {
         binding(node, InterpolateMode::Linear, one(0), values)
     };
     let params = vec![
-        RigParam::scalar("Pull", 0.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![
+        FixtureParam::scalar("Pull", 0.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![
             b(
                 1,
                 ClmBindingValues::Deform(cells(vec![(
@@ -887,7 +909,7 @@ fn physics(targets: Vec<ParamId>, local_only: bool) -> ClmSimplePhysics {
 /// Two drivers, the first's output translating the second's anchor: the
 /// chained-physics case the contribution table exists for. The first writes a
 /// pair of params, the second a single one.
-fn chained_physics_rig() -> RigFile {
+fn chained_physics_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         at(
@@ -914,7 +936,7 @@ fn chained_physics_rig() -> RigFile {
         binding(node, InterpolateMode::Linear, two(0), values)
     };
     let params = vec![
-        RigParam::pair(
+        FixtureParam::pair(
             "Swing",
             [-1.0, 0.0],
             [1.0, 2.0],
@@ -939,7 +961,7 @@ fn chained_physics_rig() -> RigFile {
             // kind is exercised too.
             swing(3, ClmBindingValues::OutputScaleX(cells(vec![(0, 0, 0.5)]))),
         ]),
-        RigParam::scalar("Tip", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
+        FixtureParam::scalar("Tip", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
             4,
             InterpolateMode::Linear,
             one(1),
@@ -951,7 +973,7 @@ fn chained_physics_rig() -> RigFile {
 
 /// A mesh group whose `translate_children` filter targets a `local_only`
 /// driver — the case that forces the anchor pre-pass every frame.
-fn tc_over_local_driver_rig() -> RigFile {
+fn tc_over_local_driver_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         node(
@@ -977,7 +999,7 @@ fn tc_over_local_driver_rig() -> RigFile {
         ),
     ];
     let params = vec![
-        RigParam::scalar("Warp", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
+        FixtureParam::scalar("Bend", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
             1,
             InterpolateMode::Linear,
             one(0),
@@ -987,7 +1009,7 @@ fn tc_over_local_driver_rig() -> RigFile {
                 vec![6.0, -2.0, 6.0, -2.0, 6.0, -2.0, 6.0, -2.0],
             )])),
         )]),
-        RigParam::pair(
+        FixtureParam::pair(
             "Sway",
             [-1.0, 0.0],
             [1.0, 2.0],
@@ -1013,7 +1035,7 @@ fn tc_over_local_driver_rig() -> RigFile {
 /// and the pose the caller set must survive the rebake.
 #[test]
 fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
-    let f = two_param_rig(InterpolateMode::Linear);
+    let f = two_param_fixture(InterpolateMode::Linear);
     let mut model = Model::from_clm_file(&f.file).unwrap();
     let mut puppet = Puppet::new(&model);
     let (px, py) = (
@@ -1085,7 +1107,7 @@ fn a_model_edit_keeps_the_drivers_running() {
                 ClmNodeKind::Part(part(quad(6.0, 20.0))),
             ),
         ];
-        let params = vec![RigParam::pair(
+        let params = vec![FixtureParam::pair(
             "Swing",
             [-1.0, 0.0],
             [1.0, 2.0],
@@ -1129,14 +1151,14 @@ fn a_model_edit_keeps_the_drivers_running() {
 
 /// A part whose transform and deform a single param drives, for a clip's lane
 /// to reach.
-fn animation_rig() -> RigFile {
+fn animation_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         node(Some(0), "Body", ClmNodeKind::Part(part(quad(5.0, 5.0)))),
     ];
     let b = |values: ClmBindingValues| binding(1, InterpolateMode::Linear, one(0), values);
     let params = vec![
-        RigParam::scalar("Blink", 0.0, 1.0, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
+        FixtureParam::scalar("Blink", 0.0, 1.0, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
             b(ClmBindingValues::TransformTY(cells(vec![
                 (0, 0, -3.0),
                 (2, 0, 9.0),

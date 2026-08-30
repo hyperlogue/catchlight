@@ -31,9 +31,9 @@ struct HarnessInner {
     pipelines: Arc<Pipelines>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Render context per puppet *instance* (each carries its own renderer so
+    /// Render context per puppet (each carries its own renderer so
     /// two render caches never overwrite each other's mesh and texture slots,
-    /// and so two instances of one model in a single frame don't overwrite
+    /// and so two puppets of one model in a single frame do not overwrite
     /// each other's instance buffer). Keyed by model stem for the
     /// single-puppet path, and by stem + frame position for multi-puppet
     /// frames. Populated lazily on first use.

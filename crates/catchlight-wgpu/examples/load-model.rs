@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! winit viewer for a `.clm` rig — the interactive way to look at one.
+//! winit viewer for a `.clm` model — the interactive way to look at one.
 //!
 //! `.clm` only; import an `.inx` with `cargo xtask import` first.
 //!
@@ -18,7 +18,7 @@ use std::sync::Arc;
 /// Read a `.clm` off disk. The format dispatch lives in the core; this is
 /// only the filesystem half, which the core deliberately does not have.
 ///
-/// `.clm` is the only model file catchlight loads. Convert an inochi2d rig
+/// `.clm` is the only model file catchlight loads. Convert an inochi2d model
 /// once with `cargo xtask import <model.inx>` and open the `.clm` it writes.
 fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
@@ -428,7 +428,7 @@ impl ApplicationHandler for App {
                         // Animate the first deform param so the param -> DeformStack
                         // -> GPU deform_buffer path shows on screen. A shallow
                         // 0..0.5 sine looks more like breathing than 0..1.0,
-                        // which visibly over-deforms the reference rig's shoulders/body.
+                        // which visibly over-deforms the reference model's shoulders/body.
                         let t = self.start.elapsed().as_secs_f32();
                         let v = 0.25 + 0.25 * (t * std::f32::consts::TAU * 0.3).sin();
                         self.puppet.set_param_value(param, v);
@@ -567,7 +567,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Synthesize a blink animation targeting every param whose name
-    // contains "Blink" (the reference rig: "Left Eye - Blink" and
+    // contains "Blink" (the reference model: "Left Eye - Blink" and
     // "Right Eye - Blink"). value=0 -> open, value=1 -> closed.
     // Sequence: 3s open -> quick close -> brief hold -> quick reopen.
     if puppet.animations().is_empty() {

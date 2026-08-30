@@ -958,7 +958,7 @@ mod tests {
         m.add_node(
             &composite,
             ModelNode::new(
-                "Warp",
+                "Bend",
                 ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad(6.0))),
             ),
             &mut hex,
@@ -1311,8 +1311,8 @@ mod tests {
                 .position(|n| n.name == name)
                 .unwrap_or_else(|| panic!("no node named {name}"))
         };
-        let (face, warp) = (index("Face"), index("Warp"));
-        file.doc.nodes.swap(face, warp);
+        let (face, bend) = (index("Face"), index("Bend"));
+        file.doc.nodes.swap(face, bend);
 
         assert!(matches!(
             load_err(&file),
@@ -1479,14 +1479,14 @@ mod tests {
             ),
         ] {
             let mut file = sample().to_clm_file().unwrap();
-            let warp = node_named(&file, "Warp").id.clone();
-            file.doc.bindings[0].node = warp.clone();
+            let bend = node_named(&file, "Bend").id.clone();
+            file.doc.bindings[0].node = bend.clone();
             file.doc.bindings[0].values = values;
 
             assert_eq!(
                 load_err(&file),
                 ClmLoadError::ColorOnMeshGroup {
-                    node: warp.to_string(),
+                    node: bend.to_string(),
                     target,
                 }
             );
@@ -1498,8 +1498,8 @@ mod tests {
     #[test]
     fn a_deform_binding_on_a_mesh_group_still_loads() {
         let mut file = sample().to_clm_file().unwrap();
-        let warp = node_named(&file, "Warp").id.clone();
-        file.doc.bindings[0].node = warp;
+        let bend = node_named(&file, "Bend").id.clone();
+        file.doc.bindings[0].node = bend;
         file.doc.bindings[0].values = ClmBindingValues::Deform(ClmCells::default());
 
         assert!(Model::from_clm_file(&file).is_ok());

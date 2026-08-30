@@ -35,7 +35,7 @@ pub(crate) fn update_puppets(
             puppet.bake(model, id);
         }
         // The entity's world placement is the puppet's root, so a moved,
-        // rotated or scaled entity moves the whole rig. Transform propagation
+        // rotated or scaled entity moves the whole model. Transform propagation
         // runs earlier in PostUpdate, so this reads *this* frame's placement.
         let root = global_transform.to_matrix();
         if let Some(puppet) = puppet.puppet_mut() {

@@ -2193,7 +2193,7 @@ mod tests {
     use crate::id::SeededHex;
 
     /// One model carrying every kind of thing a mutating method can reach.
-    pub(super) struct Rig {
+    pub(super) struct Fixture {
         pub model: Model,
         pub root: NodeId,
         pub part: NodeId,
@@ -2205,7 +2205,7 @@ mod tests {
         pub hex: SeededHex,
     }
 
-    impl Rig {
+    impl Fixture {
         fn node(&mut self, name: &str, kind: ModelNodeKind) -> NodeId {
             let root = self.root.clone();
             self.model
@@ -2214,7 +2214,7 @@ mod tests {
         }
     }
 
-    fn rig() -> Rig {
+    fn fixture() -> Fixture {
         let mut hex = SeededHex::new(7);
         let mut model = Model::new();
         let root = model.root().unwrap().clone();
@@ -2240,7 +2240,7 @@ mod tests {
                 &mut hex,
             )
             .unwrap();
-        let mut rig = Rig {
+        let mut fixture = Fixture {
             model,
             root,
             part: NodeId::new("placeholder").unwrap(),
@@ -2251,21 +2251,23 @@ mod tests {
             tex,
             hex,
         };
-        rig.part = rig.node("part", part_kind());
-        rig.other = rig.node("other", part_kind());
-        rig.composite = rig.node("composite", ModelNodeKind::Composite(ModelComposite::new()));
-        rig.physics = rig.node(
+        fixture.part = fixture.node("part", part_kind());
+        fixture.other = fixture.node("other", part_kind());
+        fixture.composite =
+            fixture.node("composite", ModelNodeKind::Composite(ModelComposite::new()));
+        fixture.physics = fixture.node(
             "physics",
             ModelNodeKind::SimplePhysics(ModelPhysics::new(PendulumKind::RigidPendulum)),
         );
-        let (composite, part) = (rig.composite.clone(), rig.part.clone());
-        rig.model
+        let (composite, part) = (fixture.composite.clone(), fixture.part.clone());
+        fixture
+            .model
             .mask_add(&composite, &part, MaskMode::Mask)
             .unwrap();
-        let other = rig.other.clone();
-        rig.model.seam_add(&part, seam("collar")).unwrap();
-        rig.model.seam_add(&other, seam("hem")).unwrap();
-        rig
+        let other = fixture.other.clone();
+        fixture.model.seam_add(&part, seam("collar")).unwrap();
+        fixture.model.seam_add(&other, seam("hem")).unwrap();
+        fixture
     }
 
     fn seam(id: &str) -> SeamId {
@@ -2276,7 +2278,7 @@ mod tests {
         SlotId::new(id).unwrap()
     }
 
-    fn scalar_key(r: &Rig) -> BindingKey {
+    fn scalar_key(r: &Fixture) -> BindingKey {
         BindingKey::new(
             r.param.clone(),
             r.part.clone(),
@@ -2284,7 +2286,7 @@ mod tests {
         )
     }
 
-    fn deform_key(r: &Rig) -> BindingKey {
+    fn deform_key(r: &Fixture) -> BindingKey {
         BindingKey::new(r.param.clone(), r.part.clone(), BindingTarget::Deform)
     }
 
@@ -2309,7 +2311,7 @@ mod tests {
     /// cross-reference a caller can hand in wholesale.
     #[test]
     fn an_animation_lane_must_name_a_live_param() {
-        let mut r = rig();
+        let mut r = fixture();
         let stranger = ParamId::new("nobody").unwrap();
 
         assert!(matches!(
@@ -2321,7 +2323,7 @@ mod tests {
 
     #[test]
     fn deleting_a_param_drops_its_animation_lanes() {
-        let mut r = rig();
+        let mut r = fixture();
         let param = r.param.clone();
         r.model
             .set_animations(vec![one_lane_animation(&param)])
@@ -2391,7 +2393,7 @@ mod tests {
     #[test]
     fn generation_bumps_on_every_mutating_method() {
         #[allow(clippy::type_complexity)]
-        let edits: Vec<(&str, Box<dyn Fn(&mut Rig)>)> = vec![
+        let edits: Vec<(&str, Box<dyn Fn(&mut Fixture)>)> = vec![
             (
                 "update_node",
                 Box::new(|r| {
@@ -2744,7 +2746,7 @@ mod tests {
         ];
 
         for (name, edit) in edits {
-            let mut r = rig();
+            let mut r = fixture();
             let before = r.model.generation();
             edit(&mut r);
             assert!(
@@ -2756,8 +2758,8 @@ mod tests {
 
     /// Two welded parts: `collar` on `part` and `hem` on `other`, each holding
     /// slots `l` and `r`, filled and welded.
-    fn welded_rig() -> Rig {
-        let mut r = rig();
+    fn welded_fixture() -> Fixture {
+        let mut r = fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
         for (node, s, verts) in [
             (&part, seam("collar"), [0u32, 1]),
@@ -2784,7 +2786,7 @@ mod tests {
     /// resolve.
     #[test]
     fn re_meshing_a_part_empties_its_slots_and_reports_them() {
-        let mut r = welded_rig();
+        let mut r = welded_fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
         assert_eq!(
             r.model.welds()[0].resolve(&r.model),
@@ -2851,7 +2853,7 @@ mod tests {
     /// single edit could leave a weld `.clm` cannot express.
     #[test]
     fn a_welded_seam_shares_its_slot_set_along_the_chain() {
-        let mut r = welded_rig();
+        let mut r = welded_fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
         let third = r.node("third", part_kind());
         r.model.seam_add(&third, seam("cuff")).unwrap();
@@ -2906,7 +2908,7 @@ mod tests {
 
     #[test]
     fn seam_edits_are_checked_before_they_land() {
-        let mut r = rig();
+        let mut r = fixture();
         let (part, composite) = (r.part.clone(), r.composite.clone());
         let ghost = NodeId::new("ghost").unwrap();
 
@@ -2941,7 +2943,7 @@ mod tests {
                 r.model.slot_fill(&part, &seam("collar"), &slot("l"), 4),
                 Err(ModelError::IndexOutOfRange)
             ),
-            "the rig's part draws a quad, so vertex 4 is off the end",
+            "the fixture's part draws a quad, so vertex 4 is off the end",
         );
 
         r.model
@@ -2972,7 +2974,7 @@ mod tests {
 
     #[test]
     fn a_weld_needs_two_seams_holding_the_same_slots() {
-        let mut r = welded_rig();
+        let mut r = welded_fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
         let weld = |weights: Vec<(SlotId, f32)>| {
             vec![ModelWeld::new(
@@ -3036,7 +3038,7 @@ mod tests {
     /// move the generation either.
     #[test]
     fn a_rejected_edit_leaves_the_generation_alone() {
-        let mut r = rig();
+        let mut r = fixture();
         let before = r.model.generation();
         let root = r.root.clone();
         assert!(r.model.delete_node(&root).is_err());
@@ -3054,7 +3056,7 @@ mod tests {
     /// whole-model rewrite or it leaves a dangling reference behind.
     #[test]
     fn renaming_rewrites_every_reference_to_the_id() {
-        let mut r = rig();
+        let mut r = fixture();
         let (part, other, composite, physics) = (
             r.part.clone(),
             r.other.clone(),
@@ -3143,7 +3145,7 @@ mod tests {
 
     #[test]
     fn renaming_onto_a_taken_id_is_refused() {
-        let mut r = rig();
+        let mut r = fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
         assert!(matches!(
             r.model.rename_node_id(&part, other),
@@ -3158,7 +3160,7 @@ mod tests {
     /// reading aid, not a path, so moving the node must not touch it.
     #[test]
     fn reparenting_leaves_the_generated_id_alone() {
-        let mut r = rig();
+        let mut r = fixture();
         let part = r.part.clone();
         assert!(
             part.as_str().starts_with("root/part-"),
@@ -3272,7 +3274,7 @@ mod tests {
 
     #[test]
     fn model_snapshots_share_large_payloads_until_mutated() {
-        let mut r = rig();
+        let mut r = fixture();
         let node = r.part.clone();
         let key = deform_key(&r);
         let model = &mut r.model;
@@ -3367,7 +3369,7 @@ mod tests {
 
     #[test]
     fn mask_ops_validate_and_reorder() {
-        let mut r = rig();
+        let mut r = fixture();
         let (a, b, target) = (r.part.clone(), r.other.clone(), r.composite.clone());
         let c = r.node("c", part_kind());
         let root = r.root.clone();
@@ -3394,7 +3396,7 @@ mod tests {
 
     #[test]
     fn cross_references_are_checked_before_they_land() {
-        let mut r = rig();
+        let mut r = fixture();
         // A texture, param and node this model no longer has.
         let orphan_tex = r.model.add_texture(texture(), &mut r.hex).unwrap();
         r.model.delete_texture(&orphan_tex).unwrap();
