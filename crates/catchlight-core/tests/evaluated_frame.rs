@@ -25,7 +25,7 @@
 //! Regenerate after an intentional behaviour change:
 //!   UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-core --test evaluated_frame
 
-use catchlight_core::animation::{PuppetAnimation, PuppetLane};
+use catchlight_core::animation::{Animation, Lane};
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
@@ -310,13 +310,13 @@ fn current() -> Baseline {
 /// lead-in and the keyframe interpolator, all reaching bindings.
 fn animation_frames(out: &mut Baseline) {
     let mut rig = Rig::load(animation_rig());
-    rig.puppet.set_animations(vec![PuppetAnimation {
+    rig.puppet.set_animations(vec![Animation {
         name: "Blink".into(),
         timestep: 1.0 / 60.0,
         length: 31,
         lead_in: 6,
         lead_out: 28,
-        lanes: vec![PuppetLane {
+        lanes: vec![Lane {
             param: ParamId::new("param-0").unwrap(),
             keyframes: vec![
                 Keyframe {
