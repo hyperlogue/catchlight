@@ -80,7 +80,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
 
     // An inochi2d clip has no `.clm` counterpart yet, so it is dropped. Say
     // so rather than losing it in silence: `ClmAnimation` exists on the wire,
-    // and carrying these across is a decision waiting on a rig to test it
+    // and carrying these across is a decision waiting on a model to test it
     // against.
     if obj.get("animations").is_some_and(|a| match a {
         serde_json::Value::Object(map) => !map.is_empty(),
