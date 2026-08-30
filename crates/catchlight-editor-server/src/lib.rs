@@ -51,9 +51,12 @@ use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::Vec2;
 use catchlight_core::{
     BindingKey, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup, ModelNode,
-    ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, ModelWeld, Pose, Puppet,
+    ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, ModelWeld, Puppet,
     ScalarTarget, DEFAULT_SLOT_WEIGHT,
 };
+// Only the headless preview builds one; the browser GUI poses its own puppet.
+#[cfg(not(target_arch = "wasm32"))]
+use catchlight_core::Pose;
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_editor_core::{Manifest, ModelManifestExt as _, TextureData};
 use catchlight_editor_core::{ManifestError, ModelMeshExt as _};

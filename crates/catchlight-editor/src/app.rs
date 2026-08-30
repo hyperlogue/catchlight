@@ -1577,7 +1577,7 @@ impl App {
             return;
         }
         let editor = self.editor.clone();
-        if let Ok(Ok(bytes)) = editor.with_model(session, |m, _| m.to_clm_bytes()) {
+        if let Ok(Ok(bytes)) = editor.with_model(session, |m| m.to_clm_bytes()) {
             crate::io::autosave_write(self.io_queue.clone(), bytes);
             self.autosave_rev = rev;
         }
