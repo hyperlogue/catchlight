@@ -12,13 +12,14 @@
 //! all land in a node's deform stack, so a difference in any of them shows up
 //! here as a per-vertex difference. Nothing else observes them.
 
+use catchlight_core::animation::{Animation, AnimationLane, Keyframe, PuppetAnimation, PuppetLane};
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clp::{
     self, ClpBinding, ClpBindingValues, ClpCell, ClpCells, ClpComposite, ClpDocument, ClpFile,
     ClpIndices, ClpMask, ClpMesh, ClpMeshGroup, ClpNode, ClpNodeKind, ClpParam, ClpPart,
     ClpPhysics, ClpSimplePhysics, ClpTransform, ClpWeld, ClpWeldPair, FORMAT_VERSION,
 };
-use catchlight_core::params::InterpolateMode;
+use catchlight_core::params::{InterpolateMode, ParamAxis};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
 use catchlight_core::{
@@ -885,4 +886,101 @@ fn a_model_edit_keeps_the_drivers_running() {
         (a - b).abs() < 0.05,
         "the driver kept swinging across the rebake: {a} -> {b}"
     );
+}
+
+/// A playing animation has to pose the same params in the same order for both
+/// runtimes. A model carries no animations, so both are handed the same clip
+/// built by hand — the legacy one keyed by param index, the new one by Id.
+#[test]
+fn a_playing_animation_drives_the_same_frames() {
+    let nodes = vec![
+        node(None, "Root", ClpNodeKind::Group),
+        node(Some(0), "Body", ClpNodeKind::Part(part(quad(5.0, 5.0)))),
+    ];
+    let params = vec![ClpParam {
+        name: "Blink".into(),
+        is_vec2: false,
+        min: [0.0, 0.0],
+        max: [1.0, 1.0],
+        defaults: [0.0, 0.0],
+        axis_points_x: vec![0.0, 0.5, 1.0],
+        axis_points_y: vec![0.0],
+        bindings: vec![
+            ClpBinding {
+                node: 1,
+                interpolate_mode: InterpolateMode::Linear,
+                values: ClpBindingValues::TransformTY(cells(vec![(0, 0, -3.0), (2, 0, 9.0)])),
+            },
+            ClpBinding {
+                node: 1,
+                interpolate_mode: InterpolateMode::Linear,
+                values: ClpBindingValues::Deform(cells(vec![(
+                    2,
+                    0,
+                    vec![1.0, 2.0, -1.0, 0.0, 0.0, 3.0, 0.5, -0.5],
+                )])),
+            },
+        ],
+    }];
+    let f = file(nodes, params, Vec::new());
+
+    let keyframes = vec![
+        Keyframe {
+            frame: 0,
+            value: 0.0,
+        },
+        Keyframe {
+            frame: 12,
+            value: 1.0,
+        },
+        Keyframe {
+            frame: 30,
+            value: 0.25,
+        },
+    ];
+    let mut pair = Pair::load(&f);
+    pair.legacy.set_animations(vec![Animation {
+        name: "Blink".into(),
+        timestep: 1.0 / 60.0,
+        length: 31,
+        lead_in: 6,
+        lead_out: 28,
+        lanes: vec![AnimationLane {
+            param_id: 0,
+            axis: ParamAxis::X,
+            keyframes: keyframes.clone(),
+            interpolation: InterpolateMode::Linear,
+        }],
+    }]);
+    pair.puppet.set_animations(vec![PuppetAnimation {
+        name: "Blink".into(),
+        timestep: 1.0 / 60.0,
+        length: 31,
+        lead_in: 6,
+        lead_out: 28,
+        lanes: vec![PuppetLane {
+            param: ParamId::new("param-0").unwrap(),
+            keyframes,
+            interpolation: InterpolateMode::Linear,
+        }],
+    }]);
+    assert!(pair.legacy.play_animation("Blink"));
+    assert!(pair.puppet.play_animation("Blink"));
+    assert!(pair.legacy.has_playing_animation() && pair.puppet.has_playing_animation());
+
+    let mut moved = false;
+    for frame in 0..120 {
+        pair.tick(DT);
+        pair.assert_agrees(&format!("animation frame {frame}"));
+        if pair.transforms.get(pair.nodes[1].0).w_axis.y.abs() > 1e-3 {
+            moved = true;
+        }
+    }
+    assert!(moved, "the lane actually drove the binding");
+
+    pair.legacy.stop_animation();
+    pair.puppet.stop_animation();
+    assert!(!pair.legacy.has_playing_animation() && !pair.puppet.has_playing_animation());
+    pair.tick(DT);
+    pair.assert_agrees("animation stopped");
 }

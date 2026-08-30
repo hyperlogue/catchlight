@@ -40,12 +40,15 @@
 //!   model renders settled instead of swinging into place, and it leaves the
 //!   puppet *unposed* — `tick` is what folds a renderable pose.
 //!
-//! Two things a puppet does not own. **Textures**: nothing here decodes an
-//! image, so a part carries its albedo as an index into
+//! Three things a puppet does not take from the model. **Textures**: nothing
+//! here decodes an image, so a part carries its albedo as an index into
 //! [`Model::texture_ids`] and the render cache resolves it. **Masks**: a baked
 //! [`crate::components::Mask`] carries the source node's `NodeIdx` in its
 //! `source_uuid`, because the field is the legacy uuid namespace and a model
 //! has none; [`Puppet::node_for_uuid`] is the identity for that reason.
+//! **Animations**: a model stores none yet, so a caller hands the puppet the
+//! clips it can play ([`Puppet::set_animations`]) and the puppet owns only the
+//! play state. `.clm` v1 is where a model gains them.
 
 mod arena;
 mod bake;
@@ -59,6 +62,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::{Mat4, Vec2, Vec3};
 
+use crate::animation::{AnimationPlayState, PuppetAnimation};
 use crate::components::{checked_affine_inverse, Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::id::{NodeId, ParamId};
@@ -174,6 +178,9 @@ pub struct Puppet {
     /// `param_generation == G` would produce.
     last_anchor_pose_generation: Option<u64>,
 
+    animations: Vec<PuppetAnimation>,
+    play_state: Option<AnimationPlayState>,
+
     /// Reused by the fold: where each param slot sits on its key positions.
     located: Vec<Located>,
 }
@@ -203,6 +210,8 @@ impl Puppet {
             physics_targets: Vec::new(),
             physics_update_scratch: Vec::new(),
             last_anchor_pose_generation: None,
+            animations: Vec::new(),
+            play_state: None,
             located: Vec::new(),
         };
         puppet.install(bake::bake(model));
@@ -647,6 +656,103 @@ impl Puppet {
         }
     }
 
+    // ---- animations -------------------------------------------------------
+
+    pub fn animations(&self) -> &[PuppetAnimation] {
+        &self.animations
+    }
+
+    /// Replace the animations this puppet can play. A model carries none of
+    /// its own yet — `.clm` v1 is where they land — so a caller supplies them.
+    pub fn set_animations(&mut self, animations: Vec<PuppetAnimation>) {
+        self.animations = animations;
+        // Any play state indexes into the old list.
+        self.play_state = None;
+    }
+
+    /// Start playing the animation with this name, looping. False when no
+    /// animation has it.
+    pub fn play_animation(&mut self, name: &str) -> bool {
+        if let Some(index) = self.animations.iter().position(|a| a.name == name) {
+            self.play_state = Some(AnimationPlayState {
+                index,
+                time: 0.0,
+                looping: true,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn stop_animation(&mut self) {
+        self.play_state = None;
+    }
+
+    pub fn has_playing_animation(&self) -> bool {
+        self.play_state.is_some()
+    }
+
+    /// Advance playback by `dt` seconds and pose every lane's param at the
+    /// value it holds there. Returns whether any param moved.
+    pub fn tick_animations(&mut self, dt: f32) -> bool {
+        let _span = tracing::trace_span!("tick_animations").entered();
+        if !dt.is_finite() {
+            return false;
+        }
+        let Some(mut state) = self.play_state else {
+            return false;
+        };
+        let Some(anim) = self.animations.get(state.index) else {
+            self.play_state = None;
+            return false;
+        };
+        state.time += dt;
+        // A looping animation snaps back to the loop region's start (the
+        // lead-in plays once), and playback always clamps to the last frame.
+        if anim.length > 0 && anim.timestep > 0.0 {
+            let (loop_begin, loop_end) = anim.loop_region();
+            let frame = (state.time / anim.timestep).round() as i64;
+            if state.looping && frame >= loop_end as i64 {
+                state.time = loop_begin as f32 * anim.timestep;
+            }
+            let frame = (state.time / anim.timestep).round() as i64;
+            if frame + 1 >= anim.length as i64 {
+                state.time = (anim.length - 1) as f32 * anim.timestep;
+            }
+        }
+        let frame = if anim.timestep > 0.0 {
+            state.time / anim.timestep
+        } else {
+            0.0
+        };
+        // Move the list out so the writes below can take `&mut self`; nothing
+        // here can early-return before it is put back.
+        let animations = std::mem::take(&mut self.animations);
+        let mut changed = false;
+        if let Some(anim) = animations.get(state.index) {
+            for lane in &anim.lanes {
+                let value = lane.value_at(frame);
+                if self.param_value_posed(&lane.param) != Some(value) {
+                    self.set_param_value(&lane.param, value);
+                    changed = true;
+                }
+            }
+        }
+        self.animations = animations;
+        self.play_state = Some(state);
+        changed
+    }
+
+    /// The value posed for a param, ignoring driver claims — what a lane
+    /// compares against before writing.
+    fn param_value_posed(&self, param: &ParamId) -> Option<f32> {
+        match self.slot_of_param.get(param) {
+            Some(&slot) => self.param_values.get(slot as usize).copied().flatten(),
+            None => self.param_values_overflow.get(param).copied(),
+        }
+    }
+
     // ---- drivers ----------------------------------------------------------
 
     pub fn has_simple_physics(&self) -> bool {
@@ -863,6 +969,7 @@ impl Puppet {
         let _span = tracing::trace_span!("tick").entered();
         self.sync(model);
         let mut out = std::mem::take(&mut self.transforms);
+        self.tick_animations(dt);
 
         let has_physics = self.physics_enabled && self.has_simple_physics();
         let mut pre_pass_ran = false;

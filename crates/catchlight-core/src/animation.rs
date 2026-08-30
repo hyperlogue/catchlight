@@ -21,7 +21,32 @@ impl AnimationLane {
     /// Interpolated value at fractional frame `t`. Out-of-range `t`
     /// clamps to the first/last keyframe (no extrapolation).
     pub fn value_at(&self, t: f32) -> f32 {
-        match self.keyframes.as_slice() {
+        value_at(&self.keyframes, self.interpolation, t)
+    }
+}
+
+/// One lane of a [`PuppetAnimation`]: the param it drives and the values it
+/// holds over time. A param is a scalar, so a lane drives a whole param rather
+/// than one axis of a two-dimensional one — the difference from
+/// [`AnimationLane`], which is keyed by the legacy uuid namespace.
+#[derive(Debug, Clone)]
+pub struct PuppetLane {
+    pub param: crate::id::ParamId,
+    pub keyframes: Vec<Keyframe>,
+    pub interpolation: InterpolateMode,
+}
+
+impl PuppetLane {
+    /// Interpolated value at fractional frame `t`, clamped at both ends.
+    pub fn value_at(&self, t: f32) -> f32 {
+        value_at(&self.keyframes, self.interpolation, t)
+    }
+}
+
+/// The one keyframe interpolator both lane types use.
+fn value_at(keyframes: &[Keyframe], interpolation: InterpolateMode, t: f32) -> f32 {
+    {
+        match keyframes {
             [] => 0.0,
             [k] => k.value,
             kfs => {
@@ -42,7 +67,7 @@ impl AnimationLane {
                 }
                 let span = (b.frame - a.frame) as f32;
                 let frac = ((t - a.frame as f32) / span).clamp(0.0, 1.0);
-                match self.interpolation {
+                match interpolation {
                     InterpolateMode::Nearest => {
                         if frac < 0.5 {
                             a.value
@@ -89,23 +114,60 @@ impl Animation {
     /// A lead-in/out affects the loop region only when it lies strictly
     /// inside the clip.
     pub(crate) fn loop_region(&self) -> (i32, i32) {
-        // saturating_add: lead_in/lead_out come verbatim from the model file,
-        // so `+ 1` on i32::MAX would overflow (panic in debug, wrap to a
-        // negative that passes the `< length` test in release).
-        let has_lead_in = self.lead_in > 0 && self.lead_in.saturating_add(1) < self.length;
-        let has_lead_out = self.lead_out > 0 && self.lead_out.saturating_add(1) < self.length;
-        let begin = if has_lead_in { self.lead_in } else { 0 };
-        let end = if has_lead_out {
-            self.lead_out
-        } else {
-            self.length
-        };
-        // A file with lead_out < lead_in would give begin > end, which wedges
-        // playback at `begin` forever; fall back to the whole clip.
-        if begin >= end {
-            return (0, self.length);
+        loop_region(self.length, self.lead_in, self.lead_out)
+    }
+}
+
+/// The frames a looping player wraps between.
+fn loop_region(length: i32, lead_in: i32, lead_out: i32) -> (i32, i32) {
+    // saturating_add: lead_in/lead_out come verbatim from the model file,
+    // so `+ 1` on i32::MAX would overflow (panic in debug, wrap to a
+    // negative that passes the `< length` test in release).
+    let has_lead_in = lead_in > 0 && lead_in.saturating_add(1) < length;
+    let has_lead_out = lead_out > 0 && lead_out.saturating_add(1) < length;
+    let begin = if has_lead_in { lead_in } else { 0 };
+    let end = if has_lead_out { lead_out } else { length };
+    // A file with lead_out < lead_in would give begin > end, which wedges
+    // playback at `begin` forever; fall back to the whole clip.
+    if begin >= end {
+        return (0, length);
+    }
+    (begin, end)
+}
+
+/// A named, timed sequence of param values: an optional lead-in played once,
+/// then a body that repeats. The form a [`crate::puppet::Puppet`] plays —
+/// [`Animation`] is the same shape keyed by the legacy uuid namespace.
+#[derive(Debug, Clone)]
+pub struct PuppetAnimation {
+    pub name: String,
+    /// Seconds per frame. Defaults to 0.0166s (about 60 fps).
+    pub timestep: f32,
+    /// Length in frames.
+    pub length: i32,
+    /// Frame where the lead-in ends and looping restarts, or -1 for none.
+    pub lead_in: i32,
+    /// Frame where the lead-out starts and looping wraps, or -1 for none.
+    pub lead_out: i32,
+    pub lanes: Vec<PuppetLane>,
+}
+
+impl PuppetAnimation {
+    pub(crate) fn loop_region(&self) -> (i32, i32) {
+        loop_region(self.length, self.lead_in, self.lead_out)
+    }
+}
+
+impl Default for PuppetAnimation {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            timestep: 1.0 / 60.0,
+            length: 0,
+            lead_in: -1,
+            lead_out: -1,
+            lanes: Vec::new(),
         }
-        (begin, end)
     }
 }
 
