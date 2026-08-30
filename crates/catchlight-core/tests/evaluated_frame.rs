@@ -28,17 +28,14 @@
 use catchlight_core::animation::{Animation, Lane};
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
-    ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
-};
-use catchlight_core::formats::legacy::{
-    LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyMask, LegacyMeshGroup,
-    LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyWeld,
+    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument, ClmFile,
+    ClmIndices, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSeam,
+    ClmSimplePhysics, ClmSlot, ClmSlotWeight, ClmTransform, ClmWeld, ClmWeldEnd,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::model::ModelWeldPair;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
-use catchlight_core::{Keyframe, Model, NodeId, NodeIdx, NodeKind, ParamId, Vec2};
+use catchlight_core::{Keyframe, Model, NodeId, NodeIdx, NodeKind, ParamId, SeamId, SlotId, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -65,26 +62,23 @@ type Baseline = BTreeMap<String, Frame>;
 // ---------------------------------------------------------------------------
 
 struct Rig {
-    file: LegacyFile,
+    file: RigFile,
     model: Model,
     puppet: Puppet,
-    /// Arena index of each `.clm` node, in document order.
+    /// Baked index of each document node, in document order.
     nodes: Vec<NodeIdx>,
 }
 
 impl Rig {
-    fn load(file: LegacyFile) -> Rig {
-        let model = Model::from_legacy(&file).expect("model build");
+    fn load(file: RigFile) -> Rig {
+        let model = Model::from_clm_file(&file.file).expect("model build");
         let puppet = Puppet::new(&model);
-        let nodes = (0..file.doc.nodes.len())
-            .map(|i| {
-                let id = if i == 0 {
-                    NodeId::new("root").unwrap()
-                } else {
-                    NodeId::new(format!("node-{i}")).unwrap()
-                };
-                puppet.node_idx(&id).expect("baked node")
-            })
+        let nodes = file
+            .file
+            .doc
+            .nodes
+            .iter()
+            .map(|n| puppet.node_idx(&n.id).expect("baked node"))
             .collect();
         Rig {
             file,
@@ -95,16 +89,10 @@ impl Rig {
     }
 
     fn pose(&mut self, values: &[(f32, f32)]) {
-        for (j, p) in self.file.doc.params.iter().enumerate() {
-            let (x, y) = values[j];
-            if p.is_vec2 {
-                self.puppet
-                    .set_param_value(&ParamId::new(format!("param-{j}.x")).unwrap(), x);
-                self.puppet
-                    .set_param_value(&ParamId::new(format!("param-{j}.y")).unwrap(), y);
-            } else {
-                self.puppet
-                    .set_param_value(&ParamId::new(format!("param-{j}")).unwrap(), x);
+        for (slot, &(x, y)) in self.file.slots.iter().zip(values) {
+            self.puppet.set_param_value(&slot.ids[0], x);
+            if let Some(id) = slot.ids.get(1) {
+                self.puppet.set_param_value(id, y);
             }
         }
     }
@@ -116,8 +104,8 @@ impl Rig {
     /// Displace every driver's pendulum so the run that follows is a swing
     /// rather than a fixed point.
     fn kick_drivers(&mut self) {
-        for (i, node) in self.file.doc.nodes.iter().enumerate() {
-            if matches!(node.kind, LegacyNodeKind::SimplePhysics(_)) {
+        for (i, node) in self.file.file.doc.nodes.iter().enumerate() {
+            if matches!(node.kind, ClmNodeKind::SimplePhysics(_)) {
                 assert!(
                     self.puppet
                         .place_driver(self.nodes[i], Vec2::new(40.0, 40.0)),
@@ -129,10 +117,11 @@ impl Rig {
 
     fn has_drivers(&self) -> bool {
         self.file
+            .file
             .doc
             .nodes
             .iter()
-            .any(|n| matches!(n.kind, LegacyNodeKind::SimplePhysics(_)))
+            .any(|n| matches!(n.kind, ClmNodeKind::SimplePhysics(_)))
     }
 
     /// The evaluated frame, flattened for the baseline.
@@ -170,8 +159,8 @@ fn colour(kind: &NodeKind) -> Option<(f32, [f32; 3], [f32; 3])> {
 /// Poses to drive a rig through: everything at rest, everything at each
 /// extreme and at the middle, then each param swept on its own so a binding
 /// that only one param reaches is still exercised.
-fn pose_grid(file: &LegacyFile) -> Vec<Vec<(f32, f32)>> {
-    let params = &file.doc.params;
+fn pose_grid(file: &RigFile) -> Vec<Vec<(f32, f32)>> {
+    let params = &file.slots;
     let at = |k: usize| -> Vec<(f32, f32)> {
         params
             .iter()
@@ -205,7 +194,7 @@ fn pose_grid(file: &LegacyFile) -> Vec<Vec<(f32, f32)>> {
 /// fold, and it is a property rather than a captured number. A rig with
 /// drivers moves between the two ticks by design, so both frames are captured
 /// instead, and a settle plus a simulated run follows.
-fn capture(label: &str, file: LegacyFile, out: &mut Baseline) {
+fn capture(label: &str, file: RigFile, out: &mut Baseline) {
     let mut rig = Rig::load(file);
     let drivers = rig.has_drivers();
 
@@ -400,6 +389,108 @@ fn every_rig_evaluates_the_frame_it_always_has() -> Result<(), Box<dyn std::erro
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Authoring a rig
+// ---------------------------------------------------------------------------
+//
+// The rigs author the `.clm` document directly and mint the Ids an import
+// would: `root` / `node-<i>` by position, `param-<i>` per source param, or
+// `param-<i>.x` / `param-<i>.y` for one the pose schedule drives on two axes.
+// That second shape is why [`Slot`] exists — a model has only scalar params,
+// but this suite's poses are defined per *source* param, and they have to stay
+// the ones the committed baseline was captured at.
+
+/// One source param: the model params it became, and the range the pose
+/// schedule sweeps it over.
+struct Slot {
+    ids: Vec<ParamId>,
+    min: [f32; 2],
+    max: [f32; 2],
+    defaults: [f32; 2],
+}
+
+/// A rig: the document a [`Model`] is read from, and the slots that pose it.
+struct RigFile {
+    file: ClmFile,
+    slots: Vec<Slot>,
+}
+
+/// One rig param before it is split: `vec2` means two scalar params, `.x` and
+/// `.y`, the way an import splits a 2-D inochi2d param.
+struct RigParam {
+    name: &'static str,
+    vec2: bool,
+    min: [f32; 2],
+    max: [f32; 2],
+    defaults: [f32; 2],
+    keys_x: Vec<f32>,
+    keys_y: Vec<f32>,
+    bindings: Vec<ClmBinding>,
+}
+
+impl RigParam {
+    fn scalar(name: &'static str, min: f32, max: f32, default: f32, keys: Vec<f32>) -> RigParam {
+        RigParam {
+            name,
+            vec2: false,
+            min: [min, 0.0],
+            max: [max, 1.0],
+            defaults: [default, 0.0],
+            keys_x: keys,
+            keys_y: vec![0.0],
+            bindings: Vec::new(),
+        }
+    }
+
+    fn pair(
+        name: &'static str,
+        min: [f32; 2],
+        max: [f32; 2],
+        defaults: [f32; 2],
+        keys_x: Vec<f32>,
+        keys_y: Vec<f32>,
+    ) -> RigParam {
+        RigParam {
+            name,
+            vec2: true,
+            min,
+            max,
+            defaults,
+            keys_x,
+            keys_y,
+            bindings: Vec::new(),
+        }
+    }
+
+    fn driving(mut self, bindings: Vec<ClmBinding>) -> RigParam {
+        self.bindings = bindings;
+        self
+    }
+}
+
+fn nid(i: usize) -> NodeId {
+    NodeId::new(if i == 0 {
+        "root".to_string()
+    } else {
+        format!("node-{i}")
+    })
+    .unwrap()
+}
+
+/// The one param a scalar slot became.
+fn one(i: usize) -> Vec<ParamId> {
+    vec![ParamId::new(format!("param-{i}")).unwrap()]
+}
+
+/// The two params a 2-D slot split into, `x` first.
+fn two(i: usize) -> Vec<ParamId> {
+    vec![
+        ParamId::new(format!("param-{i}.x")).unwrap(),
+        ParamId::new(format!("param-{i}.y")).unwrap(),
+    ]
+}
+
 fn transform() -> ClmTransform {
     ClmTransform {
         translation: [0.0; 3],
@@ -417,22 +508,44 @@ fn quad(w: f32, h: f32) -> ClmMesh {
     }
 }
 
-fn part(mesh: ClmMesh) -> LegacyPart {
-    LegacyPart {
+fn part(mesh: ClmMesh) -> ClmPart {
+    ClmPart {
         mesh,
-        albedo: u32::MAX,
+        albedo: None,
         opacity: 1.0,
         blend_mode: BlendMode::Normal,
         tint: [1.0; 3],
         screen_tint: [0.0; 3],
         masks: Vec::new(),
         mask_threshold: 0.5,
+        seams: Vec::new(),
     }
 }
 
-fn node(parent: Option<u32>, name: &str, kind: LegacyNodeKind) -> LegacyNode {
-    LegacyNode {
-        parent,
+/// A part carrying one seam, whose slots `s0..` name the vertices `verts` —
+/// what a weld pairs.
+fn welded_part(mesh: ClmMesh, seam: &str, verts: &[u32]) -> ClmPart {
+    ClmPart {
+        seams: vec![ClmSeam {
+            id: SeamId::new(seam).unwrap(),
+            slots: verts
+                .iter()
+                .enumerate()
+                .map(|(i, &vertex)| ClmSlot {
+                    id: SlotId::new(format!("s{i}")).unwrap(),
+                    vertex: Some(vertex),
+                })
+                .collect(),
+        }],
+        ..part(mesh)
+    }
+}
+
+fn node(parent: Option<usize>, name: &str, kind: ClmNodeKind) -> ClmNode {
+    ClmNode {
+        // Overwritten by `file`, which numbers the nodes by position.
+        id: nid(0),
+        parent: parent.map(nid),
         name: name.into(),
         enabled: true,
         z_order: 0.0,
@@ -442,10 +555,24 @@ fn node(parent: Option<u32>, name: &str, kind: LegacyNodeKind) -> LegacyNode {
     }
 }
 
-fn at(parent: Option<u32>, name: &str, xy: [f32; 2], kind: LegacyNodeKind) -> LegacyNode {
+fn at(parent: Option<usize>, name: &str, xy: [f32; 2], kind: ClmNodeKind) -> ClmNode {
     let mut n = node(parent, name, kind);
     n.transform.translation = [xy[0], xy[1], 0.0];
     n
+}
+
+fn binding(
+    node: usize,
+    mode: InterpolateMode,
+    params: Vec<ParamId>,
+    values: ClmBindingValues,
+) -> ClmBinding {
+    ClmBinding {
+        params,
+        node: nid(node),
+        interpolate_mode: mode,
+        values,
+    }
 }
 
 fn cells<T>(entries: Vec<(u32, u32, T)>) -> ClmCells<T> {
@@ -457,40 +584,91 @@ fn cells<T>(entries: Vec<(u32, u32, T)>) -> ClmCells<T> {
     }
 }
 
-fn file(nodes: Vec<LegacyNode>, params: Vec<LegacyParam>, welds: Vec<LegacyWeld>) -> LegacyFile {
-    LegacyFile {
-        doc: LegacyDocument {
-            physics: ClmPhysics::default(),
-            nodes,
-            params,
-            welds,
+/// Number the nodes by position, split every 2-D param into its `.x` / `.y`
+/// pair, and lift the bindings out from under their params.
+fn file(nodes: Vec<ClmNode>, rig_params: Vec<RigParam>, welds: Vec<ClmWeld>) -> RigFile {
+    let nodes: Vec<ClmNode> = nodes
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut n)| {
+            n.id = nid(i);
+            n
+        })
+        .collect();
+
+    let mut params = Vec::new();
+    let mut bindings = Vec::new();
+    let mut slots = Vec::new();
+    for (i, p) in rig_params.into_iter().enumerate() {
+        let ids = if p.vec2 { two(i) } else { one(i) };
+        params.push(ClmParam {
+            id: ids[0].clone(),
+            name: if p.vec2 {
+                format!("{}.x", p.name)
+            } else {
+                p.name.to_string()
+            },
+            min: p.min[0],
+            max: p.max[0],
+            default: p.defaults[0],
+            key_positions: p.keys_x,
+        });
+        if p.vec2 {
+            params.push(ClmParam {
+                id: ids[1].clone(),
+                name: format!("{}.y", p.name),
+                min: p.min[1],
+                max: p.max[1],
+                default: p.defaults[1],
+                key_positions: p.keys_y,
+            });
+        }
+        bindings.extend(p.bindings);
+        slots.push(Slot {
+            ids,
+            min: p.min,
+            max: p.max,
+            defaults: p.defaults,
+        });
+    }
+
+    RigFile {
+        file: ClmFile {
+            doc: ClmDocument {
+                nodes,
+                params,
+                bindings,
+                welds,
+                ..ClmDocument::default()
+            },
+            textures: Vec::new(),
         },
-        textures: Vec::new(),
+        slots,
     }
 }
 
 /// A part under a group, driven by one 2-D param whose deform binding is
 /// authored at scattered cells of a 3x3 grid, plus scalar bindings on every
 /// other target the runtime folds.
-fn two_param_rig(mode: InterpolateMode) -> LegacyFile {
+fn two_param_rig(mode: InterpolateMode) -> RigFile {
     let nodes = vec![
-        node(None, "Root", LegacyNodeKind::Group),
+        node(None, "Root", ClmNodeKind::Group),
         at(
             Some(0),
             "Body",
             [10.0, -5.0],
-            LegacyNodeKind::Part(part(quad(8.0, 6.0))),
+            ClmNodeKind::Part(part(quad(8.0, 6.0))),
         ),
         node(
             Some(0),
             "Layered",
-            LegacyNodeKind::Composite(LegacyComposite {
+            ClmNodeKind::Composite(ClmComposite {
                 opacity: 0.9,
                 blend_mode: BlendMode::Normal,
                 tint: [1.0, 0.8, 0.7],
                 screen_tint: [0.0; 3],
-                masks: vec![LegacyMask {
-                    source: 1,
+                masks: vec![ClmMask {
+                    source: nid(1),
                     mode: MaskMode::Mask,
                 }],
                 mask_threshold: 0.4,
@@ -501,113 +679,84 @@ fn two_param_rig(mode: InterpolateMode) -> LegacyFile {
             Some(2),
             "Face",
             [0.0, 4.0],
-            LegacyNodeKind::Part(part(quad(3.0, 3.0))),
+            ClmNodeKind::Part(part(quad(3.0, 3.0))),
         ),
     ];
     let d = |x: u32, y: u32, v: Vec<f32>| (x, y, v);
-    let params = vec![LegacyParam {
-        name: "Head".into(),
-        is_vec2: true,
-        min: [-1.0, -2.0],
-        max: [1.0, 2.0],
-        defaults: [0.0, 0.5],
-        axis_points_x: vec![0.0, 0.25, 1.0],
-        axis_points_y: vec![0.0, 0.5, 1.0],
-        bindings: vec![
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: mode,
-                values: ClmBindingValues::Deform(cells(vec![
-                    d(0, 0, vec![-2.0, 0.5, 0.0, 0.0, 1.0, -1.0, 0.0, 3.0]),
-                    d(2, 0, vec![4.0, 0.0, -1.0, 2.0, 0.0, 0.0, 0.5, 0.5]),
-                    d(1, 2, vec![0.0, -3.0, 2.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
-                    d(2, 2, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
-                ])),
-            },
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: mode,
-                values: ClmBindingValues::TransformTX(cells(vec![(0, 0, -6.0), (2, 2, 9.0)])),
-            },
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: mode,
-                values: ClmBindingValues::TransformRZ(cells(vec![(2, 0, 0.7)])),
-            },
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: mode,
-                values: ClmBindingValues::TransformSY(cells(vec![(0, 2, 1.8)])),
-            },
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: mode,
-                values: ClmBindingValues::ZOrder(cells(vec![(0, 0, -4.0), (2, 2, 6.0)])),
-            },
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: mode,
-                values: ClmBindingValues::Opacity(cells(vec![(0, 0, 0.25), (2, 2, 1.0)])),
-            },
-            LegacyBinding {
-                node: 3,
-                interpolate_mode: mode,
-                values: ClmBindingValues::TintG(cells(vec![(0, 0, 0.2), (2, 2, 1.0)])),
-            },
-            LegacyBinding {
-                node: 3,
-                interpolate_mode: mode,
-                values: ClmBindingValues::ScreenTintB(cells(vec![(1, 1, 0.6)])),
-            },
-            LegacyBinding {
-                node: 2,
-                interpolate_mode: mode,
-                values: ClmBindingValues::Opacity(cells(vec![(0, 2, 0.3)])),
-            },
-        ],
-    }];
+    let b = |node: usize, values: ClmBindingValues| binding(node, mode, two(0), values);
+    let params = vec![RigParam::pair(
+        "Head",
+        [-1.0, -2.0],
+        [1.0, 2.0],
+        [0.0, 0.5],
+        vec![0.0, 0.25, 1.0],
+        vec![0.0, 0.5, 1.0],
+    )
+    .driving(vec![
+        b(
+            1,
+            ClmBindingValues::Deform(cells(vec![
+                d(0, 0, vec![-2.0, 0.5, 0.0, 0.0, 1.0, -1.0, 0.0, 3.0]),
+                d(2, 0, vec![4.0, 0.0, -1.0, 2.0, 0.0, 0.0, 0.5, 0.5]),
+                d(1, 2, vec![0.0, -3.0, 2.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
+                d(2, 2, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+            ])),
+        ),
+        b(
+            1,
+            ClmBindingValues::TransformTX(cells(vec![(0, 0, -6.0), (2, 2, 9.0)])),
+        ),
+        b(1, ClmBindingValues::TransformRZ(cells(vec![(2, 0, 0.7)]))),
+        b(1, ClmBindingValues::TransformSY(cells(vec![(0, 2, 1.8)]))),
+        b(
+            1,
+            ClmBindingValues::ZOrder(cells(vec![(0, 0, -4.0), (2, 2, 6.0)])),
+        ),
+        b(
+            1,
+            ClmBindingValues::Opacity(cells(vec![(0, 0, 0.25), (2, 2, 1.0)])),
+        ),
+        b(
+            3,
+            ClmBindingValues::TintG(cells(vec![(0, 0, 0.2), (2, 2, 1.0)])),
+        ),
+        b(3, ClmBindingValues::ScreenTintB(cells(vec![(1, 1, 0.6)]))),
+        b(2, ClmBindingValues::Opacity(cells(vec![(0, 2, 0.3)]))),
+    ])];
     file(nodes, params, Vec::new())
 }
 
-/// Two one-param bindings on one node, from different params — the case the
-/// legacy runtime gives one deform slot per param and the new one gives one
-/// per binding.
-fn two_params_deforming_one_node() -> LegacyFile {
+/// Two one-param bindings on one node, from different params — one deform
+/// slot per binding.
+fn two_params_deforming_one_node() -> RigFile {
     let nodes = vec![
-        node(None, "Root", LegacyNodeKind::Group),
-        node(Some(0), "Body", LegacyNodeKind::Part(part(quad(5.0, 5.0)))),
+        node(None, "Root", ClmNodeKind::Group),
+        node(Some(0), "Body", ClmNodeKind::Part(part(quad(5.0, 5.0)))),
     ];
-    let binding = |v: Vec<f32>| LegacyBinding {
-        node: 1,
-        interpolate_mode: InterpolateMode::Linear,
-        values: ClmBindingValues::Deform(cells(vec![(1, 0, v)])),
-    };
-    let param = |name: &str, values: Vec<f32>| LegacyParam {
-        name: name.into(),
-        is_vec2: false,
-        min: [0.0, 0.0],
-        max: [1.0, 1.0],
-        defaults: [0.0, 0.0],
-        axis_points_x: vec![0.0, 1.0],
-        axis_points_y: vec![0.0],
-        bindings: vec![binding(values)],
+    let param = |i: usize, name: &'static str, values: Vec<f32>| {
+        RigParam::scalar(name, 0.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
+            1,
+            InterpolateMode::Linear,
+            one(i),
+            ClmBindingValues::Deform(cells(vec![(1, 0, values)])),
+        )])
     };
     let params = vec![
-        param("A", vec![3.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 0.0]),
-        param("B", vec![0.0, -4.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.5]),
+        param(0, "A", vec![3.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0, 0.0]),
+        param(1, "B", vec![0.0, -4.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.5]),
     ];
     file(nodes, params, Vec::new())
 }
 
 /// A mesh group over two parts, keyed by a param: the descent, the attachment
 /// bake and the `translate_children` filter all have to land the same.
-fn mesh_group_rig(dynamic: bool, translate_children: bool) -> LegacyFile {
+fn mesh_group_rig(dynamic: bool, translate_children: bool) -> RigFile {
     let nodes = vec![
-        node(None, "Root", LegacyNodeKind::Group),
+        node(None, "Root", ClmNodeKind::Group),
         node(
             Some(0),
             "MG",
-            LegacyNodeKind::MeshGroup(LegacyMeshGroup {
+            ClmNodeKind::MeshGroup(ClmMeshGroup {
                 mesh: quad(20.0, 20.0),
                 dynamic,
                 translate_children,
@@ -617,106 +766,98 @@ fn mesh_group_rig(dynamic: bool, translate_children: bool) -> LegacyFile {
             Some(1),
             "Under",
             [2.0, 3.0],
-            LegacyNodeKind::Part(part(quad(6.0, 6.0))),
+            ClmNodeKind::Part(part(quad(6.0, 6.0))),
         ),
-        at(Some(1), "Origin", [-4.0, 1.0], LegacyNodeKind::Group),
+        at(Some(1), "Origin", [-4.0, 1.0], ClmNodeKind::Group),
         at(
             Some(3),
             "Deep",
             [1.0, -1.0],
-            LegacyNodeKind::Part(part(quad(2.0, 2.0))),
+            ClmNodeKind::Part(part(quad(2.0, 2.0))),
         ),
     ];
-    let params = vec![LegacyParam {
-        name: "Warp".into(),
-        is_vec2: false,
-        min: [-1.0, 0.0],
-        max: [1.0, 1.0],
-        defaults: [0.0, 0.0],
-        axis_points_x: vec![0.0, 0.5, 1.0],
-        axis_points_y: vec![0.0],
-        bindings: vec![
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::Deform(cells(vec![
+    let b = |node: usize, values: ClmBindingValues| {
+        binding(node, InterpolateMode::Linear, one(0), values)
+    };
+    let params = vec![
+        RigParam::scalar("Warp", -1.0, 1.0, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
+            b(
+                1,
+                ClmBindingValues::Deform(cells(vec![
                     (0, 0, vec![-5.0, 0.0, 3.0, 1.0, 0.0, -6.0, 2.0, 2.0]),
                     (2, 0, vec![4.0, 4.0, -2.0, 0.0, 1.0, 5.0, -3.0, 1.0]),
                 ])),
-            },
-            LegacyBinding {
-                node: 2,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::Deform(cells(vec![(
+            ),
+            b(
+                2,
+                ClmBindingValues::Deform(cells(vec![(
                     2,
                     0,
                     vec![1.0, 1.0, -1.0, 0.0, 0.5, 0.5, 0.0, -1.0],
                 )])),
-            },
-        ],
-    }];
+            ),
+        ]),
+    ];
     file(nodes, params, Vec::new())
 }
 
 /// Two parts welded seam to seam, each with its own deform binding, so the
 /// weld pass has something to pull together.
-fn weld_rig() -> LegacyFile {
+fn weld_rig() -> RigFile {
     let nodes = vec![
-        node(None, "Root", LegacyNodeKind::Group),
+        node(None, "Root", ClmNodeKind::Group),
         at(
             Some(0),
             "A",
             [-4.0, 0.0],
-            LegacyNodeKind::Part(part(quad(4.0, 4.0))),
+            ClmNodeKind::Part(welded_part(quad(4.0, 4.0), "weld-0-a", &[1, 2])),
         ),
         at(
             Some(0),
             "B",
             [4.0, 0.0],
-            LegacyNodeKind::Part(part(quad(4.0, 4.0))),
+            ClmNodeKind::Part(welded_part(quad(4.0, 4.0), "weld-0-b", &[0, 3])),
         ),
     ];
-    let params = vec![LegacyParam {
-        name: "Pull".into(),
-        is_vec2: false,
-        min: [0.0, 0.0],
-        max: [1.0, 1.0],
-        defaults: [0.0, 0.0],
-        axis_points_x: vec![0.0, 1.0],
-        axis_points_y: vec![0.0],
-        bindings: vec![
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::Deform(cells(vec![(
+    let b = |node: usize, values: ClmBindingValues| {
+        binding(node, InterpolateMode::Linear, one(0), values)
+    };
+    let params = vec![
+        RigParam::scalar("Pull", 0.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![
+            b(
+                1,
+                ClmBindingValues::Deform(cells(vec![(
                     1,
                     0,
                     vec![0.0, 0.0, 2.0, 1.0, 2.0, -1.0, 0.0, 0.0],
                 )])),
-            },
-            LegacyBinding {
-                node: 2,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::Deform(cells(vec![(
+            ),
+            b(
+                2,
+                ClmBindingValues::Deform(cells(vec![(
                     1,
                     0,
                     vec![-3.0, 0.5, 0.0, 0.0, 0.0, 0.0, -3.0, -0.5],
                 )])),
-            },
-        ],
-    }];
-    let welds = vec![LegacyWeld {
-        a: 1,
-        b: 2,
-        pairs: vec![
-            ModelWeldPair {
-                a_vert: 1,
-                b_vert: 0,
+            ),
+        ]),
+    ];
+    let welds = vec![ClmWeld {
+        a: ClmWeldEnd {
+            node: nid(1),
+            seam: SeamId::new("weld-0-a").unwrap(),
+        },
+        b: ClmWeldEnd {
+            node: nid(2),
+            seam: SeamId::new("weld-0-b").unwrap(),
+        },
+        weights: vec![
+            ClmSlotWeight {
+                slot: SlotId::new("s0").unwrap(),
                 weight: 0.5,
             },
-            ModelWeldPair {
-                a_vert: 2,
-                b_vert: 3,
+            ClmSlotWeight {
+                slot: SlotId::new("s1").unwrap(),
                 weight: 0.25,
             },
         ],
@@ -724,12 +865,16 @@ fn weld_rig() -> LegacyFile {
     file(nodes, params, welds)
 }
 
-fn physics(target: Option<u32>, local_only: bool) -> LegacySimplePhysics {
-    LegacySimplePhysics {
+fn physics(targets: Vec<ParamId>, local_only: bool) -> ClmSimplePhysics {
+    let mut target_params: [Option<ParamId>; 2] = [None, None];
+    for (slot, id) in target_params.iter_mut().zip(targets) {
+        *slot = Some(id);
+    }
+    ClmSimplePhysics {
         kind: PendulumKind::RigidPendulum,
         map_mode: PhysicsParamMapMode::AngleLength,
         local_only,
-        target_param: target,
+        target_params,
         gravity: 1.0,
         length: 60.0,
         frequency: 1.0,
@@ -741,90 +886,78 @@ fn physics(target: Option<u32>, local_only: bool) -> LegacySimplePhysics {
 
 /// Two drivers, the first's output translating the second's anchor: the
 /// chained-physics case the contribution table exists for. The first writes a
-/// 2-D param (two scalar params on the new side), the second a 1-D one.
-fn chained_physics_rig() -> LegacyFile {
+/// pair of params, the second a single one.
+fn chained_physics_rig() -> RigFile {
     let nodes = vec![
-        node(None, "Root", LegacyNodeKind::Group),
+        node(None, "Root", ClmNodeKind::Group),
         at(
             Some(0),
             "Upper",
             [0.0, 40.0],
-            LegacyNodeKind::SimplePhysics(physics(Some(0), false)),
+            ClmNodeKind::SimplePhysics(physics(two(0), false)),
         ),
-        at(Some(0), "Mid", [0.0, 10.0], LegacyNodeKind::Group),
+        at(Some(0), "Mid", [0.0, 10.0], ClmNodeKind::Group),
         at(
             Some(2),
             "Lower",
             [5.0, -20.0],
-            LegacyNodeKind::SimplePhysics(physics(Some(1), true)),
+            ClmNodeKind::SimplePhysics(physics(one(1), true)),
         ),
         at(
             Some(0),
             "Hair",
             [0.0, 0.0],
-            LegacyNodeKind::Part(part(quad(6.0, 20.0))),
+            ClmNodeKind::Part(part(quad(6.0, 20.0))),
         ),
     ];
+    let swing = |node: usize, values: ClmBindingValues| {
+        binding(node, InterpolateMode::Linear, two(0), values)
+    };
     let params = vec![
-        LegacyParam {
-            name: "Swing".into(),
-            is_vec2: true,
-            min: [-1.0, 0.0],
-            max: [1.0, 2.0],
-            defaults: [0.0, 1.0],
-            axis_points_x: vec![0.0, 0.5, 1.0],
-            axis_points_y: vec![0.0, 1.0],
-            bindings: vec![
-                // The upper driver's output moves the lower driver's anchor.
-                LegacyBinding {
-                    node: 2,
-                    interpolate_mode: InterpolateMode::Linear,
-                    values: ClmBindingValues::TransformTX(cells(vec![(0, 0, -30.0), (2, 1, 30.0)])),
-                },
-                LegacyBinding {
-                    node: 4,
-                    interpolate_mode: InterpolateMode::Linear,
-                    values: ClmBindingValues::Deform(cells(vec![
-                        (0, 0, vec![-4.0, 0.0, 4.0, 0.0, 0.0, 2.0, 0.0, -2.0]),
-                        (2, 1, vec![4.0, 1.0, -4.0, 1.0, 0.0, -2.0, 0.0, 2.0]),
-                    ])),
-                },
-                // An output-scale binding, so the pre-pass's second target
-                // kind is exercised too.
-                LegacyBinding {
-                    node: 3,
-                    interpolate_mode: InterpolateMode::Linear,
-                    values: ClmBindingValues::OutputScaleX(cells(vec![(0, 0, 0.5)])),
-                },
-            ],
-        },
-        LegacyParam {
-            name: "Tip".into(),
-            is_vec2: false,
-            min: [-1.0, 0.0],
-            max: [1.0, 1.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-            bindings: vec![LegacyBinding {
-                node: 4,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::TransformTY(cells(vec![(1, 0, 12.0)])),
-            }],
-        },
+        RigParam::pair(
+            "Swing",
+            [-1.0, 0.0],
+            [1.0, 2.0],
+            [0.0, 1.0],
+            vec![0.0, 0.5, 1.0],
+            vec![0.0, 1.0],
+        )
+        .driving(vec![
+            // The upper driver's output moves the lower driver's anchor.
+            swing(
+                2,
+                ClmBindingValues::TransformTX(cells(vec![(0, 0, -30.0), (2, 1, 30.0)])),
+            ),
+            swing(
+                4,
+                ClmBindingValues::Deform(cells(vec![
+                    (0, 0, vec![-4.0, 0.0, 4.0, 0.0, 0.0, 2.0, 0.0, -2.0]),
+                    (2, 1, vec![4.0, 1.0, -4.0, 1.0, 0.0, -2.0, 0.0, 2.0]),
+                ])),
+            ),
+            // An output-scale binding, so the pre-pass's second target
+            // kind is exercised too.
+            swing(3, ClmBindingValues::OutputScaleX(cells(vec![(0, 0, 0.5)]))),
+        ]),
+        RigParam::scalar("Tip", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
+            4,
+            InterpolateMode::Linear,
+            one(1),
+            ClmBindingValues::TransformTY(cells(vec![(1, 0, 12.0)])),
+        )]),
     ];
     file(nodes, params, Vec::new())
 }
 
 /// A mesh group whose `translate_children` filter targets a `local_only`
 /// driver — the case that forces the anchor pre-pass every frame.
-fn tc_over_local_driver_rig() -> LegacyFile {
+fn tc_over_local_driver_rig() -> RigFile {
     let nodes = vec![
-        node(None, "Root", LegacyNodeKind::Group),
+        node(None, "Root", ClmNodeKind::Group),
         node(
             Some(0),
             "MG",
-            LegacyNodeKind::MeshGroup(LegacyMeshGroup {
+            ClmNodeKind::MeshGroup(ClmMeshGroup {
                 mesh: quad(30.0, 30.0),
                 dynamic: false,
                 translate_children: true,
@@ -834,48 +967,40 @@ fn tc_over_local_driver_rig() -> LegacyFile {
             Some(1),
             "Driver",
             [3.0, 6.0],
-            LegacyNodeKind::SimplePhysics(physics(Some(1), true)),
+            ClmNodeKind::SimplePhysics(physics(two(1), true)),
         ),
         at(
             Some(1),
             "Skin",
             [0.0, 0.0],
-            LegacyNodeKind::Part(part(quad(8.0, 8.0))),
+            ClmNodeKind::Part(part(quad(8.0, 8.0))),
         ),
     ];
     let params = vec![
-        LegacyParam {
-            name: "Warp".into(),
-            is_vec2: false,
-            min: [-1.0, 0.0],
-            max: [1.0, 1.0],
-            defaults: [0.0, 0.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0],
-            bindings: vec![LegacyBinding {
-                node: 1,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::Deform(cells(vec![(
-                    1,
-                    0,
-                    vec![6.0, -2.0, 6.0, -2.0, 6.0, -2.0, 6.0, -2.0],
-                )])),
-            }],
-        },
-        LegacyParam {
-            name: "Sway".into(),
-            is_vec2: true,
-            min: [-1.0, 0.0],
-            max: [1.0, 2.0],
-            defaults: [0.0, 1.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0, 1.0],
-            bindings: vec![LegacyBinding {
-                node: 3,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::TransformTX(cells(vec![(0, 0, -7.0), (1, 1, 7.0)])),
-            }],
-        },
+        RigParam::scalar("Warp", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
+            1,
+            InterpolateMode::Linear,
+            one(0),
+            ClmBindingValues::Deform(cells(vec![(
+                1,
+                0,
+                vec![6.0, -2.0, 6.0, -2.0, 6.0, -2.0, 6.0, -2.0],
+            )])),
+        )]),
+        RigParam::pair(
+            "Sway",
+            [-1.0, 0.0],
+            [1.0, 2.0],
+            [0.0, 1.0],
+            vec![0.0, 1.0],
+            vec![0.0, 1.0],
+        )
+        .driving(vec![binding(
+            3,
+            InterpolateMode::Linear,
+            two(1),
+            ClmBindingValues::TransformTX(cells(vec![(0, 0, -7.0), (1, 1, 7.0)])),
+        )]),
     ];
     file(nodes, params, Vec::new())
 }
@@ -889,7 +1014,7 @@ fn tc_over_local_driver_rig() -> LegacyFile {
 #[test]
 fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
     let f = two_param_rig(InterpolateMode::Linear);
-    let mut model = Model::from_legacy(&f).unwrap();
+    let mut model = Model::from_clm_file(&f.file).unwrap();
     let mut puppet = Puppet::new(&model);
     let (px, py) = (
         ParamId::new("param-0.x").unwrap(),
@@ -946,37 +1071,37 @@ fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
 fn a_model_edit_keeps_the_drivers_running() {
     let f = {
         let nodes = vec![
-            node(None, "Root", LegacyNodeKind::Group),
+            node(None, "Root", ClmNodeKind::Group),
             at(
                 Some(0),
                 "Driver",
                 [0.0, 40.0],
-                LegacyNodeKind::SimplePhysics(physics(Some(0), false)),
+                ClmNodeKind::SimplePhysics(physics(two(0), false)),
             ),
             at(
                 Some(0),
                 "Hair",
                 [0.0, 0.0],
-                LegacyNodeKind::Part(part(quad(6.0, 20.0))),
+                ClmNodeKind::Part(part(quad(6.0, 20.0))),
             ),
         ];
-        let params = vec![LegacyParam {
-            name: "Swing".into(),
-            is_vec2: true,
-            min: [-1.0, 0.0],
-            max: [1.0, 2.0],
-            defaults: [0.0, 1.0],
-            axis_points_x: vec![0.0, 1.0],
-            axis_points_y: vec![0.0, 1.0],
-            bindings: vec![LegacyBinding {
-                node: 2,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::TransformTX(cells(vec![(1, 1, 20.0)])),
-            }],
-        }];
+        let params = vec![RigParam::pair(
+            "Swing",
+            [-1.0, 0.0],
+            [1.0, 2.0],
+            [0.0, 1.0],
+            vec![0.0, 1.0],
+            vec![0.0, 1.0],
+        )
+        .driving(vec![binding(
+            2,
+            InterpolateMode::Linear,
+            two(0),
+            ClmBindingValues::TransformTX(cells(vec![(1, 1, 20.0)])),
+        )])];
         file(nodes, params, Vec::new())
     };
-    let mut model = Model::from_legacy(&f).unwrap();
+    let mut model = Model::from_clm_file(&f.file).unwrap();
     let mut puppet = Puppet::new(&model);
     puppet.settle_physics(&model);
     // Kick the pendulum away from rest and let it swing.
@@ -1004,35 +1129,24 @@ fn a_model_edit_keeps_the_drivers_running() {
 
 /// A part whose transform and deform a single param drives, for a clip's lane
 /// to reach.
-fn animation_rig() -> LegacyFile {
+fn animation_rig() -> RigFile {
     let nodes = vec![
-        node(None, "Root", LegacyNodeKind::Group),
-        node(Some(0), "Body", LegacyNodeKind::Part(part(quad(5.0, 5.0)))),
+        node(None, "Root", ClmNodeKind::Group),
+        node(Some(0), "Body", ClmNodeKind::Part(part(quad(5.0, 5.0)))),
     ];
-    let params = vec![LegacyParam {
-        name: "Blink".into(),
-        is_vec2: false,
-        min: [0.0, 0.0],
-        max: [1.0, 1.0],
-        defaults: [0.0, 0.0],
-        axis_points_x: vec![0.0, 0.5, 1.0],
-        axis_points_y: vec![0.0],
-        bindings: vec![
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::TransformTY(cells(vec![(0, 0, -3.0), (2, 0, 9.0)])),
-            },
-            LegacyBinding {
-                node: 1,
-                interpolate_mode: InterpolateMode::Linear,
-                values: ClmBindingValues::Deform(cells(vec![(
-                    2,
-                    0,
-                    vec![1.0, 2.0, -1.0, 0.0, 0.0, 3.0, 0.5, -0.5],
-                )])),
-            },
-        ],
-    }];
+    let b = |values: ClmBindingValues| binding(1, InterpolateMode::Linear, one(0), values);
+    let params = vec![
+        RigParam::scalar("Blink", 0.0, 1.0, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
+            b(ClmBindingValues::TransformTY(cells(vec![
+                (0, 0, -3.0),
+                (2, 0, 9.0),
+            ]))),
+            b(ClmBindingValues::Deform(cells(vec![(
+                2,
+                0,
+                vec![1.0, 2.0, -1.0, 0.0, 0.0, 3.0, 0.5, -0.5],
+            )]))),
+        ]),
+    ];
     file(nodes, params, Vec::new())
 }
