@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Multi-session editor server for catchlight: holds EditModels + a warm headless renderer, driven in-process or over a Unix socket"
+description = "Multi-session editor server for catchlight: a Model per session plus a warm headless renderer, driven in-process or over a Unix socket"
 
 [dependencies]
 catchlight-editor-core = { workspace = true }
