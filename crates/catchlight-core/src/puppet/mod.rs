@@ -67,7 +67,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::{Mat4, Vec2, Vec3};
 
-use crate::animation::{AnimationPlayState, PuppetAnimation};
+use crate::animation::{Animation, AnimationPlayState};
 use crate::components::{checked_affine_inverse, Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::id::{NodeId, ParamId};
@@ -235,7 +235,7 @@ pub struct Puppet {
     /// `param_generation == G` would produce.
     last_anchor_pose_generation: Option<u64>,
 
-    animations: Vec<PuppetAnimation>,
+    animations: Vec<Animation>,
     play_state: Option<AnimationPlayState>,
 
     /// Reused by the fold: where each param slot sits on its key positions.
@@ -774,14 +774,14 @@ impl Puppet {
 
     // ---- animations -------------------------------------------------------
 
-    pub fn animations(&self) -> &[PuppetAnimation] {
+    pub fn animations(&self) -> &[Animation] {
         &self.animations
     }
 
     /// Replace the animations this puppet can play with clips a caller built
     /// by hand. [`Self::set_animations_from`] is the one that takes the
     /// model's own.
-    pub fn set_animations(&mut self, animations: Vec<PuppetAnimation>) {
+    pub fn set_animations(&mut self, animations: Vec<Animation>) {
         self.animations = animations;
         // Any play state indexes into the old list.
         self.play_state = None;
@@ -791,13 +791,7 @@ impl Puppet {
     /// does not do this: the clips are the caller's to install, because a
     /// caller may be playing ones the model does not carry.
     pub fn set_animations_from(&mut self, model: &Model) {
-        self.set_animations(
-            model
-                .animations()
-                .iter()
-                .map(PuppetAnimation::from_clm)
-                .collect(),
-        );
+        self.set_animations(model.animations().iter().map(Animation::from_clm).collect());
     }
 
     /// Start playing the animation with this name, looping. False when no

@@ -1,3 +1,16 @@
+//! Animations: named, timed sequences of param values a puppet can play.
+//!
+//! A model stores its clips on the wire
+//! ([`ClmAnimation`](crate::formats::clm::ClmAnimation)); the types here are
+//! the play form, keyed by [`ParamId`](crate::id::ParamId), which a caller
+//! installs on a puppet. The two are the same shape and are separate only
+//! because one is what the file holds and the other is what a tick advances.
+//!
+//! **A loop region is derived, not authored.** `lead_in` / `lead_out` affect
+//! it only when they lie strictly inside the clip, and a clip whose lead-out
+//! precedes its lead-in falls back to the whole length rather than wedging
+//! playback at one frame.
+
 use crate::interpolate::InterpolateMode;
 
 /// A single keyframe on an animation lane. `frame` is an integer frame
@@ -8,23 +21,24 @@ pub struct Keyframe {
     pub value: f32,
 }
 
-/// One lane of a [`PuppetAnimation`]: the param it drives and the values it
-/// holds over time. A param is a scalar, so a lane drives one whole param.
+/// One [`Animation`]'s track over a single param: the param it drives and the
+/// values it holds over time. A param is a scalar, so a lane drives one whole
+/// param.
 #[derive(Debug, Clone)]
-pub struct PuppetLane {
+pub struct Lane {
     pub param: crate::id::ParamId,
     pub keyframes: Vec<Keyframe>,
     pub interpolation: InterpolateMode,
 }
 
-impl PuppetLane {
+impl Lane {
     /// Interpolated value at fractional frame `t`, clamped at both ends.
     pub fn value_at(&self, t: f32) -> f32 {
         value_at(&self.keyframes, self.interpolation, t)
     }
 }
 
-/// The one keyframe interpolator both lane types use.
+/// The keyframe interpolator.
 fn value_at(keyframes: &[Keyframe], interpolation: InterpolateMode, t: f32) -> f32 {
     {
         match keyframes {
@@ -88,11 +102,14 @@ fn loop_region(length: i32, lead_in: i32, lead_out: i32) -> (i32, i32) {
     (begin, end)
 }
 
-/// A named, timed sequence of param values: an optional lead-in played once,
-/// then a body that repeats. The form a [`crate::puppet::Puppet`] plays; a
-/// model stores the same shape as [`crate::formats::clm::ClmAnimation`].
+/// A named, timed sequence of param values: a length in frames, an optional
+/// lead-in played once, and a body that repeats. The form a
+/// [`crate::puppet::Puppet`] plays; a model stores the same shape as
+/// [`crate::formats::clm::ClmAnimation`], and
+/// [`Puppet::set_animations_from`](crate::puppet::Puppet::set_animations_from)
+/// is the conversion.
 #[derive(Debug, Clone)]
-pub struct PuppetAnimation {
+pub struct Animation {
     pub name: String,
     /// Seconds per frame. Defaults to 0.0166s (about 60 fps).
     pub timestep: f32,
@@ -102,10 +119,10 @@ pub struct PuppetAnimation {
     pub lead_in: i32,
     /// Frame where the lead-out starts and looping wraps, or -1 for none.
     pub lead_out: i32,
-    pub lanes: Vec<PuppetLane>,
+    pub lanes: Vec<Lane>,
 }
 
-impl PuppetAnimation {
+impl Animation {
     pub(crate) fn loop_region(&self) -> (i32, i32) {
         loop_region(self.length, self.lead_in, self.lead_out)
     }
@@ -123,7 +140,7 @@ impl PuppetAnimation {
             lanes: clip
                 .lanes
                 .iter()
-                .map(|lane| PuppetLane {
+                .map(|lane| Lane {
                     param: lane.param.clone(),
                     interpolation: lane.interpolation,
                     keyframes: lane
@@ -140,7 +157,7 @@ impl PuppetAnimation {
     }
 }
 
-impl Default for PuppetAnimation {
+impl Default for Animation {
     fn default() -> Self {
         Self {
             name: String::new(),
@@ -165,8 +182,8 @@ pub(crate) struct AnimationPlayState {
 mod tests {
     use super::*;
 
-    fn lane(kfs: Vec<(i32, f32)>, mode: InterpolateMode) -> PuppetLane {
-        PuppetLane {
+    fn lane(kfs: Vec<(i32, f32)>, mode: InterpolateMode) -> Lane {
+        Lane {
             param: crate::id::ParamId::new("p").unwrap(),
             keyframes: kfs
                 .into_iter()

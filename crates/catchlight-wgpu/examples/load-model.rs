@@ -562,7 +562,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // "Right Eye - Blink"). value=0 -> open, value=1 -> closed.
     // Sequence: 3s open -> quick close -> brief hold -> quick reopen.
     if puppet.animations().is_empty() {
-        use catchlight_core::{InterpolateMode, Keyframe, PuppetAnimation, PuppetLane};
+        use catchlight_core::{Animation, InterpolateMode, Keyframe, Lane};
         let blink_params: Vec<ParamId> = model
             .param_ids()
             .iter()
@@ -603,13 +603,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let lanes = blink_params
                 .iter()
-                .map(|param| PuppetLane {
+                .map(|param| Lane {
                     param: param.clone(),
                     keyframes: kfs(),
                     interpolation: InterpolateMode::Linear,
                 })
                 .collect();
-            let anim = PuppetAnimation {
+            let anim = Animation {
                 name: "Blink".into(),
                 timestep: 1.0 / 60.0,
                 length: 102,
