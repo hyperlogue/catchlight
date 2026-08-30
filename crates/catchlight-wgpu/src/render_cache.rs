@@ -429,14 +429,6 @@ impl DrawSource for CacheSource<'_> {
         self.puppet.baked_generation()
     }
 
-    fn mask_source(&self, source: u32) -> Option<NodeIdx> {
-        // A baked `Mask` carries its source node's arena slot: the field is
-        // the legacy uuid namespace and a model has none, so this cache
-        // resolves it against its own node table rather than inventing one.
-        // A mask naming a node the tree no longer has resolves to nothing.
-        ((source as usize) < self.cache.node_ids.len()).then_some(NodeIdx(source))
-    }
-
     fn mesh_slot(&self, idx: NodeIdx) -> u32 {
         self.cache
             .mesh_of_node

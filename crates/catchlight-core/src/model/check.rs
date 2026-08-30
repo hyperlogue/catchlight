@@ -356,7 +356,7 @@ mod tests {
             .bindings
             .push(crate::formats::legacy::LegacyBinding {
                 node: group_index,
-                interpolate_mode: crate::params::InterpolateMode::Linear,
+                interpolate_mode: crate::interpolate::InterpolateMode::Linear,
                 values: crate::formats::clm::ClmBindingValues::Opacity(Default::default()),
             });
         let m = Model::from_legacy(&file).unwrap();

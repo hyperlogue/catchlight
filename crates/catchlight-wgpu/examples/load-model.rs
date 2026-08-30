@@ -5,7 +5,7 @@
 //! `--control` (or the `C` key) opens the egui panel of per-param sliders and
 //! stops animation playback.
 
-use catchlight_core::{load_model_bytes, Model, ModelFormat, ParamId, Puppet};
+use catchlight_core::{load_model, Model, ModelFormat, ParamId, Puppet};
 use catchlight_wgpu::{
     collect, create_orthographic_camera_at, create_surface_context, PrepareOptions, RenderCache,
     SurfaceContext, WgpuRenderer,
@@ -19,7 +19,7 @@ fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
     let format = ModelFormat::from_path(path)
         .ok_or_else(|| format!("unsupported model file: {}", path.display()))?;
-    Ok(load_model_bytes(&bytes, format)?)
+    Ok(load_model(&bytes, format)?)
 }
 use winit::{
     application::ApplicationHandler,

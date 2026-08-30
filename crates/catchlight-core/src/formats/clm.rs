@@ -56,7 +56,7 @@ use thiserror::Error;
 use super::container::{self, ContainerError, Section};
 use crate::components::{BlendMode, MaskMode};
 use crate::id::{NodeId, ParamId, SeamId, SlotId, TexId};
-use crate::params::InterpolateMode;
+use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
 /// Alpha convention of a texture's stored bytes. The compile/preview step
@@ -145,7 +145,7 @@ impl Default for ClmIndices {
     }
 }
 
-/// Binding targets mirror the live [`crate::params::BindingValues`]. Binding
+/// Binding targets mirror the live [`crate::interpolate::BindingValues`]. Binding
 /// kinds the runtime doesn't fold (emissionStrength, unknown targets) are
 /// dropped at import. Each variant carries only the *authored* keypoint cells;
 /// unauthored cells are derived, never stored — authored = present, so the

@@ -83,9 +83,6 @@ pub(super) struct SchemaNode {
     #[serde(default, rename = "type", deserialize_with = "de_lenient")]
     pub(super) ty: Option<String>,
     #[serde(default, deserialize_with = "de_lenient_vec")]
-    pub(super) children: Vec<serde_json::Value>,
-
-    #[serde(default, deserialize_with = "de_lenient_vec")]
     pub(super) textures: Vec<i64>,
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) mesh: Option<SchemaMesh>,
@@ -128,7 +125,7 @@ pub(super) struct SchemaNode {
     #[serde(default, deserialize_with = "de_lenient_vec")]
     pub(super) output_scale: Vec<f32>,
 
-    // The authored Composite flag the LegacyPuppet path hardcodes to true;
+    // The authored Composite flag the old runtime path hardcoded to true;
     // the `.clm` importer reads it.
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) propagate_meshgroup: Option<bool>,
@@ -215,38 +212,4 @@ pub(super) struct SchemaBinding {
     /// set vs. inochi's baked re-interpolation fill.
     #[serde(default, rename = "isSet", deserialize_with = "de_lenient")]
     pub(super) is_set: Option<Vec<Vec<bool>>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaAnimation {
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) timestep: Option<f32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) length: Option<i32>,
-    #[serde(default, rename = "leadIn", deserialize_with = "de_lenient")]
-    pub(super) lead_in: Option<i32>,
-    #[serde(default, rename = "leadOut", deserialize_with = "de_lenient")]
-    pub(super) lead_out: Option<i32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
-    pub(super) lanes: Vec<SchemaAnimationLane>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaAnimationLane {
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) uuid: Option<u32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) target: Option<u8>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) interpolation: Option<String>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
-    pub(super) keyframes: Vec<SchemaKeyframe>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaKeyframe {
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) frame: Option<i32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) value: Option<f32>,
 }

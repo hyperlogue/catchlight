@@ -33,7 +33,7 @@ impl TextureId {
     }
 }
 
-/// Canonical texture representation in a LegacyPuppet: pre-decoded bytes
+/// Canonical texture representation in a puppet: pre-decoded bytes
 /// encoding premultiplied LINEAR colour, ready for any renderer to upload
 /// as `Rgba8UnormSrgb` (the sampler's decode then hands shaders
 /// premultiplied linear). The importer owns the conversion from source-file
@@ -145,13 +145,11 @@ pub(crate) fn srgb_encode_to_byte(linear: f32) -> u8 {
     (s * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// Each node carries two transforms: `base_transform` / `base_z_order`
-/// are the loader-parsed values, set once and never mutated; `transform`
-/// / `z_order` are the per-frame working copies that `LegacyPuppet::
-/// reset_dynamic_state` resets to base at frame start and
-/// `LegacyPuppet::apply_params` additively modifies. Callers that don't use
-/// parameters see identical behavior: base == working at load, nothing
-/// changes between frames.
+/// Each node carries two transforms: `base_transform` / `base_z_order` are
+/// what the model authored, baked once and never mutated; `transform` /
+/// `z_order` are the per-frame working copies a tick resets to base and then
+/// folds the bindings into. A puppet with no bindings sees identical
+/// behaviour: base == working at bake, nothing changes between frames.
 #[derive(Debug, Clone)]
 pub struct Node {
     pub name: String,
@@ -262,7 +260,7 @@ impl Default for CompositeData {
 /// A mesh group is never drawn (`drawable_collector` skips it), so it carries
 /// no colour at all — the fields a drawable has for it are absent here, and a
 /// `.clm` binding that drives colour on a mesh group is rejected at load; see
-/// [`crate::params::MeshGroupColorBindingError`].
+/// [`crate::interpolate::MeshGroupColorBindingError`].
 #[derive(Debug, Clone)]
 pub struct MeshGroupData {
     pub mesh: Mesh,
@@ -528,9 +526,12 @@ pub enum MaskMode {
     DodgeMask,
 }
 
+/// One drawable's clipping rule, as a puppet holds it: the arena slot of the
+/// node whose shape clips it, and whether what that shape covers is kept or
+/// cut away. A model names the source by Id; the bake resolves it.
 #[derive(Debug, Clone)]
 pub struct Mask {
-    pub source_uuid: u32,
+    pub source: NodeIdx,
     pub mode: MaskMode,
 }
 

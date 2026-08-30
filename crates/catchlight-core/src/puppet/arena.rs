@@ -202,24 +202,6 @@ impl Arena {
         }
     }
 
-    /// Replace a node's authored transform and reset its working transform to
-    /// the same value.
-    pub(crate) fn set_node_base_transform(&mut self, id: NodeIdx, transform: crate::Transform) {
-        let slot = id.0 as usize;
-        let Some(node) = self.nodes.get_mut(slot) else {
-            return;
-        };
-        node.base_transform = transform;
-        node.transform = transform;
-        if let Some(matrix) = self.base_local_matrix.get_mut(slot) {
-            *matrix = transform.to_matrix();
-        }
-        if let Some(dirty) = self.node_transform_dirty.get_mut(slot) {
-            *dirty = false;
-        }
-        self.rebuild_all_mesh_group_attachments();
-    }
-
     /// Rebuild the three kind registries from the current node kinds.
     pub(crate) fn rebuild_kind_registries(&mut self) {
         self.deform_node_ids.clear();

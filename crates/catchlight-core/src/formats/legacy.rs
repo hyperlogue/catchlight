@@ -1,11 +1,15 @@
 //! The legacy arena document: the shape catchlight's model file had before
 //! `.clm`. It has no byte codec any more — nothing reads or writes it — and
-//! survives only as the shared in-memory shape of two conversions:
-//! `.inx` -> arena (`importer::inochi2d::to_legacy`) on the way in, and
-//! arena -> dense runtime puppet (`importer::inochi2d::from_legacy`) on the
-//! way out. A [`Model`](crate::Model) is the pivot between them
-//! (`crates/catchlight-core/src/model/legacy.rs`), and `.clm` is the only
-//! thing that reaches a disk.
+//! `.clm` is the only thing that reaches a disk.
+//!
+//! **It stays until cl-0ci**, because it is still an *authoring* shape: the
+//! `.inx` reader writes one (`importer::inochi2d::to_legacy`) and `cargo
+//! xtask`'s fixture generators author one by hand, and both then go through
+//! [`Model::from_legacy`](crate::Model::from_legacy) to become a `.clm`.
+//! [`Model::to_legacy`](crate::Model::to_legacy) is the way back, which the
+//! fixture-drift check and the scalar-param-split tests need. When the
+//! importer moves to its own crate and the generators author a `Model`
+//! directly, this module and both halves of the bridge go with them.
 //!
 //! The structure is an **arena**: nodes and params are flat `Vec`s and every
 //! cross-reference is an index into one of them — a node's `parent`, a
@@ -22,8 +26,8 @@ use super::clm::{
     ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha, TextureEncoding,
 };
 use crate::components::{BlendMode, MaskMode};
+use crate::interpolate::InterpolateMode;
 use crate::model::ModelWeldPair;
-use crate::params::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,7 +104,7 @@ pub struct LegacyComposite {
 /// A mesh group deforms what is beneath it and is never drawn, so it stores no
 /// colour. Colour keys written by an older writer decode as unknown fields and
 /// are ignored; a *binding* aiming a colour target at a mesh group is rejected
-/// at load ([`crate::params::MeshGroupColorBindingError`]).
+/// at load ([`crate::interpolate::MeshGroupColorBindingError`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegacyMeshGroup {
     pub mesh: ClmMesh,

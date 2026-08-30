@@ -50,8 +50,6 @@ pub(crate) trait DrawSource {
     /// Bumped whenever the tree's shape changes. The collector caches the
     /// structural half of its pass-through verdict against it.
     fn structure_revision(&self) -> u64;
-    /// Resolve what a baked mask names as its source.
-    fn mask_source(&self, source: u32) -> Option<NodeIdx>;
     /// The cache slot holding this node's uploaded mesh, or [`NO_SLOT`].
     fn mesh_slot(&self, idx: NodeIdx) -> u32;
     /// The cache slot holding this part's albedo, or [`NO_SLOT`]. May name a
@@ -335,9 +333,7 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
 
     let mut sources = MaskSources::new();
     for binding in masks {
-        let Some(mask_node_id) = source.mask_source(binding.source_uuid) else {
-            continue;
-        };
+        let mask_node_id = binding.source;
         let Some(mask_node) = source.node(mask_node_id) else {
             continue;
         };

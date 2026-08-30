@@ -19,8 +19,8 @@ use crate::components::{
 use crate::deform::DeformStack;
 use crate::formats::clm::{ClmIndices, ClmMesh};
 use crate::id::{NodeId, ParamId};
+use crate::interpolate::InterpolateMode;
 use crate::model::{BindingKey, BindingTarget, DenseGrid, Model, ModelNodeKind, ModelPhysics};
-use crate::params::InterpolateMode;
 use crate::physics::SimplePhysicsData;
 
 use super::arena::Arena;
@@ -137,10 +137,9 @@ pub(super) fn bake(model: &Model) -> Baked {
     // written into slot 0 directly.
     arena.rebuild_kind_registries();
 
-    // Masks name their source by NodeIdx: `Mask::source_uuid` is the legacy
-    // uuid namespace, and a Model has none, so a baked mask carries the
-    // source's arena slot. `Puppet::node_for_uuid` is the identity because of
-    // it. The render cache task replaces the field outright.
+    // Masks are resolved last, because a mask may name a node that comes
+    // after its target in the walk. A mask whose source is not in the model
+    // is dropped rather than baked as a dangling slot.
     for (slot, id) in id_of_node.iter().enumerate() {
         let Some(model_node) = model.node(id) else {
             continue;
@@ -148,8 +147,8 @@ pub(super) fn bake(model: &Model) -> Baked {
         let sources: Vec<Mask> = model_masks(model_node)
             .iter()
             .filter_map(|m| {
-                node_of_id.get(m.source()).map(|idx| Mask {
-                    source_uuid: idx.0,
+                node_of_id.get(m.source()).map(|&idx| Mask {
+                    source: idx,
                     mode: m.mode(),
                 })
             })
@@ -358,16 +357,15 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
     }
 }
 
-/// The authored driver plus a rest state. `target_param_id` stays `None`: it
-/// is the legacy uuid namespace, and this runtime resolves a driver's targets
-/// through [`Baked::physics_targets`] instead.
+/// The authored driver plus a rest state. A driver's target params are not on
+/// the driver: they are resolved to param slots in [`Baked::physics_targets`],
+/// parallel to `Arena::physics_node_ids`.
 fn build_physics(ph: &ModelPhysics, transform: &Transform, g_scale: f32) -> SimplePhysicsData {
     let anchor = Vec2::new(transform.translation.x, transform.translation.y);
     SimplePhysicsData {
         kind: ph.kind,
         map_mode: ph.map_mode,
         local_only: ph.local_only,
-        target_param_id: None,
         // The model stores authored, unscaled gravity; the integrator wants it
         // pre-folded with the model-level pixelsPerMeter x gravity.
         gravity: ph.gravity * g_scale,

@@ -1,11 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The legacy bridge, checked against the runtime that still reads the arena.
+//! The legacy bridge: a 2-D arena param becomes two scalar params plus a
+//! two-param binding in a [`Model`].
 //!
-//! A 2-D arena param becomes two scalar params plus a two-param binding in a
-//! [`Model`]. That is only lossless if the pair evaluates to what the 2-D
-//! param evaluated to, so this drives the *same document* two ways — through
-//! the legacy runtime's `Param::apply` and through `Model::eval_scalar` — and
-//! compares them across the grid.
+//! That is only lossless if the pair evaluates to what the 2-D param
+//! evaluated to. The runtime that read the 2-D param is gone, so the
+//! comparison is against a reference interpolator written out longhand
+//! below — normalize the pose into the param's box, bracket it against the
+//! key positions, interpolate the binding's dense grid — which is the whole
+//! definition of a two-axis param and shares no code with the model's own
+//! evaluator.
 
 use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmPhysics, ClmTransform,
@@ -13,7 +16,8 @@ use catchlight_core::formats::clm::{
 use catchlight_core::formats::legacy::{
     LegacyBinding, LegacyDocument, LegacyFile, LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart,
 };
-use catchlight_core::params::InterpolateMode;
+use catchlight_core::interpolate::InterpolateMode;
+use catchlight_core::model::DenseGrid;
 use catchlight_core::{BindingKey, BindingParams, BindingTarget, Model, Pose, ScalarTarget};
 
 /// One part under the root, driven by one 2-D param whose z-order binding is
@@ -93,18 +97,104 @@ fn two_dimensional_file(mode: InterpolateMode) -> LegacyFile {
     }
 }
 
-/// The z order the legacy runtime's 2-D param folds onto the part at `(x, y)`,
-/// as a delta from the part's authored z order.
-fn runtime_contribution(file: &LegacyFile, x: f32, y: f32) -> f32 {
-    let mut puppet = catchlight_core::from_legacy(file, 0).unwrap();
-    puppet.apply_pose_overlay(&[("Head", glam::Vec2::new(x, y))]);
-    puppet.reset_dynamic_state();
-    puppet.apply_params();
-    let node = puppet
-        .node_for_uuid(1)
-        .and_then(|id| puppet.get(id))
-        .expect("the part is in the arena");
-    node.z_order - node.base_z_order
+/// What a two-axis param at `(x, y)` is *defined* to produce, computed here
+/// rather than asked of the model: normalize into the box the arena param
+/// declared, bracket against its key positions, interpolate the binding's
+/// dense grid in the authored mode.
+///
+/// `file` supplies the param's box and key positions (the model's, split in
+/// two, must agree with them); the grid comes from the model because deriving
+/// the unauthored cells is [`catchlight_core::fill`]'s job and has its own
+/// tests.
+fn reference_contribution(
+    file: &LegacyFile,
+    model: &Model,
+    key: &BindingKey,
+    mode: InterpolateMode,
+    x: f32,
+    y: f32,
+) -> f32 {
+    let p = &file.doc.params[0];
+    let (w, h) = model.binding_grid(key).unwrap();
+    let (w, h) = (w as usize, h as usize);
+    let DenseGrid::Scalar(grid) = &**model.binding_dense(key).unwrap() else {
+        panic!("the fixture binds z order, which is a scalar target");
+    };
+    assert_eq!(grid.len(), w * h);
+
+    let norm = |v: f32, min: f32, max: f32| ((v - min) / (max - min)).clamp(0.0, 1.0);
+    let tx = norm(x, p.min[0], p.max[0]);
+    let ty = if p.is_vec2 {
+        norm(y, p.min[1], p.max[1])
+    } else {
+        0.0
+    };
+
+    let axis_x = &p.axis_points_x;
+    let axis_y = &p.axis_points_y;
+    let (x0, x1, fx) = locate(axis_x, tx);
+    let (y0, y1, fy) = locate(axis_y, ty);
+    let at = |i: usize, j: usize| grid[j * w + i];
+
+    match mode {
+        InterpolateMode::Nearest => at(
+            if fx < 0.5 { x0 } else { x1 },
+            if fy < 0.5 { y0 } else { y1 },
+        ),
+        // Hold the bracket's lower cell, except at the very top of an axis,
+        // where the bracket stops advancing and the last cell would otherwise
+        // be unreachable.
+        InterpolateMode::Stepped => at(
+            if fx >= 1.0 && x1 + 1 >= w { x1 } else { x0 },
+            if fy >= 1.0 && y1 + 1 >= h { y1 } else { y0 },
+        ),
+        InterpolateMode::Linear => {
+            let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * fx;
+            let bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * fx;
+            top + (bottom - top) * fy
+        }
+        InterpolateMode::Cubic => {
+            // Catmull-Rom over the bracket plus one cell each side, with the
+            // outer indices clamped so an edge cell degrades to linear.
+            let cx = [x0.saturating_sub(1), x0, x1, (x1 + 1).min(w - 1)];
+            let cy = [y0.saturating_sub(1), y0, y1, (y1 + 1).min(h - 1)];
+            let row =
+                |j: usize| catmull_rom(at(cx[0], j), at(cx[1], j), at(cx[2], j), at(cx[3], j), fx);
+            catmull_rom(row(cy[0]), row(cy[1]), row(cy[2]), row(cy[3]), fy)
+        }
+    }
+}
+
+/// The bracketing key positions around `t` and how far between them it sits.
+fn locate(axis: &[f32], t: f32) -> (usize, usize, f32) {
+    let last = axis.len().saturating_sub(1);
+    if last == 0 {
+        return (0, 0, 0.0);
+    }
+    let (i0, i1) = (0..last)
+        .find(|&i| t >= axis[i] && t <= axis[i + 1])
+        .map(|i| (i, i + 1))
+        .unwrap_or(if t < axis[0] {
+            (0, 1)
+        } else {
+            (last - 1, last)
+        });
+    let (a, b) = (axis[i0], axis[i1]);
+    let f = if (b - a).abs() < 1e-9 {
+        0.0
+    } else {
+        ((t - a) / (b - a)).clamp(0.0, 1.0)
+    };
+    (i0, i1, f)
+}
+
+fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+    let (m1, m2) = ((p2 - p0) * 0.5, (p3 - p1) * 0.5);
+    let (t2, t3) = (t * t, t * t * t);
+    p1 * (2.0 * t3 - 3.0 * t2 + 1.0)
+        + p2 * (-2.0 * t3 + 3.0 * t2)
+        + m1 * (t3 - 2.0 * t2 + t)
+        + m2 * (t3 - t2)
 }
 
 fn model_contribution(model: &Model, key: &BindingKey, x: f32, y: f32) -> f32 {
@@ -149,11 +239,11 @@ fn a_split_two_dimensional_param_evaluates_as_it_did() {
             for j in 0..=8 {
                 let x = -1.5 + 3.0 * i as f32 / 8.0;
                 let y = -3.0 + 6.0 * j as f32 / 8.0;
-                let runtime = runtime_contribution(&file, x, y);
+                let expected = reference_contribution(&file, &model, &key, mode, x, y);
                 let model_value = model_contribution(&model, &key, x, y);
                 assert!(
-                    (runtime - model_value).abs() < 1e-4,
-                    "{mode:?} at ({x}, {y}): runtime {runtime}, model {model_value}",
+                    (expected - model_value).abs() < 1e-4,
+                    "{mode:?} at ({x}, {y}): expected {expected}, model {model_value}",
                 );
             }
         }
@@ -195,12 +285,12 @@ fn a_one_dimensional_param_still_evaluates_as_it_did() {
 
     for i in 0..=8 {
         let x = -1.5 + 3.0 * i as f32 / 8.0;
-        let runtime = runtime_contribution(&file, x, 0.0);
+        let expected = reference_contribution(&file, &model, &key, InterpolateMode::Linear, x, 0.0);
         let pose: Pose = [(param.clone(), x)].into_iter().collect();
         let model_value = model.eval_scalar(&key, &pose).unwrap();
         assert!(
-            (runtime - model_value).abs() < 1e-4,
-            "at {x}: runtime {runtime}, model {model_value}",
+            (expected - model_value).abs() < 1e-4,
+            "at {x}: expected {expected}, model {model_value}",
         );
     }
 }

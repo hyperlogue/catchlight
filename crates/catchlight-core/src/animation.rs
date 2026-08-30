@@ -1,4 +1,4 @@
-use crate::params::{InterpolateMode, ParamAxis};
+use crate::interpolate::InterpolateMode;
 
 /// A single keyframe on an animation lane. `frame` is an integer frame
 /// index rather than time; the lane's `timestep` converts frames to seconds.
@@ -8,27 +8,8 @@ pub struct Keyframe {
     pub value: f32,
 }
 
-/// One lane of an animation drives a single axis of a single parameter.
-#[derive(Debug, Clone)]
-pub struct AnimationLane {
-    pub param_id: u32,
-    pub axis: ParamAxis,
-    pub keyframes: Vec<Keyframe>,
-    pub interpolation: InterpolateMode,
-}
-
-impl AnimationLane {
-    /// Interpolated value at fractional frame `t`. Out-of-range `t`
-    /// clamps to the first/last keyframe (no extrapolation).
-    pub fn value_at(&self, t: f32) -> f32 {
-        value_at(&self.keyframes, self.interpolation, t)
-    }
-}
-
 /// One lane of a [`PuppetAnimation`]: the param it drives and the values it
-/// holds over time. A param is a scalar, so a lane drives a whole param rather
-/// than one axis of a two-dimensional one — the difference from
-/// [`AnimationLane`], which is keyed by the legacy uuid namespace.
+/// holds over time. A param is a scalar, so a lane drives one whole param.
 #[derive(Debug, Clone)]
 pub struct PuppetLane {
     pub param: crate::id::ParamId,
@@ -82,39 +63,11 @@ fn value_at(keyframes: &[Keyframe], interpolation: InterpolateMode, t: f32) -> f
                         let p1 = a.value;
                         let p2 = b.value;
                         let p3 = kfs[(i + 1).min(kfs.len() - 1)].value;
-                        crate::params::cubic(p0, p1, p2, p3, frac)
+                        crate::interpolate::cubic(p0, p1, p2, p3, frac)
                     }
                 }
             }
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Animation {
-    pub name: String,
-    /// Seconds per frame. Defaults to 0.0166s (about 60 fps).
-    pub timestep: f32,
-    /// Length in frames. A player that advances past `length` rolls
-    /// back to the loop region's start (looping) unless a caller
-    /// tracks play state itself.
-    pub length: i32,
-    /// Frame where the lead-in ends / looping restarts. -1 (or any
-    /// value outside (0, length-1)) means the loop region starts at 0.
-    /// The lead-in plays once before the first wrap.
-    pub lead_in: i32,
-    /// Frame where the lead-out starts / looping wraps. -1 (or any
-    /// value outside (0, length-1)) means the loop region ends at
-    /// `length`.
-    pub lead_out: i32,
-    pub lanes: Vec<AnimationLane>,
-}
-
-impl Animation {
-    /// A lead-in/out affects the loop region only when it lies strictly
-    /// inside the clip.
-    pub(crate) fn loop_region(&self) -> (i32, i32) {
-        loop_region(self.length, self.lead_in, self.lead_out)
     }
 }
 
@@ -136,8 +89,8 @@ fn loop_region(length: i32, lead_in: i32, lead_out: i32) -> (i32, i32) {
 }
 
 /// A named, timed sequence of param values: an optional lead-in played once,
-/// then a body that repeats. The form a [`crate::puppet::Puppet`] plays —
-/// [`Animation`] is the same shape keyed by the legacy uuid namespace.
+/// then a body that repeats. The form a [`crate::puppet::Puppet`] plays; a
+/// model stores the same shape as [`crate::formats::clm::ClmAnimation`].
 #[derive(Debug, Clone)]
 pub struct PuppetAnimation {
     pub name: String,
@@ -200,19 +153,6 @@ impl Default for PuppetAnimation {
     }
 }
 
-impl Default for Animation {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            timestep: 1.0 / 60.0,
-            length: 0,
-            lead_in: -1,
-            lead_out: -1,
-            lanes: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AnimationPlayState {
     pub index: usize,
@@ -225,10 +165,9 @@ pub(crate) struct AnimationPlayState {
 mod tests {
     use super::*;
 
-    fn lane(kfs: Vec<(i32, f32)>, mode: InterpolateMode) -> AnimationLane {
-        AnimationLane {
-            param_id: 0,
-            axis: ParamAxis::X,
+    fn lane(kfs: Vec<(i32, f32)>, mode: InterpolateMode) -> PuppetLane {
+        PuppetLane {
+            param: crate::id::ParamId::new("p").unwrap(),
             keyframes: kfs
                 .into_iter()
                 .map(|(frame, value)| Keyframe { frame, value })

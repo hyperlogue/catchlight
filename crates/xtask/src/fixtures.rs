@@ -32,8 +32,8 @@ use catchlight_core::formats::legacy::{
     LegacyBinding, LegacyComposite, LegacyDocument, LegacyFile, LegacyNode, LegacyNodeKind,
     LegacyParam, LegacyPart, LegacyTexture, LegacyWeld,
 };
+use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::model::ModelWeldPair;
-use catchlight_core::params::InterpolateMode;
 use catchlight_core::Model;
 
 /// Builds a fixture's structure document and its texture table.

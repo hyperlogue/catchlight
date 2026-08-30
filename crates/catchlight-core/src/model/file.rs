@@ -886,7 +886,7 @@ mod tests {
         ClmMesh, TextureAlpha, TextureEncoding,
     };
     use crate::id::SeededHex;
-    use crate::params::InterpolateMode;
+    use crate::interpolate::InterpolateMode;
     use crate::physics::PendulumKind;
 
     fn seam(id: &str) -> SeamId {

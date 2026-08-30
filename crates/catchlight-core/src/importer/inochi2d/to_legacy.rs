@@ -9,8 +9,8 @@
 //! node index, `SimplePhysics.target_param` to a param index — and then
 //! dropped; the array position is the only identity the arena has, and the
 //! Ids a Model mints from it are what the file stores. References that don't
-//! resolve are dropped, exactly as the LegacyPuppet path drops them; duplicate uuids
-//! collapse to the first occurrence (the LegacyPuppet path's renumbering, for free).
+//! resolve are dropped; duplicate uuids collapse to the first occurrence, so a
+//! reference always names the node that claimed the uuid first.
 //!
 //! Like [`super::convert`], this keeps only what catchlight models and drops the
 //! rest (meta, groups, automation, animations, cameras, emissive/bump slots,
@@ -29,7 +29,7 @@ use crate::formats::legacy::{
     LegacyNode, LegacyNodeKind, LegacyParam, LegacyPart, LegacySimplePhysics, LegacyTexture,
 };
 use crate::formats::{InxModel, TextureFormat};
-use crate::params::InterpolateMode;
+use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
 use super::error::ImportError;
@@ -64,7 +64,7 @@ pub fn from_inx_model_to_legacy(model: &InxModel) -> Result<LegacyFile, ImportEr
     }
 
     // Params keep their array order; build a uuid → index map (first-wins, which
-    // is the LegacyPuppet path's duplicate-uuid renumbering).
+    // first-wins on a duplicate, like the node map).
     let schema_params: Vec<SchemaParam> = obj
         .get("param")
         .and_then(|v| v.as_array())
@@ -158,10 +158,9 @@ fn parse_node_shallow(value: &serde_json::Value) -> SchemaNode {
     serde_json::from_value(serde_json::Value::Object(sanitized)).unwrap_or_default()
 }
 
-// Shorter-than-expected arrays fill the missing components individually,
-// matching `convert::convert_vec2` / `convert_vec3`. Falling back to the whole
-// default instead would snap a node with `"scale": [2.0]` to unit scale on this
-// path while the LegacyPuppet path reads (2.0, 1.0).
+// Shorter-than-expected arrays fill the missing components individually.
+// Falling back to the whole default instead would snap a node with
+// `"scale": [2.0]` to unit scale, which is not what the file says.
 fn vec2_arr(v: &[f32], default: [f32; 2]) -> [f32; 2] {
     [
         v.first().copied().unwrap_or(default[0]),
@@ -264,7 +263,8 @@ fn convert_masks(masks: &[SchemaMask], node_index: &HashMap<u32, u32>) -> Vec<Le
     masks
         .iter()
         .filter_map(|m| {
-            // Drop masks whose source node doesn't resolve, as the LegacyPuppet path does.
+            // Drop masks whose source node doesn't resolve: `.inx` is untrusted
+            // and a dangling mask has nothing to clip against.
             let source = *node_index.get(&m.source?)?;
             Some(LegacyMask {
                 source,
@@ -346,7 +346,7 @@ fn convert_param(
 ) -> LegacyParam {
     let is_vec2 = p.is_vec2.unwrap_or(false);
     // Resolve inochi2d's axis-point defaults here so the wire holds final axis
-    // stops (the same logic the LegacyPuppet path applies in convert.rs): absent axes
+    // stops: absent axes
     // default to [0,1] on x and [0,1]/[0] on y (vec2/scalar), and a degenerate
     // empty axis collapses to a single stop so the param can still drive.
     let default_y = || if is_vec2 { vec![0.0, 1.0] } else { vec![0.0] };
@@ -388,13 +388,14 @@ fn convert_binding(
     axis_x: &[f32],
     axis_y: &[f32],
 ) -> Option<LegacyBinding> {
-    // Drop bindings whose target node doesn't resolve, as the LegacyPuppet path does.
+    // Drop bindings whose target node doesn't resolve: there is nothing for
+    // them to drive.
     let node = *node_index.get(&b.node?)?;
     let values_json = b.values.as_ref()?;
     let kind = b.param_name.as_deref().unwrap_or("");
     // A mesh group is never drawn and carries no colour, so a colour binding on
     // one has nowhere to land — and writing it out would produce a `.clm` the
-    // loader rejects. The LegacyPuppet path drops the same shape.
+    // loader rejects.
     if source_binding_is_color(kind)
         && matches!(
             nodes.get(node as usize).map(|n| &n.kind),
@@ -479,7 +480,7 @@ fn convert_binding_values(
         "outputScale.x" => ClmBindingValues::OutputScaleX(cells),
         "outputScale.y" => ClmBindingValues::OutputScaleY(cells),
         // emissionStrength and any unknown target are folded by no renderer path,
-        // so they're dropped here exactly as the LegacyPuppet importer drops them.
+        // so they are dropped here.
         _ => return None,
     })
 }
@@ -654,8 +655,8 @@ fn matrix_vec2_flat(v: &serde_json::Value) -> Dense<Vec<f32>> {
     }
 }
 
-/// Mirrors `convert::convert_blend_mode`: an unrecognised name is an error, not
-/// a silent downgrade to Normal. `.clm` is the source of truth after import, so
+/// An unrecognised blend-mode name is an error, not a silent downgrade to
+/// Normal. `.clm` is the source of truth after import, so
 /// a wrong-but-valid blend mode baked in here is unrecoverable.
 fn blend(s: Option<&str>) -> Result<BlendMode, ImportError> {
     match s {
@@ -958,7 +959,7 @@ mod tests {
         let model = load_reference();
         let file = from_inx_model_to_legacy(&model).unwrap();
         // The root "Puppet Body" composite authors propagate_meshgroup=false —
-        // the divergence the LegacyPuppet path hardcodes to true.
+        // the flag the old runtime path hardcoded to true.
         assert!(
             file.doc.nodes.iter().any(|n| matches!(
                 &n.kind,

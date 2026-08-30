@@ -20,8 +20,6 @@ use std::sync::Arc;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, LoadContext};
 use bevy::prelude::*;
-use catchlight_core::formats::InxModel;
-use catchlight_core::importer::from_inx_model_to_legacy;
 use catchlight_core::{Model, ModelFormat};
 
 /// A loaded [`Model`], shared by every puppet animating it.
@@ -118,23 +116,11 @@ impl AssetLoader for CatchlightModelLoader {
 
 /// Read model-file `bytes` of a known `format` into a [`Model`].
 ///
-/// `.clm` is the one first-class path. A legacy `.inx` / `.inp` goes through
-/// the importer's legacy document, which is the only route it still has —
-/// convert one with `cargo xtask import` rather than shipping it as an asset.
+/// The dispatch is the core's ([`catchlight_core::load_model`]); this only
+/// re-labels its error, because an asset loader can do nothing with a reader's
+/// error but log it.
 pub fn model_from_bytes(bytes: &[u8], format: ModelFormat) -> Result<Model, ModelAssetError> {
-    match format {
-        ModelFormat::Clm => Model::from_clm_bytes(bytes).map_err(ModelAssetError::parse),
-        ModelFormat::Inx | ModelFormat::Inp => {
-            tracing::warn!(
-                "loading a legacy inochi2d model as an asset is deprecated; \
-                 convert it to .clm with `cargo xtask import`"
-            );
-            let inx =
-                InxModel::parse(std::io::Cursor::new(bytes)).map_err(ModelAssetError::parse)?;
-            let legacy = from_inx_model_to_legacy(&inx).map_err(ModelAssetError::parse)?;
-            Model::from_legacy(&legacy).map_err(ModelAssetError::parse)
-        }
-    }
+    catchlight_core::load_model(bytes, format).map_err(ModelAssetError::parse)
 }
 
 /// Why a model asset could not be loaded.

@@ -17,8 +17,8 @@ use glam::Vec2;
 
 use crate::components::NodeKind;
 use crate::deform::DeformSource;
+use crate::interpolate::{cubic, InterpolateMode};
 use crate::model::{BindingTarget, DenseGrid, ScalarTarget};
-use crate::params::{cubic, InterpolateMode};
 
 use super::bake::BakedBinding;
 use super::{Located, Puppet};

@@ -9,7 +9,7 @@ use catchlight_core::formats::clm::{
     TextureEncoding,
 };
 use catchlight_core::id::{Name, NodeId, ParamId, SeamId, SeededHex, SlotId, TexId};
-use catchlight_core::params::InterpolateMode;
+use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::PendulumKind;
 use catchlight_core::{
     target_of, BindingKey, BindingTarget, HexSource, InstallError, MaskMode, Model, ModelComposite,

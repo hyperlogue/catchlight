@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use crate::id::ParamId;
-use crate::params::{bracket, cubic, frac, InterpolateMode};
+use crate::interpolate::{bracket, cubic, frac, InterpolateMode};
 
 use super::{BindingKey, BindingTarget, DenseGrid, Model, ModelError};
 
