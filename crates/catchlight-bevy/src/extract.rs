@@ -1,63 +1,66 @@
+use std::sync::Arc;
+
 use bevy::prelude::*;
 use bevy::render::{sync_world::RenderEntity, Extract};
+use catchlight_core::Model;
 
+use crate::asset::CatchlightModel;
 use crate::components::{CatchlightCamera, CatchlightPuppet};
-use std::sync::{Arc, RwLock};
+use crate::plugin::CatchlightSettings;
+use crate::prepare::{CatchlightRenderState, RendererKey};
 
-use catchlight_core::LegacyPuppet;
-use catchlight_wgpu::{DeformSnapshot, RenderList};
-
-/// Render-world snapshot of a `CatchlightPuppet`, retained across frames
-/// and refilled in place by `extract_puppets` (see
-/// `DeformSnapshot::refill_from_puppet`).
+/// Render-world half of a `CatchlightPuppet`, retained across frames and
+/// refilled in place by `extract_puppets`.
 ///
-/// Everything the render world needs for *this* frame is frozen here at
-/// extract time (while the main world is paused): the drawable list and
-/// the combined deforms. The render world therefore never reads the live
-/// puppet during the frame, so the next main-world frame can recompute
-/// deforms — which overwrite the live `DeformStack::combined` buffers in
-/// place — concurrently with rendering (bevy pipelined rendering). The
-/// `Arc<RwLock<LegacyPuppet>>` is retained only for the one-time `upload_puppet`
-/// (static meshes + textures, read once when the renderer is created).
+/// It carries what the render world needs and cannot get from a cache: the
+/// model to prepare from, and the entity's placement in the scene. The
+/// drawables and the deforms are not here — those go straight into the render
+/// cache during extraction, while the main world is paused.
 #[derive(Component)]
 pub struct ExtractedPuppet {
-    pub puppet: Arc<RwLock<LegacyPuppet>>,
-    pub render_list: Option<RenderList>,
-    // On wasm prepare reads the live puppet instead (no pipelined
-    // rendering), so the snapshot is only filled and read on native.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub deforms: DeformSnapshot,
+    /// The model this entity animates. An `Arc`, so extraction copies a
+    /// pointer rather than a rig.
+    pub model: Arc<Model>,
+    /// Which asset that is — the cache is rebuilt when this changes.
+    pub model_id: AssetId<CatchlightModel>,
     /// World-space z of the entity, used to order overlapping puppets
     /// deterministically (higher z renders in front).
     pub z: f32,
     /// Hierarchy visibility (`Visibility::Hidden` or a hidden ancestor
-    /// clears this). The render node skips drawing when false; the
-    /// renderer is kept resident so unhiding doesn't re-upload the
-    /// puppet.
+    /// clears this). The render node skips drawing when false; the cache is
+    /// kept resident so unhiding doesn't re-upload the model.
     pub visible: bool,
 }
 
 // bevy 0.19's `SyncComponentPlugin` needs this `SyncComponent` impl: it
 // registers `SyncToRenderWorld` as required on `CatchlightPuppet` (so each gets
 // a paired `RenderEntity`), and on removal strips `Target` from the render
-// entity — dropping `ExtractedPuppet` makes `prepare`'s GC release the renderer
+// entity — dropping `ExtractedPuppet` makes `prepare`'s GC release the cache
 // instead of drawing the frozen render list forever.
 impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
     type Target = ExtractedPuppet;
 }
 
-/// Extract system. Bevy's Extract schedule: main-world frozen, we copy
-/// what the render world needs into the paired `RenderEntity`.
+/// Extract system. Bevy's Extract schedule: main world frozen, we hand the
+/// render world what this frame needs.
 ///
-/// The render world *retains* the `ExtractedPuppet` across frames, so we
-/// refill it in place (reusing its `DeformSnapshot` Vec allocations) rather
-/// than inserting a fresh one each frame — the snapshot is the only
-/// per-frame allocation otherwise, and it's ~one Vec per active deform node.
-// Invariant: per-puppet RwLocks are only poisoned on panic, treated as fatal.
+/// This is where a puppet reaches its render cache. Bevy's `extract` is
+/// catchlight's [`RenderCache::refresh`](catchlight_wgpu::RenderCache::refresh):
+/// the frame's deforms are uploaded and the drawables collected here, against
+/// the live puppet, because **the main world is paused and nothing else may
+/// read it**. Under bevy's pipelined rendering the next main-world frame runs
+/// while the render world draws, and a tick overwrites the puppet's combined
+/// deforms in place — so a later read would race. Doing it here also means the
+/// render world never holds a puppet, and the frozen per-frame copy the old
+/// path needed (a `DeformSnapshot`) is gone with it.
+// Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
 #[allow(clippy::unwrap_used)]
 pub(crate) fn extract_puppets(
     mut commands: Commands,
     mut existing: Query<&mut ExtractedPuppet>,
+    state: Res<CatchlightRenderState>,
+    settings: Extract<Res<CatchlightSettings>>,
+    models: Extract<Res<Assets<CatchlightModel>>>,
     query: Extract<
         Query<(
             &CatchlightPuppet,
@@ -67,40 +70,53 @@ pub(crate) fn extract_puppets(
         )>,
     >,
 ) {
-    for (cp, transform, visibility, render_entity) in query.iter() {
-        // Safe to read without racing update_puppets: extract runs with the
-        // main world paused. Snapshot the per-frame state so the render
-        // world owns it and the next main-world frame can mutate the puppet
-        // concurrently.
-        let z = transform.translation().z;
+    let mut inner = state.inner.lock().unwrap();
+    // Copied in here so `prepare_puppets`, which has no main-world access,
+    // builds caches the way the app asked for.
+    inner.options = settings.prepare;
+    let options = inner.options;
+    let formats = inner.formats();
+
+    for (puppet_component, transform, visibility, render_entity) in query.iter() {
+        let Some(puppet) = puppet_component.puppet() else {
+            // The model has not loaded yet, so there is nothing to draw and
+            // nothing for `prepare_puppets` to build a cache from.
+            continue;
+        };
+        let model_id = puppet_component.model().id();
+        let Some(asset) = models.get(model_id) else {
+            continue;
+        };
         let visible = visibility.get();
-        match existing.get_mut(render_entity.id()) {
-            Ok(mut ex) => {
-                // Native: refill the deform snapshot for the render thread.
-                // Wasm: prepare reads the live puppet (no pipelining), so
-                // skip the snapshot copy — `deforms` stays empty/unused.
-                // Hidden puppets skip the copy too: nothing draws them,
-                // and the unhide frame extracts visible=true first, so
-                // the refill (generation-gated) catches up right here.
-                #[cfg(not(target_arch = "wasm32"))]
-                if visible {
-                    ex.deforms.refill_from_puppet(&cp.puppet.read().unwrap());
+        // A hidden puppet skips the upload and the collect: nothing draws it,
+        // and the frame it is unhidden extracts `visible = true` first, so it
+        // catches up right here.
+        if visible {
+            for format in &formats {
+                let key = RendererKey {
+                    entity: render_entity.id(),
+                    format: *format,
+                };
+                if let Some(gpu) = inner.gpus.get_mut(&key) {
+                    gpu.refresh(asset.model(), model_id, puppet, options);
                 }
-                ex.render_list
-                    .clone_from(&cp.state.read().unwrap().render_list);
-                ex.z = z;
-                ex.visible = visible;
+            }
+        }
+
+        let z = transform.translation().z;
+        match existing.get_mut(render_entity.id()) {
+            Ok(mut extracted) => {
+                if !Arc::ptr_eq(&extracted.model, asset.shared()) {
+                    extracted.model = asset.shared().clone();
+                }
+                extracted.model_id = model_id;
+                extracted.z = z;
+                extracted.visible = visible;
             }
             Err(_) => {
-                let render_list = cp.state.read().unwrap().render_list.clone();
-                #[cfg(not(target_arch = "wasm32"))]
-                let deforms = DeformSnapshot::from_puppet(&cp.puppet.read().unwrap());
-                #[cfg(target_arch = "wasm32")]
-                let deforms = DeformSnapshot::default();
                 commands.entity(render_entity.id()).insert(ExtractedPuppet {
-                    puppet: cp.puppet.clone(),
-                    render_list,
-                    deforms,
+                    model: asset.shared().clone(),
+                    model_id,
                     z,
                     visible,
                 });

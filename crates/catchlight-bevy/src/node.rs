@@ -56,7 +56,7 @@ pub(crate) fn catchlight_2d_pass(
 
     // Destructure for disjoint borrows on the fields.
     let CatchlightRenderInner {
-        renderers,
+        gpus,
         formats,
         size,
         missing_format_warned,
@@ -88,11 +88,11 @@ pub(crate) fn catchlight_2d_pass(
     let color_texture: &wgpu::Texture = target.main_texture();
 
     // Deterministic draw order: ascending entity z, so a higher-z
-    // puppet composites in front (bevy 2D convention). `renderers` is
+    // puppet composites in front (bevy 2D convention). `gpus` is
     // a HashMap, so equal-z puppets need the Entity tie-break or their
     // order would follow hash iteration order and flicker across
     // runs. Hidden puppets are skipped.
-    let mut order: Vec<(Entity, f32)> = renderers
+    let mut order: Vec<(Entity, f32)> = gpus
         .keys()
         .filter_map(|key| {
             if key.format != view_format {
@@ -109,17 +109,17 @@ pub(crate) fn catchlight_2d_pass(
             entity: *entity,
             format: view_format,
         };
-        let Some(renderer) = renderers.get_mut(&key) else {
+        let Some(gpu) = gpus.get_mut(&key) else {
             continue;
         };
-        let Some(ex) = world.get::<ExtractedPuppet>(*entity) else {
+        // Collected at extract, against this cache. A cache prepared this
+        // frame has not been collected into yet, so it draws from the next
+        // frame on rather than drawing a list whose slots name another
+        // cache's resources.
+        if !gpu.collected {
             continue;
-        };
-        // Frozen snapshot from extract — borrow directly, no per-frame
-        // clone and no lock on the live puppet state.
-        let Some(render_list) = &ex.render_list else {
-            continue;
-        };
+        }
+        let (renderer, render_list) = (&mut gpu.renderer, &gpu.render_list);
 
         // Per-renderer camera write: each view records its own
         // dynamic offset, so two marked cameras in one submit don't
@@ -159,9 +159,9 @@ pub(crate) fn catchlight_2d_pass(
     // same frame resolves its own work. The matching once-per-frame
     // end_gpu_frame runs in `prepare_puppets`, after this encoder has
     // been submitted.
-    for (key, renderer) in renderers.iter_mut() {
+    for (key, gpu) in gpus.iter_mut() {
         if key.format == view_format {
-            renderer.resolve_gpu_queries(encoder);
+            gpu.renderer.resolve_gpu_queries(encoder);
         }
     }
 }
