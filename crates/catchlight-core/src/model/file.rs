@@ -531,6 +531,7 @@ impl Model {
             texture_order,
             bindings,
             animations: doc.animations.clone(),
+            binding_index: OnceLock::new(),
         })
     }
 

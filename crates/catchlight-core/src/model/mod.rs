@@ -250,6 +250,10 @@ pub struct Model {
     texture_order: Vec<TexId>,
     bindings: Vec<ModelBinding>,
     animations: Vec<ClmAnimation>,
+    /// `bindings` by key. Derived, so it is built on the first lookup and
+    /// dropped by [`Model::bump`] — every mutating path invalidates it
+    /// without having to know it exists.
+    binding_index: OnceLock<HashMap<BindingKey, usize>>,
 }
 
 /// The share of the meeting point a slot added to a welded seam starts at:
@@ -846,6 +850,7 @@ impl Model {
             texture_order: Vec::new(),
             bindings: Vec::new(),
             animations: Vec::new(),
+            binding_index: OnceLock::new(),
         }
     }
 
@@ -877,6 +882,9 @@ impl Model {
     /// same state", even after an undo walked the model backwards.
     fn bump(&mut self) {
         self.generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        // The binding index is derived from `bindings`, and this is the one
+        // place every edit passes through.
+        self.binding_index.take();
     }
 
     // ---- tree ----
