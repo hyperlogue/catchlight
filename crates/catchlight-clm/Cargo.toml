@@ -1,0 +1,17 @@
+[package]
+name = "catchlight-clm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "File-level operations on catchlight .clm model files: patch, replace-texture, extract, merge, requirements, diff"
+
+[dependencies]
+catchlight-core = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

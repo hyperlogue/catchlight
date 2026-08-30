@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/catchlight-core",
+    "crates/catchlight-clm",
     "crates/catchlight-editor-core",
     "crates/catchlight-editor-protocol",
     "crates/catchlight-editor-server",
