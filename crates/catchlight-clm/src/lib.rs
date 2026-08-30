@@ -73,6 +73,7 @@
 
 pub mod diff;
 pub mod file;
+pub mod patch;
 
 use std::path::PathBuf;
 

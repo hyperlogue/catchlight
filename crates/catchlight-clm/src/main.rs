@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use catchlight_clm::{diff, Error, EXIT_DIFFERS, EXIT_ERROR};
+use catchlight_clm::{diff, patch, Error, EXIT_DIFFERS, EXIT_ERROR};
 use clap::{Parser, Subcommand};
 
 const AFTER_HELP: &str = "\
@@ -43,6 +43,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Set one scalar field on one node or param.
+    Patch {
+        /// The .clm to edit.
+        file: PathBuf,
+        /// The node or param id.
+        id: String,
+        /// The field, e.g. z_order, enabled, name, translation.x, opacity, min.
+        field: String,
+        /// The new value.
+        value: String,
+        /// Resolve the id as a node (only needed when a param shares it).
+        #[arg(long, conflicts_with = "param")]
+        node: bool,
+        /// Resolve the id as a param (only needed when a node shares it).
+        #[arg(long)]
+        param: bool,
+        /// Write here instead of over the input.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Compare two model files by id.
     Diff { a: PathBuf, b: PathBuf },
 }
@@ -60,6 +80,27 @@ fn main() {
 
 fn run() -> Result<i32, Error> {
     match Cli::parse().cmd {
+        Cmd::Patch {
+            file,
+            id,
+            field,
+            value,
+            node,
+            param,
+            out,
+        } => {
+            let want = match (node, param) {
+                (true, false) => Some(patch::Kind::Node),
+                (false, true) => Some(patch::Kind::Param),
+                _ => None,
+            };
+            let change = patch::run(&file, &id, &field, &value, want, out.as_deref())?;
+            if change.changed() {
+                println!("{change}");
+            } else {
+                println!("{change} (unchanged)");
+            }
+        }
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;
             for line in &lines {
