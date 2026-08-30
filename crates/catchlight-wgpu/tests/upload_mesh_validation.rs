@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use catchlight_core::{Mesh, MeshId, MeshIndices, PuppetTexture, TextureId, Vec2};
+use catchlight_core::{Mesh, MeshIndices, PuppetTexture, Vec2};
 use catchlight_wgpu::{create_headless_context, RendererError, WgpuRenderer};
 
 async fn make_renderer() -> WgpuRenderer {
@@ -17,7 +17,7 @@ fn upload_mesh_rejects_vertex_uv_length_mismatch() {
         MeshIndices::U16(vec![0, 1, 2]),
         Vec2::ZERO,
     );
-    match r.upload_mesh(MeshId(42), &mesh) {
+    match r.upload_mesh(42, &mesh) {
         Err(RendererError::MeshVertexUvMismatch {
             mesh_id: 42,
             vertices: 3,
@@ -39,7 +39,7 @@ fn upload_mesh_tolerates_non_triangle_index_count() {
         MeshIndices::U16(vec![0, 1, 2, 0]), // not %3: trailing index dropped
         Vec2::ZERO,
     );
-    r.upload_mesh(MeshId(7), &mesh)
+    r.upload_mesh(7, &mesh)
         .expect("partial triangle must be truncated, not rejected");
 }
 
@@ -52,7 +52,7 @@ fn upload_mesh_tolerates_empty_uvs() {
         MeshIndices::U16(vec![0, 1, 2]),
         Vec2::ZERO,
     );
-    r.upload_mesh(MeshId(8), &mesh)
+    r.upload_mesh(8, &mesh)
         .expect("empty uvs must be zero-substituted, not rejected");
 }
 
@@ -65,7 +65,7 @@ fn upload_mesh_rejects_out_of_bounds_index() {
         MeshIndices::U16(vec![0, 1, 9]), // 9 >= 3
         Vec2::ZERO,
     );
-    match r.upload_mesh(MeshId(99), &mesh) {
+    match r.upload_mesh(99, &mesh) {
         Err(RendererError::MeshIndexOutOfBounds {
             mesh_id: 99,
             index: 9,
@@ -84,7 +84,7 @@ fn upload_texture_rejects_zero_dimensions() {
         rgba: Vec::new().into(),
     };
 
-    match r.upload_texture(TextureId(0), &texture) {
+    match r.upload_texture(0, &texture) {
         Err(RendererError::TextureDimensionsOutOfRange {
             width: 0,
             height: 1,
@@ -105,7 +105,7 @@ fn upload_texture_rejects_device_limit_overflow() {
         rgba: Vec::new().into(),
     };
 
-    match r.upload_texture(TextureId(0), &texture) {
+    match r.upload_texture(0, &texture) {
         Err(RendererError::TextureDimensionsOutOfRange {
             width,
             height: 1,
@@ -124,7 +124,7 @@ fn upload_texture_rejects_rgba_length_mismatch() {
         rgba: vec![0; 15].into(),
     };
 
-    match r.upload_texture(TextureId(0), &texture) {
+    match r.upload_texture(0, &texture) {
         Err(RendererError::TextureByteLengthMismatch {
             width: 2,
             height: 2,

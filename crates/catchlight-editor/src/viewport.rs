@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use catchlight_core::{GlobalTransforms, LegacyPuppet, NodeIdx, Vec2};
+use catchlight_core::{GlobalTransforms, LegacyPuppet, Vec2};
 use catchlight_wgpu::{
     collect_drawables, create_orthographic_camera_at, CompositePool, DrawableInfo,
     FramebufferSnapshotPool, Pipelines, RenderList, StencilTarget, WgpuRenderer,
@@ -48,7 +48,7 @@ pub(crate) struct NodePreview {
 /// `composite_children` with nothing walking that map.
 fn retain_isolated(render_list: &mut RenderList, allowed: &HashSet<u32>) {
     let keep_part = |d: &DrawableInfo| match d {
-        DrawableInfo::Part { mesh_id, .. } => allowed.contains(&mesh_id.0),
+        DrawableInfo::Part { mesh_id, .. } => allowed.contains(mesh_id),
         DrawableInfo::Composite { .. } => true,
     };
     render_list.root_drawables.retain(keep_part);
@@ -56,7 +56,7 @@ fn retain_isolated(render_list: &mut RenderList, allowed: &HashSet<u32>) {
         children.retain(keep_part);
     }
     loop {
-        let empty: HashSet<NodeIdx> = render_list
+        let empty: HashSet<u32> = render_list
             .composite_children
             .iter()
             .filter(|(_, ch)| ch.is_empty())
@@ -401,10 +401,10 @@ mod tests {
     }
 
     fn dummy_part(id: u32) -> DrawableInfo {
-        use catchlight_core::{BlendMode, MeshId, TextureId};
+        use catchlight_core::BlendMode;
         DrawableInfo::Part {
-            mesh_id: MeshId(id),
-            texture_id: TextureId(0),
+            mesh_id: id,
+            texture_id: 0,
             transform: glam::Mat4::IDENTITY,
             z_order: 0.0,
             blend_mode: BlendMode::Normal,
@@ -419,7 +419,7 @@ mod tests {
     fn dummy_composite(id: u32) -> DrawableInfo {
         use catchlight_core::BlendMode;
         DrawableInfo::Composite {
-            node_id: NodeIdx(id),
+            node_id: id,
             z_order: 0.0,
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
@@ -435,44 +435,35 @@ mod tests {
         let mut list = RenderList::default();
         list.root_drawables.push(dummy_composite(1));
         list.composite_children
-            .insert(NodeIdx(1), vec![dummy_part(2), dummy_part(3)]);
+            .insert(1, vec![dummy_part(2), dummy_part(3)]);
 
         retain_isolated(&mut list, &HashSet::from([2u32]));
 
         assert_eq!(list.root_drawables.len(), 1, "parent composite must stay");
-        let kids = &list.composite_children[&NodeIdx(1)];
+        let kids = &list.composite_children[&1];
         assert_eq!(kids.len(), 1, "sibling part dropped");
-        assert!(matches!(kids[0], DrawableInfo::Part { mesh_id, .. } if mesh_id.0 == 2));
+        assert!(matches!(kids[0], DrawableInfo::Part { mesh_id, .. } if mesh_id == 2));
     }
 
     #[test]
     fn isolate_keeps_nested_composite_chain() {
         let mut list = RenderList::default();
         list.root_drawables.push(dummy_composite(1));
-        list.composite_children
-            .insert(NodeIdx(1), vec![dummy_composite(2)]);
-        list.composite_children
-            .insert(NodeIdx(2), vec![dummy_part(3)]);
+        list.composite_children.insert(1, vec![dummy_composite(2)]);
+        list.composite_children.insert(2, vec![dummy_part(3)]);
 
         retain_isolated(&mut list, &HashSet::from([3u32]));
 
         assert_eq!(list.root_drawables.len(), 1);
-        assert_eq!(
-            list.composite_children.get(&NodeIdx(1)).map(Vec::len),
-            Some(1)
-        );
-        assert_eq!(
-            list.composite_children.get(&NodeIdx(2)).map(Vec::len),
-            Some(1)
-        );
+        assert_eq!(list.composite_children.get(&1).map(Vec::len), Some(1));
+        assert_eq!(list.composite_children.get(&2).map(Vec::len), Some(1));
     }
 
     #[test]
     fn isolate_drops_empty_composite() {
         let mut list = RenderList::default();
         list.root_drawables.push(dummy_composite(1));
-        list.composite_children
-            .insert(NodeIdx(1), vec![dummy_part(2)]);
+        list.composite_children.insert(1, vec![dummy_part(2)]);
 
         retain_isolated(&mut list, &HashSet::from([99u32]));
 

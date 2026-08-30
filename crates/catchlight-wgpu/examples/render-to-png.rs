@@ -38,7 +38,7 @@ fn print_render_list(render_list: &RenderList) {
                 };
                 println!(
                     "[{}] Part entity={} z_order={:.2} texture={} blend={:?}{} pos=({:.1}, {:.1})",
-                    idx, mesh_id.0, z_order, texture_id.0, blend_mode, mask_str, pos.x, pos.y
+                    idx, mesh_id, z_order, texture_id, blend_mode, mask_str, pos.x, pos.y
                 );
             }
             DrawableInfo::Composite {
@@ -50,14 +50,14 @@ fn print_render_list(render_list: &RenderList) {
             } => {
                 println!(
                     "[{}] Composite node_id={} z_order={:.2} blend={:?} opacity={:.2}",
-                    idx, node_id.0, z_order, blend_mode, opacity
+                    idx, node_id, z_order, blend_mode, opacity
                 );
             }
         }
     }
 
     for (composite_node_id, children) in &render_list.composite_children {
-        println!("\n=== COMPOSITE {} CHILDREN ===", composite_node_id.0);
+        println!("\n=== COMPOSITE {} CHILDREN ===", composite_node_id);
         for (idx, child) in children.iter().enumerate() {
             if let DrawableInfo::Part {
                 mesh_id,
@@ -77,7 +77,7 @@ fn print_render_list(render_list: &RenderList) {
                 };
                 println!(
                     "[{}] Part entity={} z_order={:.2} texture={} blend={:?}{} pos=({:.1}, {:.1})",
-                    idx, mesh_id.0, z_order, texture_id.0, blend_mode, mask_str, pos.x, pos.y
+                    idx, mesh_id, z_order, texture_id, blend_mode, mask_str, pos.x, pos.y
                 );
             }
         }
