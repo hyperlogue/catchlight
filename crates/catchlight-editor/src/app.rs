@@ -4,8 +4,23 @@
 //! Fixed three-region layout: tree (+textures) | viewport | inspector (+params).
 //! The viewport renders on eframe's own wgpu device into an egui texture,
 //! re-rendered when the document revision, pose, camera or preview state
-//! changes — no readback. Continuous edits preview against the puppet's
-//! working state and commit exactly one command on release.
+//! changes — no readback.
+//!
+//! Invariants this module carries:
+//!
+//! - **A drag rides the presence path; only the release edits the document.**
+//!   A vertex drag sends [`Command::ScratchDeform`] per pointer move — the
+//!   same command an out-of-process client sends, so there is one live-edit
+//!   path and not a GUI-only copy of it — which shows the drag on the
+//!   session's puppet without touching the model, its revision or its undo
+//!   history. Releasing sends one [`Command::DeformVertices`], which is the
+//!   only undo entry a gesture of any length produces. The gizmo's transform
+//!   preview is the same split by other means: `NodePreview`s are re-applied
+//!   through `Puppet::refold_with_node_edits` after every fold and commit as
+//!   one `NodeSet`.
+//!
+//! - **Recording never authors a one-param binding beside a two-param one.**
+//!   See [`App::record_target`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -33,6 +48,8 @@ use crate::tree_panel::{TreeAction, TreePanel};
 use crate::viewport::{NodePreview, ViewportRenderer};
 
 mod selection;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 
 pub struct App {
     editor: Arc<Editor>,
@@ -83,8 +100,13 @@ pub struct App {
     /// Per-vertex deform tool active (armed + Part selected).
     deform_mode: bool,
     deform_drag: Option<DeformDrag>,
-    /// Live vertex-drag scratch deform: (core id, per-vertex node-local deltas).
-    scratch_deform: Option<(u32, Vec<(usize, glam::Vec2)>)>,
+    /// The node a live vertex drag is showing on the session's puppet. The
+    /// offsets themselves live there, written by `Command::ScratchDeform`;
+    /// this is only what has to be cleared when the gesture ends.
+    scratch: Option<NodeId>,
+    /// Moves whenever the scratch deform is rewritten or cleared. The puppet
+    /// holds the drag, so nothing else in the render signature would notice.
+    scratch_rev: u64,
     /// Deform sub-tool: single vertex, weighted brush, or lasso selection.
     deform_kind: DeformKind,
     /// The core node the lasso selection belongs to; a different node or a
@@ -123,7 +145,9 @@ struct RenderSig {
     size: (u32, u32),
     isolated: Option<NodeId>,
     previews: Vec<NodePreview>,
-    scratch_deform: Option<(u32, Vec<(usize, glam::Vec2)>)>,
+    /// The puppet holds the live drag, so the signature tracks *that it
+    /// moved*, not what it says.
+    scratch_rev: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +199,8 @@ impl App {
             copied_cell: None,
             deform_mode: false,
             deform_drag: None,
-            scratch_deform: None,
+            scratch: None,
+            scratch_rev: 0,
             deform_kind: DeformKind::Single,
             deform_sel_core: None,
             brush_radius: 60.0,
@@ -224,7 +249,8 @@ impl App {
         self.copied_cell = None;
         self.deform_mode = false;
         self.deform_drag = None;
-        self.scratch_deform = None;
+        self.scratch = None;
+        self.scratch_rev = 0;
         self.deform_selection.clear();
         self.lasso_points.clear();
         self.mesh_edit = None;
@@ -1287,11 +1313,11 @@ impl App {
         let deform_active = self.deform_mode
             && self.armed.is_some()
             && self.primary().and_then(|r| self.core_of_ref(&r)).is_some();
-        if !deform_active && (self.deform_drag.is_some() || self.scratch_deform.is_some()) {
+        if !deform_active && (self.deform_drag.is_some() || self.scratch.is_some()) {
             // The tool was switched off out from under a drag — drop it
             // rather than letting a stale gesture commit later.
             self.deform_drag = None;
-            self.scratch_deform = None;
+            self.clear_scratch_deform();
         }
         // The frame picking/gizmo/vertex tools read is the puppet's, and one
         // render pass has to tick it after an edit before it describes the
@@ -1425,7 +1451,7 @@ impl App {
             size: (w, h),
             isolated: self.isolated.clone(),
             previews: self.previews.clone(),
-            scratch_deform: self.scratch_deform.clone(),
+            scratch_rev: self.scratch_rev,
         };
         if self.rendered.as_ref() != Some(&sig) || self.texture_id.is_none() {
             let Some(render_state) = frame.wgpu_render_state() else {
@@ -1440,7 +1466,6 @@ impl App {
             let editor = self.editor.clone();
             let camera = self.camera;
             let previews = self.previews.clone();
-            let scratch_deform = self.scratch_deform.clone();
             if let Some(viewport) = self.viewport.as_mut() {
                 match editor.with_puppet(session, |model, puppet| {
                     viewport.render(
@@ -1450,7 +1475,6 @@ impl App {
                         puppet,
                         &pose,
                         &previews,
-                        scratch_deform.as_ref(),
                         &camera,
                         w,
                         h,
@@ -1823,19 +1847,67 @@ impl App {
             let local = to_local(&drag.node_inv, world - drag.start_world);
             drag.pending = drag.verts.iter().map(|&(v, w)| (v, local * w)).collect();
         }
-        let scratch: Vec<(usize, glam::Vec2)> =
-            drag.pending.iter().map(|(&v, &d)| (v, d)).collect();
-
         if resp.drag_stopped_by(egui::PointerButton::Primary) {
             let core = drag.core;
             let deltas = std::mem::take(&mut drag.pending);
             self.deform_drag = None;
-            self.scratch_deform = None;
+            self.clear_scratch_deform();
             self.commit_deform_deltas(session, core, &deltas, snapshot);
         } else {
-            self.scratch_deform = Some((drag.core, scratch));
+            let deltas = drag.pending.clone();
+            if let Some(node) = self.ref_of_core(core) {
+                self.set_scratch_deform(session, &node, &deltas);
+            }
         }
         true
+    }
+
+    /// Show a vertex drag on the session's puppet without authoring it. This
+    /// is the presence path: no revision, no undo entry, however long the
+    /// gesture runs. `deltas` are node-local, keyed by vertex.
+    fn set_scratch_deform(
+        &mut self,
+        session: SessionId,
+        node: &NodeId,
+        deltas: &HashMap<usize, glam::Vec2>,
+    ) {
+        let editor = self.editor.clone();
+        let Ok(len) = editor.with_model(session, |m| m.deform_len(node)) else {
+            return;
+        };
+        if len == 0 {
+            return;
+        }
+        // The command wants the whole mesh, and a stale vertex index (a mesh
+        // edit under a live selection) must not stretch it past that.
+        let mut offsets = vec![0.0f32; len];
+        for (&vertex, delta) in deltas {
+            if let Some(slot) = offsets.get_mut(vertex * 2..vertex * 2 + 2) {
+                slot[0] = delta.x;
+                slot[1] = delta.y;
+            }
+        }
+        self.send(Command::ScratchDeform {
+            session,
+            node: node.clone(),
+            offsets,
+        });
+        self.scratch = Some(node.clone());
+        self.scratch_rev = self.scratch_rev.wrapping_add(1);
+    }
+
+    /// End the live drag: the puppet drops the scratch deform and the next
+    /// render shows the document again.
+    fn clear_scratch_deform(&mut self) {
+        let (Some(session), Some(node)) = (self.session, self.scratch.take()) else {
+            return;
+        };
+        self.send(Command::ScratchDeform {
+            session,
+            node,
+            offsets: Vec::new(),
+        });
+        self.scratch_rev = self.scratch_rev.wrapping_add(1);
     }
 
     /// Write `current cell offsets + deltas` back as the authored cell.
