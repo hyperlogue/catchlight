@@ -964,6 +964,12 @@ impl App {
         let Some(mesh) = self.mesh_edit.take() else {
             return;
         };
+        // Nothing edited since the working mesh last was the document's: there
+        // is nothing to apply, and applying anyway would empty every seam slot
+        // on the part a second time — including the ones just refilled.
+        if mesh.matches_document() {
+            return;
+        }
         let new_mesh = match mesh.working.to_mesh(&mesh.uv_map, mesh.alpha.as_ref()) {
             Ok(new_mesh) => new_mesh,
             Err(e) => {
@@ -992,11 +998,16 @@ impl App {
                 body: ResponseBody::Emptied { node, slots },
                 ..
             } => {
-                self.emptied.extend(slots.iter().map(|s| SlotAddr {
-                    node: node.clone(),
-                    seam: s.seam.clone(),
-                    slot: s.slot.clone(),
-                }));
+                for slot in &slots {
+                    let addr = SlotAddr {
+                        node: node.clone(),
+                        seam: slot.seam.clone(),
+                        slot: slot.slot.clone(),
+                    };
+                    if !self.emptied.contains(&addr) {
+                        self.emptied.push(addr);
+                    }
+                }
                 slots
                     .into_iter()
                     .map(|s| (s.seam, s.slot))
@@ -1707,7 +1718,7 @@ impl eframe::App for App {
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            self.viewport_ui(ui, frame, rev, &snapshot);
+            self.viewport_ui(ui, frame, rev, &snapshot, &seam_view);
         });
         self.id_rename_modal(&ui.ctx().clone());
 
@@ -1885,6 +1896,7 @@ impl App {
         frame: &eframe::Frame,
         rev: u64,
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
+        seam_view: &SeamView,
     ) {
         let avail = ui.available_size();
         let (rect, resp) = ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
@@ -2140,7 +2152,7 @@ impl App {
             return;
         }
         if let Some(mesh) = &self.mesh_edit {
-            mesh.draw(ui, rect, &self.camera);
+            mesh.draw(ui, rect, &self.camera, seam_view);
         } else {
             self.draw_selection_bounds(ui, rect, session);
             if deform_active {

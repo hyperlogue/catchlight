@@ -530,8 +530,15 @@ impl MeshEditState {
         true
     }
 
-    /// Overlay: derived wireframe, pinned edges, vertices, marquee.
-    pub(crate) fn draw(&self, ui: &egui::Ui, rect: egui::Rect, camera: &EditorCamera) {
+    /// Overlay: derived wireframe, pinned edges, vertices, marquee — and,
+    /// under the seam tool, which vertices a slot already names.
+    pub(crate) fn draw(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        camera: &EditorCamera,
+        view: &SeamView,
+    ) {
         let paint = ui.painter_at(rect);
         let wire = egui::Stroke::new(
             1.0_f32,
@@ -568,6 +575,43 @@ impl MeshEditState {
                 egui::Color32::from_rgb(90, 150, 240)
             };
             paint.circle_filled(pos, if selected { 4.0 } else { 3.0 }, color);
+        }
+        if self.tool == MeshTool::Seam {
+            // A filled slot is a name for a vertex: say which, and say it
+            // loudly while the author is picking one.
+            let picking = self.armed_slot.is_some();
+            for seam in &view.seams {
+                for slot in &seam.slots {
+                    let Some(v) = slot
+                        .vertex
+                        .filter(|v| *v < self.working.vertex_count() as u32)
+                    else {
+                        continue;
+                    };
+                    let pos = self.screen_of_vertex(rect, camera, v);
+                    paint.circle_stroke(
+                        pos,
+                        6.0,
+                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(120, 220, 160)),
+                    );
+                    paint.text(
+                        pos + egui::vec2(8.0, -8.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!("{}·{}", seam.id, slot.id),
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::from_rgb(120, 220, 160),
+                    );
+                }
+            }
+            if picking {
+                for i in 0..self.working.vertex_count() as u32 {
+                    paint.circle_stroke(
+                        self.screen_of_vertex(rect, camera, i),
+                        5.0,
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 220, 90)),
+                    );
+                }
+            }
         }
         if let (Some(start), Some(cur)) = (self.marquee, ui.ctx().pointer_latest_pos()) {
             paint.rect_stroke(
@@ -611,8 +655,16 @@ impl MeshEditState {
     ) {
         ui.horizontal(|ui| {
             let can_apply = !self.tris.is_empty();
+            // With nothing edited there is nothing to apply, and re-applying
+            // would empty the seam slots all over again — so the button says
+            // what it does, which is leave.
+            let label = if self.matches_document() {
+                "✔ Done"
+            } else {
+                "✔ Apply"
+            };
             if ui
-                .add_enabled(can_apply, egui::Button::new("✔ Apply"))
+                .add_enabled(can_apply, egui::Button::new(label))
                 .clicked()
             {
                 self.actions.push(MeshEditAction::Apply);
