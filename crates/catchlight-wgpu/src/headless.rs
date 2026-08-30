@@ -1,4 +1,4 @@
-use catchlight_core::{DeformSource, GlobalTransforms, LegacyPuppet, NodeKind, Vec2};
+use catchlight_core::{DeformSource, GlobalTransforms, LegacyPuppet, NodeKind, Puppet, Vec2};
 
 use crate::{
     create_headless_context, read_texture_to_rgba, CompositePool, FramebufferSnapshotPool,
@@ -106,6 +106,27 @@ impl RenderContext {
     }
 }
 
+/// Shift every part's vertices by `shift` through the puppet's scratch
+/// deform, then recombine — the end-to-end "a deform reaches the shader"
+/// check, with no param machinery in the way.
+pub fn apply_uniform_scratch_deform(puppet: &mut Puppet, shift: Vec2) {
+    let parts: Vec<(catchlight_core::NodeIdx, usize)> = puppet
+        .iter()
+        .filter_map(|(id, node)| match &node.kind {
+            NodeKind::Part(p) => Some((id, p.mesh.vertices.len())),
+            _ => None,
+        })
+        .collect();
+    for (id, count) in parts {
+        if count == 0 {
+            continue;
+        }
+        puppet.set_scratch_deform(id, &vec![shift; count]);
+    }
+    puppet.combine_deforms();
+}
+
+// legacy: removed by cl-32i.8
 pub fn apply_uniform_test_deform(puppet: &mut LegacyPuppet, shift: Vec2) {
     let ids_and_lens: Vec<_> = puppet
         .iter()
