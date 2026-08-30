@@ -319,3 +319,54 @@ fn a_models_animation_is_baked_onto_every_puppet_that_shares_it() {
         "each puppet plays the shared clip from its own phase: {values:?}",
     );
 }
+
+#[test]
+fn the_asset_server_loads_a_clm_off_disk() {
+    // The asset root is the workspace, so the path below is the one anybody
+    // reading `tests/models` would type.
+    let mut app = App::new();
+    app.add_plugins((
+        MinimalPlugins,
+        AssetPlugin {
+            file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../..").to_string(),
+            ..default()
+        },
+        TransformPlugin,
+        CatchlightPlugin,
+    ));
+    let handle: Handle<CatchlightModel> = app
+        .world()
+        .resource::<AssetServer>()
+        .load("tests/models/welded_seam.clm");
+    let entity = app
+        .world_mut()
+        .spawn((CatchlightPuppet::new(handle.clone()), Transform::default()))
+        .id();
+
+    // Loading is asynchronous; give it a bounded number of frames.
+    let mut frames = 0;
+    while app
+        .world()
+        .resource::<Assets<CatchlightModel>>()
+        .get(&handle)
+        .is_none()
+    {
+        app.update();
+        frames += 1;
+        assert!(frames < 600, "the model never finished loading");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // One more frame for `update_puppets` to bake against it.
+    app.update();
+
+    let model = app
+        .world()
+        .resource::<Assets<CatchlightModel>>()
+        .get(&handle)
+        .unwrap();
+    assert!(model.model().node_count() > 1, "the file really parsed");
+    assert!(
+        puppet(&app, entity).len() > 1,
+        "and the entity animates what was loaded",
+    );
+}
