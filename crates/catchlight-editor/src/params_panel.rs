@@ -3,21 +3,86 @@
 //! the bindings list.
 //! Pure UI over snapshot data — emits [`ParamAction`]s the app applies.
 //!
-//! A param is a scalar, so every controller here is one track. Authoring two
-//! params jointly is a *binding* that names both, and the pad that edits one
-//! is a view over any two params rather than a property of either — which is
-//! why there is no 2-D controller in this file.
+//! Invariants this module carries:
+//!
+//! - **A param is a scalar, so a controller is a track.** The two-axis pad is
+//!   a view over a *binding* that names two params ([`Armed::Two`]), not a
+//!   property of either: any two params can be posed together on it, and what
+//!   it records is one binding whose grid is the product of their key
+//!   positions. Nothing here can make a param two-dimensional.
+//!
+//! - **A row addresses its own binding.** [`BindingRow`] carries the params
+//!   and the cell of the binding it lists, because arming one param of a pair
+//!   lists rows whose grid has a second axis the armed param does not.
 
-use catchlight_editor_protocol::{NodeId, ParamId, ParamInfo};
+use catchlight_editor_protocol::{BindingParams, NodeId, ParamId, ParamInfo};
 use eframe::egui;
+
+/// What recording writes through: one param, or two params authored jointly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Armed {
+    One(ParamId),
+    /// Two params on one pad; x runs along the grid's first axis.
+    Two(ParamId, ParamId),
+}
+
+impl Armed {
+    pub(crate) fn x(&self) -> &ParamId {
+        match self {
+            Self::One(p) | Self::Two(p, _) => p,
+        }
+    }
+
+    pub(crate) fn y(&self) -> Option<&ParamId> {
+        match self {
+            Self::One(_) => None,
+            Self::Two(_, p) => Some(p),
+        }
+    }
+
+    pub(crate) fn contains(&self, param: &ParamId) -> bool {
+        self.x() == param || self.y() == Some(param)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &ParamId> {
+        std::iter::once(self.x()).chain(self.y())
+    }
+}
+
+/// One binding of the armed param(s), and where the current pose sits in
+/// *that binding's* grid.
+pub(crate) struct BindingAddr {
+    pub params: BindingParams,
+    pub node: NodeId,
+    pub target: String,
+    pub cell: [u32; 2],
+}
+
+pub(crate) enum BindingOp {
+    /// Un-author the keypoint (back to derived).
+    Unset,
+    /// Author the identity value at the keypoint.
+    Reset,
+    Delete,
+    Invert,
+    Interpolate(String),
+    Copy,
+    Paste,
+}
 
 pub(crate) enum ParamAction {
     Pose {
         param: ParamId,
         value: f32,
     },
-    Arm(Option<ParamId>),
+    Arm(Option<Armed>),
     AddParam {
+        name: String,
+    },
+    /// Two scalar params, `<name>.x` and `<name>.y`, armed together on the
+    /// pad — what authoring "left *and* up" as one shape takes now that a
+    /// param has one axis.
+    AddParamPair {
         name: String,
     },
     /// Relabel: free, repeatable, and it never touches the Id.
@@ -39,42 +104,20 @@ pub(crate) enum ParamAction {
     Flip {
         param: ParamId,
     },
-    BindingUnset {
-        node: NodeId,
-        target: String,
-    },
-    BindingReset {
-        node: NodeId,
-        target: String,
-    },
-    BindingDelete {
-        node: NodeId,
-        target: String,
-    },
-    BindingInterpolate {
-        node: NodeId,
-        target: String,
-        mode: String,
-    },
-    BindingInvert {
-        node: NodeId,
-        target: String,
-    },
-    CopyCell {
-        node: NodeId,
-        target: String,
-    },
-    PasteCell {
-        node: NodeId,
-        target: String,
+    Binding {
+        row: BindingAddr,
+        op: BindingOp,
     },
 }
 
-/// Authored-state of each grid cell for the armed param: 0 = none of the
-/// bindings author it, 1 = some, 2 = all.
+/// Authored-state of each cell of the armed grid: 0 = none of the bindings
+/// author it, 1 = some, 2 = all.
 pub(crate) struct ArmedInfo {
-    pub param: ParamId,
+    pub armed: Armed,
+    /// The cell the current pose lands on, in the armed grid.
     pub cell: [u32; 2],
+    /// The armed grid: the x param's key positions by the y param's (or 1).
+    pub grid: (usize, usize),
     pub cell_states: Vec<u8>,
     pub bindings: Vec<BindingRow>,
 }
@@ -85,6 +128,10 @@ pub(crate) struct BindingRow {
     pub target: String,
     pub interpolate: String,
     pub authored_at_cell: bool,
+    /// The binding's own params and cell — not the armed param's, which may
+    /// be one half of them.
+    pub params: BindingParams,
+    pub cell: [u32; 2],
 }
 
 pub(crate) struct ParamsPanel<'a> {
@@ -110,8 +157,22 @@ impl ParamsPanel<'_> {
                 if ui.button("add").clicked() {
                     self.actions.push(ParamAction::AddParam { name });
                     ui.close();
+                    return;
+                }
+                if ui
+                    .button("add two (x / y)")
+                    .on_hover_text(
+                        "two scalar params on one pad — a pad is a view over a \
+                         binding that names both, not a two-axis param",
+                    )
+                    .clicked()
+                {
+                    let name: String = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or_default();
+                    self.actions.push(ParamAction::AddParamPair { name });
+                    ui.close();
                 }
             });
+            self.pad_menu(ui);
             ui.checkbox(self.snap, "snap");
         });
 
@@ -120,18 +181,79 @@ impl ParamsPanel<'_> {
         }
     }
 
-    /// The recording-mode panel: the armed param's keypoint controller and
-    /// bindings list (the left panel replaces the node tree with this).
+    /// Arm any two params on the pad. The pair belongs to the binding it
+    /// records, so it is chosen here rather than carried by a param.
+    fn pad_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("⊹ pad", |ui| {
+            ui.label("pose and record two params together");
+            let id = ui.id().with("pad-pair");
+            let mut pair: (String, String) =
+                ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or_else(|| {
+                    match self.params.first().zip(self.params.get(1)) {
+                        Some((a, b)) => (a.id.to_string(), b.id.to_string()),
+                        None => (String::new(), String::new()),
+                    }
+                });
+            let label = |id: &str| {
+                self.params
+                    .iter()
+                    .find(|p| p.id.as_str() == id)
+                    .map_or("(none)".to_string(), |p| p.name.clone())
+            };
+            for (axis, slot) in [("x", &mut pair.0), ("y", &mut pair.1)] {
+                egui::ComboBox::from_id_salt(("pad-axis", axis))
+                    .selected_text(format!("{axis}: {}", label(slot)))
+                    .show_ui(ui, |ui| {
+                        for p in self.params {
+                            if ui.button(&p.name).on_hover_text(p.id.as_str()).clicked() {
+                                *slot = p.id.to_string();
+                                ui.close();
+                            }
+                        }
+                    });
+            }
+            let chosen = ParamId::new(&pair.0).ok().zip(ParamId::new(&pair.1).ok());
+            let chosen = chosen.filter(|(a, b)| a != b);
+            ui.ctx().data_mut(|d| d.insert_temp(id, pair));
+            if ui
+                .add_enabled(chosen.is_some(), egui::Button::new("open pad"))
+                .clicked()
+            {
+                if let Some((x, y)) = chosen {
+                    self.actions.push(ParamAction::Arm(Some(Armed::Two(x, y))));
+                }
+                ui.close();
+            }
+        });
+    }
+
+    /// The recording-mode panel: the armed controller (a track, or the pad
+    /// when two params are armed) and the bindings list.
     pub(crate) fn show_recording(&mut self, ui: &mut egui::Ui) {
         let Some(armed) = self.armed else { return };
-        let Some(p) = self.params.iter().find(|p| p.id == armed.param) else {
+        let Some(px) = self.params.iter().find(|p| p.id == *armed.armed.x()) else {
             return;
         };
-        ui.label(format!(
-            "{} @ ({}, {})",
-            p.name, armed.cell[0], armed.cell[1]
-        ));
-        self.line_1d(ui, p, Some(armed));
+        match armed
+            .armed
+            .y()
+            .and_then(|y| self.params.iter().find(|p| p.id == *y))
+        {
+            Some(py) => {
+                ui.label(format!(
+                    "{} × {} @ ({}, {})",
+                    px.name, py.name, armed.cell[0], armed.cell[1]
+                ));
+                self.pad_2d(ui, px, py, armed);
+            }
+            None => {
+                ui.label(format!(
+                    "{} @ ({}, {})",
+                    px.name, armed.cell[0], armed.cell[1]
+                ));
+                self.line_1d(ui, px, Some(armed));
+            }
+        }
         ui.separator();
         ui.label("Bindings");
         // Binding rows are wider than the panel; scroll them sideways without
@@ -142,7 +264,7 @@ impl ParamsPanel<'_> {
     }
 
     fn param_row(&mut self, ui: &mut egui::Ui, p: &ParamInfo) {
-        let armed_here = self.armed.map(|a| &a.param) == Some(&p.id);
+        let armed_here = self.armed.is_some_and(|a| a.armed.contains(&p.id));
         let value = (self.pose)(&p.id);
         ui.horizontal(|ui| {
             let arm = ui
@@ -152,7 +274,7 @@ impl ParamsPanel<'_> {
                 self.actions.push(ParamAction::Arm(if armed_here {
                     None
                 } else {
-                    Some(p.id.clone())
+                    Some(Armed::One(p.id.clone()))
                 }));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -171,7 +293,11 @@ impl ParamsPanel<'_> {
                 });
             });
         });
-        let armed = self.armed.filter(|a| a.param == p.id);
+        // A one-param track under the row, showing this param's own keys; the
+        // dots come from the armed grid only when this is the armed param.
+        let armed = self
+            .armed
+            .filter(|a| matches!(&a.armed, Armed::One(id) if *id == p.id));
         self.line_1d(ui, p, armed);
         ui.add_space(6.0);
     }
@@ -264,7 +390,7 @@ impl ParamsPanel<'_> {
             cy,
             egui::Stroke::new(2.0_f32, vis.widgets.inactive.bg_fill),
         );
-        // `t` is normalized 0..1 — the space axis points live in.
+        // `t` is normalized 0..1 — the space key positions live in.
         let at = |t: f32| egui::pos2(track.left() + t.clamp(0.0, 1.0) * track.width(), cy);
         for (xi, &ax) in p.key_positions.iter().enumerate() {
             let pos = at(ax);
@@ -296,77 +422,132 @@ impl ParamsPanel<'_> {
         }
     }
 
+    /// The pad: two params posed together, over the grid their key positions
+    /// make. Dragging it poses both, so a gesture records into one cell of one
+    /// two-param binding.
+    fn pad_2d(&mut self, ui: &mut egui::Ui, px: &ParamInfo, py: &ParamInfo, armed: &ArmedInfo) {
+        let side = ui.available_width().clamp(120.0, 320.0);
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click_and_drag());
+        let paint = ui.painter_at(rect);
+        let vis = ui.visuals();
+        let field = rect.shrink(HANDLE_R + 2.0);
+        paint.rect_stroke(
+            field,
+            2.0,
+            egui::Stroke::new(1.0_f32, vis.widgets.inactive.bg_fill),
+            egui::StrokeKind::Inside,
+        );
+        // Screen y grows downward; a param's y grows upward, as the pad reads.
+        let at = |tx: f32, ty: f32| {
+            egui::pos2(
+                field.left() + tx.clamp(0.0, 1.0) * field.width(),
+                field.bottom() - ty.clamp(0.0, 1.0) * field.height(),
+            )
+        };
+        let (w, _) = armed.grid;
+        for (yi, &ay) in py.key_positions.iter().enumerate() {
+            for (xi, &ax) in px.key_positions.iter().enumerate() {
+                dot(
+                    &paint,
+                    at(ax, ay),
+                    armed.cell_states.get(yi * w + xi).copied().unwrap_or(0),
+                    armed.cell == [xi as u32, yi as u32],
+                    vis,
+                );
+            }
+        }
+        let vx = (self.pose)(&px.id);
+        let vy = (self.pose)(&py.id);
+        handle(
+            &paint,
+            at(norm(vx, px.min, px.max), norm(vy, py.min, py.max)),
+        );
+        if let Some(pos) = drag_pos(&resp) {
+            let tx = ((pos.x - field.left()) / field.width()).clamp(0.0, 1.0);
+            let ty = ((field.bottom() - pos.y) / field.height()).clamp(0.0, 1.0);
+            let tx = self.maybe_snap(tx, &px.key_positions);
+            let ty = self.maybe_snap(ty, &py.key_positions);
+            self.actions.push(ParamAction::Pose {
+                param: px.id.clone(),
+                value: px.min + tx * (px.max - px.min),
+            });
+            self.actions.push(ParamAction::Pose {
+                param: py.id.clone(),
+                value: py.min + ty * (py.max - py.min),
+            });
+        }
+    }
+
     fn bindings_list(&mut self, ui: &mut egui::Ui, armed: &ArmedInfo) {
         for row in &armed.bindings {
+            let addr = || BindingAddr {
+                params: row.params.clone(),
+                node: row.node.clone(),
+                target: row.target.clone(),
+                cell: row.cell,
+            };
             ui.horizontal(|ui| {
                 let mark = if row.authored_at_cell { "●" } else { "○" };
-                ui.label(format!("{mark} {} · {}", row.node_name, row.target));
+                let pair = row
+                    .params
+                    .param_y
+                    .as_ref()
+                    .map(|y| format!(" · {} × {}", row.params.param, y))
+                    .unwrap_or_default();
+                ui.label(format!("{mark} {} · {}", row.node_name, row.target))
+                    .on_hover_text(format!("{}{pair}", row.node));
                 egui::ComboBox::from_id_salt(("interp", row.node.as_str(), &row.target))
                     .selected_text(&row.interpolate)
                     .width(70.0)
                     .show_ui(ui, |ui| {
                         for mode in ["nearest", "stepped", "linear", "cubic"] {
                             if ui.button(mode).clicked() {
-                                self.actions.push(ParamAction::BindingInterpolate {
-                                    node: row.node.clone(),
-                                    target: row.target.clone(),
-                                    mode: mode.into(),
+                                self.actions.push(ParamAction::Binding {
+                                    row: addr(),
+                                    op: BindingOp::Interpolate(mode.into()),
                                 });
                                 ui.close();
                             }
                         }
                     });
+                let mut op = None;
                 if ui
                     .small_button("reset")
                     .on_hover_text("author the identity value at this keypoint")
                     .clicked()
                 {
-                    self.actions.push(ParamAction::BindingReset {
-                        node: row.node.clone(),
-                        target: row.target.clone(),
-                    });
+                    op = Some(BindingOp::Reset);
                 }
                 if ui
                     .small_button("unset")
                     .on_hover_text("un-author this keypoint (back to derived)")
                     .clicked()
                 {
-                    self.actions.push(ParamAction::BindingUnset {
-                        node: row.node.clone(),
-                        target: row.target.clone(),
-                    });
+                    op = Some(BindingOp::Unset);
                 }
                 if ui.small_button("copy").clicked() {
-                    self.actions.push(ParamAction::CopyCell {
-                        node: row.node.clone(),
-                        target: row.target.clone(),
-                    });
+                    op = Some(BindingOp::Copy);
                 }
                 if self.can_paste && ui.small_button("paste").clicked() {
-                    self.actions.push(ParamAction::PasteCell {
-                        node: row.node.clone(),
-                        target: row.target.clone(),
-                    });
+                    op = Some(BindingOp::Paste);
                 }
                 if ui
                     .small_button("±")
                     .on_hover_text("negate every authored value")
                     .clicked()
                 {
-                    self.actions.push(ParamAction::BindingInvert {
-                        node: row.node.clone(),
-                        target: row.target.clone(),
-                    });
+                    op = Some(BindingOp::Invert);
                 }
                 if ui
                     .small_button("✕")
                     .on_hover_text("delete binding")
                     .clicked()
                 {
-                    self.actions.push(ParamAction::BindingDelete {
-                        node: row.node.clone(),
-                        target: row.target.clone(),
-                    });
+                    op = Some(BindingOp::Delete);
+                }
+                if let Some(op) = op {
+                    self.actions.push(ParamAction::Binding { row: addr(), op });
                 }
             });
         }

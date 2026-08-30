@@ -66,7 +66,7 @@ fn a_drag_of_any_length_and_its_release_leave_one_undo_entry() {
     let (editor, session, mut app) = app_on(&welded_seam());
     let node = first_meshed_node(&editor, session);
     let core = app.core_of_ref(&node).expect("node is baked");
-    app.armed = Some(param_named(&editor, session, "pull"));
+    app.armed = Some(Armed::One(param_named(&editor, session, "pull")));
 
     let rev_before = editor.doc_snapshot(session).expect("snapshot").rev;
     for i in 0..100u32 {
@@ -268,7 +268,7 @@ fn an_id_outside_the_charset_keeps_the_prompt_open() {
 fn renaming_a_param_id_carries_the_recording_state() {
     let (editor, session, mut app) = app_on(&welded_seam());
     let pull = param_named(&editor, session, "pull");
-    app.armed = Some(pull.clone());
+    app.armed = Some(Armed::One(pull.clone()));
     app.pose.insert(pull.clone(), 0.75);
 
     app.apply_param_action(ParamAction::RenameId(pull.clone()), &None);
@@ -276,10 +276,220 @@ fn renaming_a_param_id_carries_the_recording_state() {
     app.confirm_id_rename();
 
     let tug = ParamId::new("tug").unwrap();
-    assert_eq!(app.armed.as_ref(), Some(&tug));
+    assert_eq!(app.armed, Some(Armed::One(tug.clone())));
     assert_eq!(app.pose.get(&tug), Some(&0.75));
     assert!(!app.pose.contains_key(&pull));
     assert!(editor
         .with_model(session, |m| m.param(&tug).is_some())
         .unwrap());
+}
+
+fn add_param(app: &mut App, session: SessionId, name: &str) -> ParamId {
+    match app.send(Command::ParamAdd {
+        session,
+        name: name.into(),
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        key_positions: Vec::new(),
+    }) {
+        Reply::Ok {
+            body: ResponseBody::Param { param },
+            ..
+        } => param,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A model whose `head.x` / `head.y` pair already drives `tx` on a node
+/// through one two-param binding — the shape an inochi2d 2-D param imports as.
+fn split_pair(app: &mut App, session: SessionId, node: &NodeId) -> (ParamId, ParamId) {
+    let x = add_param(app, session, "head.x");
+    let y = add_param(app, session, "head.y");
+    app.send(Command::BindingAdd {
+        session,
+        params: BindingParams::two(x.clone(), y.clone()),
+        node: node.clone(),
+        target: "tx".into(),
+    });
+    (x, y)
+}
+
+/// Arming one param of an imported pair and recording must join the pair's
+/// binding, filling the partner's cell from the pose. A one-param binding
+/// beside the two-param one is what the v0 flatten refuses as unpairable, and
+/// nothing in the GUI would tell the author why their save broke.
+#[test]
+fn recording_on_half_a_pair_joins_its_binding_instead_of_starting_a_rival() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let node = first_meshed_node(&editor, session);
+    let (x, y) = split_pair(&mut app, session, &node);
+
+    app.armed = Some(Armed::One(x.clone()));
+    app.selection = vec![node.clone()];
+    // Pose both: the partner's cell comes from the pose, which only the GUI
+    // holds — the server has none.
+    app.pose.insert(x.clone(), 1.0);
+    app.pose.insert(y.clone(), 1.0);
+    app.commit_patch(
+        node.clone(),
+        NodePatch {
+            translate: Some([5.0, 0.0, 0.0]),
+            ..Default::default()
+        },
+    );
+
+    let (bindings, authored) = editor
+        .with_model(session, |m| {
+            let bindings: Vec<String> = m
+                .bindings_of_node(&node)
+                .filter(|b| b.target().name() == "tx")
+                .map(|b| match b.params() {
+                    catchlight_core::BindingParams::One(p) => format!("one({p})"),
+                    catchlight_core::BindingParams::Two(a, b) => format!("two({a},{b})"),
+                })
+                .collect();
+            let key = catchlight_core::BindingKey::pair(
+                x.clone(),
+                y.clone(),
+                node.clone(),
+                BindingTarget::Scalar(catchlight_core::ScalarTarget::Tx),
+            );
+            let authored: Vec<[u32; 2]> = m
+                .binding(&key)
+                .and_then(|b| catchlight_core::scalar_cells(b.values()))
+                .map(|cells| cells.iter().map(|c| [c.x, c.y]).collect())
+                .unwrap_or_default();
+            (bindings, authored)
+        })
+        .unwrap();
+
+    assert_eq!(
+        bindings,
+        vec![format!("two({x},{y})")],
+        "the pair's binding is the only one driving tx",
+    );
+    // (a new binding authors its origin cell, so the pose's cell is the
+    // second one — what matters is that it is *in the pair's grid*.)
+    assert!(
+        authored.contains(&[1, 1]),
+        "the key lands at the pose's cell in the pair's grid, got {authored:?}",
+    );
+}
+
+/// The same rule reaches a target the pair does not drive yet: a param that
+/// is half of a pair anywhere in the model is half of a pair everywhere, or
+/// the model stops being flattenable the moment the second key is recorded.
+#[test]
+fn a_paired_param_records_as_a_pair_even_on_a_target_it_does_not_drive_yet() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let mut nodes: Vec<NodeId> = editor
+        .with_model(session, |m| {
+            let mut ids: Vec<NodeId> = m
+                .node_ids()
+                .filter(|id| m.node_mesh(id).is_some())
+                .cloned()
+                .collect();
+            ids.sort();
+            ids
+        })
+        .unwrap();
+    let elsewhere = nodes.pop().expect("two meshed nodes");
+    let node = nodes.pop().expect("two meshed nodes");
+    let (x, y) = split_pair(&mut app, session, &node);
+
+    app.armed = Some(Armed::One(x.clone()));
+    app.pose.insert(y.clone(), 1.0);
+    let snap = editor.doc_snapshot(session).expect("snapshot");
+    let (params, cell) = app
+        .record_target(&snap, &elsewhere)
+        .expect("a target to record into");
+
+    assert_eq!(params, BindingParams::two(x, y));
+    assert_eq!(cell, [0, 1], "the partner's cell comes from the pose");
+}
+
+/// The pad is a view over a two-param binding: arming a pair records into a
+/// grid that spans both params' key positions.
+#[test]
+fn arming_a_pair_records_into_the_pairs_grid() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let node = first_meshed_node(&editor, session);
+    let x = add_param(&mut app, session, "look.x");
+    let y = add_param(&mut app, session, "look.y");
+
+    app.apply_param_action(
+        ParamAction::Arm(Some(Armed::Two(x.clone(), y.clone()))),
+        &None,
+    );
+    app.selection = vec![node.clone()];
+    app.pose.insert(x.clone(), 1.0);
+    app.pose.insert(y.clone(), 0.0);
+    app.commit_patch(
+        node.clone(),
+        NodePatch {
+            translate: Some([0.0, 3.0, 0.0]),
+            ..Default::default()
+        },
+    );
+
+    let authored = editor
+        .with_model(session, |m| {
+            let key = catchlight_core::BindingKey::pair(
+                x.clone(),
+                y.clone(),
+                node.clone(),
+                BindingTarget::Scalar(catchlight_core::ScalarTarget::Ty),
+            );
+            m.binding(&key)
+                .and_then(|b| catchlight_core::scalar_cells(b.values()))
+                .map(|cells| cells.iter().map(|c| [c.x, c.y]).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .unwrap();
+    assert!(authored.contains(&[1, 0]), "{authored:?}");
+
+    // And the panel data reads that grid, not one param's row.
+    let snap = editor.doc_snapshot(session).expect("snapshot");
+    let info = app.armed_info(&snap).expect("armed info");
+    assert_eq!(info.grid, (2, 2));
+    assert_eq!(info.cell, [1, 0]);
+    assert_eq!(info.cell_states.len(), 4);
+    assert!(
+        info.bindings
+            .iter()
+            .any(|r| r.cell == [1, 0] && r.authored_at_cell),
+        "the row has to read its own binding's cell",
+    );
+}
+
+/// "Add two" makes two ordinary scalar params and opens them on the pad —
+/// there is no two-axis param for it to make.
+#[test]
+fn adding_two_params_makes_two_scalars_on_one_pad() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let before = editor.with_model(session, |m| m.param_ids().len()).unwrap();
+
+    app.apply_param_action(
+        ParamAction::AddParamPair {
+            name: "head".into(),
+        },
+        &None,
+    );
+
+    let names = editor
+        .with_model(session, |m| {
+            m.param_ids()
+                .iter()
+                .filter_map(|id| m.param(id).map(|p| p.name.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert_eq!(names.len(), before + 2);
+    assert!(names.contains(&"head.x".to_string()), "{names:?}");
+    assert!(names.contains(&"head.y".to_string()), "{names:?}");
+    match app.armed.as_ref().expect("the pad opens on the new pair") {
+        Armed::Two(x, y) => assert_ne!(x, y),
+        other => panic!("{other:?}"),
+    }
 }
