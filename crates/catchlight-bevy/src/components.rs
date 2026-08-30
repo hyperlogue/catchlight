@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use catchlight_core::{Keyframe, Model, Pose, Puppet, PuppetAnimation, PuppetLane};
+use catchlight_core::{Model, Pose, Puppet};
 
 use crate::asset::CatchlightModel;
 
@@ -118,7 +118,7 @@ impl CatchlightPuppet {
             .take()
             .or_else(|| self.puppet.as_ref().map(Puppet::pose));
         let mut puppet = Puppet::new(model);
-        puppet.set_animations(animations_of(model));
+        puppet.set_animations_from(model);
         // A freshly baked model renders settled rather than swinging into
         // place. `settle_physics` leaves the puppet unposed, so the carried
         // pose goes on after it.
@@ -129,41 +129,6 @@ impl CatchlightPuppet {
         self.puppet = Some(puppet);
         self.baked_from = Some(id);
     }
-}
-
-/// The model's own animation clips, in the form a puppet plays.
-///
-/// A conversion rather than a shared type because a `.clm` clip is wire data
-/// and a [`PuppetAnimation`] is play state; core should own this once the two
-/// stop being separate types.
-fn animations_of(model: &Model) -> Vec<PuppetAnimation> {
-    model
-        .animations()
-        .iter()
-        .map(|clip| PuppetAnimation {
-            name: clip.name.clone(),
-            timestep: clip.timestep,
-            length: clip.length,
-            lead_in: clip.lead_in,
-            lead_out: clip.lead_out,
-            lanes: clip
-                .lanes
-                .iter()
-                .map(|lane| PuppetLane {
-                    param: lane.param.clone(),
-                    interpolation: lane.interpolation,
-                    keyframes: lane
-                        .keyframes
-                        .iter()
-                        .map(|k| Keyframe {
-                            frame: k.frame,
-                            value: k.value,
-                        })
-                        .collect(),
-                })
-                .collect(),
-        })
-        .collect()
 }
 
 /// Marker component on cameras that should render puppets.
