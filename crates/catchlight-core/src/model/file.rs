@@ -55,6 +55,8 @@ pub enum ClmLoadError {
     },
     #[error("node {node:?} names texture {id:?}, which the file does not carry")]
     DanglingTexture { node: String, id: String },
+    #[error("a binding names node {id:?}, which no node has")]
+    DanglingBindingNode { id: String },
     #[error("{owner} names param {id:?}, which the file does not carry")]
     DanglingParam { owner: String, id: String },
     #[error(
@@ -344,9 +346,7 @@ impl Model {
         let mut bindings = Vec::with_capacity(doc.bindings.len());
         for b in &doc.bindings {
             if !nodes.contains_key(&b.node) {
-                return Err(ClmLoadError::DanglingNode {
-                    node: b.node.to_string(),
-                    field: "binding node",
+                return Err(ClmLoadError::DanglingBindingNode {
                     id: b.node.to_string(),
                 }
                 .into());
@@ -1101,6 +1101,17 @@ mod tests {
             load_err(&file),
             ClmLoadError::BindingParamCount { got: 2, .. }
         ));
+    }
+
+    #[test]
+    fn a_dangling_binding_node_is_a_structured_error() {
+        let mut file = sample().to_clm_file().unwrap();
+        file.doc.bindings[0].node = NodeId::new("ghost").unwrap();
+
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::DanglingBindingNode { id: "ghost".into() }
+        );
     }
 
     #[test]
