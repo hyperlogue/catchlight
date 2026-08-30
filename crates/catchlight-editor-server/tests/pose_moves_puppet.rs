@@ -1,7 +1,6 @@
-//! Regression: posing a param on the editor's flattened puppet must move it
-//! exactly like the viewport does (set value by name, then tick).
+//! Regression: posing a param on a session's puppet must move it exactly like
+//! the viewport does (set the value by Id, then tick).
 
-use catchlight_core::GlobalTransforms;
 use catchlight_editor_server::Editor;
 
 #[test]
@@ -17,27 +16,25 @@ fn posing_a_param_changes_the_ticked_state() {
     let session = ed.open_bytes("welded_seam", &bytes).expect("open");
 
     let moved = ed
-        .with_puppet(session, |puppet| {
-            let names: Vec<String> = puppet.params().iter().map(|p| p.name.clone()).collect();
-            assert!(!names.is_empty(), "the rig has params");
+        .with_puppet(session, |model, puppet| {
+            let params: Vec<_> = model.param_ids().to_vec();
+            assert!(!params.is_empty(), "the model has params");
 
-            let mut transforms = GlobalTransforms::new();
-            puppet.tick(&mut transforms, glam::Mat4::IDENTITY, 0.0);
-            let baseline = state_signature(puppet, &transforms);
+            puppet.tick(model, 0.0);
+            let baseline = state_signature(puppet);
 
             let mut any_moved = false;
-            for name in &names {
+            for id in &params {
                 let (min, max) = {
-                    let p = puppet.param_by_name(name).expect("param");
+                    let p = model.param(id).expect("param");
                     (p.min, p.max)
                 };
-                assert!(puppet.set_param_value_by_name(name, max), "set {name}");
-                puppet.tick(&mut transforms, glam::Mat4::IDENTITY, 0.0);
-                let posed = state_signature(puppet, &transforms);
-                if posed != baseline {
+                puppet.set_param_value(id, max);
+                puppet.tick(model, 0.0);
+                if state_signature(puppet) != baseline {
                     any_moved = true;
                 }
-                puppet.set_param_value_by_name(name, min.lerp(max, 0.5));
+                puppet.set_param_value(id, min.midpoint(max));
             }
             any_moved
         })
@@ -45,14 +42,11 @@ fn posing_a_param_changes_the_ticked_state() {
     assert!(moved, "no param pose changed transforms or deforms");
 }
 
-fn state_signature(
-    puppet: &catchlight_core::LegacyPuppet,
-    transforms: &GlobalTransforms,
-) -> Vec<[i64; 2]> {
+fn state_signature(puppet: &catchlight_core::Puppet) -> Vec<[i64; 2]> {
     let mut sig = Vec::new();
     let order = puppet.tree().with_dfs_order(|o| o.to_vec());
     for id in order {
-        let m = transforms.get(id);
+        let m = puppet.transforms().get(id);
         let t = m.transform_point3(glam::vec3(0.0, 0.0, 0.0));
         sig.push([(t.x * 1e3) as i64, (t.y * 1e3) as i64]);
         if let Some(node) = puppet.get(id) {

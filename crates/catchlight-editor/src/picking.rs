@@ -2,14 +2,17 @@
 //! already live on the CPU, so a point test is a tree walk + point-in-triangle
 //! — no renderer involvement.
 
-use catchlight_core::{BlendMode, GlobalTransforms, LegacyPuppet, MeshIndices, NodeKind, PartData};
+use catchlight_core::{
+    BlendMode, GlobalTransforms, MeshIndices, Model, NodeKind, PartData, Puppet,
+};
 use glam::Vec2;
 
 /// Core node ids of the Parts whose deformed mesh contains `world`,
 /// front-most first (higher cumulative z order renders in front; ties go to the
 /// later-drawn node).
 pub(crate) fn pick_all(
-    puppet: &LegacyPuppet,
+    model: &Model,
+    puppet: &Puppet,
     transforms: &GlobalTransforms,
     world: Vec2,
 ) -> Vec<u32> {
@@ -27,7 +30,7 @@ pub(crate) fn pick_all(
         match &node.kind {
             NodeKind::Composite(c) if opacity_culled(c.opacity, c.blend_mode) => continue,
             NodeKind::Part(p) => {
-                let missing = p.albedo_texture.0 as usize >= puppet.textures().len();
+                let missing = p.albedo_texture.0 as usize >= model.texture_ids().len();
                 if !opacity_culled(p.opacity, p.blend_mode)
                     && !missing
                     && part_contains(p, &transforms.get(id), world)
@@ -113,7 +116,7 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
 
 /// World-space AABB over the deformed Parts of the given subtrees.
 pub(crate) fn world_bounds(
-    puppet: &LegacyPuppet,
+    puppet: &Puppet,
     transforms: &GlobalTransforms,
     roots: &[u32],
 ) -> Option<(Vec2, Vec2)> {
@@ -143,121 +146,146 @@ pub(crate) fn world_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
     use catchlight_core::{
-        CompositeData, DeformStack, LegacyPuppet, Mesh, MeshIndices, Node, PartData, PuppetTexture,
-        TextureId,
+        Mesh, ModelComposite, ModelNode, ModelNodeKind, ModelPart, ModelTexture, NodeId, SeededHex,
+        TexId,
     };
+    use std::sync::Arc;
 
-    fn white_tex() -> PuppetTexture {
-        PuppetTexture {
-            width: 1,
-            height: 1,
-            rgba: vec![255, 255, 255, 255].into(),
+    /// A model builder for the picking tests: the texture is never decoded
+    /// here (a part is culled by whether its albedo slot resolves at all), so
+    /// its bytes are a placeholder rather than a real image.
+    struct Rig {
+        model: catchlight_core::Model,
+        hex: SeededHex,
+        tex: TexId,
+        root: NodeId,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let mut model = catchlight_core::Model::new();
+            let mut hex = SeededHex::new(7);
+            let tex = model
+                .add_texture(
+                    ModelTexture {
+                        encoding: TextureEncoding::Png,
+                        alpha: TextureAlpha::Straight,
+                        data: Arc::new(Vec::new()),
+                    },
+                    &mut hex,
+                )
+                .expect("add texture");
+            let root = model.root().expect("a fresh model has one root").clone();
+            Self {
+                model,
+                hex,
+                tex,
+                root,
+            }
+        }
+
+        fn part(&mut self, parent: &NodeId, origin: Vec2, z_order: f32) -> NodeId {
+            let mesh = Mesh::new(
+                vec![
+                    Vec2::new(-1.0, -1.0) + origin,
+                    Vec2::new(1.0, -1.0) + origin,
+                    Vec2::new(0.0, 1.0) + origin,
+                ],
+                vec![Vec2::ZERO; 3],
+                MeshIndices::U16(vec![0, 1, 2]),
+                origin,
+            );
+            let clm = ClmMesh {
+                verts: mesh.vertices.iter().flat_map(|v| [v.x, v.y]).collect(),
+                uvs: mesh.uvs.iter().flat_map(|v| [v.x, v.y]).collect(),
+                indices: ClmIndices::U16(vec![0, 1, 2]),
+                origin: [origin.x, origin.y],
+            };
+            let mut node = ModelNode::new("part", ModelNodeKind::Part(ModelPart::new(clm)));
+            node.z_order = z_order;
+            let id = self
+                .model
+                .add_node(parent, node, &mut self.hex)
+                .expect("add part");
+            self.model
+                .set_part_albedo(&id, Some(self.tex.clone()))
+                .expect("albedo");
+            id
+        }
+
+        fn composite(&mut self, opacity: f32) -> NodeId {
+            let mut composite = ModelComposite::new();
+            composite.opacity = opacity;
+            let node = ModelNode::new("composite", ModelNodeKind::Composite(composite));
+            self.model
+                .add_node(&self.root.clone(), node, &mut self.hex)
+                .expect("add composite")
+        }
+
+        /// The puppet at rest, with its transforms walked.
+        fn puppet(&self) -> Puppet {
+            let mut puppet = Puppet::new(&self.model);
+            puppet.compute_transforms();
+            puppet
         }
     }
 
-    fn triangle_part(origin: Vec2) -> Node {
-        let mesh = Mesh::new(
-            vec![
-                Vec2::new(-1.0, -1.0) + origin,
-                Vec2::new(1.0, -1.0) + origin,
-                Vec2::new(0.0, 1.0) + origin,
-            ],
-            vec![Vec2::ZERO; 3],
-            MeshIndices::U16(vec![0, 1, 2]),
-            origin,
-        );
-        Node {
-            kind: NodeKind::Part(Box::new(PartData {
-                deform_stack: DeformStack::new(3),
-                mesh,
-                albedo_texture: TextureId(0),
-                opacity: 1.0,
-                ..PartData::default()
-            })),
-            ..Default::default()
-        }
+    fn slot(puppet: &Puppet, id: &NodeId) -> u32 {
+        puppet.node_idx(id).expect("node is in the arena").0
     }
 
     #[test]
     fn opacity_zero_composite_does_not_hit_children() {
-        let mut puppet = LegacyPuppet::new();
-        puppet.set_textures(vec![white_tex()]);
-        let c = CompositeData {
-            opacity: 0.0,
-            ..Default::default()
-        };
-        let comp = puppet.insert_child(
-            puppet.root(),
-            Node {
-                kind: NodeKind::Composite(Box::new(c)),
-                ..Default::default()
-            },
-            None,
-        );
-        puppet.insert_child(comp, triangle_part(Vec2::ZERO), None);
-        let mut tx = GlobalTransforms::new();
-        puppet.compute_transforms(&mut tx);
+        let mut rig = Rig::new();
+        let comp = rig.composite(0.0);
+        rig.part(&comp, Vec2::ZERO, 0.0);
+        let puppet = rig.puppet();
+        let tx = puppet.transforms().clone();
         assert!(
-            pick_all(&puppet, &tx, Vec2::ZERO).is_empty(),
+            pick_all(&rig.model, &puppet, &tx, Vec2::ZERO).is_empty(),
             "culled composite children must not steal clicks"
         );
     }
 
     #[test]
     fn pick_uses_origin_shifted_vertices() {
-        let mut puppet = LegacyPuppet::new();
-        puppet.set_textures(vec![white_tex()]);
+        let mut rig = Rig::new();
         let origin = Vec2::new(10.0, 0.0);
-        puppet.insert_child(puppet.root(), triangle_part(origin), None);
-        let mut tx = GlobalTransforms::new();
-        puppet.compute_transforms(&mut tx);
+        let root = rig.root.clone();
+        rig.part(&root, origin, 0.0);
+        let puppet = rig.puppet();
+        let tx = puppet.transforms().clone();
         assert_eq!(
-            pick_all(&puppet, &tx, Vec2::ZERO).len(),
+            pick_all(&rig.model, &puppet, &tx, Vec2::ZERO).len(),
             1,
             "GPU draws v - origin; a click at local 0 must hit"
         );
         assert!(
-            pick_all(&puppet, &tx, origin).is_empty(),
+            pick_all(&rig.model, &puppet, &tx, origin).is_empty(),
             "unshifted verts would hit here and miss the pixels"
         );
     }
 
     #[test]
     fn pick_prefers_higher_z_and_later_equal_z_nodes() {
-        let mut puppet = LegacyPuppet::new();
-        puppet.set_textures(vec![white_tex()]);
-        let root = puppet.root();
-        let behind = puppet.insert_child(
-            root,
-            Node {
-                z_order: -1.0,
-                ..triangle_part(Vec2::ZERO)
-            },
-            None,
-        );
-        let first_front = puppet.insert_child(
-            root,
-            Node {
-                z_order: 2.0,
-                ..triangle_part(Vec2::ZERO)
-            },
-            None,
-        );
-        let last_front = puppet.insert_child(
-            root,
-            Node {
-                z_order: 2.0,
-                ..triangle_part(Vec2::ZERO)
-            },
-            None,
-        );
-        let mut tx = GlobalTransforms::new();
-        puppet.compute_transforms(&mut tx);
+        let mut rig = Rig::new();
+        let root = rig.root.clone();
+        let behind = rig.part(&root, Vec2::ZERO, -1.0);
+        let first_front = rig.part(&root, Vec2::ZERO, 2.0);
+        let last_front = rig.part(&root, Vec2::ZERO, 2.0);
+        let puppet = rig.puppet();
+        let tx = puppet.transforms().clone();
 
         assert_eq!(
-            pick_all(&puppet, &tx, Vec2::ZERO),
-            vec![last_front.0, first_front.0, behind.0]
+            pick_all(&rig.model, &puppet, &tx, Vec2::ZERO),
+            vec![
+                slot(&puppet, &last_front),
+                slot(&puppet, &first_front),
+                slot(&puppet, &behind),
+            ],
+            "front-most first; equal z resolves to the later-drawn node",
         );
     }
 }
