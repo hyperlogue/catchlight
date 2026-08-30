@@ -83,7 +83,7 @@ pub enum EditorError {
     NoParam(ParamId),
     #[error("no texture {0}")]
     NoTexture(TexId),
-    #[error("unknown binding target {0:?}")]
+    #[error("{0}")]
     BadTarget(String),
     #[error("nothing to undo")]
     NothingToUndo,
@@ -106,6 +106,12 @@ pub enum EditorError {
 }
 
 impl EditorError {
+    /// An enum name the server does not know: a binding target, a blend
+    /// mode, an interpolation mode.
+    fn unknown(kind: &str, name: &str) -> Self {
+        Self::BadTarget(format!("unknown {kind} {name:?}"))
+    }
+
     /// The wire code a client branches on. The message stays for a person;
     /// this is what a commit gate or a mesh editor reacts to.
     pub fn code(&self) -> ErrorCode {
@@ -889,11 +895,14 @@ impl Editor {
             } => self.edit_session(session, |s| {
                 let parsed_kind = kind
                     .as_deref()
-                    .map(|m| parse_pendulum_kind(m).ok_or(EditorError::BadTarget(m.to_string())))
+                    .map(|m| {
+                        parse_pendulum_kind(m)
+                            .ok_or_else(|| EditorError::unknown("pendulum kind", m))
+                    })
                     .transpose()?;
                 let parsed_map = map_mode
                     .as_deref()
-                    .map(|m| parse_map_mode(m).ok_or(EditorError::BadTarget(m.to_string())))
+                    .map(|m| parse_map_mode(m).ok_or_else(|| EditorError::unknown("map mode", m)))
                     .transpose()?;
                 let targets = match (clear_target_params, target_params) {
                     (true, _) => Some([None, None]),
@@ -1082,7 +1091,8 @@ impl Editor {
                 node,
                 target,
             } => self.edit_session(session, |s| {
-                let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = ScalarTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model
                     .add_binding(&binding_key(params, node, BindingTarget::Scalar(t))?)?;
                 s.touch();
@@ -1096,7 +1106,8 @@ impl Editor {
                 cell,
                 value,
             } => self.edit_session(session, |s| {
-                let t = ScalarTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = ScalarTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 let key = binding_key(params, node, BindingTarget::Scalar(t))?;
                 s.model.set_binding_key(&key, cell, value)?;
                 s.touch();
@@ -1114,7 +1125,7 @@ impl Editor {
                     .map(|e| {
                         ScalarTarget::parse(&e.target)
                             .map(|t| (t, e.value))
-                            .ok_or_else(|| EditorError::BadTarget(e.target.clone()))
+                            .ok_or_else(|| EditorError::unknown("binding target", &e.target))
                     })
                     .collect::<Result<_, _>>()?;
                 for (t, value) in parsed {
@@ -1131,7 +1142,8 @@ impl Editor {
                 target,
                 cell,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = BindingTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model
                     .unset_binding_key(&binding_key(params, node, t)?, cell)?;
                 s.touch();
@@ -1144,7 +1156,8 @@ impl Editor {
                 target,
                 cell,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = BindingTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model
                     .reset_binding_key(&binding_key(params, node, t)?, cell)?;
                 s.touch();
@@ -1156,7 +1169,8 @@ impl Editor {
                 node,
                 target,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = BindingTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model.delete_binding(&binding_key(params, node, t)?)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -1168,7 +1182,8 @@ impl Editor {
                 target,
                 mode,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = BindingTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 let m = parse_interpolate_mode(&mode)?;
                 s.model
                     .set_binding_interpolate(&binding_key(params, node, t)?, m)?;
@@ -1181,7 +1196,8 @@ impl Editor {
                 node,
                 target,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = BindingTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model.invert_binding(&binding_key(params, node, t)?)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -1194,7 +1210,8 @@ impl Editor {
                 from,
                 to,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target).ok_or(EditorError::BadTarget(target))?;
+                let t = BindingTarget::parse(&target)
+                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model
                     .copy_binding_key(&binding_key(params, node, t)?, from, to)?;
                 s.touch();
@@ -1383,7 +1400,7 @@ impl Editor {
                 length_damping,
             } => self.edit_session(session, |s| {
                 let phys_kind = parse_pendulum_kind(&kind)
-                    .ok_or_else(|| EditorError::BadTarget(kind.clone()))?;
+                    .ok_or_else(|| EditorError::unknown("pendulum kind", &kind))?;
                 let targets = physics_targets(&s.model, target_params)?;
                 let mut phys = ModelPhysics::new(phys_kind);
                 if let Some(v) = gravity {
@@ -1776,7 +1793,7 @@ fn apply_patch(n: &mut ModelNode, patch: &NodePatch) -> Result<(), EditorError> 
     let blend = patch
         .blend_mode
         .as_deref()
-        .map(|s| BlendMode::from_name(s).ok_or_else(|| EditorError::BadTarget(s.to_string())))
+        .map(|s| BlendMode::from_name(s).ok_or_else(|| EditorError::unknown("blend mode", s)))
         .transpose()?;
     if let Some(name) = &patch.name {
         n.name = Name::truncated(name);
@@ -1886,7 +1903,7 @@ fn parse_interpolate_mode(
         "stepped" => Ok(I::Stepped),
         "linear" => Ok(I::Linear),
         "cubic" => Ok(I::Cubic),
-        other => Err(EditorError::BadTarget(other.to_string())),
+        other => Err(EditorError::unknown("interpolation mode", other)),
     }
 }
 
@@ -1894,7 +1911,7 @@ fn parse_mask_mode(s: &str) -> Result<MaskMode, EditorError> {
     match s.to_ascii_lowercase().as_str() {
         "mask" => Ok(MaskMode::Mask),
         "dodge" | "dodge_mask" | "dodgemask" => Ok(MaskMode::DodgeMask),
-        other => Err(EditorError::BadTarget(other.to_string())),
+        other => Err(EditorError::unknown("mask mode", other)),
     }
 }
 
