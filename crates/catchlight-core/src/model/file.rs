@@ -563,10 +563,9 @@ impl Model {
 }
 
 /// A deform cell holds one `[dx, dy]` per mesh vertex, so its length is the
-/// node's flat vertex-array length and nothing else. The legacy runtime sized
-/// its grid from the *longest* authored cell and a [`Model`] sizes it from the
-/// mesh, so a file where the two disagree evaluates differently depending on
-/// which runtime reads it — refuse it rather than pick a winner.
+/// node's flat vertex-array length and nothing else. A [`Model`] sizes the
+/// grid from the mesh, so a cell that disagrees with it is a file saying two
+/// things at once — refuse it rather than pick a winner.
 fn check_deform_cells(
     node: &NodeId,
     expected: usize,
@@ -1456,10 +1455,9 @@ mod tests {
         ));
     }
 
-    /// `Model::add_binding` refuses a colour target on a mesh group and the
-    /// legacy loader refuses a file carrying one, but a Model read from a file
-    /// used to accept it and the fold then dropped it silently. The reader is
-    /// where that hole closes.
+    /// `Model::add_binding` refuses a colour target on a mesh group, but a
+    /// Model read from a file used to accept it and the fold then dropped it
+    /// silently. The reader is where that hole closes.
     #[test]
     fn a_colour_binding_on_a_mesh_group_is_a_structured_error() {
         for (values, target) in [
@@ -1507,9 +1505,8 @@ mod tests {
         assert!(Model::from_clm_file(&file).is_ok());
     }
 
-    /// The legacy runtime sized a deform grid from the longest authored cell
-    /// and a Model sizes it from the mesh, so a file where a cell and the mesh
-    /// disagree evaluates differently depending on who reads it.
+    /// A Model sizes a deform grid from the mesh, so a file whose cell and
+    /// mesh disagree is saying two things at once about the same node.
     #[test]
     fn a_deform_cell_the_mesh_cannot_take_is_a_structured_error() {
         let node = {

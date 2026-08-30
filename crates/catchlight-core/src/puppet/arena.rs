@@ -13,8 +13,8 @@
 //! matrices the transform walk reuses when a node has no delta this frame.
 //! What it does not hold is a pose: a fold writes into the arena, but which
 //! fold to run and at what values is the owning runtime's business. That is
-//! the whole reason it is a separate struct — [`crate::legacy_puppet`] and
-//! [`crate::puppet`] carry different pose layers over one set of passes.
+//! the whole reason it is a separate struct — [`crate::puppet`] carries the
+//! pose layers over one set of passes.
 
 use glam::Mat4;
 

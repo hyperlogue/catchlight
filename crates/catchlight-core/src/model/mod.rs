@@ -90,7 +90,6 @@ mod binding;
 mod check;
 mod eval;
 mod file;
-mod legacy;
 
 pub use addon::{InstallError, Installed, Required, Requirement, Requirements};
 pub use binding::{
@@ -111,7 +110,6 @@ use crate::formats::clm::{
     self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha,
     TextureEncoding,
 };
-use crate::formats::legacy::LegacyMeshGroup;
 use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SeamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
@@ -138,10 +136,6 @@ pub enum ModelError {
     IdExhausted,
     #[error(transparent)]
     Id(#[from] IdError),
-    #[error(".clm node arena must contain exactly one root at index 0")]
-    InvalidLegacyRoot,
-    #[error(".clm node {node} parent index {parent} must name a preceding node")]
-    InvalidLegacyParent { node: usize, parent: u32 },
     #[error("cannot reparent a node under itself or a descendant")]
     Cycle,
     #[error("this needs a complete model; an addon fragment has no single root")]
@@ -176,16 +170,6 @@ pub enum ModelError {
     ColorOnMeshGroup,
     #[error("a two-param binding needs two different params")]
     SelfPairedBinding,
-    #[error(
-        "the two-param binding on node {node} ({target}) cannot be written to .clm v0: its \
-         params are not an adjacent `<name>.x` / `<name>.y` pair"
-    )]
-    UnpairableBinding { node: String, target: &'static str },
-    #[error(
-        "physics node {0} drives two params that are not an adjacent `<name>.x` / `<name>.y` \
-         pair, which .clm v0 cannot express"
-    )]
-    UnpairablePhysicsTarget(String),
     #[error("binding target does not match the operation")]
     WrongTarget,
     #[error("index out of range")]
@@ -369,8 +353,8 @@ impl ModelWeld {
 
 /// One resolved pair of welded vertices, one from each part: what a weld's
 /// slot pair becomes once both slots are filled. A Model never stores these —
-/// [`ModelWeld::resolve`] derives them — but the legacy arena document and
-/// the runtime both take them directly.
+/// [`ModelWeld::resolve`] derives them — but the runtime takes them
+/// directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelWeldPair {
     /// Vertex indices into each part's mesh.
@@ -432,7 +416,8 @@ impl ModelNodeKind {
 pub struct ModelMesh(Arc<ClmMesh>);
 
 impl ModelMesh {
-    pub fn to_legacy(&self) -> ClmMesh {
+    /// A copy of the mesh as the file stores it.
+    pub fn to_clm(&self) -> ClmMesh {
         (*self.0).clone()
     }
 }
@@ -472,22 +457,6 @@ impl ModelMeshGroup {
 
     pub fn mesh(&self) -> &ClmMesh {
         &self.mesh
-    }
-
-    pub fn from_legacy(group: &LegacyMeshGroup) -> Self {
-        Self {
-            dynamic: group.dynamic,
-            translate_children: group.translate_children,
-            mesh: group.mesh.clone().into(),
-        }
-    }
-
-    pub fn to_legacy(&self) -> LegacyMeshGroup {
-        LegacyMeshGroup {
-            mesh: self.mesh.to_legacy(),
-            dynamic: self.dynamic,
-            translate_children: self.translate_children,
-        }
     }
 }
 

@@ -246,7 +246,7 @@ pub struct ClmKeyframe {
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
 /// Bumped for every breaking wire change. **1** is the only version
 /// `decode_structure` accepts; there is no migration path and no reader for
-/// the pre-public v0 arena (see [`super::legacy`], which is now memory-only).
+/// the pre-public v0 arena, which no longer exists in any form.
 pub const FORMAT_VERSION: u16 = 1;
 
 const SECTION_STRUCTURE: u32 = 0;
