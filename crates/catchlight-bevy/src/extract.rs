@@ -21,7 +21,9 @@ pub struct ExtractedPuppet {
     /// The model this entity animates. An `Arc`, so extraction copies a
     /// pointer rather than a rig.
     pub model: Arc<Model>,
-    /// Which asset that is — the cache is rebuilt when this changes.
+    /// Which asset it came from. For a reader asking what a render entity
+    /// draws — staleness is decided by the model's own identity, not by this,
+    /// because an id outlives the value behind it.
     pub model_id: AssetId<CatchlightModel>,
     /// World-space z of the entity, used to order overlapping puppets
     /// deterministically (higher z renders in front).
@@ -98,7 +100,7 @@ pub(crate) fn extract_puppets(
                     format: *format,
                 };
                 if let Some(gpu) = inner.gpus.get_mut(&key) {
-                    gpu.refresh(asset.model(), model_id, puppet, options);
+                    gpu.refresh(asset.shared(), puppet, options);
                 }
             }
         }

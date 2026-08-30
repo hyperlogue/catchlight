@@ -381,3 +381,45 @@ fn swapping_the_model_re_prepares_the_same_cache() {
     assert!(drawn_pixels(&after) > 1000, "the new model draws");
     assert_ne!(before, after, "and it is a different model on the target");
 }
+
+#[test]
+fn replacing_the_asset_value_re_prepares_the_cache() {
+    let mut app = render_app();
+    let target = offscreen_target(&mut app);
+    app.world_mut().spawn((
+        Camera2d,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            ..default()
+        },
+        RenderTarget::Image(target.clone().into()),
+        CatchlightCamera,
+    ));
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .add(CatchlightModel::new(fixture("welded_seam")));
+    app.world_mut().spawn((
+        CatchlightPuppet::new(handle.clone()),
+        Transform::from_scale(Vec3::splat(0.4)),
+    ));
+    for _ in 0..4 {
+        app.update();
+    }
+    let before = readback(&app, &target);
+
+    // Same handle, a different model: the id is unchanged and the new model's
+    // generation starts back at zero, so only the model's own identity tells
+    // the cache it is stale.
+    app.world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .insert(&handle, CatchlightModel::new(fixture("composite_masks")))
+        .expect("replace the model asset");
+    for _ in 0..4 {
+        app.update();
+    }
+    let after = readback(&app, &target);
+
+    assert!(drawn_pixels(&after) > 1000, "the replacement draws");
+    assert_ne!(before, after, "and it is what reaches the target");
+}
