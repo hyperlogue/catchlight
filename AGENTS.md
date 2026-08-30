@@ -87,7 +87,9 @@ that enforces them, not here. Add new ones there.
 
 - `crates/catchlight-wgpu/src/renderer.rs` — buffer writes, submits, camera
   slots, masking blends, resource sharing, WebGL fallbacks
-- `crates/catchlight-wgpu/src/drawable_collector.rs` — flattening and z order
+- `crates/catchlight-wgpu/src/collect.rs` — collecting drawables and z order
+- `crates/catchlight-wgpu/src/render_cache.rs` — what `prepare` and `refresh`
+  own, the generation gates, the Idx arena
 - `crates/catchlight-wgpu/src/lib.rs` — headless context, orthographic camera
 - `crates/catchlight-core/src/legacy_puppet.rs` — `tick`, its caches, `settle_physics`
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translateChildren`
