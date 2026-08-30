@@ -11,14 +11,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use catchlight_core::formats::clm::TextureEncoding;
-use catchlight_core::Vec2;
 use catchlight_core::{BindingKey, BindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
-    BindingKeyEntry, Command, NodePatch, NodeRef, ParamInfo, ParamRef, Reply, Request,
-    ResponseBody, SessionId, TexRef, TreeNode,
+    BindingKeyEntry, BindingParams, Command, NodeId, NodePatch, ParamId, ParamInfo, Reply, Request,
+    ResponseBody, SessionId, TexId, TreeNode,
 };
 use catchlight_editor_server::Editor;
-use catchlight_editor_server::RefMap;
 use eframe::egui;
 
 use crate::camera::EditorCamera;
@@ -42,8 +40,8 @@ pub struct App {
     editor: Arc<Editor>,
     session: Option<SessionId>,
     title: String,
-    /// Local preview pose (param name -> [x, y]). Client-local view state.
-    pose: HashMap<String, [f32; 2]>,
+    /// Local preview pose, by param Id. Client-local view state.
+    pose: HashMap<ParamId, f32>,
     status: String,
     io_queue: Arc<IoQueue>,
     /// Built lazily on the first frame, once eframe's wgpu device is in hand.
@@ -64,26 +62,26 @@ pub struct App {
     /// every tool-switch site clears the others.
     pan_mode: bool,
     /// Ordered selection; the last entry is the primary (inspected) node.
-    selection: Vec<NodeRef>,
-    collapsed: HashSet<u64>,
+    selection: Vec<NodeId>,
+    collapsed: HashSet<NodeId>,
     filter: String,
-    isolated: Option<NodeRef>,
+    isolated: Option<NodeId>,
     /// Live gesture previews, applied to puppet working state each render.
     previews: Vec<NodePreview>,
     mapping: Option<NodeMapping>,
     thumbs: HashMap<usize, egui::TextureHandle>,
     /// Parts under the cursor at the last right-click (the picker menu).
-    ctx_hits: Vec<(NodeRef, String)>,
+    ctx_hits: Vec<(NodeId, String)>,
     /// The viewport rect from the last frame — focus math needs its aspect.
     last_viewport_rect: Option<egui::Rect>,
 
     /// Recording state: the armed param — edits to TRS/z order/opacity write
     /// binding keys at the closest keypoint instead of node state.
-    armed: Option<ParamRef>,
+    armed: Option<ParamId>,
     /// Snap pose drags to keypoints (the controller's default).
     snap: bool,
     /// Keypoint clipboard: (param, node, target, cell) the value was taken at.
-    copied_cell: Option<(ParamRef, NodeRef, String, [u32; 2])>,
+    copied_cell: Option<(ParamId, NodeId, String, [u32; 2])>,
     /// Per-vertex deform tool active (armed + Part selected).
     deform_mode: bool,
     deform_drag: Option<DeformDrag>,
@@ -115,17 +113,17 @@ pub struct App {
     armed_cache: Option<(ArmedCacheKey, ArmedInfo)>,
 }
 
-/// (doc rev, armed param ffi id, armed cell) — the inputs ArmedInfo derives from.
-type ArmedCacheKey = (u64, u64, [u32; 2]);
+/// (doc rev, armed param, armed cell) — the inputs ArmedInfo derives from.
+type ArmedCacheKey = (u64, ParamId, [u32; 2]);
 
 /// Everything the rendered viewport image depends on; a change re-renders.
 #[derive(Clone, PartialEq)]
 struct RenderSig {
     rev: u64,
-    pose: Vec<(String, [f32; 2])>,
+    pose: Vec<(ParamId, f32)>,
     camera: EditorCamera,
     size: (u32, u32),
-    isolated: Option<NodeRef>,
+    isolated: Option<NodeId>,
     previews: Vec<NodePreview>,
     scratch_deform: Option<(u32, Vec<(usize, glam::Vec2)>)>,
 }
@@ -306,39 +304,32 @@ impl App {
 
     // ---- recording (armed param) ----
 
-    fn pose_of(&self, snap: &catchlight_editor_server::DocSnapshot, param: ParamRef) -> [f32; 2] {
-        let Some(info) = snap.params.iter().find(|p| p.param == param) else {
-            return [0.0, 0.0];
+    fn pose_of(&self, snap: &catchlight_editor_server::DocSnapshot, param: &ParamId) -> f32 {
+        let Some(info) = snap.params.iter().find(|p| &p.id == param) else {
+            return 0.0;
         };
-        self.pose.get(&info.name).copied().unwrap_or(info.defaults)
+        self.pose.get(&info.id).copied().unwrap_or(info.default)
     }
 
-    /// The keypoint cell recording writes to: nearest axis point per axis at
-    /// the current pose.
+    /// The keypoint cell recording writes to: the key position nearest the
+    /// current pose. A param is a scalar, so the cell's y is always 0 — a
+    /// grid with a second axis belongs to a *binding* that names two params,
+    /// which this panel does not author.
     fn armed_cell(
         &self,
         snap: &catchlight_editor_server::DocSnapshot,
-    ) -> Option<(ParamRef, [u32; 2])> {
-        let param = self.armed?;
-        let info = snap.params.iter().find(|p| p.param == param)?;
-        let pose = self.pose_of(snap, param);
-        // Axis points are normalized 0..1; map the pose into that space.
-        let normed = |v: f32, min: f32, max: f32| {
-            if (max - min).abs() > f32::EPSILON {
-                ((v - min) / (max - min)).clamp(0.0, 1.0)
-            } else {
-                0.0
-            }
+    ) -> Option<(ParamId, [u32; 2])> {
+        let param = self.armed.clone()?;
+        let info = snap.params.iter().find(|p| p.id == param)?;
+        let pose = self.pose_of(snap, &param);
+        // Key positions are normalized 0..1; map the pose into that space.
+        let normed = if (info.max - info.min).abs() > f32::EPSILON {
+            ((pose - info.min) / (info.max - info.min)).clamp(0.0, 1.0)
+        } else {
+            0.0
         };
-        let cx = nearest_index(
-            &info.axis_points_x,
-            normed(pose[0], info.min[0], info.max[0]),
-        );
-        let cy = nearest_index(
-            &info.axis_points_y,
-            normed(pose[1], info.min[1], info.max[1]),
-        );
-        Some((param, [cx, cy]))
+        let cx = nearest_index(&info.key_positions, normed);
+        Some((param, [cx, 0]))
     }
 
     /// Rebuild the armed-param panel data only when (rev, param, cell) moved —
@@ -346,12 +337,12 @@ impl App {
     fn refresh_armed_cache(&mut self, snap: &Arc<catchlight_editor_server::DocSnapshot>) {
         let Some(info) = self
             .armed_cell(snap)
-            .map(|(param, cell)| (snap.rev, param.0, cell))
+            .map(|(param, cell)| (snap.rev, param, cell))
         else {
             self.armed_cache = None;
             return;
         };
-        if self.armed_cache.as_ref().map(|(key, _)| *key) == Some(info) {
+        if self.armed_cache.as_ref().map(|(key, _)| key) == Some(&info) {
             return;
         }
         self.armed_cache = self.armed_info(snap).map(|v| (info, v));
@@ -360,12 +351,14 @@ impl App {
     fn armed_info(&self, snap: &Arc<catchlight_editor_server::DocSnapshot>) -> Option<ArmedInfo> {
         let session = self.session?;
         let (param, cell) = self.armed_cell(snap)?;
-        let info = snap.params.iter().find(|p| p.param == param)?;
-        let (w, h) = (info.axis[0] as usize, info.axis[1] as usize);
+        let info = snap.params.iter().find(|p| p.id == param)?;
+        // A param is scalar, so its own grid is one row; a two-param binding
+        // has more, and this panel shows the armed param's row of it.
+        let (w, h) = (info.key_positions.len(), 1);
         let editor = self.editor.clone();
+        let pid = param.clone();
         let data = editor
-            .with_model(session, |m, refs| {
-                let pid = refs.param_id(param)?.clone();
+            .with_model(session, |m| {
                 m.param(&pid)?;
                 let mut authored_count = vec![0u32; w * h];
                 let mut rows = Vec::new();
@@ -395,7 +388,7 @@ impl App {
                         }
                     }
                     rows.push(BindingRow {
-                        node: refs.node(b.node()),
+                        node: b.node().clone(),
                         node_name: m
                             .node(b.node())
                             .map(|n| n.name.to_string())
@@ -439,9 +432,9 @@ impl App {
     /// (the posed value is a sum/product over every binding).
     fn record_entries(
         &self,
-        param: ParamRef,
+        param: &ParamId,
         cell: [u32; 2],
-        node: NodeRef,
+        node: &NodeId,
         patch: &NodePatch,
     ) -> Vec<BindingKeyEntry> {
         let Some(session) = self.session else {
@@ -475,9 +468,8 @@ impl App {
         use catchlight_core::ScalarTarget as T;
         let key_at = |t: T| {
             editor
-                .with_model(session, |m, refs| {
-                    let key = scalar_key(refs, param, node, t)?;
-                    m.scalar_value_at(&key, cell).ok()
+                .with_model(session, |m| {
+                    m.scalar_value_at(&scalar_key(param, node, t), cell).ok()
                 })
                 .ok()
                 .flatten()
@@ -530,7 +522,7 @@ impl App {
     /// armed; the rest stays a document NodeSet. When armed but the keypoint
     /// can't be resolved (the param vanished), the recordable fields are
     /// dropped rather than baked into the document as posed values.
-    fn commit_patch(&mut self, node: NodeRef, patch: NodePatch) {
+    fn commit_patch(&mut self, node: NodeId, patch: NodePatch) {
         let Some(session) = self.session else { return };
         if self.armed.is_some() {
             let armed = self
@@ -548,12 +540,12 @@ impl App {
             let has_recordable = patch != rest;
             match armed {
                 Some((param, cell)) if has_recordable => {
-                    let entries = self.record_entries(param, cell, node, &patch);
+                    let entries = self.record_entries(&param, cell, &node, &patch);
                     if !entries.is_empty() {
                         self.send(Command::BindingKeys {
                             session,
-                            param,
-                            node,
+                            params: BindingParams::one(param),
+                            node: node.clone(),
                             cell,
                             entries,
                         });
@@ -596,18 +588,18 @@ impl App {
     fn enter_mesh_edit(&mut self) {
         let Some(session) = self.session else { return };
         let Some(node) = self.primary() else { return };
-        let Some(core) = self.core_of_ref(node) else {
+        let Some(core) = self.core_of_ref(&node) else {
             return;
         };
         let editor = self.editor.clone();
-        let Ok(Some((mesh, tex_bytes))) = editor.with_model(session, |m, refs| {
-            let id = refs.node_id(node)?;
-            let albedo = match m.node(id).map(|n| &n.kind) {
+        let id = node.clone();
+        let Ok(Some((mesh, tex_bytes))) = editor.with_model(session, |m| {
+            let albedo = match m.node(&id).map(|n| &n.kind) {
                 Some(ModelNodeKind::Part(p)) => p.albedo(),
                 Some(ModelNodeKind::MeshGroup(_)) => None,
                 _ => return None,
             };
-            let mesh = m.node_mesh(id)?.clone();
+            let mesh = m.node_mesh(&id)?.clone();
             let bytes = albedo.and_then(|t| m.texture(t)).map(|t| t.data.to_vec());
             Some((mesh, bytes))
         }) else {
@@ -650,7 +642,7 @@ impl App {
                     }
                     catchlight_core::formats::clm::ClmIndices::U32(v) => v.clone(),
                 };
-                self.send(Command::MeshApply {
+                self.send(Command::MeshSet {
                     session,
                     node: mesh.node,
                     verts: new_mesh.verts,
@@ -665,12 +657,10 @@ impl App {
 
     /// Replace the *working* mesh with another node's topology (the document
     /// is untouched until Apply).
-    fn mesh_copy_into_working(&mut self, src: NodeRef) {
+    fn mesh_copy_into_working(&mut self, src: NodeId) {
         let Some(session) = self.session else { return };
         let editor = self.editor.clone();
-        let Ok(Some(src_mesh)) =
-            editor.with_model(session, |m, refs| m.node_mesh(refs.node_id(src)?).cloned())
-        else {
+        let Ok(Some(src_mesh)) = editor.with_model(session, |m| m.node_mesh(&src).cloned()) else {
             return;
         };
         if let Some(mesh) = &mut self.mesh_edit {
@@ -686,25 +676,23 @@ impl App {
         let Some(session) = self.session else { return };
         let armed_cell = snapshot.as_ref().and_then(|s| self.armed_cell(s));
         match action {
-            ParamAction::Pose { name, value } => {
-                self.pose.insert(name, value);
+            ParamAction::Pose { param, value } => {
+                self.pose.insert(param, value);
             }
             ParamAction::Arm(param) => {
-                self.armed = param;
                 if param.is_none() {
                     self.deform_mode = false;
                 }
+                self.armed = param;
             }
-            ParamAction::AddParam { name, vec2 } => {
+            ParamAction::AddParam { name } => {
                 self.send(Command::ParamAdd {
                     session,
                     name,
-                    vec2,
-                    min: if vec2 { [-1.0, -1.0] } else { [0.0, 0.0] },
-                    max: [1.0, 1.0],
-                    defaults: [0.0, 0.0],
-                    axis_x: Vec::new(),
-                    axis_y: Vec::new(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    key_positions: Vec::new(),
                 });
             }
             ParamAction::Rename { param, name } => {
@@ -714,43 +702,37 @@ impl App {
                     name: Some(name),
                     min: None,
                     max: None,
-                    defaults: None,
+                    default: None,
                 });
             }
             ParamAction::Delete(param) => {
-                if self.armed == Some(param) {
+                if self.armed.as_ref() == Some(&param) {
                     self.armed = None;
                 }
                 self.send(Command::ParamDelete { session, param });
             }
-            ParamAction::AxisInsert { param, axis, value } => {
-                self.send(Command::ParamAxisInsert {
+            ParamAction::KeyInsert { param, value } => {
+                self.send(Command::ParamKeyInsert {
                     session,
                     param,
-                    axis,
                     value,
                 });
             }
-            ParamAction::AxisDelete { param, axis, index } => {
-                self.send(Command::ParamAxisDelete {
+            ParamAction::KeyDelete { param, index } => {
+                self.send(Command::ParamKeyDelete {
                     session,
                     param,
-                    axis,
                     index,
                 });
             }
-            ParamAction::Flip { param, axis } => {
-                self.send(Command::ParamFlip {
-                    session,
-                    param,
-                    axis,
-                });
+            ParamAction::Flip { param } => {
+                self.send(Command::ParamFlip { session, param });
             }
             ParamAction::BindingUnset { node, target } => {
                 if let Some((param, cell)) = armed_cell {
                     self.send(Command::BindingUnset {
                         session,
-                        param,
+                        params: BindingParams::one(param),
                         node,
                         target,
                         cell,
@@ -761,7 +743,7 @@ impl App {
                 if let Some((param, cell)) = armed_cell {
                     self.send(Command::BindingReset {
                         session,
-                        param,
+                        params: BindingParams::one(param),
                         node,
                         target,
                         cell,
@@ -772,7 +754,7 @@ impl App {
                 if let Some((param, _)) = armed_cell {
                     self.send(Command::BindingDelete {
                         session,
-                        param,
+                        params: BindingParams::one(param),
                         node,
                         target,
                     });
@@ -782,7 +764,7 @@ impl App {
                 if let Some((param, _)) = armed_cell {
                     self.send(Command::BindingInterpolate {
                         session,
-                        param,
+                        params: BindingParams::one(param),
                         node,
                         target,
                         mode,
@@ -793,7 +775,7 @@ impl App {
                 if let Some((param, _)) = armed_cell {
                     self.send(Command::BindingInvert {
                         session,
-                        param,
+                        params: BindingParams::one(param),
                         node,
                         target,
                     });
@@ -820,7 +802,7 @@ impl App {
                 if src_node == node {
                     self.send(Command::BindingCopyKey {
                         session,
-                        param,
+                        params: BindingParams::one(param),
                         node,
                         target,
                         from: src_cell,
@@ -832,16 +814,14 @@ impl App {
                 // re-fitted from the source mesh onto the target's topology.
                 let editor = self.editor.clone();
                 if target == "deform" {
+                    let (pid, src_id, dst_id) = (param.clone(), src_node.clone(), node.clone());
                     let refit = editor
-                        .with_model(session, |m, refs| {
-                            let pid = refs.param_id(param)?.clone();
-                            let src_id = refs.node_id(src_node)?.clone();
-                            let dst_id = refs.node_id(node)?;
+                        .with_model(session, |m| {
                             let src_mesh = m.node_mesh(&src_id)?.clone();
-                            let dst_verts = m.node_mesh(dst_id)?.verts.clone();
+                            let dst_verts = m.node_mesh(&dst_id)?.verts.clone();
                             let src_offsets = m
                                 .deform_value_at(
-                                    &BindingKey::new(pid, src_id, BindingTarget::Deform),
+                                    &BindingKey::new(pid, src_id.clone(), BindingTarget::Deform),
                                     src_cell,
                                 )
                                 .ok()?;
@@ -857,7 +837,7 @@ impl App {
                         Some(offsets) => {
                             self.send(Command::DeformVertices {
                                 session,
-                                param,
+                                params: BindingParams::one(param),
                                 node,
                                 cell,
                                 offsets,
@@ -866,13 +846,16 @@ impl App {
                         None => self.status = "paste: source or target has no mesh".into(),
                     }
                 } else {
+                    let (pid, src_id, target_name) =
+                        (param.clone(), src_node.clone(), target.clone());
                     let value = editor
-                        .with_model(session, |m, refs| {
-                            let BindingTarget::Scalar(t) = BindingTarget::parse(&target)? else {
+                        .with_model(session, |m| {
+                            let BindingTarget::Scalar(t) = BindingTarget::parse(&target_name)?
+                            else {
                                 return None;
                             };
-                            let key = scalar_key(refs, param, src_node, t)?;
-                            m.scalar_value_at(&key, src_cell).ok()
+                            m.scalar_value_at(&scalar_key(&pid, &src_id, t), src_cell)
+                                .ok()
                         })
                         .ok()
                         .flatten();
@@ -880,7 +863,7 @@ impl App {
                         Some(value) => {
                             self.send(Command::BindingKey {
                                 session,
-                                param,
+                                params: BindingParams::one(param),
                                 node,
                                 target,
                                 cell,
@@ -907,8 +890,8 @@ impl eframe::App for App {
         // The armed param can vanish under us (undo of its ParamAdd, a
         // co-driving agent's delete) — recording must stop, not fall back to
         // document edits of posed values.
-        if let (Some(armed), Some(snap)) = (self.armed, &snapshot) {
-            if !snap.params.iter().any(|p| p.param == armed) {
+        if let (Some(armed), Some(snap)) = (self.armed.clone(), &snapshot) {
+            if !snap.params.iter().any(|p| p.id == armed) {
                 self.armed = None;
                 self.deform_mode = false;
             }
@@ -958,14 +941,14 @@ impl eframe::App for App {
         let mut visible_order = Vec::new();
         let mut param_actions = Vec::new();
         let mut mesh_outcome = MeshEditOutcome::Continue;
-        let mut mesh_copy: Option<NodeRef> = None;
+        let mut mesh_copy: Option<NodeId> = None;
         let mesh_title = self.mesh_edit.as_ref().and_then(|m| {
             snapshot
                 .as_ref()
-                .and_then(|s| find_subtree(&s.root, m.node))
+                .and_then(|s| find_subtree(&s.root, &m.node))
                 .map(|n| n.name.clone())
         });
-        let copy_sources: Vec<(NodeRef, String)> = match (&self.mesh_edit, &snapshot) {
+        let copy_sources: Vec<(NodeId, String)> = match (&self.mesh_edit, &snapshot) {
             (Some(mesh), Some(s)) => {
                 let mut out = Vec::new();
                 collect_parts(&s.root, &mut out);
@@ -1023,10 +1006,10 @@ impl eframe::App for App {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if let Some(snap) = &snapshot {
-                            let sel: HashSet<u64> = self.selection.iter().map(|r| r.0).collect();
+                            let sel: HashSet<NodeId> = self.selection.iter().cloned().collect();
                             let mut panel = TreePanel {
                                 selection: &sel,
-                                isolated: self.isolated,
+                                isolated: self.isolated.clone(),
                                 filter: &self.filter.clone(),
                                 collapsed: &mut self.collapsed,
                                 actions: Vec::new(),
@@ -1314,7 +1297,7 @@ impl App {
         }
         let deform_active = self.deform_mode
             && self.armed.is_some()
-            && self.primary().and_then(|r| self.core_of_ref(r)).is_some();
+            && self.primary().and_then(|r| self.core_of_ref(&r)).is_some();
         if !deform_active && (self.deform_drag.is_some() || self.scratch_deform.is_some()) {
             // The tool was switched off out from under a drag — drop it
             // rather than letting a stale gesture commit later.
@@ -1343,8 +1326,8 @@ impl App {
             let resolved = self
                 .mesh_edit
                 .as_ref()
-                .map(|m| m.node)
-                .and_then(|n| self.core_of_ref(n));
+                .map(|m| m.node.clone())
+                .and_then(|n| self.core_of_ref(&n));
             match resolved {
                 Some(core) => {
                     let camera = self.camera;
@@ -1418,21 +1401,21 @@ impl App {
                         .filter_map(|r| {
                             snapshot
                                 .as_ref()
-                                .and_then(|s| find_subtree(&s.root, r))
-                                .map(|n| (r, n.name.clone()))
+                                .and_then(|s| find_subtree(&s.root, &r))
+                                .map(|n| (r.clone(), n.name.clone()))
                         })
                         .take(12)
                         .collect();
                 }
             }
-            let mut picked: Option<NodeRef> = None;
+            let mut picked: Option<NodeId> = None;
             resp.context_menu(|ui| {
                 if self.ctx_hits.is_empty() {
                     ui.label("nothing under cursor");
                 }
                 for (r, name) in &self.ctx_hits {
                     if ui.button(name).clicked() {
-                        picked = Some(*r);
+                        picked = Some(r.clone());
                         ui.close();
                     }
                 }
@@ -1445,7 +1428,7 @@ impl App {
         // Render when the signature moved.
         let w = rect.width().round().max(1.0) as u32;
         let h = rect.height().round().max(1.0) as u32;
-        let mut pose: Vec<(String, [f32; 2])> =
+        let mut pose: Vec<(ParamId, f32)> =
             self.pose.iter().map(|(k, v)| (k.clone(), *v)).collect();
         pose.sort_by(|a, b| a.0.cmp(&b.0));
         let sig = RenderSig {
@@ -1453,7 +1436,7 @@ impl App {
             pose,
             camera: self.camera,
             size: (w, h),
-            isolated: self.isolated,
+            isolated: self.isolated.clone(),
             previews: self.previews.clone(),
             scratch_deform: self.scratch_deform.clone(),
         };
@@ -1466,11 +1449,7 @@ impl App {
             if self.viewport.is_none() {
                 self.viewport = Some(ViewportRenderer::new(&render_state, w, h));
             }
-            let pose: Vec<(String, Vec2)> = sig
-                .pose
-                .iter()
-                .map(|(name, v)| (name.clone(), Vec2::new(v[0], v[1])))
-                .collect();
+            let pose = sig.pose.clone();
             let editor = self.editor.clone();
             let camera = self.camera;
             let previews = self.previews.clone();
@@ -1541,7 +1520,7 @@ impl App {
         let Some(primary) = self.primary() else {
             return;
         };
-        let Some(core) = self.core_of_ref(primary) else {
+        let Some(core) = self.core_of_ref(&primary) else {
             return;
         };
         match event {
@@ -1722,7 +1701,7 @@ impl App {
         session: SessionId,
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
     ) -> bool {
-        let Some(core) = self.primary().and_then(|r| self.core_of_ref(r)) else {
+        let Some(core) = self.primary().and_then(|r| self.core_of_ref(&r)) else {
             return false;
         };
         // Lasso indices belong to one node's mesh — a different primary (or a
@@ -1894,15 +1873,9 @@ impl App {
             return;
         };
         let editor = self.editor.clone();
+        let key = BindingKey::new(param.clone(), node.clone(), BindingTarget::Deform);
         let base = editor
-            .with_model(session, |m, refs| {
-                let key = BindingKey::new(
-                    refs.param_id(param)?.clone(),
-                    refs.node_id(node)?.clone(),
-                    BindingTarget::Deform,
-                );
-                m.deform_value_at(&key, cell).ok()
-            })
+            .with_model(session, |m| m.deform_value_at(&key, cell).ok())
             .ok()
             .flatten();
         let Some(mut offsets) = base else { return };
@@ -1915,7 +1888,7 @@ impl App {
         }
         self.send(Command::DeformVertices {
             session,
-            param,
+            params: BindingParams::one(param),
             node,
             cell,
             offsets,
@@ -1923,7 +1896,7 @@ impl App {
     }
 
     fn draw_deform_handles(&mut self, ui: &egui::Ui, rect: egui::Rect, session: SessionId) {
-        let Some(core) = self.primary().and_then(|r| self.core_of_ref(r)) else {
+        let Some(core) = self.primary().and_then(|r| self.core_of_ref(&r)) else {
             return;
         };
         let verts = self.part_world_verts(session, core);
@@ -2051,10 +2024,10 @@ impl App {
         ui.heading("Textures");
         let Some(session) = self.session else { return };
         let editor = self.editor.clone();
-        let Ok(texs) = editor.with_model(session, |m, refs| {
+        let Ok(texs) = editor.with_model(session, |m| {
             let ids = m.texture_ids().to_vec();
             ids.iter()
-                .filter_map(|t| m.texture(t).map(|tex| (refs.texture(t), tex.data.clone())))
+                .filter_map(|t| m.texture(t).map(|tex| (t.clone(), tex.data.clone())))
                 .collect::<Vec<_>>()
         }) else {
             return;
@@ -2085,29 +2058,28 @@ impl App {
             .max_height(180.0)
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for (i, (tref, data)) in texs.iter().enumerate() {
-                        // Keyed by the byte buffer's address: two parts
-                        // drawing one image share a thumbnail, and replacing an
-                        // image gets a new one.
+                    for (i, (tid, data)) in texs.iter().enumerate() {
+                        // Keyed by the payload's allocation: two parts drawing
+                        // one image share a thumbnail, and replacing an image
+                        // gets a new one.
                         let key = Arc::as_ptr(data) as usize;
                         let handle = self
                             .thumbs
                             .entry(key)
                             .or_insert_with(|| thumb_texture(ui.ctx(), &format!("tex{i}"), data));
-                        let _ = tref;
                         let resp = ui
                             .add(egui::Button::image(egui::load::SizedTexture::new(
                                 handle.id(),
                                 egui::vec2(56.0, 56.0),
                             )))
-                            .on_hover_text(format!("tex{i} — click to assign to selected part"));
+                            .on_hover_text(format!("{tid} — click to assign to selected part"));
                         if resp.clicked() {
-                            if let Some(node) = selected_part {
+                            if let Some(node) = selected_part.clone() {
                                 self.send(Command::NodeSet {
                                     session,
                                     node,
                                     patch: NodePatch {
-                                        texture: Some(*tref),
+                                        texture: Some(tid.clone()),
                                         ..Default::default()
                                     },
                                 });
@@ -2132,15 +2104,14 @@ impl App {
             return Vec::new();
         };
         let editor = self.editor.clone();
-        let Ok(Some(mut data)) =
-            editor.with_model(session, |m, refs| build_inspector_data(m, refs, primary))
+        let Ok(Some(mut data)) = editor.with_model(session, |m| build_inspector_data(m, &primary))
         else {
             return Vec::new();
         };
         // While armed, TRS/z order/opacity edit the *posed* values (they record
         // to the keypoint), so display the puppet's working state.
         if self.armed.is_some() {
-            if let Some(core) = self.core_of_ref(primary) {
+            if let Some(core) = self.core_of_ref(&primary) {
                 if let Ok(Some((t, r, s, z, op))) = editor.with_puppet(session, |_model, p| {
                     p.get(catchlight_core::NodeIdx(core)).map(|n| {
                         let op = match &n.kind {
@@ -2175,7 +2146,7 @@ impl App {
                 "⏺ recording — TRS / z order / opacity write to the armed keypoint",
             );
         }
-        let parts: Vec<(NodeRef, String)> = snapshot
+        let parts: Vec<(NodeId, String)> = snapshot
             .as_ref()
             .map(|s| {
                 let mut out = Vec::new();
@@ -2183,16 +2154,20 @@ impl App {
                 out
             })
             .unwrap_or_default();
-        let params: Vec<(ParamRef, String)> = snapshot
+        let params: Vec<(ParamId, String)> = snapshot
             .as_ref()
-            .map(|s| s.params.iter().map(|p| (p.param, p.name.clone())).collect())
+            .map(|s| {
+                s.params
+                    .iter()
+                    .map(|p| (p.id.clone(), p.name.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
-        let textures: Vec<(TexRef, String)> = editor
-            .with_model(session, |m, refs| {
-                let ids = m.texture_ids().to_vec();
-                ids.iter()
-                    .enumerate()
-                    .map(|(i, t)| (refs.texture(t), format!("tex{i}")))
+        let textures: Vec<(TexId, String)> = editor
+            .with_model(session, |m| {
+                m.texture_ids()
+                    .iter()
+                    .map(|t| (t.clone(), t.to_string()))
                     .collect()
             })
             .unwrap_or_default();
@@ -2208,7 +2183,7 @@ impl App {
         ui.separator();
         ui.label("Puppet physics");
         let editor = self.editor.clone();
-        let Ok((gravity, ppm)) = editor.with_model(session, |m, _| {
+        let Ok((gravity, ppm)) = editor.with_model(session, |m| {
             (m.physics().gravity, m.physics().pixels_per_meter)
         }) else {
             return;
@@ -2243,7 +2218,7 @@ impl App {
         &mut self,
         action: TreeAction,
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
-        visible: &[NodeRef],
+        visible: &[NodeId],
     ) {
         let Some(session) = self.session else { return };
         match action {
@@ -2272,8 +2247,8 @@ impl App {
                 let adjusted = fresh
                     .as_ref()
                     .or(snapshot.as_ref())
-                    .and_then(|s| find_subtree(&s.root, parent))
-                    .and_then(|p| p.children.iter().position(|c| c.node == node))
+                    .and_then(|s| find_subtree(&s.root, &parent))
+                    .and_then(|p| p.children.iter().position(|c| c.id == node))
                     .map(|old| {
                         if (old as u32) < index {
                             index - 1
@@ -2303,7 +2278,7 @@ impl App {
                     parent,
                     name: None,
                     kind: "rigid".into(),
-                    target_param: None,
+                    target_params: Vec::new(),
                     length: None,
                     gravity: None,
                     frequency: None,
@@ -2321,8 +2296,8 @@ impl App {
                 }
             }
             TreeAction::Delete(node) => {
-                self.selection.retain(|&r| r != node);
-                if self.isolated == Some(node) {
+                self.selection.retain(|r| *r != node);
+                if self.isolated.as_ref() == Some(&node) {
                     self.isolated = None;
                 }
                 self.send(Command::NodeDelete { session, node });
@@ -2352,7 +2327,7 @@ impl App {
         };
         match action {
             InspectorAction::Preview(patch) => {
-                if let Some(core) = self.core_of_ref(primary) {
+                if let Some(core) = self.core_of_ref(&primary) {
                     self.previews = vec![NodePreview {
                         core_id: core,
                         translation: patch.translate,
@@ -2374,8 +2349,8 @@ impl App {
                     kind: p.kind,
                     map_mode: p.map_mode,
                     local_only: p.local_only,
-                    target_param: p.target_param,
-                    clear_target_param: p.clear_target_param,
+                    target_params: p.target_param.map(|t| vec![t]),
+                    clear_target_params: p.clear_target_param,
                     gravity: p.gravity,
                     length: p.length,
                     frequency: p.frequency,
@@ -2421,22 +2396,12 @@ impl App {
 }
 
 /// The binding a scalar target on one node is driven by, for one param.
-fn scalar_key(
-    refs: &RefMap,
-    param: ParamRef,
-    node: NodeRef,
-    target: catchlight_core::ScalarTarget,
-) -> Option<BindingKey> {
-    Some(BindingKey::new(
-        refs.param_id(param)?.clone(),
-        refs.node_id(node)?.clone(),
-        BindingTarget::Scalar(target),
-    ))
+fn scalar_key(param: &ParamId, node: &NodeId, target: catchlight_core::ScalarTarget) -> BindingKey {
+    BindingKey::new(param.clone(), node.clone(), BindingTarget::Scalar(target))
 }
 
-fn build_inspector_data(model: &Model, refs: &mut RefMap, node: NodeRef) -> Option<InspectorData> {
-    let id = refs.node_id(node)?.clone();
-    let n = model.node(&id)?;
+fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
+    let n = model.node(node)?;
     let kind = match &n.kind {
         ModelNodeKind::Group => InspectorKind::Group,
         ModelNodeKind::Part(p) => InspectorKind::Part {
@@ -2448,7 +2413,7 @@ fn build_inspector_data(model: &Model, refs: &mut RefMap, node: NodeRef) -> Opti
                 mask_threshold: p.mask_threshold,
                 masks: mask_rows(model, p.masks()),
             },
-            albedo: p.albedo().cloned().map(|t| refs.texture(&t)),
+            albedo: p.albedo().cloned(),
             vert_count: p.mesh().verts.len() / 2,
             tri_count: match &p.mesh().indices {
                 catchlight_core::formats::clm::ClmIndices::U16(v) => v.len() / 3,
@@ -2475,7 +2440,7 @@ fn build_inspector_data(model: &Model, refs: &mut RefMap, node: NodeRef) -> Opti
             kind: ph.kind,
             map_mode: ph.map_mode,
             local_only: ph.local_only,
-            target_param: ph.target_params()[0].clone().map(|p| refs.param(&p)),
+            target_param: ph.target_params()[0].clone(),
             gravity: ph.gravity,
             length: ph.length,
             frequency: ph.frequency,
@@ -2509,17 +2474,17 @@ fn mask_rows(model: &Model, masks: &[catchlight_core::ModelMask]) -> Vec<MaskRow
         .collect()
 }
 
-fn collect_parts(node: &TreeNode, out: &mut Vec<(NodeRef, String)>) {
+fn collect_parts(node: &TreeNode, out: &mut Vec<(NodeId, String)>) {
     if node.kind == "part" {
-        out.push((node.node, node.name.clone()));
+        out.push((node.id.clone(), node.name.clone()));
     }
     for c in &node.children {
         collect_parts(c, out);
     }
 }
 
-fn find_subtree(root: &TreeNode, target: NodeRef) -> Option<&TreeNode> {
-    if root.node == target {
+fn find_subtree<'a>(root: &'a TreeNode, target: &NodeId) -> Option<&'a TreeNode> {
+    if root.id == *target {
         return Some(root);
     }
     root.children.iter().find_map(|c| find_subtree(c, target))
@@ -2527,22 +2492,22 @@ fn find_subtree(root: &TreeNode, target: NodeRef) -> Option<&TreeNode> {
 
 /// Posed value lookup for `ParamsPanel`: live pose overrides, else defaults.
 fn pose_reader<'a>(
-    pose: &'a HashMap<String, [f32; 2]>,
+    pose: &'a HashMap<ParamId, f32>,
     params: &'a [ParamInfo],
-) -> impl Fn(&str) -> [f32; 2] + 'a {
-    move |name: &str| {
-        pose.get(name).copied().unwrap_or_else(|| {
+) -> impl Fn(&ParamId) -> f32 + 'a {
+    move |id: &ParamId| {
+        pose.get(id).copied().unwrap_or_else(|| {
             params
                 .iter()
-                .find(|p| p.name == name)
-                .map(|p| p.defaults)
-                .unwrap_or([0.0, 0.0])
+                .find(|p| &p.id == id)
+                .map(|p| p.default)
+                .unwrap_or(0.0)
         })
     }
 }
 
-fn collect_refs(node: &TreeNode, f: &mut impl FnMut(NodeRef)) {
-    f(node.node);
+fn collect_refs<'a>(node: &'a TreeNode, f: &mut impl FnMut(&'a NodeId)) {
+    f(&node.id);
     for c in &node.children {
         collect_refs(c, f);
     }

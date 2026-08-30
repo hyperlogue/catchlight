@@ -1,6 +1,6 @@
 //! Mesh edit mode: a tool-local editing session over a [`WorkingMesh`], with
 //! its own snapshot undo stack. The document is untouched until Apply, which
-//! flattens the CDT (alpha-culled) into one `MeshApply` command — the document
+//! flattens the CDT (alpha-culled) into one `MeshSet` command — the document
 //! undo sees a single step, and the deform re-fit rides in it server-side.
 
 use std::collections::HashSet;
@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use catchlight_editor_core::{
     contour_automesh, grid_automesh, AlphaMask, ContourKnobs, UvMap, WorkingMesh,
 };
-use catchlight_editor_protocol::NodeRef;
+use catchlight_editor_protocol::NodeId;
 use eframe::egui;
 
 use crate::camera::EditorCamera;
@@ -22,7 +22,7 @@ pub(crate) enum MeshTool {
 }
 
 pub(crate) struct MeshEditState {
-    pub node: NodeRef,
+    pub node: NodeId,
     pub core: u32,
     pub working: WorkingMesh,
     /// Cached triangulation of `working` (the live preview).
@@ -63,7 +63,7 @@ const AXIS_SNAP: f32 = 4.0;
 
 impl MeshEditState {
     pub(crate) fn new(
-        node: NodeRef,
+        node: NodeId,
         core: u32,
         working: WorkingMesh,
         uv_map: UvMap,
@@ -475,8 +475,8 @@ impl MeshEditState {
     pub(crate) fn panel_ui(
         &mut self,
         ui: &mut egui::Ui,
-        copy_sources: &[(NodeRef, String)],
-    ) -> (MeshEditOutcome, Option<NodeRef>) {
+        copy_sources: &[(NodeId, String)],
+    ) -> (MeshEditOutcome, Option<NodeId>) {
         let mut outcome = MeshEditOutcome::Continue;
         let mut copy_from = None;
         ui.horizontal(|ui| {
@@ -606,7 +606,7 @@ impl MeshEditState {
                     .show(ui, |ui| {
                         for (node, name) in copy_sources {
                             if ui.button(name).clicked() {
-                                copy_from = Some(*node);
+                                copy_from = Some(node.clone());
                                 ui.close();
                             }
                         }
