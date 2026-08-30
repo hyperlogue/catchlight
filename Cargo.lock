@@ -1525,6 +1525,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "catchlight-clm"
+version = "0.1.0"
+dependencies = [
+ "catchlight-core",
+ "clap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "catchlight-core"
 version = "0.1.0"
 dependencies = [
