@@ -75,7 +75,7 @@ fn rebuild_after_an_edit(options: PrepareOptions) {
 
         // The edit. Nothing tells the puppet or the cache about it.
         let mut model = model;
-        let root = model.root().clone();
+        let root = model.root().expect("a complete model").clone();
         let tex = model.texture_ids()[0].clone();
         let mesh = common::quad(0.5, 0.5);
         let node =
@@ -156,7 +156,7 @@ fn refreshing_with_a_puppet_from_another_generation_is_a_programmer_error() {
         let puppet = Puppet::new(&model);
 
         // Edit the model but never sync the puppet, so its bake is stale.
-        let root = model.root().clone();
+        let root = model.root().expect("a complete model").clone();
         model
             .add_node(
                 &root,
