@@ -53,6 +53,14 @@
 //! - **The world is the base's.** An addon carries the physics settings of
 //!   whatever it was cut from; install keeps the base model's and ignores the
 //!   addon's.
+//! - **What an addon cannot express is a change to a base node.** A mask lives
+//!   on the node it clips, so a *base* drawable masked by an addon's part is
+//!   not something an addon can carry: [`Model::extract`] leaves that mask
+//!   behind and deleting the subtree drops it. That is the same rule as
+//!   [`InstallError::BindsOffAddon`] and as "an addon never adds a param" —
+//!   an addon adds to a base model, it does not edit one — and
+//!   `a_mask_on_a_base_node_is_not_the_addons_to_carry` in
+//!   `tests/addons.rs` is where it is pinned.
 
 use std::fmt;
 use std::sync::OnceLock;
