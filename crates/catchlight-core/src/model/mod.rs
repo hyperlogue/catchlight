@@ -17,7 +17,7 @@
 //!   model has one root and its parent is `None`; an *addon fragment* has
 //!   [`Model::roots`] naming parents it does not carry, and its other
 //!   references into a base model are meant to dangle until
-//!   `Model::install` resolves them — `model::addon` is where that lives, and
+//!   [`Model::install`] resolves them — [`addon`] is where that lives, and
 //!   [`Model::is_fragment`] is which shape this is. Neither shape has a
 //!   cycle, and no reference that resolves inside the model may dangle:
 //!   deleting a node drops every mask, binding and weld that
@@ -75,12 +75,14 @@
 //!
 //! Pure and wasm-safe: no GPU, no async, no filesystem.
 
+pub mod addon;
 mod binding;
 mod check;
 mod eval;
 mod file;
 mod legacy;
 
+pub use addon::{InstallError, Installed, Required, Requirement, Requirements};
 pub use binding::{
     deform_cells, mask_mode_name, param_range_is_valid, scalar_cells, target_of, BindingKey,
     BindingParams, BindingTarget, DenseGrid, ScalarTarget,
@@ -294,7 +296,7 @@ impl Slot {
 /// weighted meeting point after every other deformation so the seam stays
 /// closed. Both ends name a seam, so nothing here goes stale when a part is
 /// re-meshed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelWeld {
     a: (NodeId, SeamId),
     b: (NodeId, SeamId),
@@ -1837,7 +1839,7 @@ impl Model {
     ///
     /// In a **fragment**, an end naming a node the fragment does not carry is
     /// a weld into the base model: only the end this model can see is
-    /// validated, and `Model::install` checks the other against the base.
+    /// validated, and [`Model::install`] checks the other against the base.
     pub fn set_welds(&mut self, welds: Vec<ModelWeld>) -> Result<(), ModelError> {
         let fragment = self.is_fragment();
         for w in &welds {
