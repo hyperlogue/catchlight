@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/catchlight-core",
+    "crates/catchlight-import-inochi2d",
     "crates/catchlight-clm",
     "crates/catchlight-editor-core",
     "crates/catchlight-editor-protocol",
@@ -25,6 +26,7 @@ repository = "https://github.com/hovo/catchlight"
 # crates.io requires it, and without it these read as `*` requirements, which
 # `cargo deny check bans` rejects. Keep it in step with `workspace.package`.
 catchlight-core = { path = "crates/catchlight-core", version = "0.1.0" }
+catchlight-import-inochi2d = { path = "crates/catchlight-import-inochi2d", version = "0.1.0" }
 catchlight-editor-core = { path = "crates/catchlight-editor-core", version = "0.1.0" }
 catchlight-editor-protocol = { path = "crates/catchlight-editor-protocol", version = "0.1.0" }
 catchlight-editor-server = { path = "crates/catchlight-editor-server", version = "0.1.0" }

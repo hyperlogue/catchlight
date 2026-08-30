@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 catchlight-core = { path = "../catchlight-core" }
+catchlight-import-inochi2d = { path = "../catchlight-import-inochi2d" }
 image = { workspace = true }
 
 [lints]

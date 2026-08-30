@@ -2,10 +2,12 @@ use std::io::Read;
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::load_budget::{LoadBudget, LoadLimitError, LoadResource, MAX_TEXTURE_DIMENSION};
-use crate::texture::{EncodedTexture, TextureFormat};
+use catchlight_core::load_budget::{
+    LoadBudget, LoadLimitError, LoadResource, MAX_TEXTURE_DIMENSION,
+};
+use catchlight_core::texture::{EncodedTexture, TextureFormat};
 
-use super::utils::{read_be_u32, read_n, read_u8, read_vec};
+use crate::read::{read_be_u32, read_n, read_u8, read_vec};
 
 const MAGIC: &[u8] = b"TRNSRTS\0";
 const TEX_SECT: &[u8] = b"TEX_SECT";
@@ -376,9 +378,9 @@ mod tests {
             data.extend_from_slice(&0u32.to_be_bytes());
             data.push(0);
         }
-        let mut budget = LoadBudget::new(crate::load_budget::LoadLimits {
+        let mut budget = LoadBudget::new(catchlight_core::load_budget::LoadLimits {
             decoded_texture_bytes: 4,
-            ..crate::load_budget::LoadLimits::default()
+            ..catchlight_core::load_budget::LoadLimits::default()
         });
 
         let err = InxModel::parse_with_budget(Cursor::new(data), &mut budget).unwrap_err();
@@ -550,9 +552,7 @@ mod tests {
         assert!(model.textures.is_empty());
         assert!(model.vendors.is_empty());
 
-        let doc = crate::importer::from_inx_model_to_legacy(&model)
-            .expect("import")
-            .doc;
+        let doc = crate::from_inx_model_to_legacy(&model).expect("import").doc;
         assert_eq!(doc.nodes.len(), 1);
         assert_eq!(doc.nodes[0].name, "Root");
     }

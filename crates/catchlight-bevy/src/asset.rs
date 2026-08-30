@@ -82,8 +82,11 @@ impl fmt::Debug for CatchlightModel {
     }
 }
 
-/// Loads `.clm` (and, for a one-time import, `.inx` / `.inp`) into a
-/// [`CatchlightModel`].
+/// Loads a `.clm` into a [`CatchlightModel`].
+///
+/// `.clm` is the only model format catchlight reads. An inochi2d `.inx` /
+/// `.inp` is converted once, with `cargo xtask import`, and the `.clm` it
+/// writes is what an app ships.
 #[derive(Default, TypePath)]
 pub struct CatchlightModelLoader;
 
@@ -110,7 +113,7 @@ impl AssetLoader for CatchlightModelLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["clm", "inx", "inp"]
+        &["clm"]
     }
 }
 
@@ -132,8 +135,7 @@ pub enum ModelAssetError {
     /// format catchlight can read.
     UnknownFormat,
     /// The bytes named a format but did not parse as one. The message is the
-    /// reader's own, kept as text because the three readers report three
-    /// unrelated error types and a caller can only log this.
+    /// reader's own, kept as text because a caller can only log this.
     Parse(String),
 }
 

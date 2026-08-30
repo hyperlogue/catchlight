@@ -1,82 +1,62 @@
-//! Loading a model file into a [`Model`], dispatched by format.
+//! Loading a model file into a [`Model`].
 //!
-//! catchlight's first-class on-disk format is **`.clm`** (the editable source
-//! of truth). The legacy `.inx` / `.inp` formats are kept only as a one-time
-//! import path — convert a model to `.clm` with `cargo xtask import` and load
-//! that. These functions are byte-based (no filesystem), so they work on wasm
-//! too; callers read the bytes and tag the format from the file extension.
+//! **The load path is `.clm` bytes -> [`Model`], and there is no other.**
+//! `.clm` is catchlight's own format and the only one this crate reads: an
+//! inochi2d `.inx` / `.inp` is converted once, by `cargo xtask import`
+//! (`catchlight-import-inochi2d`), and the `.clm` is what ships. Nothing here
+//! knows that format exists.
 //!
-//! **The load path is `.clm` bytes -> [`Model`].** The file is only ever read
-//! into a Model — that is where the format's Ids, scalar params and seams are
-//! checked — and whatever animates or draws it is derived from there:
-//! [`crate::Puppet::new`] bakes the runtime's dense arena, and a render cache
-//! is prepared alongside it. Nothing reads a model file into anything else, so
-//! there is one reader to keep honest.
+//! The file is only ever read into a Model — that is where the format's Ids,
+//! scalar params and seams are checked — and whatever animates or draws it is
+//! derived from there: [`crate::Puppet::new`] bakes the runtime's dense arena,
+//! and a render cache is prepared alongside it. So there is one reader to
+//! keep honest.
+//!
+//! These functions are byte-based (no filesystem), so they work on wasm too;
+//! callers read the bytes and tag the format from the file extension or the
+//! magic.
 
-use std::io::Cursor;
 use std::path::Path;
 
 use crate::formats::clm;
-use crate::formats::inx::InxModel;
-use crate::importer::from_inx_model_to_legacy;
-use crate::model::Model;
-use crate::ImportError;
+use crate::model::{Model, ModelError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelFormat {
-    /// catchlight's editable source-of-truth format.
+    /// catchlight's editable source-of-truth format — the only one there is.
     Clm,
-    /// Legacy export (deprecated load path — import to `.clm` instead).
-    Inx,
-    /// Legacy puppet (deprecated load path — import to `.clm` instead).
-    Inp,
 }
 
 impl ModelFormat {
     /// Infer the format from a path's extension (case-insensitive). `None` for
-    /// any other extension.
+    /// any other extension, including `.inx` / `.inp`: those are imported, not
+    /// loaded.
     pub fn from_path(path: &Path) -> Option<ModelFormat> {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
             "clm" => Some(ModelFormat::Clm),
-            "inx" => Some(ModelFormat::Inx),
-            "inp" => Some(ModelFormat::Inp),
             _ => None,
         }
     }
 
     /// Detect the format from a file's leading magic bytes, for callers that
-    /// only have bytes and no path (a `fetch()` in the wasm host, a hand-in from
-    /// JS). `.inx` and `.inp` share the `TRNSRTS\0` container magic, so
-    /// both report as [`ModelFormat::Inx`] (the parse path is identical).
+    /// only have bytes and no path (a `fetch()` in the wasm host, a hand-in
+    /// from JS).
     pub fn sniff(bytes: &[u8]) -> Option<ModelFormat> {
-        const INX_MAGIC: &[u8] = b"TRNSRTS\0";
-        if bytes.starts_with(&clm::MAGIC[..]) {
-            Some(ModelFormat::Clm)
-        } else if bytes.starts_with(INX_MAGIC) {
-            Some(ModelFormat::Inx)
-        } else {
-            None
-        }
+        bytes
+            .starts_with(&clm::MAGIC[..])
+            .then_some(ModelFormat::Clm)
     }
 }
 
 /// Read model-file `bytes` of the given `format` into a [`Model`].
 ///
-/// `.clm` is read directly; a legacy `.inx` / `.inp` goes through the
-/// importer's arena document, which is the one path either still has.
 /// Textures arrive source-encoded, exactly as the file stores them — a render
 /// cache is what decodes and downsamples them, so there is no texture budget
 /// here.
-pub fn load_model(bytes: &[u8], format: ModelFormat) -> Result<Model, ImportError> {
-    let inx = match format {
-        ModelFormat::Clm => return Ok(Model::from_clm_bytes(bytes)?),
-        ModelFormat::Inx => InxModel::parse(Cursor::new(bytes))?,
-        ModelFormat::Inp => crate::formats::inx::parse_inp(Cursor::new(bytes))?,
-    };
-    tracing::warn!(
-        "loading a .inx/.inp directly is deprecated; convert it to .clm with `cargo xtask import`"
-    );
-    Ok(Model::from_legacy(&from_inx_model_to_legacy(&inx)?)?)
+pub fn load_model(bytes: &[u8], format: ModelFormat) -> Result<Model, ModelError> {
+    match format {
+        ModelFormat::Clm => Model::from_clm_bytes(bytes),
+    }
 }
 
 #[cfg(test)]
@@ -84,10 +64,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sniff_detects_magics() {
+    fn sniff_detects_the_clm_magic_and_nothing_else() {
         assert_eq!(ModelFormat::sniff(&clm::MAGIC[..]), Some(ModelFormat::Clm));
-        assert_eq!(ModelFormat::sniff(b"TRNSRTS\0junk"), Some(ModelFormat::Inx));
+        assert_eq!(ModelFormat::sniff(b"TRNSRTS\0junk"), None);
         assert_eq!(ModelFormat::sniff(b"nope"), None);
         assert_eq!(ModelFormat::sniff(&[]), None);
+    }
+
+    #[test]
+    fn only_clm_is_a_loadable_extension() {
+        assert_eq!(
+            ModelFormat::from_path(Path::new("a/b.clm")),
+            Some(ModelFormat::Clm)
+        );
+        assert_eq!(
+            ModelFormat::from_path(Path::new("a/b.CLM")),
+            Some(ModelFormat::Clm)
+        );
+        assert_eq!(ModelFormat::from_path(Path::new("a/b.inx")), None);
+        assert_eq!(ModelFormat::from_path(Path::new("a/b.inp")), None);
     }
 }

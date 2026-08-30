@@ -2,6 +2,8 @@
 
 //! winit viewer for a `.clm` rig — the interactive way to look at one.
 //!
+//! `.clm` only; import an `.inx` with `cargo xtask import` first.
+//!
 //! `--control` (or the `C` key) opens the egui panel of per-param sliders and
 //! stops animation playback.
 
@@ -13,12 +15,19 @@ use catchlight_wgpu::{
 use std::path::Path;
 use std::sync::Arc;
 
-/// Read a model file off disk. The format dispatch lives in the core; this is
+/// Read a `.clm` off disk. The format dispatch lives in the core; this is
 /// only the filesystem half, which the core deliberately does not have.
+///
+/// `.clm` is the only model file catchlight loads. Convert an inochi2d rig
+/// once with `cargo xtask import <model.inx>` and open the `.clm` it writes.
 fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
-    let format = ModelFormat::from_path(path)
-        .ok_or_else(|| format!("unsupported model file: {}", path.display()))?;
+    let format = ModelFormat::from_path(path).ok_or_else(|| {
+        format!(
+            "{} is not a .clm; convert it first with `cargo xtask import`",
+            path.display()
+        )
+    })?;
     Ok(load_model(&bytes, format)?)
 }
 use winit::{

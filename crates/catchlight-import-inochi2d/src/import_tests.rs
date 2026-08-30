@@ -6,11 +6,11 @@
 //! contract is that none of them is an error — the node loads with the
 //! offending part dropped or defaulted — and these pin which half that is.
 
-use super::to_legacy::from_inx_model_to_legacy;
-use crate::formats::clm::ClmIndices;
-use crate::formats::inx::InxModel;
-use crate::formats::legacy::{LegacyDocument, LegacyNodeKind};
-use crate::importer::ImportError;
+use crate::inx::InxModel;
+use crate::to_legacy::from_inx_model_to_legacy;
+use crate::ImportError;
+use catchlight_core::formats::clm::ClmIndices;
+use catchlight_core::formats::legacy::{LegacyDocument, LegacyNodeKind};
 use serde_json::json;
 
 /// Read one node tree, given as the `.inx` payload's `nodes` value.
@@ -27,7 +27,10 @@ fn try_doc(nodes: serde_json::Value) -> Result<LegacyDocument, ImportError> {
     from_inx_model_to_legacy(&model).map(|f| f.doc)
 }
 
-fn node_named<'a>(doc: &'a LegacyDocument, name: &str) -> &'a crate::formats::legacy::LegacyNode {
+fn node_named<'a>(
+    doc: &'a LegacyDocument,
+    name: &str,
+) -> &'a catchlight_core::formats::legacy::LegacyNode {
     doc.nodes
         .iter()
         .find(|n| n.name == name)
@@ -101,7 +104,10 @@ fn mask_threshold_parses_when_present_and_defaults_to_half() {
     assert_eq!(comp.masks.len(), 1);
     // Masks name a node index, and `source` sits at index 1 of the flattening.
     assert_eq!(comp.masks[0].source, 1);
-    assert_eq!(comp.masks[0].mode, crate::components::MaskMode::DodgeMask);
+    assert_eq!(
+        comp.masks[0].mode,
+        catchlight_core::components::MaskMode::DodgeMask
+    );
 }
 
 #[test]

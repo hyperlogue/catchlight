@@ -15,7 +15,6 @@ serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
 bytemuck = "1.25.2"
-image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
 smallvec = { version = "1.15", features = ["union"] }
 ciborium = "0.2.2"
 serde_bytes = "0.11.19"

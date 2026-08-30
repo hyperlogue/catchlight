@@ -1,7 +1,7 @@
 // This file has no build path (there is no `scripts/Cargo.toml`). Treat it as
 // a snippet to paste into an example, not a runnable tool.
 
-use catchlight_core::formats::InxModel;
+use catchlight_import_inochi2d::InxModel;
 use std::fs::File;
 use std::io::BufReader;
 

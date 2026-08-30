@@ -1,0 +1,21 @@
+[package]
+name = "catchlight-import-inochi2d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "One-time import of inochi2d .inx/.inp puppets into catchlight's .clm"
+
+[dependencies]
+catchlight-core = { workspace = true }
+image.workspace = true
+# The only BC7 DDS decode in the workspace: an .inx may store a texture as
+# DDS, and catchlight's own format never does.
+image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

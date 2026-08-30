@@ -46,4 +46,4 @@ jobs:
       # The editor has to run in a browser, so the core and the wgpu backend
       # must keep compiling for wasm32 even though nothing here links them
       # into a bundle yet.
-      - run: nix develop -c cargo build -p catchlight-core -p catchlight-wgpu --target wasm32-unknown-unknown
+      - run: nix develop -c cargo build -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d --target wasm32-unknown-unknown
