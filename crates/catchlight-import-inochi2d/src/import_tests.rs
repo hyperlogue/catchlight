@@ -496,3 +496,66 @@ fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
     // Without the fit, `.clm` refuses the document outright.
     reread(&file);
 }
+
+#[test]
+fn a_part_naming_no_texture_takes_slot_zero_when_the_rig_has_one() {
+    let with_texture = import(
+        json!({"nodes": {"uuid": 1, "name": "bare", "type": "Part",
+                         "mesh": {"verts": [], "uvs": [], "indices": []}}}),
+        1,
+    )
+    .expect("import");
+    let ClmNodeKind::Part(part) = &with_texture.doc.nodes[0].kind else {
+        panic!("expected a Part");
+    };
+    assert_eq!(
+        part.albedo,
+        Some(TexId::new("tex-0").unwrap()),
+        "slot 0 is what the source runtime draws"
+    );
+    reread(&with_texture);
+
+    let without = import(
+        json!({"nodes": {"uuid": 1, "name": "bare", "type": "Part",
+                         "mesh": {"verts": [], "uvs": [], "indices": []}}}),
+        0,
+    )
+    .expect("import");
+    let ClmNodeKind::Part(part) = &without.doc.nodes[0].kind else {
+        panic!("expected a Part");
+    };
+    assert_eq!(
+        part.albedo, None,
+        "a rig with no textures has no slot 0 to name"
+    );
+    reread(&without);
+}
+
+#[test]
+fn a_texture_no_part_draws_is_dropped_and_the_survivors_keep_their_ids() {
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [
+                    {"uuid": 2, "name": "one", "type": "Part", "textures": [1],
+                     "mesh": {"verts": [], "uvs": [], "indices": []}},
+                    {"uuid": 3, "name": "three", "type": "Part", "textures": [3],
+                     "mesh": {"verts": [], "uvs": [], "indices": []}}
+                ]
+            }
+        }),
+        4,
+    )
+    .expect("import");
+
+    assert_eq!(
+        file.textures
+            .iter()
+            .map(|t| t.id.to_string())
+            .collect::<Vec<_>>(),
+        vec!["tex-1".to_string(), "tex-3".to_string()],
+        "dropping tex-0 and tex-2 renumbers nothing"
+    );
+    reread(&file);
+}

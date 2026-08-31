@@ -21,16 +21,21 @@
 //! `<name>.y`, adjacent in param order, and every binding under it becomes a
 //! two-param binding over the pair. A pendulum aimed at one is aimed at both.
 //!
-//! **A param has to be posable**, so one of the crate's repairs lands here
-//! (the rule is in the crate doc): `usable_range` widens a range the source
-//! could not move along, and refuses one authored backwards.
+//! **A param has to be posable and a part has to name a texture the file
+//! carries**, so this is where two of the crate's repairs land (the rule is in
+//! the crate doc). `usable_range` widens a range the source could not move
+//! along and refuses one authored backwards; `convert_part` gives a part with
+//! no `textures` array the `tex-0` the source runtime draws, or no texture when
+//! the rig carries none. The texture table is then cut down to what some part
+//! actually draws — Ids are minted from the source's texture order, so the
+//! survivors keep theirs and dropping `tex-2` never renumbers `tex-3`.
 //!
 //! Only what catchlight models is kept; the rest (meta, groups, automation,
 //! animations, cameras, emissive/bump slots, emissionStrength) is dropped.
 //! Textures are carried verbatim — a render cache is what decodes and crops
 //! them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use catchlight_core::formats::clm::{
     ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
@@ -129,6 +134,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         uuid_node: &uuid_node,
         uuid_param: &uuid_param,
         slots: &slots,
+        textures: model.textures.len(),
     };
 
     let mut nodes = Vec::with_capacity(flat.len());
@@ -185,22 +191,33 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         );
     }
 
-    let textures = model
-        .textures
+    // A texture no part's albedo names draws nothing, so dropping it cannot
+    // change the render. Ids are minted from the source's texture order and
+    // the survivors keep theirs: dropping `tex-2` never renumbers `tex-3`.
+    let drawn: HashSet<&TexId> = nodes
         .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            Ok(ClmTexture {
-                id: tex_id(i as u32)?,
-                encoding: match t.format {
-                    TextureFormat::Png => TextureEncoding::Png,
-                    TextureFormat::Tga => TextureEncoding::Tga,
-                },
-                alpha: TextureAlpha::PremultipliedSrgb,
-                data: t.data.to_vec(),
-            })
+        .filter_map(|n| match &n.kind {
+            ClmNodeKind::Part(p) => p.albedo.as_ref(),
+            _ => None,
         })
-        .collect::<Result<Vec<_>, ImportError>>()?;
+        .collect();
+    let mut textures = Vec::with_capacity(model.textures.len());
+    for (i, t) in model.textures.iter().enumerate() {
+        let id = tex_id(i as u32)?;
+        if !drawn.contains(&id) {
+            tracing::warn!("dropping texture {id}: no part draws it");
+            continue;
+        }
+        textures.push(ClmTexture {
+            id,
+            encoding: match t.format {
+                TextureFormat::Png => TextureEncoding::Png,
+                TextureFormat::Tga => TextureEncoding::Tga,
+            },
+            alpha: TextureAlpha::PremultipliedSrgb,
+            data: t.data.to_vec(),
+        });
+    }
 
     Ok(ClmFile {
         doc: ClmDocument {
@@ -248,6 +265,9 @@ struct Refs<'a> {
     uuid_node: &'a HashMap<u32, u32>,
     uuid_param: &'a HashMap<u32, u32>,
     slots: &'a [Slot],
+    /// How many textures the rig carries — what a part naming none is
+    /// resolved against.
+    textures: usize,
 }
 
 impl Refs<'_> {
@@ -417,10 +437,28 @@ fn convert_part(
     node: NodeRef<'_>,
     refs: &Refs<'_>,
 ) -> Result<ClmPart, ImportError> {
-    // A part with no `textures` array takes slot 0, which is what the source
-    // runtime does; an index too large to be one is no texture at all.
+    // A part with no `textures` array draws slot 0 in the source runtime, so
+    // that is what it draws here — but only if the rig has a slot 0; naming a
+    // texture the file does not carry would be a `.clm` no reader accepts. An
+    // index too large to be a slot is no texture at all.
     let albedo = match s.textures.first() {
-        None => Some(tex_id(0)?),
+        None if refs.textures > 0 => {
+            tracing::warn!(
+                "part {} ({:?}) names no texture; giving it tex-0, which is what the source \
+                 runtime draws",
+                node.id,
+                node.name,
+            );
+            Some(tex_id(0)?)
+        }
+        None => {
+            tracing::warn!(
+                "part {} ({:?}) names no texture and the rig carries none; it draws nothing",
+                node.id,
+                node.name,
+            );
+            None
+        }
         Some(&v) => match u32::try_from(v) {
             Ok(v) => Some(tex_id(v)?),
             Err(_) => None,

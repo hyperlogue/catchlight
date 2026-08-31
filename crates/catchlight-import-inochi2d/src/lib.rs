@@ -65,6 +65,10 @@
 //! - a deform cell that disagrees with its node's mesh is zipped against it —
 //!   offsets past the last vertex drive nothing, vertices past the last offset
 //!   stay undeformed (`fit_deform_cells`, `reflect.rs`)
+//! - a part with no `textures` array takes `tex-0`, which is what the source
+//!   runtime draws, or no texture at all when the rig carries none
+//!   (`convert_part`)
+//! - a texture no part draws is dropped from the file (`from_inx_model`)
 //!
 //! Refused, because inochi2d's own rendering of them is undefined or unclear:
 //!
@@ -75,7 +79,8 @@
 //! **Textures are carried verbatim.** The bytes an `.inx` stores land in the
 //! model unchanged; decoding, the alpha crop and the UV remap belong to
 //! [`catchlight_core::texture`], which every model goes through whether it
-//! was imported or authored.
+//! was imported or authored. Ids are minted from the source's texture order,
+//! and dropping an undrawn texture never renumbers the ones that stay.
 //!
 //! **What is dropped**, because catchlight does not model it: meta, groups,
 //! automation, cameras, emissive and bump texture slots, `emissionStrength`,
