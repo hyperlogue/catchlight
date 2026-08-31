@@ -20,15 +20,10 @@ use clap::{Parser, Subcommand};
 /// The Id rules, repeated in `--help` because every command takes one.
 const ID_HELP: &str = "\
 Nodes, params, textures, seams and slots are named by their Id: one or more of
-the characters [A-Za-z0-9_./-], not starting with '.' or '/'. An Id is what the
-.clm file stores, so it means the same thing in every session that opened that
-file, and `node tree` / `param list` / `texture list` print the ones a model
-carries.
-
-An Id may begin with '-', which this CLI would otherwise read as an option.
-End the option list with `--` first:
-
-    catchlight-editor-cli node delete -- -hat";
+the characters [A-Za-z0-9_./-], starting with none of '.', '/' or '-'. An Id is
+what the .clm file stores, so it means the same thing in every session that
+opened that file, and `node tree` / `param list` / `texture list` print the ones
+a model carries.";
 
 #[derive(Parser)]
 #[command(
@@ -1636,21 +1631,20 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// The Id charset allows a leading `-`, which clap reads as an option —
-    /// so `--help` has to say that `--` ends the option list, and `--` has to
-    /// actually work.
+    /// The charset bans a leading `-` precisely so no Id ever has to be
+    /// smuggled past clap's option parsing — `--help` says so, and the Id
+    /// type refuses one before the socket.
     #[test]
-    fn a_leading_dash_id_is_reachable_after_a_double_dash() {
+    fn a_leading_dash_is_not_an_id() {
         assert!(ID_HELP.contains("[A-Za-z0-9_./-]"));
-        assert!(ID_HELP.contains("not starting with '.' or '/'"));
-        assert!(ID_HELP.contains("`--`"));
+        assert!(ID_HELP.contains("starting with none of '.', '/' or '-'"));
 
-        let cli = Cli::try_parse_from(["cli", "--session", "1", "node", "delete", "--", "-hat"])
-            .expect("`--` ends the option list");
-        match build_command(&cli).unwrap() {
-            Command::NodeDelete { node, .. } => assert_eq!(node.as_str(), "-hat"),
-            other => panic!("{other:?}"),
-        }
+        let Err(err) =
+            Cli::try_parse_from(["cli", "--session", "1", "node", "delete", "--", "-hat"])
+        else {
+            panic!("a leading dash is not an id");
+        };
+        assert!(err.to_string().contains("'-'"), "{err}");
     }
 
     #[test]

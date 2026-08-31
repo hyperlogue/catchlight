@@ -285,12 +285,11 @@ fn the_exit_status_says_whether_they_differ() {
 }
 
 #[test]
-fn the_help_documents_the_id_charset_and_the_option_terminator() {
+fn the_help_documents_the_id_charset_and_the_exit_statuses() {
     let (code, out, _) = common::run(&["--help"]);
     assert_eq!(code, 0);
     assert!(out.contains("[A-Za-z0-9_./-]"), "{out}");
-    assert!(out.contains("starts with neither `.` nor `/`"), "{out}");
-    assert!(out.contains("takes `--` to end its options"), "{out}");
+    assert!(out.contains("starts with none of `.`, `/` or `-`"), "{out}");
     assert!(
         out.contains("1  `diff` only: the two files differ"),
         "{out}"
