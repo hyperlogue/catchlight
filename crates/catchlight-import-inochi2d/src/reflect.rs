@@ -16,8 +16,11 @@
 //! Tolerance stops where the crate's repair rule does (see the crate doc):
 //! repair only what provably cannot change how inochi2d renders the rig.
 //! [`convert_mesh`] **refuses** a mesh whose indices or UVs do not fit its
-//! vertices: the source's own drawing of one is undefined, so there is no
-//! behaviour a repair could preserve.
+//! vertices — the source's own drawing of one is undefined, so there is no
+//! behaviour to preserve — while a deform cell that disagrees with its node's
+//! mesh is **repaired** by zipping it against the mesh, because the offsets
+//! past the last vertex drive nothing and the vertices past the last offset
+//! stay where they were.
 
 use std::collections::HashMap;
 
@@ -197,6 +200,8 @@ pub(crate) fn convert_binding_values(
     is_set: Option<&[Vec<bool>]>,
     axis_x: &[f32],
     axis_y: &[f32],
+    node: NodeRef<'_>,
+    deform_len: usize,
 ) -> Option<ClmBindingValues> {
     if kind == "deform" {
         let mut d = matrix_vec2_flat(v);
@@ -205,8 +210,15 @@ pub(crate) fn convert_binding_values(
                 *y = -*y;
             }
         }
-        let vlen = d.data.iter().map(Vec::len).max().unwrap_or(0);
-        let cells = sparsify(d, is_set, axis_x, axis_y, &vec![0.0f32; vlen], close_vec);
+        fit_deform_cells(&mut d, deform_len, node);
+        let cells = sparsify(
+            d,
+            is_set,
+            axis_x,
+            axis_y,
+            &vec![0.0f32; deform_len],
+            close_vec,
+        );
         return Some(ClmBindingValues::Deform(cells));
     }
     // Reflect source-space outputs at the import boundary: spatial Y into
@@ -253,6 +265,30 @@ pub(crate) fn convert_binding_values(
         // so they are dropped here.
         _ => return None,
     })
+}
+
+/// Zip a deform matrix against the mesh it drives. A cell holds one `[dx, dy]`
+/// per vertex, and `.clm` refuses one that says otherwise, so a ragged matrix
+/// has to be resolved here — and both sides of the zip are free: an offset past
+/// the last vertex drives nothing, and a vertex past the last offset was
+/// already staying where it was. Extra offsets are dropped, missing ones are
+/// zeros, and the rendered pose is the one the source drew.
+fn fit_deform_cells(d: &mut Dense<Vec<f32>>, deform_len: usize, node: NodeRef<'_>) {
+    let ragged = d.data.iter().filter(|c| c.len() != deform_len).count();
+    if ragged == 0 {
+        return;
+    }
+    let shortest = d.data.iter().map(Vec::len).min().unwrap_or(0);
+    let longest = d.data.iter().map(Vec::len).max().unwrap_or(0);
+    tracing::warn!(
+        "node {} ({:?}): {ragged} deform cell(s) hold {shortest}..={longest} offsets where the \
+         node's mesh takes {deform_len}; truncating the long ones and zero-padding the short ones",
+        node.id,
+        node.name,
+    );
+    for cell in &mut d.data {
+        cell.resize(deform_len, 0.0);
+    }
 }
 
 pub(crate) fn reflect_z(value: f32) -> f32 {

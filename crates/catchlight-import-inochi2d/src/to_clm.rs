@@ -29,8 +29,9 @@
 use std::collections::HashMap;
 
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind,
-    ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics, ClmTexture, TextureAlpha, TextureEncoding,
+    ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
+    ClmNodeKind, ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics, ClmTexture, TextureAlpha,
+    TextureEncoding,
 };
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::texture::TextureFormat;
@@ -285,6 +286,16 @@ fn tex_id(i: u32) -> Result<TexId, ImportError> {
     Ok(TexId::new(format!("tex-{i}"))?)
 }
 
+/// The mesh a node deforms, if it has one. A part and a mesh group carry one;
+/// nothing else does, so a deform binding on anything else drives no vertex.
+fn mesh_of(kind: &ClmNodeKind) -> Option<&ClmMesh> {
+    match kind {
+        ClmNodeKind::Part(p) => Some(&p.mesh),
+        ClmNodeKind::MeshGroup(mg) => Some(&mg.mesh),
+        _ => None,
+    }
+}
+
 fn convert_node(
     s: &SchemaNode,
     index: usize,
@@ -438,16 +449,14 @@ fn convert_binding(
     // Drop bindings whose target node doesn't resolve: there is nothing for
     // them to drive.
     let node = refs.node_of_uuid(b.node?)?;
+    let target = nodes.iter().find(|n| &n.id == node);
     let values_json = b.values.as_ref()?;
     let kind = b.param_name.as_deref().unwrap_or("");
     // A mesh group is never drawn and carries no colour, so a colour binding on
     // one has nowhere to land — and writing it out would produce a `.clm` the
     // loader rejects.
     if source_binding_is_color(kind)
-        && matches!(
-            nodes.iter().find(|n| &n.id == node).map(|n| &n.kind),
-            Some(ClmNodeKind::MeshGroup(_))
-        )
+        && matches!(target.map(|n| &n.kind), Some(ClmNodeKind::MeshGroup(_)))
     {
         tracing::debug!(
             "dropping {:?} binding on mesh group node {}: a mesh group is never drawn",
@@ -456,7 +465,24 @@ fn convert_binding(
         );
         return None;
     }
-    let values = convert_binding_values(kind, values_json, b.is_set.as_deref(), axis_x, axis_y)?;
+    // A deform cell is one `[dx, dy]` per vertex of *this* node's mesh, so the
+    // mesh has to be in scope to fit the cells to it.
+    let named = NodeRef {
+        id: node,
+        name: target.map_or("", |n| n.name.as_str()),
+    };
+    let deform_len = target
+        .and_then(|n| mesh_of(&n.kind))
+        .map_or(0, |m| m.verts.len());
+    let values = convert_binding_values(
+        kind,
+        values_json,
+        b.is_set.as_deref(),
+        axis_x,
+        axis_y,
+        named,
+        deform_len,
+    )?;
     Some(ClmBinding {
         params: slot.params(),
         node: node.clone(),
