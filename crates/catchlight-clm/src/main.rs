@@ -31,10 +31,8 @@ impl AlphaArg {
 const AFTER_HELP: &str = "\
 Ids:
   A node, param or texture id is a non-empty string of [A-Za-z0-9_./-] that
-  starts with neither `.` nor `/`. It may start with `-`, so every command
-  takes `--` to end its options:
-
-      catchlight-clm patch model.clm -- -odd-id z_order 1
+  starts with none of `.`, `/` or `-` — so an id is always safe to pass as a
+  bare argument.
 
   Ids are case-sensitive, and the `/` a generated id carries (`head/part-3f9a`)
   is a reading aid, not a path.

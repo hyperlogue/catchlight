@@ -14,7 +14,7 @@
 //!   an addon can be written against a model by reading its tree, and two
 //!   clients editing one session mean the same node by the same word. The
 //!   Id types validate on the way in, so a string outside the charset
-//!   (`[A-Za-z0-9_./-]`, no leading `.` or `/`) never reaches the server: it
+//!   (`[A-Za-z0-9_./-]`, no leading `.`, `/` or `-`) never reaches the server: it
 //!   is refused as [`ErrorCode::BadRequest`] against the request's own `id`.
 //!   [`SessionId`] is the exception — a session is not part of any model, so
 //!   it stays an opaque `u64` the server allocates.
