@@ -57,6 +57,12 @@
 //! unrecoverable in a way a refusal is not. Every repair says what it changed
 //! through `tracing::warn!`, naming the thing it changed.
 //!
+//! Repaired, because the source draws the same picture either way:
+//!
+//! - a deform cell that disagrees with its node's mesh is zipped against it —
+//!   offsets past the last vertex drive nothing, vertices past the last offset
+//!   stay undeformed (`fit_deform_cells`, `reflect.rs`)
+//!
 //! Refused, because inochi2d's own rendering of them is undefined or unclear:
 //!
 //! - a mesh whose indices name vertices it does not have, or whose UVs do not

@@ -7,14 +7,18 @@
 //! these pin which half each case takes.
 //!
 //! The rest of the file is the repair-or-refuse rule from the crate doc, one
-//! test per behaviour.
+//! test per behaviour. A repair is pinned twice: what the document holds, and
+//! that the document still loads — a "repair" that leaves a `.clm` no reader
+//! accepts has repaired nothing.
 
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;
 use crate::ImportError;
-use catchlight_core::formats::clm::{ClmDocument, ClmIndices, ClmNode, ClmNodeKind};
-use catchlight_core::{NodeId, TexId};
+use catchlight_core::formats::clm::{ClmDocument, ClmFile, ClmIndices, ClmNode, ClmNodeKind};
+use catchlight_core::texture::{EncodedTexture, TextureFormat};
+use catchlight_core::{Model, NodeId, TexId};
 use serde_json::json;
+use std::sync::Arc;
 
 /// Read one node tree, given as the `.inx` payload's `nodes` value.
 fn doc(nodes: serde_json::Value) -> ClmDocument {
@@ -28,6 +32,36 @@ fn try_doc(nodes: serde_json::Value) -> Result<ClmDocument, ImportError> {
         vendors: Vec::new(),
     };
     from_inx_model(&model).map(|f| f.doc)
+}
+
+/// Import a whole payload — nodes, params and a rig carrying `textures`
+/// texture slots.
+fn import(payload: serde_json::Value, textures: usize) -> Result<ClmFile, ImportError> {
+    let model = InxModel {
+        payload,
+        // The import carries texture bytes verbatim and decodes none of them,
+        // so what a slot encodes is not what these tests are about.
+        textures: (0..textures)
+            .map(|_| EncodedTexture {
+                format: TextureFormat::Png,
+                data: Arc::from(&b"texture bytes"[..]),
+                premultiplied: true,
+            })
+            .collect(),
+        vendors: Vec::new(),
+    };
+    from_inx_model(&model)
+}
+
+/// The imported document, read back the way a `.clm` off disk is read: through
+/// the loader, out to bytes, and in through the byte reader. A repair that
+/// leaves a document this refuses is not a repair.
+fn reread(file: &ClmFile) -> Model {
+    let bytes = Model::from_clm_file(file)
+        .expect("the repaired document loads")
+        .to_clm_bytes()
+        .expect("and writes back out");
+    Model::from_clm_bytes(&bytes).expect("and reads back in")
 }
 
 fn node_named<'a>(doc: &'a ClmDocument, name: &str) -> &'a ClmNode {
@@ -286,6 +320,28 @@ fn a_mesh_with_an_odd_coordinate_count_keeps_the_pairs_it_has() {
     assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1]));
 }
 
+/// A part with two vertices, named `name`, drawing texture slot 0.
+fn two_vertex_part(uuid: u32, name: &str) -> serde_json::Value {
+    json!({
+        "uuid": uuid, "name": name, "type": "Part", "textures": [0],
+        "mesh": {
+            "verts": [0.0, 0.0, 1.0, 0.0],
+            "uvs": [0.0, 0.0, 1.0, 0.0],
+            "indices": [0, 1]
+        }
+    })
+}
+
+/// One param with one binding, over two x keypoints and one y.
+fn one_binding(binding: serde_json::Value) -> serde_json::Value {
+    json!([{
+        "uuid": 100, "name": "p", "is_vec2": false,
+        "min": [0.0, 0.0], "max": [1.0, 1.0], "defaults": [0.0, 0.0],
+        "axis_points": [[0.0, 1.0], [0.0]],
+        "bindings": [binding]
+    }])
+}
+
 #[test]
 fn a_mesh_index_past_the_vertex_array_is_refused_naming_the_node() {
     let err = try_doc(json!({
@@ -340,4 +396,42 @@ fn a_uv_array_that_does_not_pair_with_the_vertices_is_refused() {
         panic!("expected a MeshGroup");
     };
     assert_eq!(group.mesh.vertex_count(), 2);
+}
+
+#[test]
+fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
+    // Two vertices, so a cell holds four offsets. The first cell authors three
+    // points and the second one; the source drew neither the third point (no
+    // vertex takes it) nor a second point in the second cell (it stayed put).
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [two_vertex_part(2, "part")]
+            },
+            "param": one_binding(json!({
+                "node": 2, "param_name": "deform", "values": [
+                    [[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]],
+                    [[[7.0, 8.0]]]
+                ]
+            }))
+        }),
+        1,
+    )
+    .expect("a ragged deform matrix is repaired, not refused");
+
+    let cells = catchlight_core::model::deform_cells(&file.doc.bindings[0].values)
+        .expect("the deform binding");
+    assert_eq!(
+        cells.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
+        vec![
+            // The third point is dropped; y still flips into catchlight's frame.
+            vec![1.0, -2.0, 3.0, -4.0],
+            // The missing point is zero: that vertex is undeformed.
+            vec![7.0, -8.0, 0.0, 0.0],
+        ],
+    );
+
+    // Without the fit, `.clm` refuses the document outright.
+    reread(&file);
 }
