@@ -45,6 +45,11 @@
 //!   siblings are the only way an Id ever changes — each rewrites every
 //!   reference to it. The root's Id starts out `root`; a model read from a
 //!   `.clm`, which stores no Ids, gets `node-<arena index>` for the rest.
+//! - **A mask source is a drawable.** The renderer rasterizes a source's own
+//!   drawing into the mask, so [`Model::mask_add`] takes a part or a
+//!   composite and refuses everything else — a mesh group is never drawn, and
+//!   a group or a physics node has nothing to draw. The `.clm` reader refuses
+//!   the same shapes.
 //! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
 //!   free to repeat, and never a key.
 //! - **Every param is a scalar.** Joint control over two params is a property
@@ -148,6 +153,8 @@ pub enum ModelError {
     UnknownBinding,
     #[error("node is not a part")]
     NotAPart,
+    #[error("a mask source must be a part or a composite")]
+    NotAMaskSource,
     #[error("part carries no such seam")]
     UnknownSeam,
     #[error("seam carries no such slot")]
@@ -1446,8 +1453,10 @@ impl Model {
         }
     }
 
-    /// Append a mask source. Sources must be parts (the renderer rasterizes a
-    /// source's own mesh + texture into the mask).
+    /// Append a mask source. A source has to be something the renderer draws
+    /// — a part, whose mesh and texture it rasterizes into the mask, or a
+    /// composite, whose whole subtree it rasterizes. A mesh group, a group or
+    /// a physics node draws nothing and cannot be one.
     pub fn mask_add(
         &mut self,
         id: &NodeId,
@@ -1458,8 +1467,8 @@ impl Model {
             return Err(ModelError::SelfMask);
         }
         match self.nodes.get(source).map(|n| &n.kind) {
-            Some(ModelNodeKind::Part(_)) => {}
-            Some(_) => return Err(ModelError::NotAPart),
+            Some(k) if is_mask_source(k) => {}
+            Some(_) => return Err(ModelError::NotAMaskSource),
             None => return Err(ModelError::UnknownNode),
         }
         let source = source.clone();
@@ -2071,8 +2080,8 @@ impl Model {
         if let Some(masks) = node.masks() {
             for m in masks {
                 match self.nodes.get(&m.source).map(|n| &n.kind) {
-                    Some(ModelNodeKind::Part(_)) => {}
-                    Some(_) => return Err(ModelError::NotAPart),
+                    Some(k) if is_mask_source(k) => {}
+                    Some(_) => return Err(ModelError::NotAMaskSource),
                     None => return Err(ModelError::UnknownNode),
                 }
             }
@@ -2102,6 +2111,13 @@ impl Model {
         }
         false
     }
+}
+
+/// Whether a node of this kind may be named as a mask source: the two kinds
+/// the renderer draws. One place, because [`Model::mask_add`], the model's own
+/// reference check and the `.clm` reader all have to agree.
+pub(crate) fn is_mask_source(kind: &ModelNodeKind) -> bool {
+    matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::Composite(_))
 }
 
 /// Vertices come in pairs, uvs match them, and every index names a vertex.
@@ -3379,7 +3395,20 @@ mod tests {
         assert!(m.mask_add(&a, &a, MaskMode::Mask).is_err());
         assert!(m
             .mask_add(&a, &root, MaskMode::Mask)
-            .is_err_and(|e| matches!(e, ModelError::NotAPart)));
+            .is_err_and(|e| matches!(e, ModelError::NotAMaskSource)));
+        // A composite is drawn, so it is a source like a part is — the
+        // renderer has always rasterized one, and `tests/models/
+        // composite_masks.clm` is the baseline that says so.
+        m.mask_add(&a, &target, MaskMode::Mask).unwrap();
+        m.mask_delete(&a, 0).unwrap();
+        let bend = r.node(
+            "bend",
+            ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad())),
+        );
+        let m = &mut r.model;
+        assert!(m
+            .mask_add(&a, &bend, MaskMode::Mask)
+            .is_err_and(|e| matches!(e, ModelError::NotAMaskSource)));
 
         m.mask_add(&target, &a, MaskMode::Mask).unwrap();
         m.mask_add(&target, &b, MaskMode::DodgeMask).unwrap();

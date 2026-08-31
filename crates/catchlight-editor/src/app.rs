@@ -1610,7 +1610,8 @@ impl eframe::App for App {
         let copy_sources: Vec<(NodeId, String)> = match (&self.mesh_edit, &snapshot) {
             (Some(mesh), Some(s)) => {
                 let mut out = Vec::new();
-                collect_parts(&s.root, &mut out);
+                // A mesh is copied from another *part*: a composite has none.
+                collect_by_kind(&s.root, |k| k == "part", &mut out);
                 out.retain(|(r, _)| *r != mesh.node);
                 out
             }
@@ -2921,11 +2922,11 @@ impl App {
                 "⏺ recording — TRS / z order / opacity write to the armed keypoint",
             );
         }
-        let parts: Vec<(NodeId, String)> = snapshot
+        let mask_sources: Vec<(NodeId, String)> = snapshot
             .as_ref()
             .map(|s| {
                 let mut out = Vec::new();
-                collect_parts(&s.root, &mut out);
+                collect_by_kind(&s.root, is_mask_source_kind, &mut out);
                 out
             })
             .unwrap_or_default();
@@ -2947,7 +2948,7 @@ impl App {
             })
             .unwrap_or_default();
         let ctx = InspectorContext {
-            parts: &parts,
+            mask_sources: &mask_sources,
             params: &params,
         };
         inspector_ui(ui, &data, &ctx, &textures)
@@ -3265,13 +3266,21 @@ fn mask_rows(model: &Model, masks: &[catchlight_core::ModelMask]) -> Vec<MaskRow
         .collect()
 }
 
-fn collect_parts(node: &TreeNode, out: &mut Vec<(NodeId, String)>) {
-    if node.kind == "part" {
+/// Every node in the tree whose kind `want` accepts, in tree order.
+fn collect_by_kind(node: &TreeNode, want: fn(&str) -> bool, out: &mut Vec<(NodeId, String)>) {
+    if want(&node.kind) {
         out.push((node.id.clone(), node.name.clone()));
     }
     for c in &node.children {
-        collect_parts(c, out);
+        collect_by_kind(c, want, out);
     }
+}
+
+/// The nodes a mask may name as its source: the two kinds the renderer draws.
+/// `Model::mask_add` refuses the rest, so offering one would only author a
+/// refused edit.
+fn is_mask_source_kind(kind: &str) -> bool {
+    kind == "part" || kind == "composite"
 }
 
 fn find_subtree<'a>(root: &'a TreeNode, target: &NodeId) -> Option<&'a TreeNode> {
