@@ -118,10 +118,10 @@ pub(crate) struct PhysicsPatch {
     pub output_scale: Option<[f32; 2]>,
 }
 
-/// Candidate lists the inspector needs: parts (mask sources) and params
-/// (physics targets).
+/// Candidate lists the inspector needs: the drawables a mask may name as its
+/// source (parts and composites) and params (physics targets).
 pub(crate) struct InspectorContext<'a> {
-    pub parts: &'a [(NodeId, String)],
+    pub mask_sources: &'a [(NodeId, String)],
     pub params: &'a [(ParamId, String)],
 }
 
@@ -374,10 +374,10 @@ fn drawable_props_ui(
         egui::ScrollArea::vertical()
             .max_height(240.0)
             .show(ui, |ui| {
-                for (part, name) in ctx.parts {
+                for (source, name) in ctx.mask_sources {
                     if ui.button(name).clicked() {
                         out.push(InspectorAction::MaskAdd {
-                            source: part.clone(),
+                            source: source.clone(),
                             mode: MaskMode::Mask,
                         });
                         ui.close();
