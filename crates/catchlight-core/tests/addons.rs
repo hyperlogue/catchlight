@@ -77,20 +77,6 @@ fn random_model(rng: &mut Rng) -> Model {
     let mut m = Model::new();
     let root = m.root().unwrap().clone();
 
-    let textures: Vec<TexId> = (0..2 + rng.below(3))
-        .map(|i| {
-            m.add_texture(
-                ModelTexture {
-                    encoding: TextureEncoding::Png,
-                    alpha: TextureAlpha::Straight,
-                    data: std::sync::Arc::new(vec![i as u8; 6]),
-                },
-                &mut hex,
-            )
-            .unwrap()
-        })
-        .collect();
-
     let params: Vec<ParamId> = (0..2 + rng.below(3))
         .map(|i| {
             let p = m
@@ -124,15 +110,37 @@ fn random_model(rng: &mut Rng) -> Model {
         node.transform.translation = [rng.unit(), rng.unit(), 0.0];
         let id = m.add_node(&parent, node, &mut hex).unwrap();
         if is_part {
-            if rng.one_in(4) {
-                m.set_part_albedo(&id, None).unwrap();
-            } else {
-                m.set_part_albedo(&id, Some(rng.pick(&textures).clone()))
-                    .unwrap();
-            }
             parts.push(id.clone());
         }
         nodes.push(id);
+    }
+
+    // A texture goes to the part that draws it, so the parts come first: one
+    // each, then a few repointed so some are shared and some parts unmapped.
+    // A repoint that takes the last user takes the texture with it, which is
+    // churn this generator should produce.
+    for (i, id) in parts.iter().enumerate() {
+        m.add_texture(
+            id,
+            ModelTexture {
+                encoding: TextureEncoding::Png,
+                alpha: TextureAlpha::Straight,
+                data: std::sync::Arc::new(vec![i as u8; 6]),
+            },
+            &mut hex,
+        )
+        .unwrap();
+    }
+    for id in &parts {
+        let live: Vec<TexId> = m.texture_ids().to_vec();
+        match rng.below(6) {
+            0 => m.set_part_albedo(id, None).unwrap(),
+            1 if !live.is_empty() => {
+                let pick = rng.pick(&live).clone();
+                m.set_part_albedo(id, Some(pick)).unwrap();
+            }
+            _ => {}
+        }
     }
 
     for id in nodes.clone() {
@@ -299,20 +307,19 @@ fn masks_of(n: &ModelNode) -> Vec<&NodeId> {
     }
 }
 
-/// Cut `root` out of `base` the way an author would: delete the subtree, then
-/// the textures nothing else was using.
-fn without(base: &Model, root: &NodeId, addon: &Model) -> Model {
+/// Cut `root` out of `base` the way an author would: delete the subtree. The
+/// textures nothing else draws go with it — that is `delete_node`'s job now,
+/// not the caller's.
+fn without(base: &Model, root: &NodeId) -> Model {
     let mut cut = base.clone();
     cut.delete_node(root).unwrap();
-    for t in addon.texture_ids() {
-        cut.delete_texture(t).unwrap();
-    }
     cut
 }
 
 #[test]
 fn removing_a_subtree_and_installing_it_back_restores_the_model() {
     let mut checked = 0;
+    let mut clashed = 0;
     for seed in 0..40u32 {
         let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9) ^ 0xC0FF_EE00);
         let base = random_model(&mut rng);
@@ -333,7 +340,27 @@ fn removing_a_subtree_and_installing_it_back_restores_the_model() {
             "seed {seed}: animations travelled"
         );
 
-        let mut cut = without(&base, &root, &addon);
+        let mut cut = without(&base, &root);
+        // A texture the cut base still draws is one the addon carries a copy
+        // of: `extract` copies rather than requiring, and an Id an addon
+        // provides is exclusive. Those two together say this is not a round
+        // trip, and the install says so rather than merging silently.
+        if let Some(shared) = addon
+            .texture_ids()
+            .iter()
+            .find(|t| cut.texture(t).is_some())
+        {
+            assert_eq!(
+                cut.install(&addon).unwrap_err(),
+                InstallError::Collision {
+                    kind: "texture",
+                    id: shared.to_string(),
+                },
+                "seed {seed}, root {root}"
+            );
+            clashed += 1;
+            continue;
+        }
         cut.install(&addon)
             .unwrap_or_else(|e| panic!("seed {seed}, root {root}: {e}"));
 
@@ -344,7 +371,13 @@ fn removing_a_subtree_and_installing_it_back_restores_the_model() {
         );
         checked += 1;
     }
-    assert!(checked > 30, "only {checked} of 40 seeds produced a case");
+    assert!(
+        checked + clashed > 30,
+        "only {} of 40 seeds produced a case",
+        checked + clashed
+    );
+    assert!(checked > 0, "no seed round-tripped");
+    assert!(clashed > 0, "no seed shared a texture across the cut");
 }
 
 /// The receipt is exact both ways: install then uninstall is the identity, on
@@ -360,7 +393,12 @@ fn uninstalling_an_addon_undoes_installing_it() {
         }
         let root = rng.pick(&candidates).clone();
         let addon = base.extract(std::slice::from_ref(&root));
-        let cut = without(&base, &root, &addon);
+        let cut = without(&base, &root);
+        // See the note in the round-trip test: a texture the cut base kept is
+        // one the addon now provides too, and install refuses that.
+        if addon.texture_ids().iter().any(|t| cut.texture(t).is_some()) {
+            continue;
+        }
 
         let mut m = cut.clone();
         let installed = m.install(&addon).unwrap();

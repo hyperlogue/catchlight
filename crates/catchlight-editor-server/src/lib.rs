@@ -327,9 +327,21 @@ impl Session {
         Ok(model.add_param(param, hex)?)
     }
 
-    fn add_texture(&mut self, texture: ModelTexture) -> Result<TexId, EditorError> {
+    /// Add `texture` and point `part` at it, in one edit. Hands back the new
+    /// Id and whatever the upload displaced: a texture the part had been the
+    /// last to draw goes with the same edit.
+    fn add_texture(
+        &mut self,
+        part: &NodeId,
+        texture: ModelTexture,
+    ) -> Result<(TexId, Vec<TexId>), EditorError> {
+        let dropped = self
+            .model
+            .texture_dropped_by_repointing(part, None)
+            .into_iter()
+            .collect();
         let Self { model, hex, .. } = self;
-        Ok(model.add_texture(texture, hex)?)
+        Ok((model.add_texture(part, texture, hex)?, dropped))
     }
 
     fn duplicate_subtree(&mut self, node: &NodeId) -> Result<NodeId, EditorError> {
@@ -489,18 +501,22 @@ impl Editor {
     pub fn add_texture_bytes(
         &self,
         id: SessionId,
+        part: &NodeId,
         encoding: TextureEncoding,
         bytes: Vec<u8>,
-    ) -> Result<TexId, EditorError> {
+    ) -> Result<(TexId, Vec<TexId>), EditorError> {
         image_dims(&bytes)?;
         self.edit_session(id, |s| {
-            let tex = s.add_texture(ModelTexture {
-                encoding,
-                alpha: TextureAlpha::Straight,
-                data: Arc::new(bytes),
-            })?;
+            let added = s.add_texture(
+                part,
+                ModelTexture {
+                    encoding,
+                    alpha: TextureAlpha::Straight,
+                    data: Arc::new(bytes),
+                },
+            )?;
             s.touch();
-            Ok(tex)
+            Ok(added)
         })
     }
 
@@ -774,13 +790,17 @@ impl Editor {
                     ModelNode::new(name.unwrap_or_else(|| default_name(kind)), make_kind(kind));
                 let node = s.add_node(&parent, node)?;
                 s.touch();
-                Ok(ResponseBody::Node { node })
+                Ok(ResponseBody::Node {
+                    node,
+                    dropped: Vec::new(),
+                })
             }),
             Command::NodeSet {
                 session,
                 node,
                 patch,
             } => self.edit_session(session, |s| {
+                let mut dropped = Vec::new();
                 if let Some(tex) = &patch.texture {
                     if s.model.texture(tex).is_none() {
                         return Err(EditorError::NoTexture(tex.clone()));
@@ -789,12 +809,16 @@ impl Editor {
                         s.model.node(&node).map(|n| &n.kind),
                         Some(ModelNodeKind::Part(_))
                     ) {
+                        // Repointing the last part drawing a texture deletes
+                        // it; the reply says so, because nothing downstream
+                        // of this session gets it back.
+                        dropped.extend(s.model.texture_dropped_by_repointing(&node, Some(tex)));
                         s.model.set_part_albedo(&node, Some(tex.clone()))?;
                     }
                 }
                 s.model.update_node(&node, |n| apply_patch(n, &patch))??;
                 s.touch();
-                Ok(ResponseBody::Node { node })
+                Ok(ResponseBody::Node { node, dropped })
             }),
             Command::NodeReparent { session, node, to } => self.edit_session(session, |s| {
                 s.model.reparent(&node, &to)?;
@@ -826,7 +850,10 @@ impl Editor {
             Command::NodeDuplicate { session, node } => self.edit_session(session, |s| {
                 let copy = s.duplicate_subtree(&node)?;
                 s.touch();
-                Ok(ResponseBody::Node { node: copy })
+                Ok(ResponseBody::Node {
+                    node: copy,
+                    dropped: Vec::new(),
+                })
             }),
             Command::RenameId { session, rename } => self.edit_session(session, |s| {
                 match rename {
@@ -965,21 +992,29 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDelete { session, node } => self.edit_session(session, |s| {
+                let dropped = s.model.textures_dropped_by_deleting(&node);
                 s.model.delete_node(&node)?;
                 s.touch();
-                Ok(ResponseBody::Empty)
+                Ok(ResponseBody::Node { node, dropped })
             }),
             #[cfg(not(target_arch = "wasm32"))]
-            Command::TextureAdd { session, path } => self.edit_session(session, |s| {
+            Command::TextureAdd {
+                session,
+                node,
+                path,
+            } => self.edit_session(session, |s| {
                 let bytes = std::fs::read(&path)?;
                 image_dims(&bytes)?; // validate it decodes
-                let texture = s.add_texture(ModelTexture {
-                    encoding: encoding_from_path(&path),
-                    alpha: TextureAlpha::Straight,
-                    data: Arc::new(bytes),
-                })?;
+                let (texture, dropped) = s.add_texture(
+                    &node,
+                    ModelTexture {
+                        encoding: encoding_from_path(&path),
+                        alpha: TextureAlpha::Straight,
+                        data: Arc::new(bytes),
+                    },
+                )?;
                 s.touch();
-                Ok(ResponseBody::Texture { texture })
+                Ok(ResponseBody::Texture { texture, dropped })
             }),
             Command::TextureList { session } => self.with_session(session, |s| {
                 let mut textures = Vec::new();
@@ -1425,7 +1460,10 @@ impl Editor {
                 let node = s.add_node(&parent, node)?;
                 s.model.set_physics_targets(&node, targets)?;
                 s.touch();
-                Ok(ResponseBody::Node { node })
+                Ok(ResponseBody::Node {
+                    node,
+                    dropped: Vec::new(),
+                })
             }),
             Command::PresenceSet { session, presence } => {
                 // Deliberately not via with_session: presence must not bump rev,
@@ -2193,8 +2231,20 @@ mod tests {
     fn a_texture_shared_by_every_snapshot_is_counted_once() {
         let mut model = Model::new();
         let mut hex = SeededHex::new(7);
+        let root = model.root().unwrap().clone();
+        let part = model
+            .add_node(
+                &root,
+                ModelNode::new(
+                    "part",
+                    ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
+                ),
+                &mut hex,
+            )
+            .unwrap();
         model
             .add_texture(
+                &part,
                 ModelTexture {
                     encoding: TextureEncoding::Png,
                     alpha: TextureAlpha::Straight,
@@ -2293,7 +2343,7 @@ mod tests {
                 name: Some("A".into()),
             },
         ))) {
-            ResponseBody::Node { node } => node,
+            ResponseBody::Node { node, .. } => node,
             other => panic!("{other:?}"),
         };
 
@@ -2344,6 +2394,130 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
+    /// A 1x1 PNG, which is what an upload validates and what the dimensions
+    /// come from. The bytes are never looked at again.
+    fn one_pixel_png(rgba: [u8; 4]) -> Vec<u8> {
+        let image = image::RgbaImage::from_raw(1, 1, rgba.to_vec()).expect("1x1");
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("encode png");
+        out.into_inner()
+    }
+
+    fn new_part(ed: &Editor, s: SessionId, id: u64) -> NodeId {
+        let root = match body(ed.handle(req(id, Command::NodeTree { session: s }))) {
+            ResponseBody::Tree { root } => root.id,
+            other => panic!("{other:?}"),
+        };
+        match body(ed.handle(req(
+            id + 1,
+            Command::NodeAdd {
+                session: s,
+                parent: root,
+                kind: NodeKindArg::Part,
+                name: None,
+            },
+        ))) {
+            ResponseBody::Node { node, .. } => node,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn texture_ids(ed: &Editor, s: SessionId, id: u64) -> Vec<TexId> {
+        match body(ed.handle(req(id, Command::TextureList { session: s }))) {
+            ResponseBody::Textures { textures } => textures.into_iter().map(|t| t.id).collect(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// An upload names the part it is for and both land in one edit: one
+    /// revision, and no moment where the session holds a texture nothing
+    /// draws.
+    #[test]
+    fn an_upload_adds_the_texture_and_assigns_it_in_one_edit() {
+        let ed = Editor::new();
+        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let part = new_part(&ed, s, 2);
+        let rev = ed.doc_snapshot(s).expect("a snapshot").rev;
+
+        let (tex, dropped) = ed
+            .add_texture_bytes(s, &part, TextureEncoding::Png, one_pixel_png([9; 4]))
+            .expect("upload");
+
+        assert!(dropped.is_empty(), "nothing was displaced");
+        assert_eq!(texture_ids(&ed, s, 4), vec![tex.clone()]);
+        assert_eq!(
+            ed.with_model(s, |m| match m.node(&part).map(|n| &n.kind) {
+                Some(ModelNodeKind::Part(p)) => p.albedo().cloned(),
+                _ => None,
+            })
+            .expect("session"),
+            Some(tex),
+        );
+        assert_eq!(
+            ed.doc_snapshot(s).expect("a snapshot").rev,
+            rev + 1,
+            "one edit, one revision"
+        );
+    }
+
+    /// The cascade is in the reply: an edit that leaves a texture with no part
+    /// drawing it deletes it, and a client that has to tell an author what a
+    /// click cost reads that off the reply rather than diffing the session.
+    #[test]
+    fn a_reply_names_the_textures_the_edit_deleted() {
+        let ed = Editor::new();
+        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let part = new_part(&ed, s, 2);
+        let (first, _) = ed
+            .add_texture_bytes(s, &part, TextureEncoding::Png, one_pixel_png([1; 4]))
+            .expect("upload");
+
+        // A second upload to the same part displaces the first, which nothing
+        // else draws.
+        let (second, dropped) = ed
+            .add_texture_bytes(s, &part, TextureEncoding::Png, one_pixel_png([2; 4]))
+            .expect("upload");
+        assert_eq!(dropped, vec![first]);
+        assert_eq!(texture_ids(&ed, s, 4), vec![second.clone()]);
+
+        // Unmapping the part through the wire says the same thing.
+        let other = new_part(&ed, s, 5);
+        let (third, _) = ed
+            .add_texture_bytes(s, &other, TextureEncoding::Png, one_pixel_png([3; 4]))
+            .expect("upload");
+        match body(ed.handle(req(
+            7,
+            Command::NodeSet {
+                session: s,
+                node: other,
+                patch: NodePatch {
+                    texture: Some(second.clone()),
+                    ..Default::default()
+                },
+            },
+        ))) {
+            ResponseBody::Node { dropped, .. } => assert_eq!(dropped, vec![third]),
+            other => panic!("{other:?}"),
+        }
+
+        // And so does deleting the last part drawing one.
+        match body(ed.handle(req(
+            8,
+            Command::NodeDelete {
+                session: s,
+                node: part,
+            },
+        ))) {
+            ResponseBody::Node { dropped, .. } => {
+                assert!(dropped.is_empty(), "the other part still draws it")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(texture_ids(&ed, s, 9), vec![second]);
+    }
+
     #[test]
     fn delete_then_save_drops_the_node() {
         let ed = Editor::new();
@@ -2361,12 +2535,12 @@ mod tests {
                 name: None,
             },
         ))) {
-            ResponseBody::Node { node } => node,
+            ResponseBody::Node { node, .. } => node,
             other => panic!("{other:?}"),
         };
         assert!(matches!(
             body(ed.handle(req(4, Command::NodeDelete { session: s, node }))),
-            ResponseBody::Empty
+            ResponseBody::Node { dropped, .. } if dropped.is_empty()
         ));
         let status = match body(ed.handle(req(5, Command::Status { session: s }))) {
             ResponseBody::Status { status } => status,

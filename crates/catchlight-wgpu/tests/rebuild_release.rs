@@ -139,12 +139,12 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
 
         // The shrink. Same model, so the cache's identity gate still passes
         // and its generation gate is what notices.
+        // Deleting the part takes its texture: nothing else draws it, and a
+        // texture with no part drawing it is not a thing a model holds.
         model
             .delete_node(&nodes[1])
             .expect("delete the middle part");
-        model
-            .delete_texture(&textures[1])
-            .expect("delete its texture");
+        assert!(model.texture(&textures[1]).is_none());
 
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
@@ -211,12 +211,10 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
         // from here is exactly the rebuild's re-uploads.
         assert_eq!(ctx.renderer.frame_stats().queue_submits, 0);
 
-        // Drop the *last* part and texture, which leaves the surviving two at
-        // the slots they already hold.
+        // Drop the *last* part, which takes its texture with it and leaves
+        // the surviving two at the slots they already hold.
         model.delete_node(&nodes[2]).expect("delete the right part");
-        model
-            .delete_texture(&textures[2])
-            .expect("delete its texture");
+        assert!(model.texture(&textures[2]).is_none());
         puppet.tick(&model, 0.0);
         cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
 

@@ -15,7 +15,10 @@
 //! a file no reader would accept, and it makes it a second opinion — [`scan`]
 //! and [`Model::requirements`](catchlight_core::Model::requirements) walk the same
 //! fields and must always agree,
-//! which `requirements_agree_with_the_model` pins.
+//! which `requirements_agree_with_the_model` pins. A texture is never among
+//! them: an addon carries the textures its own parts draw, so `extract`
+//! copies one the base still draws into the addon instead of listing it as
+//! something a base has to supply.
 //!
 //! Two rules the commands here enforce that the Model API alone does not:
 //!
@@ -152,10 +155,12 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
 ///
 /// This is [`Model::requirements`](catchlight_core::Model::requirements) with the
 /// file's tables in place of a
-/// Model's, and it walks exactly the same eight fields: `nodes[].parent`,
-/// `nodes[].kind.Part.albedo`, `nodes[].kind.*.masks[].source`,
+/// Model's, and it walks exactly the same seven fields: `nodes[].parent`,
+/// `nodes[].kind.*.masks[].source`,
 /// `nodes[].kind.SimplePhysics.target_params`, `bindings[].node`,
 /// `bindings[].params`, `welds[].{a,b}.node` and `animations[].lanes[].param`.
+/// `nodes[].kind.Part.albedo` is not among them: an addon carries the textures
+/// its own parts draw, so a texture is not something a base can supply.
 /// Sorted and deduplicated, so the same Id appears once per field that names
 /// it.
 pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
@@ -167,7 +172,6 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
 
     let has_node = |id: &NodeId| doc.nodes.iter().any(|n| &n.id == id);
     let has_param = |id: &catchlight_core::id::ParamId| doc.params.iter().any(|p| &p.id == id);
-    let has_texture = |id: &catchlight_core::id::TexId| clm.textures.iter().any(|t| &t.id == id);
 
     for node in &doc.nodes {
         let owner = node.id.to_string();
@@ -177,14 +181,10 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
             }
         }
         let masks = match &node.kind {
-            ClmNodeKind::Part(p) => {
-                if let Some(albedo) = &p.albedo {
-                    if !has_texture(albedo) {
-                        need(Required::Texture(albedo.clone()), "albedo", owner.clone());
-                    }
-                }
-                p.masks.as_slice()
-            }
+            // A part's albedo is not scanned: an addon carries the textures
+            // its own parts draw, so it is never a requirement. The fragment
+            // reader refuses one that dangles.
+            ClmNodeKind::Part(p) => p.masks.as_slice(),
             ClmNodeKind::Composite(c) => c.masks.as_slice(),
             ClmNodeKind::SimplePhysics(s) => {
                 for target in s.target_params.iter().flatten() {
@@ -270,7 +270,6 @@ pub fn render_line(requirement: &Requirement) -> String {
         Required::Node(id) => ("node", id.to_string(), String::new()),
         Required::Part(id) => ("part", id.to_string(), String::new()),
         Required::Param(id) => ("param", id.to_string(), String::new()),
-        Required::Texture(id) => ("texture", id.to_string(), String::new()),
         Required::Seam(node, seam) => ("seam", node.to_string(), seam.to_string()),
     };
     format!(
@@ -289,7 +288,6 @@ pub fn render_json(requirements: &[Requirement]) -> String {
                 Required::Node(id) => ("node", id.to_string(), None),
                 Required::Part(id) => ("part", id.to_string(), None),
                 Required::Param(id) => ("param", id.to_string(), None),
-                Required::Texture(id) => ("texture", id.to_string(), None),
                 Required::Seam(node, seam) => ("seam", node.to_string(), Some(seam.to_string())),
             };
             serde_json::json!({

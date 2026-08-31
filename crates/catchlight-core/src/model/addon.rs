@@ -26,6 +26,17 @@
 //!   `shoes` are alternatives, and only one is installed at a time. A seam Id
 //!   is unique per part rather than per model, so an addon's seams cannot
 //!   collide on their own: the part carrying them collides first.
+//! - **An addon carries the textures its own parts draw.** A texture's only
+//!   user is a part's albedo, so an addon that reached into the base for one
+//!   would be an addon whose parts stop drawing when the base drops a texture
+//!   it has no reason to keep. A fragment's albedo therefore may not dangle
+//!   (the reader refuses it, [`Model::from_clm_bytes_fragment`]), a texture
+//!   is not a [`Required`] kind at all, and [`Model::extract`] *copies* a
+//!   texture the cut subtree shares with the parts left behind rather than
+//!   leaving it as a requirement. The price is paid where it is cheapest to
+//!   pay: duplicated bytes in the addon file, and — because an Id an addon
+//!   provides is exclusive — a shared texture that makes the addon collide
+//!   with the very base it was cut from until that base drops it.
 //! - **An addon never adds or changes a param.** A `ParamId` it uses has to be
 //!   in the base already — that is a requirement like any other — so
 //!   [`Model::extract`] carries no params and install refuses an addon that
@@ -40,11 +51,13 @@
 //!   ticking through an install pays one rebake and keeps its pose, which is
 //!   carried by Id.
 //! - **Extract is install's inverse, up to order.** `extract` takes the
-//!   subtrees, the bindings on them, the welds touching them and the textures
-//!   *only* they use. Installing that back into the base it was cut from
+//!   subtrees, the bindings on them, the welds touching them and every
+//!   texture they draw. Installing that back into the base it was cut from
 //!   restores every value — but install appends: an addon's roots go last
 //!   among their parent's children and its textures last in texture order,
-//!   because an addon records no position to be put back into.
+//!   because an addon records no position to be put back into. "The base it
+//!   was cut from" means the base after the cut: deleting the subtree is what
+//!   frees the texture Ids the addon now provides.
 //! - **Animations travel, lanes are not extracted.** A lane addresses a param,
 //!   and params stay in the base, so there is no such thing as the animations
 //!   "over" a subtree and `extract` returns none. An addon that *was* authored
@@ -78,7 +91,6 @@ pub enum Required {
     /// prints as a requirement's kind; see [`Model::mask_add`] for the rule.
     Part(NodeId),
     Param(ParamId),
-    Texture(TexId),
     /// A seam on a base part, which needs the part and the seam both — what
     /// one end of a weld names.
     Seam(NodeId, SeamId),
@@ -90,7 +102,6 @@ impl fmt::Display for Required {
             Self::Node(id) => write!(f, "node {:?}", id.as_str()),
             Self::Part(id) => write!(f, "part {:?}", id.as_str()),
             Self::Param(id) => write!(f, "param {:?}", id.as_str()),
-            Self::Texture(id) => write!(f, "texture {:?}", id.as_str()),
             Self::Seam(node, seam) => {
                 write!(f, "seam {:?} on part {:?}", seam.as_str(), node.as_str())
             }
@@ -103,9 +114,9 @@ impl fmt::Display for Required {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Requirement {
     pub id: Required,
-    /// `"parent"`, `"albedo"`, `"mask source"`, `"physics target"`,
-    /// `"binding param"`, `"binding node"`, `"weld end"` or
-    /// `"animation lane"`.
+    /// `"parent"`, `"mask source"`, `"physics target"`, `"binding param"`,
+    /// `"binding node"`, `"weld end"` or `"animation lane"`. Never an
+    /// albedo: an addon carries the textures its own parts draw.
     pub field: &'static str,
     /// The node in the addon whose field names it — or the animation, for a
     /// lane.
@@ -145,13 +156,6 @@ impl Requirements {
     pub fn params(&self) -> impl Iterator<Item = &ParamId> {
         sorted(self.entries.iter().filter_map(|r| match &r.id {
             Required::Param(id) => Some(id),
-            _ => None,
-        }))
-    }
-
-    pub fn textures(&self) -> impl Iterator<Item = &TexId> {
-        sorted(self.entries.iter().filter_map(|r| match &r.id {
-            Required::Texture(id) => Some(id),
             _ => None,
         }))
     }
@@ -287,22 +291,12 @@ impl Model {
                     need(Required::Node(parent.clone()), "parent", &id);
                 }
             }
-            match &node.kind {
-                ModelNodeKind::Part(p) => {
-                    if let Some(t) = p.albedo() {
-                        if !self.textures.contains_key(t) {
-                            need(Required::Texture(t.clone()), "albedo", &id);
-                        }
+            if let ModelNodeKind::SimplePhysics(ph) = &node.kind {
+                for t in ph.target_params().iter().flatten() {
+                    if !self.params.contains_key(t) {
+                        need(Required::Param(t.clone()), "physics target", &id);
                     }
                 }
-                ModelNodeKind::SimplePhysics(ph) => {
-                    for t in ph.target_params().iter().flatten() {
-                        if !self.params.contains_key(t) {
-                            need(Required::Param(t.clone()), "physics target", &id);
-                        }
-                    }
-                }
-                _ => {}
             }
             for mask in node.masks().unwrap_or_default() {
                 if !self.nodes.contains_key(mask.source()) {
@@ -468,7 +462,6 @@ impl Model {
                     .map(|n| &n.kind)
                     .is_some_and(is_mask_source),
                 Required::Param(id) => self.params.contains_key(id),
-                Required::Texture(id) => self.textures.contains_key(id),
                 Required::Seam(node, seam) => self.seam(node, seam).is_some(),
             };
             if !held {
@@ -542,23 +535,15 @@ impl Model {
             .collect();
 
         let inside = |id: &NodeId| kept.contains(id);
-        fn albedo_of(n: &ModelNode) -> Option<&TexId> {
-            match &n.kind {
-                ModelNodeKind::Part(p) => p.albedo(),
-                _ => None,
-            }
-        }
-        let used_outside: HashSet<&TexId> = self
-            .nodes
-            .iter()
-            .filter(|(id, _)| !inside(id))
-            .filter_map(|(_, n)| albedo_of(n))
-            .collect();
+        // Every texture the cut parts draw, whether or not the base keeps a
+        // part drawing it too: an addon carries its own, so a shared one is
+        // *copied* rather than left behind as a requirement. The bytes are
+        // `Arc`-shared until one of the two models is written.
         let used_inside: HashSet<&TexId> = nodes.values().filter_map(albedo_of).collect();
         let texture_order: Vec<TexId> = self
             .texture_order
             .iter()
-            .filter(|t| used_inside.contains(t) && !used_outside.contains(t))
+            .filter(|t| used_inside.contains(t))
             .cloned()
             .collect();
         let textures = texture_order
@@ -637,6 +622,10 @@ impl Model {
             self.textures.remove(t);
             self.texture_order.retain(|x| x != t);
         }
+        // The receipt names the textures the install added; an edit since
+        // then may have left a *base* texture with only addon parts drawing
+        // it, and removing them orphans it. Uninstall is total, so it sweeps.
+        self.gc_textures();
         retain_less(&mut self.welds, &installed.welds, |w| {
             !removed.contains(&w.a.0) && !removed.contains(&w.b.0)
         });
@@ -710,8 +699,8 @@ mod tests {
     }
 
     /// A base model an addon can be authored against: a `body` part carrying
-    /// the seam `hem`, a `head` group to hang things under, one param and one
-    /// texture two parts share.
+    /// the seam `hem` and drawing the one texture, a `head` group to hang
+    /// things under, and one param.
     struct Base {
         m: Model,
         root: NodeId,
@@ -726,7 +715,6 @@ mod tests {
         let mut hex = SeededHex::new(11);
         let mut m = Model::new();
         let root = m.root().unwrap().clone();
-        let tex = m.add_texture(texture(1), &mut hex).unwrap();
         let body = m
             .add_node(
                 &root,
@@ -734,7 +722,7 @@ mod tests {
                 &mut hex,
             )
             .unwrap();
-        m.set_part_albedo(&body, Some(tex.clone())).unwrap();
+        let tex = m.add_texture(&body, texture(1), &mut hex).unwrap();
         let head = m
             .add_node(
                 &root,
@@ -775,9 +763,9 @@ mod tests {
     }
 
     /// A hat under `head` that reaches into the base every way a fragment can:
-    /// a base parent, a base texture, a base part as a mask source, a base
-    /// param through a binding and through a pendulum, and a weld into the
-    /// base's `hem`.
+    /// a base parent, a base part as a mask source, a base param through a
+    /// binding and through a pendulum, and a weld into the base's `hem`. Its
+    /// texture is its own — that is the one reference an addon never makes.
     fn hat_addon(b: &Base) -> Model {
         author(b, |m, hex| {
             let hat = m
@@ -787,7 +775,7 @@ mod tests {
                     hex,
                 )
                 .unwrap();
-            m.set_part_albedo(&hat, Some(b.tex.clone())).unwrap();
+            m.add_texture(&hat, texture(2), hex).unwrap();
             m.mask_add(&hat, &b.body, MaskMode::DodgeMask).unwrap();
 
             let key = BindingKey::new(b.param.clone(), hat.clone(), BindingTarget::Deform);
@@ -874,11 +862,6 @@ mod tests {
                     sway.to_string()
                 ),
                 (
-                    format!("texture {:?}", b.tex.as_str()),
-                    "albedo",
-                    hat.to_string()
-                ),
-                (
                     format!("seam \"hem\" on part {:?}", b.body.as_str()),
                     "weld end",
                     hat.to_string()
@@ -887,7 +870,6 @@ mod tests {
         );
         assert_eq!(addon.requirements().nodes().count(), 2);
         assert_eq!(addon.requirements().params().count(), 1);
-        assert_eq!(addon.requirements().textures().count(), 1);
         assert_eq!(addon.requirements().seams().count(), 1);
     }
 
@@ -1048,9 +1030,10 @@ mod tests {
     fn a_texture_id_the_base_already_has_is_refused() {
         let b = base();
         let mut addon = hat_addon(&b);
-        // Give the addon a texture of its own, under the base's Id.
+        // Re-upload the hat's texture under the Id the base already uses.
+        let hat = named(&addon, "Hat");
         addon
-            .add_texture_with_id(b.tex.clone(), texture(2))
+            .add_texture_with_id(b.tex.clone(), &hat, texture(3))
             .unwrap();
         assert_eq!(
             b.m.clone().install(&addon).unwrap_err(),
@@ -1228,10 +1211,12 @@ mod tests {
         );
     }
 
+    /// An addon carries the textures its parts draw — all of them. A texture
+    /// the base still draws is copied rather than left as a requirement,
+    /// because a texture is not a requirement kind any more.
     #[test]
-    fn extract_takes_the_textures_only_the_subtree_uses() {
+    fn extract_copies_a_texture_the_base_still_draws() {
         let mut b = base();
-        let mine = b.m.add_texture(texture(7), &mut b.hex).unwrap();
         let hat =
             b.m.add_node(
                 &b.head,
@@ -1239,7 +1224,7 @@ mod tests {
                 &mut b.hex,
             )
             .unwrap();
-        b.m.set_part_albedo(&hat, Some(mine.clone())).unwrap();
+        let mine = b.m.add_texture(&hat, texture(7), &mut b.hex).unwrap();
         let brim =
             b.m.add_node(
                 &hat,
@@ -1251,11 +1236,41 @@ mod tests {
         b.m.set_part_albedo(&brim, Some(b.tex.clone())).unwrap();
 
         let addon = b.m.extract(&[hat]);
-        assert_eq!(addon.texture_ids(), [mine]);
-        assert_eq!(
-            addon.requirements().textures().collect::<Vec<_>>(),
-            [&b.tex]
+        // Texture order is the base's, and the base's own came first.
+        assert_eq!(addon.texture_ids(), [b.tex.clone(), mine]);
+        assert!(addon.requirements().iter().all(|r| r.field != "albedo"));
+        // The cut is not a move: the base still draws it too.
+        assert!(b.m.texture(&b.tex).is_some());
+    }
+
+    /// Cut, delete, install: the base that dropped the subtree dropped its
+    /// texture with it, so the Id the addon now provides is free and the
+    /// round trip closes.
+    #[test]
+    fn an_extracted_addon_installs_into_the_base_the_cut_left_behind() {
+        let mut b = base();
+        let hat =
+            b.m.add_node(
+                &b.head,
+                ModelNode::new("Hat", ModelNodeKind::Part(ModelPart::new(quad()))),
+                &mut b.hex,
+            )
+            .unwrap();
+        let mine = b.m.add_texture(&hat, texture(7), &mut b.hex).unwrap();
+        let before = b.m.to_clm_bytes().unwrap();
+
+        let addon = b.m.extract(std::slice::from_ref(&hat));
+        assert_eq!(addon.texture_ids(), std::slice::from_ref(&mine));
+
+        let mut cut = b.m.clone();
+        cut.delete_node(&hat).unwrap();
+        assert!(
+            cut.texture(&mine).is_none(),
+            "the only part drawing it went with the subtree"
         );
+
+        cut.install(&addon).unwrap();
+        assert_eq!(cut.to_clm_bytes().unwrap(), before);
     }
 
     #[test]

@@ -344,8 +344,9 @@ enum WeldCmd {
 
 #[derive(Subcommand)]
 enum TextureCmd {
-    /// Register a PNG/TGA texture from a file.
-    Add { path: String },
+    /// Give a PNG/TGA file to a part: the texture is added and the part draws
+    /// it in one edit. A texture the part was the last to draw goes with it.
+    Add { node: NodeId, path: String },
     /// List the session's textures.
     List,
 }
@@ -1182,8 +1183,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
             session: resolve_session(cli)?,
         },
         Cmd::Texture { action } => match action {
-            TextureCmd::Add { path } => Command::TextureAdd {
+            TextureCmd::Add { node, path } => Command::TextureAdd {
                 session: resolve_session(cli)?,
+                node: node.clone(),
                 path: path.clone(),
             },
             TextureCmd::List => Command::TextureList {
@@ -1455,7 +1457,10 @@ fn print_body(body: &ResponseBody) {
                 );
             }
         }
-        ResponseBody::Node { node } => println!("node {node}"),
+        ResponseBody::Node { node, dropped } => {
+            println!("node {node}");
+            print_dropped(dropped);
+        }
         ResponseBody::Param { param } => println!("param {param}"),
         ResponseBody::Params { params } => {
             if params.is_empty() {
@@ -1474,7 +1479,10 @@ fn print_body(body: &ResponseBody) {
                 );
             }
         }
-        ResponseBody::Texture { texture } => println!("texture {texture}"),
+        ResponseBody::Texture { texture, dropped } => {
+            println!("texture {texture}");
+            print_dropped(dropped);
+        }
         ResponseBody::Textures { textures } => {
             for t in textures {
                 println!("texture {}  {}x{}", t.id, t.width, t.height);
@@ -1577,6 +1585,15 @@ fn print_body(body: &ResponseBody) {
                 }
             }
         }
+    }
+}
+
+/// What an edit deleted on its way through. A texture with no part drawing it
+/// is not a thing a model holds, so the edit that took the last user took the
+/// texture — and an addon that named it by Id has no way back.
+fn print_dropped(dropped: &[TexId]) {
+    for t in dropped {
+        println!("dropped texture {t}");
     }
 }
 

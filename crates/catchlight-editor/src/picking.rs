@@ -150,33 +150,25 @@ mod tests {
 
     /// A model builder for the picking tests: the texture is never decoded
     /// here (a part is culled by whether its albedo slot resolves at all), so
-    /// its bytes are a placeholder rather than a real image.
+    /// its bytes are a placeholder rather than a real image. A texture goes to
+    /// the part that draws it, so the first part uploads one and the parts
+    /// after it share it.
     struct Fixture {
         model: catchlight_core::Model,
         hex: SeededHex,
-        tex: TexId,
+        tex: Option<TexId>,
         root: NodeId,
     }
 
     impl Fixture {
         fn new() -> Self {
-            let mut model = catchlight_core::Model::new();
-            let mut hex = SeededHex::new(7);
-            let tex = model
-                .add_texture(
-                    ModelTexture {
-                        encoding: TextureEncoding::Png,
-                        alpha: TextureAlpha::Straight,
-                        data: Arc::new(Vec::new()),
-                    },
-                    &mut hex,
-                )
-                .expect("add texture");
+            let model = catchlight_core::Model::new();
+            let hex = SeededHex::new(7);
             let root = model.root().expect("a fresh model has one root").clone();
             Self {
                 model,
                 hex,
-                tex,
+                tex: None,
                 root,
             }
         }
@@ -204,9 +196,27 @@ mod tests {
                 .model
                 .add_node(parent, node, &mut self.hex)
                 .expect("add part");
-            self.model
-                .set_part_albedo(&id, Some(self.tex.clone()))
-                .expect("albedo");
+            match &self.tex {
+                Some(tex) => self
+                    .model
+                    .set_part_albedo(&id, Some(tex.clone()))
+                    .expect("albedo"),
+                None => {
+                    let tex = self
+                        .model
+                        .add_texture(
+                            &id,
+                            ModelTexture {
+                                encoding: TextureEncoding::Png,
+                                alpha: TextureAlpha::Straight,
+                                data: Arc::new(Vec::new()),
+                            },
+                            &mut self.hex,
+                        )
+                        .expect("add texture");
+                    self.tex = Some(tex);
+                }
+            }
             id
         }
 

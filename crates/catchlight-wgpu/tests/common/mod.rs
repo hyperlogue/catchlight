@@ -14,6 +14,7 @@ use catchlight_core::{
     TexId,
 };
 use catchlight_wgpu::{PrepareOptions, RenderCache, RenderList, WgpuRenderer};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const NO_ADAPTER: &str =
@@ -67,6 +68,11 @@ pub struct Build {
     /// Public so a test can keep minting Ids after the model has moved into
     /// a [`Scene`] — an edit between frames is a case worth writing.
     pub hex: SeededHex,
+    /// Textures asked for but not yet in the model. A texture goes to the
+    /// part that draws it, so [`Build::texture`] only mints the Id and holds
+    /// the bytes; the first [`Build::part`] to name it does the upload and
+    /// the parts after that share it.
+    pending: HashMap<TexId, ModelTexture>,
 }
 
 impl Default for Build {
@@ -80,6 +86,7 @@ impl Build {
         Self {
             model: Model::new(),
             hex: SeededHex::new(1),
+            pending: HashMap::new(),
         }
     }
 
@@ -87,10 +94,14 @@ impl Build {
         self.model.root().expect("a complete model").clone()
     }
 
+    /// Reserve a texture Id for `texture`. Nothing reaches the model until a
+    /// part names it — see [`Build::pending`].
     pub fn texture(&mut self, texture: ModelTexture) -> TexId {
-        self.model
-            .add_texture(texture, &mut self.hex)
-            .expect("add texture")
+        let id = std::iter::repeat_with(|| TexId::generate(&mut self.hex))
+            .find(|id| !self.pending.contains_key(id) && self.model.texture(id).is_none())
+            .expect("a free texture id");
+        self.pending.insert(id.clone(), texture);
+        id
     }
 
     /// Add `kind` under `parent` at `z_order`.
@@ -121,9 +132,16 @@ impl Build {
         let mut part = ModelPart::new(mesh);
         configure(&mut part);
         let id = self.node(parent, name, z_order, ModelNodeKind::Part(part));
-        self.model
-            .set_part_albedo(&id, Some(albedo.clone()))
-            .expect("set albedo");
+        match self.pending.remove(albedo) {
+            Some(texture) => self
+                .model
+                .add_texture_with_id(albedo.clone(), &id, texture)
+                .expect("add texture"),
+            None => self
+                .model
+                .set_part_albedo(&id, Some(albedo.clone()))
+                .expect("set albedo"),
+        }
         id
     }
 }

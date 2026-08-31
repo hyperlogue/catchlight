@@ -25,7 +25,7 @@ fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
 
 fn node_of(b: ResponseBody) -> NodeId {
     match b {
-        ResponseBody::Node { node } => node,
+        ResponseBody::Node { node, .. } => node,
         other => panic!("expected a node, got {other:?}"),
     }
 }

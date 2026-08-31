@@ -26,6 +26,15 @@
 //!   it the way it treats deleting a param: an author's deliberate act, not
 //!   an editing convenience.
 //!
+//! - **A texture belongs to a part.** [`Command::TextureAdd`] names the part
+//!   the image is for and the model gains both in one edit; there is no
+//!   command that adds a texture on its own. The rule holds on the way out,
+//!   so an edit that leaves a texture with no part drawing it deletes it, and
+//!   the reply says which ([`ResponseBody::Node::dropped`],
+//!   [`ResponseBody::Texture::dropped`]). Like [`Command::RenameId`] it is a
+//!   breaking change for an addon that named that Id — undo restores it in
+//!   the session, nothing restores it downstream.
+//!
 //! - **Nothing is addressed by name.** [`Name`](catchlight_core::id::Name) is
 //!   a label a person reads; two nodes may share one. Commands that carry a
 //!   `name` are setting or reporting that label.
@@ -230,8 +239,13 @@ pub enum Command {
         session: SessionId,
         node: NodeId,
     },
+    /// Read an image from `path` and give it to `node`, which has to be a
+    /// part: a texture is added and assigned in one edit. If that part was
+    /// the last thing drawing whatever it drew before, that texture goes with
+    /// this edit — see [`ResponseBody::Texture`].
     TextureAdd {
         session: SessionId,
+        node: NodeId,
         path: String,
     },
     TextureList {
@@ -766,6 +780,11 @@ pub enum ResponseBody {
     },
     Node {
         node: NodeId,
+        /// Textures the edit deleted, because no part draws them any more.
+        /// Every texture a model carries is drawn by a part, so repointing or
+        /// removing the last one takes the texture with it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dropped: Vec<TexId>,
     },
     Param {
         param: ParamId,
@@ -775,6 +794,12 @@ pub enum ResponseBody {
     },
     Texture {
         texture: TexId,
+        /// Textures the edit deleted, because the part that had been drawing
+        /// them stopped and nothing else was. Every texture a model carries
+        /// is drawn by a part, so an upload that displaces the last user of
+        /// the old one takes it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dropped: Vec<TexId>,
     },
     Textures {
         textures: Vec<TexInfo>,

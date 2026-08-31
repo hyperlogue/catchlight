@@ -20,21 +20,13 @@ use catchlight_core::{InstallError, Model, Required, Requirement};
 use common::{decode, read, tmp};
 
 /// The base a `merge` puts an addon back into: the model with the given nodes
-/// gone, and with the textures only they used gone too. `Model::delete_node`
-/// does not garbage-collect a texture, so leaving one behind would collide
-/// with the addon's own copy of it.
-fn base_without(
-    nodes: &[&str],
-    textures: &[&str],
-    dir: &std::path::Path,
-    name: &str,
-) -> std::path::PathBuf {
+/// gone. The textures only they drew go with them — `delete_node` takes them,
+/// because a texture no part draws is not a thing a model holds — and leaving
+/// one behind would collide with the addon's own copy of it.
+fn base_without(nodes: &[&str], dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let mut model = Model::from_clm_bytes(&read(&common::fixture("composite_masks"))).unwrap();
     for node in nodes {
         model.delete_node(&NodeId::new(node).unwrap()).unwrap();
-    }
-    for texture in textures {
-        model.delete_texture(&TexId::new(texture).unwrap()).unwrap();
     }
     let path = dir.join(format!("{name}.clm"));
     std::fs::write(&path, model.to_clm_bytes().unwrap()).unwrap();
@@ -64,7 +56,7 @@ fn an_extracted_subtree_is_an_addon_and_not_a_complete_model() {
     assert_eq!(
         fragment.texture_ids(),
         &[TexId::new("tex-4").unwrap()][..],
-        "a texture the rest of the model also uses would stay behind"
+        "an addon carries every texture its parts draw"
     );
 
     let as_model = Model::from_clm_bytes(&bytes);
@@ -82,7 +74,7 @@ fn installing_an_extract_back_restores_the_model() {
     let dir = tmp("addons-round-trip");
     let original = common::fixture("composite_masks");
 
-    let base = base_without(&["node-9"], &["tex-4"], &dir, "base");
+    let base = base_without(&["node-9"], &dir, "base");
     assert!(!diff(&decode(&original), &decode(&base)).is_empty());
 
     let addon = dir.join("addon.clm");
@@ -228,6 +220,95 @@ fn the_requirements_are_exactly_the_cut_edges() {
     );
 }
 
+/// A texture is never a requirement: an addon carries the textures its own
+/// parts draw, so `extract` copies one the base still draws instead of asking
+/// the base for it. The addon then provides that Id, and installing it back
+/// into the base that still has it is the collision it now is.
+#[test]
+fn a_shared_texture_is_copied_into_the_addon_and_never_required() {
+    let dir = tmp("addons-shared-texture");
+    let original = common::fixture("composite_masks");
+
+    // Give `node-10` the texture `node-6` draws, and drop the one that
+    // leaves behind, so the cut and the base share a texture.
+    let mut clm = decode(&original);
+    let keep = part_albedo(&clm, "node-6");
+    let freed = part_albedo(&clm, "node-10");
+    set_part_albedo(&mut clm, "node-10", &keep);
+    clm.textures.retain(|t| t.id != freed);
+    let shared = common::write_clm(&dir, "shared", &clm);
+
+    let addon = dir.join("hood.clm");
+    let extracted = fragment::extract(&shared, &["node-9".into()], &addon).unwrap();
+    assert_eq!(extracted.textures, 1, "the shared texture came along");
+
+    let requirements = fragment::requirements(&addon).unwrap();
+    assert!(
+        requirements
+            .iter()
+            .all(|r| !matches!(r.id, Required::Node(_) if r.field == "albedo")),
+        "{requirements:?}"
+    );
+    assert_eq!(
+        requirements
+            .iter()
+            .map(fragment::render_line)
+            .collect::<Vec<_>>(),
+        vec![
+            "node\troot\t\tparent\tnode-9".to_string(),
+            "part\tnode-5\t\tmask source\tnode-9".to_string(),
+        ],
+        "the albedo is carried, not required"
+    );
+    assert_eq!(
+        Model::from_clm_bytes_fragment(&read(&addon))
+            .unwrap()
+            .texture_ids(),
+        &[keep.clone()][..]
+    );
+
+    // Cut the subtree out of the base and the shared texture stays — `node-6`
+    // still draws it — so the Id the addon provides is taken and the merge
+    // says so instead of installing a second copy.
+    let mut base = Model::from_clm_bytes(&read(&shared)).unwrap();
+    base.delete_node(&NodeId::new("node-9").unwrap()).unwrap();
+    assert!(base.texture(&keep).is_some(), "node-6 still draws it");
+    let cut = dir.join("cut.clm");
+    std::fs::write(&cut, base.to_clm_bytes().unwrap()).unwrap();
+
+    let merged = dir.join("merged.clm");
+    let error = fragment::merge(&cut, &addon, &merged).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            Error::Install(InstallError::Collision { kind: "texture", id }) if id == keep.as_str()
+        ),
+        "{error}"
+    );
+}
+
+fn part_albedo(clm: &catchlight_core::formats::clm::ClmFile, node: &str) -> TexId {
+    clm.doc
+        .nodes
+        .iter()
+        .find(|n| n.id.as_str() == node)
+        .and_then(|n| match &n.kind {
+            catchlight_core::formats::clm::ClmNodeKind::Part(p) => p.albedo.clone(),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{node} draws a texture"))
+}
+
+fn set_part_albedo(clm: &mut catchlight_core::formats::clm::ClmFile, node: &str, tex: &TexId) {
+    for n in &mut clm.doc.nodes {
+        if n.id.as_str() == node {
+            if let catchlight_core::formats::clm::ClmNodeKind::Part(p) = &mut n.kind {
+                p.albedo = Some(tex.clone());
+            }
+        }
+    }
+}
+
 /// A weld that reaches into a base part needs the seam, not just the node —
 /// the one requirement that carries two Ids.
 #[test]
@@ -270,7 +351,7 @@ fn an_install_error_is_reported_verbatim() {
     fragment::extract(&original, &["node-9".into()], &addon).unwrap();
 
     // A base that lacks the mask source the addon reaches for.
-    let base = base_without(&["node-9", "node-5"], &["tex-4"], &dir, "base");
+    let base = base_without(&["node-9", "node-5"], &dir, "base");
 
     let out = dir.join("merged.clm");
     let error = fragment::merge(&base, &addon, &out).unwrap_err();
@@ -363,7 +444,7 @@ fn the_binary_extracts_merges_and_lists_requirements() {
     assert_eq!(parsed[1]["kind"], "part");
     assert_eq!(parsed[1]["field"], "mask source");
 
-    let base = base_without(&["node-9"], &["tex-4"], &dir, "base");
+    let base = base_without(&["node-9"], &dir, "base");
 
     let merged = dir.join("merged.clm");
     let (code, out, err) = common::run(&[
@@ -387,10 +468,15 @@ fn the_binary_extracts_merges_and_lists_requirements() {
 fn requirements_reads_a_file_no_model_reader_would_take() {
     let dir = tmp("addons-requirements-hostile");
     let mut clm = decode(&common::fixture("mip_checker"));
+    // Cut the root out and take the textures with it. Neither reader takes
+    // this — the complete one because the parents dangle, the fragment one
+    // because the albedos do — and the scan answers anyway.
+    clm.doc.nodes.retain(|n| n.parent.is_some());
     clm.textures.clear();
 
-    let file = common::write_clm(&dir, "no-textures", &clm);
+    let file = common::write_clm(&dir, "no-root-no-textures", &clm);
     assert!(Model::from_clm_bytes(&read(&file)).is_err());
+    assert!(Model::from_clm_bytes_fragment(&read(&file)).is_err());
 
     let requirements = fragment::requirements(&file).unwrap();
     assert_eq!(
@@ -399,8 +485,8 @@ fn requirements_reads_a_file_no_model_reader_would_take() {
             .map(fragment::render_line)
             .collect::<Vec<_>>(),
         vec![
-            "texture\ttex-0\t\talbedo\tnode-1".to_string(),
-            "texture\ttex-0\t\talbedo\tnode-2".to_string(),
+            "node\troot\t\tparent\tnode-1".to_string(),
+            "node\troot\t\tparent\tnode-2".to_string(),
         ]
     );
 }
