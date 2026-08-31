@@ -14,7 +14,10 @@
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;
 use crate::ImportError;
-use catchlight_core::formats::clm::{ClmDocument, ClmFile, ClmIndices, ClmNode, ClmNodeKind};
+use catchlight_core::formats::clm::{
+    ClmAnimation, ClmDocument, ClmFile, ClmIndices, ClmNode, ClmNodeKind,
+};
+use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::texture::{EncodedTexture, TextureFormat};
 use catchlight_core::{Model, NodeId, TexId};
 use serde_json::json;
@@ -691,6 +694,193 @@ fn a_texture_no_part_draws_is_dropped_and_the_survivors_keep_their_ids() {
             .collect::<Vec<_>>(),
         vec!["tex-1".to_string(), "tex-3".to_string()],
         "dropping tex-0 and tex-2 renumbers nothing"
+    );
+    reread(&file);
+}
+
+/// The two params every animation test rigs against: a scalar (`param-0`) and
+/// a 2-D one (`param-1.x` / `param-1.y`), so a lane's `target` has both an
+/// axis to find and an axis to miss.
+fn animated_params() -> serde_json::Value {
+    json!([
+        {"uuid": 10, "name": "scalar", "is_vec2": false,
+         "min": [0.0, 0.0], "max": [1.0, 1.0], "defaults": [0.0, 0.0],
+         "axis_points": [[0.0, 1.0], [0.0]], "bindings": []},
+        {"uuid": 11, "name": "pair", "is_vec2": true,
+         "min": [0.0, 0.0], "max": [1.0, 1.0], "defaults": [0.0, 0.0],
+         "axis_points": [[0.0, 1.0], [0.0, 1.0]], "bindings": []}
+    ])
+}
+
+fn animated(animations: serde_json::Value) -> Result<ClmFile, ImportError> {
+    import(
+        json!({
+            "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+            "param": animated_params(),
+            "animations": animations,
+        }),
+        0,
+    )
+}
+
+fn lane_params(anim: &ClmAnimation) -> Vec<String> {
+    anim.lanes.iter().map(|l| l.param.to_string()).collect()
+}
+
+#[test]
+fn a_clip_carries_its_timing_and_a_lane_per_axis() {
+    let file = animated(json!({
+        "Blink": {
+            "timestep": 0.02, "length": 30, "leadIn": 5, "leadOut": 25,
+            "lanes": [
+                // Authored out of frame order: a lane is read in frame order,
+                // so the import is what sorts it.
+                {"uuid": 10, "target": 0, "interpolation": "Cubic",
+                 "keyframes": [{"frame": 12, "value": 1.0}, {"frame": 0, "value": 0.0}]},
+                {"uuid": 11, "target": 0, "interpolation": "Stepped",
+                 "keyframes": [{"frame": 0, "value": 0.25}]},
+                {"uuid": 11, "target": 1, "interpolation": "Nearest",
+                 "keyframes": [{"frame": 0, "value": 0.5}]}
+            ]
+        }
+    }))
+    .expect("import");
+
+    assert_eq!(file.doc.animations.len(), 1);
+    let anim = &file.doc.animations[0];
+    assert_eq!(anim.name, "Blink");
+    assert_eq!(anim.timestep, 0.02);
+    assert_eq!((anim.length, anim.lead_in, anim.lead_out), (30, 5, 25));
+    assert_eq!(
+        lane_params(anim),
+        vec!["param-0", "param-1.x", "param-1.y"],
+        "target 0 is x and target 1 is y of the pair the 2-D param split into"
+    );
+    assert_eq!(
+        anim.lanes
+            .iter()
+            .map(|l| l.interpolation)
+            .collect::<Vec<_>>(),
+        vec![
+            InterpolateMode::Cubic,
+            InterpolateMode::Stepped,
+            InterpolateMode::Nearest
+        ]
+    );
+    assert_eq!(
+        anim.lanes[0]
+            .keyframes
+            .iter()
+            .map(|k| (k.frame, k.value))
+            .collect::<Vec<_>>(),
+        vec![(0, 0.0), (12, 1.0)],
+        "keyframes keep integer frames, in frame order"
+    );
+
+    // The clip has to survive the reader, the writer and the reader again:
+    // a lane naming a param the document does not carry is a load error, so
+    // this is what proves the Ids the lanes resolved to are the minted ones.
+    let model = reread(&file);
+    assert_eq!(model.animations(), file.doc.animations);
+}
+
+#[test]
+fn a_clip_that_authors_no_timing_takes_the_source_defaults() {
+    let file = animated(json!({
+        "Idle": {"lanes": [{"uuid": 10, "keyframes": [{"frame": 0}]}]}
+    }))
+    .expect("import");
+
+    let anim = &file.doc.animations[0];
+    assert_eq!(anim.timestep, 1.0 / 60.0, "60 fps");
+    assert_eq!(
+        (anim.length, anim.lead_in, anim.lead_out),
+        (0, -1, -1),
+        "-1 is what the runtime reads as no lead-in and no lead-out"
+    );
+    assert_eq!(
+        anim.lanes[0].keyframes[0].value, 0.0,
+        "a keyframe with no value holds zero"
+    );
+    assert_eq!(
+        anim.lanes[0].interpolation,
+        InterpolateMode::Linear,
+        "an unstated interpolation is the source's own default"
+    );
+    reread(&file);
+}
+
+#[test]
+fn a_lane_that_names_no_param_of_this_rig_is_dropped() {
+    let file = animated(json!({
+        "Nod": {
+            "length": 10,
+            "lanes": [
+                // No param claims uuid 99.
+                {"uuid": 99, "target": 0, "keyframes": [{"frame": 0, "value": 1.0}]},
+                // param-0 is scalar: it has an x and nothing else.
+                {"uuid": 10, "target": 1, "keyframes": [{"frame": 0, "value": 1.0}]},
+                {"uuid": 10, "target": 0, "keyframes": [{"frame": 0, "value": 1.0}]}
+            ]
+        }
+    }))
+    .expect("import");
+
+    let anim = &file.doc.animations[0];
+    assert_eq!(
+        lane_params(anim),
+        vec!["param-0"],
+        "the dangling uuid and the axis the param does not have both go"
+    );
+    assert_eq!(
+        anim.length, 10,
+        "the clip itself survives its dropped lanes"
+    );
+    reread(&file);
+}
+
+#[test]
+fn an_interpolation_with_no_equivalent_falls_back_and_keeps_the_lane() {
+    let file = animated(json!({
+        "Wave": {
+            "length": 10,
+            "lanes": [{
+                // The reference's Bezier lane is an eased lerp behind a
+                // per-keyframe tension it never finished; Linear is what it
+                // draws.
+                "uuid": 10, "target": 0, "interpolation": "Bezier",
+                "keyframes": [{"frame": 0, "value": 0.0}, {"frame": 9, "value": 1.0}]
+            }]
+        }
+    }))
+    .expect("import");
+
+    let lane = &file.doc.animations[0].lanes[0];
+    assert_eq!(lane.interpolation, InterpolateMode::Linear);
+    assert_eq!(
+        lane.keyframes.len(),
+        2,
+        "an unmodelled curve costs the lane nothing but its curve"
+    );
+    reread(&file);
+}
+
+#[test]
+fn clips_read_from_an_array_as_well_as_from_a_name_map() {
+    let file = animated(json!([
+        {"name": "Named", "length": 4, "lanes": []},
+        {"length": 4, "lanes": []}
+    ]))
+    .expect("import");
+
+    assert_eq!(
+        file.doc
+            .animations
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Named", "anim-1"],
+        "an array entry with no name is called by its position"
     );
     reread(&file);
 }
