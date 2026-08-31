@@ -65,6 +65,8 @@
 //! - a deform cell that disagrees with its node's mesh is zipped against it —
 //!   offsets past the last vertex drive nothing, vertices past the last offset
 //!   stay undeformed (`fit_deform_cells`, `reflect.rs`)
+//! - a deform binding on a node with no mesh vertices is dropped; there is
+//!   nothing for it to move (`convert_binding`)
 //! - a part with no `textures` array takes `tex-0`, which is what the source
 //!   runtime draws, or no texture at all when the rig carries none
 //!   (`convert_part`)
