@@ -21,26 +21,41 @@
 //! `<name>.y`, adjacent in param order, and every binding under it becomes a
 //! two-param binding over the pair. A pendulum aimed at one is aimed at both.
 //!
+//! **A deform binding has to have vertices to move**, so `convert_binding`
+//! drops one whose node carries no mesh: it moves nothing in the source
+//! either, and the reader refuses a deform on a node it cannot size the cells
+//! from.
+//!
+//! **A param has to be posable and a part has to name a texture the file
+//! carries**, so this is where two of the crate's repairs land (the rule is in
+//! the crate doc). `usable_range` widens a range the source could not move
+//! along and refuses one authored backwards; `convert_part` gives a part with
+//! no `textures` array the `tex-0` the source runtime draws, or no texture when
+//! the rig carries none. The texture table is then cut down to what some part
+//! actually draws — Ids are minted from the source's texture order, so the
+//! survivors keep theirs and dropping `tex-2` never renumbers `tex-3`.
+//!
 //! Only what catchlight models is kept; the rest (meta, groups, automation,
 //! animations, cameras, emissive/bump slots, emissionStrength) is dropped.
 //! Textures are carried verbatim — a render cache is what decodes and crops
 //! them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind,
-    ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics, ClmTexture, TextureAlpha, TextureEncoding,
+    ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
+    ClmNodeKind, ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics, ClmTexture, TextureAlpha,
+    TextureEncoding,
 };
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::texture::TextureFormat;
-use catchlight_core::{param_range_is_valid, Model, NodeId, ParamId, TexId};
+use catchlight_core::{Model, NodeId, ParamId, TexId};
 
 use crate::error::ImportError;
 use crate::inx::InxModel;
 use crate::reflect::{
     axes_of, blend, convert_binding_values, convert_mesh, convert_transform, flatten, interp,
-    mask_mode, reflect_z, vec2_arr, vec3_arr,
+    mask_mode, reflect_z, vec2_arr, vec3_arr, NodeRef,
 };
 use crate::schema::{
     source_binding_is_color, SchemaBinding, SchemaMask, SchemaNode, SchemaParam,
@@ -119,7 +134,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     }
     let slots = param_slots(&schema_params)?;
 
-    let drawn: Vec<bool> = flat
+    let drawn_nodes: Vec<bool> = flat
         .iter()
         .map(|(s, _)| matches!(s.ty.as_deref(), Some("Part" | "Composite")))
         .collect();
@@ -128,7 +143,8 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         uuid_node: &uuid_node,
         uuid_param: &uuid_param,
         slots: &slots,
-        drawn: &drawn,
+        drawn_nodes: &drawn_nodes,
+        textures: model.textures.len(),
     };
 
     let mut nodes = Vec::with_capacity(flat.len());
@@ -146,7 +162,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         let defaults = vec2_arr(&p.defaults, [0.0, 0.0]);
         match &slots[i] {
             Slot::One(id) => {
-                let (min, max) = param_range(min[0], max[0], &name, "x");
+                let (min, max) = usable_range(id, &name, min[0], max[0])?;
                 params.push(ClmParam {
                     id: id.clone(),
                     name,
@@ -157,11 +173,12 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
                 });
             }
             Slot::Pair(x, y) => {
-                let (min_x, max_x) = param_range(min[0], max[0], &name, "x");
-                let (min_y, max_y) = param_range(min[1], max[1], &name, "y");
+                let (name_x, name_y) = (format!("{name}.x"), format!("{name}.y"));
+                let (min_x, max_x) = usable_range(x, &name_x, min[0], max[0])?;
+                let (min_y, max_y) = usable_range(y, &name_y, min[1], max[1])?;
                 params.push(ClmParam {
                     id: x.clone(),
-                    name: format!("{name}.x"),
+                    name: name_x,
                     min: min_x,
                     max: max_x,
                     default: defaults[0],
@@ -169,7 +186,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
                 });
                 params.push(ClmParam {
                     id: y.clone(),
-                    name: format!("{name}.y"),
+                    name: name_y,
                     min: min_y,
                     max: max_y,
                     default: defaults[1],
@@ -184,22 +201,33 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         );
     }
 
-    let textures = model
-        .textures
+    // A texture no part's albedo names draws nothing, so dropping it cannot
+    // change the render. Ids are minted from the source's texture order and
+    // the survivors keep theirs: dropping `tex-2` never renumbers `tex-3`.
+    let drawn: HashSet<&TexId> = nodes
         .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            Ok(ClmTexture {
-                id: tex_id(i as u32)?,
-                encoding: match t.format {
-                    TextureFormat::Png => TextureEncoding::Png,
-                    TextureFormat::Tga => TextureEncoding::Tga,
-                },
-                alpha: TextureAlpha::PremultipliedSrgb,
-                data: t.data.to_vec(),
-            })
+        .filter_map(|n| match &n.kind {
+            ClmNodeKind::Part(p) => p.albedo.as_ref(),
+            _ => None,
         })
-        .collect::<Result<Vec<_>, ImportError>>()?;
+        .collect();
+    let mut textures = Vec::with_capacity(model.textures.len());
+    for (i, t) in model.textures.iter().enumerate() {
+        let id = tex_id(i as u32)?;
+        if !drawn.contains(&id) {
+            tracing::warn!("dropping texture {id}: no part draws it");
+            continue;
+        }
+        textures.push(ClmTexture {
+            id,
+            encoding: match t.format {
+                TextureFormat::Png => TextureEncoding::Png,
+                TextureFormat::Tga => TextureEncoding::Tga,
+            },
+            alpha: TextureAlpha::PremultipliedSrgb,
+            data: t.data.to_vec(),
+        });
+    }
 
     Ok(ClmFile {
         doc: ClmDocument {
@@ -249,7 +277,10 @@ struct Refs<'a> {
     slots: &'a [Slot],
     /// Whether the node at each flat index becomes one catchlight draws — the
     /// only thing a mask may name. Parallel to `node_ids`.
-    drawn: &'a [bool],
+    drawn_nodes: &'a [bool],
+    /// How many textures the rig carries — what a part naming none is
+    /// resolved against.
+    textures: usize,
 }
 
 impl Refs<'_> {
@@ -265,7 +296,7 @@ impl Refs<'_> {
     fn draws(&self, uuid: u32) -> bool {
         self.uuid_node
             .get(&uuid)
-            .and_then(|&i| self.drawn.get(i as usize))
+            .and_then(|&i| self.drawn_nodes.get(i as usize))
             .copied()
             .unwrap_or(false)
     }
@@ -307,18 +338,75 @@ fn tex_id(i: u32) -> Result<TexId, ImportError> {
     Ok(TexId::new(format!("tex-{i}"))?)
 }
 
+/// A param range a pose can be read against: finite and strictly increasing.
+///
+/// A collapsed range (`min == max`) is **widened** to `min..min + 1`. The
+/// source param cannot move either — every value maps to the one point — so
+/// the rest pose the rig draws is unchanged, and the widened range gives the
+/// runtime something to normalize against. A bound that is not a number has no
+/// pose to preserve at all: it collapses onto the other bound, or onto zero
+/// when neither is finite, and widens from there. (`.inx` cannot spell an
+/// infinity, but a bound too large for `f32` rounds to one.)
+///
+/// A finite range authored the wrong way round is not repaired: what the
+/// source runtime does with `min > max` is unclear, so any widening would be a
+/// guess about where the rig sits, and a guess here moves the model. The
+/// import refuses it and names the param.
+fn usable_range(id: &ParamId, name: &str, min: f32, max: f32) -> Result<(f32, f32), ImportError> {
+    if min.is_finite() && max.is_finite() {
+        if min < max {
+            return Ok((min, max));
+        }
+        if min > max {
+            return Err(ImportError::InvertedParamRange {
+                id: id.to_string(),
+                name: name.to_string(),
+                min,
+                max,
+            });
+        }
+    }
+    let base = if min.is_finite() {
+        min
+    } else if max.is_finite() {
+        max
+    } else {
+        0.0
+    };
+    tracing::warn!(
+        "param {id} ({name:?}): the range {min}..{max} cannot be posed against; widening it to \
+         {base}..{}",
+        base + 1.0
+    );
+    Ok((base, base + 1.0))
+}
+
+/// The mesh a node deforms, if it has one. A part and a mesh group carry one;
+/// nothing else does, so a deform binding on anything else drives no vertex.
+fn mesh_of(kind: &ClmNodeKind) -> Option<&ClmMesh> {
+    match kind {
+        ClmNodeKind::Part(p) => Some(&p.mesh),
+        ClmNodeKind::MeshGroup(mg) => Some(&mg.mesh),
+        _ => None,
+    }
+}
+
 fn convert_node(
     s: &SchemaNode,
     index: usize,
     parent: Option<u32>,
     refs: &Refs<'_>,
 ) -> Result<ClmNode, ImportError> {
+    let id = refs
+        .node_ids
+        .get(index)
+        .ok_or(ImportError::MissingField("node"))?;
+    let named = NodeRef {
+        id,
+        name: s.name.as_deref().unwrap_or_default(),
+    };
     Ok(ClmNode {
-        id: refs
-            .node_ids
-            .get(index)
-            .ok_or(ImportError::MissingField("node"))?
-            .clone(),
+        id: id.clone(),
         parent: match parent {
             Some(p) => Some(
                 refs.node_ids
@@ -333,47 +421,43 @@ fn convert_node(
         z_order: reflect_z(s.zsort.unwrap_or(0.0)),
         transform: convert_transform(s.transform.as_ref()),
         lock_to_root: s.lock_to_root.unwrap_or(false),
-        kind: convert_node_kind(s, refs)?,
+        kind: convert_node_kind(s, named, refs)?,
     })
 }
 
-fn convert_node_kind(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmNodeKind, ImportError> {
+fn convert_node_kind(
+    s: &SchemaNode,
+    node: NodeRef<'_>,
+    refs: &Refs<'_>,
+) -> Result<ClmNodeKind, ImportError> {
     Ok(match s.ty.as_deref().unwrap_or("") {
-        "Part" => ClmNodeKind::Part(convert_part(s, refs)?),
-        "Composite" => ClmNodeKind::Composite(convert_composite(s, refs)?),
-        "MeshGroup" => ClmNodeKind::MeshGroup(convert_mesh_group(s)),
+        "Part" => ClmNodeKind::Part(convert_part(s, node, refs)?),
+        "Composite" => ClmNodeKind::Composite(convert_composite(s, node, refs)?),
+        "MeshGroup" => ClmNodeKind::MeshGroup(convert_mesh_group(s, node)?),
         "SimplePhysics" => ClmNodeKind::SimplePhysics(convert_simple_physics(s, refs)),
         // Node, Camera, and any unmodeled type all become a container Group.
         _ => ClmNodeKind::Group,
     })
 }
 
-/// A param's key positions are normalized across its range, so the range has
-/// to be finite and increasing — `Model` refuses one that is not. A source
-/// axis that is collapsed, inverted or non-finite falls back to the default
-/// `0..1`, like any other field an `.inx` got wrong.
-fn param_range(min: f32, max: f32, name: &str, axis: &str) -> (f32, f32) {
-    if param_range_is_valid(min, max) {
-        return (min, max);
-    }
-    tracing::debug!(
-        "param {name:?} ({axis}): {min}..{max} is not a range; falling back to the default 0..1",
-    );
-    (0.0, 1.0)
-}
-
-fn convert_masks(masks: &[SchemaMask], refs: &Refs<'_>) -> Vec<ClmMask> {
+fn convert_masks(masks: &[SchemaMask], node: NodeRef<'_>, refs: &Refs<'_>) -> Vec<ClmMask> {
     masks
         .iter()
         .filter_map(|m| {
             // Drop masks whose source node doesn't resolve: `.inx` is untrusted
-            // and a dangling mask has nothing to clip against. Drop one that
-            // resolves to a node catchlight never draws for the same reason —
-            // a mask *is* the source's own drawing, so `Model::mask_add` and
-            // the `.clm` reader both take only a part or a composite.
+            // and a dangling mask has nothing to clip against.
             let source = m.source?;
+            // A source catchlight never draws goes for the same reason: a mask
+            // is the source's own drawing rasterized into a stencil, and a mesh
+            // group, a plain node and a pendulum each draw nothing, here and in
+            // the source runtime alike. `Model::mask_add` and the `.clm` reader
+            // both take only a part or a composite.
             if !refs.draws(source) {
-                tracing::debug!("dropping a mask whose source {source} is not drawn");
+                tracing::warn!(
+                    "node {} ({:?}): dropping the mask on source {source}, which is not drawn",
+                    node.id,
+                    node.name,
+                );
                 return None;
             }
             Some(ClmMask {
@@ -384,49 +468,77 @@ fn convert_masks(masks: &[SchemaMask], refs: &Refs<'_>) -> Vec<ClmMask> {
         .collect()
 }
 
-fn convert_part(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmPart, ImportError> {
-    // A part with no `textures` array takes slot 0, which is what the source
-    // runtime does; an index too large to be one is no texture at all.
+fn convert_part(
+    s: &SchemaNode,
+    node: NodeRef<'_>,
+    refs: &Refs<'_>,
+) -> Result<ClmPart, ImportError> {
+    // A part with no `textures` array draws slot 0 in the source runtime, so
+    // that is what it draws here — but only if the rig has a slot 0; naming a
+    // texture the file does not carry would be a `.clm` no reader accepts. An
+    // index too large to be a slot is no texture at all.
     let albedo = match s.textures.first() {
-        None => Some(tex_id(0)?),
+        None if refs.textures > 0 => {
+            tracing::warn!(
+                "part {} ({:?}) names no texture; giving it tex-0, which is what the source \
+                 runtime draws",
+                node.id,
+                node.name,
+            );
+            Some(tex_id(0)?)
+        }
+        None => {
+            tracing::warn!(
+                "part {} ({:?}) names no texture and the rig carries none; it draws nothing",
+                node.id,
+                node.name,
+            );
+            None
+        }
         Some(&v) => match u32::try_from(v) {
             Ok(v) => Some(tex_id(v)?),
             Err(_) => None,
         },
     };
     Ok(ClmPart {
-        mesh: convert_mesh(s.mesh.as_ref(), s.name.as_deref().unwrap_or_default()),
+        mesh: convert_mesh(s.mesh.as_ref(), node, true)?,
         albedo,
         opacity: s.opacity.unwrap_or(1.0),
         blend_mode: blend(s.blend_mode.as_deref())?,
         tint: vec3_arr(&s.tint, [1.0, 1.0, 1.0]),
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
-        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), refs),
+        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
         // An `.inx` names no vertex, so it fills no seam.
         seams: Vec::new(),
     })
 }
 
-fn convert_composite(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmComposite, ImportError> {
+fn convert_composite(
+    s: &SchemaNode,
+    node: NodeRef<'_>,
+    refs: &Refs<'_>,
+) -> Result<ClmComposite, ImportError> {
     Ok(ClmComposite {
         opacity: s.opacity.unwrap_or(1.0),
         blend_mode: blend(s.blend_mode.as_deref())?,
         tint: vec3_arr(&s.tint, [1.0, 1.0, 1.0]),
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
-        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), refs),
+        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
         propagate_meshgroup: s.propagate_meshgroup.unwrap_or(true),
     })
 }
 
-fn convert_mesh_group(s: &SchemaNode) -> ClmMeshGroup {
+fn convert_mesh_group(s: &SchemaNode, node: NodeRef<'_>) -> Result<ClmMeshGroup, ImportError> {
     s.log_dropped_mesh_group_color();
-    ClmMeshGroup {
-        mesh: convert_mesh(s.mesh.as_ref(), s.name.as_deref().unwrap_or_default()),
+    Ok(ClmMeshGroup {
+        // A mesh group is never drawn, so it samples nothing through its UVs
+        // and inochi2d authors none for it.
+        mesh: convert_mesh(s.mesh.as_ref(), node, false)?,
         dynamic: s.dynamic_deformation.unwrap_or(false),
         translate_children: s.translate_children.unwrap_or(false),
-    }
+    })
 }
 
 fn convert_simple_physics(s: &SchemaNode, refs: &Refs<'_>) -> ClmSimplePhysics {
@@ -468,16 +580,14 @@ fn convert_binding(
     // Drop bindings whose target node doesn't resolve: there is nothing for
     // them to drive.
     let node = refs.node_of_uuid(b.node?)?;
+    let target = nodes.iter().find(|n| &n.id == node);
     let values_json = b.values.as_ref()?;
     let kind = b.param_name.as_deref().unwrap_or("");
     // A mesh group is never drawn and carries no colour, so a colour binding on
     // one has nowhere to land — and writing it out would produce a `.clm` the
     // loader rejects.
     if source_binding_is_color(kind)
-        && matches!(
-            nodes.iter().find(|n| &n.id == node).map(|n| &n.kind),
-            Some(ClmNodeKind::MeshGroup(_))
-        )
+        && matches!(target.map(|n| &n.kind), Some(ClmNodeKind::MeshGroup(_)))
     {
         tracing::debug!(
             "dropping {:?} binding on mesh group node {}: a mesh group is never drawn",
@@ -486,7 +596,36 @@ fn convert_binding(
         );
         return None;
     }
-    let values = convert_binding_values(kind, values_json, b.is_set.as_deref(), axis_x, axis_y)?;
+    // A deform cell is one `[dx, dy]` per vertex of *this* node's mesh, so the
+    // mesh has to be in scope to fit the cells to it.
+    let named = NodeRef {
+        id: node,
+        name: target.map_or("", |n| n.name.as_str()),
+    };
+    let deform_len = target
+        .and_then(|n| mesh_of(&n.kind))
+        .map_or(0, |m| m.verts.len());
+    // A node with no vertices — a group, a composite, a pendulum, a part whose
+    // mesh is empty — has nothing for a deform to move, so the binding drives
+    // no pixel and dropping it draws the same frame. Keeping it would write a
+    // `.clm` the loader refuses (`add_binding`'s `NotMeshed`).
+    if kind == "deform" && deform_len == 0 {
+        tracing::warn!(
+            "dropping the deform binding on node {} ({:?}): the node has no mesh vertices to move",
+            named.id,
+            named.name,
+        );
+        return None;
+    }
+    let values = convert_binding_values(
+        kind,
+        values_json,
+        b.is_set.as_deref(),
+        axis_x,
+        axis_y,
+        named,
+        deform_len,
+    )?;
     Some(ClmBinding {
         params: slot.params(),
         node: node.clone(),
