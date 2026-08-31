@@ -343,6 +343,67 @@ fn one_binding(binding: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
+fn a_param_that_cannot_be_posed_against_is_widened_by_one() {
+    // `pinned` cannot move in the source either, and 1e40 is past what an f32
+    // holds, so it reaches the reader as an infinity.
+    let file = import(
+        json!({
+            "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+            "param": [
+                {"uuid": 10, "name": "pinned", "is_vec2": false,
+                 "min": [0.5, 0.0], "max": [0.5, 0.0], "defaults": [0.5, 0.0],
+                 "axis_points": [[0.0, 1.0], [0.0]], "bindings": []},
+                {"uuid": 11, "name": "unbounded", "is_vec2": false,
+                 "min": [0.0, 0.0], "max": [1e40, 0.0], "defaults": [0.0, 0.0],
+                 "axis_points": [[0.0, 1.0], [0.0]], "bindings": []},
+                {"uuid": 12, "name": "fine", "is_vec2": false,
+                 "min": [-2.0, 0.0], "max": [3.0, 0.0], "defaults": [0.0, 0.0],
+                 "axis_points": [[0.0, 1.0], [0.0]], "bindings": []}
+            ]
+        }),
+        0,
+    )
+    .expect("import");
+
+    let range = |i: usize| (file.doc.params[i].min, file.doc.params[i].max);
+    assert_eq!(range(0), (0.5, 1.5), "a collapsed range widens by one");
+    assert_eq!(
+        range(1),
+        (0.0, 1.0),
+        "a bound that is not a number collapses"
+    );
+    assert_eq!(range(2), (-2.0, 3.0), "a usable range is left alone");
+    assert_eq!(
+        file.doc.params[0].default, 0.5,
+        "widening moves no default: the rest pose is the source's"
+    );
+
+    let model = reread(&file);
+    assert_eq!(model.param_ids().len(), 3);
+}
+
+#[test]
+fn a_param_range_authored_backwards_is_refused_naming_the_param() {
+    let err = import(
+        json!({
+            "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+            "param": [{
+                "uuid": 10, "name": "backwards", "is_vec2": false,
+                "min": [1.0, 0.0], "max": [0.0, 0.0], "defaults": [0.0, 0.0],
+                "axis_points": [[0.0, 1.0], [0.0]], "bindings": []
+            }]
+        }),
+        0,
+    )
+    .expect_err("an inverted range is not repaired");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("param-0") && msg.contains("backwards"),
+        "the error names the param: {msg}"
+    );
+}
+
+#[test]
 fn a_mesh_index_past_the_vertex_array_is_refused_naming_the_node() {
     let err = try_doc(json!({
         "uuid": 1, "name": "root", "type": "Node",
