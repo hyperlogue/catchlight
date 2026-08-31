@@ -231,7 +231,11 @@ impl ModelManifestExt for Model {
             gravity: manifest.physics.gravity,
         });
 
-        let mut tex_ids: HashMap<&str, TexId> = HashMap::new();
+        // Nothing is added to the model here. A texture goes to the part that
+        // draws it, so this pass only decodes the dimensions the generated
+        // meshes are sized from and holds the bytes until a part names them;
+        // a manifest texture no node names never reaches the model.
+        let mut tex_data: HashMap<&str, &TextureData> = HashMap::new();
         let mut tex_dims: HashMap<&str, (f32, f32)> = HashMap::new();
         for t in &manifest.textures {
             let d = data
@@ -241,17 +245,12 @@ impl ModelManifestExt for Model {
             let (w, h) =
                 image_dims(&d.bytes).map_err(|e| ManifestError::Decode(t.id.clone(), e))?;
             budget.check_texture_dimensions(w, h)?;
-            let id = m.add_texture(
-                ModelTexture {
-                    encoding: d.encoding,
-                    alpha: TextureAlpha::Straight,
-                    data: d.bytes.clone(),
-                },
-                &mut hex,
-            )?;
-            tex_ids.insert(t.id.as_str(), id);
+            tex_data.insert(t.id.as_str(), d);
             tex_dims.insert(t.id.as_str(), (w as f32, h as f32));
         }
+        // What each manifest texture became, filled in by the first part to
+        // draw it; the parts after that share it.
+        let mut tex_ids: HashMap<&str, TexId> = HashMap::new();
 
         let mut seen = HashSet::new();
         for mn in &manifest.nodes {
@@ -276,7 +275,7 @@ impl ModelManifestExt for Model {
                     still.push(mn);
                     continue;
                 };
-                let (kind, albedo) = build_kind(mn, &tex_ids, &tex_dims, budget)?;
+                let (kind, albedo) = build_kind(mn, &tex_dims, budget)?;
                 let mut node =
                     ModelNode::new(mn.name.clone().unwrap_or_else(|| mn.id.clone()), kind);
                 node.transform = ClmTransform {
@@ -288,8 +287,25 @@ impl ModelManifestExt for Model {
                 let id = m
                     .add_node(&parent, node, &mut hex)
                     .map_err(|_| ManifestError::UnknownParent(mn.id.clone(), "<root>".into()))?;
-                if albedo.is_some() {
-                    m.set_part_albedo(&id, albedo)?;
+                if let Some(name) = albedo {
+                    match tex_ids.get(name) {
+                        Some(tid) => m.set_part_albedo(&id, Some(tid.clone()))?,
+                        None => {
+                            let d = tex_data.get(name).ok_or_else(|| {
+                                ManifestError::UnknownTexture(mn.id.clone(), name.to_string())
+                            })?;
+                            let tid = m.add_texture(
+                                &id,
+                                ModelTexture {
+                                    encoding: d.encoding,
+                                    alpha: TextureAlpha::Straight,
+                                    data: d.bytes.clone(),
+                                },
+                                &mut hex,
+                            )?;
+                            tex_ids.insert(name, tid);
+                        }
+                    }
                 }
                 resolved.insert(mn.id.as_str(), id);
             }
@@ -437,25 +453,24 @@ impl ModelManifestExt for Model {
     }
 }
 
-fn build_kind(
-    mn: &ManifestNode,
-    tex_ids: &HashMap<&str, TexId>,
+/// The node's kind and, for a part, the *manifest* texture it draws. The model
+/// Id it turns into is minted by the upload, which needs the part to exist.
+fn build_kind<'a>(
+    mn: &'a ManifestNode,
     tex_dims: &HashMap<&str, (f32, f32)>,
     budget: &mut LoadBudget,
-) -> Result<(ModelNodeKind, Option<TexId>), ManifestError> {
+) -> Result<(ModelNodeKind, Option<&'a str>), ManifestError> {
     match mn.kind.as_str() {
         "group" => Ok((ModelNodeKind::Group, None)),
         "part" => {
             let albedo = match &mn.texture {
-                Some(t) => Some(
-                    tex_ids
-                        .get(t.as_str())
-                        .ok_or_else(|| ManifestError::UnknownTexture(mn.id.clone(), t.clone()))?
-                        .clone(),
-                ),
+                Some(t) if !tex_dims.contains_key(t.as_str()) => {
+                    return Err(ManifestError::UnknownTexture(mn.id.clone(), t.clone()))
+                }
+                Some(t) => Some(t.as_str()),
                 None => None,
             };
-            let dims = mn.texture.as_deref().and_then(|t| tex_dims.get(t).copied());
+            let dims = albedo.and_then(|t| tex_dims.get(t).copied());
             let mesh = match mn.mesh {
                 Some(spec) => {
                     let (w, h) =

@@ -42,7 +42,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             name: Some("probe".into()),
         },
     ) {
-        ResponseBody::Node { node } => node,
+        ResponseBody::Node { node, .. } => node,
         other => panic!("{other:?}"),
     };
 

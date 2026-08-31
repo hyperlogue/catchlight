@@ -533,7 +533,7 @@ fn the_physics_inspector_aims_a_driver_at_both_of_its_params() {
         length_damping: None,
     }) {
         Reply::Ok {
-            body: ResponseBody::Node { node },
+            body: ResponseBody::Node { node, .. },
             ..
         } => node,
         other => panic!("{other:?}"),

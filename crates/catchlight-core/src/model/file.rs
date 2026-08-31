@@ -19,21 +19,27 @@
 //!   the file itself declares, and a failure names the field and the Id that
 //!   dangled ([`ClmLoadError`]). What the reader accepts is exactly what the
 //!   Model's own invariants allow, so a loaded Model needs no repair pass.
-//!   Beyond the Ids, that is six checks, each the file-shaped half of a rule
+//!   Beyond the Ids, that is seven checks, each the file-shaped half of a rule
 //!   an edit already obeys: a param's range has to be finite and increasing
 //!   ([`crate::param_range_is_valid`]); a mask source has to be a kind the
 //!   renderer draws ([`Model::mask_add`]); a deform binding has to sit on a
 //!   node that carries a mesh, and a colour binding may not sit on a mesh
 //!   group ([`Model::add_binding`]); a mesh has to be `[x, y]` pairs with uvs
-//!   to match and every index in range ([`Model::set_node_mesh`]); and a
-//!   deform cell has to be sized to its node's mesh.
+//!   to match and every index in range ([`Model::set_node_mesh`]); a deform
+//!   cell has to be sized to its node's mesh; and every texture the file
+//!   carries has to be one some part's albedo names
+//!   ([`ClmLoadError::UnusedTexture`], the file-shaped half of
+//!   [`Model::add_texture`] taking the part the texture is for).
 //! - **A file is read as one shape or the other, never guessed.**
 //!   [`Model::from_clm_bytes`] reads a *complete model*: one node with no
 //!   parent, and nothing dangling. [`Model::from_clm_bytes_fragment`] reads an
 //!   *addon fragment*: every node names a parent, the ones the file does not
-//!   carry are its roots, and every other reference into a base — albedo, mask
+//!   carry are its roots, and every other reference into a base — mask
 //!   source, physics target, binding param, weld end, animation lane — may
-//!   dangle for [`Model::install`] to resolve. The two shapes are disjoint on
+//!   dangle for [`Model::install`] to resolve. A part's albedo is the one
+//!   that may not: an addon carries the textures its own parts draw, so that
+//!   reference resolves inside the fragment in both shapes. The two shapes
+//!   are disjoint on
 //!   the wire (a complete model always has a parentless node and a fragment
 //!   never does), so a caller that does not know which it holds decodes once
 //!   and tries both readers against the same [`ClmFile`]; nothing else about
@@ -79,6 +85,11 @@ pub enum ClmLoadError {
     },
     #[error("node {node:?} names texture {id:?}, which the file does not carry")]
     DanglingTexture { node: String, id: String },
+    #[error(
+        "the file carries texture {id:?}, which no part's albedo names; every texture a model \
+         holds is drawn by one of its parts, and an addon brings its own"
+    )]
+    UnusedTexture { id: String },
     #[error("a binding names node {id:?}, which no node has")]
     DanglingBindingNode { id: String },
     #[error("{owner} names param {id:?}, which the file does not carry")]
@@ -485,6 +496,27 @@ impl Model {
             }
         }
 
+        // The other half of the albedo check above: every texture the file
+        // carries is drawn by a part the file carries. Both shapes, because
+        // an addon brings the textures its own parts draw and nothing else —
+        // a spare one in a fragment is as much a mistake as in a model.
+        // Walked in the file's texture order, so a file with two spares
+        // always names the first.
+        let drawn: HashSet<&TexId> = doc
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.kind {
+                ClmNodeKind::Part(p) => p.albedo.as_ref(),
+                _ => None,
+            })
+            .collect();
+        if let Some(spare) = file.textures.iter().find(|t| !drawn.contains(&t.id)) {
+            return Err(ClmLoadError::UnusedTexture {
+                id: spare.id.to_string(),
+            }
+            .into());
+        }
+
         // Children in document order, which is the model's sibling order.
         for cn in &doc.nodes {
             if let Some(parent) = &cn.parent {
@@ -760,7 +792,10 @@ fn model_kind(
             check_mesh(id, &p.mesh)?;
             let mut part = ModelPart::new(p.mesh.clone());
             if let Some(albedo) = &p.albedo {
-                if !textures.contains_key(albedo) && !shape.allows_dangling() {
+                // Checked in either shape, unlike every other reference that
+                // leaves a node: an addon carries the textures its own parts
+                // draw, so this one never reaches into a base.
+                if !textures.contains_key(albedo) {
                     return Err(ClmLoadError::DanglingTexture {
                         node: id.to_string(),
                         id: albedo.to_string(),
@@ -997,17 +1032,6 @@ mod tests {
         let mut m = Model::new();
         let root = m.root().unwrap().clone();
 
-        let tex = m
-            .add_texture(
-                ModelTexture {
-                    encoding: TextureEncoding::Png,
-                    alpha: TextureAlpha::Straight,
-                    data: Arc::new(vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4]),
-                },
-                &mut hex,
-            )
-            .unwrap();
-
         let upper = m
             .add_node(
                 &root,
@@ -1022,7 +1046,16 @@ mod tests {
                 &mut hex,
             )
             .unwrap();
-        m.set_part_albedo(&upper, Some(tex)).unwrap();
+        m.add_texture(
+            &upper,
+            ModelTexture {
+                encoding: TextureEncoding::Png,
+                alpha: TextureAlpha::Straight,
+                data: Arc::new(vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4]),
+            },
+            &mut hex,
+        )
+        .unwrap();
 
         let composite = m
             .add_node(
@@ -1154,10 +1187,11 @@ mod tests {
         }
     }
 
-    /// [`sample`] with the root, the `Lower` part, the params and the texture
-    /// taken out: what is left is an addon that hangs off `root`, draws a base
-    /// texture, is masked by a base part, welds into one, and is deformed and
-    /// animated by base params. Every kind of dangling reference at once.
+    /// [`sample`] with the root, the `Lower` part and the params taken out:
+    /// what is left is an addon that hangs off `root`, is masked by a base
+    /// part, welds into one, and is deformed and animated by base params.
+    /// Every kind of dangling reference at once — the texture table stays,
+    /// because the one reference an addon never makes is into the base's.
     fn sample_fragment_file() -> ClmFile {
         let mut file = sample().to_clm_file().unwrap();
         let lower = node_named(&file, "Lower").id.clone();
@@ -1165,7 +1199,6 @@ mod tests {
             .nodes
             .retain(|n| n.parent.is_some() && n.id != lower);
         file.doc.params.clear();
-        file.textures.clear();
         file
     }
 
@@ -1205,8 +1238,9 @@ mod tests {
             assert_eq!(parent.as_str(), "root");
             assert!(f.node(parent).is_none());
         }
-        // ... and every other reference still points at the base.
-        assert!(f.texture(part(&f, &upper).albedo().unwrap()).is_none());
+        // Its own texture came with it; every other reference still points
+        // at the base.
+        assert!(f.texture(part(&f, &upper).albedo().unwrap()).is_some());
         assert!(f.node(part_mask_source(&f, &face)).is_none());
         assert!(f.node(&f.welds()[0].b().0).is_none());
         assert_eq!(f.welds()[0].weights().len(), 2);
@@ -1423,6 +1457,58 @@ mod tests {
         assert!(matches!(
             load_err(&file),
             ClmLoadError::DanglingTexture { id, .. } if id == "gone"
+        ));
+    }
+
+    /// An albedo is the one reference a fragment may not dangle: an addon
+    /// carries the textures its own parts draw, so there is no base texture
+    /// for it to be reaching at.
+    #[test]
+    fn a_fragments_albedo_may_not_dangle_either() {
+        let mut file = sample_fragment_file();
+        let drawn = part_named(&mut file, "Upper")
+            .albedo
+            .clone()
+            .expect("Upper draws one");
+        file.textures.clear();
+
+        assert!(matches!(
+            fragment_err(&file),
+            ClmLoadError::DanglingTexture { id, .. } if id == drawn.as_str()
+        ));
+    }
+
+    /// The other half of the same rule: a texture no part's albedo names is
+    /// one an author cannot have meant, and it would survive every edit
+    /// afterwards because nothing would ever collect it.
+    #[test]
+    fn a_texture_no_part_draws_is_a_structured_error() {
+        let mut file = sample().to_clm_file().unwrap();
+        let spare = ClmTexture {
+            id: TexId::new("spare").unwrap(),
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: vec![0x89, b'P', b'N', b'G'],
+        };
+        file.textures.push(spare);
+
+        assert!(matches!(
+            load_err(&file),
+            ClmLoadError::UnusedTexture { id } if id == "spare"
+        ));
+
+        // And in a fragment, where a texture reaching into the base is
+        // exactly what an addon may not do.
+        let mut file = sample_fragment_file();
+        file.textures.push(ClmTexture {
+            id: TexId::new("spare").unwrap(),
+            encoding: TextureEncoding::Png,
+            alpha: TextureAlpha::Straight,
+            data: vec![0x89, b'P', b'N', b'G'],
+        });
+        assert!(matches!(
+            fragment_err(&file),
+            ClmLoadError::UnusedTexture { id } if id == "spare"
         ));
     }
 

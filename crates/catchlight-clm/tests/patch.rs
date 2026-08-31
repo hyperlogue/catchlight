@@ -233,7 +233,6 @@ fn an_id_that_names_both_a_node_and_a_param_asks_which() {
 fn albedo_is_the_one_cross_reference_and_it_must_resolve() {
     let dir = tmp("patch-albedo");
     let file = copy_fixture("welded_seam", &dir);
-    let base = decode(&file);
 
     let error = patch::run(&file, "node-1", "albedo", "tex-nope", None, None).unwrap_err();
     assert!(
@@ -246,20 +245,101 @@ fn albedo_is_the_one_cross_reference_and_it_must_resolve() {
     );
     assert_eq!(read(&file), read(&common::fixture("welded_seam")));
 
+    // Every texture a model carries is drawn by a part. `patch` moves one
+    // field and collects nothing, so pointing the only part drawing `tex-0`
+    // away from it would write a file no reader takes — and `patch` refuses
+    // with the reader's own error rather than saving it.
+    let orphaned = dir.join("orphaned.clm");
+    let error = patch::run(&file, "node-1", "albedo", "tex-1", None, Some(&orphaned)).unwrap_err();
+    assert!(
+        matches!(error, Error::PatchBreaksFile { .. }),
+        "expected PatchBreaksFile, got {error}"
+    );
+    assert!(error.to_string().contains("tex-0"), "{error}");
+    assert!(!orphaned.exists(), "a refused patch writes nothing");
+
+    // Where the texture has a second part drawing it, the swap and the unmap
+    // both go through.
+    let (clm, [from, to], shared, other) = shared_albedo();
+    let file = write_clm(&dir, "shared", &clm);
+    let base = decode(&file);
+
     let swapped = dir.join("swapped.clm");
-    patch::run(&file, "node-1", "albedo", "tex-1", None, Some(&swapped)).unwrap();
+    patch::run(
+        &file,
+        from.as_str(),
+        "albedo",
+        other.as_str(),
+        None,
+        Some(&swapped),
+    )
+    .unwrap();
     assert_eq!(
         diff(&base, &decode(&swapped)),
-        vec!["~ node node-1 albedo: \"tex-0\" -> \"tex-1\"".to_string()]
+        vec![format!(
+            "~ node {from} albedo: {:?} -> {:?}",
+            shared.as_str(),
+            other.as_str()
+        )]
     );
+    Model::from_clm_bytes(&read(&swapped)).unwrap();
 
     let unmapped = dir.join("unmapped.clm");
-    patch::run(&file, "node-1", "albedo", "none", None, Some(&unmapped)).unwrap();
+    patch::run(&file, to.as_str(), "albedo", "none", None, Some(&unmapped)).unwrap();
     assert_eq!(
         diff(&base, &decode(&unmapped)),
-        vec!["~ node node-1 albedo: \"tex-0\" -> (none)".to_string()]
+        vec![format!(
+            "~ node {to} albedo: {:?} -> (none)",
+            shared.as_str()
+        )]
     );
     Model::from_clm_bytes(&read(&unmapped)).unwrap();
+}
+
+/// `composite_masks` with its second part drawing the first's texture and the
+/// texture that left behind dropped: one texture with two parts drawing it, so
+/// an albedo can move off one of them and still leave every texture a user.
+/// Hands back the two parts sharing it, the texture they share, and another
+/// the file still carries to swap to.
+fn shared_albedo() -> (ClmFile, [NodeId; 2], TexId, TexId) {
+    fn drawn(clm: &ClmFile) -> Vec<(NodeId, TexId)> {
+        clm.doc
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.kind {
+                ClmNodeKind::Part(p) => Some((n.id.clone(), p.albedo.clone()?)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let mut clm = decode(&common::fixture("composite_masks"));
+    let all = drawn(&clm);
+    let (first, shared) = all.first().cloned().expect("a part drawing a texture");
+    // A part drawing a texture nothing else draws: repointing it frees that
+    // texture, and dropping it leaves every texture left with a user.
+    let (second, freed) = all
+        .iter()
+        .find(|(id, t)| {
+            id != &first && t != &shared && all.iter().filter(|(_, u)| u == t).count() == 1
+        })
+        .cloned()
+        .expect("a part with a texture of its own");
+    for node in &mut clm.doc.nodes {
+        if node.id == second {
+            if let ClmNodeKind::Part(p) = &mut node.kind {
+                p.albedo = Some(shared.clone());
+            }
+        }
+    }
+    clm.textures.retain(|t| t.id != freed);
+    let other = clm
+        .textures
+        .iter()
+        .map(|t| t.id.clone())
+        .find(|t| t != &shared)
+        .expect("a second texture to swap to");
+    (clm, [first, second], shared, other)
 }
 
 /// A `Name` is capped, and a Model truncates a longer one on load — so writing
@@ -447,6 +527,19 @@ fn kitchen_sink() -> ClmFile {
         translate_children: false,
     });
 
+    // A second part drawing `tex-0`, so unmapping either one still leaves the
+    // texture with a part drawing it — a texture no part draws is a file no
+    // reader takes.
+    clm.doc.nodes.push(ClmNode {
+        id: NodeId::new("node-5").unwrap(),
+        parent: Some(root.clone()),
+        name: "Twin".into(),
+        enabled: true,
+        z_order: 0.0,
+        transform: ClmTransform::default(),
+        lock_to_root: false,
+        kind: clm.doc.nodes[1].kind.clone(),
+    });
     clm.doc.nodes.push(ClmNode {
         id: NodeId::new("node-3").unwrap(),
         parent: Some(root.clone()),

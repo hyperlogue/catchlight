@@ -135,6 +135,9 @@ pub struct App {
     pending_restore: Option<Vec<u8>>,
     /// An Id rename waiting to be confirmed. See [`IdRename`].
     id_rename: Option<IdRename>,
+    /// An edit that would delete a texture, waiting to be confirmed. See
+    /// [`TextureDrop`].
+    texture_drop: Option<TextureDrop>,
     /// Slots a mesh edit in this session emptied. See [`App::commit_block`].
     emptied: Vec<SlotAddr>,
     /// `Model::check()` warnings, re-read when the revision moves.
@@ -158,6 +161,31 @@ struct IdRename {
     to: String,
     /// Why the last confirm was refused, if it was.
     error: Option<String>,
+}
+
+/// An edit the author has asked for that would delete a texture, held until
+/// they confirm it.
+///
+/// Every texture a model carries is drawn by a part, so an edit that takes a
+/// texture's last user takes the texture. Undo puts it back in this session;
+/// nothing puts it back for an addon that named it by Id — the same cost
+/// [`IdRename`] exists to state, so it is stated the same way.
+struct TextureDrop {
+    /// What the edit would delete, in the model's texture order.
+    dropped: Vec<TexId>,
+    edit: DroppingEdit,
+}
+
+/// An edit that can take a texture with it. `Send` covers everything the
+/// server has a command for; an upload does not, because its bytes come from
+/// the file picker rather than off the wire.
+enum DroppingEdit {
+    Send(Box<Command>),
+    Upload {
+        part: NodeId,
+        encoding: TextureEncoding,
+        bytes: Vec<u8>,
+    },
 }
 
 /// What an [`IdRename`] renames, typed so the old Id is never re-parsed.
@@ -262,6 +290,7 @@ impl App {
             last_rev_seen: 0,
             rev_changed_at: 0.0,
             pending_restore: None,
+            texture_drop: None,
             id_rename: None,
             emptied: Vec::new(),
             warnings: None,
@@ -358,16 +387,23 @@ impl App {
                     }
                 }
                 IoEvent::PickedTexture { bytes, is_tga } => {
-                    if let Some(session) = self.session {
-                        let encoding = if is_tga {
-                            TextureEncoding::Tga
-                        } else {
-                            TextureEncoding::Png
-                        };
-                        match self.editor.add_texture_bytes(session, encoding, bytes) {
-                            Ok(_) => self.status = "texture added".into(),
-                            Err(e) => self.status = format!("texture: {e}"),
+                    // A texture goes to the part that draws it, so the picker
+                    // is only reachable with a part selected — but the pick is
+                    // async, and the selection can move while it is open.
+                    match self.selected_part() {
+                        Some(part) => {
+                            let encoding = if is_tga {
+                                TextureEncoding::Tga
+                            } else {
+                                TextureEncoding::Png
+                            };
+                            self.guard_texture_drop(DroppingEdit::Upload {
+                                part,
+                                encoding,
+                                bytes,
+                            });
                         }
+                        None => self.status = "select a part to give the texture to".into(),
                     }
                 }
                 IoEvent::AutosaveFound { bytes } => {
@@ -909,6 +945,124 @@ impl App {
             self.id_rename = None;
         } else if confirm {
             self.confirm_id_rename();
+        }
+    }
+
+    // ---- textures ----
+
+    /// The selected node, if it is a part. A texture goes to the part that
+    /// draws it, so every texture command needs one.
+    fn selected_part(&self) -> Option<NodeId> {
+        let session = self.session?;
+        let node = self.primary()?;
+        self.editor
+            .with_model(session, |m| {
+                matches!(m.node(&node).map(|n| &n.kind), Some(ModelNodeKind::Part(_)))
+            })
+            .ok()?
+            .then_some(node)
+    }
+
+    /// What `edit` would leave with no part drawing it. The model answers;
+    /// this only asks the question the edit is about.
+    fn textures_dropped_by(&self, edit: &DroppingEdit) -> Vec<TexId> {
+        let Some(session) = self.session else {
+            return Vec::new();
+        };
+        self.editor
+            .with_model(session, |m| match edit {
+                DroppingEdit::Send(command) => match command.as_ref() {
+                    Command::NodeDelete { node, .. } => m.textures_dropped_by_deleting(node),
+                    Command::NodeSet { node, patch, .. } => m
+                        .texture_dropped_by_repointing(node, patch.texture.as_ref())
+                        .into_iter()
+                        .collect(),
+                    // An upload displaces whatever the part drew before.
+                    Command::TextureAdd { node, .. } => m
+                        .texture_dropped_by_repointing(node, None)
+                        .into_iter()
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                DroppingEdit::Upload { part, .. } => m
+                    .texture_dropped_by_repointing(part, None)
+                    .into_iter()
+                    .collect(),
+            })
+            .unwrap_or_default()
+    }
+
+    /// Run `edit`, or hold it until the author has seen what it deletes.
+    fn guard_texture_drop(&mut self, edit: DroppingEdit) {
+        let dropped = self.textures_dropped_by(&edit);
+        if dropped.is_empty() {
+            self.run_dropping_edit(edit);
+        } else {
+            self.texture_drop = Some(TextureDrop { dropped, edit });
+        }
+    }
+
+    fn run_dropping_edit(&mut self, edit: DroppingEdit) {
+        let Some(session) = self.session else { return };
+        match edit {
+            DroppingEdit::Send(command) => {
+                self.send(*command);
+            }
+            DroppingEdit::Upload {
+                part,
+                encoding,
+                bytes,
+            } => match self
+                .editor
+                .add_texture_bytes(session, &part, encoding, bytes)
+            {
+                Ok(_) => self.status = "texture added".into(),
+                Err(e) => self.status = format!("texture: {e}"),
+            },
+        }
+    }
+
+    /// The confirmation itself. Says what the edit deletes before it happens,
+    /// because nothing undoes it for an addon author downstream.
+    fn texture_drop_modal(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.texture_drop else {
+            return;
+        };
+        let dropped: Vec<String> = pending.dropped.iter().map(TexId::to_string).collect();
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("texture-drop")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading(if dropped.len() == 1 {
+                "Delete a texture?".to_string()
+            } else {
+                format!("Delete {} textures?", dropped.len())
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Every texture a model carries is drawn by a part. This edit \
+                     leaves nothing drawing these, so they go with it — undo brings \
+                     them back here, but an addon that named one by Id is broken for \
+                     good.",
+                )
+                .weak(),
+            );
+            ui.add_space(6.0);
+            for id in &dropped {
+                ui.label(id.as_str());
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                confirm |= ui.button("Delete and continue").clicked();
+                cancel |= ui.button("Cancel").clicked();
+            });
+        });
+        if cancel {
+            self.texture_drop = None;
+        } else if confirm {
+            if let Some(pending) = self.texture_drop.take() {
+                self.run_dropping_edit(pending.edit);
+            }
         }
     }
 
@@ -1725,6 +1879,7 @@ impl eframe::App for App {
             self.viewport_ui(ui, frame, rev, &snapshot, &seam_view);
         });
         self.id_rename_modal(&ui.ctx().clone());
+        self.texture_drop_modal(&ui.ctx().clone());
 
         let mesh_actions = self
             .mesh_edit
@@ -2782,26 +2937,32 @@ impl App {
             return;
         };
 
+        // An upload goes *to* a part: the model has no texture that nothing
+        // draws, so there is no adding one and finding it a part later.
+        let selected_part = self.selected_part();
         ui.horizontal(|ui| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if ui.button("＋ add…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("image", &["png", "tga"])
-                    .pick_file()
-                {
-                    self.send(Command::TextureAdd {
+            let enabled = selected_part.is_some();
+            let add = ui
+                .add_enabled(enabled, egui::Button::new("＋ add…"))
+                .on_disabled_hover_text("select a part to give the texture to");
+            if add.clicked() {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let (Some(node), Some(path)) = (
+                    selected_part.clone(),
+                    rfd::FileDialog::new()
+                        .add_filter("image", &["png", "tga"])
+                        .pick_file(),
+                ) {
+                    self.guard_texture_drop(DroppingEdit::Send(Box::new(Command::TextureAdd {
                         session,
+                        node,
                         path: path.display().to_string(),
-                    });
+                    })));
                 }
-            }
-            #[cfg(target_arch = "wasm32")]
-            if ui.button("＋ add…").clicked() {
+                #[cfg(target_arch = "wasm32")]
                 crate::io::pick_texture(self.io_queue.clone());
             }
         });
-
-        let selected_part = self.primary();
         egui::ScrollArea::vertical()
             .id_salt("tex-scroll")
             .max_height(180.0)
@@ -2837,14 +2998,16 @@ impl App {
                             .on_hover_text(format!("{tid} — click to assign to selected part"));
                         if resp.clicked() {
                             if let Some(node) = selected_part.clone() {
-                                self.send(Command::NodeSet {
-                                    session,
-                                    node,
-                                    patch: NodePatch {
-                                        texture: Some(tid.clone()),
-                                        ..Default::default()
+                                self.guard_texture_drop(DroppingEdit::Send(Box::new(
+                                    Command::NodeSet {
+                                        session,
+                                        node,
+                                        patch: NodePatch {
+                                            texture: Some(tid.clone()),
+                                            ..Default::default()
+                                        },
                                     },
-                                });
+                                )));
                             }
                         }
                         let mut rename = None;
@@ -3064,7 +3227,7 @@ impl App {
             }
             TreeAction::Duplicate(node) => {
                 if let Reply::Ok {
-                    body: ResponseBody::Node { node: copy },
+                    body: ResponseBody::Node { node: copy, .. },
                     ..
                 } = self.send(Command::NodeDuplicate { session, node })
                 {
@@ -3076,7 +3239,10 @@ impl App {
                 if self.isolated.as_ref() == Some(&node) {
                     self.isolated = None;
                 }
-                self.send(Command::NodeDelete { session, node });
+                self.guard_texture_drop(DroppingEdit::Send(Box::new(Command::NodeDelete {
+                    session,
+                    node,
+                })));
             }
             TreeAction::SetEnabled { node, enabled } => {
                 self.send(Command::NodeSet {
@@ -3117,7 +3283,18 @@ impl App {
             }
             InspectorAction::Commit(patch) => {
                 self.previews.clear();
-                self.commit_patch(primary, patch);
+                // An albedo change is the one patch field that can delete
+                // something; a texture is never recordable, so routing it
+                // around `commit_patch` sends the same NodeSet either way.
+                if patch.texture.is_some() {
+                    self.guard_texture_drop(DroppingEdit::Send(Box::new(Command::NodeSet {
+                        session,
+                        node: primary,
+                        patch,
+                    })));
+                } else {
+                    self.commit_patch(primary, patch);
+                }
             }
             InspectorAction::PhysicsCommit(p) => {
                 self.send(Command::PhysicsSet {

@@ -38,6 +38,17 @@
 //!   a physics target, a weld's ends) are private and only reachable through
 //!   methods that check them, which is what makes [`Model::to_clm_file`]
 //!   total.
+//! - **Every texture has a user, and a part's albedo is the only user kind.**
+//!   There is no adding a texture and finding it a part later:
+//!   [`Model::add_texture`] takes the part it is for and sets its albedo in
+//!   the same edit, so a texture is never in the model unmapped. The rule
+//!   holds on the way out too — [`Model::set_part_albedo`] deletes the
+//!   texture it leaves behind if this part was the last drawing it, and
+//!   [`Model::delete_node`] takes the textures only the removed subtree drew
+//!   — which is why nothing has to sweep for orphans and why the `.clm`
+//!   reader can refuse a file carrying one. It is a *hard* delete: undo
+//!   restores it, but an addon that named it by Id does not, so the two
+//!   `textures_dropped_by_*` queries let an editor say so first.
 //! - **An Id is unique within the model and never changes on its own.** This
 //!   is where the uniqueness [`crate::id`] cannot check is enforced: a
 //!   generated Id is re-drawn until it is free, an author-chosen one is
@@ -1020,6 +1031,11 @@ impl Model {
 
     /// Remove a node and its whole subtree, then drop every mask and binding
     /// that pointed into the removed set so the model stays referentially valid.
+    ///
+    /// A texture the removed parts were the last to draw goes with them; one
+    /// a part outside the subtree still draws stays.
+    /// [`Self::textures_dropped_by_deleting`] answers which is which before
+    /// the edit runs.
     pub fn delete_node(&mut self, id: &NodeId) -> Result<(), ModelError> {
         if self.root() == Some(id) {
             return Err(ModelError::Root("deleted"));
@@ -1045,6 +1061,7 @@ impl Model {
         self.bindings.retain(|b| !removed.contains(&b.key.node));
         self.welds
             .retain(|w| !removed.contains(&w.a.0) && !removed.contains(&w.b.0));
+        self.gc_textures();
         self.bump();
         Ok(())
     }
@@ -1341,6 +1358,12 @@ impl Model {
 
     /// Point a part at a texture, or unmap it (the renderer culls an unmapped
     /// part).
+    ///
+    /// If this part was the last thing drawing the texture it leaves behind,
+    /// that texture is deleted in the same edit — a texture with no user is
+    /// not a thing a Model holds, so nothing has to sweep for one later.
+    /// [`Self::texture_dropped_by_repointing`] answers which one that is
+    /// before the edit runs.
     pub fn set_part_albedo(
         &mut self,
         id: &NodeId,
@@ -1352,11 +1375,12 @@ impl Model {
         {
             return Err(ModelError::UnknownTexture);
         }
-        match self.nodes.get_mut(id).map(|n| &mut n.kind) {
-            Some(ModelNodeKind::Part(p)) => p.albedo = albedo,
+        match self.nodes.get(id).map(|n| &n.kind) {
+            Some(ModelNodeKind::Part(_)) => {}
             Some(_) => return Err(ModelError::NotAPart),
             None => return Err(ModelError::UnknownNode),
         }
+        self.point_albedo(id, albedo);
         self.bump();
         Ok(())
     }
@@ -1799,33 +1823,48 @@ impl Model {
         self.textures.get(id)
     }
 
-    /// Add a texture under a generated Id (`tex-<8 hex>`).
+    /// Add a texture under a generated Id (`tex-<8 hex>`) and point `part` at
+    /// it, in one edit.
+    ///
+    /// A texture is never added on its own: the part comes first and the
+    /// upload goes *to* it. If `part` was the last thing drawing whatever it
+    /// drew before, that texture goes in the same edit — see
+    /// [`Self::set_part_albedo`].
     pub fn add_texture(
         &mut self,
+        part: &NodeId,
         texture: ModelTexture,
         hex: &mut impl HexSource,
     ) -> Result<TexId, ModelError> {
         let id = self.mint(TexId::generate, |m, id| m.textures.contains_key(id), hex)?;
-        self.add_texture_with_id(id.clone(), texture)?;
+        self.add_texture_with_id(id.clone(), part, texture)?;
         Ok(id)
     }
 
-    /// Add a texture under an Id the author chose. Fails if the Id is taken.
+    /// Add a texture under an Id the author chose and point `part` at it.
+    /// Fails if the Id is taken.
     pub fn add_texture_with_id(
         &mut self,
         id: TexId,
+        part: &NodeId,
         texture: ModelTexture,
     ) -> Result<(), ModelError> {
         if self.textures.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
+        match self.nodes.get(part).map(|n| &n.kind) {
+            Some(ModelNodeKind::Part(_)) => {}
+            Some(_) => return Err(ModelError::NotAPart),
+            None => return Err(ModelError::UnknownNode),
+        }
         self.textures.insert(id.clone(), texture);
-        self.texture_order.push(id);
+        self.texture_order.push(id.clone());
+        self.point_albedo(part, Some(id));
         self.bump();
         Ok(())
     }
 
-    /// Remove a texture and unmap any part that referenced it.
+    /// Remove a texture and unmap every part that drew with it.
     pub fn delete_texture(&mut self, id: &TexId) -> Result<(), ModelError> {
         if self.textures.remove(id).is_none() {
             return Err(ModelError::UnknownTexture);
@@ -1840,6 +1879,74 @@ impl Model {
         }
         self.bump();
         Ok(())
+    }
+
+    /// What [`Self::delete_node`] would take with it: the textures only the
+    /// subtree under `id` draws, in the model's texture order.
+    ///
+    /// Deleting the last user deletes the texture, and an addon that named it
+    /// by Id has no way back — so an editor can say what a delete costs
+    /// before it runs.
+    pub fn textures_dropped_by_deleting(&self, id: &NodeId) -> Vec<TexId> {
+        let removed: HashSet<NodeId> = self.subtree(id).into_iter().collect();
+        let kept: HashSet<&TexId> = self
+            .nodes
+            .iter()
+            .filter(|(id, _)| !removed.contains(*id))
+            .filter_map(|(_, n)| albedo_of(n))
+            .collect();
+        let going: HashSet<&TexId> = removed
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .filter_map(albedo_of)
+            .collect();
+        self.texture_order
+            .iter()
+            .filter(|t| going.contains(t) && !kept.contains(t))
+            .cloned()
+            .collect()
+    }
+
+    /// What pointing `part` at `albedo` would take with it: the texture
+    /// `part` draws now, if nothing else draws it. Answers for an upload too
+    /// — [`Self::add_texture`] displaces the old albedo the same way.
+    pub fn texture_dropped_by_repointing(
+        &self,
+        part: &NodeId,
+        albedo: Option<&TexId>,
+    ) -> Option<TexId> {
+        let old = self.nodes.get(part).and_then(albedo_of)?;
+        if Some(old) == albedo {
+            return None;
+        }
+        self.nodes
+            .iter()
+            .all(|(id, n)| id == part || albedo_of(n) != Some(old))
+            .then(|| old.clone())
+    }
+
+    /// Point `part` at `albedo`, dropping whatever texture that leaves with
+    /// no user. Both Ids are the caller's to check, and so is the bump.
+    fn point_albedo(&mut self, part: &NodeId, albedo: Option<TexId>) {
+        let old = match self.nodes.get_mut(part).map(|n| &mut n.kind) {
+            Some(ModelNodeKind::Part(p)) => std::mem::replace(&mut p.albedo, albedo),
+            _ => return,
+        };
+        if let Some(old) = old {
+            if !self.nodes.values().any(|n| albedo_of(n) == Some(&old)) {
+                self.textures.remove(&old);
+                self.texture_order.retain(|t| t != &old);
+            }
+        }
+    }
+
+    /// Drop every texture no part's albedo names any more. The edits that can
+    /// remove a part — and with it the last user of a texture — run this
+    /// before they return.
+    fn gc_textures(&mut self) {
+        let drawn: HashSet<TexId> = self.nodes.values().filter_map(albedo_of).cloned().collect();
+        self.textures.retain(|id, _| drawn.contains(id));
+        self.texture_order.retain(|id| drawn.contains(id));
     }
 
     // ---- physics and welds ----
@@ -2071,11 +2178,8 @@ impl Model {
     /// Every cross-reference a node about to join the model carries has to
     /// name something this model actually has.
     fn check_node_refs(&self, node: &ModelNode) -> Result<(), ModelError> {
-        // A fragment's cross-references are supposed to dangle into a base;
-        // `Model::install` is where they are resolved.
-        if self.is_fragment() {
-            return Ok(());
-        }
+        // Checked in either shape: an addon carries its own textures, so an
+        // albedo is the one cross-reference that never dangles into a base.
         if let ModelNodeKind::Part(p) = &node.kind {
             if p.albedo
                 .as_ref()
@@ -2083,6 +2187,11 @@ impl Model {
             {
                 return Err(ModelError::UnknownTexture);
             }
+        }
+        // A fragment's other cross-references are supposed to dangle into a
+        // base; `Model::install` is where they are resolved.
+        if self.is_fragment() {
+            return Ok(());
         }
         if let ModelNodeKind::SimplePhysics(ph) = &node.kind {
             if ph
@@ -2135,6 +2244,16 @@ impl Model {
 /// reference check and the `.clm` reader all have to agree.
 pub(crate) fn is_mask_source(kind: &ModelNodeKind) -> bool {
     matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::Composite(_))
+}
+
+/// The texture a node draws with, for the one kind that draws with one. A
+/// part's albedo is a texture's only user, so this is the whole of "who uses
+/// this texture".
+pub(crate) fn albedo_of(node: &ModelNode) -> Option<&TexId> {
+    match &node.kind {
+        ModelNodeKind::Part(p) => p.albedo.as_ref(),
+        _ => None,
+    }
 }
 
 /// Vertices come in pairs, uvs match them, and every index names a vertex.
@@ -2251,16 +2370,6 @@ mod tests {
         let mut hex = SeededHex::new(7);
         let mut model = Model::new();
         let root = model.root().unwrap().clone();
-        let tex = model
-            .add_texture(
-                ModelTexture {
-                    encoding: TextureEncoding::Png,
-                    alpha: TextureAlpha::Straight,
-                    data: Arc::new(vec![0x89, b'P', b'N', b'G']),
-                },
-                &mut hex,
-            )
-            .unwrap();
         let param = model
             .add_param(
                 ModelParam {
@@ -2281,11 +2390,27 @@ mod tests {
             composite: NodeId::new("placeholder").unwrap(),
             physics: NodeId::new("placeholder").unwrap(),
             param,
-            tex,
+            tex: TexId::new("placeholder").unwrap(),
             hex,
         };
         fixture.part = fixture.node("part", part_kind());
         fixture.other = fixture.node("other", part_kind());
+        // A texture goes to the part that draws it, so the parts come first.
+        // `other` is the one that draws it; `part` is left unmapped, which is
+        // what most of these tests point somewhere.
+        let drawn_by = fixture.other.clone();
+        fixture.tex = fixture
+            .model
+            .add_texture(
+                &drawn_by,
+                ModelTexture {
+                    encoding: TextureEncoding::Png,
+                    alpha: TextureAlpha::Straight,
+                    data: Arc::new(vec![0x89, b'P', b'N', b'G']),
+                },
+                &mut fixture.hex,
+            )
+            .unwrap();
         fixture.composite =
             fixture.node("composite", ModelNodeKind::Composite(ModelComposite::new()));
         fixture.physics = fixture.node(
@@ -2620,14 +2745,14 @@ mod tests {
                 "add_texture",
                 Box::new(|r| {
                     let t = texture();
-                    r.model.add_texture(t, &mut r.hex).unwrap();
+                    r.model.add_texture(&r.part, t, &mut r.hex).unwrap();
                 }),
             ),
             (
                 "add_texture_with_id",
                 Box::new(|r| {
                     r.model
-                        .add_texture_with_id(TexId::new("chosen").unwrap(), texture())
+                        .add_texture_with_id(TexId::new("chosen").unwrap(), &r.part, texture())
                         .unwrap()
                 }),
             ),
@@ -3116,6 +3241,204 @@ mod tests {
         assert_eq!(r.model.generation(), before);
     }
 
+    // ---- textures ----
+
+    /// A texture is added *to* a part, and the two land in one edit: there is
+    /// no window in which the model holds a texture nobody draws.
+    #[test]
+    fn adding_a_texture_points_a_part_at_it_in_one_edit() {
+        let mut r = fixture();
+        let (part, before) = (r.part.clone(), r.model.generation());
+
+        let tex = r.model.add_texture(&part, texture(), &mut r.hex).unwrap();
+
+        assert_eq!(albedo(&r.model, &part), Some(tex.clone()));
+        assert!(r.model.texture(&tex).is_some());
+        assert!(
+            r.model.generation() > before,
+            "one edit, and it moved the clock"
+        );
+    }
+
+    /// The part has to be there, and has to be a part: an albedo is a
+    /// texture's only user, so nothing else can be given one.
+    #[test]
+    fn a_texture_needs_a_part_to_draw_it() {
+        let mut r = fixture();
+        let (composite, stranger) = (r.composite.clone(), NodeId::new("gone").unwrap());
+        let before = r.model.generation();
+
+        assert!(matches!(
+            r.model.add_texture(&composite, texture(), &mut r.hex),
+            Err(ModelError::NotAPart)
+        ));
+        assert!(matches!(
+            r.model.add_texture(&stranger, texture(), &mut r.hex),
+            Err(ModelError::UnknownNode)
+        ));
+        assert!(matches!(
+            r.model
+                .add_texture_with_id(TexId::new("chosen").unwrap(), &composite, texture()),
+            Err(ModelError::NotAPart)
+        ));
+        assert_eq!(r.model.texture_ids().len(), 1, "nothing landed");
+        assert_eq!(r.model.generation(), before, "and nothing moved the clock");
+    }
+
+    /// Pointing the last part drawing a texture somewhere else deletes it, in
+    /// the same edit — including when "somewhere else" is nowhere, and
+    /// including the upload that displaces it.
+    #[test]
+    fn repointing_the_last_part_drawing_a_texture_deletes_it() {
+        for albedo_after in [None, Some(())] {
+            let mut r = fixture();
+            let (part, other, old) = (r.part.clone(), r.other.clone(), r.tex.clone());
+            // `other` draws `old`; hand it to `part` as well, then take it
+            // back off `other` — two users, so nothing goes.
+            r.model.set_part_albedo(&part, Some(old.clone())).unwrap();
+            r.model.set_part_albedo(&other, None).unwrap();
+            assert!(
+                r.model.texture(&old).is_some(),
+                "a texture a part still draws stays"
+            );
+
+            let next = albedo_after.map(|()| {
+                r.model
+                    .add_texture(&other, texture(), &mut r.hex)
+                    .expect("a second texture")
+            });
+            assert_eq!(
+                r.model.texture_dropped_by_repointing(&part, next.as_ref()),
+                Some(old.clone()),
+                "the query and the edit have to agree"
+            );
+            let before = r.model.generation();
+            r.model.set_part_albedo(&part, next.clone()).unwrap();
+
+            assert!(r.model.texture(&old).is_none(), "the last user let go");
+            assert!(
+                !r.model.texture_ids().contains(&old),
+                "and the order with it"
+            );
+            assert_eq!(albedo(&r.model, &part), next);
+            assert!(r.model.generation() > before, "one edit, one bump");
+        }
+    }
+
+    /// An upload displaces what the part drew, and takes it with the same
+    /// edit when nothing else drew it.
+    #[test]
+    fn an_upload_takes_the_texture_it_displaces() {
+        let mut r = fixture();
+        let (other, old) = (r.other.clone(), r.tex.clone());
+
+        assert_eq!(
+            r.model.texture_dropped_by_repointing(&other, None),
+            Some(old.clone())
+        );
+        let new = r.model.add_texture(&other, texture(), &mut r.hex).unwrap();
+
+        assert_eq!(r.model.texture_ids(), std::slice::from_ref(&new));
+        assert_eq!(albedo(&r.model, &other), Some(new));
+    }
+
+    /// Undo is a snapshot of the whole model, so the cascade is undone with
+    /// the edit that caused it — a restored model carries the texture again.
+    #[test]
+    fn a_snapshot_taken_before_the_cascade_still_has_the_texture() {
+        let mut r = fixture();
+        let (other, old) = (r.other.clone(), r.tex.clone());
+        let snapshot = r.model.clone();
+
+        r.model.set_part_albedo(&other, None).unwrap();
+        assert!(r.model.texture(&old).is_none());
+
+        assert!(snapshot.texture(&old).is_some());
+        assert_eq!(snapshot.texture_ids(), std::slice::from_ref(&old));
+    }
+
+    /// Deleting a subtree takes the textures only it drew. One a part outside
+    /// the subtree still draws stays — the rule is "no user", not "the owner
+    /// left".
+    #[test]
+    fn deleting_a_subtree_takes_only_the_textures_nothing_else_draws() {
+        let mut r = fixture();
+        let (part, other) = (r.part.clone(), r.other.clone());
+        let shared = r.tex.clone();
+        // `other` draws `shared` and stays behind. Under `part`: a child
+        // drawing `shared` too, and one with a texture of its own.
+        let sharer = r
+            .model
+            .add_node(&part, ModelNode::new("sharer", part_kind()), &mut r.hex)
+            .unwrap();
+        r.model
+            .set_part_albedo(&sharer, Some(shared.clone()))
+            .unwrap();
+        let owner = r
+            .model
+            .add_node(&part, ModelNode::new("owner", part_kind()), &mut r.hex)
+            .unwrap();
+        let exclusive = r.model.add_texture(&owner, texture(), &mut r.hex).unwrap();
+
+        assert_eq!(
+            r.model.textures_dropped_by_deleting(&part),
+            vec![exclusive.clone()],
+            "the query and the edit have to agree"
+        );
+        r.model.delete_node(&part).unwrap();
+
+        assert!(
+            r.model.texture(&exclusive).is_none(),
+            "nothing draws it now"
+        );
+        assert!(
+            r.model.texture(&shared).is_some(),
+            "a part outside the subtree still draws it"
+        );
+        assert_eq!(r.model.texture_ids(), std::slice::from_ref(&shared));
+        assert_eq!(albedo(&r.model, &other), Some(shared));
+    }
+
+    /// Every edit that can leave a texture with no user is one of these, and
+    /// each of them cleans up after itself — which is what lets the `.clm`
+    /// reader refuse a file carrying an unused texture.
+    #[test]
+    fn no_edit_leaves_a_texture_with_no_part_drawing_it() {
+        #[allow(clippy::type_complexity)]
+        let edits: Vec<(&str, Box<dyn Fn(&mut Fixture)>)> = vec![
+            (
+                "set_part_albedo(None)",
+                Box::new(|r| r.model.set_part_albedo(&r.other, None).unwrap()),
+            ),
+            (
+                "add_texture over the old one",
+                Box::new(|r| {
+                    let t = texture();
+                    r.model.add_texture(&r.other, t, &mut r.hex).unwrap();
+                }),
+            ),
+            (
+                "delete_node",
+                Box::new(|r| r.model.delete_node(&r.other).unwrap()),
+            ),
+            (
+                "delete_texture",
+                Box::new(|r| r.model.delete_texture(&r.tex).unwrap()),
+            ),
+        ];
+        for (name, edit) in edits {
+            let mut r = fixture();
+            edit(&mut r);
+            let drawn: HashSet<&TexId> = r.model.nodes.values().filter_map(albedo_of).collect();
+            for id in r.model.texture_ids() {
+                assert!(
+                    drawn.contains(id),
+                    "{name} left {id} with no part drawing it"
+                );
+            }
+        }
+    }
+
     /// An Id is what an addon reaches into a model by, so a rename has to be a
     /// whole-model rewrite or it leaves a dangling reference behind.
     #[test]
@@ -3475,7 +3798,7 @@ mod tests {
     fn cross_references_are_checked_before_they_land() {
         let mut r = fixture();
         // A texture, param and node this model no longer has.
-        let orphan_tex = r.model.add_texture(texture(), &mut r.hex).unwrap();
+        let orphan_tex = r.model.add_texture(&r.part, texture(), &mut r.hex).unwrap();
         r.model.delete_texture(&orphan_tex).unwrap();
         let orphan_param = r.model.add_param(param("gone"), &mut r.hex).unwrap();
         r.model.delete_param(&orphan_param).unwrap();
