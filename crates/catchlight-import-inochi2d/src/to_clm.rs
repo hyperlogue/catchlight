@@ -40,7 +40,7 @@ use crate::error::ImportError;
 use crate::inx::InxModel;
 use crate::reflect::{
     axes_of, blend, convert_binding_values, convert_mesh, convert_transform, flatten, interp,
-    mask_mode, reflect_z, vec2_arr, vec3_arr,
+    mask_mode, reflect_z, vec2_arr, vec3_arr, NodeRef,
 };
 use crate::schema::{
     source_binding_is_color, SchemaBinding, SchemaMask, SchemaNode, SchemaParam,
@@ -291,12 +291,16 @@ fn convert_node(
     parent: Option<u32>,
     refs: &Refs<'_>,
 ) -> Result<ClmNode, ImportError> {
+    let id = refs
+        .node_ids
+        .get(index)
+        .ok_or(ImportError::MissingField("node"))?;
+    let named = NodeRef {
+        id,
+        name: s.name.as_deref().unwrap_or_default(),
+    };
     Ok(ClmNode {
-        id: refs
-            .node_ids
-            .get(index)
-            .ok_or(ImportError::MissingField("node"))?
-            .clone(),
+        id: id.clone(),
         parent: match parent {
             Some(p) => Some(
                 refs.node_ids
@@ -311,15 +315,19 @@ fn convert_node(
         z_order: reflect_z(s.zsort.unwrap_or(0.0)),
         transform: convert_transform(s.transform.as_ref()),
         lock_to_root: s.lock_to_root.unwrap_or(false),
-        kind: convert_node_kind(s, refs)?,
+        kind: convert_node_kind(s, named, refs)?,
     })
 }
 
-fn convert_node_kind(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmNodeKind, ImportError> {
+fn convert_node_kind(
+    s: &SchemaNode,
+    node: NodeRef<'_>,
+    refs: &Refs<'_>,
+) -> Result<ClmNodeKind, ImportError> {
     Ok(match s.ty.as_deref().unwrap_or("") {
-        "Part" => ClmNodeKind::Part(convert_part(s, refs)?),
+        "Part" => ClmNodeKind::Part(convert_part(s, node, refs)?),
         "Composite" => ClmNodeKind::Composite(convert_composite(s, refs)?),
-        "MeshGroup" => ClmNodeKind::MeshGroup(convert_mesh_group(s)),
+        "MeshGroup" => ClmNodeKind::MeshGroup(convert_mesh_group(s, node)?),
         "SimplePhysics" => ClmNodeKind::SimplePhysics(convert_simple_physics(s, refs)),
         // Node, Camera, and any unmodeled type all become a container Group.
         _ => ClmNodeKind::Group,
@@ -340,7 +348,11 @@ fn convert_masks(masks: &[SchemaMask], refs: &Refs<'_>) -> Vec<ClmMask> {
         .collect()
 }
 
-fn convert_part(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmPart, ImportError> {
+fn convert_part(
+    s: &SchemaNode,
+    node: NodeRef<'_>,
+    refs: &Refs<'_>,
+) -> Result<ClmPart, ImportError> {
     // A part with no `textures` array takes slot 0, which is what the source
     // runtime does; an index too large to be one is no texture at all.
     let albedo = match s.textures.first() {
@@ -351,7 +363,7 @@ fn convert_part(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmPart, ImportError>
         },
     };
     Ok(ClmPart {
-        mesh: convert_mesh(s.mesh.as_ref()),
+        mesh: convert_mesh(s.mesh.as_ref(), node, true)?,
         albedo,
         opacity: s.opacity.unwrap_or(1.0),
         blend_mode: blend(s.blend_mode.as_deref())?,
@@ -376,13 +388,15 @@ fn convert_composite(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmComposite, Im
     })
 }
 
-fn convert_mesh_group(s: &SchemaNode) -> ClmMeshGroup {
+fn convert_mesh_group(s: &SchemaNode, node: NodeRef<'_>) -> Result<ClmMeshGroup, ImportError> {
     s.log_dropped_mesh_group_color();
-    ClmMeshGroup {
-        mesh: convert_mesh(s.mesh.as_ref()),
+    Ok(ClmMeshGroup {
+        // A mesh group is never drawn, so it samples nothing through its UVs
+        // and inochi2d authors none for it.
+        mesh: convert_mesh(s.mesh.as_ref(), node, false)?,
         dynamic: s.dynamic_deformation.unwrap_or(false),
         translate_children: s.translate_children.unwrap_or(false),
-    }
+    })
 }
 
 fn convert_simple_physics(s: &SchemaNode, refs: &Refs<'_>) -> ClmSimplePhysics {

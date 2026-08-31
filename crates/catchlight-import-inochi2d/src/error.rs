@@ -52,6 +52,17 @@ pub enum ImportError {
 
     #[error("texture decode failed: {0}")]
     TextureDecode(String),
+
+    /// A mesh inochi2d could not have drawn either: an index naming a vertex
+    /// the mesh does not have, or a UV array that does not pair with the
+    /// vertices. There is no rendering to preserve and nothing to repair
+    /// without inventing geometry, so the import stops and names the node.
+    #[error("node {id} ({name:?}) carries a mesh inochi2d could not draw: {detail}")]
+    MalformedMesh {
+        id: String,
+        name: String,
+        detail: String,
+    },
 }
 
 #[cfg(test)]

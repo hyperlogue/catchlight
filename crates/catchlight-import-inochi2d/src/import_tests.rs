@@ -2,9 +2,12 @@
 //!
 //! Every case here is a shape a real export has produced or could: a mask
 //! naming a node that is not there, two nodes sharing a uuid, a field of the
-//! wrong JSON type, a node type catchlight does not model. The reader's
-//! contract is that none of them is an error — the node loads with the
-//! offending part dropped or defaulted — and these pin which half that is.
+//! wrong JSON type, a node type catchlight does not model. Sloppiness is not an
+//! error — the node loads with the offending part dropped or defaulted — and
+//! these pin which half each case takes.
+//!
+//! The rest of the file is the repair-or-refuse rule from the crate doc, one
+//! test per behaviour.
 
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;

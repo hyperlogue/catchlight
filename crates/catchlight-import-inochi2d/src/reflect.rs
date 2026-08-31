@@ -12,6 +12,12 @@
 //! array fills its missing components one at a time, a field of the wrong
 //! JSON type falls back to its default, and the node walk carries its own
 //! stack because `.inx` is untrusted and unbounded in depth.
+//!
+//! Tolerance stops where the crate's repair rule does (see the crate doc):
+//! repair only what provably cannot change how inochi2d renders the rig.
+//! [`convert_mesh`] **refuses** a mesh whose indices or UVs do not fit its
+//! vertices: the source's own drawing of one is undefined, so there is no
+//! behaviour a repair could preserve.
 
 use std::collections::HashMap;
 
@@ -21,9 +27,19 @@ use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmTransform,
 };
 use catchlight_core::interpolate::InterpolateMode;
+use catchlight_core::NodeId;
 
 use crate::error::ImportError;
 use crate::schema::{SchemaMesh, SchemaNode, SchemaParam, SchemaTransform};
+
+/// What a warning or an error calls one node: the Id the import minted for it
+/// and the name the source authored. `.inx` names nothing uniquely, so a
+/// message that carried only the name could point at four nodes at once.
+#[derive(Clone, Copy)]
+pub(crate) struct NodeRef<'a> {
+    pub(crate) id: &'a NodeId,
+    pub(crate) name: &'a str,
+}
 
 /// DFS pre-order flatten: append this node (parsed shallow) with its parent
 /// index, map its uuid → index, then descend into children. Pre-order keeps
@@ -109,10 +125,43 @@ fn reflect_transform_y(t: &mut ClmTransform) {
     t.rotation[2] = -t.rotation[2];
 }
 
-pub(crate) fn convert_mesh(m: Option<&SchemaMesh>) -> ClmMesh {
+/// The mesh, checked against itself. An index past the vertex array or a UV
+/// array that does not pair with the vertices is a mesh inochi2d cannot draw
+/// either: its rendering is undefined, so there is no behaviour a repair could
+/// preserve and the import refuses the file naming the node.
+///
+/// `textured` says whether the UVs are read. A part samples its albedo through
+/// them, so one that does not pair with its vertices is malformed; a mesh group
+/// is never drawn and inochi2d authors none for it, so its UVs are not checked.
+///
+/// A trailing lone coordinate is not a vertex — `verts` and `uvs` are flat
+/// `[x, y, …]` — so it is dropped rather than left to make the arrays disagree
+/// with the vertex count everything downstream derives from them.
+pub(crate) fn convert_mesh(
+    m: Option<&SchemaMesh>,
+    node: NodeRef<'_>,
+    textured: bool,
+) -> Result<ClmMesh, ImportError> {
     let Some(m) = m else {
-        return ClmMesh::default();
+        return Ok(ClmMesh::default());
     };
+    let malformed = |detail: String| ImportError::MalformedMesh {
+        id: node.id.to_string(),
+        name: node.name.to_string(),
+        detail,
+    };
+    let vertices = m.verts.len() / 2;
+    if textured && m.uvs.len() / 2 != vertices {
+        return Err(malformed(format!(
+            "{vertices} vertices against {} uvs",
+            m.uvs.len() / 2
+        )));
+    }
+    if let Some(past) = m.indices.iter().copied().find(|&i| i as usize >= vertices) {
+        return Err(malformed(format!(
+            "index {past} names a vertex past the mesh's {vertices}"
+        )));
+    }
     let max = m.indices.iter().copied().max().unwrap_or(0);
     let indices = if max <= u16::MAX as u32 {
         ClmIndices::U16(m.indices.iter().map(|&i| i as u16).collect())
@@ -120,13 +169,13 @@ pub(crate) fn convert_mesh(m: Option<&SchemaMesh>) -> ClmMesh {
         ClmIndices::U32(m.indices.clone())
     };
     let mut mesh = ClmMesh {
-        verts: m.verts.clone(),
-        uvs: m.uvs.clone(),
+        verts: m.verts[..vertices * 2].to_vec(),
+        uvs: m.uvs[..(m.uvs.len() / 2) * 2].to_vec(),
         indices,
         origin: vec2_arr(&m.origin, [0.0, 0.0]),
     };
     reflect_mesh_y(&mut mesh);
-    mesh
+    Ok(mesh)
 }
 
 /// Reflect mesh geometry into catchlight's Y-up frame (see [`reflect_transform_y`]).
