@@ -18,10 +18,15 @@
 //! - **Reading trusts nothing.** Every Id in the file is resolved against what
 //!   the file itself declares, and a failure names the field and the Id that
 //!   dangled ([`ClmLoadError`]). What the reader accepts is exactly what the
-//!   Model's own invariants allow — including the two a Model built from a
-//!   file used to escape, a colour binding on a mesh group and a deform cell
-//!   sized to something other than the node's mesh — so a loaded Model needs
-//!   no repair pass.
+//!   Model's own invariants allow, so a loaded Model needs no repair pass.
+//!   Beyond the Ids, that is six checks, each the file-shaped half of a rule
+//!   an edit already obeys: a param's range has to be finite and increasing
+//!   ([`crate::param_range_is_valid`]); a mask source has to be a kind the
+//!   renderer draws ([`Model::mask_add`]); a deform binding has to sit on a
+//!   node that carries a mesh, and a colour binding may not sit on a mesh
+//!   group ([`Model::add_binding`]); a mesh has to be `[x, y]` pairs with uvs
+//!   to match and every index in range ([`Model::set_node_mesh`]); and a
+//!   deform cell has to be sized to its node's mesh.
 //! - **A file is read as one shape or the other, never guessed.**
 //!   [`Model::from_clm_bytes`] reads a *complete model*: one node with no
 //!   parent, and nothing dangling. [`Model::from_clm_bytes_fragment`] reads an
@@ -107,6 +112,10 @@ pub enum ClmLoadError {
     )]
     ColorOnMeshGroup { node: String, target: &'static str },
     #[error(
+        "the deform binding on node {node:?} targets a {kind}, which carries no mesh to deform"
+    )]
+    DeformOnUnmeshed { node: String, kind: &'static str },
+    #[error(
         "the deform binding on node {node:?} holds {got} offsets at cell {cell:?}, but the node's \
          mesh takes {expected}"
     )]
@@ -118,6 +127,21 @@ pub enum ClmLoadError {
     },
     #[error("a weld names seam {seam:?} on node {node:?}, which carries no such seam")]
     UnknownSeam { node: String, seam: String },
+    #[error("param {param:?} has a range that is not finite and increasing")]
+    ParamRange { param: String },
+    // The field is `mask_source` rather than `source` because thiserror reads
+    // a field of that name as the error's cause.
+    #[error(
+        "node {node:?} names mask source {mask_source:?}, which is a {kind}; only a part or a \
+         composite is drawn, and only what is drawn can be a mask"
+    )]
+    MaskSourceKind {
+        node: String,
+        mask_source: String,
+        kind: &'static str,
+    },
+    #[error("the mesh on node {node:?} is malformed: {reason}")]
+    MalformedMesh { node: String, reason: &'static str },
     #[error(
         "the weld between {a:?} and {b:?} does not weight each of the two seams' slots exactly once"
     )]
@@ -328,6 +352,12 @@ impl Model {
         let mut params = HashMap::with_capacity(doc.params.len());
         let mut param_order = Vec::with_capacity(doc.params.len());
         for p in &doc.params {
+            if !param_range_is_valid(p.min, p.max) {
+                return Err(ClmLoadError::ParamRange {
+                    param: p.id.to_string(),
+                }
+                .into());
+            }
             if params
                 .insert(
                     p.id.clone(),
@@ -434,6 +464,27 @@ impl Model {
             return Err(ClmLoadError::NoRoot.into());
         }
 
+        // Every mask source the file itself carries has to be a kind the
+        // renderer draws — the reader's half of `Model::mask_add`. Walked in
+        // document order so a file with two bad masks always names the first.
+        // A source the file does *not* carry is a fragment's requirement, and
+        // `Model::install` kind-checks it against the base.
+        for cn in &doc.nodes {
+            for mask in clm_masks_of(&cn.kind) {
+                let Some(source) = nodes.get(&mask.source) else {
+                    continue;
+                };
+                if !is_mask_source(&source.kind) {
+                    return Err(ClmLoadError::MaskSourceKind {
+                        node: cn.id.to_string(),
+                        mask_source: mask.source.to_string(),
+                        kind: source.kind.name(),
+                    }
+                    .into());
+                }
+            }
+        }
+
         // Children in document order, which is the model's sibling order.
         for cn in &doc.nodes {
             if let Some(parent) = &cn.parent {
@@ -472,10 +523,18 @@ impl Model {
                     .into());
                 }
             }
-            let vertices = nodes
-                .get(&b.node)
-                .and_then(ModelNode::mesh)
-                .map_or(0, |m| m.verts.len());
+            let mesh = nodes.get(&b.node).and_then(ModelNode::mesh);
+            // `Model::add_binding` refuses a deform on a node with no mesh to
+            // deform; without this the file slipped past `check_deform_cells`,
+            // whose expected length for such a node is zero.
+            if mesh.is_none() && matches!(target, BindingTarget::Deform) {
+                return Err(ClmLoadError::DeformOnUnmeshed {
+                    node: b.node.to_string(),
+                    kind: kind.map_or("node", ModelNodeKind::name),
+                }
+                .into());
+            }
+            let vertices = mesh.map_or(0, |m| m.verts.len());
             check_deform_cells(&b.node, vertices, &b.values)?;
 
             let key_params = match b.params.as_slice() {
@@ -588,6 +647,29 @@ fn check_deform_cells(
     Ok(())
 }
 
+/// The masks a `.clm` node carries, or none for a kind that cannot hold any.
+fn clm_masks_of(kind: &ClmNodeKind) -> &[ClmMask] {
+    match kind {
+        ClmNodeKind::Part(p) => &p.masks,
+        ClmNodeKind::Composite(c) => &c.masks,
+        _ => &[],
+    }
+}
+
+/// A mesh off the wire, held to what [`Model::set_node_mesh`] holds an
+/// authored one to — the reader is the only other way a mesh gets into a
+/// Model.
+fn check_mesh(id: &NodeId, mesh: &ClmMesh) -> Result<(), ModelError> {
+    match super::validate_mesh(mesh) {
+        Err(ModelError::MalformedMesh(reason)) => Err(ClmLoadError::MalformedMesh {
+            node: id.to_string(),
+            reason,
+        }
+        .into()),
+        other => other,
+    }
+}
+
 fn duplicate(kind: &'static str, id: &impl std::fmt::Display) -> ModelError {
     ClmLoadError::DuplicateId {
         kind,
@@ -675,6 +757,7 @@ fn model_kind(
     Ok(match kind {
         ClmNodeKind::Group => ModelNodeKind::Group,
         ClmNodeKind::Part(p) => {
+            check_mesh(id, &p.mesh)?;
             let mut part = ModelPart::new(p.mesh.clone());
             if let Some(albedo) = &p.albedo {
                 if !textures.contains_key(albedo) && !shape.allows_dangling() {
@@ -707,6 +790,7 @@ fn model_kind(
             ModelNodeKind::Composite(composite)
         }
         ClmNodeKind::MeshGroup(mg) => {
+            check_mesh(id, &mg.mesh)?;
             let mut group = ModelMeshGroup::new(mg.mesh.clone());
             group.dynamic = mg.dynamic;
             group.translate_children = mg.translate_children;
@@ -1359,6 +1443,156 @@ mod tests {
                 ..
             } if id == "ghost"
         ));
+    }
+
+    /// `Model::set_param_range` refuses a collapsed, inverted or non-finite
+    /// range because the normalized key positions have nothing to map onto;
+    /// a file carrying one has to be refused for the same reason.
+    #[test]
+    fn a_param_range_the_model_would_refuse_is_a_structured_error() {
+        for (min, max) in [
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (f32::NAN, 1.0),
+            (0.0, f32::INFINITY),
+        ] {
+            let mut file = sample().to_clm_file().unwrap();
+            let id = file.doc.params[0].id.clone();
+            file.doc.params[0].min = min;
+            file.doc.params[0].max = max;
+
+            assert_eq!(
+                load_err(&file),
+                ClmLoadError::ParamRange {
+                    param: id.to_string(),
+                },
+                "range {min}..{max}",
+            );
+        }
+    }
+
+    /// A mask is the source's own drawing, so the source has to be one of the
+    /// two kinds the renderer draws. `Model::mask_add` refuses the rest.
+    #[test]
+    fn a_mask_source_that_is_never_drawn_is_a_structured_error() {
+        let mut file = sample().to_clm_file().unwrap();
+        let bend = node_named(&file, "Bend").id.clone();
+        let face = node_named(&file, "Face").id.clone();
+        for node in &mut file.doc.nodes {
+            if let ClmNodeKind::Composite(c) = &mut node.kind {
+                c.masks[0].source = bend.clone();
+            }
+        }
+
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::MaskSourceKind {
+                node: face.to_string(),
+                mask_source: bend.to_string(),
+                kind: "mesh_group",
+            }
+        );
+    }
+
+    /// A composite is drawn, so it is a source like a part is — which is what
+    /// `tests/models/composite_masks.clm` has always been a baseline of.
+    #[test]
+    fn a_composite_mask_source_loads() {
+        let mut file = sample().to_clm_file().unwrap();
+        let face = node_named(&file, "Face").id.clone();
+        part_named(&mut file, "Upper").masks.push(ClmMask {
+            source: face.clone(),
+            mode: MaskMode::Mask,
+        });
+
+        let m = Model::from_clm_file(&file).unwrap();
+
+        let upper = named(&m, "Upper");
+        assert_eq!(part(&m, &upper).masks()[0].source(), &face);
+    }
+
+    /// `Model::add_binding` refuses a deform on a node with no mesh to
+    /// deform. The reader used to take one: `check_deform_cells` asks for
+    /// cells of length zero, and a file that carries none agrees.
+    #[test]
+    fn a_deform_binding_on_a_node_with_no_mesh_is_a_structured_error() {
+        for (name, kind) in [("Face", "composite"), ("Sway", "physics")] {
+            let mut file = sample().to_clm_file().unwrap();
+            let node = node_named(&file, name).id.clone();
+            file.doc.bindings[0].node = node.clone();
+            file.doc.bindings[0].values = ClmBindingValues::Deform(ClmCells::default());
+
+            assert_eq!(
+                load_err(&file),
+                ClmLoadError::DeformOnUnmeshed {
+                    node: node.to_string(),
+                    kind,
+                }
+            );
+        }
+    }
+
+    /// The mesh checks `Model::set_node_mesh` runs, run on the way in as
+    /// well: the reader is the only other door a mesh comes through.
+    #[test]
+    fn a_malformed_mesh_is_a_structured_error() {
+        let cases: [(BreakMesh, &str); 3] = [
+            (
+                |mesh| mesh.verts.push(0.5),
+                "vertex array is not [x, y] pairs",
+            ),
+            (
+                |mesh| mesh.uvs.truncate(6),
+                "uv count does not match vertices",
+            ),
+            (
+                |mesh| mesh.indices = ClmIndices::U16(vec![0, 1, 9]),
+                "index names a missing vertex",
+            ),
+        ];
+
+        // Both meshed kinds, so neither door is left open.
+        for (name, take) in [("Upper", part_mesh as MeshOf), ("Bend", group_mesh)] {
+            for (break_it, reason) in cases {
+                let mut file = sample().to_clm_file().unwrap();
+                let node = node_named(&file, name).id.clone();
+                let target = file
+                    .doc
+                    .nodes
+                    .iter_mut()
+                    .find(|n| n.name == name)
+                    .expect("the node");
+                break_it(take(target));
+
+                assert_eq!(
+                    load_err(&file),
+                    ClmLoadError::MalformedMesh {
+                        node: node.to_string(),
+                        reason,
+                    },
+                    "{name}: {reason}",
+                );
+            }
+        }
+    }
+
+    /// One way to break a mesh, and the way to reach the mesh on one node
+    /// kind: `a_malformed_mesh_is_a_structured_error` crosses the two.
+    type BreakMesh = fn(&mut ClmMesh);
+    type MeshOf = fn(&mut ClmNode) -> &mut ClmMesh;
+
+    fn part_mesh(node: &mut ClmNode) -> &mut ClmMesh {
+        match &mut node.kind {
+            ClmNodeKind::Part(p) => &mut p.mesh,
+            other => panic!("not a part: {other:?}"),
+        }
+    }
+
+    fn group_mesh(node: &mut ClmNode) -> &mut ClmMesh {
+        match &mut node.kind {
+            ClmNodeKind::MeshGroup(g) => &mut g.mesh,
+            other => panic!("not a mesh group: {other:?}"),
+        }
     }
 
     #[test]
