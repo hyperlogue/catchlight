@@ -35,18 +35,26 @@
 //! actually draws — Ids are minted from the source's texture order, so the
 //! survivors keep theirs and dropping `tex-2` never renumbers `tex-3`.
 //!
+//! **An animation lane names a param and an axis**, so `convert_animations`
+//! is the second place the 2-D split above is undone: the lane's `uuid`
+//! resolves to a slot and its `target` picks which of the slot's params it
+//! drives. A lane whose param the rig does not carry, or whose axis its param
+//! does not have, is dropped like any other dangling reference; an
+//! interpolation `.clm` has no mode for is not a dangling reference and costs
+//! the lane nothing but a warning.
+//!
 //! Only what catchlight models is kept; the rest (meta, groups, automation,
-//! animations, cameras, emissive/bump slots, emissionStrength) is dropped.
-//! Textures are carried verbatim — a render cache is what decodes and crops
-//! them.
+//! cameras, emissive/bump slots, emissionStrength) is dropped. Textures are
+//! carried verbatim — a render cache is what decodes and crops them.
 
 use std::collections::{HashMap, HashSet};
 
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
-    ClmNodeKind, ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics, ClmTexture, TextureAlpha,
-    TextureEncoding,
+    ClmAnimation, ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmKeyframe, ClmLane, ClmMask,
+    ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics,
+    ClmTexture, TextureAlpha, TextureEncoding,
 };
+use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::texture::TextureFormat;
 use catchlight_core::{Model, NodeId, ParamId, TexId};
@@ -58,8 +66,8 @@ use crate::reflect::{
     mask_mode, reflect_z, vec2_arr, vec3_arr, NodeRef,
 };
 use crate::schema::{
-    source_binding_is_color, SchemaBinding, SchemaMask, SchemaNode, SchemaParam,
-    SchemaPuppetPhysics,
+    source_binding_is_color, SchemaAnimation, SchemaAnimationLane, SchemaBinding, SchemaMask,
+    SchemaNode, SchemaParam, SchemaPuppetPhysics,
 };
 
 /// Import a parsed `.inx` into a [`Model`].
@@ -92,18 +100,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
             gravity: p.gravity.unwrap_or(9.8),
         })
         .unwrap_or_default();
-
-    // An inochi2d clip has no `.clm` counterpart yet, so it is dropped. Say
-    // so rather than losing it in silence: `ClmAnimation` exists on the wire,
-    // and carrying these across is a decision waiting on a model to test it
-    // against.
-    if obj.get("animations").is_some_and(|a| match a {
-        serde_json::Value::Object(map) => !map.is_empty(),
-        serde_json::Value::Array(items) => !items.is_empty(),
-        _ => false,
-    }) {
-        tracing::warn!("dropping this model's animations: the import does not carry them yet");
-    }
 
     // Flatten the node tree, recording each node's parent position and a
     // uuid → position map for resolving cross-references.
@@ -230,10 +226,9 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
             nodes,
             params,
             bindings,
-            // An `.inx` has no seams, so it has no welds; inochi2d has no
-            // animation the runtime reads either (see the crate doc).
+            // An `.inx` has no seams, so it has no welds.
             welds: Vec::new(),
-            animations: Vec::new(),
+            animations: convert_animations(obj.get("animations"), &refs),
         },
         textures,
     })
@@ -252,6 +247,25 @@ impl Slot {
         match self {
             Slot::One(id) => vec![id.clone()],
             Slot::Pair(x, y) => vec![x.clone(), y.clone()],
+        }
+    }
+
+    /// The param an animation lane's `target` names: 0 is the x axis and
+    /// anything else the y. A scalar source param has no y, so a lane aimed at
+    /// one axis it does not have resolves to nothing.
+    fn axis(&self, target: u8) -> Option<&ParamId> {
+        match (self, target) {
+            (Slot::One(id), 0) => Some(id),
+            (Slot::One(_), _) => None,
+            (Slot::Pair(x, _), 0) => Some(x),
+            (Slot::Pair(_, y), _) => Some(y),
+        }
+    }
+
+    /// The Id a message names this slot by — the x of a pair.
+    fn head(&self) -> &ParamId {
+        match self {
+            Slot::One(id) | Slot::Pair(id, _) => id,
         }
     }
 
@@ -597,6 +611,125 @@ fn convert_binding(
         interpolate_mode: interp(b.interpolate_mode.as_deref()),
         values,
     })
+}
+
+/// The rig's clips, as `.clm` animations.
+///
+/// inochi2d 0.8.6 writes `animations` as an object keyed by clip name; older
+/// and nijigenerate variants write an array carrying a `name` per entry. Both
+/// read; an unnamed array entry is called `anim-<i>`, and anything that is
+/// neither shape carries no clip.
+fn convert_animations(json: Option<&serde_json::Value>, refs: &Refs<'_>) -> Vec<ClmAnimation> {
+    let entries: Vec<(String, &serde_json::Value)> = match json {
+        Some(serde_json::Value::Object(map)) => map.iter().map(|(k, v)| (k.clone(), v)).collect(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let name = v
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("anim-{i}"));
+                (name, v)
+            })
+            .collect(),
+        _ => return Vec::new(),
+    };
+    entries
+        .into_iter()
+        .filter_map(|(name, v)| {
+            let anim: SchemaAnimation = serde_json::from_value(v.clone()).ok()?;
+            Some(convert_animation(name, &anim, refs))
+        })
+        .collect()
+}
+
+fn convert_animation(name: String, anim: &SchemaAnimation, refs: &Refs<'_>) -> ClmAnimation {
+    let lanes = anim
+        .lanes
+        .iter()
+        .filter_map(|lane| convert_animation_lane(&name, lane, refs))
+        .collect();
+    ClmAnimation {
+        // inochi2d's own defaults, which `.clm` shares: 60 fps, no frames,
+        // and -1 for a lead-in / lead-out the author never set.
+        timestep: anim.timestep.unwrap_or(1.0 / 60.0),
+        length: anim.length.unwrap_or(0),
+        lead_in: anim.lead_in.unwrap_or(-1),
+        lead_out: anim.lead_out.unwrap_or(-1),
+        name,
+        lanes,
+    }
+}
+
+/// One lane, or nothing when the param it drives is not one this import can
+/// name. Both misses are the crate's dangling-reference rule: a lane whose
+/// `uuid` no param claims, and a lane on the y axis of a source param that
+/// only has an x — the second is what a 2-D lane over a scalar param is.
+fn convert_animation_lane(
+    animation: &str,
+    lane: &SchemaAnimationLane,
+    refs: &Refs<'_>,
+) -> Option<ClmLane> {
+    let slot = match lane.uuid.and_then(|uuid| refs.slot_of_uuid(uuid)) {
+        Some(slot) => slot,
+        None => {
+            tracing::warn!(
+                "animation {animation:?}: dropping a lane whose param {:?} is not in this rig",
+                lane.uuid
+            );
+            return None;
+        }
+    };
+    // inochi2d encodes the axis as an integer and reads anything but 0 as y.
+    let target = lane.target.unwrap_or(0);
+    let Some(param) = slot.axis(target) else {
+        tracing::warn!(
+            "animation {animation:?}: dropping a lane on axis {target} of param {}, \
+             which has no such axis",
+            slot.head()
+        );
+        return None;
+    };
+    let mut keyframes: Vec<ClmKeyframe> = lane
+        .keyframes
+        .iter()
+        .map(|k| ClmKeyframe {
+            // inochi2d defaults both to 0.
+            frame: k.frame.unwrap_or(0),
+            value: k.value.unwrap_or(0.0),
+        })
+        .collect();
+    // A lane is read in frame order; the reference sorts on load
+    // (`animation.d`, `updateFrames`) rather than trusting the file, and a
+    // `.clm` a player can read has to be sorted before it is written.
+    keyframes.sort_by_key(|k| k.frame);
+    Some(ClmLane {
+        param: param.clone(),
+        interpolation: lane_interp(lane.interpolation.as_deref(), animation),
+        keyframes,
+    })
+}
+
+/// A lane's interpolation. The modes the two share map straight across; one
+/// catchlight does not model falls back to its nearest equivalent and says so,
+/// because a clip that plays the wrong curve is still the clip, and a dropped
+/// lane is not.
+fn lane_interp(mode: Option<&str>, animation: &str) -> InterpolateMode {
+    match mode {
+        None | Some("Nearest" | "Linear" | "Stepped" | "Cubic") => interp(mode),
+        // inochi2d's Bezier branch is itself a placeholder — an eased lerp
+        // gated on a per-keyframe tension it marks TODO — so Linear is what
+        // the source draws today, not an approximation of something else.
+        Some(other) => {
+            tracing::warn!(
+                "animation {animation:?}: interpolation {other:?} has no catchlight \
+                 equivalent; the lane plays Linear"
+            );
+            InterpolateMode::Linear
+        }
+    }
 }
 
 #[cfg(test)]

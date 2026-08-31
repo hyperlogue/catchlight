@@ -84,11 +84,18 @@
 //! was imported or authored. Ids are minted from the source's texture order,
 //! and dropping an undrawn texture never renumbers the ones that stay.
 //!
+//! **Animations come across.** A source clip's lanes address a param by
+//! `uuid` and an axis by index, which is the one thing about them that does
+//! not survive the split of a 2-D source param into two scalar ones; the lane
+//! lands on the param that axis became (`convert_animations`, `to_clm.rs`). A
+//! lane is dropped, by the same rule as any other dangling reference, when its
+//! `uuid` names no param or its axis names one the param does not have. An
+//! interpolation catchlight does not model is **not** grounds for dropping
+//! one: the lane keeps its keyframes and plays the nearest mode, warned.
+//!
 //! **What is dropped**, because catchlight does not model it: meta, groups,
 //! automation, cameras, emissive and bump texture slots, `emissionStrength`,
-//! and a source node's `uuid`. Animations are dropped too, with a warning —
-//! `.clm` has a section for them and carrying them across is an open
-//! decision, not a limit of the format.
+//! and a source node's `uuid`.
 
 pub(crate) mod error;
 pub mod inx;

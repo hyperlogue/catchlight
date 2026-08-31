@@ -213,3 +213,40 @@ pub(super) struct SchemaBinding {
     #[serde(default, rename = "isSet", deserialize_with = "de_lenient")]
     pub(super) is_set: Option<Vec<Vec<bool>>>,
 }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(super) struct SchemaAnimation {
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub(super) timestep: Option<f32>,
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub(super) length: Option<i32>,
+    #[serde(default, rename = "leadIn", deserialize_with = "de_lenient")]
+    pub(super) lead_in: Option<i32>,
+    #[serde(default, rename = "leadOut", deserialize_with = "de_lenient")]
+    pub(super) lead_out: Option<i32>,
+    #[serde(default, deserialize_with = "de_lenient_vec")]
+    pub(super) lanes: Vec<SchemaAnimationLane>,
+}
+
+/// One lane of a source clip. `uuid` names the *param* it drives and `target`
+/// picks that param's axis — 0 is x, anything else is y — because a source
+/// param may be 2-D where catchlight's are scalar.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(super) struct SchemaAnimationLane {
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub(super) uuid: Option<u32>,
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub(super) target: Option<u8>,
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub(super) interpolation: Option<String>,
+    #[serde(default, deserialize_with = "de_lenient_vec")]
+    pub(super) keyframes: Vec<SchemaKeyframe>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(super) struct SchemaKeyframe {
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub(super) frame: Option<i32>,
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub(super) value: Option<f32>,
+}
