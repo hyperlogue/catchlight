@@ -109,7 +109,7 @@ fn reflect_transform_y(t: &mut ClmTransform) {
     t.rotation[2] = -t.rotation[2];
 }
 
-pub(crate) fn convert_mesh(m: Option<&SchemaMesh>) -> ClmMesh {
+pub(crate) fn convert_mesh(m: Option<&SchemaMesh>, node: &str) -> ClmMesh {
     let Some(m) = m else {
         return ClmMesh::default();
     };
@@ -126,7 +126,53 @@ pub(crate) fn convert_mesh(m: Option<&SchemaMesh>) -> ClmMesh {
         origin: vec2_arr(&m.origin, [0.0, 0.0]),
     };
     reflect_mesh_y(&mut mesh);
+    normalize_mesh(&mut mesh, node);
     mesh
+}
+
+/// Hold an `.inx` mesh to the shape a [`ClmMesh`] is allowed to be: `[x, y]`
+/// pairs, uvs that match them or none at all, and every index naming a vertex
+/// the mesh has. `.inx` is untrusted and the `.clm` reader refuses a mesh that
+/// is none of those, so a source that got it wrong is repaired here rather
+/// than written into a file that will not open.
+fn normalize_mesh(m: &mut ClmMesh, node: &str) {
+    if !m.verts.len().is_multiple_of(2) {
+        tracing::debug!("mesh on {node:?}: dropping a vertex with no y");
+        m.verts.pop();
+    }
+    if !m.uvs.is_empty() && m.uvs.len() != m.verts.len() {
+        tracing::debug!(
+            "mesh on {node:?}: dropping {} uvs for {} vertices",
+            m.uvs.len() / 2,
+            m.verts.len() / 2,
+        );
+        m.uvs.clear();
+    }
+    let vertices = m.verts.len() / 2;
+    match &mut m.indices {
+        ClmIndices::U16(v) => keep_triangles_in_range(v, vertices, node),
+        ClmIndices::U32(v) => keep_triangles_in_range(v, vertices, node),
+    }
+}
+
+/// Drop the triangles that name a vertex the mesh does not have, whole, so
+/// the remaining ones still describe the same surface. A trailing group of
+/// fewer than three indices is not a triangle and is kept or dropped on the
+/// same test — the reader only asks that every index name a vertex.
+fn keep_triangles_in_range<T: Copy + Into<u32>>(indices: &mut Vec<T>, vertices: usize, node: &str) {
+    let kept: Vec<T> = indices
+        .chunks(3)
+        .filter(|t| t.iter().all(|&i| (i.into() as usize) < vertices))
+        .flatten()
+        .copied()
+        .collect();
+    if kept.len() != indices.len() {
+        tracing::debug!(
+            "mesh on {node:?}: dropping {} index/indices naming a vertex it does not have",
+            indices.len() - kept.len(),
+        );
+    }
+    *indices = kept;
 }
 
 /// Reflect mesh geometry into catchlight's Y-up frame (see [`reflect_transform_y`]).

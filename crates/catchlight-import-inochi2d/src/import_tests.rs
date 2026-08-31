@@ -142,6 +142,110 @@ fn a_mask_whose_source_is_not_there_is_dropped() {
     assert_eq!(part.masks[0].source, node(1));
 }
 
+/// A mask is the source's own drawing, so `Model::mask_add` and the `.clm`
+/// reader take only a part or a composite. An `.inx` may point one at
+/// anything, and an import that carried that through would write a file that
+/// does not open — so a source catchlight never draws is dropped like one
+/// that does not resolve at all.
+#[test]
+fn a_mask_whose_source_is_never_drawn_is_dropped() {
+    let d = doc(json!({
+        "uuid": 1, "name": "root", "type": "Node",
+        "children": [
+            {"uuid": 7, "name": "lattice", "type": "MeshGroup",
+             "mesh": {"verts": [], "uvs": [], "indices": []}},
+            {"uuid": 8, "name": "sway", "type": "SimplePhysics"},
+            {"uuid": 9, "name": "holder", "type": "Node"},
+            {"uuid": 10, "name": "face", "type": "Composite"},
+            {"uuid": 42, "name": "P", "type": "Part", "textures": [0],
+             "mesh": {"verts": [], "uvs": [], "indices": []},
+             "masks": [
+                {"source": 7, "mode": "Mask"},
+                {"source": 8, "mode": "Mask"},
+                {"source": 9, "mode": "Mask"},
+                {"source": 10, "mode": "Mask"}
+             ]}
+        ]
+    }));
+    let ClmNodeKind::Part(part) = &node_named(&d, "P").kind else {
+        panic!("expected Part");
+    };
+    assert_eq!(part.masks.len(), 1, "only the composite is drawn");
+    assert_eq!(part.masks[0].source, node(4));
+}
+
+/// The key positions are normalized across the range, so a collapsed,
+/// inverted or non-finite one has nothing to normalize onto and `Model`
+/// refuses it. Like any other field an `.inx` got wrong, it defaults.
+#[test]
+fn a_param_range_the_model_would_refuse_falls_back_to_the_default() {
+    let param = |min: serde_json::Value, max: serde_json::Value| {
+        let model = InxModel {
+            payload: json!({
+                "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+                "param": [{
+                    "uuid": 10, "name": "p", "is_vec2": false,
+                    "min": min, "max": max, "defaults": [0.0, 0.0],
+                    "axis_points": [[0.0, 1.0], [0.0]],
+                    "bindings": []
+                }],
+            }),
+            textures: Vec::new(),
+            vendors: Vec::new(),
+        };
+        let file = from_inx_model(&model).expect("import");
+        catchlight_core::Model::from_clm_file(&file).expect("the import opens");
+        let [p] = &file.doc.params[..] else {
+            panic!("one param")
+        };
+        (p.min, p.max)
+    };
+
+    assert_eq!(param(json!([-2.0, 0.0]), json!([2.0, 0.0])), (-2.0, 2.0));
+    assert_eq!(param(json!([1.0, 0.0]), json!([1.0, 0.0])), (0.0, 1.0));
+    assert_eq!(param(json!([2.0, 0.0]), json!([1.0, 0.0])), (0.0, 1.0));
+}
+
+/// An index naming a vertex the mesh does not have would make the renderer
+/// read past the buffer, and the `.clm` reader refuses it. Drop the triangle
+/// it belongs to, not the mesh.
+#[test]
+fn a_mesh_index_past_the_vertices_loses_its_triangle() {
+    let d = doc(json!({
+        "type": "Part",
+        "textures": [0],
+        "mesh": {
+            "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+            "uvs": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+            "indices": [0, 1, 2, 0, 1, 9]
+        }
+    }));
+    let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
+        panic!("expected Part");
+    };
+    assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1, 2]));
+}
+
+/// A part whose uvs do not pair up with its vertices cannot be drawn from,
+/// and the `.clm` reader refuses it — so the uvs go, not the geometry.
+#[test]
+fn mesh_uvs_that_do_not_match_the_vertices_are_dropped() {
+    let d = doc(json!({
+        "type": "Part",
+        "textures": [0],
+        "mesh": {
+            "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+            "uvs": [0.0, 0.0],
+            "indices": [0, 1, 2]
+        }
+    }));
+    let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
+        panic!("expected Part");
+    };
+    assert!(part.mesh.uvs.is_empty());
+    assert_eq!(part.mesh.verts.len(), 6, "the geometry is untouched");
+}
+
 #[test]
 fn a_duplicate_uuid_does_not_shadow_the_first_node() {
     let model = InxModel {
