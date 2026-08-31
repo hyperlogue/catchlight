@@ -45,6 +45,16 @@
 //!   siblings are the only way an Id ever changes — each rewrites every
 //!   reference to it. The root's Id starts out `root`; a model read from a
 //!   `.clm`, which stores no Ids, gets `node-<arena index>` for the rest.
+//! - **A mask source is a drawable.** The renderer rasterizes a source's own
+//!   drawing into the mask, so [`Model::mask_add`] takes a part or a
+//!   composite and refuses everything else — a mesh group is never drawn, and
+//!   a group or a physics node has nothing to draw. The `.clm` reader refuses
+//!   the same shapes.
+//! - **What the writer emits, the reader takes.** A param's range and a
+//!   mesh's shape are checked wherever they enter the model — a new param and
+//!   a new node as much as [`Model::set_param_range`] and
+//!   [`Model::set_node_mesh`] — so no sequence of edits builds a Model that
+//!   [`Model::to_clm_file`] writes and [`Model::from_clm_file`] then refuses.
 //! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
 //!   free to repeat, and never a key.
 //! - **Every param is a scalar.** Joint control over two params is a property
@@ -148,6 +158,8 @@ pub enum ModelError {
     UnknownBinding,
     #[error("node is not a part")]
     NotAPart,
+    #[error("a mask source must be a part or a composite")]
+    NotAMaskSource,
     #[error("part carries no such seam")]
     UnknownSeam,
     #[error("seam carries no such slot")]
@@ -990,6 +1002,12 @@ impl Model {
         if self.nodes.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
+        // A mesh reaches a Model here or through `set_node_mesh_with`, and
+        // both hold it to the same shape: the reader refuses a malformed one,
+        // so nothing may author one either.
+        if let Some(mesh) = node.mesh() {
+            validate_mesh(mesh)?;
+        }
         // A node cloned out of another model carries that model's Ids.
         self.check_node_refs(&node)?;
         node.parent = Some(parent.clone());
@@ -1446,8 +1464,10 @@ impl Model {
         }
     }
 
-    /// Append a mask source. Sources must be parts (the renderer rasterizes a
-    /// source's own mesh + texture into the mask).
+    /// Append a mask source. A source has to be something the renderer draws
+    /// — a part, whose mesh and texture it rasterizes into the mask, or a
+    /// composite, whose whole subtree it rasterizes. A mesh group, a group or
+    /// a physics node draws nothing and cannot be one.
     pub fn mask_add(
         &mut self,
         id: &NodeId,
@@ -1458,8 +1478,8 @@ impl Model {
             return Err(ModelError::SelfMask);
         }
         match self.nodes.get(source).map(|n| &n.kind) {
-            Some(ModelNodeKind::Part(_)) => {}
-            Some(_) => return Err(ModelError::NotAPart),
+            Some(k) if is_mask_source(k) => {}
+            Some(_) => return Err(ModelError::NotAMaskSource),
             None => return Err(ModelError::UnknownNode),
         }
         let source = source.clone();
@@ -1728,8 +1748,14 @@ impl Model {
         Ok(id)
     }
 
-    /// Add a param under an Id the author chose. Fails if the Id is taken.
+    /// Add a param under an Id the author chose. Fails if the Id is taken, or
+    /// if the range is one [`Self::set_param_range`] would refuse — the key
+    /// positions are normalized across it, and a collapsed, inverted or
+    /// non-finite range has nothing to normalize onto.
     pub fn add_param_with_id(&mut self, id: ParamId, param: ModelParam) -> Result<(), ModelError> {
+        if !param_range_is_valid(param.min, param.max) {
+            return Err(ModelError::CellOutOfRange);
+        }
         if self.params.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
@@ -2071,8 +2097,8 @@ impl Model {
         if let Some(masks) = node.masks() {
             for m in masks {
                 match self.nodes.get(&m.source).map(|n| &n.kind) {
-                    Some(ModelNodeKind::Part(_)) => {}
-                    Some(_) => return Err(ModelError::NotAPart),
+                    Some(k) if is_mask_source(k) => {}
+                    Some(_) => return Err(ModelError::NotAMaskSource),
                     None => return Err(ModelError::UnknownNode),
                 }
             }
@@ -2102,6 +2128,13 @@ impl Model {
         }
         false
     }
+}
+
+/// Whether a node of this kind may be named as a mask source: the two kinds
+/// the renderer draws. One place, because [`Model::mask_add`], the model's own
+/// reference check and the `.clm` reader all have to agree.
+pub(crate) fn is_mask_source(kind: &ModelNodeKind) -> bool {
+    matches!(kind, ModelNodeKind::Part(_) | ModelNodeKind::Composite(_))
 }
 
 /// Vertices come in pairs, uvs match them, and every index names a vertex.
@@ -3034,6 +3067,37 @@ mod tests {
         );
     }
 
+    /// The `.clm` reader refuses a malformed mesh and a range the key
+    /// positions cannot normalize onto, so no edit may author one: a model
+    /// that saves has to be a model that reopens.
+    #[test]
+    fn what_the_reader_refuses_cannot_be_authored() {
+        let mut r = fixture();
+        let root = r.root.clone();
+        let before = r.model.generation();
+        let mut hex = SeededHex::new(3);
+
+        let mut odd = quad();
+        odd.verts.push(0.5);
+        assert!(matches!(
+            r.model.add_node(
+                &root,
+                ModelNode::new("odd", ModelNodeKind::Part(ModelPart::new(odd))),
+                &mut hex,
+            ),
+            Err(ModelError::MalformedMesh(_))
+        ));
+        assert!(matches!(
+            r.model.add_param_with_id(
+                ParamId::new("flat").unwrap(),
+                ModelParam::new(Name::truncated("flat"), 1.0, 1.0, 0.0),
+            ),
+            Err(ModelError::CellOutOfRange)
+        ));
+        assert_eq!(r.model.generation(), before, "neither edit landed");
+        assert!(r.model.to_clm_bytes().is_ok());
+    }
+
     /// A rejected edit must leave every derived object alone, so it must not
     /// move the generation either.
     #[test]
@@ -3379,7 +3443,20 @@ mod tests {
         assert!(m.mask_add(&a, &a, MaskMode::Mask).is_err());
         assert!(m
             .mask_add(&a, &root, MaskMode::Mask)
-            .is_err_and(|e| matches!(e, ModelError::NotAPart)));
+            .is_err_and(|e| matches!(e, ModelError::NotAMaskSource)));
+        // A composite is drawn, so it is a source like a part is — the
+        // renderer has always rasterized one, and `tests/models/
+        // composite_masks.clm` is the baseline that says so.
+        m.mask_add(&a, &target, MaskMode::Mask).unwrap();
+        m.mask_delete(&a, 0).unwrap();
+        let bend = r.node(
+            "bend",
+            ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad())),
+        );
+        let m = &mut r.model;
+        assert!(m
+            .mask_add(&a, &bend, MaskMode::Mask)
+            .is_err_and(|e| matches!(e, ModelError::NotAMaskSource)));
 
         m.mask_add(&target, &a, MaskMode::Mask).unwrap();
         m.mask_add(&target, &b, MaskMode::DodgeMask).unwrap();

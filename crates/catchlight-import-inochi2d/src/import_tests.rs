@@ -182,6 +182,82 @@ fn a_mask_whose_source_is_not_there_is_dropped() {
     assert_eq!(part.masks[0].source, node(1));
 }
 
+/// A mask is the source's own drawing rasterized into a stencil, so
+/// `Model::mask_add` and the `.clm` reader take only a part or a composite.
+/// An `.inx` may point one at anything, and a mask on a node that draws
+/// nothing clipped nothing in the source runtime either — so it is dropped
+/// like one whose source does not resolve, and the document still loads.
+#[test]
+fn a_mask_whose_source_is_never_drawn_is_dropped() {
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [
+                    {"uuid": 7, "name": "lattice", "type": "MeshGroup",
+                     "mesh": {"verts": [0.0, 0.0, 1.0, 0.0], "uvs": [], "indices": [0, 1]}},
+                    {"uuid": 8, "name": "sway", "type": "SimplePhysics"},
+                    {"uuid": 9, "name": "holder", "type": "Node"},
+                    {"uuid": 10, "name": "face", "type": "Composite"},
+                    {"uuid": 11, "name": "drawn", "type": "Part", "textures": [0],
+                     "mesh": {
+                        "verts": [0.0, 0.0, 1.0, 0.0],
+                        "uvs": [0.0, 0.0, 1.0, 0.0],
+                        "indices": [0, 1]
+                     },
+                     "masks": [
+                        {"source": 7, "mode": "Mask"},
+                        {"source": 8, "mode": "Mask"},
+                        {"source": 9, "mode": "Mask"},
+                        {"source": 10, "mode": "Mask"}
+                     ]}
+                ]
+            }
+        }),
+        1,
+    )
+    .expect("import");
+
+    let ClmNodeKind::Part(part) = &node_named(&file.doc, "drawn").kind else {
+        panic!("expected Part");
+    };
+    assert_eq!(part.masks.len(), 1, "only the composite is drawn");
+    assert_eq!(part.masks[0].source, node(4), "which is `face`");
+    reread(&file);
+}
+
+/// A mesh group is never drawn, so its UVs go unchecked — but a `ClmMesh` may
+/// not carry UVs that do not pair with its vertices, and the reader refuses
+/// one that does. Nothing samples them, so they are dropped rather than
+/// carried into a file that will not open.
+#[test]
+fn a_mesh_groups_unpaired_uvs_are_dropped_rather_than_carried() {
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [{
+                    "uuid": 2, "name": "deformer", "type": "MeshGroup",
+                    "mesh": {
+                        "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+                        "uvs": [0.0, 0.0],
+                        "indices": [0, 1, 2]
+                    }
+                }]
+            }
+        }),
+        0,
+    )
+    .expect("a mesh group is not refused for uvs nothing reads");
+
+    let ClmNodeKind::MeshGroup(group) = &node_named(&file.doc, "deformer").kind else {
+        panic!("expected MeshGroup");
+    };
+    assert!(group.mesh.uvs.is_empty());
+    assert_eq!(group.mesh.verts.len(), 6, "the geometry is untouched");
+    reread(&file);
+}
+
 #[test]
 fn a_duplicate_uuid_does_not_shadow_the_first_node() {
     let model = InxModel {

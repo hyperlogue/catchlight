@@ -130,11 +130,16 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     }
     let slots = param_slots(&schema_params)?;
 
+    let drawn_nodes: Vec<bool> = flat
+        .iter()
+        .map(|(s, _)| matches!(s.ty.as_deref(), Some("Part" | "Composite")))
+        .collect();
     let refs = Refs {
         node_ids: &node_ids,
         uuid_node: &uuid_node,
         uuid_param: &uuid_param,
         slots: &slots,
+        drawn_nodes: &drawn_nodes,
         textures: model.textures.len(),
     };
 
@@ -284,6 +289,9 @@ struct Refs<'a> {
     uuid_node: &'a HashMap<u32, u32>,
     uuid_param: &'a HashMap<u32, u32>,
     slots: &'a [Slot],
+    /// Whether the node at each flat index becomes one catchlight draws — the
+    /// only thing a mask may name. Parallel to `node_ids`.
+    drawn_nodes: &'a [bool],
     /// How many textures the rig carries — what a part naming none is
     /// resolved against.
     textures: usize,
@@ -296,6 +304,15 @@ impl Refs<'_> {
 
     fn slot_of_uuid(&self, uuid: u32) -> Option<&Slot> {
         self.slots.get(*self.uuid_param.get(&uuid)? as usize)
+    }
+
+    /// Whether the node this uuid names becomes a part or a composite.
+    fn draws(&self, uuid: u32) -> bool {
+        self.uuid_node
+            .get(&uuid)
+            .and_then(|&i| self.drawn_nodes.get(i as usize))
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -429,7 +446,7 @@ fn convert_node_kind(
 ) -> Result<ClmNodeKind, ImportError> {
     Ok(match s.ty.as_deref().unwrap_or("") {
         "Part" => ClmNodeKind::Part(convert_part(s, node, refs)?),
-        "Composite" => ClmNodeKind::Composite(convert_composite(s, refs)?),
+        "Composite" => ClmNodeKind::Composite(convert_composite(s, node, refs)?),
         "MeshGroup" => ClmNodeKind::MeshGroup(convert_mesh_group(s, node)?),
         "SimplePhysics" => ClmNodeKind::SimplePhysics(convert_simple_physics(s, refs)),
         // Node, Camera, and any unmodeled type all become a container Group.
@@ -437,14 +454,28 @@ fn convert_node_kind(
     })
 }
 
-fn convert_masks(masks: &[SchemaMask], refs: &Refs<'_>) -> Vec<ClmMask> {
+fn convert_masks(masks: &[SchemaMask], node: NodeRef<'_>, refs: &Refs<'_>) -> Vec<ClmMask> {
     masks
         .iter()
         .filter_map(|m| {
             // Drop masks whose source node doesn't resolve: `.inx` is untrusted
             // and a dangling mask has nothing to clip against.
+            let source = m.source?;
+            // A source catchlight never draws goes for the same reason: a mask
+            // is the source's own drawing rasterized into a stencil, and a mesh
+            // group, a plain node and a pendulum each draw nothing, here and in
+            // the source runtime alike. `Model::mask_add` and the `.clm` reader
+            // both take only a part or a composite.
+            if !refs.draws(source) {
+                tracing::warn!(
+                    "node {} ({:?}): dropping the mask on source {source}, which is not drawn",
+                    node.id,
+                    node.name,
+                );
+                return None;
+            }
             Some(ClmMask {
-                source: refs.node_of_uuid(m.source?)?.clone(),
+                source: refs.node_of_uuid(source)?.clone(),
                 mode: mask_mode(m.mode.as_deref()),
             })
         })
@@ -490,20 +521,24 @@ fn convert_part(
         blend_mode: blend(s.blend_mode.as_deref())?,
         tint: vec3_arr(&s.tint, [1.0, 1.0, 1.0]),
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
-        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), refs),
+        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
         // An `.inx` names no vertex, so it fills no seam.
         seams: Vec::new(),
     })
 }
 
-fn convert_composite(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmComposite, ImportError> {
+fn convert_composite(
+    s: &SchemaNode,
+    node: NodeRef<'_>,
+    refs: &Refs<'_>,
+) -> Result<ClmComposite, ImportError> {
     Ok(ClmComposite {
         opacity: s.opacity.unwrap_or(1.0),
         blend_mode: blend(s.blend_mode.as_deref())?,
         tint: vec3_arr(&s.tint, [1.0, 1.0, 1.0]),
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
-        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), refs),
+        masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
         propagate_meshgroup: s.propagate_meshgroup.unwrap_or(true),
     })

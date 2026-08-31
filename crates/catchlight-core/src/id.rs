@@ -11,12 +11,11 @@
 //! Invariants this module enforces:
 //!
 //! - **Charset.** An Id is non-empty, is made only of `[A-Za-z0-9_./-]`, and
-//!   starts with neither `.` nor `/`. Every constructor validates; [`IdError`]
-//!   names the offending byte and its offset. The set is deliberately narrow:
-//!   an Id has to survive a file path, a URL, a JSON key and a shell argument
-//!   without quoting. A leading `-` is left alone: it is a CLI hazard, and the
-//!   CLI ends its option list with `--` rather than the format narrowing the
-//!   charset for it.
+//!   starts with none of `.`, `/` or `-`. Every constructor validates;
+//!   [`IdError`] names the offending byte and its offset. The set is
+//!   deliberately narrow: an Id has to survive a file path, a URL, a JSON key
+//!   and a shell argument without quoting — the leading `-` is banned for the
+//!   last of those, since a command line reads one as an option.
 //! - **Case-sensitive.** `Head` and `head` are two different Ids.
 //! - **The `/` in an Id is not a path.** A generated Id carries its parent's
 //!   Id as a prefix (`head/part-3f9a2c1e`) purely as a reading aid. It is
@@ -68,6 +67,12 @@ pub enum IdError {
     /// is additive while tightening one is not.
     #[error("an id must not start with '/'")]
     LeadingSlash,
+    /// A leading `-` is reserved because every command line reads one as an
+    /// option, and an Id that needs a `--` in front of it does not survive
+    /// being passed as a bare argument. Interior `-` is ordinary — it is what
+    /// a generated Id puts before its hex.
+    #[error("an id must not start with '-'")]
+    LeadingDash,
     /// A byte outside `[A-Za-z0-9_./-]`.
     #[error("invalid byte '{}' (0x{byte:02x}) at offset {offset} of an id", .byte.escape_ascii())]
     Byte {
@@ -99,6 +104,7 @@ pub fn validate_id(s: &str) -> Result<(), IdError> {
     match s.as_bytes()[0] {
         b'.' => return Err(IdError::LeadingDot),
         b'/' => return Err(IdError::LeadingSlash),
+        b'-' => return Err(IdError::LeadingDash),
         _ => {}
     }
     for (offset, byte) in s.bytes().enumerate() {
@@ -435,7 +441,6 @@ mod tests {
             "trailing.",
             "a//b",
             "_leading",
-            "-leading",
             "0123456789",
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_./-",
         ] {
@@ -460,6 +465,18 @@ mod tests {
         // Only *leading*: the `/` a generated id carries is ordinary.
         assert!(NodeId::new("head/part-3f9a2c1e").is_ok());
         assert!(NodeId::new("a//b").is_ok());
+    }
+
+    #[test]
+    fn rejects_leading_dash() {
+        assert_eq!(NodeId::new("-"), Err(IdError::LeadingDash));
+        assert_eq!(NodeId::new("-hat"), Err(IdError::LeadingDash));
+        assert_eq!(ParamId::new("--"), Err(IdError::LeadingDash));
+        // Only *leading*: the `-` a generated id puts before its hex is
+        // ordinary, and so is one anywhere else.
+        assert!(NodeId::new("head/part-3f9a2c1e").is_ok());
+        assert!(NodeId::new("a-b").is_ok());
+        assert!(NodeId::new("trailing-").is_ok());
     }
 
     #[test]

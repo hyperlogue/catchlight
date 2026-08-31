@@ -73,7 +73,9 @@ use super::*;
 pub enum Required {
     /// A node of any kind — what a fragment root's `parent` names.
     Node(NodeId),
-    /// A node that has to be a part — what a mask's source names.
+    /// A node the renderer draws — a part or a composite — which is what a
+    /// mask's source names. Still called `Part` because it is what the CLI
+    /// prints as a requirement's kind; see [`Model::mask_add`] for the rule.
     Part(NodeId),
     Param(ParamId),
     Texture(TexId),
@@ -457,12 +459,14 @@ impl Model {
         for req in addon.requirements().iter() {
             let held = match &req.id {
                 Required::Node(id) => self.nodes.contains_key(id),
-                Required::Part(id) => {
-                    matches!(
-                        self.nodes.get(id).map(|n| &n.kind),
-                        Some(ModelNodeKind::Part(_))
-                    )
-                }
+                // A mask source has to be one the renderer draws, in the
+                // base exactly as in the addon: install is the one place a
+                // fragment's dangling mask source is finally kind-checked.
+                Required::Part(id) => self
+                    .nodes
+                    .get(id)
+                    .map(|n| &n.kind)
+                    .is_some_and(is_mask_source),
                 Required::Param(id) => self.params.contains_key(id),
                 Required::Texture(id) => self.textures.contains_key(id),
                 Required::Seam(node, seam) => self.seam(node, seam).is_some(),

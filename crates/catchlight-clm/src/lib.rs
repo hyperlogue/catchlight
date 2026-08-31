@@ -67,9 +67,9 @@
 //!   command that does not choose: its addon argument is always read with the
 //!   fragment reader, so handing it a complete model says so.
 //! - **An Id is taken verbatim.** The charset (`[A-Za-z0-9_./-]`, no leading
-//!   `.` or `/`) allows a leading `-`, which `catchlight_core::id` explicitly
-//!   leaves to the CLI to handle: every command takes `--` to end its options,
-//!   and `--help` says so.
+//!   `.`, `/` or `-`) is narrow enough that an Id is always a bare argument:
+//!   no command needs `--` to reach one, and `--help` says what the charset
+//!   is.
 
 pub mod diff;
 pub mod file;
