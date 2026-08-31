@@ -63,6 +63,17 @@ pub enum ImportError {
         name: String,
         detail: String,
     },
+
+    /// A finite param range whose minimum sits above its maximum. What the
+    /// source runtime does with one is unclear, and guessing would move the
+    /// rig, so the import refuses it by name rather than pick a reading.
+    #[error("param {id} ({name:?}) is authored backwards: min {min} is above max {max}")]
+    InvertedParamRange {
+        id: String,
+        name: String,
+        min: f32,
+        max: f32,
+    },
 }
 
 #[cfg(test)]

@@ -59,6 +59,9 @@
 //!
 //! Repaired, because the source draws the same picture either way:
 //!
+//! - a param range that cannot be posed against — `min == max`, or a bound too
+//!   large to be a number — widens to `min..min + 1`; the source param cannot
+//!   move either (`usable_range`, `to_clm.rs`)
 //! - a deform cell that disagrees with its node's mesh is zipped against it —
 //!   offsets past the last vertex drive nothing, vertices past the last offset
 //!   stay undeformed (`fit_deform_cells`, `reflect.rs`)
@@ -67,6 +70,7 @@
 //!
 //! - a mesh whose indices name vertices it does not have, or whose UVs do not
 //!   pair with its vertices (`convert_mesh`, `reflect.rs`)
+//! - a finite param range authored the wrong way round (`min > max`)
 //!
 //! **Textures are carried verbatim.** The bytes an `.inx` stores land in the
 //! model unchanged; decoding, the alpha crop and the UV remap belong to

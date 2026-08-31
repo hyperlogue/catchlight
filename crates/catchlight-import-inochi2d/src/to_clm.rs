@@ -21,6 +21,10 @@
 //! `<name>.y`, adjacent in param order, and every binding under it becomes a
 //! two-param binding over the pair. A pendulum aimed at one is aimed at both.
 //!
+//! **A param has to be posable**, so one of the crate's repairs lands here
+//! (the rule is in the crate doc): `usable_range` widens a range the source
+//! could not move along, and refuses one authored backwards.
+//!
 //! Only what catchlight models is kept; the rest (meta, groups, automation,
 //! animations, cameras, emissive/bump slots, emissionStrength) is dropped.
 //! Textures are carried verbatim — a render cache is what decodes and crops
@@ -141,28 +145,34 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         let max = vec2_arr(&p.max, [1.0, 1.0]);
         let defaults = vec2_arr(&p.defaults, [0.0, 0.0]);
         match &slots[i] {
-            Slot::One(id) => params.push(ClmParam {
-                id: id.clone(),
-                name,
-                min: min[0],
-                max: max[0],
-                default: defaults[0],
-                key_positions: axis_x.clone(),
-            }),
+            Slot::One(id) => {
+                let (min, max) = usable_range(id, &name, min[0], max[0])?;
+                params.push(ClmParam {
+                    id: id.clone(),
+                    name,
+                    min,
+                    max,
+                    default: defaults[0],
+                    key_positions: axis_x.clone(),
+                });
+            }
             Slot::Pair(x, y) => {
+                let (name_x, name_y) = (format!("{name}.x"), format!("{name}.y"));
+                let (min_x, max_x) = usable_range(x, &name_x, min[0], max[0])?;
+                let (min_y, max_y) = usable_range(y, &name_y, min[1], max[1])?;
                 params.push(ClmParam {
                     id: x.clone(),
-                    name: format!("{name}.x"),
-                    min: min[0],
-                    max: max[0],
+                    name: name_x,
+                    min: min_x,
+                    max: max_x,
                     default: defaults[0],
                     key_positions: axis_x.clone(),
                 });
                 params.push(ClmParam {
                     id: y.clone(),
-                    name: format!("{name}.y"),
-                    min: min[1],
-                    max: max[1],
+                    name: name_y,
+                    min: min_y,
+                    max: max_y,
                     default: defaults[1],
                     key_positions: axis_y.clone(),
                 });
@@ -284,6 +294,49 @@ fn param_slots(params: &[SchemaParam]) -> Result<Vec<Slot>, ImportError> {
 
 fn tex_id(i: u32) -> Result<TexId, ImportError> {
     Ok(TexId::new(format!("tex-{i}"))?)
+}
+
+/// A param range a pose can be read against: finite and strictly increasing.
+///
+/// A collapsed range (`min == max`) is **widened** to `min..min + 1`. The
+/// source param cannot move either — every value maps to the one point — so
+/// the rest pose the rig draws is unchanged, and the widened range gives the
+/// runtime something to normalize against. A bound that is not a number has no
+/// pose to preserve at all: it collapses onto the other bound, or onto zero
+/// when neither is finite, and widens from there. (`.inx` cannot spell an
+/// infinity, but a bound too large for `f32` rounds to one.)
+///
+/// A finite range authored the wrong way round is not repaired: what the
+/// source runtime does with `min > max` is unclear, so any widening would be a
+/// guess about where the rig sits, and a guess here moves the model. The
+/// import refuses it and names the param.
+fn usable_range(id: &ParamId, name: &str, min: f32, max: f32) -> Result<(f32, f32), ImportError> {
+    if min.is_finite() && max.is_finite() {
+        if min < max {
+            return Ok((min, max));
+        }
+        if min > max {
+            return Err(ImportError::InvertedParamRange {
+                id: id.to_string(),
+                name: name.to_string(),
+                min,
+                max,
+            });
+        }
+    }
+    let base = if min.is_finite() {
+        min
+    } else if max.is_finite() {
+        max
+    } else {
+        0.0
+    };
+    tracing::warn!(
+        "param {id} ({name:?}): the range {min}..{max} cannot be posed against; widening it to \
+         {base}..{}",
+        base + 1.0
+    );
+    Ok((base, base + 1.0))
 }
 
 /// The mesh a node deforms, if it has one. A part and a mesh group carry one;
