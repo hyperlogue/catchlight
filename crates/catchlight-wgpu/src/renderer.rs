@@ -1573,6 +1573,17 @@ impl<V> DenseMap<V> {
         self.slots.clear();
     }
 
+    /// Drop every slot at or above `len`, keeping the ones below it. What a
+    /// rebuild that names fewer slots than the build before it releases.
+    fn truncate(&mut self, len: usize) {
+        self.slots.truncate(len);
+    }
+
+    /// How many slots currently hold a value.
+    fn live(&self) -> usize {
+        self.slots.iter().flatten().count()
+    }
+
     /// Indices currently holding a value, ascending. Used to sweep the
     /// deform-upload set for meshes that went inactive this frame.
     fn keys(&self) -> impl Iterator<Item = usize> + '_ {
@@ -2505,6 +2516,46 @@ impl WgpuRenderer {
     pub fn clear_meshes(&mut self) {
         self.mesh_buffers.clear();
         self.reset_deform_buffer_layout();
+    }
+
+    /// Release the GPU state a [`crate::RenderCache`] rebuild is about to
+    /// replace, leaving only what the new build will name.
+    ///
+    /// Mesh slots and the whole deform atlas go: mesh ids are handed out
+    /// densely from zero on every build, so a rebuild renames every one of
+    /// them and the atlas ranges reserved for the old ones are dead. Texture
+    /// slots at or above `textures` — the new build's texture count — go for
+    /// the same reason; the slots below it stay so `upload_texture`'s
+    /// re-upload memo can still skip a texture the edit did not touch, which
+    /// is what makes [`crate::PrepareOptions::memoize_textures`] worth
+    /// setting.
+    ///
+    /// A rebuild runs from `prepare` or `refresh`, both outside a frame, so
+    /// this never strands a recorded pass on a freed buffer.
+    pub(crate) fn release_for_rebuild(&mut self, textures: u32) {
+        self.clear_meshes();
+        self.textures.truncate(textures as usize);
+    }
+
+    /// Mesh slots currently holding a GPU buffer. Test-facing: it is how a
+    /// rebuild's release is observable from outside the crate.
+    #[doc(hidden)]
+    pub fn live_mesh_slots(&self) -> usize {
+        self.mesh_buffers.live()
+    }
+
+    /// Texture slots currently holding a GPU texture. Test-facing, as
+    /// [`Self::live_mesh_slots`].
+    #[doc(hidden)]
+    pub fn live_texture_slots(&self) -> usize {
+        self.textures.live()
+    }
+
+    /// Bytes of the deform atlas currently reserved by uploaded meshes.
+    /// Test-facing, as [`Self::live_mesh_slots`].
+    #[doc(hidden)]
+    pub fn reserved_deform_bytes(&self) -> u64 {
+        self.deform_buffer_len
     }
 
     /// Tolerance matches the importer (which matches the reference's
