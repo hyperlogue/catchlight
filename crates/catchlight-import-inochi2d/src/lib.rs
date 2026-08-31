@@ -43,13 +43,24 @@
 //! one both fail. The synthetic INX must therefore be authored in the
 //! **source** convention (Y-down, lower-zsort-in-front).
 //!
-//! **The reader is total.** On anything short of a corrupt container, import
-//! produces a model: a reference that does not resolve is dropped, a field of
-//! the wrong JSON type falls back to its default, and an unmodelled node type
-//! becomes a group — `import_tests.rs` pins which half each case takes.
-//! `.inx` is untrusted input, so the node walk carries its own stack rather
-//! than recursing, and every length the container declares is checked against
-//! a ceiling before anything is allocated for it.
+//! **The reader is tolerant of sloppiness.** A reference that does not resolve
+//! is dropped, a field of the wrong JSON type falls back to its default, and an
+//! unmodelled node type becomes a group — `import_tests.rs` pins which half
+//! each case takes. `.inx` is untrusted input, so the node walk carries its own
+//! stack rather than recursing, and every length the container declares is
+//! checked against a ceiling before anything is allocated for it.
+//!
+//! **A malformed rig is repaired only when the repair provably cannot change
+//! how inochi2d renders it; otherwise the import is refused with the node or
+//! param named.** Guessing is the one thing an import may not do: the `.clm` it
+//! writes is the source of truth afterwards, so a wrong-but-loadable model is
+//! unrecoverable in a way a refusal is not. Every repair says what it changed
+//! through `tracing::warn!`, naming the thing it changed.
+//!
+//! Refused, because inochi2d's own rendering of them is undefined or unclear:
+//!
+//! - a mesh whose indices name vertices it does not have, or whose UVs do not
+//!   pair with its vertices (`convert_mesh`, `reflect.rs`)
 //!
 //! **Textures are carried verbatim.** The bytes an `.inx` stores land in the
 //! model unchanged; decoding, the alpha crop and the UV remap belong to
