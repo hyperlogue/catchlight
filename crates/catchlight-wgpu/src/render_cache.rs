@@ -31,6 +31,15 @@
 //!   by the model's Ids at prepare time and none of them leaves the crate:
 //!   what reaches a caller is a `u32` slot in a [`RenderList`], meaningful
 //!   only against the cache that produced it.
+//! - **A rebuild releases every slot the previous build held and does not
+//!   name again.** Mesh slots and the deform atlas are handed back whole —
+//!   both are re-derived from zero — and texture slots past the new texture
+//!   count are dropped, so a model that shrank does not strand GPU buffers
+//!   under slots nothing addresses. Surviving texture slots are kept rather
+//!   than freed and re-uploaded, which is what leaves
+//!   [`PrepareOptions::memoize_textures`] something to save. A stopgap: the
+//!   arena rework (cl-32i.19) replaces it with slots that are owned rather
+//!   than swept.
 //! - **One cache, one renderer.** The GPU state a cache's slots name lives in
 //!   the [`WgpuRenderer`] that prepared it. Two caches sharing a renderer
 //!   would overwrite each other's mesh and texture slots, which is the same
@@ -276,6 +285,11 @@ impl RenderCache {
     fn rebuild(&mut self, renderer: &mut WgpuRenderer, model: &Model) -> RendererResult<()> {
         let _span = tracing::trace_span!("render_cache::rebuild").entered();
 
+        // Hand back every slot the previous build held before taking new
+        // ones, so a model that shrank does not leave GPU buffers and deform
+        // ranges behind under slots nothing names any more.
+        renderer.release_for_rebuild(model.texture_ids().len() as u32);
+
         let textures: Vec<catchlight_core::EncodedTexture> = model
             .texture_ids()
             .iter()
@@ -307,7 +321,6 @@ impl RenderCache {
             .map(|(slot, id)| (id.clone(), slot as u32))
             .collect();
 
-        renderer.clear_meshes();
         self.node_ids = model.nodes_in_order();
         self.mesh_of_node = vec![None; self.node_ids.len()];
         let mut next_mesh = 0u32;
