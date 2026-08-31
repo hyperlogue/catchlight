@@ -571,7 +571,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // "Right Eye - Blink"). value=0 -> open, value=1 -> closed.
     // Sequence: 3s open -> quick close -> brief hold -> quick reopen.
     if puppet.animations().is_empty() {
-        use catchlight_core::{Animation, InterpolateMode, Keyframe, Lane};
+        use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+        use catchlight_core::InterpolateMode;
         let blink_params: Vec<ParamId> = model
             .param_ids()
             .iter()
@@ -583,28 +584,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .cloned()
             .collect();
         if !blink_params.is_empty() {
-            let kfs = || -> Vec<Keyframe> {
+            let kfs = || -> Vec<ClmKeyframe> {
                 // 60 fps timestep below; frame values become seconds * 60.
                 // Short cycle with noticeable closed phase so the blink
                 // is obvious without having to watch for seconds.
                 vec![
-                    Keyframe {
+                    ClmKeyframe {
                         frame: 0,
                         value: 0.0,
                     },
-                    Keyframe {
+                    ClmKeyframe {
                         frame: 60,
                         value: 0.0,
                     }, // 1.0s open
-                    Keyframe {
+                    ClmKeyframe {
                         frame: 72,
                         value: 1.0,
                     }, // 200ms close
-                    Keyframe {
+                    ClmKeyframe {
                         frame: 90,
                         value: 1.0,
                     }, // 300ms hold closed
-                    Keyframe {
+                    ClmKeyframe {
                         frame: 102,
                         value: 0.0,
                     }, // 200ms reopen
@@ -612,13 +613,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let lanes = blink_params
                 .iter()
-                .map(|param| Lane {
+                .map(|param| ClmLane {
                     param: param.clone(),
                     keyframes: kfs(),
                     interpolation: InterpolateMode::Linear,
                 })
                 .collect();
-            let anim = Animation {
+            let anim = ClmAnimation {
                 name: "Blink".into(),
                 timestep: 1.0 / 60.0,
                 length: 102,
