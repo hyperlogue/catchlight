@@ -380,24 +380,20 @@ fn patching_a_hundred_megabyte_texture_file_stays_linear_in_bytes() {
 
 // ---- the command line ------------------------------------------------------
 
-/// An Id may begin with `-` — the format leaves that to the CLI, and the CLI
-/// answers with `--`.
+/// An Id may not begin with `-`, so no command has to be reached through
+/// `--`: an argument that opens with a dash is an option and nothing else.
 #[test]
-fn an_id_beginning_with_a_dash_needs_only_the_double_dash() {
+fn an_id_cannot_begin_with_a_dash() {
+    assert!(NodeId::new("-odd").is_err());
+
     let dir = tmp("patch-leading-dash");
-    let mut clm = decode(&common::fixture("mip_checker"));
-    let odd = NodeId::new("-odd").unwrap();
-    clm.doc.nodes[1].id = odd;
-    let file = write_clm(&dir, "leading-dash", &clm);
+    let file = copy_fixture("mip_checker", &dir);
     let path = file.to_str().unwrap();
+    let before = read(&file);
 
-    let (code, _, err) = common::run(&["patch", path, "-odd", "z_order", "1"]);
-    assert_eq!(code, 2, "without `--` the id is read as options: {err}");
-
-    let (code, out, err) = common::run(&["patch", path, "--", "-odd", "z_order", "1"]);
-    assert_eq!(code, 0, "{err}");
-    assert!(out.contains("node \"-odd\" z_order: 0 -> 1"), "{out}");
-    assert_eq!(decode(&file).doc.nodes[1].z_order, 1.0);
+    let (code, _, err) = common::run(&["patch", path, "--", "-odd", "z_order", "1"]);
+    assert_eq!(code, 2, "even after `--`, `-odd` is not an id: {err}");
+    assert_eq!(read(&file), before, "a refused patch writes nothing");
 }
 
 #[test]

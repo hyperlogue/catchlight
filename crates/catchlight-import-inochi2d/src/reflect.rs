@@ -135,7 +135,10 @@ fn reflect_transform_y(t: &mut ClmTransform) {
 ///
 /// `textured` says whether the UVs are read. A part samples its albedo through
 /// them, so one that does not pair with its vertices is malformed; a mesh group
-/// is never drawn and inochi2d authors none for it, so its UVs are not checked.
+/// is never drawn and inochi2d authors none for it, so its UVs are not checked
+/// — and a ragged array on one is dropped rather than carried, since a
+/// [`ClmMesh`] may only hold UVs that pair with its vertices and nothing
+/// samples a mesh group's.
 ///
 /// A trailing lone coordinate is not a vertex — `verts` and `uvs` are flat
 /// `[x, y, …]` — so it is dropped rather than left to make the arrays disagree
@@ -171,9 +174,26 @@ pub(crate) fn convert_mesh(
     } else {
         ClmIndices::U32(m.indices.clone())
     };
+    // A `ClmMesh` carries UVs that pair with its vertices or none at all, and
+    // the `.clm` reader refuses anything else. For a part that is already
+    // settled — the check above refused a ragged array. For a mesh group the
+    // UVs went unchecked because nothing samples them, which is the same
+    // reason dropping a ragged one provably cannot change how the rig draws.
+    let uvs = if m.uvs.len() / 2 == vertices {
+        m.uvs[..vertices * 2].to_vec()
+    } else {
+        tracing::warn!(
+            "node {} ({:?}): dropping {} uvs that do not pair with its {vertices} vertices; \
+             nothing samples a mesh group's",
+            node.id,
+            node.name,
+            m.uvs.len() / 2,
+        );
+        Vec::new()
+    };
     let mut mesh = ClmMesh {
         verts: m.verts[..vertices * 2].to_vec(),
-        uvs: m.uvs[..(m.uvs.len() / 2) * 2].to_vec(),
+        uvs,
         indices,
         origin: vec2_arr(&m.origin, [0.0, 0.0]),
     };

@@ -71,6 +71,13 @@
 //!   runtime draws, or no texture at all when the rig carries none
 //!   (`convert_part`)
 //! - a texture no part draws is dropped from the file (`from_inx_model`)
+//! - a mask whose source is not a part or a composite is dropped; catchlight
+//!   draws neither a mesh group nor a plain node nor a pendulum, so a source
+//!   that is one rasterized into no stencil in the source runtime either
+//!   (`convert_masks`, `to_clm.rs`)
+//! - a mesh group's UVs are dropped when they do not pair with its vertices;
+//!   nothing samples them, which is the same reason they are not checked
+//!   (`convert_mesh`, `reflect.rs`)
 //!
 //! Refused, because inochi2d's own rendering of them is undefined or unclear:
 //!
