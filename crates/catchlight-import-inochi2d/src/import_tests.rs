@@ -285,3 +285,59 @@ fn a_mesh_with_an_odd_coordinate_count_keeps_the_pairs_it_has() {
     assert_eq!(part.mesh.verts.len() / 2, 2);
     assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1]));
 }
+
+#[test]
+fn a_mesh_index_past_the_vertex_array_is_refused_naming_the_node() {
+    let err = try_doc(json!({
+        "uuid": 1, "name": "root", "type": "Node",
+        "children": [{
+            "uuid": 2, "name": "broken", "type": "Part", "textures": [0],
+            "mesh": {
+                "verts": [0.0, 0.0, 1.0, 0.0],
+                "uvs": [0.0, 0.0, 1.0, 0.0],
+                "indices": [0, 1, 2]
+            }
+        }]
+    }))
+    .expect_err("a mesh inochi2d cannot draw is not repaired");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("node-1") && msg.contains("broken") && msg.contains('2'),
+        "the error names the node and the index: {msg}"
+    );
+}
+
+#[test]
+fn a_uv_array_that_does_not_pair_with_the_vertices_is_refused() {
+    let err = try_doc(json!({
+        "uuid": 1, "name": "root", "type": "Node",
+        "children": [{
+            "uuid": 2, "name": "unpaired", "type": "Part", "textures": [0],
+            "mesh": {
+                "verts": [0.0, 0.0, 1.0, 0.0],
+                "uvs": [0.0, 0.0],
+                "indices": [0, 1]
+            }
+        }]
+    }))
+    .expect_err("a part samples through its uvs, so they have to pair");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("node-1") && msg.contains("unpaired"),
+        "the error names the node: {msg}"
+    );
+
+    // A mesh group is never drawn and inochi2d authors it no uvs, so the same
+    // mesh is fine on one.
+    let d = doc(json!({
+        "uuid": 1, "name": "root", "type": "Node",
+        "children": [{
+            "uuid": 2, "name": "deformer", "type": "MeshGroup",
+            "mesh": {"verts": [0.0, 0.0, 1.0, 0.0], "uvs": [], "indices": [0, 1]}
+        }]
+    }));
+    let ClmNodeKind::MeshGroup(group) = &node_named(&d, "deformer").kind else {
+        panic!("expected a MeshGroup");
+    };
+    assert_eq!(group.mesh.vertex_count(), 2);
+}
