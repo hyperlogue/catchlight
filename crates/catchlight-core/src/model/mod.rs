@@ -50,6 +50,11 @@
 //!   composite and refuses everything else — a mesh group is never drawn, and
 //!   a group or a physics node has nothing to draw. The `.clm` reader refuses
 //!   the same shapes.
+//! - **What the writer emits, the reader takes.** A param's range and a
+//!   mesh's shape are checked wherever they enter the model — a new param and
+//!   a new node as much as [`Model::set_param_range`] and
+//!   [`Model::set_node_mesh`] — so no sequence of edits builds a Model that
+//!   [`Model::to_clm_file`] writes and [`Model::from_clm_file`] then refuses.
 //! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
 //!   free to repeat, and never a key.
 //! - **Every param is a scalar.** Joint control over two params is a property
@@ -997,6 +1002,12 @@ impl Model {
         if self.nodes.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
+        // A mesh reaches a Model here or through `set_node_mesh_with`, and
+        // both hold it to the same shape: the reader refuses a malformed one,
+        // so nothing may author one either.
+        if let Some(mesh) = node.mesh() {
+            validate_mesh(mesh)?;
+        }
         // A node cloned out of another model carries that model's Ids.
         self.check_node_refs(&node)?;
         node.parent = Some(parent.clone());
@@ -1737,8 +1748,14 @@ impl Model {
         Ok(id)
     }
 
-    /// Add a param under an Id the author chose. Fails if the Id is taken.
+    /// Add a param under an Id the author chose. Fails if the Id is taken, or
+    /// if the range is one [`Self::set_param_range`] would refuse — the key
+    /// positions are normalized across it, and a collapsed, inverted or
+    /// non-finite range has nothing to normalize onto.
     pub fn add_param_with_id(&mut self, id: ParamId, param: ModelParam) -> Result<(), ModelError> {
+        if !param_range_is_valid(param.min, param.max) {
+            return Err(ModelError::CellOutOfRange);
+        }
         if self.params.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
@@ -3048,6 +3065,37 @@ mod tests {
             "deleting a seam takes the welds that named it, the way deleting a \
              node takes the masks that named it",
         );
+    }
+
+    /// The `.clm` reader refuses a malformed mesh and a range the key
+    /// positions cannot normalize onto, so no edit may author one: a model
+    /// that saves has to be a model that reopens.
+    #[test]
+    fn what_the_reader_refuses_cannot_be_authored() {
+        let mut r = fixture();
+        let root = r.root.clone();
+        let before = r.model.generation();
+        let mut hex = SeededHex::new(3);
+
+        let mut odd = quad();
+        odd.verts.push(0.5);
+        assert!(matches!(
+            r.model.add_node(
+                &root,
+                ModelNode::new("odd", ModelNodeKind::Part(ModelPart::new(odd))),
+                &mut hex,
+            ),
+            Err(ModelError::MalformedMesh(_))
+        ));
+        assert!(matches!(
+            r.model.add_param_with_id(
+                ParamId::new("flat").unwrap(),
+                ModelParam::new(Name::truncated("flat"), 1.0, 1.0, 0.0),
+            ),
+            Err(ModelError::CellOutOfRange)
+        ));
+        assert_eq!(r.model.generation(), before, "neither edit landed");
+        assert!(r.model.to_clm_bytes().is_ok());
     }
 
     /// A rejected edit must leave every derived object alone, so it must not
