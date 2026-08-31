@@ -25,17 +25,17 @@
 //! Regenerate after an intentional behaviour change:
 //!   UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-core --test evaluated_frame
 
-use catchlight_core::animation::{Animation, Lane};
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument, ClmFile,
-    ClmIndices, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSeam,
-    ClmSimplePhysics, ClmSlot, ClmSlotWeight, ClmTransform, ClmWeld, ClmWeldEnd,
+    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument,
+    ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
+    ClmNodeKind, ClmParam, ClmPart, ClmSeam, ClmSimplePhysics, ClmSlot, ClmSlotWeight,
+    ClmTransform, ClmWeld, ClmWeldEnd,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
-use catchlight_core::{Keyframe, Model, NodeId, NodeIdx, NodeKind, ParamId, SeamId, SlotId, Vec2};
+use catchlight_core::{Model, NodeId, NodeIdx, NodeKind, ParamId, SeamId, SlotId, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -303,24 +303,24 @@ fn current() -> Baseline {
 /// lead-in and the keyframe interpolator, all reaching bindings.
 fn animation_frames(out: &mut Baseline) {
     let mut fixture = Fixture::load(animation_fixture());
-    fixture.puppet.set_animations(vec![Animation {
+    fixture.puppet.set_animations(vec![ClmAnimation {
         name: "Blink".into(),
         timestep: 1.0 / 60.0,
         length: 31,
         lead_in: 6,
         lead_out: 28,
-        lanes: vec![Lane {
+        lanes: vec![ClmLane {
             param: ParamId::new("param-0").unwrap(),
             keyframes: vec![
-                Keyframe {
+                ClmKeyframe {
                     frame: 0,
                     value: 0.0,
                 },
-                Keyframe {
+                ClmKeyframe {
                     frame: 12,
                     value: 1.0,
                 },
-                Keyframe {
+                ClmKeyframe {
                     frame: 30,
                     value: 0.25,
                 },
