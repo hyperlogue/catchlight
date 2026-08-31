@@ -2288,6 +2288,63 @@ mod tests {
         assert_eq!(history.bytes(), 0);
     }
 
+    /// A delete that cascades into a texture leaves the payload in the older
+    /// snapshots and nowhere else. The ledger counts a payload while any
+    /// snapshot holds it, so it stays billed until the last one holding it is
+    /// trimmed — and an edit that frees megabytes does not make the history
+    /// look free while undo can still bring them back.
+    #[test]
+    fn a_cascaded_texture_delete_is_billed_until_the_last_snapshot_holding_it_goes() {
+        let mut model = Model::new();
+        let mut hex = SeededHex::new(7);
+        let root = model.root().unwrap().clone();
+        let part = model
+            .add_node(
+                &root,
+                ModelNode::new(
+                    "part",
+                    ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
+                ),
+                &mut hex,
+            )
+            .unwrap();
+        model
+            .add_texture(
+                &part,
+                ModelTexture {
+                    encoding: TextureEncoding::Png,
+                    alpha: TextureAlpha::Straight,
+                    data: Arc::new(vec![0u8; 4 * 1024 * 1024]),
+                },
+                &mut hex,
+            )
+            .unwrap();
+        let payload = model
+            .texture(&model.texture_ids()[0])
+            .unwrap()
+            .data
+            .capacity();
+
+        let mut history = History::default();
+        history.push_undo(model.clone());
+
+        // Deleting the only part drawing it takes the texture with it.
+        model.delete_node(&part).unwrap();
+        assert!(model.texture_ids().is_empty());
+        history.push_undo(model.clone());
+
+        assert!(
+            history.bytes() > payload,
+            "the snapshot that can undo the delete still holds the bytes"
+        );
+        history.trim(1, usize::MAX);
+        assert!(
+            history.bytes() < payload,
+            "nothing holds the payload once that snapshot is gone: {}",
+            history.bytes()
+        );
+    }
+
     /// Undo, redo and trimming all move snapshots between the stacks; the
     /// ledger has to follow them or it drifts.
     #[test]

@@ -824,3 +824,83 @@ fn the_warnings_panel_reads_the_models_own_check() {
         warnings(&mut app),
     );
 }
+
+/// A texture with no part drawing it is deleted by the edit that took its last
+/// user. Undo brings it back here; nothing brings it back for an addon that
+/// named it by Id, so the app holds the edit until the author has seen what it
+/// costs — the same reason an Id rename is held.
+#[test]
+fn an_edit_that_would_delete_a_texture_waits_to_be_confirmed() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let part = first_meshed_node(&editor, session);
+    let tex = editor
+        .with_model(session, |m| match m.node(&part).map(|n| &n.kind) {
+            Some(ModelNodeKind::Part(p)) => p.albedo().cloned(),
+            _ => None,
+        })
+        .unwrap()
+        .expect("the part draws a texture");
+
+    app.guard_texture_drop(DroppingEdit::Send(Box::new(Command::NodeDelete {
+        session,
+        node: part.clone(),
+    })));
+
+    assert_eq!(
+        app.texture_drop.as_ref().map(|held| held.dropped.clone()),
+        Some(vec![tex.clone()]),
+        "the delete is held, naming what it would take"
+    );
+    assert!(
+        editor
+            .with_model(session, |m| m.node(&part).is_some())
+            .unwrap(),
+        "and nothing has happened to the document yet"
+    );
+
+    let held = app.texture_drop.take().expect("a held edit");
+    app.run_dropping_edit(held.edit);
+
+    assert!(editor
+        .with_model(session, |m| m.node(&part).is_none())
+        .unwrap());
+    assert!(editor
+        .with_model(session, |m| m.texture(&tex).is_none())
+        .unwrap());
+}
+
+/// An edit that leaves every texture with a part drawing it costs nothing to
+/// undo, so it is not worth a prompt and does not get one.
+#[test]
+fn an_edit_that_deletes_no_texture_is_not_held() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let parent = editor
+        .with_model(session, |m| m.root().cloned())
+        .unwrap()
+        .expect("a complete model has a root");
+    let group = match app.send(Command::NodeAdd {
+        session,
+        parent,
+        kind: catchlight_editor_protocol::NodeKindArg::Group,
+        name: None,
+    }) {
+        Reply::Ok {
+            body: ResponseBody::Node { node, .. },
+            ..
+        } => node,
+        other => panic!("{other:?}"),
+    };
+
+    app.guard_texture_drop(DroppingEdit::Send(Box::new(Command::NodeDelete {
+        session,
+        node: group.clone(),
+    })));
+
+    assert!(app.texture_drop.is_none(), "nothing to warn about");
+    assert!(
+        editor
+            .with_model(session, |m| m.node(&group).is_none())
+            .unwrap(),
+        "so it ran instead of waiting"
+    );
+}
