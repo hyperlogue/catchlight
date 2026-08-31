@@ -1,4 +1,4 @@
-pub mod animation;
+pub(crate) mod animation;
 pub mod components;
 pub mod deform;
 pub mod fill;
@@ -15,7 +15,6 @@ pub mod puppet;
 pub mod texture;
 pub mod weld;
 
-pub use animation::*;
 pub use components::*;
 pub use deform::*;
 pub use id::*;
