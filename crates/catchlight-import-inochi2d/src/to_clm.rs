@@ -21,6 +21,11 @@
 //! `<name>.y`, adjacent in param order, and every binding under it becomes a
 //! two-param binding over the pair. A pendulum aimed at one is aimed at both.
 //!
+//! **A deform binding has to have vertices to move**, so `convert_binding`
+//! drops one whose node carries no mesh: it moves nothing in the source
+//! either, and the reader refuses a deform on a node it cannot size the cells
+//! from.
+//!
 //! **A param has to be posable and a part has to name a texture the file
 //! carries**, so this is where two of the crate's repairs land (the rule is in
 //! the crate doc). `usable_range` widens a range the source could not move
@@ -565,6 +570,18 @@ fn convert_binding(
     let deform_len = target
         .and_then(|n| mesh_of(&n.kind))
         .map_or(0, |m| m.verts.len());
+    // A node with no vertices — a group, a composite, a pendulum, a part whose
+    // mesh is empty — has nothing for a deform to move, so the binding drives
+    // no pixel and dropping it draws the same frame. Keeping it would write a
+    // `.clm` the loader refuses (`add_binding`'s `NotMeshed`).
+    if kind == "deform" && deform_len == 0 {
+        tracing::warn!(
+            "dropping the deform binding on node {} ({:?}): the node has no mesh vertices to move",
+            named.id,
+            named.name,
+        );
+        return None;
+    }
     let values = convert_binding_values(
         kind,
         values_json,

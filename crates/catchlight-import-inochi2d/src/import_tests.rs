@@ -498,6 +498,65 @@ fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
 }
 
 #[test]
+fn a_deform_binding_on_a_node_with_no_mesh_is_dropped() {
+    // A group has no vertices, and neither does a part whose mesh is empty:
+    // there is nothing for either binding to move.
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [
+                    {"uuid": 2, "name": "group", "type": "Node"},
+                    {"uuid": 3, "name": "empty", "type": "Part", "textures": [0],
+                     "mesh": {"verts": [], "uvs": [], "indices": []}},
+                    two_vertex_part(4, "meshed")
+                ]
+            },
+            "param": [{
+                "uuid": 100, "name": "p", "is_vec2": false,
+                "min": [0.0, 0.0], "max": [1.0, 1.0], "defaults": [0.0, 0.0],
+                "axis_points": [[0.0, 1.0], [0.0]],
+                "bindings": [
+                    {"node": 2, "param_name": "deform", "values": [
+                        [[[1.0, 2.0]]], [[[3.0, 4.0]]]
+                    ]},
+                    {"node": 3, "param_name": "deform", "values": [
+                        [[[1.0, 2.0]]], [[[3.0, 4.0]]]
+                    ]},
+                    {"node": 4, "param_name": "deform", "values": [
+                        [[[1.0, 2.0], [3.0, 4.0]]], [[[5.0, 6.0], [7.0, 8.0]]]
+                    ]}
+                ]
+            }]
+        }),
+        1,
+    )
+    .expect("import");
+
+    assert_eq!(
+        file.doc
+            .bindings
+            .iter()
+            .map(|b| b.node.to_string())
+            .collect::<Vec<_>>(),
+        vec!["node-3".to_string()],
+        "only the node with vertices keeps its deform"
+    );
+
+    let model = reread(&file);
+    // `.clm` refuses a deform on a meshless node, so the drop is what makes
+    // this document loadable at all.
+    assert_eq!(
+        model
+            .node(&NodeId::new("node-1").unwrap())
+            .expect("the group survives the binding that named it")
+            .name
+            .as_str(),
+        "group"
+    );
+}
+
+#[test]
 fn a_part_naming_no_texture_takes_slot_zero_when_the_rig_has_one() {
     let with_texture = import(
         json!({"nodes": {"uuid": 1, "name": "bare", "type": "Part",
