@@ -2,16 +2,23 @@
 //!
 //! Every case here is a shape a real export has produced or could: a mask
 //! naming a node that is not there, two nodes sharing a uuid, a field of the
-//! wrong JSON type, a node type catchlight does not model. The reader's
-//! contract is that none of them is an error — the node loads with the
-//! offending part dropped or defaulted — and these pin which half that is.
+//! wrong JSON type, a node type catchlight does not model. Sloppiness is not an
+//! error — the node loads with the offending part dropped or defaulted — and
+//! these pin which half each case takes.
+//!
+//! The rest of the file is the repair-or-refuse rule from the crate doc, one
+//! test per behaviour. A repair is pinned twice: what the document holds, and
+//! that the document still loads — a "repair" that leaves a `.clm` no reader
+//! accepts has repaired nothing.
 
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;
 use crate::ImportError;
-use catchlight_core::formats::clm::{ClmDocument, ClmIndices, ClmNode, ClmNodeKind};
-use catchlight_core::{NodeId, TexId};
+use catchlight_core::formats::clm::{ClmDocument, ClmFile, ClmIndices, ClmNode, ClmNodeKind};
+use catchlight_core::texture::{EncodedTexture, TextureFormat};
+use catchlight_core::{Model, NodeId, TexId};
 use serde_json::json;
+use std::sync::Arc;
 
 /// Read one node tree, given as the `.inx` payload's `nodes` value.
 fn doc(nodes: serde_json::Value) -> ClmDocument {
@@ -25,6 +32,36 @@ fn try_doc(nodes: serde_json::Value) -> Result<ClmDocument, ImportError> {
         vendors: Vec::new(),
     };
     from_inx_model(&model).map(|f| f.doc)
+}
+
+/// Import a whole payload — nodes, params and a rig carrying `textures`
+/// texture slots.
+fn import(payload: serde_json::Value, textures: usize) -> Result<ClmFile, ImportError> {
+    let model = InxModel {
+        payload,
+        // The import carries texture bytes verbatim and decodes none of them,
+        // so what a slot encodes is not what these tests are about.
+        textures: (0..textures)
+            .map(|_| EncodedTexture {
+                format: TextureFormat::Png,
+                data: Arc::from(&b"texture bytes"[..]),
+                premultiplied: true,
+            })
+            .collect(),
+        vendors: Vec::new(),
+    };
+    from_inx_model(&model)
+}
+
+/// The imported document, read back the way a `.clm` off disk is read: through
+/// the loader, out to bytes, and in through the byte reader. A repair that
+/// leaves a document this refuses is not a repair.
+fn reread(file: &ClmFile) -> Model {
+    let bytes = Model::from_clm_file(file)
+        .expect("the repaired document loads")
+        .to_clm_bytes()
+        .expect("and writes back out");
+    Model::from_clm_bytes(&bytes).expect("and reads back in")
 }
 
 fn node_named<'a>(doc: &'a ClmDocument, name: &str) -> &'a ClmNode {
@@ -142,108 +179,80 @@ fn a_mask_whose_source_is_not_there_is_dropped() {
     assert_eq!(part.masks[0].source, node(1));
 }
 
-/// A mask is the source's own drawing, so `Model::mask_add` and the `.clm`
-/// reader take only a part or a composite. An `.inx` may point one at
-/// anything, and an import that carried that through would write a file that
-/// does not open — so a source catchlight never draws is dropped like one
-/// that does not resolve at all.
+/// A mask is the source's own drawing rasterized into a stencil, so
+/// `Model::mask_add` and the `.clm` reader take only a part or a composite.
+/// An `.inx` may point one at anything, and a mask on a node that draws
+/// nothing clipped nothing in the source runtime either — so it is dropped
+/// like one whose source does not resolve, and the document still loads.
 #[test]
 fn a_mask_whose_source_is_never_drawn_is_dropped() {
-    let d = doc(json!({
-        "uuid": 1, "name": "root", "type": "Node",
-        "children": [
-            {"uuid": 7, "name": "lattice", "type": "MeshGroup",
-             "mesh": {"verts": [], "uvs": [], "indices": []}},
-            {"uuid": 8, "name": "sway", "type": "SimplePhysics"},
-            {"uuid": 9, "name": "holder", "type": "Node"},
-            {"uuid": 10, "name": "face", "type": "Composite"},
-            {"uuid": 42, "name": "P", "type": "Part", "textures": [0],
-             "mesh": {"verts": [], "uvs": [], "indices": []},
-             "masks": [
-                {"source": 7, "mode": "Mask"},
-                {"source": 8, "mode": "Mask"},
-                {"source": 9, "mode": "Mask"},
-                {"source": 10, "mode": "Mask"}
-             ]}
-        ]
-    }));
-    let ClmNodeKind::Part(part) = &node_named(&d, "P").kind else {
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [
+                    {"uuid": 7, "name": "lattice", "type": "MeshGroup",
+                     "mesh": {"verts": [0.0, 0.0, 1.0, 0.0], "uvs": [], "indices": [0, 1]}},
+                    {"uuid": 8, "name": "sway", "type": "SimplePhysics"},
+                    {"uuid": 9, "name": "holder", "type": "Node"},
+                    {"uuid": 10, "name": "face", "type": "Composite"},
+                    {"uuid": 11, "name": "drawn", "type": "Part", "textures": [0],
+                     "mesh": {
+                        "verts": [0.0, 0.0, 1.0, 0.0],
+                        "uvs": [0.0, 0.0, 1.0, 0.0],
+                        "indices": [0, 1]
+                     },
+                     "masks": [
+                        {"source": 7, "mode": "Mask"},
+                        {"source": 8, "mode": "Mask"},
+                        {"source": 9, "mode": "Mask"},
+                        {"source": 10, "mode": "Mask"}
+                     ]}
+                ]
+            }
+        }),
+        1,
+    )
+    .expect("import");
+
+    let ClmNodeKind::Part(part) = &node_named(&file.doc, "drawn").kind else {
         panic!("expected Part");
     };
     assert_eq!(part.masks.len(), 1, "only the composite is drawn");
-    assert_eq!(part.masks[0].source, node(4));
+    assert_eq!(part.masks[0].source, node(4), "which is `face`");
+    reread(&file);
 }
 
-/// The key positions are normalized across the range, so a collapsed,
-/// inverted or non-finite one has nothing to normalize onto and `Model`
-/// refuses it. Like any other field an `.inx` got wrong, it defaults.
+/// A mesh group is never drawn, so its UVs go unchecked — but a `ClmMesh` may
+/// not carry UVs that do not pair with its vertices, and the reader refuses
+/// one that does. Nothing samples them, so they are dropped rather than
+/// carried into a file that will not open.
 #[test]
-fn a_param_range_the_model_would_refuse_falls_back_to_the_default() {
-    let param = |min: serde_json::Value, max: serde_json::Value| {
-        let model = InxModel {
-            payload: json!({
-                "nodes": {"uuid": 1, "name": "root", "type": "Node"},
-                "param": [{
-                    "uuid": 10, "name": "p", "is_vec2": false,
-                    "min": min, "max": max, "defaults": [0.0, 0.0],
-                    "axis_points": [[0.0, 1.0], [0.0]],
-                    "bindings": []
-                }],
-            }),
-            textures: Vec::new(),
-            vendors: Vec::new(),
-        };
-        let file = from_inx_model(&model).expect("import");
-        catchlight_core::Model::from_clm_file(&file).expect("the import opens");
-        let [p] = &file.doc.params[..] else {
-            panic!("one param")
-        };
-        (p.min, p.max)
-    };
+fn a_mesh_groups_unpaired_uvs_are_dropped_rather_than_carried() {
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [{
+                    "uuid": 2, "name": "deformer", "type": "MeshGroup",
+                    "mesh": {
+                        "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+                        "uvs": [0.0, 0.0],
+                        "indices": [0, 1, 2]
+                    }
+                }]
+            }
+        }),
+        0,
+    )
+    .expect("a mesh group is not refused for uvs nothing reads");
 
-    assert_eq!(param(json!([-2.0, 0.0]), json!([2.0, 0.0])), (-2.0, 2.0));
-    assert_eq!(param(json!([1.0, 0.0]), json!([1.0, 0.0])), (0.0, 1.0));
-    assert_eq!(param(json!([2.0, 0.0]), json!([1.0, 0.0])), (0.0, 1.0));
-}
-
-/// An index naming a vertex the mesh does not have would make the renderer
-/// read past the buffer, and the `.clm` reader refuses it. Drop the triangle
-/// it belongs to, not the mesh.
-#[test]
-fn a_mesh_index_past_the_vertices_loses_its_triangle() {
-    let d = doc(json!({
-        "type": "Part",
-        "textures": [0],
-        "mesh": {
-            "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-            "uvs": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-            "indices": [0, 1, 2, 0, 1, 9]
-        }
-    }));
-    let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
-        panic!("expected Part");
+    let ClmNodeKind::MeshGroup(group) = &node_named(&file.doc, "deformer").kind else {
+        panic!("expected MeshGroup");
     };
-    assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1, 2]));
-}
-
-/// A part whose uvs do not pair up with its vertices cannot be drawn from,
-/// and the `.clm` reader refuses it — so the uvs go, not the geometry.
-#[test]
-fn mesh_uvs_that_do_not_match_the_vertices_are_dropped() {
-    let d = doc(json!({
-        "type": "Part",
-        "textures": [0],
-        "mesh": {
-            "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-            "uvs": [0.0, 0.0],
-            "indices": [0, 1, 2]
-        }
-    }));
-    let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
-        panic!("expected Part");
-    };
-    assert!(part.mesh.uvs.is_empty());
-    assert_eq!(part.mesh.verts.len(), 6, "the geometry is untouched");
+    assert!(group.mesh.uvs.is_empty());
+    assert_eq!(group.mesh.verts.len(), 6, "the geometry is untouched");
+    reread(&file);
 }
 
 #[test]
@@ -385,4 +394,303 @@ fn a_mesh_with_an_odd_coordinate_count_keeps_the_pairs_it_has() {
     // The trailing lone coordinate is not a vertex; the pairs before it are.
     assert_eq!(part.mesh.verts.len() / 2, 2);
     assert_eq!(part.mesh.indices, ClmIndices::U16(vec![0, 1]));
+}
+
+/// A part with two vertices, named `name`, drawing texture slot 0.
+fn two_vertex_part(uuid: u32, name: &str) -> serde_json::Value {
+    json!({
+        "uuid": uuid, "name": name, "type": "Part", "textures": [0],
+        "mesh": {
+            "verts": [0.0, 0.0, 1.0, 0.0],
+            "uvs": [0.0, 0.0, 1.0, 0.0],
+            "indices": [0, 1]
+        }
+    })
+}
+
+/// One param with one binding, over two x keypoints and one y.
+fn one_binding(binding: serde_json::Value) -> serde_json::Value {
+    json!([{
+        "uuid": 100, "name": "p", "is_vec2": false,
+        "min": [0.0, 0.0], "max": [1.0, 1.0], "defaults": [0.0, 0.0],
+        "axis_points": [[0.0, 1.0], [0.0]],
+        "bindings": [binding]
+    }])
+}
+
+#[test]
+fn a_param_that_cannot_be_posed_against_is_widened_by_one() {
+    // `pinned` cannot move in the source either, and 1e40 is past what an f32
+    // holds, so it reaches the reader as an infinity.
+    let file = import(
+        json!({
+            "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+            "param": [
+                {"uuid": 10, "name": "pinned", "is_vec2": false,
+                 "min": [0.5, 0.0], "max": [0.5, 0.0], "defaults": [0.5, 0.0],
+                 "axis_points": [[0.0, 1.0], [0.0]], "bindings": []},
+                {"uuid": 11, "name": "unbounded", "is_vec2": false,
+                 "min": [0.0, 0.0], "max": [1e40, 0.0], "defaults": [0.0, 0.0],
+                 "axis_points": [[0.0, 1.0], [0.0]], "bindings": []},
+                {"uuid": 12, "name": "fine", "is_vec2": false,
+                 "min": [-2.0, 0.0], "max": [3.0, 0.0], "defaults": [0.0, 0.0],
+                 "axis_points": [[0.0, 1.0], [0.0]], "bindings": []}
+            ]
+        }),
+        0,
+    )
+    .expect("import");
+
+    let range = |i: usize| (file.doc.params[i].min, file.doc.params[i].max);
+    assert_eq!(range(0), (0.5, 1.5), "a collapsed range widens by one");
+    assert_eq!(
+        range(1),
+        (0.0, 1.0),
+        "a bound that is not a number collapses"
+    );
+    assert_eq!(range(2), (-2.0, 3.0), "a usable range is left alone");
+    assert_eq!(
+        file.doc.params[0].default, 0.5,
+        "widening moves no default: the rest pose is the source's"
+    );
+
+    let model = reread(&file);
+    assert_eq!(model.param_ids().len(), 3);
+}
+
+#[test]
+fn a_param_range_authored_backwards_is_refused_naming_the_param() {
+    let err = import(
+        json!({
+            "nodes": {"uuid": 1, "name": "root", "type": "Node"},
+            "param": [{
+                "uuid": 10, "name": "backwards", "is_vec2": false,
+                "min": [1.0, 0.0], "max": [0.0, 0.0], "defaults": [0.0, 0.0],
+                "axis_points": [[0.0, 1.0], [0.0]], "bindings": []
+            }]
+        }),
+        0,
+    )
+    .expect_err("an inverted range is not repaired");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("param-0") && msg.contains("backwards"),
+        "the error names the param: {msg}"
+    );
+}
+
+#[test]
+fn a_mesh_index_past_the_vertex_array_is_refused_naming_the_node() {
+    let err = try_doc(json!({
+        "uuid": 1, "name": "root", "type": "Node",
+        "children": [{
+            "uuid": 2, "name": "broken", "type": "Part", "textures": [0],
+            "mesh": {
+                "verts": [0.0, 0.0, 1.0, 0.0],
+                "uvs": [0.0, 0.0, 1.0, 0.0],
+                "indices": [0, 1, 2]
+            }
+        }]
+    }))
+    .expect_err("a mesh inochi2d cannot draw is not repaired");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("node-1") && msg.contains("broken") && msg.contains('2'),
+        "the error names the node and the index: {msg}"
+    );
+}
+
+#[test]
+fn a_uv_array_that_does_not_pair_with_the_vertices_is_refused() {
+    let err = try_doc(json!({
+        "uuid": 1, "name": "root", "type": "Node",
+        "children": [{
+            "uuid": 2, "name": "unpaired", "type": "Part", "textures": [0],
+            "mesh": {
+                "verts": [0.0, 0.0, 1.0, 0.0],
+                "uvs": [0.0, 0.0],
+                "indices": [0, 1]
+            }
+        }]
+    }))
+    .expect_err("a part samples through its uvs, so they have to pair");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("node-1") && msg.contains("unpaired"),
+        "the error names the node: {msg}"
+    );
+
+    // A mesh group is never drawn and inochi2d authors it no uvs, so the same
+    // mesh is fine on one.
+    let d = doc(json!({
+        "uuid": 1, "name": "root", "type": "Node",
+        "children": [{
+            "uuid": 2, "name": "deformer", "type": "MeshGroup",
+            "mesh": {"verts": [0.0, 0.0, 1.0, 0.0], "uvs": [], "indices": [0, 1]}
+        }]
+    }));
+    let ClmNodeKind::MeshGroup(group) = &node_named(&d, "deformer").kind else {
+        panic!("expected a MeshGroup");
+    };
+    assert_eq!(group.mesh.vertex_count(), 2);
+}
+
+#[test]
+fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
+    // Two vertices, so a cell holds four offsets. The first cell authors three
+    // points and the second one; the source drew neither the third point (no
+    // vertex takes it) nor a second point in the second cell (it stayed put).
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [two_vertex_part(2, "part")]
+            },
+            "param": one_binding(json!({
+                "node": 2, "param_name": "deform", "values": [
+                    [[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]],
+                    [[[7.0, 8.0]]]
+                ]
+            }))
+        }),
+        1,
+    )
+    .expect("a ragged deform matrix is repaired, not refused");
+
+    let cells = catchlight_core::model::deform_cells(&file.doc.bindings[0].values)
+        .expect("the deform binding");
+    assert_eq!(
+        cells.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
+        vec![
+            // The third point is dropped; y still flips into catchlight's frame.
+            vec![1.0, -2.0, 3.0, -4.0],
+            // The missing point is zero: that vertex is undeformed.
+            vec![7.0, -8.0, 0.0, 0.0],
+        ],
+    );
+
+    // Without the fit, `.clm` refuses the document outright.
+    reread(&file);
+}
+
+#[test]
+fn a_deform_binding_on_a_node_with_no_mesh_is_dropped() {
+    // A group has no vertices, and neither does a part whose mesh is empty:
+    // there is nothing for either binding to move.
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [
+                    {"uuid": 2, "name": "group", "type": "Node"},
+                    {"uuid": 3, "name": "empty", "type": "Part", "textures": [0],
+                     "mesh": {"verts": [], "uvs": [], "indices": []}},
+                    two_vertex_part(4, "meshed")
+                ]
+            },
+            "param": [{
+                "uuid": 100, "name": "p", "is_vec2": false,
+                "min": [0.0, 0.0], "max": [1.0, 1.0], "defaults": [0.0, 0.0],
+                "axis_points": [[0.0, 1.0], [0.0]],
+                "bindings": [
+                    {"node": 2, "param_name": "deform", "values": [
+                        [[[1.0, 2.0]]], [[[3.0, 4.0]]]
+                    ]},
+                    {"node": 3, "param_name": "deform", "values": [
+                        [[[1.0, 2.0]]], [[[3.0, 4.0]]]
+                    ]},
+                    {"node": 4, "param_name": "deform", "values": [
+                        [[[1.0, 2.0], [3.0, 4.0]]], [[[5.0, 6.0], [7.0, 8.0]]]
+                    ]}
+                ]
+            }]
+        }),
+        1,
+    )
+    .expect("import");
+
+    assert_eq!(
+        file.doc
+            .bindings
+            .iter()
+            .map(|b| b.node.to_string())
+            .collect::<Vec<_>>(),
+        vec!["node-3".to_string()],
+        "only the node with vertices keeps its deform"
+    );
+
+    let model = reread(&file);
+    // `.clm` refuses a deform on a meshless node, so the drop is what makes
+    // this document loadable at all.
+    assert_eq!(
+        model
+            .node(&NodeId::new("node-1").unwrap())
+            .expect("the group survives the binding that named it")
+            .name
+            .as_str(),
+        "group"
+    );
+}
+
+#[test]
+fn a_part_naming_no_texture_takes_slot_zero_when_the_rig_has_one() {
+    let with_texture = import(
+        json!({"nodes": {"uuid": 1, "name": "bare", "type": "Part",
+                         "mesh": {"verts": [], "uvs": [], "indices": []}}}),
+        1,
+    )
+    .expect("import");
+    let ClmNodeKind::Part(part) = &with_texture.doc.nodes[0].kind else {
+        panic!("expected a Part");
+    };
+    assert_eq!(
+        part.albedo,
+        Some(TexId::new("tex-0").unwrap()),
+        "slot 0 is what the source runtime draws"
+    );
+    reread(&with_texture);
+
+    let without = import(
+        json!({"nodes": {"uuid": 1, "name": "bare", "type": "Part",
+                         "mesh": {"verts": [], "uvs": [], "indices": []}}}),
+        0,
+    )
+    .expect("import");
+    let ClmNodeKind::Part(part) = &without.doc.nodes[0].kind else {
+        panic!("expected a Part");
+    };
+    assert_eq!(
+        part.albedo, None,
+        "a rig with no textures has no slot 0 to name"
+    );
+    reread(&without);
+}
+
+#[test]
+fn a_texture_no_part_draws_is_dropped_and_the_survivors_keep_their_ids() {
+    let file = import(
+        json!({
+            "nodes": {
+                "uuid": 1, "name": "root", "type": "Node",
+                "children": [
+                    {"uuid": 2, "name": "one", "type": "Part", "textures": [1],
+                     "mesh": {"verts": [], "uvs": [], "indices": []}},
+                    {"uuid": 3, "name": "three", "type": "Part", "textures": [3],
+                     "mesh": {"verts": [], "uvs": [], "indices": []}}
+                ]
+            }
+        }),
+        4,
+    )
+    .expect("import");
+
+    assert_eq!(
+        file.textures
+            .iter()
+            .map(|t| t.id.to_string())
+            .collect::<Vec<_>>(),
+        vec!["tex-1".to_string(), "tex-3".to_string()],
+        "dropping tex-0 and tex-2 renumbers nothing"
+    );
+    reread(&file);
 }

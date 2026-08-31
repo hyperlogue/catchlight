@@ -12,6 +12,15 @@
 //! array fills its missing components one at a time, a field of the wrong
 //! JSON type falls back to its default, and the node walk carries its own
 //! stack because `.inx` is untrusted and unbounded in depth.
+//!
+//! Tolerance stops where the crate's repair rule does (see the crate doc):
+//! repair only what provably cannot change how inochi2d renders the rig.
+//! [`convert_mesh`] **refuses** a mesh whose indices or UVs do not fit its
+//! vertices — the source's own drawing of one is undefined, so there is no
+//! behaviour to preserve — while a deform cell that disagrees with its node's
+//! mesh is **repaired** by zipping it against the mesh, because the offsets
+//! past the last vertex drive nothing and the vertices past the last offset
+//! stay where they were.
 
 use std::collections::HashMap;
 
@@ -21,9 +30,19 @@ use catchlight_core::formats::clm::{
     ClmBindingValues, ClmCell, ClmCells, ClmIndices, ClmMesh, ClmTransform,
 };
 use catchlight_core::interpolate::InterpolateMode;
+use catchlight_core::NodeId;
 
 use crate::error::ImportError;
 use crate::schema::{SchemaMesh, SchemaNode, SchemaParam, SchemaTransform};
+
+/// What a warning or an error calls one node: the Id the import minted for it
+/// and the name the source authored. `.inx` names nothing uniquely, so a
+/// message that carried only the name could point at four nodes at once.
+#[derive(Clone, Copy)]
+pub(crate) struct NodeRef<'a> {
+    pub(crate) id: &'a NodeId,
+    pub(crate) name: &'a str,
+}
 
 /// DFS pre-order flatten: append this node (parsed shallow) with its parent
 /// index, map its uuid → index, then descend into children. Pre-order keeps
@@ -109,70 +128,77 @@ fn reflect_transform_y(t: &mut ClmTransform) {
     t.rotation[2] = -t.rotation[2];
 }
 
-pub(crate) fn convert_mesh(m: Option<&SchemaMesh>, node: &str) -> ClmMesh {
+/// The mesh, checked against itself. An index past the vertex array or a UV
+/// array that does not pair with the vertices is a mesh inochi2d cannot draw
+/// either: its rendering is undefined, so there is no behaviour a repair could
+/// preserve and the import refuses the file naming the node.
+///
+/// `textured` says whether the UVs are read. A part samples its albedo through
+/// them, so one that does not pair with its vertices is malformed; a mesh group
+/// is never drawn and inochi2d authors none for it, so its UVs are not checked
+/// — and a ragged array on one is dropped rather than carried, since a
+/// [`ClmMesh`] may only hold UVs that pair with its vertices and nothing
+/// samples a mesh group's.
+///
+/// A trailing lone coordinate is not a vertex — `verts` and `uvs` are flat
+/// `[x, y, …]` — so it is dropped rather than left to make the arrays disagree
+/// with the vertex count everything downstream derives from them.
+pub(crate) fn convert_mesh(
+    m: Option<&SchemaMesh>,
+    node: NodeRef<'_>,
+    textured: bool,
+) -> Result<ClmMesh, ImportError> {
     let Some(m) = m else {
-        return ClmMesh::default();
+        return Ok(ClmMesh::default());
     };
+    let malformed = |detail: String| ImportError::MalformedMesh {
+        id: node.id.to_string(),
+        name: node.name.to_string(),
+        detail,
+    };
+    let vertices = m.verts.len() / 2;
+    if textured && m.uvs.len() / 2 != vertices {
+        return Err(malformed(format!(
+            "{vertices} vertices against {} uvs",
+            m.uvs.len() / 2
+        )));
+    }
+    if let Some(past) = m.indices.iter().copied().find(|&i| i as usize >= vertices) {
+        return Err(malformed(format!(
+            "index {past} names a vertex past the mesh's {vertices}"
+        )));
+    }
     let max = m.indices.iter().copied().max().unwrap_or(0);
     let indices = if max <= u16::MAX as u32 {
         ClmIndices::U16(m.indices.iter().map(|&i| i as u16).collect())
     } else {
         ClmIndices::U32(m.indices.clone())
     };
+    // A `ClmMesh` carries UVs that pair with its vertices or none at all, and
+    // the `.clm` reader refuses anything else. For a part that is already
+    // settled — the check above refused a ragged array. For a mesh group the
+    // UVs went unchecked because nothing samples them, which is the same
+    // reason dropping a ragged one provably cannot change how the rig draws.
+    let uvs = if m.uvs.len() / 2 == vertices {
+        m.uvs[..vertices * 2].to_vec()
+    } else {
+        tracing::warn!(
+            "node {} ({:?}): dropping {} uvs that do not pair with its {vertices} vertices; \
+             nothing samples a mesh group's",
+            node.id,
+            node.name,
+            m.uvs.len() / 2,
+        );
+        Vec::new()
+    };
     let mut mesh = ClmMesh {
-        verts: m.verts.clone(),
-        uvs: m.uvs.clone(),
+        verts: m.verts[..vertices * 2].to_vec(),
+        uvs,
         indices,
         origin: vec2_arr(&m.origin, [0.0, 0.0]),
     };
     reflect_mesh_y(&mut mesh);
-    normalize_mesh(&mut mesh, node);
-    mesh
-}
-
-/// Hold an `.inx` mesh to the shape a [`ClmMesh`] is allowed to be: `[x, y]`
-/// pairs, uvs that match them or none at all, and every index naming a vertex
-/// the mesh has. `.inx` is untrusted and the `.clm` reader refuses a mesh that
-/// is none of those, so a source that got it wrong is repaired here rather
-/// than written into a file that will not open.
-fn normalize_mesh(m: &mut ClmMesh, node: &str) {
-    if !m.verts.len().is_multiple_of(2) {
-        tracing::debug!("mesh on {node:?}: dropping a vertex with no y");
-        m.verts.pop();
-    }
-    if !m.uvs.is_empty() && m.uvs.len() != m.verts.len() {
-        tracing::debug!(
-            "mesh on {node:?}: dropping {} uvs for {} vertices",
-            m.uvs.len() / 2,
-            m.verts.len() / 2,
-        );
-        m.uvs.clear();
-    }
-    let vertices = m.verts.len() / 2;
-    match &mut m.indices {
-        ClmIndices::U16(v) => keep_triangles_in_range(v, vertices, node),
-        ClmIndices::U32(v) => keep_triangles_in_range(v, vertices, node),
-    }
-}
-
-/// Drop the triangles that name a vertex the mesh does not have, whole, so
-/// the remaining ones still describe the same surface. A trailing group of
-/// fewer than three indices is not a triangle and is kept or dropped on the
-/// same test — the reader only asks that every index name a vertex.
-fn keep_triangles_in_range<T: Copy + Into<u32>>(indices: &mut Vec<T>, vertices: usize, node: &str) {
-    let kept: Vec<T> = indices
-        .chunks(3)
-        .filter(|t| t.iter().all(|&i| (i.into() as usize) < vertices))
-        .flatten()
-        .copied()
-        .collect();
-    if kept.len() != indices.len() {
-        tracing::debug!(
-            "mesh on {node:?}: dropping {} index/indices naming a vertex it does not have",
-            indices.len() - kept.len(),
-        );
-    }
-    *indices = kept;
+    Ok(mesh)
 }
 
 /// Reflect mesh geometry into catchlight's Y-up frame (see [`reflect_transform_y`]).
@@ -194,6 +220,8 @@ pub(crate) fn convert_binding_values(
     is_set: Option<&[Vec<bool>]>,
     axis_x: &[f32],
     axis_y: &[f32],
+    node: NodeRef<'_>,
+    deform_len: usize,
 ) -> Option<ClmBindingValues> {
     if kind == "deform" {
         let mut d = matrix_vec2_flat(v);
@@ -202,8 +230,15 @@ pub(crate) fn convert_binding_values(
                 *y = -*y;
             }
         }
-        let vlen = d.data.iter().map(Vec::len).max().unwrap_or(0);
-        let cells = sparsify(d, is_set, axis_x, axis_y, &vec![0.0f32; vlen], close_vec);
+        fit_deform_cells(&mut d, deform_len, node);
+        let cells = sparsify(
+            d,
+            is_set,
+            axis_x,
+            axis_y,
+            &vec![0.0f32; deform_len],
+            close_vec,
+        );
         return Some(ClmBindingValues::Deform(cells));
     }
     // Reflect source-space outputs at the import boundary: spatial Y into
@@ -250,6 +285,30 @@ pub(crate) fn convert_binding_values(
         // so they are dropped here.
         _ => return None,
     })
+}
+
+/// Zip a deform matrix against the mesh it drives. A cell holds one `[dx, dy]`
+/// per vertex, and `.clm` refuses one that says otherwise, so a ragged matrix
+/// has to be resolved here — and both sides of the zip are free: an offset past
+/// the last vertex drives nothing, and a vertex past the last offset was
+/// already staying where it was. Extra offsets are dropped, missing ones are
+/// zeros, and the rendered pose is the one the source drew.
+fn fit_deform_cells(d: &mut Dense<Vec<f32>>, deform_len: usize, node: NodeRef<'_>) {
+    let ragged = d.data.iter().filter(|c| c.len() != deform_len).count();
+    if ragged == 0 {
+        return;
+    }
+    let shortest = d.data.iter().map(Vec::len).min().unwrap_or(0);
+    let longest = d.data.iter().map(Vec::len).max().unwrap_or(0);
+    tracing::warn!(
+        "node {} ({:?}): {ragged} deform cell(s) hold {shortest}..={longest} offsets where the \
+         node's mesh takes {deform_len}; truncating the long ones and zero-padding the short ones",
+        node.id,
+        node.name,
+    );
+    for cell in &mut d.data {
+        cell.resize(deform_len, 0.0);
+    }
 }
 
 pub(crate) fn reflect_z(value: f32) -> f32 {

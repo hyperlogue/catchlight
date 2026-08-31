@@ -43,25 +43,53 @@
 //! one both fail. The synthetic INX must therefore be authored in the
 //! **source** convention (Y-down, lower-zsort-in-front).
 //!
-//! **The reader is total, and what it produces opens.** On anything short of
-//! a corrupt container, import produces a model: a reference that does not
-//! resolve is dropped, a field of the wrong JSON type falls back to its
-//! default, and an unmodelled node type becomes a group —
-//! `import_tests.rs` pins which half each case takes. Totality is measured
-//! against the `.clm` reader, not against this crate's own patience, so
-//! anything that reader refuses is repaired here rather than written into a
-//! file that will not open: a mask whose source is not a part or a composite
-//! is dropped like an unresolvable one, a param range that is collapsed,
-//! inverted or non-finite falls back to `0..1`, and a mesh is held to `[x, y]`
-//! pairs with uvs that match them and indices that name a vertex.
-//! `.inx` is untrusted input, so the node walk carries its own stack rather
-//! than recursing, and every length the container declares is checked against
-//! a ceiling before anything is allocated for it.
+//! **The reader is tolerant of sloppiness.** A reference that does not resolve
+//! is dropped, a field of the wrong JSON type falls back to its default, and an
+//! unmodelled node type becomes a group — `import_tests.rs` pins which half
+//! each case takes. `.inx` is untrusted input, so the node walk carries its own
+//! stack rather than recursing, and every length the container declares is
+//! checked against a ceiling before anything is allocated for it.
+//!
+//! **A malformed rig is repaired only when the repair provably cannot change
+//! how inochi2d renders it; otherwise the import is refused with the node or
+//! param named.** Guessing is the one thing an import may not do: the `.clm` it
+//! writes is the source of truth afterwards, so a wrong-but-loadable model is
+//! unrecoverable in a way a refusal is not. Every repair says what it changed
+//! through `tracing::warn!`, naming the thing it changed.
+//!
+//! Repaired, because the source draws the same picture either way:
+//!
+//! - a param range that cannot be posed against — `min == max`, or a bound too
+//!   large to be a number — widens to `min..min + 1`; the source param cannot
+//!   move either (`usable_range`, `to_clm.rs`)
+//! - a deform cell that disagrees with its node's mesh is zipped against it —
+//!   offsets past the last vertex drive nothing, vertices past the last offset
+//!   stay undeformed (`fit_deform_cells`, `reflect.rs`)
+//! - a deform binding on a node with no mesh vertices is dropped; there is
+//!   nothing for it to move (`convert_binding`)
+//! - a part with no `textures` array takes `tex-0`, which is what the source
+//!   runtime draws, or no texture at all when the rig carries none
+//!   (`convert_part`)
+//! - a texture no part draws is dropped from the file (`from_inx_model`)
+//! - a mask whose source is not a part or a composite is dropped; catchlight
+//!   draws neither a mesh group nor a plain node nor a pendulum, so a source
+//!   that is one rasterized into no stencil in the source runtime either
+//!   (`convert_masks`, `to_clm.rs`)
+//! - a mesh group's UVs are dropped when they do not pair with its vertices;
+//!   nothing samples them, which is the same reason they are not checked
+//!   (`convert_mesh`, `reflect.rs`)
+//!
+//! Refused, because inochi2d's own rendering of them is undefined or unclear:
+//!
+//! - a mesh whose indices name vertices it does not have, or whose UVs do not
+//!   pair with its vertices (`convert_mesh`, `reflect.rs`)
+//! - a finite param range authored the wrong way round (`min > max`)
 //!
 //! **Textures are carried verbatim.** The bytes an `.inx` stores land in the
 //! model unchanged; decoding, the alpha crop and the UV remap belong to
 //! [`catchlight_core::texture`], which every model goes through whether it
-//! was imported or authored.
+//! was imported or authored. Ids are minted from the source's texture order,
+//! and dropping an undrawn texture never renumbers the ones that stay.
 //!
 //! **What is dropped**, because catchlight does not model it: meta, groups,
 //! automation, cameras, emissive and bump texture slots, `emissionStrength`,
