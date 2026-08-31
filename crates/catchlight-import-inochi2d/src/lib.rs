@@ -43,10 +43,17 @@
 //! one both fail. The synthetic INX must therefore be authored in the
 //! **source** convention (Y-down, lower-zsort-in-front).
 //!
-//! **The reader is total.** On anything short of a corrupt container, import
-//! produces a model: a reference that does not resolve is dropped, a field of
-//! the wrong JSON type falls back to its default, and an unmodelled node type
-//! becomes a group — `import_tests.rs` pins which half each case takes.
+//! **The reader is total, and what it produces opens.** On anything short of
+//! a corrupt container, import produces a model: a reference that does not
+//! resolve is dropped, a field of the wrong JSON type falls back to its
+//! default, and an unmodelled node type becomes a group —
+//! `import_tests.rs` pins which half each case takes. Totality is measured
+//! against the `.clm` reader, not against this crate's own patience, so
+//! anything that reader refuses is repaired here rather than written into a
+//! file that will not open: a mask whose source is not a part or a composite
+//! is dropped like an unresolvable one, a param range that is collapsed,
+//! inverted or non-finite falls back to `0..1`, and a mesh is held to `[x, y]`
+//! pairs with uvs that match them and indices that name a vertex.
 //! `.inx` is untrusted input, so the node walk carries its own stack rather
 //! than recursing, and every length the container declares is checked against
 //! a ceiling before anything is allocated for it.

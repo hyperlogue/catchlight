@@ -34,7 +34,7 @@ use catchlight_core::formats::clm::{
 };
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::texture::TextureFormat;
-use catchlight_core::{Model, NodeId, ParamId, TexId};
+use catchlight_core::{param_range_is_valid, Model, NodeId, ParamId, TexId};
 
 use crate::error::ImportError;
 use crate::inx::InxModel;
@@ -119,11 +119,16 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     }
     let slots = param_slots(&schema_params)?;
 
+    let drawn: Vec<bool> = flat
+        .iter()
+        .map(|(s, _)| matches!(s.ty.as_deref(), Some("Part" | "Composite")))
+        .collect();
     let refs = Refs {
         node_ids: &node_ids,
         uuid_node: &uuid_node,
         uuid_param: &uuid_param,
         slots: &slots,
+        drawn: &drawn,
     };
 
     let mut nodes = Vec::with_capacity(flat.len());
@@ -140,28 +145,33 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         let max = vec2_arr(&p.max, [1.0, 1.0]);
         let defaults = vec2_arr(&p.defaults, [0.0, 0.0]);
         match &slots[i] {
-            Slot::One(id) => params.push(ClmParam {
-                id: id.clone(),
-                name,
-                min: min[0],
-                max: max[0],
-                default: defaults[0],
-                key_positions: axis_x.clone(),
-            }),
+            Slot::One(id) => {
+                let (min, max) = param_range(min[0], max[0], &name, "x");
+                params.push(ClmParam {
+                    id: id.clone(),
+                    name,
+                    min,
+                    max,
+                    default: defaults[0],
+                    key_positions: axis_x.clone(),
+                });
+            }
             Slot::Pair(x, y) => {
+                let (min_x, max_x) = param_range(min[0], max[0], &name, "x");
+                let (min_y, max_y) = param_range(min[1], max[1], &name, "y");
                 params.push(ClmParam {
                     id: x.clone(),
                     name: format!("{name}.x"),
-                    min: min[0],
-                    max: max[0],
+                    min: min_x,
+                    max: max_x,
                     default: defaults[0],
                     key_positions: axis_x.clone(),
                 });
                 params.push(ClmParam {
                     id: y.clone(),
                     name: format!("{name}.y"),
-                    min: min[1],
-                    max: max[1],
+                    min: min_y,
+                    max: max_y,
                     default: defaults[1],
                     key_positions: axis_y.clone(),
                 });
@@ -237,6 +247,9 @@ struct Refs<'a> {
     uuid_node: &'a HashMap<u32, u32>,
     uuid_param: &'a HashMap<u32, u32>,
     slots: &'a [Slot],
+    /// Whether the node at each flat index becomes one catchlight draws — the
+    /// only thing a mask may name. Parallel to `node_ids`.
+    drawn: &'a [bool],
 }
 
 impl Refs<'_> {
@@ -246,6 +259,15 @@ impl Refs<'_> {
 
     fn slot_of_uuid(&self, uuid: u32) -> Option<&Slot> {
         self.slots.get(*self.uuid_param.get(&uuid)? as usize)
+    }
+
+    /// Whether the node this uuid names becomes a part or a composite.
+    fn draws(&self, uuid: u32) -> bool {
+        self.uuid_node
+            .get(&uuid)
+            .and_then(|&i| self.drawn.get(i as usize))
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -326,14 +348,36 @@ fn convert_node_kind(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmNodeKind, Imp
     })
 }
 
+/// A param's key positions are normalized across its range, so the range has
+/// to be finite and increasing — `Model` refuses one that is not. A source
+/// axis that is collapsed, inverted or non-finite falls back to the default
+/// `0..1`, like any other field an `.inx` got wrong.
+fn param_range(min: f32, max: f32, name: &str, axis: &str) -> (f32, f32) {
+    if param_range_is_valid(min, max) {
+        return (min, max);
+    }
+    tracing::debug!(
+        "param {name:?} ({axis}): {min}..{max} is not a range; falling back to the default 0..1",
+    );
+    (0.0, 1.0)
+}
+
 fn convert_masks(masks: &[SchemaMask], refs: &Refs<'_>) -> Vec<ClmMask> {
     masks
         .iter()
         .filter_map(|m| {
             // Drop masks whose source node doesn't resolve: `.inx` is untrusted
-            // and a dangling mask has nothing to clip against.
+            // and a dangling mask has nothing to clip against. Drop one that
+            // resolves to a node catchlight never draws for the same reason —
+            // a mask *is* the source's own drawing, so `Model::mask_add` and
+            // the `.clm` reader both take only a part or a composite.
+            let source = m.source?;
+            if !refs.draws(source) {
+                tracing::debug!("dropping a mask whose source {source} is not drawn");
+                return None;
+            }
             Some(ClmMask {
-                source: refs.node_of_uuid(m.source?)?.clone(),
+                source: refs.node_of_uuid(source)?.clone(),
                 mode: mask_mode(m.mode.as_deref()),
             })
         })
@@ -351,7 +395,7 @@ fn convert_part(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmPart, ImportError>
         },
     };
     Ok(ClmPart {
-        mesh: convert_mesh(s.mesh.as_ref()),
+        mesh: convert_mesh(s.mesh.as_ref(), s.name.as_deref().unwrap_or_default()),
         albedo,
         opacity: s.opacity.unwrap_or(1.0),
         blend_mode: blend(s.blend_mode.as_deref())?,
@@ -379,7 +423,7 @@ fn convert_composite(s: &SchemaNode, refs: &Refs<'_>) -> Result<ClmComposite, Im
 fn convert_mesh_group(s: &SchemaNode) -> ClmMeshGroup {
     s.log_dropped_mesh_group_color();
     ClmMeshGroup {
-        mesh: convert_mesh(s.mesh.as_ref()),
+        mesh: convert_mesh(s.mesh.as_ref(), s.name.as_deref().unwrap_or_default()),
         dynamic: s.dynamic_deformation.unwrap_or(false),
         translate_children: s.translate_children.unwrap_or(false),
     }
