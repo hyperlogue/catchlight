@@ -69,10 +69,13 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
       # The TypeScript wire types are generated from the Rust enums and
-      # committed. Nothing else checks the two against each other, so this is
-      # the guard: regenerate, and fail if the committed file moved.
+      # committed. The generator's own tests regenerate and byte-compare, and
+      # hold the command classification to the enum; they are the one guard,
+      # run here as the same `cargo test` a contributor runs locally. The
+      # fixture tests are skipped because they read LFS objects this job does
+      # not fetch.
       - name: protocol types are current
-        run: nix develop -c cargo xtask ts --check
+        run: nix develop -c cargo test -p xtask -- --skip fixtures::
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test

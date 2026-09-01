@@ -6,7 +6,7 @@
 //!   cargo xtask import <model.inx|.inp> [-o <model.clm>]
 //!   cargo xtask gen-fixture <name>
 //!   cargo xtask wasm [--debug]
-//!   cargo xtask ts [--check]
+//!   cargo xtask ts
 
 mod fixtures;
 mod ts;
@@ -44,9 +44,9 @@ fn print_usage() {
     );
     eprintln!("  wasm [--debug]");
     eprintln!("      Build @catchlight/wasm into packages/wasm/ (generated, not committed).");
-    eprintln!("  ts [--check]");
+    eprintln!("  ts");
     eprintln!("      Generate packages/core/src/protocol.gen.ts from the wire types");
-    eprintln!("      (committed). --check fails instead of writing, which is what CI runs.");
+    eprintln!("      (committed); `cargo test -p xtask` fails if the file is stale.");
 }
 
 /// The workspace root, from this crate's manifest directory. Every task writes

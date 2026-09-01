@@ -78,7 +78,7 @@ cargo deny check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d -p catchlight-editor-server -p catchlight-editor-wasm
-cargo xtask ts --check
+cargo test -p xtask -- --skip fixtures::
 bun install --frozen-lockfile && bun run typecheck && bun test
 cargo test --workspace
 ```
@@ -158,9 +158,9 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor-wasm/src/viewport.rs` — who owns the frame loop,
   what `invalidate` promises, where a size comes from, which limit bounds it
 - `packages/core/src/transport.ts`, `session.ts`, `storage.ts`, `viewport.ts` —
-  local against remote, one send method per command kind, why a store is not a
-  transport, why the backing store is measured rather than multiplied, and when
-  a viewport is allowed to idle
+  the document is the wasm editor in this tab, one send method per command
+  kind, why a store is not a transport, why the backing store is measured
+  rather than multiplied, and when a viewport is allowed to idle
 - `crates/xtask/src/fixtures.rs` — hand-authored model fixtures
 - `crates/xtask/src/ts.rs` — one generated module, nothing falling off the list,
   no command reaching TypeScript unclassified
@@ -186,7 +186,8 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
   — file-level operations on a `.clm`; `--help` documents the Id charset and the
   exit statuses.
 - `cargo xtask wasm [--debug]` — build `packages/wasm/`.
-- `cargo xtask ts [--check]` — regenerate `packages/core/src/protocol.gen.ts`.
+- `cargo xtask ts` — regenerate `packages/core/src/protocol.gen.ts`;
+  `cargo test -p xtask` fails if the committed file is stale.
 
 # Decisions
 
