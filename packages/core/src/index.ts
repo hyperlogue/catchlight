@@ -18,6 +18,8 @@ export type { SessionCommand, Unsubscribe } from "./session.js";
 export { FetchStorage, MemoryStorage, NotFoundError } from "./storage.js";
 export type { Storage } from "./storage.js";
 export { LocalTransport, ProtocolError } from "./transport.js";
+export { Viewport, devicePixelSize } from "./viewport.js";
+export type { WasmViewport } from "./viewport.js";
 export type {
   ClientErrorCode,
   FailureCode,
