@@ -1,0 +1,152 @@
+/**
+ * The editor, as the layers above it see it.
+ *
+ * This is the whole public surface of `@catchlight/core`: everything a React
+ * hook or a host application needs, and nothing about how it is served. In
+ * particular nothing above this file may reach the transport, the wasm module
+ * or the store directly — that is what keeps "no mirror" (see `session.ts`) and
+ * "local or remote" (see `transport.ts`) decisions changeable in one package.
+ *
+ * The rule this package lives by: **it contains only web-platform glue.** File
+ * pickers, OPFS, canvas lifecycle, pointer marshalling, this store adapter.
+ * Anything a native iOS or Android editor would also need — what a drag means,
+ * what a tool does, how a hit test resolves — belongs in Rust, because that is
+ * the half a native build reuses verbatim and the half TypeScript would have to
+ * write twice.
+ */
+
+import { Session } from "./session.js";
+import type { Storage } from "./storage.js";
+import { LocalTransport, ProtocolError } from "./transport.js";
+import type { Command, ResponseBody, Transport, WasmEditor } from "./transport.js";
+
+export interface EditorOptions {
+  /** How commands reach the editor. */
+  transport: Transport;
+  /** Where document bytes live. */
+  storage: Storage;
+}
+
+/** A model listed by the editor. */
+export interface SessionInfo {
+  session: number;
+  title: string;
+  file: string | null;
+  dirty: boolean;
+  rev: number;
+  node_count: number;
+}
+
+export class Editor {
+  #transport: Transport;
+  #storage: Storage;
+
+  constructor(options: EditorOptions) {
+    this.#transport = options.transport;
+    this.#storage = options.storage;
+  }
+
+  /**
+   * Builds an editor over a wasm module in this page, backed by `storage`.
+   *
+   * The module is passed in rather than imported so this package never forces
+   * 2 MiB of WebAssembly into a bundle that only wanted the types — and so the
+   * whole thing is testable against a fake.
+   */
+  static local(wasm: WasmEditor, storage: Storage): Editor {
+    return new Editor({ transport: new LocalTransport(wasm), storage });
+  }
+
+  /** An empty document. */
+  async newDocument(name?: string): Promise<Session> {
+    const body = await this.#transport.send(
+      name === undefined ? { cmd: "session_new" } : { cmd: "session_new", name },
+    );
+    return new Session(this.#transport, expectSession(body));
+  }
+
+  /**
+   * Opens the document stored at `key`.
+   *
+   * The three steps — read the bytes, stage them where the synchronous wasm
+   * side can see them, then name the key in the command — are this method's
+   * whole reason to exist. Nothing above should have to know that order.
+   */
+  async openDocument(key: string): Promise<Session> {
+    const bytes = await this.#storage.read(key);
+    this.#stage(key, bytes);
+    const body = await this.#transport.send({ cmd: "session_open", path: key });
+    return new Session(this.#transport, expectSession(body));
+  }
+
+  /**
+   * Writes `session` back to the store, at `key` or wherever it was opened
+   * from.
+   *
+   * The mirror image of `openDocument`: the command stages the bytes, and this
+   * drains them into the store. Draining rather than copying matters — a
+   * staging map that is never emptied holds a whole second copy of the model's
+   * textures.
+   */
+  async saveDocument(session: Session, key?: string): Promise<string> {
+    const body = await session.send(
+      key === undefined ? { cmd: "save" } : { cmd: "save", path: key },
+    );
+    const savedKey = String(body.path ?? key ?? "");
+    const bytes = this.#unstage(savedKey);
+    if (!bytes) {
+      throw new ProtocolError({
+        code: "bad_reply",
+        message: `save reported ${savedKey} but staged no bytes for it`,
+      });
+    }
+    await this.#storage.write(savedKey, bytes);
+    return savedKey;
+  }
+
+  /** Every open document. */
+  async listSessions(): Promise<SessionInfo[]> {
+    const body = await this.#transport.send({ cmd: "session_list" });
+    return (body.sessions ?? []) as SessionInfo[];
+  }
+
+  /**
+   * Sends a command that names no session. Present so a host is never stuck
+   * waiting for this class to grow a method; anything used twice should get
+   * one.
+   */
+  send(command: Command): Promise<ResponseBody> {
+    return this.#transport.send(command);
+  }
+
+  close(): void {
+    this.#transport.close();
+  }
+
+  /**
+   * Staging only exists for a wasm module in this page. A remote transport
+   * carries bytes its own way, so these are no-ops there rather than errors.
+   */
+  #stage(key: string, bytes: Uint8Array): void {
+    if (this.#transport instanceof LocalTransport) {
+      this.#transport.staging.putBytes(key, bytes);
+    }
+  }
+
+  #unstage(key: string): Uint8Array | undefined {
+    return this.#transport instanceof LocalTransport
+      ? this.#transport.staging.takeBytes(key)
+      : undefined;
+  }
+}
+
+function expectSession(body: ResponseBody): number {
+  const session = body.session;
+  if (typeof session !== "number") {
+    throw new ProtocolError({
+      code: "bad_reply",
+      message: `expected a session id, got ${JSON.stringify(body)}`,
+    });
+  }
+  return session;
+}
