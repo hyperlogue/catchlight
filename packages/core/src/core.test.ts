@@ -116,6 +116,9 @@ class FakeViewport implements WasmViewport {
     this.size = [width, height];
   }
   setCamera(): void {}
+  maxSize(): number {
+    return 4096;
+  }
   free(): void {
     this.freed += 1;
   }
@@ -184,7 +187,7 @@ describe("Session revisions", () => {
     });
 
     for (let i = 0; i < 100; i++) {
-      await session.sendQuiet({ cmd: "scratch_deform", node: "hair", offsets: [] });
+      await session.sendPresence({ cmd: "scratch_deform", node: "hair", offsets: [] });
     }
 
     expect(session.getRevision()).toBe(0);
@@ -214,7 +217,7 @@ describe("Generated wire types", () => {
 
     // @ts-expect-error — the session fills this in; a caller that could pass
     // it could address the wrong document.
-    void (() => session.sendQuiet({ cmd: "presence_get", session: 2 }));
+    void (() => session.query({ cmd: "presence_get", session: 2 }));
 
     // @ts-expect-error — `session_new` names no session, so it belongs on the
     // editor rather than on one.
@@ -223,6 +226,28 @@ describe("Generated wire types", () => {
     // @ts-expect-error — `nod_add` is not a command. The union is the spelling
     // check the old `{ cmd: string }` placeholder could not do.
     void (() => session.send({ cmd: "nod_add", parent: "root" }));
+
+    expect(session.id).toBe(1);
+  });
+
+  test("a command cannot be sent by the wrong method", () => {
+    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+
+    // @ts-expect-error — `scratch_deform` is a presence command. Sending it
+    // through `send` would bump the revision and re-render every panel on
+    // every pointer move, which is the bug this split exists to prevent.
+    void (() => session.send({ cmd: "scratch_deform", node: "hair", offsets: [] }));
+
+    // @ts-expect-error — `node_set` changes the document, so it cannot go out
+    // as presence: the panels would never learn the edit happened.
+    void (() => session.sendPresence({ cmd: "node_set", node: "hair", patch: {} }));
+
+    // @ts-expect-error — `status` is a read; `sendPresence` would repaint a
+    // canvas that nothing changed.
+    void (() => session.sendPresence({ cmd: "status" }));
+
+    // @ts-expect-error — and a document command is not a query.
+    void (() => session.query({ cmd: "undo" }));
 
     expect(session.id).toBe(1);
   });
@@ -246,7 +271,7 @@ describe("Viewport", () => {
     });
 
     for (let i = 0; i < 20; i++) {
-      await session.sendQuiet({ cmd: "scratch_deform", node: "hair", offsets: [] });
+      await session.sendPresence({ cmd: "scratch_deform", node: "hair", offsets: [] });
     }
 
     // Twenty repaints asked for, no revision: React saw nothing, the canvas
@@ -382,5 +407,132 @@ describe("Editor documents", () => {
     const editor = Editor.local(wasm, new MemoryStorage());
     const session = await editor.newDocument();
     await expect(editor.saveDocument(session)).rejects.toMatchObject({ code: "bad_reply" });
+  });
+});
+
+/**
+ * A canvas and the two observers the viewport reaches for, with the callbacks
+ * exposed so a test can fire them. Restores whatever was there when it is
+ * done, so one test's fakes never leak into the next.
+ */
+function stubBrowser(cssWidth: number, cssHeight: number, ratio: number) {
+  const saved = {
+    ResizeObserver: globalThis.ResizeObserver,
+    IntersectionObserver: globalThis.IntersectionObserver,
+    devicePixelRatio: globalThis.window?.devicePixelRatio,
+  };
+  let onScreen: ((entries: IntersectionObserverEntry[]) => void) | undefined;
+
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    disconnect(): void {}
+    unobserve(): void {}
+  } as unknown as typeof ResizeObserver;
+
+  globalThis.IntersectionObserver = class {
+    constructor(callback: (entries: IntersectionObserverEntry[]) => void) {
+      onScreen = callback;
+    }
+    observe(): void {}
+    disconnect(): void {}
+    unobserve(): void {}
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  } as unknown as typeof IntersectionObserver;
+
+  globalThis.window = { devicePixelRatio: ratio } as unknown as Window & typeof globalThis;
+
+  const canvas = {
+    clientWidth: cssWidth,
+    clientHeight: cssHeight,
+    width: 0,
+    height: 0,
+  } as unknown as HTMLCanvasElement;
+
+  return {
+    canvas,
+    scroll(visible: boolean) {
+      onScreen?.([{ isIntersecting: visible } as IntersectionObserverEntry]);
+    },
+    restore() {
+      globalThis.ResizeObserver = saved.ResizeObserver;
+      globalThis.IntersectionObserver = saved.IntersectionObserver;
+      if (saved.devicePixelRatio === undefined) {
+        delete (globalThis as { window?: unknown }).window;
+      }
+    },
+  };
+}
+
+describe("Viewport visibility", () => {
+  test("a viewport scrolled off screen stops, and starts again when it returns", () => {
+    const browser = stubBrowser(800, 600, 1);
+    const view = new FakeViewport();
+    const viewport = new Viewport(view, browser.canvas);
+
+    viewport.start();
+    expect(view.started).toBe(1);
+
+    browser.scroll(false);
+    expect(view.stopped).toBe(1);
+    // Still started as far as the host is concerned — nothing was disposed.
+    browser.scroll(true);
+    expect(view.started).toBe(2);
+
+    viewport.stop();
+    browser.restore();
+  });
+
+  test("a hidden viewport that the host stops does not start when it reappears", () => {
+    const browser = stubBrowser(800, 600, 1);
+    const view = new FakeViewport();
+    const viewport = new Viewport(view, browser.canvas);
+
+    viewport.start();
+    browser.scroll(false);
+    viewport.stop();
+    const startedBefore = view.started;
+
+    // The observer is disconnected, but even a stale callback must not revive a
+    // viewport the host stopped: `#started` gates it, not the observer.
+    browser.scroll(true);
+    expect(view.started).toBe(startedBefore);
+
+    browser.restore();
+  });
+
+  test("the backing store is the CSS box times the device pixel ratio on a 2x screen", () => {
+    const browser = stubBrowser(800, 600, 2);
+    const view = new FakeViewport();
+    const viewport = new Viewport(view, browser.canvas);
+
+    viewport.start();
+
+    // 800x600 CSS pixels on a retina screen is a 1600x1200 backing store, and
+    // the canvas attributes and the surface configuration have to agree — a
+    // canvas sized in CSS pixels is the classic blurry-viewport bug.
+    expect(view.size).toEqual([1600, 1200]);
+    expect(browser.canvas.width).toBe(1600);
+    expect(browser.canvas.height).toBe(1200);
+
+    viewport.stop();
+    browser.restore();
+  });
+});
+
+describe("Viewport backing store", () => {
+  test("a canvas larger than the adapter allows is clamped to what it reported", () => {
+    // 5000 CSS pixels at 2x is a 10000-pixel backing store; the fake renderer
+    // reports a 4096 limit, and a surface configured past it fails outright.
+    const browser = stubBrowser(5000, 5000, 2);
+    const view = new FakeViewport();
+    const viewport = new Viewport(view, browser.canvas);
+
+    viewport.start();
+    expect(view.size).toEqual([4096, 4096]);
+
+    viewport.stop();
+    browser.restore();
   });
 });
