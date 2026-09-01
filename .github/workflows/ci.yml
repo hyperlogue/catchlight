@@ -49,6 +49,16 @@ jobs:
       # than a filesystem path, and nothing may quietly reintroduce a
       # filesystem call that only builds natively.
       - run: nix develop -c cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d -p catchlight-editor-server -p catchlight-editor-wasm
+      # `xtask` turns the protocol crate's `ts` feature on, and Cargo unifies
+      # features across a build — so this asserts the unification stops at the
+      # workspace boundary and no shipped artifact links the code generator.
+      - name: the browser bundle carries no codegen dependency
+        run: |
+          if nix develop -c cargo tree --target wasm32-unknown-unknown \
+               -p catchlight-editor-wasm -e normal,build | grep -q 'ts-rs'; then
+            echo "ts-rs reached the wasm build; the ts feature is leaking" >&2
+            exit 1
+          fi
 
   web:
     name: web workspace

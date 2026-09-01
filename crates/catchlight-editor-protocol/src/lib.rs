@@ -580,6 +580,193 @@ pub enum Command {
     },
 }
 
+/// What applying a [`Command`] does to the document it addresses.
+///
+/// This is the fact the whole notification story hangs on, and it is written
+/// down exactly once — in [`COMMAND_KINDS`]. `cargo xtask ts` splits the
+/// TypeScript `Command` union on it, so a client picks its send method by
+/// type rather than by remembering which calls are "quiet"; the editor server
+/// asserts against it in debug builds (see `Editor::handle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandKind {
+    /// Changes the document, or which documents exist. The session's `rev`
+    /// moves — or its saved/open state does, which a title bar reads the same
+    /// way — so every view has to re-read.
+    Document,
+    /// Changes what is drawn without changing the document: the drag path.
+    /// No revision, no undo entry, and deliberately invisible to a panel.
+    Presence,
+    /// Reads. Nothing a later command would see differently.
+    ///
+    /// `export_manifest` is here despite writing bytes: what it writes lands
+    /// in the store, not in the session, and no view of the document changes.
+    Query,
+}
+
+/// Every command's wire tag paired with its [`CommandKind`].
+///
+/// Hand-maintained, and held to the enum by two tests: `xtask ts` checks this
+/// list against the variants `ts-rs` sees, so a new command cannot reach
+/// TypeScript unclassified, and [`Command::kind`] resolves through here, so a
+/// tag missing from the list panics the first time it is dispatched.
+pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
+    ("session_new", CommandKind::Document),
+    ("session_open", CommandKind::Document),
+    ("session_import", CommandKind::Document),
+    ("session_list", CommandKind::Query),
+    ("session_close", CommandKind::Document),
+    ("save", CommandKind::Document),
+    ("export_manifest", CommandKind::Query),
+    ("status", CommandKind::Query),
+    ("check", CommandKind::Query),
+    ("node_tree", CommandKind::Query),
+    ("node_add", CommandKind::Document),
+    ("node_set", CommandKind::Document),
+    ("node_reparent", CommandKind::Document),
+    ("node_reorder", CommandKind::Document),
+    ("node_move", CommandKind::Document),
+    ("node_duplicate", CommandKind::Document),
+    ("rename_id", CommandKind::Document),
+    ("mask_add", CommandKind::Document),
+    ("mask_set", CommandKind::Document),
+    ("mask_reorder", CommandKind::Document),
+    ("mask_delete", CommandKind::Document),
+    ("physics_set", CommandKind::Document),
+    ("physics_globals", CommandKind::Document),
+    ("node_delete", CommandKind::Document),
+    ("texture_add", CommandKind::Document),
+    ("texture_list", CommandKind::Query),
+    ("param_add", CommandKind::Document),
+    ("param_list", CommandKind::Query),
+    ("param_set", CommandKind::Document),
+    ("param_delete", CommandKind::Document),
+    ("param_key_insert", CommandKind::Document),
+    ("param_key_delete", CommandKind::Document),
+    ("param_key_move", CommandKind::Document),
+    ("param_flip", CommandKind::Document),
+    ("binding_add", CommandKind::Document),
+    ("binding_key", CommandKind::Document),
+    ("binding_keys", CommandKind::Document),
+    ("binding_unset", CommandKind::Document),
+    ("binding_reset", CommandKind::Document),
+    ("binding_delete", CommandKind::Document),
+    ("binding_interpolate", CommandKind::Document),
+    ("binding_invert", CommandKind::Document),
+    ("binding_copy_key", CommandKind::Document),
+    ("deform_set", CommandKind::Document),
+    ("deform_vertices", CommandKind::Document),
+    ("mesh_set", CommandKind::Document),
+    ("mesh_copy", CommandKind::Document),
+    ("seam_add", CommandKind::Document),
+    ("seam_delete", CommandKind::Document),
+    ("slot_add", CommandKind::Document),
+    ("slot_fill", CommandKind::Document),
+    ("slot_clear", CommandKind::Document),
+    ("slot_delete", CommandKind::Document),
+    ("seams", CommandKind::Query),
+    ("welds", CommandKind::Query),
+    ("unfilled_slots", CommandKind::Query),
+    ("weld_set", CommandKind::Document),
+    ("physics_add", CommandKind::Document),
+    ("undo", CommandKind::Document),
+    ("redo", CommandKind::Document),
+    ("presence_set", CommandKind::Presence),
+    ("presence_get", CommandKind::Query),
+    ("scratch_deform", CommandKind::Presence),
+    ("preview", CommandKind::Query),
+];
+
+impl Command {
+    /// The `cmd` tag this command carries on the wire.
+    ///
+    /// Exhaustive by construction: a new variant does not compile until it is
+    /// named here, which is what makes [`COMMAND_KINDS`] checkable.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Command::SessionNew { .. } => "session_new",
+            Command::SessionOpen { .. } => "session_open",
+            Command::SessionImport { .. } => "session_import",
+            Command::SessionList => "session_list",
+            Command::SessionClose { .. } => "session_close",
+            Command::Save { .. } => "save",
+            Command::ExportManifest { .. } => "export_manifest",
+            Command::Status { .. } => "status",
+            Command::Check { .. } => "check",
+            Command::NodeTree { .. } => "node_tree",
+            Command::NodeAdd { .. } => "node_add",
+            Command::NodeSet { .. } => "node_set",
+            Command::NodeReparent { .. } => "node_reparent",
+            Command::NodeReorder { .. } => "node_reorder",
+            Command::NodeMove { .. } => "node_move",
+            Command::NodeDuplicate { .. } => "node_duplicate",
+            Command::RenameId { .. } => "rename_id",
+            Command::MaskAdd { .. } => "mask_add",
+            Command::MaskSet { .. } => "mask_set",
+            Command::MaskReorder { .. } => "mask_reorder",
+            Command::MaskDelete { .. } => "mask_delete",
+            Command::PhysicsSet { .. } => "physics_set",
+            Command::PhysicsGlobals { .. } => "physics_globals",
+            Command::NodeDelete { .. } => "node_delete",
+            Command::TextureAdd { .. } => "texture_add",
+            Command::TextureList { .. } => "texture_list",
+            Command::ParamAdd { .. } => "param_add",
+            Command::ParamList { .. } => "param_list",
+            Command::ParamSet { .. } => "param_set",
+            Command::ParamDelete { .. } => "param_delete",
+            Command::ParamKeyInsert { .. } => "param_key_insert",
+            Command::ParamKeyDelete { .. } => "param_key_delete",
+            Command::ParamKeyMove { .. } => "param_key_move",
+            Command::ParamFlip { .. } => "param_flip",
+            Command::BindingAdd { .. } => "binding_add",
+            Command::BindingKey { .. } => "binding_key",
+            Command::BindingKeys { .. } => "binding_keys",
+            Command::BindingUnset { .. } => "binding_unset",
+            Command::BindingReset { .. } => "binding_reset",
+            Command::BindingDelete { .. } => "binding_delete",
+            Command::BindingInterpolate { .. } => "binding_interpolate",
+            Command::BindingInvert { .. } => "binding_invert",
+            Command::BindingCopyKey { .. } => "binding_copy_key",
+            Command::DeformSet { .. } => "deform_set",
+            Command::DeformVertices { .. } => "deform_vertices",
+            Command::MeshSet { .. } => "mesh_set",
+            Command::MeshCopy { .. } => "mesh_copy",
+            Command::SeamAdd { .. } => "seam_add",
+            Command::SeamDelete { .. } => "seam_delete",
+            Command::SlotAdd { .. } => "slot_add",
+            Command::SlotFill { .. } => "slot_fill",
+            Command::SlotClear { .. } => "slot_clear",
+            Command::SlotDelete { .. } => "slot_delete",
+            Command::Seams { .. } => "seams",
+            Command::Welds { .. } => "welds",
+            Command::UnfilledSlots { .. } => "unfilled_slots",
+            Command::WeldSet { .. } => "weld_set",
+            Command::PhysicsAdd { .. } => "physics_add",
+            Command::Undo { .. } => "undo",
+            Command::Redo { .. } => "redo",
+            Command::PresenceSet { .. } => "presence_set",
+            Command::PresenceGet { .. } => "presence_get",
+            Command::ScratchDeform { .. } => "scratch_deform",
+            Command::Preview { .. } => "preview",
+        }
+    }
+
+    /// What applying this command does to the document.
+    ///
+    /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Document`].
+    /// That case is unreachable — `xtask ts` fails the build on it — but the
+    /// fallback still has to be the conservative one: calling an edit a
+    /// `Document` costs a redundant redraw, while calling it a `Query` loses
+    /// the notification entirely and leaves a panel showing stale data.
+    pub fn kind(&self) -> CommandKind {
+        let tag = self.tag();
+        COMMAND_KINDS
+            .iter()
+            .find(|(name, _)| *name == tag)
+            .map(|(_, kind)| *kind)
+            .unwrap_or(CommandKind::Document)
+    }
+}
+
 /// Which Id [`Command::RenameId`] changes, and to what.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
