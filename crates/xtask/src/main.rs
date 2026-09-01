@@ -6,8 +6,10 @@
 //!   cargo xtask import <model.inx|.inp> [-o <model.clm>]
 //!   cargo xtask gen-fixture <name>
 //!   cargo xtask wasm [--debug]
+//!   cargo xtask ts [--check]
 
 mod fixtures;
+mod ts;
 mod wasm;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -19,6 +21,7 @@ fn main() -> Result<()> {
         Some("import") => import(&args[1..]),
         Some("gen-fixture") => gen_fixture(&args[1..]),
         Some("wasm") => wasm::run(&args[1..]),
+        Some("ts") => ts::run(&args[1..]),
         _ => {
             print_usage();
             bail!("unknown command");
@@ -41,6 +44,20 @@ fn print_usage() {
     );
     eprintln!("  wasm [--debug]");
     eprintln!("      Build @catchlight/wasm into packages/wasm/ (generated, not committed).");
+    eprintln!("  ts [--check]");
+    eprintln!("      Generate packages/core/src/protocol.gen.ts from the wire types");
+    eprintln!("      (committed). --check fails instead of writing, which is what CI runs.");
+}
+
+/// The workspace root, from this crate's manifest directory. Every task writes
+/// relative to it, so `cargo xtask` behaves the same from any subdirectory.
+fn workspace_root() -> Result<PathBuf> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .ancestors()
+        .nth(2)
+        .map(std::path::Path::to_path_buf)
+        .context("locating the workspace root from the xtask manifest")
 }
 
 fn gen_fixture(args: &[String]) -> Result<()> {

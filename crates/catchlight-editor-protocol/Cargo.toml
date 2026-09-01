@@ -12,6 +12,15 @@ description = "Wire types for the catchlight editor: transport-agnostic request/
 # an Id is rather than two that can drift.
 catchlight-core = { workspace = true }
 serde = { workspace = true }
+# Behind the `ts` feature; see below.
+ts-rs = { workspace = true, optional = true }
+
+[features]
+# Emit the TypeScript declarations for every type on this wire. Off by default:
+# a client that speaks the protocol never needs the generator, only the file it
+# wrote. `cargo xtask ts` turns it on and regenerates
+# `packages/core/src/protocol.gen.ts`; CI fails if that file has drifted.
+ts = ["dep:ts-rs", "catchlight-core/ts"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

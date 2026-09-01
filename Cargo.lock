@@ -1551,6 +1551,7 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "tracing",
+ "ts-rs",
 ]
 
 [[package]]
@@ -1606,6 +1607,7 @@ dependencies = [
  "catchlight-core",
  "serde",
  "serde_json",
+ "ts-rs",
 ]
 
 [[package]]
@@ -5103,6 +5105,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ts-rs"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
+dependencies = [
+ "thiserror 2.0.18",
+ "ts-rs-macros",
+]
+
+[[package]]
+name = "ts-rs-macros"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+ "termcolor",
+]
+
+[[package]]
 name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6148,8 +6172,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "catchlight-core",
+ "catchlight-editor-protocol",
  "catchlight-import-inochi2d",
  "image",
+ "ts-rs",
 ]
 
 [[package]]

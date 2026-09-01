@@ -58,6 +58,11 @@ image = { version = "0.25", default-features = false, features = [
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# TypeScript declarations generated from the Rust wire types. Off by default
+# and behind the `ts` feature on the two crates that carry those types: it is a
+# build-time tool for `cargo xtask ts`, never something a consumer links.
+ts-rs = { version = "12.0", default-features = false, features = ["serde-compat"] }
+
 # The browser boundary. Pinned exactly: the generated glue only loads under the
 # `wasm-bindgen` CLI of the same version, and the CLI comes from the dev shell's
 # nixpkgs pin. Bump both together or the build fails naming both versions.

@@ -130,6 +130,11 @@ macro_rules! string_id {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        // An Id is a validated string here and a plain string on the wire, so
+        // the generated declaration is `type $name = string`. Naming it rather
+        // than inlining `string` is the point: a TypeScript reader sees which
+        // of the five a field takes, the same way Rust does.
+        #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(type = "string"))]
         pub struct $name(Arc<str>);
 
         impl $name {

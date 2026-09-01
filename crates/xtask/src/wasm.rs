@@ -13,7 +13,7 @@
 //! CLI; this checks them against each other first, because the failure
 //! otherwise surfaces in the browser as an unresolved import rather than here.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -35,7 +35,7 @@ pub fn run(args: &[String]) -> Result<()> {
         }
     }
 
-    let root = workspace_root()?;
+    let root = crate::workspace_root()?;
     check_versions(&root)?;
 
     let mut build = Command::new("cargo");
@@ -156,16 +156,6 @@ fn run_to_completion(cmd: &mut Command, what: &str) -> Result<()> {
         bail!("{what} failed with {status}");
     }
     Ok(())
-}
-
-/// The workspace root, from this crate's manifest directory.
-fn workspace_root() -> Result<PathBuf> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .ancestors()
-        .nth(2)
-        .map(Path::to_path_buf)
-        .context("locating the workspace root from the xtask manifest")
 }
 
 #[cfg(test)]
