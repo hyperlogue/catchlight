@@ -2537,6 +2537,27 @@ impl WgpuRenderer {
         self.textures.truncate(textures as usize);
     }
 
+    /// Everything [`Self::upload_texture`] would refuse, checked without
+    /// touching GPU state — so a rebuild can validate every upload before it
+    /// releases the build those uploads replace.
+    pub(crate) fn validate_texture_upload(&self, tex: &DecodedTexture) -> RendererResult<()> {
+        validate_rgba8_texture(
+            tex.width,
+            tex.height,
+            tex.rgba.len(),
+            self.device.limits().max_texture_dimension_2d,
+        )
+        .map(|_| ())
+    }
+
+    /// The device's 2D texture size limit. Test-facing, as
+    /// [`Self::live_mesh_slots`]: it is how a test authors a texture the
+    /// device refuses.
+    #[doc(hidden)]
+    pub fn max_texture_dimension(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
     /// Mesh slots currently holding a GPU buffer. Test-facing: it is how a
     /// rebuild's release is observable from outside the crate.
     #[doc(hidden)]
