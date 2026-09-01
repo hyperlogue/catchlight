@@ -904,3 +904,33 @@ fn an_edit_that_deletes_no_texture_is_not_held() {
         "so it ran instead of waiting"
     );
 }
+
+/// A held texture-drop confirm was computed against the session it was built
+/// on. Adopting another session must drop it — otherwise "Delete and
+/// continue" applies the old model's edit to the new one, without a valid
+/// confirmation.
+#[test]
+fn a_held_texture_drop_does_not_survive_a_session_change() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let part = first_meshed_node(&editor, session);
+
+    app.guard_texture_drop(DroppingEdit::Send(Box::new(Command::NodeDelete {
+        session,
+        node: part.clone(),
+    })));
+    assert!(app.texture_drop.is_some(), "the delete is held");
+
+    let other = editor.open_bytes("other", &welded_seam()).expect("open");
+    app.adopt_session(other, "other".into());
+
+    assert!(
+        app.texture_drop.is_none(),
+        "a session change drops the held edit"
+    );
+    assert!(
+        editor
+            .with_model(session, |m| m.node(&part).is_some())
+            .unwrap(),
+        "and the old session's document is untouched"
+    );
+}

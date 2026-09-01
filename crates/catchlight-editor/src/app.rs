@@ -352,6 +352,9 @@ impl App {
         self.thumbs.clear();
         self.camera = EditorCamera::default();
         self.id_rename = None;
+        // A held texture-drop confirm names the old session's model; letting
+        // it survive would apply that edit to whatever loads next.
+        self.texture_drop = None;
         self.emptied.clear();
         self.warnings = None;
         self.status = format!("session {}", session.0);
