@@ -31,16 +31,26 @@
 //! - **One render cache per previewed session.** See [`preview`]: a cache's
 //!   slots name GPU state inside the one warm renderer, so switching the
 //!   previewed session re-prepares it.
+//!
+//! - **A `path` is a storage key, not a filesystem path.** See [`storage`]:
+//!   every command that names bytes resolves its key through a [`Storage`],
+//!   so the same command set serves the filesystem, the browser and a blob
+//!   store. [`Command::Preview`] is the one command that is still native — it
+//!   needs the headless renderer, not just bytes.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
+mod storage;
 #[cfg(unix)]
 mod transport;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use storage::FileStorage;
+pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
+
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -57,9 +67,9 @@ use catchlight_core::{
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Pose;
-#[cfg(not(target_arch = "wasm32"))]
-use catchlight_editor_core::{Manifest, ModelManifestExt as _, TextureData};
-use catchlight_editor_core::{ManifestError, ModelMeshExt as _};
+use catchlight_editor_core::{
+    Manifest, ManifestError, ModelManifestExt as _, ModelMeshExt as _, TextureData,
+};
 
 /// Per-session undo history depth.
 const UNDO_DEPTH: usize = 64;
@@ -153,7 +163,9 @@ struct Session {
     /// are reproducible; uniqueness is the model's job, not the seed's.
     hex: SeededHex,
     title: String,
-    file: Option<PathBuf>,
+    /// The storage key this session was opened from / last saved to, if any.
+    /// Opaque — see [`storage`].
+    file: Option<String>,
     rev: u64,
     saved_rev: u64,
     history: History,
@@ -297,7 +309,7 @@ impl History {
 }
 
 impl Session {
-    fn new(model: Model, title: String, file: Option<PathBuf>) -> Self {
+    fn new(model: Model, title: String, file: Option<String>) -> Self {
         Self {
             model,
             hex: SeededHex::new(0x1d5e_ed01),
@@ -394,6 +406,8 @@ impl Session {
 pub struct Editor {
     sessions: Mutex<HashMap<SessionId, Arc<Mutex<Session>>>>,
     next_id: AtomicU64,
+    /// Resolves the keys the protocol calls `path`. See [`storage`].
+    storage: Arc<dyn Storage>,
     #[cfg(not(target_arch = "wasm32"))]
     preview_seq: AtomicU64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -401,10 +415,23 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// An editor over the ambient default store: the filesystem natively,
+    /// [`NoStorage`] on wasm — where the host must supply one with
+    /// [`Editor::with_storage`].
     pub fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let storage = Arc::new(FileStorage);
+        #[cfg(target_arch = "wasm32")]
+        let storage = Arc::new(NoStorage);
+        Self::with_storage(storage)
+    }
+
+    /// An editor whose `path` keys resolve through `storage`.
+    pub fn with_storage(storage: Arc<dyn Storage>) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            storage,
             #[cfg(not(target_arch = "wasm32"))]
             preview_seq: AtomicU64::new(0),
             #[cfg(not(target_arch = "wasm32"))]
@@ -633,26 +660,26 @@ impl Editor {
                 self.insert_session(id, Session::new(Model::new(), title, None));
                 Ok(ResponseBody::Session { session: id })
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Command::SessionOpen { path } => {
-                let path = PathBuf::from(path);
-                let model = Model::from_clm_bytes(&std::fs::read(&path)?)?;
+                let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
                 let id = self.alloc_id();
-                let title = file_stem(&path);
+                let title = key_stem(&path);
                 self.insert_session(id, Session::new(model, title, Some(path)));
                 Ok(ResponseBody::Session { session: id })
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Command::SessionImport { manifest_path } => {
-                let mpath = PathBuf::from(manifest_path);
-                let manifest = Manifest::from_json(&std::fs::read_to_string(&mpath)?)?;
-                let base = mpath
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from("."));
+                let json = String::from_utf8(self.storage.read(&manifest_path)?).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("{manifest_path}: manifest is not UTF-8: {e}"),
+                    )
+                })?;
+                let manifest = Manifest::from_json(&json)?;
+                // Texture references are relative to the manifest's own key.
+                let base = parent_key(&manifest_path).to_string();
                 let mut data = HashMap::new();
                 for t in &manifest.textures {
-                    let bytes = std::fs::read(base.join(&t.path))?;
+                    let bytes = self.storage.read(&join_key(&base, &t.path))?;
                     data.insert(
                         t.id.clone(),
                         TextureData {
@@ -664,7 +691,7 @@ impl Editor {
                 let model = Model::from_manifest(&manifest, &data)?;
                 let id = self.alloc_id();
                 let title = if manifest.name.is_empty() {
-                    file_stem(&mpath)
+                    key_stem(&manifest_path)
                 } else {
                     manifest.name.clone()
                 };
@@ -682,7 +709,7 @@ impl Editor {
                     sessions.push(SessionInfo {
                         session: id,
                         title: s.title.clone(),
-                        file: s.file.as_ref().map(|p| p.display().to_string()),
+                        file: s.file.clone(),
                         dirty: s.dirty(),
                         rev: s.rev,
                         node_count: s.model.node_count() as u32,
@@ -697,33 +724,25 @@ impl Editor {
                     .ok_or(EditorError::NoSession(session))?;
                 Ok(ResponseBody::Empty)
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Command::Save { session, path } => {
                 let handle = self.session(session)?;
-                let (path, bytes, rev) = {
+                let (key, bytes, rev) = {
                     let s = lock(&handle);
-                    let path = match path {
-                        Some(p) => PathBuf::from(p),
+                    let key = match path {
+                        Some(p) => p,
                         None => s.file.clone().ok_or(EditorError::NoSavePath)?,
                     };
-                    (path, s.model.to_clm_bytes()?, s.rev)
+                    (key, s.model.to_clm_bytes()?, s.rev)
                 };
-                // Temp-then-rename: an interrupted save must not truncate the
-                // user's only copy.
-                let tmp = path.with_extension("clm.tmp");
-                std::fs::write(&tmp, bytes)?;
-                std::fs::rename(&tmp, &path)?;
+                // The store owns write atomicity; see `storage`.
+                self.storage.write(&key, &bytes)?;
                 let mut s = lock(&handle);
-                s.file = Some(path.clone());
+                s.file = Some(key.clone());
                 s.saved_rev = rev;
-                Ok(ResponseBody::Saved {
-                    path: path.display().to_string(),
-                })
+                Ok(ResponseBody::Saved { path: key })
             }
-            #[cfg(not(target_arch = "wasm32"))]
             Command::ExportManifest { session, path } => {
                 let handle = self.session(session)?;
-                let path = PathBuf::from(path);
                 let (manifest, textures) = {
                     let s = lock(&handle);
                     let manifest = s.model.to_manifest().to_json()?;
@@ -743,17 +762,14 @@ impl Editor {
                         .collect::<Vec<_>>();
                     (manifest, textures)
                 };
-                std::fs::write(&path, manifest)?;
-                let base = path
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from("."));
+                self.storage.write(&path, manifest.as_bytes())?;
+                // Textures land beside the manifest, as its own references
+                // expect them.
+                let base = parent_key(&path).to_string();
                 for (name, data) in textures {
-                    std::fs::write(base.join(name), &*data)?;
+                    self.storage.write(&join_key(&base, &name), &data)?;
                 }
-                Ok(ResponseBody::Saved {
-                    path: path.display().to_string(),
-                })
+                Ok(ResponseBody::Saved { path })
             }
             Command::Status { session } => self.with_session(session, |s| {
                 Ok(ResponseBody::Status {
@@ -997,25 +1013,29 @@ impl Editor {
                 s.touch();
                 Ok(ResponseBody::Node { node, dropped })
             }),
-            #[cfg(not(target_arch = "wasm32"))]
             Command::TextureAdd {
                 session,
                 node,
                 path,
-            } => self.edit_session(session, |s| {
-                let bytes = std::fs::read(&path)?;
-                image_dims(&bytes)?; // validate it decodes
-                let (texture, dropped) = s.add_texture(
-                    &node,
-                    ModelTexture {
-                        encoding: encoding_from_path(&path),
-                        alpha: TextureAlpha::Straight,
-                        data: Arc::new(bytes),
-                    },
-                )?;
-                s.touch();
-                Ok(ResponseBody::Texture { texture, dropped })
-            }),
+            } => {
+                // Read outside `edit_session`: the store is not the session's
+                // to borrow, and a failed read must not open an edit.
+                let bytes = self.storage.read(&path)?;
+                self.edit_session(session, move |s| {
+                    let bytes = bytes;
+                    image_dims(&bytes)?; // validate it decodes
+                    let (texture, dropped) = s.add_texture(
+                        &node,
+                        ModelTexture {
+                            encoding: encoding_from_path(&path),
+                            alpha: TextureAlpha::Straight,
+                            data: Arc::new(bytes),
+                        },
+                    )?;
+                    s.touch();
+                    Ok(ResponseBody::Texture { texture, dropped })
+                })
+            }
             Command::TextureList { session } => self.with_session(session, |s| {
                 let mut textures = Vec::new();
                 for tid in s.model.texture_ids() {
@@ -1518,13 +1538,11 @@ impl Editor {
                 size,
                 out,
             } => self.run_preview(session, pose, size, out),
+            // Preview is the one command that stays native: it needs the
+            // headless renderer, not just bytes. Everything else that used to
+            // be native-only now resolves its key through `storage`.
             #[cfg(target_arch = "wasm32")]
-            Command::SessionOpen { .. }
-            | Command::SessionImport { .. }
-            | Command::Save { .. }
-            | Command::ExportManifest { .. }
-            | Command::TextureAdd { .. }
-            | Command::Preview { .. } => Err(EditorError::NativeOnly),
+            Command::Preview { .. } => Err(EditorError::NativeOnly),
         }
     }
 
@@ -1953,7 +1971,9 @@ fn parse_mask_mode(s: &str) -> Result<MaskMode, EditorError> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// The encoding a storage key's extension implies. A key is opaque to
+/// everything else; this is the one place its tail is read, and only to
+/// pick a decoder.
 fn encoding_from_path(path: &str) -> TextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
         TextureEncoding::Tga

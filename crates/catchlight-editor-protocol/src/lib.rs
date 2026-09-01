@@ -53,6 +53,16 @@
 //!   and the commit gate to grow a second shape for a case nothing asks for.
 //!   [`Command::NodeTree`] on a fragment is [`ErrorCode::Fragment`].
 //!
+//! - **A `path` field is an opaque storage key.** [`Command::SessionOpen`],
+//!   [`Command::Save`], [`Command::SessionImport`],
+//!   [`Command::ExportManifest`] and [`Command::TextureAdd`] each name bytes
+//!   with one string, and what that string addresses is the server's store:
+//!   a filesystem path natively, an OPFS entry or a fetched URL in the
+//!   browser, a blob key in the cloud. Only two things read a key's shape —
+//!   `/` separates segments so a manifest's texture references resolve
+//!   relative to the manifest, and the tail after the last `.` picks a texture
+//!   decoder. A client that builds keys should not assume more.
+//!
 //! The document path ([`Command::NodeSet`] and friends) bumps the session's
 //! revision, records undo and is saved. The presence path
 //! ([`Command::PresenceSet`], [`Command::ScratchDeform`]) does none of those:
