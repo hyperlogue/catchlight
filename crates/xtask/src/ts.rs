@@ -6,8 +6,9 @@
 //! against the other is the failure this architecture invites: the drift is
 //! silent until a command reaches the server with a field spelled the way last
 //! month's Rust spelled it. So the declarations are generated, the result is
-//! committed — a TypeScript build needs no Rust toolchain — and CI runs
-//! `cargo xtask ts --check`, which fails if the file and the types disagree.
+//! committed — a TypeScript build needs no Rust toolchain — and a test in this
+//! module regenerates and byte-compares, so a stale file fails `cargo test`
+//! locally and in CI. One check, one place.
 //!
 //! Three things this module owns that the derive cannot:
 //!
@@ -76,31 +77,14 @@ macro_rules! decls {
 }
 
 pub fn run(args: &[String]) -> Result<()> {
-    let mut check = false;
-    for arg in args {
-        match arg.as_str() {
-            "--check" => check = true,
-            other => bail!("unexpected argument: {other}"),
-        }
+    if let Some(other) = args.first() {
+        bail!("unexpected argument: {other}");
     }
 
     let cfg = Config::new().with_large_int("number");
     let decls = declarations(&cfg);
     let module = render(&decls)?;
     let out = crate::workspace_root()?.join(OUT);
-
-    if check {
-        let found = std::fs::read_to_string(&out)
-            .with_context(|| format!("reading {OUT} to check it against the Rust types"))?;
-        if found != module {
-            bail!(
-                "{OUT} is out of date with the Rust protocol types.\n\
-                 Run `cargo xtask ts` and commit the result."
-            );
-        }
-        eprintln!("{OUT} matches the Rust types");
-        return Ok(());
-    }
 
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
@@ -551,13 +535,10 @@ mod tests {
         check_closed(&declarations(&cfg)).expect("every wire type is listed");
     }
 
-    /// The same comparison `cargo xtask ts --check` makes, as a plain test.
-    ///
-    /// CI runs the command, but a stale `protocol.gen.ts` is a wire-level bug
-    /// and `cargo test` is where one is expected to surface — a contributor who
-    /// edits the Rust types and runs the test suite should be told then, not
-    /// after pushing. Both paths render through `render`, so neither can pass
-    /// while the other fails.
+    /// The drift check. A stale `protocol.gen.ts` is a wire-level bug, and
+    /// `cargo test` is where one is expected to surface — a contributor who
+    /// edits the Rust types and runs the suite is told then, not after pushing.
+    /// CI runs this same test rather than a second mechanism.
     #[test]
     fn the_committed_module_matches_the_rust_types() {
         let cfg = Config::new().with_large_int("number");
