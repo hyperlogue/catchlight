@@ -15,6 +15,8 @@ import { Editor } from "./client.js";
 import { Session } from "./session.js";
 import { MemoryStorage, NotFoundError } from "./storage.js";
 import { LocalTransport, ProtocolError } from "./transport.js";
+import { Viewport, devicePixelSize } from "./viewport.js";
+import type { WasmViewport } from "./viewport.js";
 import type { ResponseBody } from "./protocol.gen.js";
 import type { WasmEditor } from "./transport.js";
 
@@ -84,9 +86,48 @@ class FakeWasm implements WasmEditor {
     return [...this.staged.keys()].sort();
   }
 
+  attach(_canvas: HTMLCanvasElement, _session: number): Promise<WasmViewport> {
+    return Promise.resolve(new FakeViewport());
+  }
+
   free(): void {
     this.freed = true;
   }
+}
+
+/** A renderer that counts what it was told, and draws nothing. */
+class FakeViewport implements WasmViewport {
+  started = 0;
+  stopped = 0;
+  invalidated = 0;
+  freed = 0;
+  size: [number, number] | undefined;
+
+  start(): void {
+    this.started += 1;
+  }
+  stop(): void {
+    this.stopped += 1;
+  }
+  invalidate(): void {
+    this.invalidated += 1;
+  }
+  resize(width: number, height: number): void {
+    this.size = [width, height];
+  }
+  setCamera(): void {}
+  free(): void {
+    this.freed += 1;
+  }
+}
+
+/** Just enough of a `ResizeObserverEntry` for the size arithmetic. */
+function entry(parts: {
+  devicePixelContentBoxSize?: ResizeObserverSize[];
+  contentBoxSize?: ResizeObserverSize[];
+  contentRect?: { width: number; height: number };
+}): ResizeObserverEntry {
+  return { contentRect: { width: 0, height: 0 }, ...parts } as unknown as ResizeObserverEntry;
 }
 
 describe("LocalTransport", () => {
@@ -191,6 +232,89 @@ describe("Generated wire types", () => {
     // `path` is reachable only after the tag is checked, which is the whole
     // point of generating the union rather than hand-writing an index type.
     expect(body.result === "saved" ? body.path : null).toBe("out.clm");
+  });
+});
+
+describe("Viewport", () => {
+  test("a drag repaints without bumping the revision", async () => {
+    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const view = new FakeViewport();
+    new Viewport(view, {} as HTMLCanvasElement, session);
+    let revisions = 0;
+    session.subscribe(() => {
+      revisions += 1;
+    });
+
+    for (let i = 0; i < 20; i++) {
+      await session.sendQuiet({ cmd: "scratch_deform", node: "hair", offsets: [] });
+    }
+
+    // Twenty repaints asked for, no revision: React saw nothing, the canvas
+    // saw everything. That split is the whole reason there are two channels.
+    expect(view.invalidated).toBe(20);
+    expect(revisions).toBe(0);
+  });
+
+  test("a document command repaints too", async () => {
+    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const view = new FakeViewport();
+    new Viewport(view, {} as HTMLCanvasElement, session);
+
+    await session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
+    expect(view.invalidated).toBe(1);
+  });
+
+  test("disposing stops the renderer and lets go of the session", async () => {
+    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const view = new FakeViewport();
+    const viewport = new Viewport(view, {} as HTMLCanvasElement, session);
+
+    viewport.dispose();
+    await session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
+
+    expect(view.stopped).toBe(1);
+    expect(view.freed).toBe(1);
+    // A disposed viewport that stayed subscribed would keep the whole GPU
+    // state alive behind the session for as long as the document is open.
+    expect(view.invalidated).toBe(0);
+  });
+
+  test("an editor with no renderer in this page says so", async () => {
+    const editor = new Editor({
+      transport: new LocalTransport(new FakeWasm()),
+      storage: new MemoryStorage(),
+    });
+    const session = await editor.newDocument();
+    await expect(editor.attach(session, {} as HTMLCanvasElement)).rejects.toThrow(
+      /no renderer in this page/,
+    );
+  });
+
+  test("device pixels are taken from the browser, not multiplied out", () => {
+    // The observed box is already device pixels: 393.6 CSS px at 1.25 zoom is
+    // 492 real pixels, which no rounding of 393.6 × 1.25 has to reproduce.
+    expect(
+      devicePixelSize(
+        entry({
+          devicePixelContentBoxSize: [{ inlineSize: 492, blockSize: 800 }],
+          contentBoxSize: [{ inlineSize: 393.6, blockSize: 640 }],
+        }),
+        1.25,
+      ),
+    ).toEqual({ width: 492, height: 800 });
+  });
+
+  test("without the device-pixel box, the CSS box is scaled and rounded", () => {
+    expect(
+      devicePixelSize(entry({ contentBoxSize: [{ inlineSize: 393.6, blockSize: 640 }] }), 1.25),
+    ).toEqual({ width: 492, height: 800 });
+  });
+
+  test("with neither box, the content rect still gives a size", () => {
+    expect(devicePixelSize(entry({ contentRect: { width: 100, height: 50 } }), 2)).toEqual({
+      width: 200,
+      height: 100,
+    });
   });
 });
 

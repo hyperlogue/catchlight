@@ -20,6 +20,7 @@ import { Session } from "./session.js";
 import type { Storage } from "./storage.js";
 import { LocalTransport, ProtocolError } from "./transport.js";
 import type { Transport, WasmEditor } from "./transport.js";
+import { Viewport } from "./viewport.js";
 
 export interface EditorOptions {
   /** How commands reach the editor. */
@@ -31,6 +32,13 @@ export interface EditorOptions {
 export class Editor {
   #transport: Transport;
   #storage: Storage;
+  /**
+   * The wasm module, when there is one in this page. Kept apart from the
+   * transport because rendering and commanding are not the same capability:
+   * the document may be served from anywhere, but the picture is always drawn
+   * here, by a GPU this tab owns.
+   */
+  #wasm: WasmEditor | undefined;
 
   constructor(options: EditorOptions) {
     this.#transport = options.transport;
@@ -45,7 +53,25 @@ export class Editor {
    * whole thing is testable against a fake.
    */
   static local(wasm: WasmEditor, storage: Storage): Editor {
-    return new Editor({ transport: new LocalTransport(wasm), storage });
+    const editor = new Editor({ transport: new LocalTransport(wasm), storage });
+    editor.#wasm = wasm;
+    return editor;
+  }
+
+  /**
+   * Draws `session` on `canvas`, until the returned viewport is disposed.
+   *
+   * Only an editor built by [`Editor.local`] can do this: drawing needs the
+   * renderer in this page, and an editor that only has a socket has no GPU
+   * state to point at a canvas.
+   */
+  async attach(session: Session, canvas: HTMLCanvasElement): Promise<Viewport> {
+    const wasm = this.#wasm;
+    if (!wasm) {
+      throw new Error("this editor has no renderer in this page; build it with Editor.local");
+    }
+    const view = await wasm.attach(canvas, session.id);
+    return new Viewport(view, canvas, session);
   }
 
   /** An empty document. */

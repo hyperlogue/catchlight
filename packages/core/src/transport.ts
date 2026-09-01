@@ -21,6 +21,7 @@
  */
 
 import type { Command, ErrorCode, Reply, ResponseBody } from "./protocol.gen.js";
+import type { WasmViewport } from "./viewport.js";
 
 /**
  * One request on the wire: a command plus the id its reply is correlated by.
@@ -82,6 +83,12 @@ export interface WasmEditor {
   putBytes(key: string, bytes: Uint8Array): void;
   takeBytes(key: string): Uint8Array | undefined;
   stagedKeys(): string[];
+  /**
+   * The one asynchronous call on this surface, because WebGPU's adapter and
+   * device are promises. Everything after it — a resize, a camera move, a
+   * frame — is synchronous.
+   */
+  attach(canvas: HTMLCanvasElement, session: number): Promise<WasmViewport>;
   free?(): void;
 }
 

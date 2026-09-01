@@ -18,6 +18,14 @@
  * `rev` and the panels catch up. That split is what keeps drags smooth, and it
  * is why `send` and `sendQuiet` are different methods rather than one method
  * with a flag nobody would remember to pass.
+ *
+ * **Two channels, because they run at different rates.** `subscribe` is the
+ * document's revision, and React reads it — once per commit. `onInvalidate` is
+ * "the picture changed", and the viewport reads it — possibly on every pointer
+ * move, because a presence command redraws without being a revision. Every
+ * command fires the second, queries included: telling a renderer to repaint
+ * something that did not change costs one coalesced frame, and failing to tell
+ * it leaves a stale viewport with no other symptom.
  */
 
 import type { Command, ResponseBody, SessionId } from "./protocol.gen.js";
@@ -43,6 +51,7 @@ export class Session {
   #transport: Transport;
   #revision = 0;
   #listeners = new Set<() => void>();
+  #redraw = new Set<() => void>();
 
   constructor(transport: Transport, id: number) {
     this.#transport = transport;
@@ -59,13 +68,20 @@ export class Session {
     return body;
   }
 
+  /** Tells every viewport on this session that the picture changed. */
+  invalidate(): void {
+    for (const listener of [...this.#redraw]) listener();
+  }
+
   /**
    * Runs a command that does not change the document — a query, or anything on
    * the presence path. Subscribers are not notified, so a drag never reaches
    * React.
    */
-  sendQuiet(command: SessionCommand): Promise<ResponseBody> {
-    return this.#transport.send(this.#address(command));
+  async sendQuiet(command: SessionCommand): Promise<ResponseBody> {
+    const body = await this.#transport.send(this.#address(command));
+    this.invalidate();
+    return body;
   }
 
   #address(command: SessionCommand): Command {
@@ -90,8 +106,17 @@ export class Session {
     };
   };
 
+  /** Registers `listener`, called whenever the picture may have changed. */
+  onInvalidate = (listener: () => void): Unsubscribe => {
+    this.#redraw.add(listener);
+    return () => {
+      this.#redraw.delete(listener);
+    };
+  };
+
   #bump(): void {
     this.#revision += 1;
+    this.invalidate();
     // Copy first: a listener that unsubscribes during notification must not
     // shift the set out from under this loop.
     for (const listener of [...this.#listeners]) listener();

@@ -52,7 +52,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | `catchlight-editor-server` | Multi-session editor server: a `Model` per session plus a warm headless renderer, driven in-process or over a Unix socket. |
 | `catchlight-editor` | The editor GUI (egui): one codebase for desktop (embeds the server + socket) and web (wasm via eframe `WebRunner`). |
 | `catchlight-editor-cli` | Thin client that drives an editing session over the Unix socket. |
-| `catchlight-editor-wasm` | The browser's one door into the editor: the same JSON protocol over a `handle(request) -> reply` call, plus the byte staging that lets a synchronous `Editor` read what an asynchronous browser fetched. |
+| `catchlight-editor-wasm` | The browser's one door into the editor: the same JSON protocol over a `handle(request) -> reply` call, the byte staging that lets a synchronous `Editor` read what an asynchronous browser fetched, and the `Viewport` that draws a session on a canvas and owns its own frame loop. |
 | `visual-tests` | Visual regression harness: render a curated matrix of param/camera configs and diff against committed baselines. `publish = false`. |
 | `xtask` | Workspace automation, run as `cargo xtask <cmd>`. `publish = false`. |
 
@@ -154,8 +154,11 @@ that enforces them, not here. Add new ones there.
   workspace deps)
 - `crates/catchlight-editor-wasm/src/lib.rs` — one door, the same protocol,
   and where the browser's asynchrony stops
-- `packages/core/src/transport.ts`, `session.ts`, `storage.ts` — local against
-  remote, why a drag is not a revision, why a store is not a transport
+- `crates/catchlight-editor-wasm/src/viewport.rs` — who owns the frame loop,
+  what `invalidate` promises, where a size comes from
+- `packages/core/src/transport.ts`, `session.ts`, `storage.ts`, `viewport.ts` —
+  local against remote, why a drag is not a revision, why a store is not a
+  transport, why the backing store is measured rather than multiplied
 - `crates/xtask/src/fixtures.rs` — hand-authored model fixtures
 - `crates/xtask/src/ts.rs` — one generated module, nothing falling off the list
 - `crates/visual-tests/src/lib.rs` — visual regression, updating baselines
