@@ -1,16 +1,16 @@
 /**
  * Where document bytes come from and go.
  *
- * This is the seam the remote mode rides on, and it is deliberately **not**
- * the transport. The two have different shapes and different failure modes: a
- * transport is a request/reply stream of small JSON messages, a store is
- * content-addressed bytes that wants progress and resumability because a rig's
- * textures are most of its size. Folding them together would put a
- * multi-megabyte upload on a channel designed for commands.
+ * This is the seam cloud persistence rides on — the whole of it. The document
+ * itself lives in this tab's wasm editor; a server holds saved `.clm` files
+ * and a lock, and never sees a command. So "remote" is a `Storage` that talks
+ * HTTP, not a second transport, and it is deliberately kept off the command
+ * channel: a transport is a request/reply stream of small JSON messages, a
+ * store is bytes that want progress and resumability because a rig's textures
+ * are most of its size.
  *
- * Both halves of the two-mode plan live behind this one interface. Running
- * self-contained, a store is OPFS or a file the user picked. Running against a
- * cloud project, it is HTTP — and nothing above this file changes.
+ * Running self-contained, a store is OPFS or a file the user picked. Running
+ * against a cloud project, it is HTTP — and nothing above this file changes.
  *
  * The wasm editor reads keys synchronously (see the staging note in
  * `catchlight-editor-wasm`), so a caller resolves bytes here first and stages

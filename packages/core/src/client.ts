@@ -5,7 +5,14 @@
  * hook or a host application needs, and nothing about how it is served. In
  * particular nothing above this file may reach the transport, the wasm module
  * or the store directly — that is what keeps "no mirror" (see `session.ts`) and
- * "local or remote" (see `transport.ts`) decisions changeable in one package.
+ * "where the bytes live" (see `storage.ts`) decisions changeable in one
+ * package.
+ *
+ * **The document is the wasm editor in this tab.** Every command goes into it
+ * and every picture comes out of it; cloud persistence, when it comes, is a
+ * `Storage` that reads and writes whole `.clm` files plus a lock, not a server
+ * that sees commands. So an `Editor` always has a renderer to point at a
+ * canvas, and there is no configuration in which `attach` cannot work.
  *
  * The rule this package lives by: **it contains only web-platform glue.** File
  * pickers, OPFS, canvas lifecycle, pointer marshalling, this store adapter.
@@ -18,59 +25,29 @@
 import type { Command, ResponseBody, SessionInfo } from "./protocol.gen.js";
 import { Session } from "./session.js";
 import type { Storage } from "./storage.js";
-import { LocalTransport, ProtocolError } from "./transport.js";
-import type { Transport, WasmEditor } from "./transport.js";
+import { ProtocolError, Transport } from "./transport.js";
+import type { WasmEditor } from "./transport.js";
 import { Viewport } from "./viewport.js";
-
-export interface EditorOptions {
-  /** How commands reach the editor. */
-  transport: Transport;
-  /** Where document bytes live. */
-  storage: Storage;
-}
 
 export class Editor {
   #transport: Transport;
   #storage: Storage;
-  /**
-   * The wasm module, when there is one in this page. Kept apart from the
-   * transport because rendering and commanding are not the same capability:
-   * the document may be served from anywhere, but the picture is always drawn
-   * here, by a GPU this tab owns.
-   */
-  #wasm: WasmEditor | undefined;
-
-  constructor(options: EditorOptions) {
-    this.#transport = options.transport;
-    this.#storage = options.storage;
-  }
 
   /**
-   * Builds an editor over a wasm module in this page, backed by `storage`.
+   * An editor over the wasm module in this page, backed by `storage`.
    *
    * The module is passed in rather than imported so this package never forces
    * 2 MiB of WebAssembly into a bundle that only wanted the types — and so the
    * whole thing is testable against a fake.
    */
-  static local(wasm: WasmEditor, storage: Storage): Editor {
-    const editor = new Editor({ transport: new LocalTransport(wasm), storage });
-    editor.#wasm = wasm;
-    return editor;
+  constructor(wasm: WasmEditor, storage: Storage) {
+    this.#transport = new Transport(wasm);
+    this.#storage = storage;
   }
 
-  /**
-   * Draws `session` on `canvas`, until the returned viewport is disposed.
-   *
-   * Only an editor built by [`Editor.local`] can do this: drawing needs the
-   * renderer in this page, and an editor that only has a socket has no GPU
-   * state to point at a canvas.
-   */
+  /** Draws `session` on `canvas`, until the returned viewport is disposed. */
   async attach(session: Session, canvas: HTMLCanvasElement): Promise<Viewport> {
-    const wasm = this.#wasm;
-    if (!wasm) {
-      throw new Error("this editor has no renderer in this page; build it with Editor.local");
-    }
-    const view = await wasm.attach(canvas, session.id);
+    const view = await this.#transport.wasm.attach(canvas, session.id);
     return new Viewport(view, canvas, session);
   }
 
@@ -137,19 +114,15 @@ export class Editor {
   }
 
   /**
-   * Staging only exists for a wasm module in this page. A remote transport
-   * carries bytes its own way, so these are no-ops there rather than errors.
+   * The staging map is where the browser's asynchrony stops: bytes are put
+   * here after `await`, and the synchronous wasm side reads them by key.
    */
   #stage(key: string, bytes: Uint8Array): void {
-    if (this.#transport instanceof LocalTransport) {
-      this.#transport.staging.putBytes(key, bytes);
-    }
+    this.#transport.wasm.putBytes(key, bytes);
   }
 
   #unstage(key: string): Uint8Array | undefined {
-    return this.#transport instanceof LocalTransport
-      ? this.#transport.staging.takeBytes(key)
-      : undefined;
+    return this.#transport.wasm.takeBytes(key);
   }
 }
 

@@ -1,18 +1,17 @@
 /**
- * How a command reaches an editor.
+ * How a command reaches the editor: one JSON string in, one JSON string out.
  *
- * Two implementations are planned and layers above must never learn which one
- * is active: `LocalTransport` calls into the wasm module in this page;
- * `RemoteTransport` (not yet written) speaks the same messages over a
- * WebSocket. The protocol was built transport-agnostic — the same requests
- * already travel over a Unix socket natively — so this seam costs almost
- * nothing to keep and is what makes a server-backed mode possible later.
+ * The wasm module speaks the protocol as serialized text — the same messages
+ * the Unix socket and the CLI already speak — and this is the one place that
+ * text is built and read. Everything above it works in typed `Command`s and
+ * typed `ResponseBody`s and never sees a string.
  *
- * **Everything here is async even where it resolves synchronously.** The local
- * transport could return a value directly; it returns a promise instead. That
- * is deliberate: it is what lets the wasm module move into a Worker, or a
- * remote server appear behind the same calls, without touching a single
- * caller.
+ * **Everything here is async even though it resolves synchronously.** The
+ * wasm call returns a value directly; this returns a promise anyway. That is
+ * deliberate: it is what lets the wasm module move into a Worker later without
+ * touching a single caller. It is not a hedge for a remote server — the
+ * document lives in this tab's wasm `Editor`, and cloud persistence rides the
+ * `Storage` seam rather than this one (see `storage.ts`).
  *
  * The message types come from `protocol.gen.ts`, which `cargo xtask ts`
  * writes from the Rust enums. Nothing in this package declares a wire shape of
@@ -28,7 +27,7 @@ import type { WasmViewport } from "./viewport.js";
  *
  * The Rust side is `Request { id, #[serde(flatten)] command }`; flattening has
  * no declaration of its own, so the intersection is written here rather than
- * generated. A transport assigns `id`, which is why callers pass a `Command`.
+ * generated. The transport assigns `id`, which is why callers pass a `Command`.
  */
 export type Request = { id: number } & Command;
 
@@ -65,18 +64,10 @@ export class ProtocolError extends Error {
   }
 }
 
-/** A transport moves one request and returns its reply body. */
-export interface Transport {
-  /** Sends `command`, resolving with its body or rejecting `ProtocolError`. */
-  send(command: Command): Promise<ResponseBody>;
-  /** Releases whatever the transport holds. Idempotent. */
-  close(): void;
-}
-
 /**
  * The wasm module's surface, as this package needs it. Declared structurally
- * rather than imported so the transport can be tested against a fake without
- * instantiating 2 MiB of WebAssembly.
+ * rather than imported so everything above can be tested against a fake
+ * without instantiating 2 MiB of WebAssembly.
  */
 export interface WasmEditor {
   handle(requestJson: string): string;
@@ -92,8 +83,8 @@ export interface WasmEditor {
   free?(): void;
 }
 
-/** Commands go straight into a wasm editor living in this page. */
-export class LocalTransport implements Transport {
+/** Sends typed commands into the wasm editor and hands back typed bodies. */
+export class Transport {
   #wasm: WasmEditor | undefined;
   #nextId = 1;
 
@@ -101,6 +92,7 @@ export class LocalTransport implements Transport {
     this.#wasm = wasm;
   }
 
+  /** Sends `command`, resolving with its body or rejecting `ProtocolError`. */
   send(command: Command): Promise<ResponseBody> {
     // Rejecting rather than throwing keeps every failure on one path for
     // callers, including this one — a closed transport is not special.
@@ -143,13 +135,14 @@ export class LocalTransport implements Transport {
     return Promise.resolve(reply.body);
   }
 
-  /** The staging map the wasm editor reads `path` keys out of. */
-  get staging(): WasmEditor {
+  /** The wasm module, for the byte staging that `path` keys are read from. */
+  get wasm(): WasmEditor {
     const wasm = this.#wasm;
     if (!wasm) throw new ProtocolError({ code: "closed", message: "transport is closed" });
     return wasm;
   }
 
+  /** Releases the wasm module. Idempotent. */
   close(): void {
     this.#wasm?.free?.();
     this.#wasm = undefined;

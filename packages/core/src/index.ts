@@ -12,7 +12,6 @@
 export type * from "./protocol.gen.js";
 
 export { Editor } from "./client.js";
-export type { EditorOptions } from "./client.js";
 export { Session } from "./session.js";
 export type {
   SessionCommand,
@@ -23,7 +22,7 @@ export type {
 } from "./session.js";
 export { FetchStorage, MemoryStorage, NotFoundError } from "./storage.js";
 export type { Storage } from "./storage.js";
-export { LocalTransport, ProtocolError } from "./transport.js";
+export { ProtocolError, Transport } from "./transport.js";
 export { Viewport, devicePixelSize } from "./viewport.js";
 export type { WasmViewport } from "./viewport.js";
 export type {
@@ -31,6 +30,5 @@ export type {
   FailureCode,
   ProtocolErrorInfo,
   Request,
-  Transport,
   WasmEditor,
 } from "./transport.js";

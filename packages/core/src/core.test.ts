@@ -14,7 +14,7 @@ import { describe, expect, test } from "bun:test";
 import { Editor } from "./client.js";
 import { Session } from "./session.js";
 import { MemoryStorage, NotFoundError } from "./storage.js";
-import { LocalTransport, ProtocolError } from "./transport.js";
+import { ProtocolError, Transport } from "./transport.js";
 import { Viewport, devicePixelSize } from "./viewport.js";
 import type { WasmViewport } from "./viewport.js";
 import type { ResponseBody } from "./protocol.gen.js";
@@ -133,10 +133,10 @@ function entry(parts: {
   return { contentRect: { width: 0, height: 0 }, ...parts } as unknown as ResizeObserverEntry;
 }
 
-describe("LocalTransport", () => {
+describe("Transport", () => {
   test("gives every request its own correlation id", async () => {
     const wasm = new FakeWasm();
-    const transport = new LocalTransport(wasm);
+    const transport = new Transport(wasm);
     await transport.send({ cmd: "session_new", name: null });
     await transport.send({ cmd: "session_new", name: null });
     expect(wasm.requests.map((r) => r.id)).toEqual([1, 2]);
@@ -145,7 +145,7 @@ describe("LocalTransport", () => {
   test("rejects a refusal as a ProtocolError carrying its code", async () => {
     const wasm = new FakeWasm();
     wasm.refuse.set("session_open", { code: "no_session", message: "nope" });
-    const transport = new LocalTransport(wasm);
+    const transport = new Transport(wasm);
 
     const failure = transport.send({ cmd: "session_open", path: "x.clm" });
     await expect(failure).rejects.toBeInstanceOf(ProtocolError);
@@ -154,7 +154,7 @@ describe("LocalTransport", () => {
 
   test("a closed transport rejects rather than throwing synchronously", async () => {
     const wasm = new FakeWasm();
-    const transport = new LocalTransport(wasm);
+    const transport = new Transport(wasm);
     transport.close();
     expect(wasm.freed).toBe(true);
     await expect(transport.send({ cmd: "session_new", name: null })).rejects.toMatchObject({
@@ -166,7 +166,7 @@ describe("LocalTransport", () => {
 describe("Session revisions", () => {
   test("a document command bumps the revision and notifies", async () => {
     const wasm = new FakeWasm();
-    const session = new Session(new LocalTransport(wasm), 1);
+    const session = new Session(new Transport(wasm), 1);
     let notified = 0;
     session.subscribe(() => {
       notified += 1;
@@ -180,7 +180,7 @@ describe("Session revisions", () => {
 
   test("the presence path bumps nothing — a drag never reaches React", async () => {
     const wasm = new FakeWasm();
-    const session = new Session(new LocalTransport(wasm), 1);
+    const session = new Session(new Transport(wasm), 1);
     let notified = 0;
     session.subscribe(() => {
       notified += 1;
@@ -198,7 +198,7 @@ describe("Session revisions", () => {
 
   test("unsubscribing during a notification does not skip a listener", async () => {
     const wasm = new FakeWasm();
-    const session = new Session(new LocalTransport(wasm), 1);
+    const session = new Session(new Transport(wasm), 1);
     const seen: string[] = [];
     const off = session.subscribe(() => {
       seen.push("first");
@@ -213,7 +213,7 @@ describe("Session revisions", () => {
 
 describe("Generated wire types", () => {
   test("a session command cannot address a session, and a bare one cannot omit it", () => {
-    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const session = new Session(new Transport(new FakeWasm()), 1);
 
     // @ts-expect-error — the session fills this in; a caller that could pass
     // it could address the wrong document.
@@ -231,7 +231,7 @@ describe("Generated wire types", () => {
   });
 
   test("a command cannot be sent by the wrong method", () => {
-    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const session = new Session(new Transport(new FakeWasm()), 1);
 
     // @ts-expect-error — `scratch_deform` is a presence command. Sending it
     // through `send` would bump the revision and re-render every panel on
@@ -262,7 +262,7 @@ describe("Generated wire types", () => {
 
 describe("Viewport", () => {
   test("a drag repaints without bumping the revision", async () => {
-    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const session = new Session(new Transport(new FakeWasm()), 1);
     const view = new FakeViewport();
     new Viewport(view, {} as HTMLCanvasElement, session);
     let revisions = 0;
@@ -281,7 +281,7 @@ describe("Viewport", () => {
   });
 
   test("a document command repaints too", async () => {
-    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const session = new Session(new Transport(new FakeWasm()), 1);
     const view = new FakeViewport();
     new Viewport(view, {} as HTMLCanvasElement, session);
 
@@ -290,7 +290,7 @@ describe("Viewport", () => {
   });
 
   test("disposing stops the renderer and lets go of the session", async () => {
-    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+    const session = new Session(new Transport(new FakeWasm()), 1);
     const view = new FakeViewport();
     const viewport = new Viewport(view, {} as HTMLCanvasElement, session);
 
@@ -302,17 +302,6 @@ describe("Viewport", () => {
     // A disposed viewport that stayed subscribed would keep the whole GPU
     // state alive behind the session for as long as the document is open.
     expect(view.invalidated).toBe(0);
-  });
-
-  test("an editor with no renderer in this page says so", async () => {
-    const editor = new Editor({
-      transport: new LocalTransport(new FakeWasm()),
-      storage: new MemoryStorage(),
-    });
-    const session = await editor.newDocument();
-    await expect(editor.attach(session, {} as HTMLCanvasElement)).rejects.toThrow(
-      /no renderer in this page/,
-    );
   });
 
   test("device pixels are taken from the browser, not multiplied out", () => {
@@ -350,7 +339,7 @@ describe("Editor documents", () => {
     const bytes = new TextEncoder().encode("a model");
     await storage.write("project/akari.clm", bytes);
 
-    const editor = Editor.local(wasm, storage);
+    const editor = new Editor(wasm, storage);
     const session = await editor.openDocument("project/akari.clm");
 
     expect(session).toBeInstanceOf(Session);
@@ -362,7 +351,7 @@ describe("Editor documents", () => {
 
   test("opening a key the store does not have fails before any command", async () => {
     const wasm = new FakeWasm();
-    const editor = Editor.local(wasm, new MemoryStorage());
+    const editor = new Editor(wasm, new MemoryStorage());
 
     await expect(editor.openDocument("missing.clm")).rejects.toBeInstanceOf(NotFoundError);
     expect(wasm.requests).toHaveLength(0);
@@ -371,7 +360,7 @@ describe("Editor documents", () => {
   test("saving drains staging into the store rather than copying it", async () => {
     const wasm = new FakeWasm();
     const storage = new MemoryStorage();
-    const editor = Editor.local(wasm, storage);
+    const editor = new Editor(wasm, storage);
     const session = await editor.newDocument();
 
     const key = await editor.saveDocument(session, "out/akari.clm");
@@ -387,7 +376,7 @@ describe("Editor documents", () => {
   test("saving with no key reuses the one the reply names", async () => {
     const wasm = new FakeWasm();
     const storage = new MemoryStorage();
-    const editor = Editor.local(wasm, storage);
+    const editor = new Editor(wasm, storage);
     const session = await editor.newDocument();
 
     expect(await editor.saveDocument(session)).toBe("previous.clm");
@@ -404,7 +393,7 @@ describe("Editor documents", () => {
       return JSON.stringify({ reply: "ok", id, body });
     }) as WasmEditor["handle"];
 
-    const editor = Editor.local(wasm, new MemoryStorage());
+    const editor = new Editor(wasm, new MemoryStorage());
     const session = await editor.newDocument();
     await expect(editor.saveDocument(session)).rejects.toMatchObject({ code: "bad_reply" });
   });
