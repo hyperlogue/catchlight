@@ -37,8 +37,15 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_arch = "wasm32")]
+use catchlight_editor_protocol::SessionId;
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use catchlight_editor_server::{Editor, Storage};
+
+#[cfg(target_arch = "wasm32")]
+mod viewport;
+#[cfg(target_arch = "wasm32")]
+pub use viewport::Viewport;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -90,7 +97,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The editor, its sessions, and the bytes staged for them.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct CatchlightEditor {
-    editor: Editor,
+    /// Shared because a [`Viewport`] outlives any one call and draws the same
+    /// sessions this answers commands about.
+    editor: Arc<Editor>,
     staged: Arc<StagedStorage>,
 }
 
@@ -104,7 +113,7 @@ impl CatchlightEditor {
     fn new_inner() -> Self {
         let staged = Arc::new(StagedStorage::default());
         Self {
-            editor: Editor::with_storage(staged.clone()),
+            editor: Arc::new(Editor::with_storage(staged.clone())),
             staged,
         }
     }
@@ -171,6 +180,31 @@ impl CatchlightEditor {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = stagedKeys))]
     pub fn staged_keys(&self) -> Vec<String> {
         self.staged.keys()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl CatchlightEditor {
+    /// Draws `session` on `canvas`, from now until the viewport is stopped.
+    ///
+    /// Asynchronous because WebGPU is: asking for an adapter and a device are
+    /// both promises, and they are the only two. Everything after this — a
+    /// resize, a camera move, a frame — is synchronous, which is what keeps the
+    /// frame loop off the microtask queue.
+    ///
+    /// `session` is an `f64` because a session id crosses the JSON protocol as
+    /// a `number` and has to be the same value here. A `u64` parameter would
+    /// reach JavaScript as a `bigint`, so the one id would have two spellings
+    /// and every call site would convert.
+    pub async fn attach(
+        &self,
+        canvas: web_sys::HtmlCanvasElement,
+        session: f64,
+    ) -> Result<Viewport, JsValue> {
+        Viewport::attach(self.editor.clone(), SessionId(session as u64), canvas)
+            .await
+            .map_err(|message| JsValue::from_str(&message))
     }
 }
 

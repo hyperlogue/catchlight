@@ -18,6 +18,18 @@ serde_json = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = "0.1"
+# The viewport. Browser-only by construction — a wgpu surface comes from a
+# canvas — so it is not in the crate's native build and neither is its cost.
+catchlight-wgpu = { workspace = true }
+wgpu = { workspace = true }
+glam = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = [
+    "Window",
+    "HtmlCanvasElement",
+    "console",
+] }
 
 [lints]
 workspace = true
