@@ -12,9 +12,6 @@
     "packages/core": {
       "name": "@catchlight/core",
       "version": "0.1.0",
-      "dependencies": {
-        "@catchlight/wasm": "workspace:*",
-      },
     },
     "packages/wasm": {
       "name": "@catchlight/wasm",

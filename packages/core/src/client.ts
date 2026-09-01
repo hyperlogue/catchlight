@@ -15,26 +15,17 @@
  * write twice.
  */
 
+import type { Command, ResponseBody, SessionInfo } from "./protocol.gen.js";
 import { Session } from "./session.js";
 import type { Storage } from "./storage.js";
 import { LocalTransport, ProtocolError } from "./transport.js";
-import type { Command, ResponseBody, Transport, WasmEditor } from "./transport.js";
+import type { Transport, WasmEditor } from "./transport.js";
 
 export interface EditorOptions {
   /** How commands reach the editor. */
   transport: Transport;
   /** Where document bytes live. */
   storage: Storage;
-}
-
-/** A model listed by the editor. */
-export interface SessionInfo {
-  session: number;
-  title: string;
-  file: string | null;
-  dirty: boolean;
-  rev: number;
-  node_count: number;
 }
 
 export class Editor {
@@ -59,10 +50,8 @@ export class Editor {
 
   /** An empty document. */
   async newDocument(name?: string): Promise<Session> {
-    const body = await this.#transport.send(
-      name === undefined ? { cmd: "session_new" } : { cmd: "session_new", name },
-    );
-    return new Session(this.#transport, expectSession(body));
+    const body = await this.#transport.send({ cmd: "session_new", name: name ?? null });
+    return new Session(this.#transport, expect(body, "session").session);
   }
 
   /**
@@ -76,7 +65,7 @@ export class Editor {
     const bytes = await this.#storage.read(key);
     this.#stage(key, bytes);
     const body = await this.#transport.send({ cmd: "session_open", path: key });
-    return new Session(this.#transport, expectSession(body));
+    return new Session(this.#transport, expect(body, "session").session);
   }
 
   /**
@@ -89,10 +78,8 @@ export class Editor {
    * textures.
    */
   async saveDocument(session: Session, key?: string): Promise<string> {
-    const body = await session.send(
-      key === undefined ? { cmd: "save" } : { cmd: "save", path: key },
-    );
-    const savedKey = String(body.path ?? key ?? "");
+    const body = await session.send({ cmd: "save", path: key ?? null });
+    const savedKey = expect(body, "saved").path;
     const bytes = this.#unstage(savedKey);
     if (!bytes) {
       throw new ProtocolError({
@@ -107,7 +94,7 @@ export class Editor {
   /** Every open document. */
   async listSessions(): Promise<SessionInfo[]> {
     const body = await this.#transport.send({ cmd: "session_list" });
-    return (body.sessions ?? []) as SessionInfo[];
+    return expect(body, "sessions").sessions;
   }
 
   /**
@@ -140,13 +127,22 @@ export class Editor {
   }
 }
 
-function expectSession(body: ResponseBody): number {
-  const session = body.session;
-  if (typeof session !== "number") {
+/**
+ * Narrows a reply to the one shape this call asked for.
+ *
+ * A server that answered something else is a bug, not a case to handle, but it
+ * has to surface as a `ProtocolError` like any other failure rather than as an
+ * `undefined` read three frames later.
+ */
+function expect<R extends ResponseBody["result"]>(
+  body: ResponseBody,
+  result: R,
+): Extract<ResponseBody, { result: R }> {
+  if (body.result !== result) {
     throw new ProtocolError({
       code: "bad_reply",
-      message: `expected a session id, got ${JSON.stringify(body)}`,
+      message: `expected a ${result} reply, got ${JSON.stringify(body)}`,
     });
   }
-  return session;
+  return body as Extract<ResponseBody, { result: R }>;
 }

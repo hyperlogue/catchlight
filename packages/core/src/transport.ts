@@ -13,26 +13,49 @@
  * is deliberate: it is what lets the wasm module move into a Worker, or a
  * remote server appear behind the same calls, without touching a single
  * caller.
+ *
+ * The message types come from `protocol.gen.ts`, which `cargo xtask ts`
+ * writes from the Rust enums. Nothing in this package declares a wire shape of
+ * its own — the envelope below is the one exception, and only because
+ * `#[serde(flatten)]` has no name on this side.
  */
 
-/** A protocol request, minus the correlation id the transport assigns. */
-export type Command = { cmd: string } & Record<string, unknown>;
+import type { Command, ErrorCode, Reply, ResponseBody } from "./protocol.gen.js";
 
-/** A successful reply's payload. */
-export type ResponseBody = { result: string } & Record<string, unknown>;
+/**
+ * One request on the wire: a command plus the id its reply is correlated by.
+ *
+ * The Rust side is `Request { id, #[serde(flatten)] command }`; flattening has
+ * no declaration of its own, so the intersection is written here rather than
+ * generated. A transport assigns `id`, which is why callers pass a `Command`.
+ */
+export type Request = { id: number } & Command;
+
+/**
+ * Why a call failed. Most of these are [`ErrorCode`] — the server's own
+ * reasons, generated from Rust.
+ *
+ * The two client codes exist because a failure can happen on this side of the
+ * wire, where the server never sees it and so has no word for it: the
+ * transport was closed, or a reply arrived that does not answer the request.
+ * Callers branch on one union rather than on a code plus a separate "did it
+ * even get there" flag.
+ */
+export type ClientErrorCode = "closed" | "bad_reply";
+export type FailureCode = ErrorCode | ClientErrorCode;
 
 /** What a refused command tells a client to branch on. */
 export interface ProtocolErrorInfo {
-  readonly code: string;
+  readonly code: FailureCode;
   readonly message: string;
 }
 
 /**
- * A command the editor refused. `code` is the machine-readable reason and the
- * thing to branch on; `message` is for a person.
+ * A command that failed. `code` is the machine-readable reason and the thing
+ * to branch on; `message` is for a person.
  */
 export class ProtocolError extends Error {
-  readonly code: string;
+  readonly code: FailureCode;
 
   constructor(info: ProtocolErrorInfo) {
     super(info.message);
@@ -62,11 +85,6 @@ export interface WasmEditor {
   free?(): void;
 }
 
-type Reply =
-  | { reply: "ok"; id: number; body: ResponseBody }
-  | { reply: "err"; id: number; code: string; message: string }
-  | { reply: "event"; [k: string]: unknown };
-
 /** Commands go straight into a wasm editor living in this page. */
 export class LocalTransport implements Transport {
   #wasm: WasmEditor | undefined;
@@ -89,10 +107,10 @@ export class LocalTransport implements Transport {
       );
     }
 
-    const id = this.#nextId++;
+    const request: Request = { id: this.#nextId++, ...command };
     let reply: Reply;
     try {
-      reply = JSON.parse(wasm.handle(JSON.stringify({ id, ...command }))) as Reply;
+      reply = JSON.parse(wasm.handle(JSON.stringify(request))) as Reply;
     } catch (cause) {
       return Promise.reject(
         new ProtocolError({
