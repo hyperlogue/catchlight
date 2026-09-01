@@ -285,11 +285,11 @@ impl RenderCache {
     fn rebuild(&mut self, renderer: &mut WgpuRenderer, model: &Model) -> RendererResult<()> {
         let _span = tracing::trace_span!("render_cache::rebuild").entered();
 
-        // Hand back every slot the previous build held before taking new
-        // ones, so a model that shrank does not leave GPU buffers and deform
-        // ranges behind under slots nothing names any more.
-        renderer.release_for_rebuild(model.texture_ids().len() as u32);
-
+        // Everything fallible runs before anything is released. A failed
+        // rebuild must leave the previous build resident: releasing first
+        // would strand this cache's tables — and the caller's last-good
+        // render list — describing slots the renderer no longer holds, which
+        // draws stale contents under new numbers.
         let textures: Vec<catchlight_core::EncodedTexture> = model
             .texture_ids()
             .iter()
@@ -307,6 +307,15 @@ impl RenderCache {
             self.texture_memo.as_mut(),
         )
         .map_err(|error| RendererError::TexturePrep(error.to_string()))?;
+        for prep in prepped.iter() {
+            renderer.validate_texture_upload(&prep.texture)?;
+        }
+
+        // Hand back every slot the previous build held before taking new
+        // ones, so a model that shrank does not leave GPU buffers and deform
+        // ranges behind under slots nothing names any more. Nothing past
+        // this point fails: every upload below was validated above.
+        renderer.release_for_rebuild(model.texture_ids().len() as u32);
         for (slot, prep) in prepped.iter().enumerate() {
             renderer.upload_texture(slot as u32, &prep.texture)?;
         }

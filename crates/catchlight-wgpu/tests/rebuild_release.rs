@@ -11,8 +11,13 @@
 
 mod common;
 
-use catchlight_core::formats::clm::ClmMesh;
-use catchlight_core::{Model, NodeId, Puppet, TexId, Vec2};
+use std::sync::Arc;
+
+use catchlight_core::formats::clm::{ClmMesh, TextureAlpha, TextureEncoding};
+use catchlight_core::{
+    Model, ModelNode, ModelNodeKind, ModelPart, ModelTexture, NodeId, Puppet, SeededHex, TexId,
+    Vec2,
+};
 use catchlight_wgpu::{
     create_headless_context, PrepareOptions, RenderCache, RenderContext, WgpuRenderer,
 };
@@ -231,6 +236,87 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
         for (x, expected) in [(-0.6, RED), (0.0, GREEN), (0.6, WHITE)] {
             let (px, py) = column_centre(x);
             assert_eq!(nearest(&pixels, px, py), expected, "column at x={x}");
+        }
+    });
+}
+
+/// A rebuild that cannot finish must leave the previous build resident. The
+/// fallible work — decode and upload validation — runs before anything is
+/// released, so a failed rebuild never guts the renderer under a cache (and
+/// a caller's last-good `RenderList`) that still describe the old build.
+#[test]
+fn a_failed_rebuild_leaves_the_previous_build_resident() {
+    pollster::block_on(async {
+        let mut ctx = context().await;
+        let (mut model, _nodes, _textures) = three_quad_model();
+        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, MEMOIZED).expect("prepare");
+        let mut puppet = Puppet::new(&model);
+        ctx.renderer.update_camera(camera());
+
+        puppet.tick(&model, 0.0);
+        cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
+        let list = catchlight_wgpu::collect(&cache, &puppet);
+        assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 3);
+
+        // The two ways texture work fails: bytes that do not decode, and a
+        // decoded texture the device refuses. Each case grows the model by
+        // one part, so the three originals keep their slots and order.
+        let mut hex = SeededHex::new(7);
+        let root = model.root().expect("a complete model").clone();
+        let cases: [(&str, ModelTexture); 2] = [
+            (
+                "bytes that do not decode",
+                ModelTexture {
+                    encoding: TextureEncoding::Png,
+                    alpha: TextureAlpha::Straight,
+                    data: Arc::new(b"not a png".to_vec()),
+                },
+            ),
+            ("a texture wider than the device allows", {
+                let side = ctx.renderer.max_texture_dimension() + 1;
+                common::solid_texture(side, 1, WHITE)
+            }),
+        ];
+        for (why, texture) in cases {
+            let part = model
+                .add_node(
+                    &root,
+                    ModelNode::new(
+                        "bad",
+                        ModelNodeKind::Part(ModelPart::new(quad_at(0.9, 0.0, 0.05))),
+                    ),
+                    &mut hex,
+                )
+                .expect("add part");
+            model
+                .add_texture(&part, texture, &mut hex)
+                .expect("add texture");
+
+            puppet.tick(&model, 0.0);
+            cache
+                .refresh(&mut ctx.renderer, &model, &puppet)
+                .expect_err(why);
+
+            assert_eq!(ctx.renderer.live_mesh_slots(), 3, "{why}");
+            assert_eq!(ctx.renderer.live_texture_slots(), 3, "{why}");
+            assert_eq!(cache.texture_count(), 3, "{why}");
+
+            // Roll the model back, which also proves the failure did not
+            // wedge the cache: the next refresh rebuilds and draws.
+            model.delete_node(&part).expect("delete the bad part");
+            puppet.tick(&model, 0.0);
+            cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
+            let list = catchlight_wgpu::collect(&cache, &puppet);
+            assert_eq!(
+                ctx.render(&list, CLEAR).expect("render").drawn_parts,
+                3,
+                "{why}"
+            );
+            let pixels = ctx.read_rgba().expect("read back");
+            for (x, expected) in [(-0.6, RED), (0.0, GREEN), (0.6, BLUE)] {
+                let (px, py) = column_centre(x);
+                assert_eq!(nearest(&pixels, px, py), expected, "{why}: column at x={x}");
+            }
         }
     });
 }
