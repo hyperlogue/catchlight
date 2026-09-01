@@ -442,14 +442,53 @@ impl Editor {
     /// Apply one request and produce its reply. Synchronous and the single
     /// funnel for every client (in-process or socket).
     pub fn handle(&self, req: Request) -> Reply {
-        match self.dispatch(req.command) {
+        // A command the protocol classifies as `Presence` or `Query` must not
+        // move any session's revision. That classification is what a client
+        // picks its send method by — a presence command that quietly bumped
+        // `rev` would re-render every panel on every pointer move, and a query
+        // that did would skip the re-render entirely. Checked here rather than
+        // per arm so it holds for commands nobody thought to test.
+        #[cfg(debug_assertions)]
+        let kind = req.command.kind();
+        #[cfg(debug_assertions)]
+        let revs_before = self.revs();
+
+        let reply = match self.dispatch(req.command) {
             Ok(body) => Reply::Ok { id: req.id, body },
             Err(e) => Reply::Err {
                 id: req.id,
                 code: e.code(),
                 message: e.to_string(),
             },
+        };
+
+        #[cfg(debug_assertions)]
+        if kind != CommandKind::Document {
+            debug_assert_eq!(
+                self.revs(),
+                revs_before,
+                "a {kind:?} command moved a session revision; either it belongs \
+                 in CommandKind::Document or it should not be editing",
+            );
         }
+        reply
+    }
+
+    /// Every open session's revision, for the debug check in [`Self::handle`].
+    /// Sessions are few and this only exists in a debug build, so the walk is
+    /// cheaper than threading the addressed session out of every command.
+    #[cfg(debug_assertions)]
+    fn revs(&self) -> Vec<(SessionId, u64)> {
+        let handles: Vec<_> = lock(&self.sessions)
+            .iter()
+            .map(|(&id, session)| (id, session.clone()))
+            .collect();
+        let mut revs: Vec<_> = handles
+            .into_iter()
+            .map(|(id, handle)| (id, lock(&handle).rev))
+            .collect();
+        revs.sort_by_key(|(id, _)| id.0);
+        revs
     }
 
     fn alloc_id(&self) -> SessionId {

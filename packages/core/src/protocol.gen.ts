@@ -859,3 +859,91 @@ export type PreviewInfo = {
   width: number,
   height: number,
 };
+
+/**
+ * A command that changes the document, or which documents exist.
+ *
+ * The session's revision moves, so every view of it re-reads. These are the
+ * commands that cost an undo entry and a React render.
+ */
+export type DocumentCommandTag =
+  | "session_new"
+  | "session_open"
+  | "session_import"
+  | "session_close"
+  | "save"
+  | "node_add"
+  | "node_set"
+  | "node_reparent"
+  | "node_reorder"
+  | "node_move"
+  | "node_duplicate"
+  | "rename_id"
+  | "mask_add"
+  | "mask_set"
+  | "mask_reorder"
+  | "mask_delete"
+  | "physics_set"
+  | "physics_globals"
+  | "node_delete"
+  | "texture_add"
+  | "param_add"
+  | "param_set"
+  | "param_delete"
+  | "param_key_insert"
+  | "param_key_delete"
+  | "param_key_move"
+  | "param_flip"
+  | "binding_add"
+  | "binding_key"
+  | "binding_keys"
+  | "binding_unset"
+  | "binding_reset"
+  | "binding_delete"
+  | "binding_interpolate"
+  | "binding_invert"
+  | "binding_copy_key"
+  | "deform_set"
+  | "deform_vertices"
+  | "mesh_set"
+  | "mesh_copy"
+  | "seam_add"
+  | "seam_delete"
+  | "slot_add"
+  | "slot_fill"
+  | "slot_clear"
+  | "slot_delete"
+  | "weld_set"
+  | "physics_add"
+  | "undo"
+  | "redo";
+export type DocumentCommand = Extract<Command, { cmd: DocumentCommandTag }>;
+
+/**
+ * A command that changes what is drawn without changing the document.
+ *
+ * The drag path. No revision, no undo entry, and deliberately invisible to a
+ * panel: a gesture of any length repaints the canvas and re-renders nothing.
+ */
+export type PresenceCommandTag =
+  | "presence_set"
+  | "scratch_deform";
+export type PresenceCommand = Extract<Command, { cmd: PresenceCommandTag }>;
+
+/**
+ * A command that reads. Nothing a later command would see differently.
+ */
+export type QueryCommandTag =
+  | "session_list"
+  | "export_manifest"
+  | "status"
+  | "check"
+  | "node_tree"
+  | "texture_list"
+  | "param_list"
+  | "seams"
+  | "welds"
+  | "unfilled_slots"
+  | "presence_get"
+  | "preview";
+export type QueryCommand = Extract<Command, { cmd: QueryCommandTag }>;

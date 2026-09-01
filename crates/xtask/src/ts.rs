@@ -165,8 +165,117 @@ fn render(decls: &[Decl]) -> Result<String> {
         out.push_str(pretty(&decl.body).trim_end().trim_end_matches(';'));
         out.push_str(";\n");
     }
+    out.push_str(&kind_aliases(command_tags(decls)?)?);
     Ok(out)
 }
+
+/// The `cmd` tags the generated `Command` union carries, in declaration order.
+///
+/// Read back out of the rendered union rather than listed again here: this is
+/// what makes [`kind_aliases`] check `COMMAND_KINDS` against the real enum
+/// instead of against a second copy of it.
+fn command_tags(decls: &[Decl]) -> Result<Vec<String>> {
+    let command = decls
+        .iter()
+        .find(|d| d.ident == "Command")
+        .context("the generated module has no `Command` type to split by kind")?;
+    let mut tags = Vec::new();
+    let mut rest = command.body.as_str();
+    while let Some(at) = rest.find("\"cmd\": \"") {
+        rest = &rest[at + 8..];
+        let end = rest
+            .find('"')
+            .context("a `cmd` tag in the Command union is not terminated")?;
+        tags.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    if tags.is_empty() {
+        bail!("the Command union carries no `cmd` tags; the tagging changed");
+    }
+    Ok(tags)
+}
+
+/// Splits the `Command` union three ways, by what applying a command does.
+///
+/// This is the whole reason `COMMAND_KINDS` exists. TypeScript cannot see that
+/// `scratch_deform` leaves the document alone and `node_set` does not, so a
+/// client that took one `Command` would have to remember which of its calls
+/// are quiet — exactly the thing nobody remembers. With the split, a session
+/// exposes one method per kind and picking the wrong one does not typecheck.
+///
+/// Every tag the union carries must appear in `COMMAND_KINDS`, and every entry
+/// in `COMMAND_KINDS` must be a tag the union carries. Either half failing is
+/// a build error naming the offenders: a new Rust command reaches TypeScript
+/// classified, or it does not reach it at all.
+fn kind_aliases(tags: Vec<String>) -> Result<String> {
+    let known: BTreeSet<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
+    let found: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
+
+    let unclassified: Vec<&str> = found.difference(&known).copied().collect();
+    if !unclassified.is_empty() {
+        bail!(
+            "COMMAND_KINDS in crates/catchlight-editor-protocol/src/lib.rs does not \
+             classify {}.\nAdd each one — a command TypeScript cannot place is a \
+             command a client cannot know how to send.",
+            unclassified.join(", ")
+        );
+    }
+    let stale: Vec<&str> = known.difference(&found).copied().collect();
+    if !stale.is_empty() {
+        bail!(
+            "COMMAND_KINDS classifies {}, which the Command enum no longer carries.\n\
+             Remove them.",
+            stale.join(", ")
+        );
+    }
+
+    let mut out = String::new();
+    for (kind, name, doc) in KIND_ALIASES {
+        let arms: Vec<&str> = tags
+            .iter()
+            .map(String::as_str)
+            .filter(|tag| {
+                proto::COMMAND_KINDS
+                    .iter()
+                    .any(|(name, k)| name == tag && k == kind)
+            })
+            .collect();
+        if arms.is_empty() {
+            bail!("no command is classified {kind:?}; the split would be empty");
+        }
+        out.push('\n');
+        push_comment(&mut out, doc, 0);
+        out.push_str(&format!("\nexport type {name}Tag ="));
+        for arm in arms {
+            out.push_str(&format!("\n  | \"{arm}\""));
+        }
+        out.push_str(&format!(
+            ";\nexport type {name} = Extract<Command, {{ cmd: {name}Tag }}>;\n"
+        ));
+    }
+    Ok(out)
+}
+
+/// The three splits, their TypeScript names, and what each one means to a
+/// client. The doc text lands in the generated module, where it is the only
+/// explanation a TypeScript reader gets.
+const KIND_ALIASES: &[(proto::CommandKind, &str, &str)] = &[
+    (
+        proto::CommandKind::Document,
+        "DocumentCommand",
+        "/**\n * A command that changes the document, or which documents exist.\n *\n          * The session's revision moves, so every view of it re-reads. These are the\n          * commands that cost an undo entry and a React render.\n */",
+    ),
+    (
+        proto::CommandKind::Presence,
+        "PresenceCommand",
+        "/**\n * A command that changes what is drawn without changing the document.\n *\n          * The drag path. No revision, no undo entry, and deliberately invisible to a\n          * panel: a gesture of any length repaints the canvas and re-renders nothing.\n */",
+    ),
+    (
+        proto::CommandKind::Query,
+        "QueryCommand",
+        "/**\n * A command that reads. Nothing a later command would see differently.\n */",
+    ),
+];
 
 /// Fails if a listed type depends on a type that is not itself listed — the
 /// one way this generator could quietly emit an incomplete module.
@@ -440,5 +549,47 @@ mod tests {
     fn the_generated_module_is_closed_over_its_dependencies() {
         let cfg = Config::new().with_large_int("number");
         check_closed(&declarations(&cfg)).expect("every wire type is listed");
+    }
+
+    /// The same comparison `cargo xtask ts --check` makes, as a plain test.
+    ///
+    /// CI runs the command, but a stale `protocol.gen.ts` is a wire-level bug
+    /// and `cargo test` is where one is expected to surface — a contributor who
+    /// edits the Rust types and runs the test suite should be told then, not
+    /// after pushing. Both paths render through `render`, so neither can pass
+    /// while the other fails.
+    #[test]
+    fn the_committed_module_matches_the_rust_types() {
+        let cfg = Config::new().with_large_int("number");
+        let module = render(&declarations(&cfg)).expect("the module renders");
+        let out = crate::workspace_root().expect("a workspace root").join(OUT);
+        let committed =
+            std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("reading {OUT}: {e}"));
+        assert_eq!(
+            committed, module,
+            "{OUT} is out of date with the Rust protocol types. \
+             Run `cargo xtask ts` and commit the result.",
+        );
+    }
+
+    #[test]
+    fn every_command_is_classified_exactly_once() {
+        let cfg = Config::new().with_large_int("number");
+        let decls = declarations(&cfg);
+        let tags = command_tags(&decls).expect("the Command union carries cmd tags");
+        assert_eq!(
+            tags.len(),
+            proto::COMMAND_KINDS.len(),
+            "COMMAND_KINDS and the Command enum disagree on how many commands there are",
+        );
+        // `kind_aliases` is what enforces the set equality; this asserts the
+        // list has no duplicate that would let a missing tag hide behind one.
+        let unique: BTreeSet<&str> = proto::COMMAND_KINDS.iter().map(|(tag, _)| *tag).collect();
+        assert_eq!(
+            unique.len(),
+            proto::COMMAND_KINDS.len(),
+            "a tag is listed twice"
+        );
+        kind_aliases(tags).expect("every command is classified");
     }
 }
