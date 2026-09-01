@@ -489,8 +489,10 @@ fn convert_part(
 ) -> Result<ClmPart, ImportError> {
     // A part with no `textures` array draws slot 0 in the source runtime, so
     // that is what it draws here — but only if the rig has a slot 0; naming a
-    // texture the file does not carry would be a `.clm` no reader accepts. An
-    // index too large to be a slot is no texture at all.
+    // texture the file does not carry would be a `.clm` no reader accepts.
+    // `uint.max` is the source runtime's "no texture in this slot" sentinel
+    // and draws nothing; any other slot the rig does not carry has no defined
+    // rendering to preserve, so the import refuses it by name.
     let albedo = match s.textures.first() {
         None if refs.textures > 0 => {
             tracing::warn!(
@@ -509,9 +511,24 @@ fn convert_part(
             );
             None
         }
+        Some(&v) if v == i64::from(u32::MAX) => {
+            tracing::warn!(
+                "part {} ({:?}) marks its texture slot empty; it draws nothing",
+                node.id,
+                node.name,
+            );
+            None
+        }
         Some(&v) => match u32::try_from(v) {
-            Ok(v) => Some(tex_id(v)?),
-            Err(_) => None,
+            Ok(slot) if (slot as usize) < refs.textures => Some(tex_id(slot)?),
+            _ => {
+                return Err(ImportError::TextureOutOfRange {
+                    id: node.id.to_string(),
+                    name: node.name.to_string(),
+                    slot: v,
+                    count: refs.textures,
+                })
+            }
         },
     };
     Ok(ClmPart {
@@ -772,6 +789,7 @@ mod tests {
     use super::*;
     use crate::inx::InxModel;
     use catchlight_core::model::{BindingTarget, ScalarTarget};
+    use catchlight_core::texture::EncodedTexture;
     use serde_json::json;
     use std::collections::HashSet;
     /// A model authored in inochi2d's frame — Y-down, lower `zsort` in front —
@@ -779,8 +797,9 @@ mod tests {
     /// it must leave alone. Values are asymmetric and non-zero so a *missing*
     /// negation and a *doubled* one both change the result.
     ///
-    /// No textures: an empty table means the alpha crop rewrites no UVs, so
-    /// the authored UVs stay comparable against the literals below.
+    /// One texture slot, so the parts' `"textures": [0]` resolves; the bytes
+    /// are carried verbatim and never decoded, so the alpha crop rewrites no
+    /// UVs and the authored UVs stay comparable against the literals below.
     fn reflection_fixture() -> InxModel {
         InxModel {
             payload: json!({
@@ -868,7 +887,11 @@ mod tests {
                     ]
                 }]
             }),
-            textures: Vec::new(),
+            textures: vec![EncodedTexture {
+                format: TextureFormat::Png,
+                data: std::sync::Arc::from(&b"texture bytes"[..]),
+                premultiplied: true,
+            }],
             vendors: Vec::new(),
         }
     }
