@@ -31,7 +31,13 @@ fn doc(nodes: serde_json::Value) -> ClmDocument {
 fn try_doc(nodes: serde_json::Value) -> Result<ClmDocument, ImportError> {
     let model = InxModel {
         payload: json!({ "nodes": nodes }),
-        textures: Vec::new(),
+        // One slot, so a `"textures": [0]` fixture resolves; the bytes are
+        // carried verbatim and never decoded here.
+        textures: vec![EncodedTexture {
+            format: TextureFormat::Png,
+            data: Arc::from(&b"texture bytes"[..]),
+            premultiplied: true,
+        }],
         vendors: Vec::new(),
     };
     from_inx_model(&model).map(|f| f.doc)
@@ -371,17 +377,40 @@ fn children_that_are_not_an_array_are_ignored() {
     assert_eq!(d.nodes.len(), 1);
 }
 
+/// An out-of-range slot is not the sentinel and not a slot: there is no
+/// rendering to preserve, so the import refuses it by name rather than mint
+/// a texture Id the `.clm` does not carry.
 #[test]
-fn a_part_naming_a_texture_that_is_not_there_still_loads() {
+fn a_part_naming_a_texture_slot_the_rig_does_not_carry_is_refused() {
+    let err = try_doc(json!({
+        "uuid": 7, "name": "orphan", "type": "Part",
+        "textures": [999999],
+        "mesh": {"verts": [0.0, 0.0], "uvs": [0.0, 0.0], "indices": [0]}
+    }))
+    .expect_err("slot 999999 of a one-texture rig");
+    assert!(matches!(
+        err,
+        ImportError::TextureOutOfRange {
+            slot: 999999,
+            count: 1,
+            ..
+        }
+    ));
+}
+
+/// `uint.max` is the source runtime's "no texture in this slot" sentinel,
+/// not a slot: the part draws nothing, and the import says so.
+#[test]
+fn the_no_texture_sentinel_draws_nothing() {
     let d = doc(json!({
         "type": "Part",
-        "textures": [999999],
+        "textures": [4_294_967_295_i64],
         "mesh": {"verts": [0.0, 0.0], "uvs": [0.0, 0.0], "indices": [0]}
     }));
     let ClmNodeKind::Part(part) = &d.nodes[0].kind else {
         panic!("expected Part");
     };
-    assert_eq!(part.albedo, Some(TexId::new("tex-999999").unwrap()));
+    assert_eq!(part.albedo, None);
 }
 
 #[test]

@@ -74,6 +74,18 @@ pub enum ImportError {
         min: f32,
         max: f32,
     },
+
+    /// A part naming a texture slot the rig does not carry. There is no
+    /// defined rendering to preserve and no repair that would not guess, so
+    /// the import stops and names the part. (`uint.max` never lands here: it
+    /// is the source runtime's "no texture" sentinel, repaired to none.)
+    #[error("part {id} ({name:?}) draws texture slot {slot}, but the rig carries {count}")]
+    TextureOutOfRange {
+        id: String,
+        name: String,
+        slot: i64,
+        count: usize,
+    },
 }
 
 #[cfg(test)]
