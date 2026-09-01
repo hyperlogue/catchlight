@@ -242,6 +242,25 @@ impl Viewport {
         self.inner.borrow_mut().dirty = true;
     }
 
+    /// The largest backing store this adapter will configure a surface for,
+    /// in device pixels on either axis.
+    ///
+    /// The page cannot work this out for itself: it is an adapter limit, and no
+    /// adapter exists until [`attach`] has awaited one. A canvas above it fails
+    /// surface configuration and the viewport goes black with no other symptom,
+    /// so the size the page reports is clamped to this rather than to a guess.
+    ///
+    /// [`attach`]: crate::CatchlightEditor::attach
+    #[wasm_bindgen(js_name = maxSize)]
+    pub fn max_size(&self) -> u32 {
+        self.inner
+            .borrow()
+            .renderer
+            .device
+            .limits()
+            .max_texture_dimension_2d
+    }
+
     /// Reconfigures for a canvas whose backing store is now `width` × `height`
     /// **device** pixels. The caller sets `canvas.width`/`canvas.height` to the
     /// same two numbers.

@@ -138,7 +138,8 @@ that enforces them, not here. Add new ones there.
   backend and adapter choice; on `create_orthographic_camera_at`, that the
   camera holds no axis flip
 - `crates/catchlight-editor-protocol/src/lib.rs` — Ids on the wire, the document
-  path against the presence path
+  path against the presence path, and `CommandKind`: what each command does to
+  the document, written down once and checked from both ends
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
   undo budget, one render cache per previewed session
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording
@@ -155,12 +156,14 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor-wasm/src/lib.rs` — one door, the same protocol,
   and where the browser's asynchrony stops
 - `crates/catchlight-editor-wasm/src/viewport.rs` — who owns the frame loop,
-  what `invalidate` promises, where a size comes from
+  what `invalidate` promises, where a size comes from, which limit bounds it
 - `packages/core/src/transport.ts`, `session.ts`, `storage.ts`, `viewport.ts` —
-  local against remote, why a drag is not a revision, why a store is not a
-  transport, why the backing store is measured rather than multiplied
+  local against remote, one send method per command kind, why a store is not a
+  transport, why the backing store is measured rather than multiplied, and when
+  a viewport is allowed to idle
 - `crates/xtask/src/fixtures.rs` — hand-authored model fixtures
-- `crates/xtask/src/ts.rs` — one generated module, nothing falling off the list
+- `crates/xtask/src/ts.rs` — one generated module, nothing falling off the list,
+  no command reaching TypeScript unclassified
 - `crates/visual-tests/src/lib.rs` — visual regression, updating baselines
 - `crates/catchlight-core/tests/evaluated_frame.rs` — the frame baseline, and
   where its numbers came from
