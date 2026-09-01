@@ -15,6 +15,7 @@ import { Editor } from "./client.js";
 import { Session } from "./session.js";
 import { MemoryStorage, NotFoundError } from "./storage.js";
 import { LocalTransport, ProtocolError } from "./transport.js";
+import type { ResponseBody } from "./protocol.gen.js";
 import type { WasmEditor } from "./transport.js";
 
 /** A wasm editor that answers the handful of commands these tests send. */
@@ -92,8 +93,8 @@ describe("LocalTransport", () => {
   test("gives every request its own correlation id", async () => {
     const wasm = new FakeWasm();
     const transport = new LocalTransport(wasm);
-    await transport.send({ cmd: "session_new" });
-    await transport.send({ cmd: "session_new" });
+    await transport.send({ cmd: "session_new", name: null });
+    await transport.send({ cmd: "session_new", name: null });
     expect(wasm.requests.map((r) => r.id)).toEqual([1, 2]);
   });
 
@@ -112,7 +113,7 @@ describe("LocalTransport", () => {
     const transport = new LocalTransport(wasm);
     transport.close();
     expect(wasm.freed).toBe(true);
-    await expect(transport.send({ cmd: "session_new" })).rejects.toMatchObject({
+    await expect(transport.send({ cmd: "session_new", name: null })).rejects.toMatchObject({
       code: "closed",
     });
   });
@@ -128,7 +129,7 @@ describe("Session revisions", () => {
     });
 
     expect(session.getRevision()).toBe(0);
-    await session.send({ cmd: "node_add", parent: "root", kind: "group" });
+    await session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
     expect(session.getRevision()).toBe(1);
     expect(notified).toBe(1);
   });
@@ -161,8 +162,35 @@ describe("Session revisions", () => {
     });
     session.subscribe(() => seen.push("second"));
 
-    await session.send({ cmd: "node_add" });
+    await session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
     expect(seen).toEqual(["first", "second"]);
+  });
+});
+
+describe("Generated wire types", () => {
+  test("a session command cannot address a session, and a bare one cannot omit it", () => {
+    const session = new Session(new LocalTransport(new FakeWasm()), 1);
+
+    // @ts-expect-error — the session fills this in; a caller that could pass
+    // it could address the wrong document.
+    void (() => session.sendQuiet({ cmd: "presence_get", session: 2 }));
+
+    // @ts-expect-error — `session_new` names no session, so it belongs on the
+    // editor rather than on one.
+    void (() => session.send({ cmd: "session_new", name: null }));
+
+    // @ts-expect-error — `nod_add` is not a command. The union is the spelling
+    // check the old `{ cmd: string }` placeholder could not do.
+    void (() => session.send({ cmd: "nod_add", parent: "root" }));
+
+    expect(session.id).toBe(1);
+  });
+
+  test("a reply narrows on its result tag", () => {
+    const body: ResponseBody = { result: "saved", path: "out.clm" };
+    // `path` is reachable only after the tag is checked, which is the whole
+    // point of generating the union rather than hand-writing an index type.
+    expect(body.result === "saved" ? body.path : null).toBe("out.clm");
   });
 });
 

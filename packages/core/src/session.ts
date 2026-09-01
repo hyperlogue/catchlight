@@ -20,13 +20,20 @@
  * with a flag nobody would remember to pass.
  */
 
-import type { Command, ResponseBody, Transport } from "./transport.js";
+import type { Command, ResponseBody, SessionId } from "./protocol.gen.js";
+import type { Transport } from "./transport.js";
+
+/** `Omit` that distributes over a union instead of collapsing it. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 /**
- * A command aimed at this session. The `session` field is the session's to
- * fill in, so a caller cannot address the wrong document by accident.
+ * A command aimed at this session: any generated [`Command`] arm that carries
+ * a `session`, minus that field. Filling it in is the session's own job, so a
+ * caller cannot address the wrong document by accident, and a command that
+ * names no session (`session_new`, `session_list`) will not typecheck here —
+ * it belongs on the `Editor`.
  */
-export type SessionCommand = { cmd: string; session?: never } & Record<string, unknown>;
+export type SessionCommand = DistributiveOmit<Extract<Command, { session: SessionId }>, "session">;
 
 export type Unsubscribe = () => void;
 
@@ -62,7 +69,11 @@ export class Session {
   }
 
   #address(command: SessionCommand): Command {
-    return { ...command, session: this.id };
+    // Putting `session` back on an arm that `SessionCommand` took it off of
+    // reconstitutes that arm, but TypeScript cannot see a spread that way: it
+    // widens the union rather than tracking which arm it came from. The type
+    // of `SessionCommand` is what makes this sound.
+    return { ...command, session: this.id } as Command;
   }
 
   /**

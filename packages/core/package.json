@@ -9,8 +9,5 @@
   },
   "scripts": {
     "typecheck": "tsc --project tsconfig.json"
-  },
-  "dependencies": {
-    "@catchlight/wasm": "workspace:*"
   }
 }

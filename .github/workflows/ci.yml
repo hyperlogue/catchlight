@@ -43,7 +43,26 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
-      # The editor has to run in a browser, so the core and the wgpu backend
-      # must keep compiling for wasm32 even though nothing here links them
-      # into a bundle yet.
-      - run: nix develop -c cargo build -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d --target wasm32-unknown-unknown
+      # The editor runs in a browser, so everything under it has to keep
+      # compiling for wasm32. The editor server is on this list because the
+      # storage seam is what put it there: a `path` is a storage key rather
+      # than a filesystem path, and nothing may quietly reintroduce a
+      # filesystem call that only builds natively.
+      - run: nix develop -c cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d -p catchlight-editor-server -p catchlight-editor-wasm
+
+  web:
+    name: web workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: Swatinem/rust-cache@v2
+      # The TypeScript wire types are generated from the Rust enums and
+      # committed. Nothing else checks the two against each other, so this is
+      # the guard: regenerate, and fail if the committed file moved.
+      - name: protocol types are current
+        run: nix develop -c cargo xtask ts --check
+      - run: nix develop -c bun install --frozen-lockfile
+      - run: nix develop -c bun run typecheck
+      - run: nix develop -c bun test
