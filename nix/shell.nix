@@ -42,6 +42,14 @@ in
         cargo-edit
         cargo-watch
 
+        # The web editor. `bun` is the package manager and test runner; `nodejs`
+        # is here because Vite's plugin ecosystem still shells out to it.
+        # `wasm-bindgen-cli` must match the `wasm-bindgen` crate version the
+        # workspace pins — a mismatch fails loudly with both versions named.
+        bun
+        nodejs
+        wasm-bindgen-cli
+
         uv
         python3
       ])
