@@ -1,0 +1,23 @@
+[package]
+name = "catchlight-editor-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The browser boundary for the catchlight editor: one wasm-bindgen surface over the editor server"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+catchlight-editor-server = { workspace = true }
+catchlight-editor-protocol = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+console_error_panic_hook = "0.1"
+
+[lints]
+workspace = true

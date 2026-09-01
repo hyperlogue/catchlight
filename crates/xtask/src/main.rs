@@ -5,8 +5,10 @@
 //! Commands:
 //!   cargo xtask import <model.inx|.inp> [-o <model.clm>]
 //!   cargo xtask gen-fixture <name>
+//!   cargo xtask wasm [--debug]
 
 mod fixtures;
+mod wasm;
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::PathBuf;
@@ -16,6 +18,7 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("import") => import(&args[1..]),
         Some("gen-fixture") => gen_fixture(&args[1..]),
+        Some("wasm") => wasm::run(&args[1..]),
         _ => {
             print_usage();
             bail!("unknown command");
@@ -36,6 +39,8 @@ fn print_usage() {
         "      names: {}",
         fixtures::names().collect::<Vec<_>>().join(", ")
     );
+    eprintln!("  wasm [--debug]");
+    eprintln!("      Build @catchlight/wasm into packages/wasm/ (generated, not committed).");
 }
 
 fn gen_fixture(args: &[String]) -> Result<()> {
