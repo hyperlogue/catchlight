@@ -76,11 +76,13 @@ pub use catchlight_core::id::{NodeId, ParamId, SeamId, SlotId, TexId};
 /// session is not part of any model, so it has no Id of its own.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(transparent)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SessionId(pub u64);
 
 /// A client request. `id` correlates the reply; commands that target a session
 /// carry it in their own fields.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Request {
     pub id: u64,
     #[serde(flatten)]
@@ -97,6 +99,7 @@ pub struct RequestId {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Command {
     SessionNew {
         #[serde(default)]
@@ -580,6 +583,7 @@ pub enum Command {
 /// Which Id [`Command::RenameId`] changes, and to what.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Rename {
     Node { from: NodeId, to: NodeId },
     Param { from: ParamId, to: ParamId },
@@ -590,6 +594,7 @@ pub enum Rename {
 /// the binding's grid spans both params' key positions and `cell` indexes
 /// both; without it the grid is one row and `cell[1]` is 0.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BindingParams {
     pub param: ParamId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -616,6 +621,7 @@ impl BindingParams {
 
 /// One end of a weld: the seam, and the part carrying it.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SeamAddr {
     pub node: NodeId,
     pub seam: SeamId,
@@ -623,6 +629,7 @@ pub struct SeamAddr {
 
 /// One slot of a model, named in full.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotAddr {
     pub node: NodeId,
     pub seam: SeamId,
@@ -631,6 +638,7 @@ pub struct SlotAddr {
 
 /// One slot of a part's seam — the part is whatever carries the reply.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SeamSlot {
     pub seam: SeamId,
     pub slot: SlotId,
@@ -638,6 +646,7 @@ pub struct SeamSlot {
 
 /// A slot's share of the point its two welded vertices are pulled toward.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotWeight {
     pub slot: SlotId,
     pub weight: f32,
@@ -645,6 +654,7 @@ pub struct SlotWeight {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum NodeKindArg {
     Group,
     Part,
@@ -657,6 +667,7 @@ pub enum NodeKindArg {
 /// (`opacity`, `blend_mode`, `tint`, `screen_tint`) reach parts and composites
 /// only, because a mesh group is never drawn and carries no colour.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NodePatch {
     /// The label a person reads. Free to repeat; nothing is addressed by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -696,6 +707,7 @@ pub struct NodePatch {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BindingKeyEntry {
     pub target: String,
     pub value: f32,
@@ -704,6 +716,7 @@ pub struct BindingKeyEntry {
 /// One param at one value — a pose is a list of these. Params are scalar, so
 /// there is one number.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ParamPose {
     pub param: ParamId,
     pub value: f32,
@@ -713,6 +726,7 @@ pub struct ParamPose {
 /// unsolicited (a document changed on a session this client observes).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "reply", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Reply {
     Ok {
         id: u64,
@@ -732,6 +746,7 @@ pub enum Reply {
 /// branches on this rather than on the message text.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ErrorCode {
     /// No open session with that [`SessionId`].
     NoSession,
@@ -780,6 +795,7 @@ pub enum ErrorCode {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "result", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ResponseBody {
     Empty,
     Session {
@@ -852,6 +868,7 @@ pub enum ResponseBody {
 /// Ephemeral shared view state. Rides its own path — decoupled from the document
 /// so scrubbing/panning generate zero document traffic and never persist.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Presence {
     #[serde(default)]
     pub pose: Vec<ParamPose>,
@@ -862,6 +879,7 @@ pub struct Presence {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Camera {
     pub center: [f32; 2],
     pub height: f32,
@@ -869,6 +887,7 @@ pub struct Camera {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "event", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Event {
     /// The document changed; `rev` is the session's new revision. Observers
     /// re-read when their last-seen rev is older.
@@ -876,6 +895,7 @@ pub enum Event {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SessionInfo {
     pub session: SessionId,
     pub title: String,
@@ -887,6 +907,7 @@ pub struct SessionInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct StatusInfo {
     pub title: String,
     pub node_count: u32,
@@ -897,6 +918,7 @@ pub struct StatusInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TexInfo {
     pub id: TexId,
     pub width: u32,
@@ -904,6 +926,7 @@ pub struct TexInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ParamInfo {
     /// What the param is addressed by.
     pub id: ParamId,
@@ -922,6 +945,7 @@ pub struct ParamInfo {
 
 /// A seam and what currently fills it.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SeamInfo {
     pub id: SeamId,
     pub slots: Vec<SlotInfo>,
@@ -929,6 +953,7 @@ pub struct SeamInfo {
 
 /// One slot; `vertex` absent means unfilled, and welds skip it.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotInfo {
     pub id: SlotId,
     #[serde(default)]
@@ -936,6 +961,7 @@ pub struct SlotInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct WeldInfo {
     pub a: SeamAddr,
     pub b: SeamAddr,
@@ -947,6 +973,7 @@ fn one() -> f32 {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TreeNode {
     /// What the node is addressed by, here and in the file.
     pub id: NodeId,
@@ -964,6 +991,7 @@ fn yes() -> bool {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PreviewInfo {
     pub path: String,
     pub width: u32,

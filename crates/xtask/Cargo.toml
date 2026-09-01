@@ -11,6 +11,13 @@ publish = false
 anyhow = { workspace = true }
 catchlight-core = { path = "../catchlight-core" }
 catchlight-import-inochi2d = { path = "../catchlight-import-inochi2d" }
+# `xtask ts` reads the wire types through `ts-rs`, so it is the one place in
+# the workspace that turns the `ts` feature on. Cargo unifies features across a
+# build, so `cargo test --workspace` compiles the protocol crate with it — which
+# is deliberate: the feature-gated derives get linted and type-checked on every
+# CI run rather than only when someone regenerates.
+catchlight-editor-protocol = { path = "../catchlight-editor-protocol", features = ["ts"] }
+ts-rs = { workspace = true }
 image = { workspace = true }
 
 [lints]

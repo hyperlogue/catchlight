@@ -18,6 +18,15 @@ bytemuck = "1.25.2"
 smallvec = { version = "1.15", features = ["union"] }
 ciborium = "0.2.2"
 serde_bytes = "0.11.19"
+# Only `id.rs` uses it, and only to say an Id crosses the wire as a string.
+# See the `ts` feature below.
+ts-rs = { workspace = true, optional = true }
+
+[features]
+# Emit TypeScript declarations for the types the editor protocol re-exports —
+# the five Id newtypes. Off by default: nothing in a normal build, a wasm build
+# or a consumer's dependency graph pulls it in. `cargo xtask ts` turns it on.
+ts = ["dep:ts-rs"]
 
 [dev-dependencies]
 serde_json.workspace = true
