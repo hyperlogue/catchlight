@@ -1635,9 +1635,15 @@ version = "0.1.0"
 dependencies = [
  "catchlight-editor-protocol",
  "catchlight-editor-server",
+ "catchlight-wgpu",
  "console_error_panic_hook",
+ "glam",
+ "js-sys",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
 ]
 
 [[package]]
