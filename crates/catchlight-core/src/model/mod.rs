@@ -86,7 +86,8 @@
 //! - **An animation lane names a live param.** Animations are authored data
 //!   like everything else here, so [`Model::set_animations`] refuses a lane
 //!   over an unknown param and [`Model::delete_param`] drops the lanes that
-//!   named the param it removed.
+//!   named the param it removed. A lane's keyframes stay in frame order for
+//!   the same reason: playback reads a lane by binary search.
 //! - **Sibling order is document state.** It is the draw order for equal z
 //!   order, so [`Model::reorder`] is an edit, not view state.
 //! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
@@ -199,6 +200,8 @@ pub enum ModelError {
     IndexOutOfRange,
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
+    #[error("an animation lane's keyframes must be in frame order")]
+    UnsortedLane,
     #[error(".clm codec: {0}")]
     Clm(#[from] crate::formats::clm::ClmError),
     #[error("invalid .clm: {0}")]
@@ -1967,7 +1970,8 @@ impl Model {
 
     /// Replace the animation list. Every lane must name a live param — an
     /// animation is stored on the model, so a dangling lane would survive a
-    /// save the way no other cross-reference does.
+    /// save the way no other cross-reference does — and keep its keyframes
+    /// in frame order, because playback reads a lane by binary search.
     pub fn set_animations(&mut self, animations: Vec<ClmAnimation>) -> Result<(), ModelError> {
         if animations
             .iter()
@@ -1975,6 +1979,13 @@ impl Model {
             .any(|lane| !self.params.contains_key(&lane.param))
         {
             return Err(ModelError::UnknownParam);
+        }
+        if animations
+            .iter()
+            .flat_map(|a| &a.lanes)
+            .any(|lane| lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame))
+        {
+            return Err(ModelError::UnsortedLane);
         }
         self.animations = animations;
         self.bump();
@@ -2475,6 +2486,31 @@ mod tests {
         assert!(matches!(
             r.model.set_animations(vec![one_lane_animation(&stranger)]),
             Err(ModelError::UnknownParam)
+        ));
+        assert!(r.model.animations().is_empty());
+    }
+
+    /// A lane is read by binary search over its frames, so an out-of-order
+    /// lane would silently interpolate the wrong pair of keyframes.
+    #[test]
+    fn an_animation_lane_must_be_in_frame_order() {
+        let mut r = fixture();
+        let param = r.param.clone();
+        let mut animation = one_lane_animation(&param);
+        animation.lanes[0].keyframes = vec![
+            crate::formats::clm::ClmKeyframe {
+                frame: 8,
+                value: 1.0,
+            },
+            crate::formats::clm::ClmKeyframe {
+                frame: 2,
+                value: 0.0,
+            },
+        ];
+
+        assert!(matches!(
+            r.model.set_animations(vec![animation]),
+            Err(ModelError::UnsortedLane)
         ));
         assert!(r.model.animations().is_empty());
     }

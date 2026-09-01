@@ -19,7 +19,7 @@
 //!   the file itself declares, and a failure names the field and the Id that
 //!   dangled ([`ClmLoadError`]). What the reader accepts is exactly what the
 //!   Model's own invariants allow, so a loaded Model needs no repair pass.
-//!   Beyond the Ids, that is seven checks, each the file-shaped half of a rule
+//!   Beyond the Ids, that is eight checks, each the file-shaped half of a rule
 //!   an edit already obeys: a param's range has to be finite and increasing
 //!   ([`crate::param_range_is_valid`]); a mask source has to be a kind the
 //!   renderer draws ([`Model::mask_add`]); a deform binding has to sit on a
@@ -29,7 +29,10 @@
 //!   cell has to be sized to its node's mesh; and every texture the file
 //!   carries has to be one some part's albedo names
 //!   ([`ClmLoadError::UnusedTexture`], the file-shaped half of
-//!   [`Model::add_texture`] taking the part the texture is for).
+//!   [`Model::add_texture`] taking the part the texture is for); and an
+//!   animation lane's keyframes have to be in frame order
+//!   ([`Model::set_animations`], because playback reads a lane by binary
+//!   search).
 //! - **A file is read as one shape or the other, never guessed.**
 //!   [`Model::from_clm_bytes`] reads a *complete model*: one node with no
 //!   parent, and nothing dangling. [`Model::from_clm_bytes_fragment`] reads an
@@ -157,6 +160,11 @@ pub enum ClmLoadError {
         "the weld between {a:?} and {b:?} does not weight each of the two seams' slots exactly once"
     )]
     WeldSlotMismatch { a: String, b: String },
+    #[error(
+        "a lane of animation {animation} on param {param:?} has keyframes out of frame order; a \
+         player reads a lane by binary search"
+    )]
+    UnsortedLane { animation: usize, param: String },
 }
 
 /// The slot Ids each of one part's seams holds — what a weld's two ends have
@@ -603,6 +611,13 @@ impl Model {
                     return Err(ClmLoadError::DanglingParam {
                         owner: format!("a lane of animation {i}"),
                         id: lane.param.to_string(),
+                    }
+                    .into());
+                }
+                if lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame) {
+                    return Err(ClmLoadError::UnsortedLane {
+                        animation: i,
+                        param: lane.param.to_string(),
                     }
                     .into());
                 }
@@ -1964,6 +1979,26 @@ mod tests {
         assert!(matches!(
             load_err(&file),
             ClmLoadError::DanglingParam { id, .. } if id == "gone"
+        ));
+    }
+
+    #[test]
+    fn an_unsorted_animation_lane_is_a_structured_error() {
+        let mut file = sample().to_clm_file().unwrap();
+        file.doc.animations[0].lanes[0].keyframes = vec![
+            ClmKeyframe {
+                frame: 8,
+                value: 1.0,
+            },
+            ClmKeyframe {
+                frame: 2,
+                value: 0.0,
+            },
+        ];
+
+        assert!(matches!(
+            load_err(&file),
+            ClmLoadError::UnsortedLane { animation: 0, .. }
         ));
     }
 

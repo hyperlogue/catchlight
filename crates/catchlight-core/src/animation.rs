@@ -27,7 +27,8 @@ impl ClmAnimation {
     }
 }
 
-/// The keyframe interpolator.
+/// The keyframe interpolator. Reads `keyframes` in frame order — the order
+/// [`crate::Model::set_animations`] and the `.clm` reader both enforce.
 fn value_at(keyframes: &[ClmKeyframe], interpolation: InterpolateMode, t: f32) -> f32 {
     match keyframes {
         [] => 0.0,
@@ -48,7 +49,10 @@ fn value_at(keyframes: &[ClmKeyframe], interpolation: InterpolateMode, t: f32) -
             if b.frame == a.frame {
                 return b.value;
             }
-            let span = (b.frame - a.frame) as f32;
+            // i64: frames come verbatim from the file, and the full i32
+            // span overflows the subtraction — the neighbour of the case
+            // `loop_region` saturates for.
+            let span = (i64::from(b.frame) - i64::from(a.frame)) as f32;
             let frac = ((t - a.frame as f32) / span).clamp(0.0, 1.0);
             match interpolation {
                 InterpolateMode::Nearest => {
@@ -140,6 +144,22 @@ mod tests {
         let l = lane(vec![(0, 10.0), (10, 20.0)], InterpolateMode::Linear);
         assert_eq!(l.value_at(-5.0), 10.0);
         assert_eq!(l.value_at(20.0), 20.0);
+    }
+
+    /// Frames come verbatim from the file: the full i32 span must not
+    /// overflow the subtraction (a panic in debug, a negative in release).
+    #[test]
+    fn extreme_frames_interpolate_without_overflow() {
+        let l = lane(
+            vec![(i32::MIN, -1.0), (i32::MAX, 1.0)],
+            InterpolateMode::Linear,
+        );
+        let v = l.value_at(0.0);
+        assert!(v.is_finite());
+        assert!(
+            v.abs() < 1e-3,
+            "t = 0 sits mid-span, so linear gives ~0: {v}"
+        );
     }
 
     #[test]
