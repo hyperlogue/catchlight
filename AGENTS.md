@@ -112,7 +112,7 @@ Non-obvious invariants and gotchas are documented in the `//!` doc of the module
 that enforces them, not here. Add new ones there.
 
 - `crates/catchlight-core/src/id.rs` — the Id charset, what a `/` in one does
-  not mean, `Name` is never a key
+  not mean, `Name` is never a key, a free generated Id is the model's to check
 - `crates/catchlight-core/src/model/mod.rs` — the generation clock, the identity
   nonce, what a Model's tree always holds
 - `crates/catchlight-core/src/model/file.rs` — writing is total, reading trusts
@@ -148,9 +148,11 @@ that enforces them, not here. Add new ones there.
   camera holds no axis flip
 - `crates/catchlight-editor-protocol/src/lib.rs` — Ids on the wire, the five
   command kinds a client routes by, written down once and checked from both
-  ends, and a reply that names its revision
+  ends, a reply that names its revision, an add may name the Id it makes and
+  never calls it `id`
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
-  undo budget, an observer never runs under a lock; `query.rs` — one
+  undo budget, an observer never runs under a lock, each session draws its own
+  Ids, the editor traces a part's alpha; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the browser
   transport and why loopback is not a permission; `storage.rs` — a `path` is a
   storage key, and an upload is not a file on disk
