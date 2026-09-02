@@ -128,6 +128,7 @@ fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::NodeInfo,
         proto::TexInfo,
         proto::ParamInfo,
+        proto::BindingInfo,
         proto::SeamInfo,
         proto::SlotInfo,
         proto::WeldInfo,

@@ -13,8 +13,8 @@ use std::io::Cursor;
 
 use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_editor_protocol::{
-    Command, CommandKind, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId, Presence, Reply,
-    Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotId, COMMAND_KINDS,
+    BindingInfo, Command, CommandKind, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId,
+    Presence, Reply, Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotId, COMMAND_KINDS,
 };
 use catchlight_editor_server::{replica_query, replica_reply, Editor};
 
@@ -203,6 +203,26 @@ impl Fixture {
         node
     }
 
+    fn params(&self) -> Vec<catchlight_editor_protocol::ParamInfo> {
+        match self.step(Command::ParamList {
+            session: self.session,
+        }) {
+            ResponseBody::Params { params } => params,
+            other => panic!("expected Params, got {other:?}"),
+        }
+    }
+
+    /// A node's bindings, agreed between the editor and a replica.
+    fn bindings(&self, node: &NodeId) -> Vec<BindingInfo> {
+        match ok(self.agree(Command::BindingList {
+            session: self.session,
+            node: node.clone(),
+        })) {
+            ResponseBody::Bindings { bindings } => bindings,
+            other => panic!("expected Bindings, got {other:?}"),
+        }
+    }
+
     fn model(&self) -> catchlight_core::Model {
         self.editor
             .with_model(self.session, |m| m.clone())
@@ -257,6 +277,10 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
         },
         Command::TextureList { session },
         Command::ParamList { session },
+        Command::BindingList {
+            session,
+            node: node.clone(),
+        },
         Command::Seams { session, node },
         Command::Welds { session },
         Command::UnfilledSlots { session },
@@ -319,6 +343,16 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
             assert_eq!(params[0].bindings, 1, "the binding is counted");
         }
         other => panic!("expected Params, got {other:?}"),
+    }
+    match ok(f.agree(Command::BindingList {
+        session,
+        node: f.body_part.clone(),
+    })) {
+        ResponseBody::Bindings { bindings } => {
+            assert_eq!(bindings.len(), 1, "the fixture's one binding");
+            assert_eq!(bindings[0].target, "tx");
+        }
+        other => panic!("expected Bindings, got {other:?}"),
     }
     match ok(f.agree(Command::TextureList { session })) {
         ResponseBody::Textures { textures } => {
@@ -538,6 +572,14 @@ fn a_replica_refuses_a_bad_read_the_way_the_editor_does() {
         Reply::Err { code, .. } => assert_eq!(code, ErrorCode::NoNode),
         other => panic!("expected Err, got {other:?}"),
     }
+    // A node that is gone reads as gone, not as a node with no bindings.
+    match f.agree(Command::BindingList {
+        session: f.session,
+        node: NodeId::new("nobody").unwrap(),
+    }) {
+        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::NoNode),
+        other => panic!("expected Err, got {other:?}"),
+    }
 }
 
 /// The kinds table is the one place a command's kind is written down, so what
@@ -615,4 +657,178 @@ fn a_replica_stamps_the_revision_it_was_given_on_the_request_that_asked() {
         }
         other => panic!("expected Ok, got {other:?}"),
     }
+}
+
+/// What a binding panel is drawn from.
+///
+/// The grid is the product of the params' key positions and the model stores
+/// only the cells somebody authored, so the read has to report both: the
+/// numbers, and the holes between them. A hole is a state a rigger acts on —
+/// reporting the target's identity there instead would hand a panel a number
+/// to write back that nobody wrote.
+#[test]
+fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
+    let f = Fixture::build();
+    let session = f.session;
+    let pull = f.params()[0].id.clone();
+
+    // A third key position on the fixture's param. Authored cells shift and
+    // the new column derives, so the grid now has a hole in the middle.
+    f.step(Command::ParamKeyInsert {
+        session,
+        param: pull.clone(),
+        value: 0.5,
+    });
+
+    // A second param, so one binding's grid spans two and is taller than one
+    // row.
+    let lean = match f.step(Command::ParamAdd {
+        session,
+        name: "Lean".into(),
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+        key_positions: Vec::new(),
+    }) {
+        ResponseBody::Param { param } => param,
+        other => panic!("expected Param, got {other:?}"),
+    };
+    f.step(Command::ParamKeyInsert {
+        session,
+        param: lean.clone(),
+        value: 0.5,
+    });
+    let pair = catchlight_editor_protocol::BindingParams::two(pull.clone(), lean.clone());
+    f.step(Command::BindingKey {
+        session,
+        params: pair.clone(),
+        node: f.body_part.clone(),
+        target: "ty".into(),
+        cell: [0, 2],
+        value: -3.0,
+    });
+    f.step(Command::BindingInterpolate {
+        session,
+        params: pair,
+        node: f.body_part.clone(),
+        target: "ty".into(),
+        mode: "cubic".into(),
+    });
+    // A deform binding authors a vertex list rather than a number, and the
+    // fixture's part is a quad. `[1, 0]` is also both params' rest cell, so
+    // this authors exactly one.
+    f.step(Command::DeformVertices {
+        session,
+        params: catchlight_editor_protocol::BindingParams::one(pull.clone()),
+        node: f.body_part.clone(),
+        cell: [1, 0],
+        offsets: vec![1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    });
+
+    let bindings = f.bindings(&f.body_part);
+    assert_eq!(bindings.len(), 3, "tx, ty and the deform");
+
+    // One param: one row. The 12 the fixture keyed, the identity the model
+    // authors alongside a binding's first cell, and a hole between them.
+    let tx = find(&bindings, "tx");
+    assert_eq!(tx.param, pull);
+    assert_eq!(tx.param_y, None);
+    assert_eq!((tx.width, tx.height), (3, 1));
+    assert_eq!(tx.interpolate, "linear", "what a new binding reads at");
+    assert_eq!(tx.keys, vec![vec![Some(0.0), None, Some(12.0)]]);
+    assert_eq!(tx.authored, vec![vec![true, false, true]]);
+
+    // Two params: the grid is x's key positions by y's, indexed `[y][x]` — the
+    // transpose of the `cell: [x, y]` that authored it.
+    let ty = find(&bindings, "ty");
+    assert_eq!(ty.param, pull);
+    assert_eq!(ty.param_y.as_ref(), Some(&lean));
+    assert_eq!((ty.width, ty.height), (3, 3));
+    assert_eq!(
+        ty.interpolate, "cubic",
+        "the word `binding_interpolate` took"
+    );
+    assert_eq!(ty.keys[2][0], Some(-3.0), "cell [0, 2] is keys[2][0]");
+    assert_eq!(ty.keys[1][1], Some(0.0), "the identity at the rest cell");
+    assert_eq!(ty.keys[0], vec![None, None, None]);
+    assert!(ty.authored[2][0]);
+    assert!(!ty.authored[2][1]);
+
+    // A deform cell is authored and has no scalar to report, so `keys` says
+    // nothing about it and `authored` says everything.
+    let deform = find(&bindings, "deform");
+    assert_eq!(deform.keys, vec![vec![None, None, None]]);
+    assert_eq!(deform.authored, vec![vec![false, true, false]]);
+
+    // Every param a binding names is a param `param_list` reports, so a panel
+    // reads the key positions its grid is sized by from there.
+    let params: BTreeSet<String> = f
+        .params()
+        .iter()
+        .map(|p| p.id.as_str().to_string())
+        .collect();
+    for b in &bindings {
+        assert!(params.contains(b.param.as_str()), "{}", b.param);
+        if let Some(y) = &b.param_y {
+            assert!(params.contains(y.as_str()), "{y}");
+        }
+    }
+}
+
+/// Un-authoring a cell puts the hole back, and resetting one fills it with the
+/// target's identity — so a panel that draws set and unset differently keeps
+/// telling the truth across both edits.
+#[test]
+fn un_authoring_a_cell_reports_it_unset_again() {
+    let f = Fixture::build();
+    let session = f.session;
+    let pull = f.params()[0].id.clone();
+    let params = catchlight_editor_protocol::BindingParams::one(pull);
+
+    // The fixture keyed one cell; the model authored the identity at the rest
+    // cell alongside it, because one authored cell otherwise fills the grid.
+    let bindings = f.bindings(&f.body_part);
+    assert_eq!(
+        find(&bindings, "tx").keys,
+        vec![vec![Some(0.0), Some(12.0)]]
+    );
+
+    f.step(Command::BindingUnset {
+        session,
+        params: params.clone(),
+        node: f.body_part.clone(),
+        target: "tx".into(),
+        cell: [0, 0],
+    });
+    let bindings = f.bindings(&f.body_part);
+    let tx = find(&bindings, "tx");
+    assert_eq!(tx.keys, vec![vec![None, Some(12.0)]]);
+    assert_eq!(tx.authored, vec![vec![false, true]]);
+
+    f.step(Command::BindingReset {
+        session,
+        params,
+        node: f.body_part.clone(),
+        target: "tx".into(),
+        cell: [0, 0],
+    });
+    assert_eq!(
+        find(&f.bindings(&f.body_part), "tx").keys,
+        vec![vec![Some(0.0), Some(12.0)]],
+        "a reset authors the target's identity"
+    );
+}
+
+/// A node nothing drives.
+#[test]
+fn a_node_with_no_bindings_reports_an_empty_list() {
+    let f = Fixture::build();
+    assert!(f.bindings(&f.group).is_empty());
+}
+
+fn find<'a>(bindings: &'a [BindingInfo], target: &str) -> &'a BindingInfo {
+    bindings
+        .iter()
+        .find(|b| b.target == target)
+        .unwrap_or_else(|| panic!("no {target} binding in {bindings:?}"))
 }

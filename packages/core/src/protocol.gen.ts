@@ -365,6 +365,11 @@ export type Command =
     param_y?: ParamId | null,
   }
   | {
+    "cmd": "binding_list",
+    session: SessionId,
+    node: NodeId,
+  }
+  | {
     "cmd": "deform_set",
     session: SessionId,
     node: NodeId,
@@ -731,6 +736,10 @@ export type ResponseBody =
     params: Array<ParamInfo>,
   }
   | {
+    "result": "bindings",
+    bindings: Array<BindingInfo>,
+  }
+  | {
     "result": "texture",
     texture: TexId,
     /**
@@ -924,6 +933,63 @@ export type ParamInfo = {
 };
 
 /**
+ * One binding, as a panel draws it: the params driving it, the property it
+ * drives, how it reads between cells, and the grid the author keyed.
+ *
+ * **The grid is `[y][x]`** — the transpose of the `cell: [x, y]` every
+ * binding command takes, so `keys[cell[1]][cell[0]]` is the cell
+ * [`Command::BindingKey`] would write. It is the full product of the params'
+ * key positions, [`Self::width`] by [`Self::height`], with one row when
+ * there is no `param_y`.
+ *
+ * **A `null` in `keys` is a cell nobody authored.** The model stores only the
+ * cells a rigger set and derives the rest at puppet build, and "unset" is a
+ * state they act on — it is not a zero. The exception is a `deform` binding,
+ * which authors per-vertex offsets rather than one number: every one of its
+ * cells reads `null` here and [`Self::authored`] is the only thing that says
+ * which are set. For every other target `authored[y][x]` is exactly
+ * `keys[y][x] != null`.
+ */
+export type BindingInfo = {
+  /**
+   * The property driven, spelled the way [`Command::BindingAdd`] and every
+   * other binding command take it — plus `deform`, which only the deform
+   * commands author.
+   */
+  target: string,
+  /**
+   * The param along the grid's x axis.
+   */
+  param: ParamId,
+  /**
+   * The param along the grid's y axis. Absent when the grid is one row.
+   */
+  param_y?: ParamId | null,
+  /**
+   * nearest | stepped | linear | cubic — the name
+   * [`Command::BindingInterpolate`] takes back.
+   */
+  interpolate: string,
+  /**
+   * How many key positions `param` has, so how wide the grid is.
+   */
+  width: number,
+  /**
+   * How many key positions `param_y` has, or 1.
+   */
+  height: number,
+  /**
+   * The authored value at each cell, `[y][x]`, `null` where nothing was
+   * authored.
+   */
+  keys: Array<Array<number | null>>,
+  /**
+   * Whether each cell was authored at all, `[y][x]`.
+   */
+  authored: Array<Array<boolean>>,
+};
+
+/**
  * A seam and what currently fills it.
  */
 export type SeamInfo = {
@@ -1044,6 +1110,7 @@ export type ReplicaQueryCommandTag =
   | "node_info"
   | "texture_list"
   | "param_list"
+  | "binding_list"
   | "seams"
   | "welds"
   | "unfilled_slots";

@@ -38,6 +38,7 @@
  */
 
 import type {
+  BindingInfo,
   Command,
   DocumentCommand,
   Event,
@@ -207,6 +208,28 @@ export class Session {
       throw cause;
     }
     return expectResult(body, "node_info").node;
+  }
+
+  /**
+   * Every binding on one node: the params driving it, the property it drives,
+   * and the grid of authored keypoints.
+   *
+   * `[]` when the model carries no such node, for the same reason
+   * [`nodeInfo`] answers `undefined` — a selection outlives the node it names,
+   * and a panel drawing nothing is not a failed read.
+   *
+   * A binding's grid is indexed `[y][x]`, the transpose of the `cell: [x, y]`
+   * every binding command takes.
+   */
+  bindings(node: NodeId): BindingInfo[] {
+    let body: ResponseBody;
+    try {
+      body = this.query({ cmd: "binding_list", node });
+    } catch (cause) {
+      if (cause instanceof ProtocolError && cause.code === "no_node") return [];
+      throw cause;
+    }
+    return expectResult(body, "bindings").bindings;
   }
 
   /** Every texture the model carries, with its dimensions. */

@@ -20,7 +20,10 @@
 //!   revision it is; the replica that holds it does. So [`replica_reply`]
 //!   takes the `rev` it stamps on the envelope rather than inventing one.
 
-use catchlight_core::{Model, ModelError, ModelNode, ModelNodeKind, ModelWeld};
+use catchlight_core::{
+    deform_cells, scalar_cells, InterpolateMode, Model, ModelBinding, ModelError, ModelNode,
+    ModelNodeKind, ModelWeld,
+};
 use catchlight_editor_protocol::*;
 
 use crate::{image_dims, EditorError};
@@ -67,6 +70,21 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
         Command::ParamList { .. } => Ok(ResponseBody::Params {
             params: param_infos(model),
         }),
+        Command::BindingList { node, .. } => {
+            // A node that is gone is `no_node` rather than an empty list: a
+            // selection outlives the node it names, and a panel showing "no
+            // bindings" for a deleted node is a lie the client cannot see
+            // through.
+            if model.node(node).is_none() {
+                return Err(EditorError::NoNode(node.clone()));
+            }
+            Ok(ResponseBody::Bindings {
+                bindings: model
+                    .bindings_of_node(node)
+                    .map(|b| binding_info(model, b))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        }
         Command::Seams { node, .. } => {
             let seams = model.seams(node).ok_or_else(|| match model.node(node) {
                 Some(_) => EditorError::Edit(ModelError::NotAPart),
@@ -194,6 +212,65 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
         },
         mg_dynamic,
         mg_translate_children,
+    }
+}
+
+/// One binding as a panel reads it: the authored grid filled in `[y][x]`,
+/// with every cell nobody set left `None`.
+///
+/// The model stores only the cells a rigger authored and derives the rest at
+/// puppet build, so the hole is the answer — spelling an unset cell as the
+/// target's identity would hand a client a number to write back that the
+/// author never wrote. A deform binding's cells hold a vertex list rather than
+/// a scalar, so they say only that they are authored.
+fn binding_info(model: &Model, binding: &ModelBinding) -> Result<BindingInfo, EditorError> {
+    let key = binding.key();
+    let (width, height) = model.binding_grid(key)?;
+    let (w, h) = (width as usize, height as usize);
+    let mut keys = vec![vec![None; w]; h];
+    let mut authored = vec![vec![false; w]; h];
+    // A cell outside the grid is one the key positions shrank away from; it
+    // cannot be addressed and it cannot be drawn, so it is not reported.
+    let mut set = |x: u32, y: u32, value: Option<f32>| {
+        let (x, y) = (x as usize, y as usize);
+        if x < w && y < h {
+            keys[y][x] = value;
+            authored[y][x] = true;
+        }
+    };
+    match scalar_cells(binding.values()) {
+        Some(cells) => {
+            for c in cells {
+                set(c.x, c.y, Some(c.value));
+            }
+        }
+        None => {
+            for c in deform_cells(binding.values()).unwrap_or(&[]) {
+                set(c.x, c.y, None);
+            }
+        }
+    }
+    Ok(BindingInfo {
+        target: key.target.name().to_string(),
+        param: key.params.x().clone(),
+        param_y: key.params.y().cloned(),
+        interpolate: interpolate_name(binding.interpolate_mode()).to_string(),
+        width,
+        height,
+        keys,
+        authored,
+    })
+}
+
+/// The wire name of an interpolation mode: the inverse of the server's own
+/// `parse_interpolate_mode`, so a mode read here is a mode
+/// [`Command::BindingInterpolate`] takes back.
+fn interpolate_name(mode: InterpolateMode) -> &'static str {
+    match mode {
+        InterpolateMode::Nearest => "nearest",
+        InterpolateMode::Stepped => "stepped",
+        InterpolateMode::Linear => "linear",
+        InterpolateMode::Cubic => "cubic",
     }
 }
 
