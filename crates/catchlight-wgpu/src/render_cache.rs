@@ -37,9 +37,12 @@
 //!   want is dropped, so a model that shrank does not strand GPU buffers under
 //!   slots nothing addresses. Surviving textures are kept rather than freed
 //!   and re-uploaded, which is what leaves
-//!   [`PrepareOptions::memoize_textures`] something to save. A stopgap: the
-//!   arena rework (cl-32i.19) replaces it with slots that are owned rather
-//!   than swept.
+//!   [`PrepareOptions::memoize_textures`] something to save. The
+//!   rebuild releases whole tables because a build renames every mesh slot
+//!   from zero, and there is exactly one cache per renderer to release for.
+//!   The deform atlas goes with them: every set's residency memo is dropped
+//!   and its bytes are re-zeroed on the next upload, because the offsets they
+//!   were derived from have all moved.
 //! - **A rebuild keeps the GPU texture whose payload did not move, wherever
 //!   its slot ended up.** A model texture's bytes are immutable, so a
 //!   [`TexId`] whose payload `Arc` is what the last build uploaded already has
@@ -58,10 +61,16 @@
 //!   rewritten in place, so the two answer the same question and only one is
 //!   free. [`RenderCache::stats`] counts what each build decoded and what it
 //!   kept.
-//! - **One cache, one renderer.** The GPU state a cache's slots name lives in
-//!   the [`WgpuRenderer`] that prepared it. Two caches sharing a renderer
-//!   would overwrite each other's mesh and texture slots, which is the same
-//!   rule `renderer.rs` already states for two puppets.
+//! - **One cache, one renderer, N puppets.** The GPU state a cache's slots
+//!   name lives in the [`WgpuRenderer`] that prepared it, and two caches
+//!   sharing a renderer would overwrite each other's mesh and texture slots.
+//!   Puppets are the other way round: every puppet of one model draws from
+//!   *this* cache, because a model's textures and meshes are the same however
+//!   it is posed. What a puppet owns is a
+//!   [`DeformSet`](crate::DeformSet) — its own slice of the renderer's deform
+//!   atlas — and the [`RenderList`] collected from it.
+//!   [`RenderCache::refresh_puppet`] pairs the two; [`RenderCache::refresh`]
+//!   is the one-puppet case, on the set every renderer has.
 //! - **UVs are remapped here, not in the model.** Textures are alpha-cropped
 //!   before upload, and a model's meshes are authored against the *uncropped*
 //!   images. The remap is applied to the vertex data this cache uploads, so
@@ -77,7 +86,7 @@ use catchlight_core::{
 };
 
 use crate::collect::{Collector, DrawSource, RenderList, NO_SLOT};
-use crate::renderer::{RendererError, RendererResult, WgpuRenderer};
+use crate::renderer::{DeformSet, RendererError, RendererResult, WgpuRenderer};
 
 /// A slot in the renderer's mesh table — dense, handed out as meshes upload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -270,11 +279,49 @@ impl RenderCache {
     ///
     /// Rebuilds the whole cache first if `model` has moved since it was
     /// prepared.
+    ///
+    /// The deforms land in [`DeformSet::FIRST`], so this is the call for a
+    /// cache serving exactly one puppet. Several puppets of one model go
+    /// through [`Self::refresh_puppet`] instead.
     pub fn refresh(
         &mut self,
         renderer: &mut WgpuRenderer,
         model: &Model,
         puppet: &Puppet,
+    ) -> RendererResult<()> {
+        self.refresh_deforms(renderer, model, puppet, DeformSet::FIRST)
+    }
+
+    /// Push one of this cache's puppets at the GPU and collect its drawables:
+    /// the deforms into `set`, the list into `render_list`, which is stamped
+    /// with `set` so the draw reads what this call uploaded.
+    ///
+    /// This is the multi-puppet form of [`Self::refresh`]. Every puppet of
+    /// one model shares this cache — one decode and one upload of every
+    /// texture and every mesh — and differs only by its deform set and its
+    /// list. Take a set with
+    /// [`WgpuRenderer::acquire_deform_set`](crate::WgpuRenderer::acquire_deform_set)
+    /// and hand it back when the puppet goes.
+    pub fn refresh_puppet(
+        &mut self,
+        renderer: &mut WgpuRenderer,
+        model: &Model,
+        puppet: &Puppet,
+        set: DeformSet,
+        render_list: &mut RenderList,
+    ) -> RendererResult<()> {
+        self.refresh_deforms(renderer, model, puppet, set)?;
+        self.collect_into(puppet, render_list);
+        render_list.deform_set = set;
+        Ok(())
+    }
+
+    fn refresh_deforms(
+        &mut self,
+        renderer: &mut WgpuRenderer,
+        model: &Model,
+        puppet: &Puppet,
+        set: DeformSet,
     ) -> RendererResult<()> {
         debug_assert_eq!(
             self.identity,
@@ -315,7 +362,7 @@ impl RenderCache {
             let slot = mesh_of_node.get(idx.0 as usize).copied().flatten()?;
             Some((slot.0, stack.generation(), stack.combined()))
         });
-        renderer.upload_deforms(active);
+        renderer.upload_deforms(set, active);
         Ok(())
     }
 

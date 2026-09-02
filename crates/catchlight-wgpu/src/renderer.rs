@@ -12,19 +12,35 @@
 //!   frame. Per-part instance and uniform data is staged in CPU-side buffers
 //!   and flushed as a single `write_buffer` at frame end
 //!   (`flush_instance_writes`, `flush_part_uniform_writes`, both called from
-//!   `render_list_ext`).
+//!   `render_lists_ext`).
 //! - **Cursor allocation, never a bare offset 0.** Take instance slots with
 //!   `reserve_instances(count)` and uniform slots with `write_part_uniform(..)`;
 //!   both hand out offsets from a monotonic per-frame cursor. A helper that
 //!   writes offset 0 itself reintroduces the aliasing above.
-//! - **One submit per frame.** `render_list` / `render_list_ext` record into
-//!   the *caller's* encoder and submit nothing; the caller's submit is the
-//!   frame's only one. The only `queue.submit` inside the renderer is
-//!   `generate_mips`, at texture-upload time.
+//! - **A frame is `render_lists_ext`, not one list.** The cursors above are
+//!   monotonic *per frame*, and a frame may carry several puppets of one
+//!   model. `render_lists_ext` sizes the frame over every list, records them
+//!   back to back, and flushes once; `render_list_ext` is the one-list case
+//!   of it. Two `render_list_ext` calls inside one submit would each reset
+//!   the cursors and rewrite offset 0 — the aliasing above, on every draw the
+//!   first call recorded. The lists draw in the order given, each puppet
+//!   atomic, and only the first may consume the frame's `clear_color`.
+//! - **One submit per frame.** `render_list` / `render_list_ext` /
+//!   `render_lists_ext` record into the *caller's* encoder and submit
+//!   nothing; the caller's submit is the frame's only one. The only
+//!   `queue.submit` inside the renderer is `generate_mips`, at texture-upload
+//!   time.
 //! - **Never grow a GPU buffer mid-frame.** `begin_frame_instances` and
 //!   `begin_frame_uniforms` size the frame up front, before any pass is
 //!   recorded. A realloc after that strands already-recorded passes on the
 //!   freed buffer.
+//! - **A deform set per puppet, a mesh slot per model.** The deform atlas is
+//!   N copies of the cache's mesh layout; a [`DeformSet`] names which copy and
+//!   a [`crate::RenderList`] carries the set its draws read. That is what lets
+//!   one renderer and one [`crate::RenderCache`] serve N puppets: they share
+//!   every texture and every vertex buffer and differ only in these bytes.
+//!   Sets are recycled by index, and a set whose bytes may still hold a
+//!   previous tenant's pose is zeroed before its first upload.
 //! - **One camera slot per view.** `reserve_camera` writes each
 //!   `render_list`'s view-proj into its own slot of a `CAMERA_RING_SLOTS`-deep
 //!   ring and binds it as a dynamic offset, so views sharing a submit can't
@@ -40,11 +56,12 @@
 //!   `masking_blend_modes_have_matching_color_and_alpha_factors`.
 //! - **Multi-puppet resource sharing.** `StencilTarget`, `CompositePool` and
 //!   `FramebufferSnapshotPool` are caller-owned and passed into
-//!   `render_list_ext`, so several puppets in one frame share them. Each
-//!   puppet still gets its own `WgpuRenderer` (mesh ids from different puppets
-//!   would collide in `mesh_buffers`) — see
-//!   `crates/catchlight-bevy/src/prepare.rs` (`HashMap<RendererKey,
-//!   WgpuRenderer>` beside one `FormatResources`) and
+//!   `render_lists_ext`, so several puppets in one frame share them. A
+//!   renderer is shared by every puppet of **one** model and no more: mesh
+//!   and texture slots are a cache's, and a second cache on one renderer
+//!   would overwrite them. Two models are two `(renderer, cache)` pairs over
+//!   shared `Pipelines` and per-format pools, one encoder and one submit —
+//!   see `crates/catchlight-bevy/src/prepare.rs` and
 //!   `crates/visual-tests/src/harness.rs`, which serializes every render
 //!   through one mutex for the same reason.
 //! - **The stencil path has a WebGL fallback.** When `Pipelines::has_stencil`
@@ -1594,6 +1611,83 @@ impl<V> DenseMap<V> {
     }
 }
 
+/// One puppet's slice of a renderer's deform atlas.
+///
+/// A [`crate::RenderCache`] is per *model*; a deform set is per *puppet*. The
+/// atlas is laid out as N copies of the cache's mesh layout and a set names
+/// which copy, so two puppets of one model upload their own frame into their
+/// own bytes while drawing from the same mesh and texture slots. Without it,
+/// the second puppet's upload would overwrite the first's before either drew:
+/// every draw of a frame lands in one submit, and `queue.write_buffer`
+/// batches at submit start.
+///
+/// [`DeformSet::FIRST`] is the set every renderer starts with, and the one a
+/// single-puppet caller never has to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DeformSet(u32);
+
+impl DeformSet {
+    /// The set a renderer always has. `RenderCache::refresh` uploads into it
+    /// and a default [`crate::RenderList`] draws from it, so a caller with one
+    /// puppet per model never touches the rest of this API.
+    pub const FIRST: Self = Self(0);
+
+    /// The set's index, which is also its position in the atlas. Test-facing.
+    #[doc(hidden)]
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for DeformSet {
+    fn default() -> Self {
+        Self::FIRST
+    }
+}
+
+/// What one [`DeformSet`] currently holds on the GPU.
+#[derive(Default)]
+struct DeformSetState {
+    /// Mesh slots whose bytes in this set hold active deform data, paired
+    /// with the `DeformStack` generation that produced them. `upload_deforms`
+    /// skips a write when the active generation is already resident and
+    /// zero-fills meshes that transition back to inactive.
+    uploaded: DenseMap<u64>,
+    /// Scratch for one upload's "still active" sweep, pooled across frames.
+    still_active: DenseMap<()>,
+    /// Per-mesh max absolute deform component resident in this set, tracked
+    /// alongside `uploaded` (same generation memo, same inactive sweep). The
+    /// shader adds deform in local space before the instance transform, so
+    /// expanding a mesh's local AABB by this magnitude on both axes bounds
+    /// the deformed geometry exactly.
+    max: DenseMap<f32>,
+    /// The set's bytes are not known to be zero: it was just acquired, or a
+    /// rebuild re-laid-out the atlas under it. The next upload zeroes the
+    /// whole slice first, so a released set's leftovers can never draw for
+    /// whoever acquires the index next.
+    needs_clear: bool,
+    /// Acquired and not yet released. `FIRST` is live from construction.
+    live: bool,
+}
+
+impl DeformSetState {
+    fn live() -> Self {
+        Self {
+            live: true,
+            ..Self::default()
+        }
+    }
+
+    /// Forget everything resident and re-zero on the next upload. What a
+    /// re-layout of the atlas (a cache rebuild) leaves behind.
+    fn invalidate(&mut self) {
+        self.uploaded.clear();
+        self.still_active.clear();
+        self.max.clear();
+        self.needs_clear = true;
+    }
+}
+
 pub struct WgpuRenderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -1663,23 +1757,25 @@ pub struct WgpuRenderer {
     /// profiler is `None` and the render path falls back to CPU-only
     /// `tracing` spans.
     gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
-    /// MeshIds whose deform buffer currently holds active data on the
-    /// GPU, paired with the `DeformStack` generation that produced it.
-    /// `upload_deforms` skips writes when the active generation is already
-    /// resident and zero-fills meshes that transition back to inactive.
-    deform_uploaded: DenseMap<u64>,
-    deform_still_active: DenseMap<()>,
+    /// What each [`DeformSet`] currently holds on the GPU, indexed by the
+    /// set. Slot 0 is [`DeformSet::FIRST`], which every renderer has and a
+    /// single-puppet caller never names.
+    deform_sets: Vec<DeformSetState>,
+    /// Set indices handed back by `release_deform_set`, reused before the
+    /// atlas grows another stride.
+    deform_free: Vec<u32>,
     deform_inactive_scratch: Vec<u32>,
     // Dirty deform byte ranges `[start, end)` collected each sync, then
     // sorted and coalesced so two far-apart meshes don't force one write
     // over the untouched span between them. Pooled across frames.
     deform_write_ranges: Vec<(u64, u64)>,
-    /// Per-mesh max absolute deform component currently resident on the
-    /// GPU, tracked alongside `deform_uploaded` (same generation memo,
-    /// same inactive sweep). The shader adds deform in local space before
-    /// the instance transform, so expanding a mesh's local AABB by this
-    /// magnitude on both axes bounds the deformed geometry exactly.
-    deform_max: DenseMap<f32>,
+    /// The deform set whose passes are being recorded, and its byte base in
+    /// the atlas. Frame-scoped: `render_lists_ext` points them at each list
+    /// before recording it, and every deform slice and deformed-bounds
+    /// lookup reads them rather than taking a parameter through a dozen
+    /// draw helpers.
+    deform_recording_set: DeformSet,
+    deform_recording_base: u64,
     /// CPU copy of the last `update_camera` view-proj, kept so per-part
     /// bounds can project to clip space. Multi-view renderers call
     /// `update_camera` per view before `render_list`, so this is the
@@ -1980,11 +2076,12 @@ impl WgpuRenderer {
             instance_write_watermark: 0,
             part_uniform_write_watermark: 0,
             gpu_profiler,
-            deform_uploaded: DenseMap::new(),
-            deform_still_active: DenseMap::new(),
+            deform_sets: vec![DeformSetState::live()],
+            deform_free: Vec::new(),
             deform_inactive_scratch: Vec::new(),
             deform_write_ranges: Vec::new(),
-            deform_max: DenseMap::new(),
+            deform_recording_set: DeformSet::FIRST,
+            deform_recording_base: 0,
             camera_view_proj: glam::Mat4::IDENTITY,
             draw_filter_scratch: Vec::new(),
             instance_scratch: Vec::new(),
@@ -2053,6 +2150,13 @@ impl WgpuRenderer {
         self.batch_instance_writes = true;
     }
 
+    /// Grow the atlas to `needed` bytes, carrying the mirror across.
+    ///
+    /// The mirror is a byte-exact copy of the atlas, so re-uploading all of
+    /// it makes the new buffer identical to the old one and every set's
+    /// residency memo stays true. Growth only ever happens between frames —
+    /// from a mesh upload or from the first upload after a set was acquired —
+    /// and `note_realloc` asserts as much.
     fn ensure_deform_buffer_capacity(&mut self, needed: u64) {
         let needed = needed.max(8);
         if needed <= self.deform_buffer_capacity {
@@ -2071,19 +2175,17 @@ impl WgpuRenderer {
             self.queue
                 .write_buffer(&self.deform_buffer, 0, &self.deform_upload_mirror);
         }
-        self.deform_uploaded.clear();
-        self.deform_still_active.clear();
-        self.deform_inactive_scratch.clear();
-        self.deform_max.clear();
     }
 
     fn reset_deform_buffer_layout(&mut self) {
         self.deform_buffer_len = 0;
         self.deform_upload_mirror.clear();
-        self.deform_uploaded.clear();
-        self.deform_still_active.clear();
         self.deform_inactive_scratch.clear();
-        self.deform_max.clear();
+        // Every set's bytes moved: the mesh slots the offsets were derived
+        // from are all being handed out again.
+        for set in &mut self.deform_sets {
+            set.invalidate();
+        }
     }
 
     fn reserve_deform_buffer(&mut self, size: u64) -> u64 {
@@ -2091,8 +2193,85 @@ impl WgpuRenderer {
         let end = offset + size;
         self.ensure_deform_buffer_capacity(end);
         self.deform_buffer_len = end;
-        self.deform_upload_mirror.resize(end as usize, 0);
+        if self.deform_upload_mirror.len() < end as usize {
+            self.deform_upload_mirror.resize(end as usize, 0);
+        }
         offset
+    }
+
+    /// Bytes one puppet's deforms occupy in the atlas: the mesh layout the
+    /// last build reserved, padded so every set's base stays 16-byte aligned
+    /// (`set_vertex_buffer` needs 4).
+    fn deform_stride(&self) -> u64 {
+        self.deform_buffer_len.next_multiple_of(16)
+    }
+
+    /// Where `set`'s copy of the mesh layout starts. Derived rather than
+    /// stored, so a rebuild that changes the stride moves every set at once.
+    fn deform_base(&self, set: DeformSet) -> u64 {
+        set.0 as u64 * self.deform_stride()
+    }
+
+    /// Take a deform set for one more puppet of this renderer's model.
+    ///
+    /// Sets are cheap: one is `deform_stride()` bytes of the atlas, which is
+    /// two floats per vertex of the model — orders below the textures and
+    /// meshes that sharing a [`crate::RenderCache`] is what saves. Release it
+    /// with [`Self::release_deform_set`] when the puppet goes; the index is
+    /// then reused rather than growing the atlas again.
+    pub fn acquire_deform_set(&mut self) -> DeformSet {
+        let index = match self.deform_free.pop() {
+            Some(index) => index,
+            None => {
+                self.deform_sets.push(DeformSetState::default());
+                (self.deform_sets.len() - 1) as u32
+            }
+        };
+        // A reused index may still hold the previous tenant's bytes; the
+        // first upload zeroes the slice before writing into it.
+        self.deform_sets[index as usize] = DeformSetState::live();
+        self.deform_sets[index as usize].needs_clear = true;
+        DeformSet(index)
+    }
+
+    /// Hand a deform set back. The atlas keeps its bytes — the index is what
+    /// is recycled — and [`DeformSet::FIRST`] is never released.
+    pub fn release_deform_set(&mut self, set: DeformSet) {
+        if set == DeformSet::FIRST {
+            return;
+        }
+        let Some(state) = self.deform_sets.get_mut(set.0 as usize) else {
+            return;
+        };
+        if !state.live {
+            return;
+        }
+        *state = DeformSetState::default();
+        self.deform_free.push(set.0);
+    }
+
+    /// Deform sets currently acquired, [`DeformSet::FIRST`] included.
+    /// Test-facing, as [`Self::live_mesh_slots`].
+    #[doc(hidden)]
+    pub fn live_deform_sets(&self) -> usize {
+        self.deform_sets.iter().filter(|s| s.live).count()
+    }
+
+    /// Size the atlas and its mirror for every set that exists. Runs at
+    /// upload time rather than at acquire time because a set's base depends
+    /// on the mesh layout, which a rebuild can still change afterwards.
+    fn ensure_deform_sets_sized(&mut self) {
+        let needed = self.deform_stride() * self.deform_sets.len() as u64;
+        if self.deform_upload_mirror.len() < needed as usize {
+            self.deform_upload_mirror.resize(needed as usize, 0);
+        }
+        self.ensure_deform_buffer_capacity(needed);
+    }
+
+    /// One mesh's deform bytes inside the set currently being recorded.
+    fn deform_slice(&self, mesh: &MeshBuffer) -> wgpu::BufferSlice<'_> {
+        let start = self.deform_recording_base + mesh.deform_offset;
+        self.deform_buffer.slice(start..start + mesh.deform_size)
     }
 
     fn reserve_instances(&mut self, count: usize) -> u64 {
@@ -2338,9 +2517,12 @@ impl WgpuRenderer {
         height: u32,
     ) -> Option<[f32; 4]> {
         let local = self.mesh_buffers.get(mesh_id as usize)?.local_bounds?;
+        // The deforms of the set being recorded, not of some other puppet's:
+        // two puppets of one model expand the same mesh by different amounts.
         let pad = self
-            .deform_max
-            .get(mesh_id as usize)
+            .deform_sets
+            .get(self.deform_recording_set.0 as usize)
+            .and_then(|set| set.max.get(mesh_id as usize))
             .copied()
             .unwrap_or(0.0);
         let expanded = Aabb2 {
@@ -2410,6 +2592,7 @@ impl WgpuRenderer {
     /// mesh whose deform is unchanged from the last sync.
     pub(crate) fn upload_deforms<'a>(
         &mut self,
+        set: DeformSet,
         active: impl Iterator<Item = (u32, u64, &'a [glam::Vec2])>,
     ) {
         // Coalesce dirty ranges only across gaps this small: below it,
@@ -2417,9 +2600,34 @@ impl WgpuRenderer {
         // fixed overhead; above it, the copied span is pure waste.
         const DEFORM_MERGE_GAP: u64 = 4096;
 
-        self.deform_still_active.clear();
+        self.ensure_deform_sets_sized();
+        let base = self.deform_base(set);
+        let stride = self.deform_stride();
+        // Taken out so the per-mesh loop can borrow the mirror and the mesh
+        // table at the same time; put back at the end.
+        let Some(mut state) = self
+            .deform_sets
+            .get_mut(set.0 as usize)
+            .filter(|state| state.live)
+            .map(std::mem::take)
+        else {
+            tracing::warn!(set = set.0, "upload_deforms: no such deform set");
+            return;
+        };
+        state.still_active.clear();
         let mut ranges = std::mem::take(&mut self.deform_write_ranges);
         ranges.clear();
+        // A freshly acquired set, or one whose atlas was re-laid-out, may
+        // still hold bytes nothing here will write. Zero the slice once so a
+        // mesh this puppet never deforms cannot inherit them.
+        if state.needs_clear {
+            state.needs_clear = false;
+            let end = (base + stride).min(self.deform_upload_mirror.len() as u64);
+            if end > base {
+                self.deform_upload_mirror[base as usize..end as usize].fill(0);
+                ranges.push((base, end));
+            }
+        }
         for (mesh_id, generation, combined) in active {
             let Some(buf) = self.mesh_buffers.get(mesh_id as usize) else {
                 continue;
@@ -2433,45 +2641,43 @@ impl WgpuRenderer {
                 );
                 continue;
             }
-            if self.deform_uploaded.get(mesh_id as usize).copied() == Some(generation) {
-                self.deform_still_active.insert(mesh_id as usize, ());
+            if state.uploaded.get(mesh_id as usize).copied() == Some(generation) {
+                state.still_active.insert(mesh_id as usize, ());
                 continue;
             }
             let bytes: &[u8] = bytemuck::cast_slice(combined);
-            let start = buf.deform_offset as usize;
+            let start = (base + buf.deform_offset) as usize;
             let end = start + bytes.len();
             self.deform_upload_mirror[start..end].copy_from_slice(bytes);
-            ranges.push((buf.deform_offset, buf.deform_offset + bytes.len() as u64));
-            self.deform_uploaded.insert(mesh_id as usize, generation);
-            self.deform_still_active.insert(mesh_id as usize, ());
+            ranges.push((start as u64, end as u64));
+            state.uploaded.insert(mesh_id as usize, generation);
+            state.still_active.insert(mesh_id as usize, ());
             // Bounds padding: the largest per-axis local shift this deform
             // applies. Recomputed only on a real upload; the generation
             // memo-hit above keeps the cached value.
             let max_abs = combined
                 .iter()
                 .fold(0.0f32, |m, v| m.max(v.x.abs()).max(v.y.abs()));
-            self.deform_max.insert(mesh_id as usize, max_abs);
+            state.max.insert(mesh_id as usize, max_abs);
         }
 
         self.deform_inactive_scratch.clear();
-        for i in self.deform_uploaded.keys() {
-            if !self.deform_still_active.contains(i) {
+        for i in state.uploaded.keys() {
+            if !state.still_active.contains(i) {
                 self.deform_inactive_scratch.push(i as u32);
             }
         }
         for i in 0..self.deform_inactive_scratch.len() {
             let mesh_id = self.deform_inactive_scratch[i];
+            state.uploaded.remove(mesh_id as usize);
+            state.max.remove(mesh_id as usize);
             let Some(buf) = self.mesh_buffers.get(mesh_id as usize) else {
-                self.deform_uploaded.remove(mesh_id as usize);
-                self.deform_max.remove(mesh_id as usize);
                 continue;
             };
-            let start = buf.deform_offset as usize;
+            let start = (base + buf.deform_offset) as usize;
             let end = start + buf.deform_size as usize;
             self.deform_upload_mirror[start..end].fill(0);
-            ranges.push((buf.deform_offset, buf.deform_offset + buf.deform_size));
-            self.deform_uploaded.remove(mesh_id as usize);
-            self.deform_max.remove(mesh_id as usize);
+            ranges.push((start as u64, end as u64));
         }
 
         // Merge sorted ranges across sub-threshold gaps, then flush one
@@ -2507,10 +2713,16 @@ impl WgpuRenderer {
             );
             written += run_end - run_start;
         }
-        self.pending_deform_bytes = written;
+        // Accumulated, not assigned: N puppets of one model each upload
+        // before the frame that draws them all, and the frame's stats want
+        // the sum. `render_lists_ext` zeroes it once it has folded it in.
+        self.pending_deform_bytes += written;
 
         ranges.clear();
         self.deform_write_ranges = ranges;
+        if let Some(slot) = self.deform_sets.get_mut(set.0 as usize) {
+            *slot = state;
+        }
     }
 
     pub fn clear_meshes(&mut self) {
@@ -2823,11 +3035,7 @@ impl WgpuRenderer {
                 pass.set_bind_group(1, &texture.bind_group, &[]);
                 pass.set_bind_group(2, &self.part_uniform_bind_group, &[uniform_offsets[i]]);
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_vertex_buffer(
-                    2,
-                    self.deform_buffer
-                        .slice(mesh.deform_offset..mesh.deform_offset + mesh.deform_size),
-                );
+                pass.set_vertex_buffer(2, self.deform_slice(mesh));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
                 self.emit_part_draw(&mut pass, mesh.num_indices, base_offset + i as u64 * stride);
             }
@@ -2979,13 +3187,7 @@ impl WgpuRenderer {
                         &[source_uniform_offsets[i]],
                     );
                     render_pass.set_vertex_buffer(0, mask_mesh.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(
-                        2,
-                        self.deform_buffer.slice(
-                            mask_mesh.deform_offset
-                                ..mask_mesh.deform_offset + mask_mesh.deform_size,
-                        ),
-                    );
+                    render_pass.set_vertex_buffer(2, self.deform_slice(mask_mesh));
                     render_pass
                         .set_index_buffer(mask_mesh.index_buffer.slice(..), mask_mesh.index_format);
                     self.emit_part_draw(&mut render_pass, mask_mesh.num_indices, off);
@@ -3138,13 +3340,7 @@ impl WgpuRenderer {
                         &[source_uniform_offsets[i]],
                     );
                     render_pass.set_vertex_buffer(0, mask_mesh.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(
-                        2,
-                        self.deform_buffer.slice(
-                            mask_mesh.deform_offset
-                                ..mask_mesh.deform_offset + mask_mesh.deform_size,
-                        ),
-                    );
+                    render_pass.set_vertex_buffer(2, self.deform_slice(mask_mesh));
                     render_pass
                         .set_index_buffer(mask_mesh.index_buffer.slice(..), mask_mesh.index_format);
                     self.emit_part_draw(render_pass, mask_mesh.num_indices, off);
@@ -3304,11 +3500,7 @@ impl WgpuRenderer {
             }
             if current_mesh != Some(part.mesh_id) {
                 render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(
-                    2,
-                    self.deform_buffer
-                        .slice(mesh.deform_offset..mesh.deform_offset + mesh.deform_size),
-                );
+                render_pass.set_vertex_buffer(2, self.deform_slice(mesh));
                 render_pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
                 current_mesh = Some(part.mesh_id);
             }
@@ -3521,13 +3713,7 @@ impl WgpuRenderer {
             }
             if current_mesh != Some(d.mesh_id) {
                 render_pass.set_vertex_buffer(0, mesh_buffer.vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(
-                    2,
-                    self.deform_buffer.slice(
-                        mesh_buffer.deform_offset
-                            ..mesh_buffer.deform_offset + mesh_buffer.deform_size,
-                    ),
-                );
+                render_pass.set_vertex_buffer(2, self.deform_slice(mesh_buffer));
                 render_pass
                     .set_index_buffer(mesh_buffer.index_buffer.slice(..), mesh_buffer.index_format);
                 current_mesh = Some(d.mesh_id);
@@ -4322,14 +4508,8 @@ impl WgpuRenderer {
         height: u32,
         clear_color: Option<wgpu::Color>,
     ) -> RendererResult<RenderStats> {
-        // Frame boundary for the resource-lifecycle counters: the camera
-        // slot write below is this frame's first queue write, so the
-        // reset has to precede it.
-        self.frame_stats = FrameStats::default();
-        self.frame_sizing_closed = false;
-        self.reserve_camera()?;
-        let result = self.render_list_ext_inner(
-            render_list,
+        self.render_lists_ext(
+            std::slice::from_ref(&render_list),
             encoder,
             view,
             stencil,
@@ -4339,45 +4519,65 @@ impl WgpuRenderer {
             width,
             height,
             clear_color,
-        );
-        self.flush_instance_writes();
-        self.flush_part_uniform_writes();
-        // Frame over: uploads between frames may size buffers again.
-        self.frame_sizing_closed = false;
-        result
+        )
     }
 
+    /// Draw several puppets of **one** model into one frame.
+    ///
+    /// This is the multi-puppet form of [`Self::render_list_ext`] and the
+    /// reason a renderer and its [`crate::RenderCache`] can be shared: the
+    /// lists are recorded back to back into one encoder, sharing the frame's
+    /// instance and part-uniform buffers under one monotonic cursor and one
+    /// camera slot, and each list draws from the [`DeformSet`] it carries.
+    /// Calling [`Self::render_list_ext`] twice inside one submit would
+    /// instead have the second call rewrite the first's instance and uniform
+    /// slots — `write_buffer` batches at submit start, so the later write
+    /// wins for every draw already recorded.
+    ///
+    /// `lists` draw in the order given, each puppet atomic: within a list z
+    /// order decides, across lists the caller's order does. `clear_color`
+    /// belongs to the frame, so only the first list may consume it.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
-    fn render_list_ext_inner(
+    pub fn render_lists_ext(
         &mut self,
-        render_list: &crate::collect::RenderList,
+        lists: &[&crate::collect::RenderList],
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         stencil: &StencilTarget,
         composites: &mut CompositePool,
         target_color_texture: Option<&wgpu::Texture>,
-        snapshots: Option<&mut FramebufferSnapshotPool>,
+        mut snapshots: Option<&mut FramebufferSnapshotPool>,
         width: u32,
         height: u32,
         clear_color: Option<wgpu::Color>,
     ) -> RendererResult<RenderStats> {
         use crate::collect::DrawableInfo;
 
-        let span = tracing::trace_span!("render_list", drawn_parts = tracing::field::Empty);
+        let span = tracing::trace_span!(
+            "render_lists",
+            puppets = lists.len(),
+            drawn_parts = tracing::field::Empty
+        );
         let _entered = span.enter();
 
+        // Frame boundary for the resource-lifecycle counters: the camera
+        // slot write below is this frame's first queue write, so the
+        // reset has to precede it.
+        self.frame_stats = FrameStats::default();
+        self.frame_sizing_closed = false;
+        self.reserve_camera()?;
+        self.current_stats = RenderStats::default();
+        self.frame_render_passes.store(0, Ordering::Relaxed);
+        self.frame_draw_calls.store(0, Ordering::Relaxed);
+
         // Open a single GPU-side timer scope around all GPU work in this
-        // render_list when TIMESTAMP_QUERY is supported. The query lives
-        // until end_query is called on the same encoder; nested CPU
-        // tracing spans below give finer-grained per-callsite breakdown.
+        // frame when TIMESTAMP_QUERY is supported. The query lives until
+        // end_query is called on the same encoder; nested CPU tracing spans
+        // below give finer-grained per-callsite breakdown.
         let gpu_query = self
             .gpu_profiler
             .as_ref()
             .map(|p| p.begin_query("render_list", encoder));
-
-        self.current_stats = RenderStats::default();
-        self.frame_render_passes.store(0, Ordering::Relaxed);
-        self.frame_draw_calls.store(0, Ordering::Relaxed);
 
         // Per-frame snapshot bookkeeping. `dst_in_shader_active` is
         // true only when both the caller-supplied texture handle and a
@@ -4385,11 +4585,14 @@ impl WgpuRenderer {
         // Composite (root or composite child) using a shader-math mode —
         // keeps the common case (zero such parts) on exactly the same
         // code path as a plain render.
-        let dst_in_shader_present = render_list
-            .root_drawables
-            .iter()
-            .chain(render_list.composite_children.values().flatten())
-            .any(|d| is_dst_in_shader(d.blend_mode()));
+        let drawables = || {
+            lists.iter().flat_map(|list| {
+                list.root_drawables
+                    .iter()
+                    .chain(list.composite_children.values().flatten())
+            })
+        };
+        let dst_in_shader_present = drawables().any(|d| is_dst_in_shader(d.blend_mode()));
         let dst_in_shader_active =
             dst_in_shader_present && target_color_texture.is_some() && snapshots.is_some();
         if dst_in_shader_present && !dst_in_shader_active {
@@ -4406,69 +4609,112 @@ impl WgpuRenderer {
             });
         }
 
-        // Each dst-in-shader Part — root or composite child — is
-        // dispatched through a composite slot, so it gains an extra
-        // uniform slot for its blit. Each dst-in-shader Composite uses
-        // its existing slot — only the blit pipeline differs. Counting
-        // the Parts here keeps the up-front uniform_slot_count exact.
-        let dst_in_shader_part_count = if dst_in_shader_active {
-            render_list
-                .root_drawables
-                .iter()
-                .chain(render_list.composite_children.values().flatten())
-                .filter(|d| {
-                    matches!(d, DrawableInfo::Part { .. }) && is_dst_in_shader(d.blend_mode())
-                })
-                .count()
-        } else {
-            0
-        };
-        let dst_in_shader_masked_composite_count = if dst_in_shader_active {
-            render_list
-                .root_drawables
-                .iter()
-                .chain(render_list.composite_children.values().flatten())
-                .filter(|drawable| {
-                    matches!(
-                        drawable,
-                        DrawableInfo::Composite {
-                            blend_mode,
-                            mask_sources,
-                            ..
-                        } if is_dst_in_shader(*blend_mode) && !mask_sources.is_empty()
-                    )
-                })
-                .count()
-        } else {
-            0
-        };
-
-        // Pre-size frame resources so passes recorded below all refer
-        // to the same instance_buffer / part_uniform_buffer and no
-        // mid-frame growth strands earlier passes on a freed buffer.
-        self.begin_frame_instances(render_list.total_instance_count());
+        // Pre-size frame resources over *every* list, so passes recorded
+        // below all refer to the same instance_buffer / part_uniform_buffer
+        // and no mid-frame growth strands earlier passes on a freed buffer.
+        let total_instances: usize = lists.iter().map(|l| l.total_instance_count()).sum();
+        self.begin_frame_instances(total_instances);
         // One uniform slot per root drawable (Part or Composite) plus
         // one per composite child Part, plus one per mask-source draw
         // (each mask write binds its source's threshold in its own
         // slot — total_mask_source_count is the per-frame upper bound).
         // Dst-in-shader Parts get one extra slot each (the
-        // composite-blit slot they're routed through).
-        let n_child_parts: usize = render_list
-            .composite_children
-            .values()
-            .map(|v| v.len())
-            .sum();
-        let uniform_slot_count = (render_list.root_drawables.len()
-            + n_child_parts
-            + dst_in_shader_part_count
-            + dst_in_shader_masked_composite_count
-            + render_list.total_mask_source_count()
-            + render_list
-                .composite_mask_sources
-                .values()
-                .map(|source| source.parts.len())
-                .sum::<usize>()) as u32;
-        self.begin_frame_uniforms(uniform_slot_count);
+        // composite-blit slot they're routed through), and so does each
+        // masked dst-in-shader Composite.
+        let dst_in_shader_extra = if dst_in_shader_active {
+            drawables()
+                .filter(|d| match d {
+                    DrawableInfo::Part { .. } => is_dst_in_shader(d.blend_mode()),
+                    DrawableInfo::Composite { mask_sources, .. } => {
+                        is_dst_in_shader(d.blend_mode()) && !mask_sources.is_empty()
+                    }
+                })
+                .count()
+        } else {
+            0
+        };
+        let uniform_slot_count = lists
+            .iter()
+            .map(|list| {
+                let child_parts: usize = list.composite_children.values().map(|v| v.len()).sum();
+                list.root_drawables.len()
+                    + child_parts
+                    + list.total_mask_source_count()
+                    + list
+                        .composite_mask_sources
+                        .values()
+                        .map(|source| source.parts.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+            + dst_in_shader_extra;
+        self.begin_frame_uniforms(uniform_slot_count as u32);
+
+        let mut result = Ok(());
+        for (i, list) in lists.iter().enumerate() {
+            // Every deform slice and deformed-bounds lookup this list's
+            // passes make reads these two.
+            self.deform_recording_set = list.deform_set;
+            self.deform_recording_base = self.deform_base(list.deform_set);
+            result = self.record_list(
+                list,
+                encoder,
+                view,
+                stencil,
+                composites,
+                target_color_texture,
+                snapshots.as_deref_mut(),
+                width,
+                height,
+                // The clear belongs to the frame, not to a puppet: a later
+                // list clearing would wipe the ones already recorded.
+                if i == 0 { clear_color } else { None },
+                dst_in_shader_active,
+            );
+            if result.is_err() {
+                break;
+            }
+        }
+        self.deform_recording_set = DeformSet::FIRST;
+        self.deform_recording_base = 0;
+
+        if let (Some(profiler), Some(query)) = (self.gpu_profiler.as_ref(), gpu_query) {
+            profiler.end_query(encoder, query);
+        }
+        self.flush_instance_writes();
+        self.flush_part_uniform_writes();
+        self.finalize_frame_stats(composites);
+        // Folded in; the next frame's uploads start the count over.
+        self.pending_deform_bytes = 0;
+        span.record("drawn_parts", self.current_stats.drawn_parts);
+        // Frame over: uploads between frames may size buffers again.
+        self.frame_sizing_closed = false;
+        result.map(|()| self.current_stats)
+    }
+
+    /// Record one puppet's list into an already-sized frame. Everything that
+    /// belongs to the frame rather than to the puppet — the camera slot, the
+    /// instance and uniform sizing, the GPU timer scope, the stats — is
+    /// [`Self::render_lists_ext`]'s, so this may run several times per frame.
+    #[allow(clippy::too_many_arguments, clippy::expect_used)]
+    fn record_list(
+        &mut self,
+        render_list: &crate::collect::RenderList,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        stencil: &StencilTarget,
+        composites: &mut CompositePool,
+        target_color_texture: Option<&wgpu::Texture>,
+        snapshots: Option<&mut FramebufferSnapshotPool>,
+        width: u32,
+        height: u32,
+        clear_color: Option<wgpu::Color>,
+        dst_in_shader_active: bool,
+    ) -> RendererResult<()> {
+        use crate::collect::DrawableInfo;
+
+        let span = tracing::trace_span!("render_list", drawn_parts = tracing::field::Empty);
+        let _entered = span.enter();
 
         composites.ensure_size(width, height);
         composites.reset();
@@ -4607,12 +4853,8 @@ impl WgpuRenderer {
                     );
                 }
             }
-            if let (Some(profiler), Some(query)) = (self.gpu_profiler.as_ref(), gpu_query) {
-                profiler.end_query(encoder, query);
-            }
-            self.finalize_frame_stats(composites);
             span.record("drawn_parts", self.current_stats.drawn_parts);
-            return Ok(self.current_stats);
+            return Ok(());
         }
 
         // Consecutive unmasked root parts accumulate here and flush as
@@ -4833,13 +5075,8 @@ impl WgpuRenderer {
             }
         }
 
-        if let (Some(profiler), Some(query)) = (self.gpu_profiler.as_ref(), gpu_query) {
-            profiler.end_query(encoder, query);
-        }
-
-        self.finalize_frame_stats(composites);
         span.record("drawn_parts", self.current_stats.drawn_parts);
-        Ok(self.current_stats)
+        Ok(())
     }
 
     /// Resolve pending wgpu-profiler timer queries into `encoder`. Records
