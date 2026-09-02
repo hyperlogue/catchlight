@@ -133,7 +133,9 @@ impl Inner {
         // canvas was resized, or the tab was hidden and came back. Reconfigure
         // and stay stale so the next frame tries again.
         let Some((frame, view)) = self.surface.acquire() else {
-            self.surface.reconfigure(replica.device());
+            if let Some(device) = replica.device() {
+                self.surface.reconfigure(device);
+            }
             self.dirty = true;
             return Ok(false);
         };
@@ -207,10 +209,21 @@ impl Viewport {
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
 
-        let surface = gpu
-            .instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .map_err(|e| JsValue::from_str(&format!("creating a surface for the canvas: {e}")))?;
+        // The GL phase of `Gpu::acquire` already built a surface for the canvas
+        // it was given, because that is where its adapter came from. Take it
+        // rather than build a second one on the same element.
+        let surface = gpu.surface_for(canvas).map_err(|e| JsValue::from_str(&e))?;
+        // A WebGL2 device presents to the one canvas its adapter was made
+        // from, so a surface on any other canvas has no format in common with
+        // it. Caught here because `configure_surface` would index an empty
+        // capability list instead of saying so.
+        if surface.get_capabilities(&gpu.adapter).formats.is_empty() {
+            return Err(JsValue::from_str(if gpu.is_webgl() {
+                "WebGL2 draws one canvas per device; a second viewport needs WebGPU"
+            } else {
+                "this canvas has no surface format in common with the adapter"
+            }));
+        }
         let surface = configure_surface(&gpu.adapter, &gpu.device, surface, width, height);
 
         let shared = replica.inner();
@@ -219,7 +232,7 @@ impl Viewport {
                 .try_borrow_mut()
                 .map_err(|_| JsValue::from_str("this replica is busy drawing another canvas"))?;
             let render = inner
-                .ensure_renderer(surface.render_format)
+                .ensure_renderer(gpu, surface.render_format)
                 .map_err(|e| JsValue::from_str(&e))?;
             (
                 StencilTarget::new_for_pipelines(
@@ -277,9 +290,11 @@ impl Viewport {
         let Ok(replica) = inner.replica.try_borrow() else {
             return;
         };
-        let device = replica.device().clone();
+        let device = replica.device().cloned();
         drop(replica);
-        inner.surface.resize(&device, width, height);
+        if let Some(device) = device {
+            inner.surface.resize(&device, width, height);
+        }
     }
 
     /// Points the camera at `(center_x, center_y)` in world units, framing
