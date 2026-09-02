@@ -7,7 +7,7 @@ use catchlight_core::Model;
 use crate::asset::CatchlightModel;
 use crate::components::{CatchlightCamera, CatchlightPuppet};
 use crate::plugin::CatchlightSettings;
-use crate::prepare::{CatchlightRenderState, RendererKey};
+use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, PuppetKey};
 
 /// Render-world half of a `CatchlightPuppet`, retained across frames and
 /// refilled in place by `extract_puppets`.
@@ -47,7 +47,8 @@ impl bevy::render::sync_component::SyncComponent for CatchlightPuppet {
 /// render world what this frame needs.
 ///
 /// This is where a puppet reaches its render cache. Bevy's `extract` is
-/// catchlight's [`RenderCache::refresh`](catchlight_wgpu::RenderCache::refresh):
+/// catchlight's
+/// [`RenderCache::refresh_puppet`](catchlight_wgpu::RenderCache::refresh_puppet):
 /// the frame's deforms are uploaded and the drawables collected here, against
 /// the live puppet, because **the main world is paused and nothing else may
 /// read it**. Under bevy's pipelined rendering the next main-world frame runs
@@ -76,7 +77,6 @@ pub(crate) fn extract_puppets(
     // Copied in here so `prepare_puppets`, which has no main-world access,
     // builds caches the way the app asked for.
     inner.options = settings.prepare;
-    let options = inner.options;
     let formats = inner.formats();
 
     for (puppet_component, transform, visibility, render_entity) in query.iter() {
@@ -95,12 +95,37 @@ pub(crate) fn extract_puppets(
         // catches up right here.
         if visible {
             for format in &formats {
-                let key = RendererKey {
+                let key = PuppetKey {
                     entity: render_entity.id(),
                     format: *format,
                 };
-                if let Some(gpu) = inner.gpus.get_mut(&key) {
-                    gpu.refresh(asset.shared(), puppet, options);
+                let CatchlightRenderInner { gpus, puppets, .. } = &mut *inner;
+                let Some(state) = puppets.get_mut(&key) else {
+                    continue;
+                };
+                let Some(model_gpu) = gpus.get_mut(&state.model) else {
+                    continue;
+                };
+                // The entity swapped models between this extract and the last
+                // prepare: its deform set and its list belong to the cache it
+                // is leaving. `prepare_puppets` rebinds it at the end of this
+                // frame and the next extract collects against the new cache.
+                if !Arc::ptr_eq(&model_gpu.model, asset.shared()) {
+                    state.collected = false;
+                    continue;
+                }
+                match model_gpu.cache.refresh_puppet(
+                    &mut model_gpu.renderer,
+                    &model_gpu.model,
+                    puppet,
+                    state.deform_set,
+                    &mut state.render_list,
+                ) {
+                    Ok(()) => state.collected = true,
+                    Err(error) => {
+                        tracing::error!("catchlight: refreshing the render cache failed: {error}");
+                        state.collected = false;
+                    }
                 }
             }
         }

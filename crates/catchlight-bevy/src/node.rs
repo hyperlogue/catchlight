@@ -6,7 +6,7 @@ use bevy::render::{
 };
 
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
-use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, RendererKey};
+use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelKey};
 
 /// Render system that draws every visible `ExtractedPuppet` onto the camera's
 /// color attachment. Runs in the Core2d render schedule after the built-in main
@@ -57,6 +57,7 @@ pub(crate) fn catchlight_2d_pass(
     // Destructure for disjoint borrows on the fields.
     let CatchlightRenderInner {
         gpus,
+        puppets,
         formats,
         size,
         missing_format_warned,
@@ -88,45 +89,67 @@ pub(crate) fn catchlight_2d_pass(
     let color_texture: &wgpu::Texture = target.main_texture();
 
     // Deterministic draw order: ascending entity z, so a higher-z
-    // puppet composites in front (bevy 2D convention). `gpus` is
+    // puppet composites in front (bevy 2D convention). `puppets` is
     // a HashMap, so equal-z puppets need the Entity tie-break or their
     // order would follow hash iteration order and flicker across
-    // runs. Hidden puppets are skipped.
-    let mut order: Vec<(Entity, f32)> = gpus
-        .keys()
-        .filter_map(|key| {
-            if key.format != view_format {
+    // runs. Hidden puppets are skipped, and so is one whose list was not
+    // collected at extract — a cache prepared this frame has not been
+    // collected into yet, so its puppets draw from the next frame on rather
+    // than drawing a list whose slots name another cache's resources.
+    let mut order: Vec<(ModelKey, f32, Entity)> = puppets
+        .iter()
+        .filter_map(|(key, puppet)| {
+            if key.format != view_format || !puppet.collected {
                 return None;
             }
             let ex = world.get::<ExtractedPuppet>(key.entity)?;
-            ex.visible.then_some((key.entity, ex.z))
+            ex.visible.then_some((puppet.model, ex.z, key.entity))
         })
         .collect();
-    order.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    order.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
 
-    for (entity, _z) in &order {
-        let key = RendererKey {
-            entity: *entity,
-            format: view_format,
-        };
-        let Some(gpu) = gpus.get_mut(&key) else {
+    // One frame call per renderer, and a renderer holds one model. Every
+    // puppet of a model therefore draws in one `render_lists_ext`: the
+    // frame's instance and part-uniform cursors are monotonic across the
+    // whole call, and a second call on the same renderer inside this submit
+    // would reset them and rewrite offsets the first call's draws read.
+    //
+    // So z decides the order **within** a model, and models are ordered by
+    // their backmost puppet. Two models whose puppets interleave in z
+    // therefore do not interleave on screen; cross-model z-interleaving
+    // needs one renderer over both models' slots and is not what this is.
+    let mut groups: Vec<(ModelKey, Vec<Entity>)> = Vec::new();
+    for (model, _z, entity) in &order {
+        match groups.iter_mut().find(|(key, _)| key == model) {
+            Some((_, members)) => members.push(*entity),
+            None => groups.push((*model, vec![*entity])),
+        }
+    }
+
+    let mut lists: Vec<&catchlight_wgpu::RenderList> = Vec::new();
+    for (model_key, members) in &groups {
+        let Some(gpu) = gpus.get_mut(model_key) else {
             continue;
         };
-        // Collected at extract, against this cache. A cache prepared this
-        // frame has not been collected into yet, so it draws from the next
-        // frame on rather than drawing a list whose slots name another
-        // cache's resources.
-        if !gpu.collected {
+        lists.clear();
+        lists.extend(members.iter().filter_map(|entity| {
+            puppets
+                .get(&crate::prepare::PuppetKey {
+                    entity: *entity,
+                    format: view_format,
+                })
+                .map(|puppet| &puppet.render_list)
+        }));
+        if lists.is_empty() {
             continue;
         }
-        let (renderer, render_list) = (&mut gpu.renderer, &gpu.render_list);
 
         // Per-renderer camera write: each view records its own
         // dynamic offset, so two marked cameras in one submit don't
         // alias on a shared offset-0 write.
-        renderer.update_camera(view_proj);
-        if let Err(e) = renderer.render_list_ext(
-            render_list,
+        gpu.renderer.update_camera(view_proj);
+        if let Err(e) = gpu.renderer.render_lists_ext(
+            &lists,
             encoder,
             color_view,
             &res.stencil,
