@@ -40,6 +40,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             parent: root,
             kind: NodeKindArg::Group,
             name: Some("probe".into()),
+            node: None,
         },
     ) {
         ResponseBody::Node { node, .. } => node,
@@ -56,6 +57,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             max: 1.0,
             default: 0.0,
             key_positions: Vec::new(),
+            param: None,
         },
     ) {
         ResponseBody::Param { param } => param,

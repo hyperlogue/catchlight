@@ -89,6 +89,11 @@ export type Command =
     parent: NodeId,
     kind: NodeKindArg,
     name: string | null,
+    /**
+     * The Id to create it under. Absent generates one; an Id the model
+     * already carries is [`ErrorCode::DuplicateId`].
+     */
+    node?: NodeId | null,
   }
   | {
     "cmd": "node_set",
@@ -231,6 +236,11 @@ export type Command =
     session: SessionId,
     node: NodeId,
     path: string,
+    /**
+     * The Id to create it under. Absent generates one; an Id the model
+     * already carries is [`ErrorCode::DuplicateId`].
+     */
+    texture?: TexId | null,
   }
   | {
     "cmd": "texture_list",
@@ -244,6 +254,11 @@ export type Command =
     max: number,
     default: number,
     key_positions: Array<number>,
+    /**
+     * The Id to create it under. Absent generates one; an Id the model
+     * already carries is [`ErrorCode::DuplicateId`].
+     */
+    param?: ParamId | null,
   }
   | {
     "cmd": "param_list",
@@ -512,6 +527,11 @@ export type Command =
     frequency: number | null,
     angle_damping: number | null,
     length_damping: number | null,
+    /**
+     * The Id to create it under. Absent generates one; an Id the model
+     * already carries is [`ErrorCode::DuplicateId`].
+     */
+    node?: NodeId | null,
   }
   | {
     "cmd": "undo",
@@ -742,6 +762,7 @@ export type ErrorCode =
   | "no_save_path"
   | "unknown_seam"
   | "unknown_slot"
+  | "duplicate_id"
   | "duplicate_seam"
   | "duplicate_slot"
   | "weld_slot_mismatch"

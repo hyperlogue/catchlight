@@ -78,6 +78,7 @@ impl Fixture {
             parent: root.clone(),
             kind: NodeKindArg::Group,
             name: Some("Torso".into()),
+            node: None,
         });
         let body_part = fixture.part(&group, "Body");
         let skirt = fixture.part(&group, "Skirt");
@@ -90,6 +91,7 @@ impl Fixture {
             max: 1.0,
             default: 0.0,
             key_positions: Vec::new(),
+            param: None,
         }) {
             ResponseBody::Param { param } => param,
             other => panic!("expected Param, got {other:?}"),
@@ -191,6 +193,7 @@ impl Fixture {
             parent: parent.clone(),
             kind: NodeKindArg::Part,
             name: Some(name.into()),
+            node: None,
         });
         self.step(Command::MeshSet {
             session: self.session,
@@ -491,6 +494,7 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
         parent: f.group.clone(),
         kind: NodeKindArg::Composite,
         name: Some("Face".into()),
+        node: None,
     });
     f.step(Command::NodeSet {
         session,
@@ -505,6 +509,7 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
         parent: f.group.clone(),
         kind: NodeKindArg::MeshGroup,
         name: Some("Cloth".into()),
+        node: None,
     });
     f.step(Command::NodeSet {
         session,
@@ -689,6 +694,7 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
         max: 1.0,
         default: 0.0,
         key_positions: Vec::new(),
+        param: None,
     }) {
         ResponseBody::Param { param } => param,
         other => panic!("expected Param, got {other:?}"),

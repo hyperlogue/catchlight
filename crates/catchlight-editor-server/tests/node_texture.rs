@@ -97,6 +97,7 @@ impl Fixture {
             parent: NodeId::new("root").unwrap(),
             kind: NodeKindArg::Part,
             name: None,
+            node: None,
         }) {
             ResponseBody::Node { node, .. } => node,
             other => panic!("{other:?}"),
@@ -105,6 +106,7 @@ impl Fixture {
             session,
             node: node.clone(),
             path: key.to_string(),
+            texture: None,
         }) {
             ResponseBody::Texture { texture, .. } => texture,
             other => panic!("{other:?}"),
@@ -240,6 +242,7 @@ fn clearing_on_a_node_that_is_not_a_part_is_ignored() {
         parent: NodeId::new("root").unwrap(),
         kind: NodeKindArg::Group,
         name: None,
+        node: None,
     }) {
         ResponseBody::Node { node, .. } => node,
         other => panic!("{other:?}"),

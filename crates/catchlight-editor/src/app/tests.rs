@@ -306,6 +306,7 @@ fn add_param(app: &mut App, session: SessionId, name: &str) -> ParamId {
         max: 1.0,
         default: 0.0,
         key_positions: Vec::new(),
+        param: None,
     }) {
         Reply::Ok {
             body: ResponseBody::Param { param },
@@ -531,6 +532,7 @@ fn the_physics_inspector_aims_a_driver_at_both_of_its_params() {
         frequency: None,
         angle_damping: None,
         length_damping: None,
+        node: None,
     }) {
         Reply::Ok {
             body: ResponseBody::Node { node, .. },
@@ -883,6 +885,7 @@ fn an_edit_that_deletes_no_texture_is_not_held() {
         parent,
         kind: catchlight_editor_protocol::NodeKindArg::Group,
         name: None,
+        node: None,
     }) {
         Reply::Ok {
             body: ResponseBody::Node { node, .. },

@@ -187,6 +187,10 @@ enum NodeCmd {
         kind: String,
         #[arg(long)]
         name: Option<String>,
+        /// The Id to create it under. Without one the editor draws a free
+        /// one; an Id the model already carries is refused.
+        #[arg(long)]
+        id: Option<NodeId>,
     },
     /// Change fields on a node.
     Set {
@@ -391,7 +395,13 @@ enum WeldCmd {
 enum TextureCmd {
     /// Give a PNG/TGA file to a part: the texture is added and the part draws
     /// it in one edit. A texture the part was the last to draw goes with it.
-    Add { node: NodeId, path: String },
+    Add {
+        node: NodeId,
+        path: String,
+        /// The Id to create it under; without one the editor draws a free one.
+        #[arg(long)]
+        id: Option<TexId>,
+    },
     /// List the session's textures.
     List,
 }
@@ -410,6 +420,9 @@ enum ParamCmd {
         default: Option<f32>,
         #[arg(long = "keys", allow_hyphen_values = true)]
         key_positions: Option<String>,
+        /// The Id to create it under; without one the editor draws a free one.
+        #[arg(long)]
+        id: Option<ParamId>,
     },
     /// List params (with key positions + binding counts).
     List,
@@ -590,6 +603,9 @@ enum PhysicsCmd {
         angle_damping: Option<f32>,
         #[arg(long = "length-damping", allow_hyphen_values = true)]
         length_damping: Option<f32>,
+        /// The Id to create it under; without one the editor draws a free one.
+        #[arg(long)]
+        id: Option<NodeId>,
     },
     /// Change fields on a physics node. `--kind rigid|spring`,
     /// `--map-mode xy|yx|angle_length|length_angle`.
@@ -820,6 +836,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     max,
                     default,
                     key_positions,
+                    id,
                 } => Command::ParamAdd {
                     session,
                     name: name.clone(),
@@ -831,6 +848,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                         .map(parse_f32_vec)
                         .transpose()?
                         .unwrap_or_default(),
+                    param: id.clone(),
                 },
                 ParamCmd::List => Command::ParamList { session },
                 ParamCmd::Set {
@@ -993,6 +1011,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     frequency,
                     angle_damping,
                     length_damping,
+                    id,
                 } => Command::PhysicsAdd {
                     session,
                     parent: parent.clone(),
@@ -1004,6 +1023,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     frequency: *frequency,
                     angle_damping: *angle_damping,
                     length_damping: *length_damping,
+                    node: id.clone(),
                 },
                 PhysicsCmd::Set {
                     node,
@@ -1278,10 +1298,11 @@ fn build_command(cli: &Cli) -> Result<Command> {
             session: resolve_session(cli)?,
         },
         Cmd::Texture { action } => match action {
-            TextureCmd::Add { node, path } => Command::TextureAdd {
+            TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
                 node: node.clone(),
                 path: path.clone(),
+                texture: id.clone(),
             },
             TextureCmd::List => Command::TextureList {
                 session: resolve_session(cli)?,
@@ -1307,11 +1328,17 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
             session,
             node: node.clone(),
         },
-        NodeCmd::Add { parent, kind, name } => Command::NodeAdd {
+        NodeCmd::Add {
+            parent,
+            kind,
+            name,
+            id,
+        } => Command::NodeAdd {
             session,
             parent: parent.clone(),
             kind: parse_kind(kind)?,
             name: name.clone(),
+            node: id.clone(),
         },
         NodeCmd::Set {
             node,

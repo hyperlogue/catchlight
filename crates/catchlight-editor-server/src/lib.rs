@@ -183,6 +183,7 @@ impl EditorError {
                 ModelError::UnknownTexture => ErrorCode::NoTexture,
                 ModelError::UnknownSeam => ErrorCode::UnknownSeam,
                 ModelError::UnknownSlot => ErrorCode::UnknownSlot,
+                ModelError::DuplicateId(_) => ErrorCode::DuplicateId,
                 ModelError::DuplicateSeam(_) => ErrorCode::DuplicateSeam,
                 ModelError::DuplicateSlot(_) => ErrorCode::DuplicateSlot,
                 ModelError::WeldSlotMismatch => ErrorCode::WeldSlotMismatch,
@@ -366,14 +367,39 @@ impl Session {
     }
 
     /// Creation splits the borrow between the model and its Id source.
-    fn add_node(&mut self, parent: &NodeId, node: ModelNode) -> Result<NodeId, EditorError> {
+    ///
+    /// `id` is the Id the request asked for; `None` draws a free one. The
+    /// model refuses a chosen Id it already carries, which is the whole check
+    /// — the charset was validated where the request was decoded.
+    fn add_node(
+        &mut self,
+        parent: &NodeId,
+        id: Option<NodeId>,
+        node: ModelNode,
+    ) -> Result<NodeId, EditorError> {
         let Self { model, hex, .. } = self;
-        Ok(model.add_node(parent, node, hex)?)
+        match id {
+            Some(id) => {
+                model.add_node_with_id(id.clone(), parent, node)?;
+                Ok(id)
+            }
+            None => Ok(model.add_node(parent, node, hex)?),
+        }
     }
 
-    fn add_param(&mut self, param: ModelParam) -> Result<ParamId, EditorError> {
+    fn add_param(
+        &mut self,
+        id: Option<ParamId>,
+        param: ModelParam,
+    ) -> Result<ParamId, EditorError> {
         let Self { model, hex, .. } = self;
-        Ok(model.add_param(param, hex)?)
+        match id {
+            Some(id) => {
+                model.add_param_with_id(id.clone(), param)?;
+                Ok(id)
+            }
+            None => Ok(model.add_param(param, hex)?),
+        }
     }
 
     /// Add `texture` and point `part` at it, in one edit. Hands back the new
@@ -382,6 +408,7 @@ impl Session {
     fn add_texture(
         &mut self,
         part: &NodeId,
+        id: Option<TexId>,
         texture: ModelTexture,
     ) -> Result<(TexId, Vec<TexId>), EditorError> {
         let dropped = self
@@ -390,7 +417,14 @@ impl Session {
             .into_iter()
             .collect();
         let Self { model, hex, .. } = self;
-        Ok((model.add_texture(part, texture, hex)?, dropped))
+        let id = match id {
+            Some(id) => {
+                model.add_texture_with_id(id.clone(), part, texture)?;
+                id
+            }
+            None => model.add_texture(part, texture, hex)?,
+        };
+        Ok((id, dropped))
     }
 
     fn seam_add_generated(&mut self, node: &NodeId) -> Result<SeamId, EditorError> {
@@ -717,6 +751,7 @@ impl Editor {
         self.edit_session(id, |s| {
             let added = s.add_texture(
                 part,
+                None,
                 ModelTexture {
                     encoding,
                     alpha: TextureAlpha::Straight,
@@ -1019,10 +1054,11 @@ impl Editor {
                 parent,
                 kind,
                 name,
+                node: id,
             } => self.edit_session(session, |s| {
                 let node =
                     ModelNode::new(name.unwrap_or_else(|| default_name(kind)), make_kind(kind));
-                let node = s.add_node(&parent, node)?;
+                let node = s.add_node(&parent, id, node)?;
                 s.touch();
                 Ok(ResponseBody::Node {
                     node,
@@ -1249,6 +1285,7 @@ impl Editor {
                 session,
                 node,
                 path,
+                texture: id,
             } => {
                 // Read outside `edit_session`: the store is not the session's
                 // to borrow, and a failed read must not open an edit.
@@ -1258,6 +1295,7 @@ impl Editor {
                     image_dims(&bytes)?; // validate it decodes
                     let (texture, dropped) = s.add_texture(
                         &node,
+                        id,
                         ModelTexture {
                             encoding: encoding_from_path(&path),
                             alpha: TextureAlpha::Straight,
@@ -1275,21 +1313,25 @@ impl Editor {
                 max,
                 default,
                 key_positions,
+                param: id,
             } => self.edit_session(session, |s| {
                 if !catchlight_core::param_range_is_valid(min, max) {
                     return Err(ModelError::CellOutOfRange.into());
                 }
-                let param = s.add_param(ModelParam {
-                    name: Name::truncated(name),
-                    min,
-                    max,
-                    default,
-                    key_positions: if key_positions.is_empty() {
-                        vec![0.0, 1.0]
-                    } else {
-                        key_positions
+                let param = s.add_param(
+                    id,
+                    ModelParam {
+                        name: Name::truncated(name),
+                        min,
+                        max,
+                        default,
+                        key_positions: if key_positions.is_empty() {
+                            vec![0.0, 1.0]
+                        } else {
+                            key_positions
+                        },
                     },
-                })?;
+                )?;
                 s.touch();
                 Ok(ResponseBody::Param { param })
             }),
@@ -1695,6 +1737,7 @@ impl Editor {
                 frequency,
                 angle_damping,
                 length_damping,
+                node: id,
             } => self.edit_session(session, |s| {
                 let phys_kind = parse_pendulum_kind(&kind)
                     .ok_or_else(|| EditorError::unknown("pendulum kind", &kind))?;
@@ -1719,7 +1762,7 @@ impl Editor {
                     name.unwrap_or_else(|| "Physics".into()),
                     ModelNodeKind::SimplePhysics(phys),
                 );
-                let node = s.add_node(&parent, node)?;
+                let node = s.add_node(&parent, id, node)?;
                 s.model.set_physics_targets(&node, targets)?;
                 s.touch();
                 Ok(ResponseBody::Node {
@@ -2367,6 +2410,7 @@ mod tests {
                 parent: NodeId::new("root").unwrap(),
                 kind: NodeKindArg::Group,
                 name: None,
+                node: None,
             },
         )));
         match lock(&seen).as_slice() {
@@ -2391,6 +2435,7 @@ mod tests {
                 parent: NodeId::new("root").unwrap(),
                 kind: NodeKindArg::Group,
                 name: None,
+                node: None,
             },
         )));
         assert!(
@@ -2425,6 +2470,7 @@ mod tests {
                     parent: NodeId::new("root").unwrap(),
                     kind: NodeKindArg::Group,
                     name: None,
+                    node: None,
                 },
             ))
         };
@@ -2740,6 +2786,7 @@ mod tests {
                 parent: root,
                 kind: NodeKindArg::Group,
                 name: Some("A".into()),
+                node: None,
             },
         ))) {
             ResponseBody::Node { node, .. } => node,
@@ -2816,6 +2863,7 @@ mod tests {
                 parent: root,
                 kind: NodeKindArg::Part,
                 name: None,
+                node: None,
             },
         ))) {
             ResponseBody::Node { node, .. } => node,
@@ -2932,6 +2980,7 @@ mod tests {
                 parent: root,
                 kind: NodeKindArg::Part,
                 name: None,
+                node: None,
             },
         ))) {
             ResponseBody::Node { node, .. } => node,
@@ -2985,6 +3034,7 @@ mod tests {
                     parent: root.clone(),
                     kind: NodeKindArg::Group,
                     name: None,
+                    node: None,
                 },
             ));
         }
@@ -3026,6 +3076,7 @@ mod tests {
                 parent: a.root.id.clone(),
                 kind: NodeKindArg::Group,
                 name: None,
+                node: None,
             },
         ));
         let c = ed.doc_snapshot(s).unwrap();
