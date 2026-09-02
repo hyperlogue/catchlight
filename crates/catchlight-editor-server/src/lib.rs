@@ -35,6 +35,11 @@
 //! - **The undo budget counts shared bytes once.** See [`History`]: 64
 //!   snapshots of one model hold its textures once, not 64 times.
 //!
+//! - **Each session draws its own Ids.** See [`session_hex`]: the seed comes
+//!   from the [`SessionId`], so two documents open at once and edited the same
+//!   way do not name their new nodes identically — while replaying a script
+//!   against a fresh editor still rebuilds the same model, Ids included.
+//!
 //! - **One render cache per previewed session.** See [`preview`]: a cache's
 //!   slots name GPU state inside the one warm renderer, so switching the
 //!   previewed session re-prepares it.
@@ -83,7 +88,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
-use catchlight_core::id::{Name, SeededHex};
+use catchlight_core::id::{HexSource as _, Name, SeededHex};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::Vec2;
 use catchlight_core::{
@@ -195,10 +200,33 @@ impl EditorError {
     }
 }
 
+/// What every session's Id seed is derived from. Fixed, so a given
+/// [`SessionId`] always draws the same sequence.
+const ID_SEED: u32 = 0x1d5e_ed01;
+
+/// The Id source for one session, seeded from its [`SessionId`].
+///
+/// **Deterministic and per-session, both on purpose.** Deterministic because a
+/// test that pins a generated Id has to keep passing, and because a model
+/// built by replaying a recorded script should come out byte-identical.
+/// Per-session because uniqueness is checked *within* a model: two sessions
+/// sharing one seed mint the same Ids for the same edits, so a part copied
+/// between them collides on arrival and an addon extracted from one names
+/// something in the other by accident.
+///
+/// The seed is drawn *by* a `SeededHex` rather than mixed here, so consecutive
+/// session ids land far apart in the sequence instead of one Weyl step apart —
+/// which is what adding the id to the seed would have done, making session 2's
+/// first Id session 1's second.
+fn session_hex(id: SessionId) -> SeededHex {
+    SeededHex::new(SeededHex::new(ID_SEED ^ id.0 as u32).next_bits())
+}
+
 struct Session {
     model: Model,
-    /// Where generated Ids come from. Seeded per session so a session's Ids
-    /// are reproducible; uniqueness is the model's job, not the seed's.
+    /// Where generated Ids come from. See [`session_hex`]: seeded from the
+    /// session's own Id, so two sessions never mint the same one for the same
+    /// edits. Uniqueness within a model is still the model's job.
     hex: SeededHex,
     title: String,
     /// The storage key this session was opened from / last saved to, if any.
@@ -347,10 +375,10 @@ impl History {
 }
 
 impl Session {
-    fn new(model: Model, title: String, file: Option<String>) -> Self {
+    fn new(id: SessionId, model: Model, title: String, file: Option<String>) -> Self {
         Self {
             model,
-            hex: SeededHex::new(0x1d5e_ed01),
+            hex: session_hex(id),
             title,
             file,
             rev: 0,
@@ -689,7 +717,7 @@ impl Editor {
     ) -> Result<SessionId, EditorError> {
         let model = Model::from_clm_bytes(bytes)?;
         let id = self.alloc_id();
-        self.insert_session(id, Session::new(model, title.into(), None));
+        self.insert_session(id, Session::new(id, model, title.into(), None));
         Ok(id)
     }
 
@@ -908,14 +936,14 @@ impl Editor {
             Command::SessionNew { name } => {
                 let id = self.alloc_id();
                 let title = name.unwrap_or_else(|| format!("untitled-{}", id.0));
-                self.insert_session(id, Session::new(Model::new(), title, None));
+                self.insert_session(id, Session::new(id, Model::new(), title, None));
                 Ok(ResponseBody::Session { session: id })
             }
             Command::SessionOpen { path } => {
                 let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
                 let id = self.alloc_id();
                 let title = key_stem(&path);
-                self.insert_session(id, Session::new(model, title, Some(path)));
+                self.insert_session(id, Session::new(id, model, title, Some(path)));
                 Ok(ResponseBody::Session { session: id })
             }
             Command::SessionImport { manifest_path } => {
@@ -938,7 +966,7 @@ impl Editor {
                 } else {
                     manifest.name.clone()
                 };
-                self.insert_session(id, Session::new(model, title, None));
+                self.insert_session(id, Session::new(id, model, title, None));
                 Ok(ResponseBody::Session { session: id })
             }
             Command::ManifestRequirements { manifest_path } => {
