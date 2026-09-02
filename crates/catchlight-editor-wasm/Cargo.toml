@@ -42,15 +42,5 @@ web-sys = { workspace = true, features = [
     "console",
 ] }
 
-# The workspace forbids `unsafe_code`; this crate denies it instead, for one
-# audited exception. wgpu 29 exposes no safe way to build the display handle
-# `wgpu_core::Instance::create_surface` requires, and without it the WebGL2
-# fallback cannot create a canvas surface at all. See `WebDisplay` in
-# `src/gpu.rs`; the clippy denies below are the workspace's, verbatim.
-[lints.rust]
-unsafe_code = "deny"
-
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
+[lints]
+workspace = true
