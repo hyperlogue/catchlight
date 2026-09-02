@@ -436,6 +436,7 @@ export class FakeReplica implements WasmReplica {
  */
 function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | undefined {
   if (tree.id === node) {
+    const drawn = tree.kind === "part" || tree.kind === "composite";
     return {
       id: tree.id,
       kind: tree.kind,
@@ -447,6 +448,19 @@ function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | und
       z_order: tree.z_order,
       enabled: tree.enabled,
       lock_to_root: false,
+      ...(drawn
+        ? {
+            opacity: 1,
+            blend_mode: "Normal",
+            tint: [1, 1, 1] as [number, number, number],
+            screen_tint: [0, 0, 0] as [number, number, number],
+            mask_threshold: 0.5,
+          }
+        : {}),
+      ...(tree.kind === "composite" ? { propagate_meshgroup: false } : {}),
+      ...(tree.kind === "mesh_group"
+        ? { mg_dynamic: false, mg_translate_children: true }
+        : {}),
     };
   }
   for (const child of tree.children) {
@@ -531,7 +545,6 @@ export function fakeWasm(): FakeModule {
             made.failNextAcquire = undefined;
             return Promise.reject(new Error(failure));
           }
-    const drawn = tree.kind === "part" || tree.kind === "composite";
           gpu.acquiredFrom.push(canvas);
           return Promise.resolve(gpu);
         },
@@ -543,19 +556,6 @@ export function fakeWasm(): FakeModule {
   return made;
 }
 
-      ...(drawn
-        ? {
-            opacity: 1,
-            blend_mode: "Normal",
-            tint: [1, 1, 1] as [number, number, number],
-            screen_tint: [0, 0, 0] as [number, number, number],
-            mask_threshold: 0.5,
-          }
-        : {}),
-      ...(tree.kind === "composite" ? { propagate_meshgroup: false } : {}),
-      ...(tree.kind === "mesh_group"
-        ? { mg_dynamic: false, mg_translate_children: true }
-        : {}),
 /**
  * A backend whose every step a test drives by hand.
  *
