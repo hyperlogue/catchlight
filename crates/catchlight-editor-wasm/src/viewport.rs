@@ -34,6 +34,15 @@
 //!   editor's habit of keeping a single canvas mounted is now a convenience
 //!   rather than the constraint it was on the WebGL2 tier (see [`Gpu`]).
 //!
+//! - **[`readback`] is the one asynchronous entry, and the loop cannot tell
+//!   it happened.** It draws the current frame again, at the timestamp the
+//!   loop last used so nothing is advanced, and copies the surface texture out
+//!   in the same submission; only the buffer mapping is awaited. It exists
+//!   because a headless Chromium holding a WebGPU device never composites the
+//!   canvas — a screenshot of one is blank while the picture is correct — so
+//!   the smoke test has no other way to see what was drawn. Nothing in the
+//!   editor calls it, and it starts, stops and invalidates nothing.
+//!
 //! - **[`start`] and [`stop`] are repeatable and idempotent.** React mounts,
 //!   unmounts and remounts an effect — StrictMode does it deliberately on every
 //!   mount — so the pair has to survive being run twice with nothing left
@@ -61,6 +70,7 @@
 //!   animations at twice the rate.
 //!
 //! [`invalidate`]: Viewport::invalidate
+//! [`readback`]: Viewport::readback
 //! [`start`]: Viewport::start
 //! [`stop`]: Viewport::stop
 //! [`Gpu`]: crate::Gpu
@@ -109,6 +119,9 @@ struct Inner {
     camera: Camera,
     size: (u32, u32),
     dirty: bool,
+    /// The animation-frame timestamp the last frame drew at, so a readback can
+    /// redraw the same one rather than inventing a clock of its own.
+    last_ms: f64,
 }
 
 impl Inner {
@@ -120,7 +133,35 @@ impl Inner {
         // Cleared before the work, not after: a command that lands while this
         // frame is in flight must leave the viewport stale again.
         self.dirty = false;
+        self.last_ms = now_ms;
 
+        match self.draw(now_ms, Copy::No)? {
+            // A surface that will not hand over a texture is not an error: the
+            // canvas was resized, or the tab was hidden and came back. `draw`
+            // reconfigured it; stay stale so the next frame tries again.
+            Drawn::NoTexture => {
+                self.dirty = true;
+                Ok(false)
+            }
+            Drawn::Rendered(_) => Ok(true),
+        }
+    }
+
+    /// Draws the current frame again and copies it out of the surface.
+    ///
+    /// At the timestamp the loop last drew at, so nothing is advanced: this
+    /// reads what is on screen rather than a frame of its own.
+    fn capture(&mut self) -> Result<Capture, String> {
+        match self.draw(self.last_ms, Copy::Yes)? {
+            Drawn::Rendered(Some(capture)) => Ok(capture),
+            _ => Err("the surface handed over no texture to read back; \
+                 the canvas was resized, or the tab is hidden"
+                .to_string()),
+        }
+    }
+
+    /// One frame into the surface texture, and a copy of it when asked.
+    fn draw(&mut self, now_ms: f64, copy: Copy) -> Result<Drawn, String> {
         let (width, height) = self.size;
         let aspect = width as f32 / height.max(1) as f32;
         let view_proj =
@@ -140,15 +181,14 @@ impl Inner {
             self.dirty = true;
         }
 
-        // A surface that will not hand over a texture is not an error: the
+        // A surface that will not hand over a texture is not an error here: the
         // canvas was resized, or the tab was hidden and came back. Reconfigure
-        // and stay stale so the next frame tries again.
+        // and let the caller decide what that means.
         let Some((frame, view)) = self.surface.acquire() else {
             if let Some(device) = replica.device() {
                 self.surface.reconfigure(device);
             }
-            self.dirty = true;
-            return Ok(false);
+            return Ok(Drawn::NoTexture);
         };
 
         let render = replica
@@ -182,11 +222,167 @@ impl Inner {
             height,
             Some(CLEAR),
         );
+        // Recorded into the same encoder as the pass above, so what is read
+        // back is this frame and not the one before it.
+        let capture = match copy {
+            Copy::Yes => Some(Capture::record(
+                &render.renderer.device,
+                &mut encoder,
+                &frame.texture,
+                width,
+                height,
+            )),
+            Copy::No => None,
+        };
         render.renderer.queue.submit(Some(encoder.finish()));
         frame.present();
         result.map_err(|e| e.to_string())?;
-        Ok(true)
+        Ok(Drawn::Rendered(capture))
     }
+}
+
+/// Whether a draw also copies the frame out. Two states rather than a `bool`
+/// because the argument is read at the call site and `true` says nothing.
+#[derive(Clone, Copy)]
+enum Copy {
+    Yes,
+    No,
+}
+
+/// What a draw did.
+enum Drawn {
+    /// The surface refused a texture; it has been reconfigured.
+    NoTexture,
+    /// A frame reached the canvas, with the copy of it that was asked for.
+    Rendered(Option<Capture>),
+}
+
+/// A frame's pixels on their way back from the GPU: a buffer with the copy
+/// already recorded into the frame's own submission, and what it takes to read
+/// it as RGBA.
+struct Capture {
+    buffer: wgpu::Buffer,
+    width: u32,
+    height: u32,
+    /// The buffer's row stride, which `copyTextureToBuffer` rounds up to 256.
+    bytes_per_row: u32,
+    /// Whether the surface's channel order is BGRA. `bgra8unorm` is what a
+    /// real GPU usually prefers and `rgba8unorm` is what llvmpipe reports, so
+    /// which one this is says nothing about the picture and everything about
+    /// the machine.
+    swap_rb: bool,
+}
+
+impl Capture {
+    /// Records the copy into `encoder`, to be submitted with the pass that
+    /// filled `texture`.
+    fn record(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Capture {
+        let bytes_per_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("catchlight viewport readback"),
+            size: u64::from(bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        Capture {
+            buffer,
+            width,
+            height,
+            bytes_per_row,
+            swap_rb: matches!(
+                texture.format(),
+                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+            ),
+        }
+    }
+
+    /// Waits for the copy, unpads it, and hands JavaScript
+    /// `{ width, height, rgba }`.
+    async fn finish(self) -> Result<JsValue, JsValue> {
+        map_read(&self.buffer).await?;
+        let padded = self.buffer.slice(..).get_mapped_range();
+        let row = self.width as usize * 4;
+        let mut rgba = Vec::with_capacity(row * self.height as usize);
+        for y in 0..self.height as usize {
+            let at = y * self.bytes_per_row as usize;
+            let Some(line) = padded.get(at..at + row) else {
+                return Err(JsValue::from_str("the readback buffer is short of pixels"));
+            };
+            if self.swap_rb {
+                for &[b, g, r, a] in line.as_chunks::<4>().0 {
+                    rgba.extend_from_slice(&[r, g, b, a]);
+                }
+            } else {
+                rgba.extend_from_slice(line);
+            }
+        }
+        drop(padded);
+        self.buffer.unmap();
+
+        let frame = js_sys::Object::new();
+        js_sys::Reflect::set(&frame, &"width".into(), &JsValue::from(self.width))?;
+        js_sys::Reflect::set(&frame, &"height".into(), &JsValue::from(self.height))?;
+        js_sys::Reflect::set(
+            &frame,
+            &"rgba".into(),
+            &js_sys::Uint8Array::from(rgba.as_slice()),
+        )?;
+        Ok(frame.into())
+    }
+}
+
+/// `map_async` as a future, through a promise the browser resolves.
+///
+/// `wgpu`'s mapping callback is not a future and this crate carries no
+/// executor to make one out of it; a promise is the one thing both sides
+/// already speak. On the web nothing polls the device — the browser resolves
+/// the mapping while the future is parked.
+async fn map_read(buffer: &wgpu::Buffer) -> Result<(), JsValue> {
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                // The caller is the browser and a throw here has nowhere to
+                // go, so the settle is dropped rather than unwrapped.
+                let settled = match result {
+                    Ok(()) => resolve.call0(&JsValue::NULL),
+                    Err(e) => reject.call1(
+                        &JsValue::NULL,
+                        &JsValue::from_str(&format!("mapping the readback buffer failed ({e})")),
+                    ),
+                };
+                drop(settled);
+            });
+    });
+    wasm_bindgen_futures::JsFuture::from(promise).await?;
+    Ok(())
 }
 
 /// The frame callback, shared between the viewport and the browser's schedule.
@@ -231,7 +427,13 @@ impl Viewport {
                 "this canvas has no surface format in common with the adapter",
             ));
         }
-        let surface = configure_surface(&gpu.adapter, &gpu.device, surface, width, height);
+        let mut surface = configure_surface(&gpu.adapter, &gpu.device, surface, width, height);
+        // `configure_surface` asks for a render attachment and nothing else.
+        // `COPY_SRC` beside it is what lets [`Viewport::readback`] copy the
+        // frame it just drew, and it costs a surface that is never read back
+        // nothing.
+        surface.config.usage |= wgpu::TextureUsages::COPY_SRC;
+        surface.reconfigure(&gpu.device);
 
         let shared = replica.inner();
         let (stencil, composites) = {
@@ -268,10 +470,42 @@ impl Viewport {
                 },
                 size: (width, height),
                 dirty: true,
+                last_ms: 0.0,
             })),
             tick: Rc::new(RefCell::new(None)),
             pending: Rc::new(Cell::new(None)),
         })
+    }
+
+    /// The frame on the canvas right now, as `{ width, height, rgba }`.
+    ///
+    /// **The one asynchronous entry after [`Gpu::acquire`], and it exists for
+    /// the browser smoke test.** Nothing in the editor calls it: a viewport's
+    /// contract with the page is synchronous and stays that way, so this
+    /// neither starts, stops nor invalidates anything, and the frame loop
+    /// cannot tell it happened. What it does is draw the current frame once
+    /// more — at the timestamp the loop last used, so the puppet is not
+    /// advanced — and copy the surface texture into a buffer in that same
+    /// submission.
+    ///
+    /// The rendering half is synchronous and happens before this returns; the
+    /// promise is only the buffer being mapped. `rgba` is always RGBA in that
+    /// order, whatever channel order the surface prefers, because the test
+    /// asking has no way to find out and no business caring.
+    ///
+    /// It is what a headless Chromium has instead of a screenshot: that
+    /// configuration never composites the canvas, so the compositor's copy is
+    /// blank while the picture is fine.
+    ///
+    /// [`Gpu::acquire`]: crate::Gpu::acquire
+    pub fn readback(&self) -> Result<js_sys::Promise, JsValue> {
+        let capture = self
+            .inner
+            .try_borrow_mut()
+            .map_err(|_| JsValue::from_str("this viewport is in the middle of a frame"))?
+            .capture()
+            .map_err(|e| JsValue::from_str(&e))?;
+        Ok(wasm_bindgen_futures::future_to_promise(capture.finish()))
     }
 
     /// Marks the picture stale. At most one frame follows, however many times

@@ -153,6 +153,15 @@ export interface WasmReplica extends WasmOwned {
   bounds(): Float32Array | undefined;
 }
 
+/** One frame of a canvas, as the renderer copied it back off the GPU. */
+export interface WasmFrame {
+  /** Device pixels, which is the canvas's backing store and not its CSS size. */
+  width: number;
+  height: number;
+  /** `width * height * 4` bytes, RGBA in that order whatever the surface prefers. */
+  rgba: Uint8Array;
+}
+
 /**
  * The renderer's surface. It owns the frame loop; this side owns the element,
  * because only the page knows how big it is.
@@ -167,6 +176,15 @@ export interface WasmViewport extends WasmOwned {
   start(): void;
   /** Cancels it; idempotent, and `start` works again afterwards. */
   stop(): void;
+  /**
+   * The frame on the canvas right now.
+   *
+   * The one asynchronous method here, and it is the browser smoke test's: a
+   * headless Chromium holding a WebGPU device never composites the canvas, so
+   * a screenshot of one is blank while the picture is correct. Nothing in the
+   * editor calls it, and it changes nothing about the loop.
+   */
+  readback(): Promise<WasmFrame>;
 }
 
 /**

@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 
 import { FakeReplica, FakeViewport, ScriptedBackend } from "./fakes.js";
 import { Session } from "./session.js";
-import { Viewport, devicePixelSize } from "./viewport.js";
+import { READBACK, Viewport, devicePixelSize } from "./viewport.js";
 
 /** Just enough of a `ResizeObserverEntry` for the size arithmetic. */
 function entry(parts: {
@@ -221,5 +221,25 @@ describe("the backing store", () => {
 
     viewport.stop();
     browser.restore();
+  });
+});
+
+describe("reading a frame back", () => {
+  test("the canvas carries it while a viewport draws, and not afterwards", async () => {
+    const view = new FakeViewport();
+    view.frame = { width: 2, height: 1, rgba: new Uint8Array(8) };
+    const canvas = {} as HTMLCanvasElement;
+    const viewport = new Viewport(view, canvas);
+
+    // A driver in the page has the element and nothing else, so this is where
+    // it has to be.
+    const read = (canvas as unknown as Record<string, () => Promise<unknown>>)[READBACK];
+    expect(typeof read).toBe("function");
+    expect(await read?.()).toEqual(view.frame);
+
+    // Gone before the renderer is freed: a function reaching a freed viewport
+    // is a trap rather than an error.
+    viewport.dispose();
+    expect((canvas as unknown as Record<string, unknown>)[READBACK]).toBeUndefined();
   });
 });

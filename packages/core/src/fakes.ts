@@ -683,6 +683,12 @@ export class FakeViewport implements WasmViewport {
   freed = 0;
   size: [number, number] | undefined;
   camera: [number, number, number] | undefined;
+  /** What `readback` resolves with. One grey pixel unless a test says more. */
+  frame = { width: 1, height: 1, rgba: new Uint8Array([0x80, 0x80, 0x80, 0xff]) };
+
+  readback(): Promise<{ width: number; height: number; rgba: Uint8Array }> {
+    return Promise.resolve(this.frame);
+  }
 
   start(): void {
     this.started += 1;

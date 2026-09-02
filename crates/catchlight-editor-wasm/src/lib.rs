@@ -20,8 +20,11 @@
 //!   synchronous because [`Editor::handle`] is, and everything a browser reads
 //!   bytes from — a file picker, OPFS, `fetch` — is not. So JS resolves its
 //!   own promises first, [`put_bytes`] the result under a key, and only then
-//!   sends the command naming that key. Nothing in Rust ever awaits, and the
-//!   async lives entirely in the TypeScript layer where the platform APIs are.
+//!   sends the command naming that key. Nothing on the command path awaits,
+//!   and the async lives in the TypeScript layer where the platform APIs are.
+//!   This crate holds exactly two futures, and neither is a command:
+//!   `Gpu::acquire`, once per tab, and `Viewport::readback`, which only the
+//!   browser smoke test calls.
 //!
 //! - **Staged bytes are not a cache.** [`StagedStorage`] holds what was put
 //!   there and nothing else; it never falls back to a network or a disk. A key

@@ -50,10 +50,11 @@ export type {
 } from "./connected.js";
 export { MemoryStorage, NotFoundError, OpfsStorage } from "./storage.js";
 export type { Storage } from "./storage.js";
-export { Viewport, devicePixelSize } from "./viewport.js";
+export { READBACK, Viewport, devicePixelSize } from "./viewport.js";
 export type {
   TextureRequest,
   WasmEditor,
+  WasmFrame,
   WasmGpu,
   WasmModule,
   WasmOwned,
