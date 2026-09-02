@@ -45,7 +45,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, seams/welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
 | `catchlight-import-inochi2d` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
 | `catchlight-clm` | File-level operations on a `.clm`: patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files. Decodes no images. |
-| `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws it. |
+| `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model, one per model serving every puppet of it; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws a frame of them. |
 | `catchlight-bevy` | Bevy integration: components, systems, and a render-graph node. |
 | `catchlight-editor-core` | Authoring tools over a `Model`: `WorkingMesh` (triangulation, automesh) and `Manifest`. Pure, wasm-safe. |
 | `catchlight-editor-protocol` | Wire types: transport-agnostic request/reply/event over newline-delimited JSON, keyed by the model's own Ids. |
@@ -73,8 +73,9 @@ Rust wire types and **is** committed; CI fails if the two disagree.
 # Build, test, lint
 
 CI (`.github/workflows/ci.yml`) runs all but `cargo test` through
-`nix develop -c`, so the local commands are the CI commands; the Rust test
-suite is local-only for now:
+`nix develop -c` — the browser smoke test through `nix develop .#e2e -c`, the
+same shell plus Chromium — so the local commands are the CI commands; the Rust
+test suite is local-only for now:
 
 ```
 cargo deny check
@@ -83,7 +84,7 @@ cargo fmt --all --check
 cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d -p catchlight-editor-server -p catchlight-editor-wasm
 cargo test -p xtask -- --skip fixtures::
 cargo xtask wasm --debug && bun install --frozen-lockfile && bun run typecheck && bun test && bun run --filter catchlight-site build
-cargo build -p catchlight-editor-server -p catchlight-editor-cli && bun run --filter catchlight-site e2e
+cargo build -p catchlight-editor-server -p catchlight-editor-cli && nix develop .#e2e -c bun run --filter catchlight-site e2e
 cargo test --workspace
 ```
 
@@ -135,11 +136,13 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-clm/src/lib.rs` — why the file ops are their own binary,
   and what "no image is decoded" rests on
 - `crates/catchlight-wgpu/src/render_cache.rs` — what `prepare` and `refresh`
-  own, the generation gate, the Idx arena
+  own, the generation gate, the Idx arena, one cache and one renderer for N
+  puppets
 - `crates/catchlight-wgpu/src/collect.rs` — z order, composites, and slots
   rather than Ids
-- `crates/catchlight-wgpu/src/renderer.rs` — buffer writes, submits, camera
-  slots, masking blends, resource sharing, WebGL fallbacks
+- `crates/catchlight-wgpu/src/renderer.rs` — buffer writes, submits, a frame
+  is many lists and a deform set per puppet, camera slots, masking blends,
+  resource sharing, WebGL fallbacks
 - `crates/catchlight-wgpu/src/lib.rs` — on `create_headless_context`, the
   backend and adapter choice; on `create_orthographic_camera_at`, that the
   camera holds no axis flip
@@ -167,19 +170,19 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor-wasm/src/replica.rs` — the revision moves forward
   only, the two ways the document changes and neither is local, pose and
   scratch never reach the model, gizmo math lives here
-- `crates/catchlight-editor-wasm/src/gpu.rs` — one device per tab, WebGL2 is a
-  real fallback
+- `crates/catchlight-editor-wasm/src/gpu.rs` — one device per tab and any
+  number of canvases, why the GL tier is gone, one message for no WebGPU
 - `crates/catchlight-editor-wasm/src/viewport.rs` — who owns the frame loop,
   what `invalidate` promises, motion keeps a frame dirty, GPU state belongs to
-  the replica
+  the replica, `readback` is the one promise after acquire
 - `packages/core/src/backend.ts`, `session.ts`, `in-tab.ts`, `connected.ts`,
   `editor.ts`, `storage.ts`, `viewport.ts` — one seam and where the editor is,
   a send that resolves once the replica caught up, feeds that never overlap,
   bulk over HTTP and never the socket, why a store is not a transport, and
   when a viewport is allowed to idle
 - `apps/site/e2e/run.ts`, `drive.ts` — the browser smoke test: the built site
-  and both backends, why the browser is an argument, and what a flat canvas
-  means
+  and both backends, why the browser is an argument, a WebGPU device on
+  llvmpipe that never composites, and what a flat frame means
 - `packages/react/src/index.ts` — hooks are the primitive, no mirror,
   TypeScript owns gestures and Rust owns what reads the model
 - `packages/editor/src/index.ts` — layout only, theming is CSS variables under
@@ -220,9 +223,9 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 
 # Decisions
 
-- The editor is **web-first**: React over a wasm replica, WebGPU with **WebGL2
-  as a supported editor tier**; the desktop egui app is frozen. The runtime is
-  tier-1 on **Windows**.
+- The editor is **web-first**: React over a wasm replica, **WebGPU-only** (the
+  runtime keeps its WebGL fallback); the desktop egui app is frozen. The
+  runtime is tier-1 on **Windows**.
 - **The editor owns the document; the tab holds a replica.** The `Editor` runs
   in the tab (Pages) or in a local process an agent also drives; the browser
   never mutates its model locally, reads answer from the replica synchronously,
