@@ -57,8 +57,15 @@ export type { ParamSliderRootProps } from "./param-slider.js";
 export { ParamList, ParamListRoot } from "./param-list.js";
 export type { ParamListRootProps } from "./param-list.js";
 
-export { NodeTree, NodeTreeItem, NodeTreeRoot } from "./node-tree.js";
-export type { NodeTreeItemProps, NodeTreeRootProps } from "./node-tree.js";
+export { useNodeActions } from "./node-actions.js";
+export type { DropAt, NodeActions } from "./node-actions.js";
+
+export { NODE_KINDS, NodeTree, NodeTreeActions, NodeTreeItem, NodeTreeRoot } from "./node-tree.js";
+export type {
+  NodeTreeActionsProps,
+  NodeTreeItemProps,
+  NodeTreeRootProps,
+} from "./node-tree.js";
 
 export { SessionList, SessionListRoot } from "./session-list.js";
 export type { SessionListRootProps } from "./session-list.js";

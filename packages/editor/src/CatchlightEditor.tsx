@@ -148,7 +148,8 @@ function Shell(): ReactNode {
             <Documents onSelect={choose} />
             <section data-catchlight-section="" data-grow="">
               <h2 data-catchlight-heading="">Nodes</h2>
-              <NodeTree.Root session={session} />
+              <NodeTree.Actions session={session} onError={failed} />
+              <NodeTree.Root session={session} onError={failed} />
             </section>
           </nav>
           <Stage session={session} view={view} />
