@@ -79,6 +79,11 @@ export type Command =
     session: SessionId,
   }
   | {
+    "cmd": "node_info",
+    session: SessionId,
+    node: NodeId,
+  }
+  | {
     "cmd": "node_add",
     session: SessionId,
     parent: NodeId,
@@ -745,6 +750,10 @@ export type ResponseBody =
     root: TreeNode,
   }
   | {
+    "result": "node_info",
+    node: NodeInfo,
+  }
+  | {
     "result": "status",
     status: StatusInfo,
   }
@@ -827,6 +836,65 @@ export type TreeNode = {
   z_order: number,
   enabled: boolean,
   children: Array<TreeNode>,
+};
+
+/**
+ * One node in full: what [`NodePatch`] can set, plus the three things it
+ * cannot — the node's Id, its kind and its parent.
+ *
+ * **The settable fields carry [`NodePatch`]'s own names.** An inspector reads
+ * a value here, edits it, and sends it straight back in a
+ * [`Command::NodeSet`] under the same key; a field that spelled itself
+ * differently on the way out would be a rename nothing checks.
+ *
+ * A field a node's kind does not carry is absent, the way it is ignored on
+ * the way in: the colour fields reach parts and composites only, `texture`
+ * only a part, `mg_*` only a mesh group. `texture` is also absent on a part
+ * that draws none, which `kind` tells apart from a node that could not have
+ * one.
+ */
+export type NodeInfo = {
+  /**
+   * What the node is addressed by, here and in the file.
+   */
+  id: NodeId,
+  /**
+   * group | part | composite | mesh_group | physics — the same word
+   * [`TreeNode::kind`] carries.
+   */
+  kind: string,
+  /**
+   * Absent on the root, which is the one node with no parent.
+   */
+  parent?: NodeId | null,
+  /**
+   * What a person reads. Free to repeat; nothing is addressed by it.
+   */
+  name: string,
+  translate: [number, number, number],
+  rotate: [number, number, number],
+  scale: [number, number],
+  z_order: number,
+  enabled: boolean,
+  lock_to_root: boolean,
+  opacity?: number | null,
+  /**
+   * Blend-mode name (Normal | Multiply | ColorDodge | …).
+   */
+  blend_mode?: string | null,
+  tint?: [number, number, number] | null,
+  screen_tint?: [number, number, number] | null,
+  mask_threshold?: number | null,
+  /**
+   * The part's albedo texture, absent when it draws none.
+   */
+  texture?: TexId | null,
+  /**
+   * Composite: forward mesh-group deformation to children.
+   */
+  propagate_meshgroup?: boolean | null,
+  mg_dynamic?: boolean | null,
+  mg_translate_children?: boolean | null,
 };
 
 export type TexInfo = {
@@ -973,6 +1041,7 @@ export type ScratchCommand = Extract<Command, { cmd: ScratchCommandTag }>;
 export type ReplicaQueryCommandTag =
   | "check"
   | "node_tree"
+  | "node_info"
   | "texture_list"
   | "param_list"
   | "seams"

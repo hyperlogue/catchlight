@@ -150,6 +150,14 @@ pub enum Command {
     NodeTree {
         session: SessionId,
     },
+    /// Everything an inspector shows for one node: what [`NodePatch`] can set,
+    /// under the same field names, plus the node's kind, its parent and its
+    /// Id. What [`Command::NodeTree`] carries is what a tree row draws;
+    /// this is the rest.
+    NodeInfo {
+        session: SessionId,
+        node: NodeId,
+    },
     NodeAdd {
         session: SessionId,
         parent: NodeId,
@@ -648,6 +656,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("status", CommandKind::ServerQuery),
     ("check", CommandKind::ReplicaQuery),
     ("node_tree", CommandKind::ReplicaQuery),
+    ("node_info", CommandKind::ReplicaQuery),
     ("node_add", CommandKind::Document),
     ("node_set", CommandKind::Document),
     ("node_reparent", CommandKind::Document),
@@ -722,6 +731,7 @@ impl Command {
             Command::Status { .. } => "status",
             Command::Check { .. } => "check",
             Command::NodeTree { .. } => "node_tree",
+            Command::NodeInfo { .. } => "node_info",
             Command::NodeAdd { .. } => "node_add",
             Command::NodeSet { .. } => "node_set",
             Command::NodeReparent { .. } => "node_reparent",
@@ -818,6 +828,7 @@ impl Command {
             | Command::Status { session }
             | Command::Check { session }
             | Command::NodeTree { session }
+            | Command::NodeInfo { session, .. }
             | Command::NodeAdd { session, .. }
             | Command::NodeSet { session, .. }
             | Command::NodeReparent { session, .. }
@@ -1139,6 +1150,12 @@ pub enum ResponseBody {
     Tree {
         root: TreeNode,
     },
+    /// One node in full, as an inspector shows it. Boxed because it is far
+    /// the largest thing a reply carries, and every other reply would pay for
+    /// it in [`Reply`]'s size.
+    NodeInfo {
+        node: Box<NodeInfo>,
+    },
     Status {
         status: StatusInfo,
     },
@@ -1304,6 +1321,61 @@ pub struct TreeNode {
 
 fn yes() -> bool {
     true
+}
+
+/// One node in full: what [`NodePatch`] can set, plus the three things it
+/// cannot — the node's Id, its kind and its parent.
+///
+/// **The settable fields carry [`NodePatch`]'s own names.** An inspector reads
+/// a value here, edits it, and sends it straight back in a
+/// [`Command::NodeSet`] under the same key; a field that spelled itself
+/// differently on the way out would be a rename nothing checks.
+///
+/// A field a node's kind does not carry is absent, the way it is ignored on
+/// the way in: the colour fields reach parts and composites only, `texture`
+/// only a part, `mg_*` only a mesh group. `texture` is also absent on a part
+/// that draws none, which `kind` tells apart from a node that could not have
+/// one.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct NodeInfo {
+    /// What the node is addressed by, here and in the file.
+    pub id: NodeId,
+    /// group | part | composite | mesh_group | physics — the same word
+    /// [`TreeNode::kind`] carries.
+    pub kind: String,
+    /// Absent on the root, which is the one node with no parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<NodeId>,
+    /// What a person reads. Free to repeat; nothing is addressed by it.
+    pub name: String,
+    pub translate: [f32; 3],
+    pub rotate: [f32; 3],
+    pub scale: [f32; 2],
+    pub z_order: f32,
+    pub enabled: bool,
+    pub lock_to_root: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    /// Blend-mode name (Normal | Multiply | ColorDodge | …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_tint: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_threshold: Option<f32>,
+    /// The part's albedo texture, absent when it draws none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<TexId>,
+    /// Composite: forward mesh-group deformation to children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propagate_meshgroup: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mg_dynamic: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mg_translate_children: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1530,6 +1602,101 @@ mod tests {
             }
             .session(),
             None
+        );
+    }
+
+    /// The inspector's whole round trip: read a node, change one number, send
+    /// it back as a `node_set`. That only works while [`NodeInfo`] spells its
+    /// settable fields exactly as [`NodePatch`] reads them, so the reply is
+    /// parsed *as* a patch here — a field renamed on one side and not the
+    /// other stops arriving, and this test says which.
+    #[test]
+    fn a_node_info_reply_parses_as_the_patch_that_would_restore_it() {
+        let info = NodeInfo {
+            id: node("root/part-1"),
+            kind: "part".into(),
+            parent: Some(node("root")),
+            name: "Body".into(),
+            translate: [1.0, 2.0, 3.0],
+            rotate: [0.25, 0.5, 0.75],
+            scale: [2.0, 3.0],
+            z_order: 4.0,
+            enabled: false,
+            lock_to_root: true,
+            opacity: Some(0.5),
+            blend_mode: Some("Multiply".into()),
+            tint: Some([0.1, 0.2, 0.3]),
+            screen_tint: Some([0.4, 0.5, 0.6]),
+            mask_threshold: Some(0.75),
+            texture: Some(TexId::new("tex-1").unwrap()),
+            propagate_meshgroup: None,
+            mg_dynamic: None,
+            mg_translate_children: None,
+        };
+        let line = serde_json::to_string(&info).unwrap();
+        let patch: NodePatch = serde_json::from_str(&line).unwrap();
+
+        assert_eq!(patch.name.as_deref(), Some("Body"));
+        assert_eq!(patch.translate, Some([1.0, 2.0, 3.0]));
+        assert_eq!(patch.rotate, Some([0.25, 0.5, 0.75]));
+        assert_eq!(patch.scale, Some([2.0, 3.0]));
+        assert_eq!(patch.z_order, Some(4.0));
+        assert_eq!(patch.enabled, Some(false));
+        assert_eq!(patch.lock_to_root, Some(true));
+        assert_eq!(patch.opacity, Some(0.5));
+        assert_eq!(patch.blend_mode.as_deref(), Some("Multiply"));
+        assert_eq!(patch.tint, Some([0.1, 0.2, 0.3]));
+        assert_eq!(patch.screen_tint, Some([0.4, 0.5, 0.6]));
+        assert_eq!(patch.mask_threshold, Some(0.75));
+        assert_eq!(patch.texture.as_ref().map(TexId::as_str), Some("tex-1"));
+        // A field this node's kind does not carry stays off the wire, so
+        // sending the reply back sets nothing it should not.
+        assert!(!line.contains("mg_dynamic"), "{line}");
+        assert_eq!(patch.mg_dynamic, None);
+        assert_eq!(patch.propagate_meshgroup, None);
+    }
+
+    /// A node's Id, kind and parent are not things a patch can set, so they
+    /// have to be on the reply itself rather than left for a second read.
+    #[test]
+    fn a_node_info_reply_names_the_node_its_kind_and_its_parent() {
+        let body = ResponseBody::NodeInfo {
+            node: Box::new(NodeInfo {
+                id: node("root/part-1"),
+                kind: "part".into(),
+                parent: Some(node("root")),
+                name: "Body".into(),
+                translate: [0.0; 3],
+                rotate: [0.0; 3],
+                scale: [1.0, 1.0],
+                z_order: 0.0,
+                enabled: true,
+                lock_to_root: false,
+                opacity: Some(1.0),
+                blend_mode: Some("Normal".into()),
+                tint: Some([1.0; 3]),
+                screen_tint: Some([0.0; 3]),
+                mask_threshold: Some(0.5),
+                texture: None,
+                propagate_meshgroup: None,
+                mg_dynamic: None,
+                mg_translate_children: None,
+            }),
+        };
+        let s = serde_json::to_string(&body).unwrap();
+        assert!(s.contains("\"result\":\"node_info\""), "{s}");
+        assert!(s.contains("\"id\":\"root/part-1\""), "{s}");
+        assert!(s.contains("\"parent\":\"root\""), "{s}");
+        // An unmapped part says so by carrying no texture at all.
+        assert!(!s.contains("texture"), "{s}");
+
+        assert_eq!(
+            Command::NodeInfo {
+                session: SessionId(1),
+                node: node("root/part-1"),
+            }
+            .kind(),
+            CommandKind::ReplicaQuery,
         );
     }
 

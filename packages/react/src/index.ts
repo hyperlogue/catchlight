@@ -26,7 +26,7 @@
 export { EditorProvider, useEditor } from "./editor-context.js";
 export type { EditorProviderProps } from "./editor-context.js";
 
-export { useParams, useReplica, useRevision, useTree } from "./replica.js";
+export { useNodeInfo, useParams, useReplica, useRevision, useTree } from "./replica.js";
 
 export { useSessions } from "./sessions.js";
 export type { Sessions } from "./sessions.js";
@@ -65,4 +65,4 @@ export type { SessionListRootProps } from "./session-list.js";
 export { FileOpen, FileOpenRoot } from "./file-open.js";
 export type { FileOpenRootProps } from "./file-open.js";
 
-export type { Camera } from "@catchlight/core";
+export type { Camera, NodeInfo } from "@catchlight/core";

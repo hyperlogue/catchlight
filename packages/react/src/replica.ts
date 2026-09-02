@@ -8,7 +8,7 @@
  * that number moves, and not otherwise.
  */
 
-import type { ParamInfo, Session, TreeNode } from "@catchlight/core";
+import type { NodeId, NodeInfo, ParamInfo, Session, TreeNode } from "@catchlight/core";
 import { useMemo, useSyncExternalStore } from "react";
 
 import { useLatest } from "./latest.js";
@@ -40,6 +40,26 @@ export function useParams(session: Session): ParamInfo[] {
 /** The node tree, from the root down. */
 export function useTree(session: Session): TreeNode {
   return useReplica(session, readTree);
+}
+
+/**
+ * One node in full, as an inspector shows it.
+ *
+ * `undefined` for the two cases a panel draws the same way: nothing is
+ * selected, and the selected node is gone. A selection is view state and
+ * outlives the node it names, so both are ordinary.
+ *
+ * Not [`useReplica`], because the read depends on which node is asked for as
+ * well as on the revision: that hook deliberately ignores its `read`, so a
+ * selection that moved between two nodes at one revision would keep showing
+ * the first one.
+ */
+export function useNodeInfo(session: Session, node: NodeId | undefined): NodeInfo | undefined {
+  const revision = useRevision(session);
+  return useMemo(
+    () => (node === undefined ? undefined : session.nodeInfo(node)),
+    [session, revision, node],
+  );
 }
 
 const readParams = (session: Session): ParamInfo[] => session.params();

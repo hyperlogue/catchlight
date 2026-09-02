@@ -990,6 +990,7 @@ impl Editor {
             // very same code against the session's model.
             Command::Check { session }
             | Command::NodeTree { session }
+            | Command::NodeInfo { session, .. }
             | Command::TextureList { session }
             | Command::ParamList { session }
             | Command::Seams { session, .. }
