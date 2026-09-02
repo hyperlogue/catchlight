@@ -170,10 +170,19 @@ export class Editor {
     if (this.#gpu) return Promise.resolve(this.#gpu);
     // Two canvases mounting in the same tick must not race for two devices:
     // the second one waits on the first one's promise.
-    this.#acquiring ??= this.#wasm.Gpu.acquire(canvas).then((gpu) => {
-      this.#gpu = gpu;
-      return gpu;
-    });
+    this.#acquiring ??= this.#wasm.Gpu.acquire(canvas).then(
+      (gpu) => {
+        this.#gpu = gpu;
+        return gpu;
+      },
+      (cause: unknown) => {
+        // A failure is not a verdict: no adapter on this canvas, or a
+        // transient one, must not be the answer every later attach gets.
+        // Remembering it would make a StrictMode remount unrecoverable.
+        this.#acquiring = undefined;
+        throw cause;
+      },
+    );
     return this.#acquiring;
   }
 

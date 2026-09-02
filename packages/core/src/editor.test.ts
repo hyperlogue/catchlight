@@ -177,6 +177,23 @@ describe("viewports and lifetime", () => {
     expect(a).not.toBe(b);
   });
 
+  test("an acquisition that failed is tried again, not remembered", async () => {
+    const { editor, module } = await inTab();
+    const session = await editor.newDocument();
+    module.failNextAcquire = "no adapter on this canvas";
+
+    await expect(editor.attach(session, {} as HTMLCanvasElement)).rejects.toThrow(
+      "no adapter on this canvas",
+    );
+
+    // The next mount is a new chance — StrictMode's second one, or a canvas
+    // that can be acquired from where the first could not.
+    const canvas = { id: "second" } as unknown as HTMLCanvasElement;
+    await editor.attach(session, canvas);
+    expect(module.gpu.acquiredFrom).toEqual([canvas]);
+    expect(module.viewports).toHaveLength(1);
+  });
+
   test("closing frees every replica, the device and the backend", async () => {
     const { editor, module, wasm } = await inTab();
     const session = await editor.newDocument();
