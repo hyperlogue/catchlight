@@ -17,10 +17,20 @@
 //! bytes or the new ones, never a truncated file. [`FileStorage`] gets this
 //! from temp-then-rename; a backend that cannot must say so in its own docs,
 //! because an interrupted save otherwise destroys the only copy.
+//!
+//! **An upload is not a file on disk.** A browser has no filesystem, so the
+//! bytes a tab wants opened arrive over HTTP rather than sitting somewhere
+//! [`FileStorage`] could read — yet the command that opens them still names
+//! one `path` key. [`StagingStorage`] is that seam: `put` parks bytes under
+//! the key the command will name, `read` finds them there before it asks the
+//! backing store, and `write` always goes to the backing store, clearing the
+//! staged copy so a save is visible to the next read.
 
+use std::collections::HashMap;
 use std::io;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// A byte store addressed by opaque keys.
 pub trait Storage: Send + Sync + std::fmt::Debug {
@@ -112,6 +122,73 @@ impl Storage for FileStorage {
     }
 }
 
+/// A [`Storage`] with an in-memory staging area in front of it.
+///
+/// `put` holds bytes under the key a later command will name; `take` removes
+/// them again. Reads check the staging map first, so
+/// `session_open { path: "model.clm" }` resolves against an upload the server
+/// never wrote anywhere. Writes never land in the map — a save is a save, so
+/// it goes to `backing` and drops whatever was staged under that key, leaving
+/// the saved bytes as the only answer a read can give.
+///
+/// Staging is not a cache: it holds what was put there and nothing else, and
+/// never reaches for a key it was not given.
+#[derive(Debug)]
+pub struct StagingStorage {
+    staged: Mutex<HashMap<String, Vec<u8>>>,
+    backing: Arc<dyn Storage>,
+}
+
+impl StagingStorage {
+    /// Stage in front of `backing`.
+    pub fn new(backing: Arc<dyn Storage>) -> Self {
+        Self {
+            staged: Mutex::new(HashMap::new()),
+            backing,
+        }
+    }
+
+    /// Park `bytes` under `key`, replacing anything staged there.
+    pub fn put(&self, key: &str, bytes: Vec<u8>) {
+        lock(&self.staged).insert(key.to_string(), bytes);
+    }
+
+    /// Remove and return what was staged under `key`.
+    pub fn take(&self, key: &str) -> Option<Vec<u8>> {
+        lock(&self.staged).remove(key)
+    }
+
+    /// The staged keys, sorted. For diagnostics only — nothing addresses
+    /// anything by this list.
+    pub fn staged_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = lock(&self.staged).keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+}
+
+impl Storage for StagingStorage {
+    fn read(&self, key: &str) -> io::Result<Vec<u8>> {
+        if let Some(bytes) = lock(&self.staged).get(key) {
+            return Ok(bytes.clone());
+        }
+        self.backing.read(key)
+    }
+
+    fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+        self.backing.write(key, bytes)?;
+        lock(&self.staged).remove(key);
+        Ok(())
+    }
+}
+
+/// A poisoned staging map means a panic already happened elsewhere; the bytes
+/// are still whatever they were, so keep going rather than cascading a second
+/// panic through a connection thread.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +217,42 @@ mod tests {
         let err = NoStorage.read("models/akari.clm").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);
         assert!(err.to_string().contains("models/akari.clm"));
+    }
+
+    #[test]
+    fn staged_bytes_answer_a_read_the_backing_store_would_refuse() {
+        let staging = StagingStorage::new(Arc::new(NoStorage));
+        staging.put("model.clm", b"staged".to_vec());
+        assert_eq!(staging.read("model.clm").unwrap(), b"staged");
+        assert_eq!(staging.staged_keys(), vec!["model.clm".to_string()]);
+        assert_eq!(staging.take("model.clm").unwrap(), b"staged");
+        assert!(staging.read("model.clm").is_err());
+    }
+
+    #[test]
+    fn a_save_lands_in_the_backing_store_and_clears_the_staged_copy() {
+        #[derive(Debug, Default)]
+        struct Mem(Mutex<HashMap<String, Vec<u8>>>);
+        impl Storage for Mem {
+            fn read(&self, key: &str) -> io::Result<Vec<u8>> {
+                lock(&self.0)
+                    .get(key)
+                    .cloned()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, key.to_string()))
+            }
+            fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+                lock(&self.0).insert(key.to_string(), bytes.to_vec());
+                Ok(())
+            }
+        }
+
+        let backing = Arc::new(Mem::default());
+        let staging = StagingStorage::new(backing.clone());
+        staging.put("model.clm", b"uploaded".to_vec());
+        staging.write("model.clm", b"saved").unwrap();
+        assert_eq!(backing.read("model.clm").unwrap(), b"saved");
+        assert!(staging.staged_keys().is_empty());
+        assert_eq!(staging.read("model.clm").unwrap(), b"saved");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

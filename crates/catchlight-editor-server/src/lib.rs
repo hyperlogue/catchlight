@@ -49,7 +49,18 @@
 //!   [`CommandKind::ReplicaQuery`] names are pure functions of the [`Model`],
 //!   so a browser tab holding a replica answers them itself. `dispatch` routes
 //!   those arms into the very same code rather than keeping a second copy.
+//!
+//! - **A browser gets the same protocol, plus bytes.** See [`http`]: `/ws`
+//!   carries one JSON [`Request`] per text frame and answers each with its
+//!   [`Reply`], exactly as [`serve_unix`] does, and additionally pushes every
+//!   [`Event`] to the connections that are open; the structure and texture
+//!   payloads a replica needs go over HTTP rather than through a frame. Loopback
+//!   is not a permission — any page on any origin can reach that port — so a
+//!   random per-launch token gates every door, and `GET /token` is readable only
+//!   from an allowlisted origin.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod http;
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
 mod query;
@@ -57,10 +68,12 @@ mod storage;
 #[cfg(unix)]
 mod transport;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use http::{bind_http, serve_http, HttpOptions, HttpServer};
 pub use query::{replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
-pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
+pub use storage::{join_key, key_stem, parent_key, NoStorage, StagingStorage, Storage};
 
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -530,6 +543,12 @@ impl Editor {
         let session = self.session(id).ok()?;
         let rev = lock(&session).rev;
         Some(rev)
+    }
+
+    /// [`Self::rev`] for a caller outside this crate: what an in-process
+    /// replica stamps on the model it just took through [`Self::with_model`].
+    pub fn revision(&self, id: SessionId) -> Option<u64> {
+        self.rev(id)
     }
 
     /// Register `observer` for every [`Event`] this editor emits, and hand
