@@ -1940,9 +1940,15 @@ fn binding_key(
 /// A driver writes one or two params (angle, length). Every one it names has
 /// to exist: `set_physics_targets` would refuse a dangling one anyway, but
 /// this says which param was missing.
+/// The two outputs a driver writes, positionally.
+///
+/// A `None` entry is an output nothing is bound to, which is why the list is
+/// positional rather than a set: a driver whose length drives a param and
+/// whose angle drives none is `[None, Some(len)]`, and there is no other way
+/// to say it. A list shorter than two leaves the rest unbound.
 fn physics_targets(
     model: &Model,
-    params: Vec<ParamId>,
+    params: Vec<Option<ParamId>>,
 ) -> Result<[Option<ParamId>; 2], EditorError> {
     if params.len() > 2 {
         return Err(EditorError::BadTarget(
@@ -1951,10 +1957,12 @@ fn physics_targets(
     }
     let mut targets = [None, None];
     for (slot, id) in targets.iter_mut().zip(params) {
-        if model.param(&id).is_none() {
-            return Err(EditorError::NoParam(id));
+        if let Some(id) = id {
+            if model.param(&id).is_none() {
+                return Err(EditorError::NoParam(id));
+            }
+            *slot = Some(id);
         }
-        *slot = Some(id);
     }
     Ok(targets)
 }

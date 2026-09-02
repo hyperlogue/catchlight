@@ -205,10 +205,14 @@ export type Command =
     map_mode: string | null,
     local_only: boolean | null,
     /**
-     * The one or two params the driver writes (angle, length). Absent =
-     * unchanged; see `clear_target_params` to detach.
+     * The one or two params the driver writes (angle, length), in that
+     * order. A `null` entry is an output nothing is bound to, so
+     * `[null, "len"]` is a driver whose length drives a param and whose
+     * angle drives none — a shorter list leaves the outputs past its end
+     * unbound the same way. Absent = unchanged; see `clear_target_params`
+     * to detach both.
      */
-    target_params: Array<ParamId> | null,
+    target_params: Array<ParamId | null> | null,
     /**
      * Detach the driven params (wins over `target_params`).
      */
@@ -519,9 +523,11 @@ export type Command =
     name: string | null,
     kind: string,
     /**
-     * The one or two params the driver writes (angle, length).
+     * The one or two params the driver writes (angle, length), spelled
+     * the way [`Command::PhysicsSet`] takes them: a `null` entry is an
+     * output nothing is bound to.
      */
-    target_params: Array<ParamId>,
+    target_params: Array<ParamId | null>,
     length: number | null,
     gravity: number | null,
     frequency: number | null,

@@ -3228,7 +3228,11 @@ impl App {
                     kind: p.kind,
                     map_mode: p.map_mode,
                     local_only: p.local_only,
-                    target_params: p.target_params,
+                    // The frozen panel only ever sets both, so every output
+                    // it names is bound; the protocol allows a hole.
+                    target_params: p
+                        .target_params
+                        .map(|params| params.into_iter().map(Some).collect()),
                     clear_target_params: p.clear_target_params,
                     gravity: p.gravity,
                     length: p.length,

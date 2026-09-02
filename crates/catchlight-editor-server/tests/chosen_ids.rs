@@ -146,7 +146,7 @@ fn an_add_creates_under_the_id_it_was_given() {
                 parent: hair.clone(),
                 name: None,
                 kind: "rigid".into(),
-                target_params: vec![pull.clone()],
+                target_params: vec![Some(pull.clone())],
                 length: None,
                 gravity: None,
                 frequency: None,
