@@ -21,6 +21,14 @@
  * again in four milliseconds. The renderer coalesces: one animation frame
  * draws once no matter how many times it was told.
  *
+ * **The canvas carries a way to read its own frame, and only tests use it.**
+ * A headless Chromium holding a WebGPU device never composites the canvas, so
+ * a screenshot of one is blank while the picture is correct — the browser
+ * smoke test has to ask the renderer instead. The element is what a driver
+ * already has a handle to, so a live viewport hangs [`READBACK`] off it and
+ * takes it back on dispose. Nothing in the editor reads that property, and
+ * nothing about the drawing depends on it.
+ *
  * **A viewport nobody can see does not run.** Started is what the host asked
  * for; running is that *and* the canvas being on screen *and* the page being
  * visible. A background tab already stops firing `requestAnimationFrame`, but
@@ -33,7 +41,7 @@
 
 import type { Unsubscribe } from "./backend.js";
 import type { Session } from "./session.js";
-import type { WasmViewport } from "./wasm.js";
+import type { WasmFrame, WasmViewport } from "./wasm.js";
 
 /**
  * The backing-store ceiling to use when nobody names one.
@@ -45,6 +53,15 @@ import type { WasmViewport } from "./wasm.js";
  * ask, so the clamp is never a guess when a fact is on hand.
  */
 const FALLBACK_MAX_BACKING_STORE = 8192;
+
+/**
+ * The property a canvas carries while a viewport is drawing it: a function
+ * resolving to that viewport's current frame.
+ *
+ * A property rather than an export, because the code that wants it runs in a
+ * page and cannot import from this bundle. See the header.
+ */
+export const READBACK = "__catchlightReadback";
 
 /** One canvas drawing one session. */
 export class Viewport {
@@ -81,6 +98,22 @@ export class Viewport {
     this.#maxSize =
       typeof maxSize === "number" && maxSize > 0 ? maxSize : FALLBACK_MAX_BACKING_STORE;
     if (session) this.#unsubscribe = session.onInvalidate(() => this.invalidate());
+    // Not enumerable, so nothing that walks the element trips over it.
+    Object.defineProperty(canvas, READBACK, {
+      value: (): Promise<WasmFrame> => this.readback(),
+      configurable: true,
+    });
+  }
+
+  /**
+   * The frame this canvas is showing, as device pixels in RGBA order.
+   *
+   * For tests. It draws the current frame once more and copies it back off the
+   * GPU; it starts nothing, stops nothing and advances no puppet, so a
+   * viewport cannot tell it happened.
+   */
+  readback(): Promise<WasmFrame> {
+    return this.#wasm.readback();
   }
 
   /**
@@ -161,6 +194,8 @@ export class Viewport {
     this.stop();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
+    // Before the free: the function it holds would reach a freed renderer.
+    delete (this.#canvas as unknown as Record<string, unknown>)[READBACK];
     this.#wasm.free();
   }
 
