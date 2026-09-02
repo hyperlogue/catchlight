@@ -6,7 +6,8 @@
 //! has no way to push: every [`Event`] the editor emits while a connection is
 //! open arrives on it as `Reply::Event`. Everything that is *bytes* rather
 //! than a message goes over HTTP instead, because a replica wants the
-//! structure and the textures as payloads, not as base64 inside a frame.
+//! structure, the whole file and the textures as payloads, not as base64
+//! inside a frame.
 //!
 //! Invariants this module enforces:
 //!
@@ -339,6 +340,7 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
 
     let response = match (request.method.as_str(), segments.as_slice()) {
         ("GET", ["sessions", id, "structure"]) => structure(state, id),
+        ("GET", ["sessions", id, "clm"]) => clm(state, id),
         ("GET", ["sessions", id, "textures", tex]) => texture(state, id, tex),
         ("PUT", ["files", ..]) => put_file(state, request),
         _ => Response::text(404, "Not Found", "no such endpoint"),
@@ -360,6 +362,22 @@ fn structure(state: &ServerState, id: &str) -> Response {
         Ok((rev, bytes)) => Response::new(200, "OK")
             .with("Content-Type", "application/octet-stream")
             .with("X-Catchlight-Rev", rev.to_string())
+            .body(bytes),
+        Err(EditorError::NoSession(_)) => Response::text(404, "Not Found", "no such session"),
+        Err(err) => Response::text(500, "Internal Server Error", &err.to_string()),
+    }
+}
+
+/// The whole document as a `.clm`, encoded on demand — what a tab downloads
+/// or writes back to storage. The bytes are built for this answer, so the body
+/// owns them.
+fn clm(state: &ServerState, id: &str) -> Response {
+    let Some(session) = parse_session(id) else {
+        return Response::text(400, "Bad Request", "session id is not a number");
+    };
+    match state.editor.save_bytes(session) {
+        Ok(bytes) => Response::new(200, "OK")
+            .with("Content-Type", "application/octet-stream")
             .body(bytes),
         Err(EditorError::NoSession(_)) => Response::text(404, "Not Found", "no such session"),
         Err(err) => Response::text(500, "Internal Server Error", &err.to_string()),

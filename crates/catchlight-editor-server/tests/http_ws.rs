@@ -565,6 +565,45 @@ fn one_pixel_png() -> Vec<u8> {
 }
 
 #[test]
+fn the_clm_endpoint_hands_back_a_file_that_loads() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let root = root_of(&mut socket, 2, session);
+
+    let response = http(
+        server.addr,
+        "GET",
+        &format!("/sessions/{}/clm", session.0),
+        &[("Authorization", &bearer())],
+        b"",
+    );
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.header("content-type"),
+        Some("application/octet-stream")
+    );
+
+    // The point of the route: what comes back is a model file, and it is this
+    // session's model rather than any model.
+    let model =
+        catchlight_core::Model::from_clm_bytes(&response.body).expect("the bytes load as a model");
+    assert!(model.node(&root).is_some());
+
+    assert_eq!(
+        http(
+            server.addr,
+            "GET",
+            "/sessions/9999/clm",
+            &[("Authorization", &bearer())],
+            b""
+        )
+        .status,
+        404
+    );
+}
+
+#[test]
 fn a_foreign_host_header_is_refused_before_anything_is_routed() {
     let server = start();
     let response = http(
