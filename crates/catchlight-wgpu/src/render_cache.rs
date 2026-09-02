@@ -33,19 +33,24 @@
 //!   only against the cache that produced it.
 //! - **A rebuild releases every slot the previous build held and does not
 //!   name again.** Mesh slots and the deform atlas are handed back whole —
-//!   both are re-derived from zero — and texture slots past the new texture
-//!   count are dropped, so a model that shrank does not strand GPU buffers
-//!   under slots nothing addresses. Surviving texture slots are kept rather
-//!   than freed and re-uploaded, which is what leaves
+//!   both are re-derived from zero — and every texture the new build does not
+//!   want is dropped, so a model that shrank does not strand GPU buffers under
+//!   slots nothing addresses. Surviving textures are kept rather than freed
+//!   and re-uploaded, which is what leaves
 //!   [`PrepareOptions::memoize_textures`] something to save. A stopgap: the
 //!   arena rework (cl-32i.19) replaces it with slots that are owned rather
 //!   than swept.
-//! - **A rebuild keeps the GPU texture whose payload did not move.** A model
-//!   texture's bytes are immutable, so a slot whose Id and payload `Arc` are
-//!   both what the last build put there already holds the right image: it is
-//!   neither decoded nor re-uploaded, and the [`UvCrop`] the first decode
-//!   returned is kept beside it because nothing would recompute it. This is
-//!   what makes a replica affordable —
+//! - **A rebuild keeps the GPU texture whose payload did not move, wherever
+//!   its slot ended up.** A model texture's bytes are immutable, so a
+//!   [`TexId`] whose payload `Arc` is what the last build uploaded already has
+//!   the right image on the GPU: it is neither decoded nor re-uploaded, and
+//!   the [`UvCrop`] the first decode returned is kept beside it because
+//!   nothing would recompute it. The memo is keyed by Id and **not by slot**,
+//!   because a slot is a position in `Model::texture_ids()` and deleting one
+//!   texture shifts every later one down: keyed by slot, removing the first
+//!   texture of a model would re-decode and re-upload all the rest. A survivor
+//!   that moved is relocated on the GPU instead. This is what makes a replica
+//!   affordable —
 //!   [`Model::replace_structure`](catchlight_core::Model::replace_structure)
 //!   rebuilds the whole model after every server-side edit and hands back the
 //!   same payloads, so a rebuild that changed no texture costs no texture
@@ -111,12 +116,14 @@ pub struct CacheStats {
     /// itself if the decoded pixels match what the slot holds; the decode
     /// happened either way.
     pub texture_uploads: u64,
-    /// Textures a build kept: same Id in the same slot, and the same payload
-    /// `Arc`. Neither decoded nor uploaded.
+    /// Textures a build kept: the same Id carrying the same payload `Arc` as
+    /// the build before it, whatever slot each of them sits at. Neither
+    /// decoded nor uploaded — a kept texture that moved slots is relocated on
+    /// the GPU.
     pub textures_kept: u64,
 }
 
-/// One texture slot's GPU state, as the build that filled it left it.
+/// One uploaded texture's GPU state, as the build that uploaded it left it.
 ///
 /// The payload is held by `Arc` rather than compared: a [`ModelTexture`]'s
 /// bytes are immutable, so a pointer-equal payload *is* the texture that was
@@ -124,16 +131,20 @@ pub struct CacheStats {
 #[derive(Debug, Clone)]
 struct UploadedTexture {
     id: TexId,
-    payload: Arc<Vec<u8>>,
+    /// The renderer slot this texture currently occupies. A rebuild matches by
+    /// Id and reads this to say where the GPU texture has to move to.
+    slot: u32,
+    payload: Arc<[u8]>,
     /// The crop the decode returned, kept because a rebuild that reuses the
     /// GPU texture never runs the decode that would produce it again.
     uv_crop: Option<UvCrop>,
 }
 
 impl UploadedTexture {
-    /// Whether the texture at this slot is the one `model` now wants there.
-    fn is(&self, id: &TexId, texture: &ModelTexture) -> bool {
-        &self.id == id && Arc::ptr_eq(&self.payload, &texture.data)
+    /// Whether this upload is still the image the model's texture holds.
+    /// Called after a match on Id, so the payload is all that is left to ask.
+    fn holds(&self, texture: &ModelTexture) -> bool {
+        Arc::ptr_eq(&self.payload, &texture.data)
     }
 }
 
@@ -160,8 +171,9 @@ pub struct RenderCache {
     /// The decode memo, when [`PrepareOptions::memoize_textures`] asked for
     /// one.
     texture_memo: Option<TexturePrepCache>,
-    /// What each texture slot holds on the GPU, indexed by slot. Rebuilt on
-    /// every build, and what the next one matches a model's textures against.
+    /// What the renderer holds for each of this build's textures, in slot
+    /// order. Rebuilt on every build, and what the next one matches a model's
+    /// textures against — by Id, so a texture that changed slots is found.
     uploaded: Vec<UploadedTexture>,
     stats: CacheStats,
     /// Collector scratch, kept here so a caller collecting every frame keeps
@@ -363,18 +375,30 @@ impl RenderCache {
             "a model's texture order named a texture it does not hold",
         );
 
-        // Which slots already hold what the model wants there. A payload the
-        // model still shares with the last build is the texture the GPU
-        // already has, so it is neither decoded nor uploaded — which is what
-        // makes replacing a replica's model per commit affordable. Read from
-        // `self.uploaded` rather than taken out of it, so the error paths
-        // below leave the table describing what the renderer still holds.
+        // Which of the last build's textures the model still wants. A payload
+        // the model shares with that build is the texture the GPU already
+        // has, so it is neither decoded nor uploaded — which is what makes
+        // replacing a replica's model per commit affordable. Matched by Id,
+        // never by slot: deleting one texture shifts every later slot down,
+        // and a survivor that moved is relocated rather than uploaded again.
+        // Read from `self.uploaded` rather than taken out of it, so the error
+        // paths below leave the table describing what the renderer holds.
+        let previous: std::collections::HashMap<&TexId, &UploadedTexture> =
+            self.uploaded.iter().map(|up| (&up.id, up)).collect();
         let mut kept: Vec<Option<UploadedTexture>> = Vec::with_capacity(wanted.len());
+        // `(old slot, new slot)` for every kept texture, for the renderer.
+        let mut moved: Vec<(u32, u32)> = Vec::new();
         let mut fresh_slots: Vec<usize> = Vec::new();
         let mut fresh: Vec<catchlight_core::EncodedTexture> = Vec::new();
         for (slot, (id, texture)) in wanted.iter().enumerate() {
-            match self.uploaded.get(slot) {
-                Some(up) if up.is(id, texture) => kept.push(Some(up.clone())),
+            match previous.get(*id) {
+                Some(up) if up.holds(texture) => {
+                    moved.push((up.slot, slot as u32));
+                    kept.push(Some(UploadedTexture {
+                        slot: slot as u32,
+                        ..(*up).clone()
+                    }));
+                }
                 _ => {
                     kept.push(None);
                     fresh_slots.push(slot);
@@ -382,6 +406,7 @@ impl RenderCache {
                 }
             }
         }
+        drop(previous);
 
         // Everything fallible runs before anything is released. A failed
         // rebuild must leave the previous build resident: releasing first
@@ -400,11 +425,11 @@ impl RenderCache {
 
         // Hand back every slot the previous build held before taking new
         // ones, so a model that shrank does not leave GPU buffers and deform
-        // ranges behind under slots nothing names any more. A kept slot is
-        // below the new count by construction, so the truncation never drops
-        // one. Nothing past this point fails: every upload below was
-        // validated above.
-        renderer.release_for_rebuild(wanted.len() as u32);
+        // ranges behind under slots nothing names any more. The kept textures
+        // move into the slots this build gave them; everything else goes.
+        // Nothing past this point fails: every upload below was validated
+        // above.
+        renderer.release_for_rebuild(&moved);
         for (&slot, prep) in fresh_slots.iter().zip(prepped.iter()) {
             renderer.upload_texture(slot as u32, &prep.texture)?;
         }
@@ -416,6 +441,7 @@ impl RenderCache {
         for (&slot, prep) in fresh_slots.iter().zip(prepped.iter()) {
             kept[slot] = Some(UploadedTexture {
                 id: wanted[slot].0.clone(),
+                slot: slot as u32,
                 payload: wanted[slot].1.data.clone(),
                 uv_crop: prep.uv_crop,
             });

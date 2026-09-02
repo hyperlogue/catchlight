@@ -15,7 +15,6 @@ use catchlight_core::{
 };
 use catchlight_wgpu::{PrepareOptions, RenderCache, RenderList, WgpuRenderer};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 pub const NO_ADAPTER: &str =
     "no Vulkan adapter for the headless context; see AGENTS.md, \"Native headless rendering\"";
@@ -38,7 +37,7 @@ pub fn png_texture(width: u32, height: u32, pixels: &[u8]) -> ModelTexture {
     ModelTexture {
         encoding: TextureEncoding::Png,
         alpha: TextureAlpha::Straight,
-        data: Arc::new(data.into_inner()),
+        data: data.into_inner().into(),
     }
 }
 

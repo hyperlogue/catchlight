@@ -67,7 +67,7 @@ pub struct ReplicaState {
     puppet: Puppet,
     /// The encoded bytes of every texture the tab has fetched, by Id. Shared
     /// with the model, so a rebuild is a pointer copy.
-    textures: HashMap<TexId, Arc<Vec<u8>>>,
+    textures: HashMap<TexId, Arc<[u8]>>,
     /// The revision this document reads as, or `None` while pristine.
     rev: Option<u64>,
 }
@@ -129,7 +129,7 @@ impl ReplicaState {
     /// naming it, which says more than an error here would.
     pub fn put_texture(&mut self, id: &str, bytes: Vec<u8>) {
         if let Ok(id) = id.parse::<TexId>() {
-            self.textures.insert(id, Arc::new(bytes));
+            self.textures.insert(id, bytes.into());
         }
     }
 

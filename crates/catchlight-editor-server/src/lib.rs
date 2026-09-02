@@ -246,12 +246,12 @@ fn texture_payloads(model: &Model) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for id in model.texture_ids() {
         if let Some(texture) = model.texture(id) {
-            // The address of the `Vec` inside the `Arc`, not of its buffer:
-            // two empty textures share a dangling buffer pointer but never an
-            // allocation.
-            let at = Arc::as_ptr(&texture.data) as usize;
+            // The payload's address inside its own `Arc` allocation, so
+            // one address per payload: an empty payload still owns an
+            // allocation, unlike an empty `Vec`'s dangling buffer.
+            let at = Arc::as_ptr(&texture.data) as *const u8 as usize;
             if !out.iter().any(|&(seen, _)| seen == at) {
-                out.push((at, texture.data.capacity()));
+                out.push((at, texture.data.len()));
             }
         }
     }
@@ -705,7 +705,7 @@ impl Editor {
                 ModelTexture {
                     encoding,
                     alpha: TextureAlpha::Straight,
-                    data: Arc::new(bytes),
+                    data: bytes.into(),
                 },
             )?;
             s.touch();
@@ -877,7 +877,7 @@ impl Editor {
                         t.id.clone(),
                         TextureData {
                             encoding: encoding_from_path(&t.path),
-                            bytes: Arc::new(bytes),
+                            bytes: bytes.into(),
                         },
                     );
                 }
@@ -1230,7 +1230,7 @@ impl Editor {
                         ModelTexture {
                             encoding: encoding_from_path(&path),
                             alpha: TextureAlpha::Straight,
-                            data: Arc::new(bytes),
+                            data: bytes.into(),
                         },
                     )?;
                     s.touch();
@@ -2510,7 +2510,7 @@ mod tests {
                 ModelTexture {
                     encoding: TextureEncoding::Png,
                     alpha: TextureAlpha::Straight,
-                    data: Arc::new(vec![0u8; 4 * 1024 * 1024]),
+                    data: vec![0u8; 4 * 1024 * 1024].into(),
                 },
                 &mut hex,
             )
@@ -2521,7 +2521,7 @@ mod tests {
             .texture(&model.texture_ids()[0])
             .unwrap()
             .data
-            .capacity();
+            .len();
         assert!(one.own_bytes < payload, "the payload is not charged twice");
 
         let mut history = History::default();
@@ -2576,16 +2576,12 @@ mod tests {
                 ModelTexture {
                     encoding: TextureEncoding::Png,
                     alpha: TextureAlpha::Straight,
-                    data: Arc::new(vec![0u8; 4 * 1024 * 1024]),
+                    data: vec![0u8; 4 * 1024 * 1024].into(),
                 },
                 &mut hex,
             )
             .unwrap();
-        let payload = model
-            .texture(&model.texture_ids()[0])
-            .unwrap()
-            .data
-            .capacity();
+        let payload = model.texture(&model.texture_ids()[0]).unwrap().data.len();
 
         let mut history = History::default();
         history.push_undo(model.clone());

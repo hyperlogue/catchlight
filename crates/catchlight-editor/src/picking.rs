@@ -146,7 +146,6 @@ mod tests {
         Mesh, ModelComposite, ModelNode, ModelNodeKind, ModelPart, ModelTexture, NodeId, SeededHex,
         TexId,
     };
-    use std::sync::Arc;
 
     /// A model builder for the picking tests: the texture is never decoded
     /// here (a part is culled by whether its albedo slot resolves at all), so
@@ -209,7 +208,7 @@ mod tests {
                             ModelTexture {
                                 encoding: TextureEncoding::Png,
                                 alpha: TextureAlpha::Straight,
-                                data: Arc::new(Vec::new()),
+                                data: [][..].into(),
                             },
                             &mut self.hex,
                         )

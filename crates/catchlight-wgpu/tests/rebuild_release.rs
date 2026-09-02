@@ -11,8 +11,6 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use catchlight_core::formats::clm::{ClmMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::{
     Model, ModelNode, ModelNodeKind, ModelPart, ModelTexture, NodeId, Puppet, SeededHex, TexId,
@@ -237,6 +235,30 @@ fn a_rebuild_keeps_the_textures_it_names_again() {
             let (px, py) = column_centre(x);
             assert_eq!(nearest(&pixels, px, py), expected, "column at x={x}");
         }
+
+        // Now the *first* part, which is the harder shape: the survivor is
+        // wanted at slot 0 having been uploaded at slot 1. A memo keyed by
+        // slot calls that a miss and uploads an image the GPU already holds;
+        // keyed by Id the texture is moved, and the moved texture still has
+        // to be the one the part draws.
+        model.delete_node(&nodes[0]).expect("delete the left part");
+        puppet.tick(&model, 0.0);
+        cache.refresh(&mut ctx.renderer, &model, &puppet).unwrap();
+
+        assert_eq!(ctx.renderer.live_texture_slots(), 1);
+        assert_eq!(
+            ctx.renderer.frame_stats().queue_submits,
+            0,
+            "a rebuild re-uploaded a texture that had only changed slots",
+        );
+
+        let list = catchlight_wgpu::collect(&cache, &puppet);
+        assert_eq!(ctx.render(&list, CLEAR).expect("render").drawn_parts, 1);
+        let pixels = ctx.read_rgba().expect("read back");
+        for (x, expected) in [(-0.6, WHITE), (0.0, GREEN), (0.6, WHITE)] {
+            let (px, py) = column_centre(x);
+            assert_eq!(nearest(&pixels, px, py), expected, "column at x={x}");
+        }
     });
 }
 
@@ -269,7 +291,7 @@ fn a_failed_rebuild_leaves_the_previous_build_resident() {
                 ModelTexture {
                     encoding: TextureEncoding::Png,
                     alpha: TextureAlpha::Straight,
-                    data: Arc::new(b"not a png".to_vec()),
+                    data: b"not a png"[..].into(),
                 },
             ),
             ("a texture wider than the device allows", {

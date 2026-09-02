@@ -60,7 +60,7 @@ pub enum ManifestError {
 #[derive(Debug, Clone)]
 pub struct TextureData {
     pub encoding: TextureEncoding,
-    pub bytes: Arc<Vec<u8>>,
+    pub bytes: Arc<[u8]>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -624,7 +624,7 @@ mod tests {
             id.to_string(),
             TextureData {
                 encoding: TextureEncoding::Png,
-                bytes: Arc::new(png_bytes(w, h)),
+                bytes: png_bytes(w, h).into(),
             },
         );
         m

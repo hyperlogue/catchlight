@@ -695,6 +695,24 @@ mod tests {
         assert_eq!(alpha_crop_rect(&tex(64, 64, &[])), None);
     }
 
+    /// The decode path takes a model's payload by reference count, not by
+    /// copy. A render cache converts every texture it is about to decode on
+    /// every rebuild, so a copy here would be one copy of every changed
+    /// texture per edit — which is what the two `Arc` shapes used to cost.
+    #[test]
+    fn the_decoders_view_of_a_model_texture_shares_its_bytes() {
+        let model_texture = crate::ModelTexture {
+            encoding: crate::formats::clm::TextureEncoding::Png,
+            alpha: crate::formats::clm::TextureAlpha::Straight,
+            data: vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4].into(),
+        };
+        let encoded = EncodedTexture::from(&model_texture);
+        assert!(
+            Arc::ptr_eq(&model_texture.data, &encoded.data),
+            "the decoder's view copied the payload instead of sharing it",
+        );
+    }
+
     #[test]
     fn cache_key_distinguishes_alpha_and_format() {
         let straight = encoded_png([64, 0, 0, 128], false);

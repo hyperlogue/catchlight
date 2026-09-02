@@ -694,7 +694,7 @@ mod tests {
         ModelTexture {
             encoding: crate::formats::clm::TextureEncoding::Png,
             alpha: crate::formats::clm::TextureAlpha::Straight,
-            data: Arc::new(vec![byte; 4]),
+            data: vec![byte; 4].into(),
         }
     }
 

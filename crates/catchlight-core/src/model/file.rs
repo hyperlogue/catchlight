@@ -68,7 +68,6 @@
 //!   field moves, so a refused structure leaves the model exactly as it was.
 //!
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use crate::formats::clm::{
     self as clm, ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMeshGroup, ClmNode,
@@ -336,7 +335,7 @@ impl Model {
                 id: id.clone(),
                 encoding: t.encoding,
                 alpha: t.alpha,
-                data: (*t.data).clone(),
+                data: t.data.to_vec(),
             });
         }
         Ok(ClmFile { doc, textures })
@@ -409,7 +408,7 @@ impl Model {
                     ModelTexture {
                         encoding: t.encoding,
                         alpha: t.alpha,
-                        data: Arc::new(t.data.clone()),
+                        data: t.data.as_slice().into(),
                     },
                 )
                 .is_some()
@@ -1171,6 +1170,8 @@ fn read_weld(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::components::{BlendMode, MaskMode};
     use crate::formats::clm::{
@@ -1225,7 +1226,7 @@ mod tests {
             ModelTexture {
                 encoding: TextureEncoding::Png,
                 alpha: TextureAlpha::Straight,
-                data: Arc::new(vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4]),
+                data: [0x89, b'P', b'N', b'G', 1, 2, 3, 4][..].into(),
             },
             &mut hex,
         )

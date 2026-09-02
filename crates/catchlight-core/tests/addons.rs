@@ -125,7 +125,7 @@ fn random_model(rng: &mut Rng) -> Model {
             ModelTexture {
                 encoding: TextureEncoding::Png,
                 alpha: TextureAlpha::Straight,
-                data: std::sync::Arc::new(vec![i as u8; 6]),
+                data: vec![i as u8; 6].into(),
             },
             &mut hex,
         )

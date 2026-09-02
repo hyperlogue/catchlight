@@ -224,27 +224,33 @@ pub enum ModelError {
 
 /// A source-encoded texture (verbatim PNG/TGA bytes), shared via `Arc` so model
 /// snapshots are cheap to clone even when the structure churns.
+///
+/// The payload is `Arc<[u8]>` rather than `Arc<Vec<u8>>` so it is the same
+/// representation [`crate::texture::EncodedTexture`] holds: the decode path a
+/// renderer runs on every rebuild then shares this allocation instead of
+/// copying it. Nothing appends to a payload — a texture's bytes are immutable
+/// under its Id — so the spare capacity a `Vec` would carry buys nothing.
 #[derive(Debug, Clone)]
 pub struct ModelTexture {
     pub encoding: TextureEncoding,
     pub alpha: TextureAlpha,
-    pub data: Arc<Vec<u8>>,
+    pub data: Arc<[u8]>,
 }
 
 impl From<&ModelTexture> for crate::texture::EncodedTexture {
     /// The decoder's view of a source-encoded texture, for
     /// [`crate::texture::prepare_textures`].
     ///
-    /// Copies the bytes: the two types disagree about `Arc<Vec<u8>>` versus
-    /// `Arc<[u8]>`, and reconciling that is `.clm`'s call, not a reason to
-    /// grow a second decode path here.
+    /// Shares the bytes: both sides hold `Arc<[u8]>`, so this is a refcount
+    /// bump however large the texture is. A render cache converts every
+    /// texture it is about to decode, on every rebuild.
     fn from(tex: &ModelTexture) -> Self {
         crate::texture::EncodedTexture {
             format: match tex.encoding {
                 TextureEncoding::Png => crate::texture::TextureFormat::Png,
                 TextureEncoding::Tga => crate::texture::TextureFormat::Tga,
             },
-            data: tex.data.as_slice().into(),
+            data: Arc::clone(&tex.data),
             premultiplied: tex.alpha == TextureAlpha::PremultipliedSrgb,
         }
     }
@@ -2170,7 +2176,7 @@ impl Model {
         for (id, texture) in &self.textures {
             bytes = bytes
                 .saturating_add(id.as_str().len())
-                .saturating_add(texture.data.capacity());
+                .saturating_add(texture.data.len());
         }
         bytes
     }
@@ -2429,7 +2435,7 @@ mod tests {
                 ModelTexture {
                     encoding: TextureEncoding::Png,
                     alpha: TextureAlpha::Straight,
-                    data: Arc::new(vec![0x89, b'P', b'N', b'G']),
+                    data: [0x89, b'P', b'N', b'G'][..].into(),
                 },
                 &mut fixture.hex,
             )
@@ -3929,7 +3935,7 @@ mod tests {
         ModelTexture {
             encoding: TextureEncoding::Png,
             alpha: TextureAlpha::Straight,
-            data: Arc::new(Vec::new()),
+            data: [][..].into(),
         }
     }
 
