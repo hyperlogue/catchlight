@@ -28,6 +28,7 @@
 //! render cache's mesh, texture or node tables — never an Id. A list is only
 //! meaningful against the cache it was collected from.
 
+use crate::renderer::DeformSet;
 use catchlight_core::{BlendMode, CompositeData, MaskMode, Node, NodeIdx, NodeKind, NodeTree};
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -165,6 +166,12 @@ pub struct RenderList {
     /// `DrawableInfo::Composite`.
     pub composite_children: HashMap<u32, Vec<DrawableInfo>>,
     pub composite_mask_sources: HashMap<u32, CompositeMaskSourceData>,
+    /// Which puppet's deforms these draws read: the slice of the renderer's
+    /// deform atlas that the same puppet's
+    /// [`RenderCache::refresh_puppet`](crate::RenderCache::refresh_puppet)
+    /// uploaded into. Left at [`DeformSet::FIRST`] by `collect_into`, which
+    /// is the only set a cache serving one puppet ever uses.
+    pub deform_set: DeformSet,
 }
 
 impl RenderList {

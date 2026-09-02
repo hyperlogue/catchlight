@@ -67,6 +67,16 @@ impl RenderContext {
         render_list: &RenderList,
         clear: Option<wgpu::Color>,
     ) -> Result<RenderStats, Box<dyn std::error::Error>> {
+        self.render_many(std::slice::from_ref(&render_list), clear)
+    }
+
+    /// One frame, one submit, several puppets of the one model this context's
+    /// renderer holds — each list drawing from the deform set it carries.
+    pub fn render_many(
+        &mut self,
+        render_lists: &[&RenderList],
+        clear: Option<wgpu::Color>,
+    ) -> Result<RenderStats, Box<dyn std::error::Error>> {
         self.renderer.begin_camera_submit();
         let mut encoder =
             self.renderer
@@ -74,8 +84,8 @@ impl RenderContext {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("headless-render-encoder"),
                 });
-        let stats = self.renderer.render_list_ext(
-            render_list,
+        let stats = self.renderer.render_lists_ext(
+            render_lists,
             &mut encoder,
             &self.view,
             &self.stencil,
