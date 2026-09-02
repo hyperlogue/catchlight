@@ -423,6 +423,8 @@ export interface FakeModule {
   gpu: FakeGpu;
   replicas: FakeReplica[];
   viewports: FakeViewport[];
+  /** Set to make the next `Gpu.acquire` reject with this message, once. */
+  failNextAcquire: string | undefined;
 }
 
 /** The four classes `@catchlight/wasm` exports, in memory. */
@@ -445,11 +447,20 @@ export function fakeWasm(): FakeModule {
     }
   }
 
-  return {
+  const made: FakeModule = {
+    gpu,
+    replicas,
+    viewports,
+    failNextAcquire: undefined,
     module: {
       CatchlightEditor: FakeEditor,
       Gpu: {
         acquire: (canvas: HTMLCanvasElement) => {
+          const failure = made.failNextAcquire;
+          if (failure !== undefined) {
+            made.failNextAcquire = undefined;
+            return Promise.reject(new Error(failure));
+          }
           gpu.acquiredFrom.push(canvas);
           return Promise.resolve(gpu);
         },
@@ -457,10 +468,8 @@ export function fakeWasm(): FakeModule {
       Replica: TrackedReplica,
       Viewport: TrackedViewport,
     },
-    gpu,
-    replicas,
-    viewports,
   };
+  return made;
 }
 
 /**
