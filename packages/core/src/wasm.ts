@@ -107,6 +107,19 @@ export interface WasmReplica {
   ): boolean;
   clearScratchTransform(node: NodeId): boolean;
   clearAllScratch(): void;
+
+  /**
+   * The node's evaluated world transform after the last tick: 16 floats,
+   * column-major. `undefined` when the model holds no such node.
+   */
+  nodeWorldTransform(node: NodeId): Float32Array | undefined;
+  /**
+   * The node's authored local translation `[x, y, z]` moved by a world-space
+   * delta, expressed in its parent's frame — what a drag previews and then
+   * commits. `undefined` when the model holds no such node.
+   */
+  translationAfterWorldDelta(node: NodeId, dx: number, dy: number): Float32Array | undefined;
+
   free(): void;
 }
 

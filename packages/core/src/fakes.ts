@@ -257,6 +257,8 @@ export class FakeReplica implements WasmReplica {
   pose = new Map<string, number>();
   scratchDeforms = new Map<string, Float32Array>();
   scratchTransforms = new Map<string, number[]>();
+  /** Authored local translations, which `translationAfterWorldDelta` reads. */
+  translations = new Map<string, [number, number, number]>();
   freed = false;
 
   #rev = 0;
@@ -351,6 +353,28 @@ export class FakeReplica implements WasmReplica {
 
   clearScratchTransform(node: string): boolean {
     return this.scratchTransforms.delete(node);
+  }
+
+  /** Identity: the fake has no fold, and nothing here reads the rotation. */
+  nodeWorldTransform(node: string): Float32Array | undefined {
+    if (!this.#holds(node)) return undefined;
+    const world = new Float32Array(16);
+    world[0] = world[5] = world[10] = world[15] = 1;
+    return world;
+  }
+
+  /** The stored local translation plus the delta, the parent frame being identity. */
+  translationAfterWorldDelta(node: string, dx: number, dy: number): Float32Array | undefined {
+    if (!this.#holds(node)) return undefined;
+    const [x, y, z] = this.translations.get(node) ?? [0, 0, 0];
+    return new Float32Array([x + dx, y + dy, z]);
+  }
+
+  /** Whether the fed document names `node` anywhere in its tree. */
+  #holds(node: string): boolean {
+    const walk = (tree: TreeNode): boolean =>
+      tree.id === node || tree.children.some(walk);
+    return this.doc ? walk(this.doc.root) : false;
   }
 
   clearAllScratch(): void {
