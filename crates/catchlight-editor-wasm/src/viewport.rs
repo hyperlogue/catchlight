@@ -18,13 +18,14 @@
 //! - **Nothing is drawn while nothing is stale, and motion is what keeps it
 //!   stale.** A started viewport still wakes on every animation frame, but a
 //!   clean one returns without touching the GPU or acquiring a surface
-//!   texture. A frame that drew stays dirty exactly while
-//!   [`Puppet::tick`](catchlight_core::Puppet::tick) reports
-//!   [`Motion`](catchlight_core::Motion): physics settling and an animation
-//!   playing draw themselves, and everything else — a pose change, a scratch
-//!   edit, a structure push — is someone calling [`invalidate`]. So a settled
-//!   puppet costs a predicate per frame and a swinging one keeps drawing with
-//!   nobody asking.
+//!   texture. A frame that drew stays dirty exactly while the replica's tick
+//!   reports [`Motion`](catchlight_core::Motion): physics settling and an
+//!   animation playing draw themselves, and everything else — a pose change, a
+//!   scratch edit, a structure push — is someone calling [`invalidate`]. So a
+//!   settled puppet costs a predicate per frame and a swinging one keeps
+//!   drawing with nobody asking. Every viewport that frames hears that motion,
+//!   including the ones whose call did not tick, or a second canvas would go
+//!   clean and stop following a pendulum the first one is still swinging.
 //!
 //! - **[`start`] and [`stop`] are repeatable and idempotent.** React mounts,
 //!   unmounts and remounts an effect — StrictMode does it deliberately on every
@@ -40,11 +41,17 @@
 //!   reads once from [`Gpu::maxSize`](crate::Gpu::max_size) — a surface above
 //!   it fails to configure and the canvas goes black with no other symptom.
 //!
-//! - **The GPU state belongs to the replica, not to the canvas.** The
-//!   renderer, its cache and its textures live on the [`Replica`] this draws;
-//!   what a viewport owns is its surface, its stencil and its composite pool,
-//!   all three sized to this canvas alone. Two viewports on one session
-//!   therefore cost two swapchains and not two copies of the model.
+//! - **The GPU state belongs to the replica, not to the canvas, and so does
+//!   the clock.** The renderer, its cache and its textures live on the
+//!   [`Replica`] this draws; what a viewport owns is its surface, its stencil
+//!   and its composite pool, all three sized to this canvas alone. Two
+//!   viewports on one session therefore cost two swapchains and not two copies
+//!   of the model. The puppet is shared the same way, so a frame hands the
+//!   replica the animation frame's *timestamp* rather than a `dt` of its own:
+//!   [`ReplicaState::frame`](crate::ReplicaState::frame) ticks once per
+//!   timestamp and the second canvas in the batch only collects and draws.
+//!   Two viewports advancing the same puppet would run its physics and its
+//!   animations at twice the rate.
 //!
 //! [`invalidate`]: Viewport::invalidate
 //! [`start`]: Viewport::start
@@ -94,8 +101,6 @@ struct Inner {
     camera: Camera,
     size: (u32, u32),
     dirty: bool,
-    /// The timestamp of the last frame that drew, for the puppet's `dt`.
-    last_ms: Option<f64>,
 }
 
 impl Inner {
@@ -108,12 +113,6 @@ impl Inner {
         // frame is in flight must leave the viewport stale again.
         self.dirty = false;
 
-        let dt = self
-            .last_ms
-            .map(|last| ((now_ms - last) / 1000.0).clamp(0.0, 0.1) as f32)
-            .unwrap_or(0.0);
-        self.last_ms = Some(now_ms);
-
         let (width, height) = self.size;
         let aspect = width as f32 / height.max(1) as f32;
         let view_proj =
@@ -123,9 +122,13 @@ impl Inner {
             .replica
             .try_borrow_mut()
             .map_err(|_| "the replica is already borrowed on this frame".to_string())?;
+        // The timestamp, not a `dt`: the replica owns the tick and derives the
+        // step from its own last one, so a second canvas in this same
+        // animation frame redraws without advancing anything.
+        //
         // Stale again while the puppet is still moving itself, so physics
         // settles and an animation plays with nobody calling `invalidate`.
-        if replica.frame(dt, &mut self.list)?.any() {
+        if replica.frame(now_ms, &mut self.list)?.any() {
             self.dirty = true;
         }
 
@@ -261,7 +264,6 @@ impl Viewport {
                 },
                 size: (width, height),
                 dirty: true,
-                last_ms: None,
             })),
             tick: Rc::new(RefCell::new(None)),
             pending: Rc::new(Cell::new(None)),
