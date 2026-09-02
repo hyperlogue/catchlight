@@ -52,10 +52,17 @@ export type { Bounds, Point, Size } from "./camera.js";
 export { useNodeDrag } from "./node-drag.js";
 export type { NodeDrag } from "./node-drag.js";
 
-export { ParamSlider, ParamSliderRoot } from "./param-slider.js";
-export type { ParamSliderRootProps } from "./param-slider.js";
-export { ParamList, ParamListRoot } from "./param-list.js";
-export type { ParamListRootProps } from "./param-list.js";
+export { ParamKeys, ParamKeysRoot, ParamSlider, ParamSliderRoot } from "./param-slider.js";
+export type { ParamKeysRootProps, ParamSliderRootProps } from "./param-slider.js";
+export {
+  ParamAdd,
+  ParamAddRoot,
+  ParamFields,
+  ParamFieldsRoot,
+  ParamList,
+  ParamListRoot,
+} from "./param-list.js";
+export type { ParamAddRootProps, ParamFieldsRootProps, ParamListRootProps } from "./param-list.js";
 
 export { useNodeActions } from "./node-actions.js";
 export type { DropAt, NodeActions } from "./node-actions.js";
@@ -73,9 +80,36 @@ export type { SessionListRootProps } from "./session-list.js";
 export { FileOpen, FileOpenRoot } from "./file-open.js";
 export type { FileOpenRootProps } from "./file-open.js";
 
+export {
+  BINDING_TARGETS,
+  INTERPOLATE_MODES,
+  bindingsOfParam,
+  keyIndexNear,
+  normalizedValue,
+  useBindings,
+  valueAtKey,
+} from "./bindings.js";
+export { useParamActions } from "./param-actions.js";
+export type { BindingCell, NewParam, ParamActions, ParamPatch } from "./param-actions.js";
+export { BindingGrid, BindingGridRoot } from "./binding-grid.js";
+export type { BindingGridRootProps } from "./binding-grid.js";
+
 export { useNodePatch } from "./node-patch.js";
 export type { NodePatchFn } from "./node-patch.js";
 export { BLEND_MODES, Inspector, InspectorRoot } from "./inspector.js";
 export type { InspectorRootProps } from "./inspector.js";
 
-export type { Camera, NodeInfo } from "@catchlight/core";
+export { POSE_INTERVAL_MS, PresenceProvider, usePose } from "./presence.js";
+export type { Pose, PoseSource, PresenceProviderProps } from "./presence.js";
+export { readPose, usePosePublisher, useResetPose } from "./pose.js";
+export {
+  downloadBytes,
+  downloadName,
+  FileSave,
+  FileSaveRoot,
+  saveKey,
+  useFileSave,
+} from "./file-save.js";
+export type { FileSaver, FileSaveRootProps, SaveOutcome } from "./file-save.js";
+
+export type { BindingInfo, BindingParams, Camera, NodeInfo } from "@catchlight/core";

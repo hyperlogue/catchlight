@@ -274,9 +274,18 @@
     cursor: grabbing;
   }
 
-  .catchlight [data-catchlight-stage][data-empty] {
+  /* Nothing open: the canvas stays put (see `Viewport.Root`), blank, with
+     the hint laid over it. */
+  .catchlight [data-catchlight-stage][data-empty] [data-catchlight-viewport] {
+    visibility: hidden;
+  }
+
+  .catchlight [data-catchlight-stage] > [data-catchlight-stage-hint] {
+    position: absolute;
+    inset: 0;
     display: grid;
     place-items: center;
+    margin: 0;
     padding: var(--cl-pad);
     color: var(--cl-text-dim);
     text-align: center;
@@ -464,4 +473,323 @@
     inline-size: 12px;
     block-size: 12px;
   }
+
+  /* Open/save, camera and pose: the rest of the toolbar, the close control on
+     a document row, and the two status items a save leaves behind. */
+
+  .catchlight [data-catchlight-new],
+  .catchlight [data-catchlight-save-as-submit],
+  .catchlight [data-catchlight-camera-reset],
+  .catchlight [data-catchlight-pose-reset] {
+    padding: 3px 10px;
+    background: var(--cl-surface);
+    color: inherit;
+    font: inherit;
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+  }
+
+  .catchlight [data-catchlight-new]:hover:not(:disabled),
+  .catchlight [data-catchlight-save-as-submit]:hover:not(:disabled),
+  .catchlight [data-catchlight-camera-reset]:hover:not(:disabled),
+  .catchlight [data-catchlight-pose-reset]:hover:not(:disabled) {
+    background: var(--cl-surface-raised);
+  }
+
+  .catchlight [data-catchlight-camera-reset]:disabled,
+  .catchlight [data-catchlight-pose-reset]:disabled {
+    color: var(--cl-text-dim);
+    cursor: default;
+  }
+
+  /* The name and its submit read as one control. */
+  .catchlight [data-catchlight-file-save] {
+    display: inline-flex;
+    align-items: stretch;
+  }
+
+  .catchlight [data-catchlight-save-as] {
+    inline-size: 12ch;
+    padding: 1px 6px;
+    background: var(--cl-crust);
+    color: inherit;
+    font: inherit;
+    border: 1px solid var(--cl-border);
+    border-inline-end: 0;
+    border-start-start-radius: var(--cl-radius);
+    border-end-start-radius: var(--cl-radius);
+  }
+
+  .catchlight [data-catchlight-save-as-submit] {
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
+  }
+
+  /* Fit, the readout and Reset sit apart from the file controls. */
+  .catchlight [data-catchlight-fit] {
+    margin-inline-start: auto;
+  }
+
+  .catchlight [data-catchlight-zoom] {
+    min-inline-size: 5ch;
+    color: var(--cl-text-dim);
+    font-family: var(--cl-font-mono);
+    font-size: var(--cl-font-size-small);
+    text-align: center;
+  }
+
+  .catchlight [data-catchlight-pose-reset] {
+    margin-inline-start: calc(var(--cl-gap) * 2);
+  }
+
+  /* A document row: the title takes the width, the close stays a glyph. */
+  .catchlight [data-catchlight-session] {
+    display: flex;
+    align-items: center;
+  }
+
+  .catchlight [data-catchlight-session] > button:first-child {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  .catchlight [data-catchlight-session][data-current] > button:first-child {
+    background: var(--cl-accent-soft);
+    box-shadow: inset 2px 0 0 var(--cl-accent);
+  }
+
+  .catchlight [data-catchlight-session-close] {
+    flex: none;
+    inline-size: var(--cl-row-height);
+    min-block-size: var(--cl-row-height);
+    padding: 0;
+    background: none;
+    color: var(--cl-text-dim);
+    font: inherit;
+    border: 0;
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+  }
+
+  .catchlight [data-catchlight-session-close]:hover {
+    background: var(--cl-surface);
+    color: var(--cl-danger);
+  }
+
+  .catchlight [data-catchlight-status-item][data-catchlight-file] {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .catchlight [data-catchlight-status-item][data-catchlight-notice] {
+    color: var(--cl-accent);
+  }
+
+  /* Param editing: the add form, one param's own fields, the keypoint strip. */
+
+  .catchlight [data-catchlight-param-add],
+  .catchlight [data-catchlight-param-fields] {
+    display: grid;
+    grid-template-columns: 1fr 3.5em 3.5em 3.5em auto;
+    gap: 2px;
+    align-items: center;
+  }
+
+  .catchlight [data-catchlight-param-add] {
+    margin-block-end: var(--cl-gap);
+  }
+
+  .catchlight [data-catchlight-param-add] input,
+  .catchlight [data-catchlight-param-fields] input {
+    min-inline-size: 0;
+    padding: 1px 3px;
+    background: var(--cl-mantle);
+    color: var(--cl-text);
+    font: inherit;
+    font-size: var(--cl-font-size-small);
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+  }
+
+  .catchlight [data-catchlight-param-rename] {
+    font-weight: 600;
+  }
+
+  .catchlight [data-catchlight-param-delete] {
+    padding: 0 4px;
+    background: none;
+    color: var(--cl-text-dim);
+    font: inherit;
+    border: 0;
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+  }
+
+  .catchlight [data-catchlight-param-delete]:hover {
+    background: var(--cl-surface);
+    color: var(--cl-danger);
+  }
+
+  .catchlight [data-catchlight-param-keys] {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .catchlight [data-catchlight-param-key-track] {
+    position: relative;
+    flex: 1 1 auto;
+    block-size: 12px;
+    border-block-start: 1px solid var(--cl-border);
+  }
+
+  /* A marker's `left` is the key position itself, set inline by the part. */
+  .catchlight [data-catchlight-param-key] {
+    position: absolute;
+    inset-block-start: 0;
+    translate: -50% 0;
+    inline-size: 7px;
+    block-size: 7px;
+    padding: 0;
+    background: var(--cl-surface-active);
+    border: 1px solid var(--cl-border);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+
+  .catchlight [data-catchlight-param-key][data-interior] {
+    cursor: ew-resize;
+  }
+
+  .catchlight [data-catchlight-param-key][data-current],
+  .catchlight [data-catchlight-param-key][data-dragging] {
+    background: var(--cl-accent);
+    border-color: var(--cl-accent);
+  }
+
+  .catchlight [data-catchlight-param-key-insert],
+  .catchlight [data-catchlight-param-key-delete] {
+    flex: none;
+    inline-size: 16px;
+    block-size: 16px;
+    padding: 0;
+    background: none;
+    color: var(--cl-text-dim);
+    font: inherit;
+    line-height: 1;
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+  }
+
+  .catchlight [data-catchlight-param-key-insert]:disabled,
+  .catchlight [data-catchlight-param-key-delete]:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  /* Bindings: one block per target, a cell per keypoint. */
+
+  .catchlight [data-catchlight-binding-param] {
+    inline-size: 100%;
+    margin-block-end: var(--cl-gap);
+    padding: 1px 3px;
+    background: var(--cl-mantle);
+    color: var(--cl-text);
+    font: inherit;
+    font-size: var(--cl-font-size-small);
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+  }
+
+  .catchlight [data-catchlight-binding-grid] {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cl-gap);
+  }
+
+  .catchlight [data-catchlight-binding-add] {
+    display: flex;
+    gap: 2px;
+  }
+
+  .catchlight [data-catchlight-binding-add] select {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  .catchlight [data-catchlight-binding] {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--cl-gap);
+    background: var(--cl-mantle);
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+  }
+
+  .catchlight [data-catchlight-binding-head] {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .catchlight [data-catchlight-binding-name] {
+    flex: 1 1 auto;
+    color: var(--cl-text);
+    font-family: var(--cl-font-mono);
+    font-size: var(--cl-font-size-small);
+  }
+
+  .catchlight [data-catchlight-binding-row] {
+    display: flex;
+    gap: 2px;
+  }
+
+  .catchlight [data-catchlight-binding-cell] {
+    flex: 1 1 0;
+    min-inline-size: 0;
+    padding: 1px 3px;
+    background: var(--cl-crust);
+    color: var(--cl-text-dim);
+    font-family: var(--cl-font-mono);
+    font-size: var(--cl-font-size-small);
+    text-align: center;
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+  }
+
+  /* The whole point of the read behind this panel: a cell nobody authored is
+     derived, and a rigger acts on that. */
+  .catchlight [data-catchlight-binding-cell][data-set] {
+    background: var(--cl-surface);
+    color: var(--cl-text);
+  }
+
+  .catchlight [data-catchlight-binding-cell][data-unset] {
+    border-style: dashed;
+  }
+
+  .catchlight [data-catchlight-binding-cell][data-selected] {
+    border-color: var(--cl-accent);
+    box-shadow: inset 0 0 0 1px var(--cl-accent);
+  }
+
+  .catchlight [data-catchlight-binding-grid][data-copying]
+    [data-catchlight-binding-cell] {
+    cursor: copy;
+  }
+
+  .catchlight [data-catchlight-binding-cell-actions] {
+    display: flex;
+    gap: 2px;
+  }
+
+  .catchlight [data-catchlight-empty] {
+    margin: 0;
+    color: var(--cl-text-dim);
+    font-size: var(--cl-font-size-small);
+  }
 }
+

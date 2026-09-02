@@ -115,6 +115,19 @@ export interface Backend {
   discardKey(key: string): Promise<void>;
 
   /**
+   * The bytes the backend's store holds at `key`, or `undefined` when this tab
+   * has no copy to hand out.
+   *
+   * What a save is read back through: in-tab the store is in this tab, and a
+   * document that stays there is one nobody can take to another machine, so
+   * the bytes come back and become a download. Connected, the key names a file
+   * in the editor's own store — already where the person asked it to go — and
+   * there is nothing to hand out. A missing key in-tab is an error, not
+   * `undefined`: a save that reported a key wrote it.
+   */
+  readBytes(key: string): Promise<Uint8Array | undefined>;
+
+  /**
    * Brings `replica` to at least `rev`, resolving with the revision it holds
    * afterwards — which may be newer than asked. Feeds for one session are
    * serialized and coalesced.

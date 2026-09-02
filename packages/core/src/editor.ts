@@ -163,6 +163,36 @@ export class Editor {
     return expectResult(body, "saved").path;
   }
 
+  /**
+   * The bytes the store holds at `key`, or `undefined` when they are not in
+   * this tab to be had.
+   *
+   * What makes a save in a tab worth anything: the store an in-tab editor
+   * writes to is the browser's own, and a document that never leaves it is
+   * one the person cannot take anywhere. So a host saves, reads the key back
+   * through here, and hands the bytes to the browser as a download. A
+   * connected editor wrote the file where it was asked to and hands back
+   * nothing — the host then says where it went rather than downloading it.
+   */
+  readDocument(key: string): Promise<Uint8Array | undefined> {
+    return this.#backend.readBytes(key);
+  }
+
+  /**
+   * Closes the document on the editor and frees this tab's replica of it.
+   *
+   * By id rather than by `Session`, because the list a person closes from
+   * names sessions this tab may never have attached. Closing one it did hold
+   * frees the replica too; anything still waiting on that session rejects.
+   */
+  async closeDocument(id: SessionId): Promise<void> {
+    await this.#backend.send({ cmd: "session_close", session: id });
+    const held = this.#sessions.get(id);
+    if (!held) return;
+    this.#sessions.delete(id);
+    held.close();
+  }
+
   /** Every document the editor has open, including ones this tab did not open. */
   async listSessions(): Promise<SessionInfo[]> {
     const reply = await this.#backend.send({ cmd: "session_list" });
@@ -182,10 +212,16 @@ export class Editor {
     return this.#sessions.get(id);
   }
 
-  /** Registers `listener`, called when a document is opened or closed anywhere. */
+  /**
+   * Registers `listener`, called whenever what [`listSessions`] reports may
+   * have changed: a document opened or closed anywhere, and a document that
+   * moved — a `SessionInfo` carries the revision, the node count and whether
+   * there is anything unsaved, and every one of those follows an edit or a
+   * save.
+   */
   onSessionsChanged(listener: () => void): Unsubscribe {
     return this.#backend.onEvent((event) => {
-      if (event.event === "sessions_changed") listener();
+      if (event.event === "sessions_changed" || event.event === "document_changed") listener();
     });
   }
 

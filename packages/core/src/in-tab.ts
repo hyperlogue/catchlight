@@ -106,6 +106,15 @@ export class InTabBackend implements Backend {
   }
 
   /**
+   * Reads `key` out of the store — never out of staging, which `send` drains
+   * into the store before it resolves, so what is there is what was written.
+   */
+  readBytes(key: string): Promise<Uint8Array | undefined> {
+    this.#live();
+    return this.#storage.read(key);
+  }
+
+  /**
    * Hands the editor's own model to the replica.
    *
    * `rev` is not passed on: the event that asked for this came from the editor

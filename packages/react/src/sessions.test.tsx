@@ -60,6 +60,41 @@ describe("the open documents", () => {
     await view.unmount();
   });
 
+  test("a close control appears only with a handler, and the current row is marked", async () => {
+    const { editor } = await harness();
+    const session = await editor.newDocument("akari");
+    await editor.newDocument("beni");
+    const closed: SessionInfo[] = [];
+
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <SessionList.Root current={session.id} />
+      </EditorProvider>,
+    );
+    await settle();
+    expect(view.container.querySelectorAll("[data-catchlight-session-close]")).toHaveLength(0);
+    expect(
+      view.container.querySelector("[data-catchlight-session][data-current]")?.getAttribute("data-session"),
+    ).toBe(String(session.id));
+
+    await view.render(
+      <EditorProvider editor={editor}>
+        <SessionList.Root current={session.id} onClose={(info) => closed.push(info)} />
+      </EditorProvider>,
+    );
+    const controls = view.container.querySelectorAll<HTMLButtonElement>("[data-catchlight-session-close]");
+    expect(controls).toHaveLength(2);
+    // The select button stays first in its row, and the close names its document.
+    expect(controls[1]?.getAttribute("aria-label")).toBe("Close beni");
+    await act(async () => {
+      controls[1]?.click();
+    });
+
+    expect(closed).toHaveLength(1);
+    expect(closed[0]).toMatchObject({ title: "beni" });
+    await view.unmount();
+  });
+
   test("refresh is the manual door, and it rejects", async () => {
     const { editor, wasm } = await harness();
     let sessions: ReturnType<typeof useSessions> | undefined;

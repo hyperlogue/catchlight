@@ -77,9 +77,15 @@ async function open(
   };
 }
 
-/** Every document command the backend was sent, in order. */
+/**
+ * Every document command the backend was sent, in order.
+ *
+ * Presence is dropped whole rather than by name: a selection publishes one on
+ * every click and the provider asks for the session's own on mount, and none
+ * of that is what a tree edit put on the wire.
+ */
 function commands(backend: ScriptedBackend): Command[] {
-  return backend.sent.filter((command) => command.cmd !== "presence_set");
+  return backend.sent.filter((command) => !command.cmd.startsWith("presence_"));
 }
 
 describe("the tree edits on the wire", () => {

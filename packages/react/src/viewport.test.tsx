@@ -98,6 +98,39 @@ describe("attaching", () => {
   });
 });
 
+describe("a stage with nothing to draw", () => {
+  test("waits with its canvas, and attaches on that same element when a session arrives", async () => {
+    const { editor, viewports } = await harness();
+    const session = await editor.newDocument();
+    const stage = (drawn: typeof session | undefined) => (
+      <EditorProvider editor={editor}>
+        <Viewport.Root session={drawn} />
+      </EditorProvider>
+    );
+
+    const view = await mount(stage(undefined));
+    await settle();
+    const canvas = view.container.querySelector("canvas");
+    expect(canvas).not.toBeNull();
+    expect(viewports).toHaveLength(0);
+
+    await view.render(stage(session));
+    await settle();
+    // The same element: on the WebGL2 tier it is the only one the device can
+    // ever draw on, so a fresh one here would be a blank stage for good.
+    expect(view.container.querySelector("canvas")).toBe(canvas);
+    expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
+
+    // Back to nothing: the renderer goes, the element stays.
+    await view.render(stage(undefined));
+    await settle();
+    expect(view.container.querySelector("canvas")).toBe(canvas);
+    expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(0);
+
+    await view.unmount();
+  });
+});
+
 describe("pointers", () => {
   test("a pointer arrives in world units, Y-up", async () => {
     const { editor } = await harness();
@@ -402,6 +435,54 @@ describe("framing the model", () => {
     expect(api?.camera.center).toEqual([0, 0]);
     expect(api?.camera.height).toBeCloseTo(13.2, 9);
     await view.unmount();
+  });
+
+  test("the zoom is measured against the fit, whichever side framed it", async () => {
+    const { editor } = await harness();
+    const session = await editor.newDocument();
+    const frames = stubFrames();
+    let api: ViewportCamera | undefined;
+
+    function Host(): ReactNode {
+      const camera = useViewportCamera();
+      api = camera;
+      return (
+        <Viewport.Root
+          session={session}
+          camera={camera.camera}
+          onCameraChange={camera.onCameraChange}
+          onFit={camera.onFit}
+          onResize={camera.onResize}
+        />
+      );
+    }
+
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <Host />
+      </EditorProvider>,
+    );
+    await settle();
+    // Nothing framed yet: there is nothing to be relative to.
+    expect(api?.zoom).toBeUndefined();
+
+    // The component's own fit, reported through `onFit`, is the reference.
+    fakeReplica(session).box = [-8, -1, 8, 1];
+    await run(() => frames.flush());
+    expect(api?.camera.height).toBeCloseTo(13.2, 9);
+    expect(api?.zoom).toBeCloseTo(1, 9);
+
+    // A wheel notch in: the height shrinks and the zoom grows by the same factor.
+    const canvas = view.container.querySelector("canvas") as HTMLCanvasElement;
+    await fire(canvas, wheel(-100, 400, 300));
+    expect(api?.zoom).toBeCloseTo(1.1, 9);
+
+    // The button's fit is the reference again.
+    await run(() => api?.fit(session));
+    expect(api?.zoom).toBeCloseTo(1, 9);
+
+    await view.unmount();
+    frames.restore();
   });
 });
 

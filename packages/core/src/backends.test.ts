@@ -340,4 +340,10 @@ describe("connected", () => {
     await backend.stageKey("project/akari.clm");
     expect(http.calls.filter((call) => call.url.includes("/files/"))).toHaveLength(0);
   });
+
+  test("reading a key back is nothing either: the file is already where it was asked to go", async () => {
+    const { backend, http } = await connect();
+    expect(await backend.readBytes("project/akari.clm")).toBeUndefined();
+    expect(http.calls.filter((call) => call.url.includes("/files/"))).toHaveLength(0);
+  });
 });
