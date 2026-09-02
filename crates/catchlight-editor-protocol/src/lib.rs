@@ -506,6 +506,21 @@ pub enum Command {
         indices: Vec<u32>,
         origin: [f32; 2],
     },
+    /// Derive a part's mesh from its own texture's alpha and apply it, with
+    /// the same deform re-fit and the same emptied-slot reply as
+    /// [`Command::MeshSet`].
+    ///
+    /// The editor does the tracing: it holds the texture bytes, and a client
+    /// that traced them itself would have to decode an image, agree on the
+    /// UV mapping, and send back a mesh — three chances to disagree with the
+    /// editor about what the part looks like.
+    MeshAuto {
+        session: SessionId,
+        node: NodeId,
+        /// Absent is [`AutoMesh::Contour`] with every knob at its default.
+        #[serde(default)]
+        mode: AutoMesh,
+    },
     /// Copy `from`'s mesh onto `to` (with the same deform re-fit and the same
     /// emptied-slot reply).
     MeshCopy {
@@ -767,6 +782,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("deform_set", CommandKind::Document),
     ("deform_vertices", CommandKind::Document),
     ("mesh_set", CommandKind::Document),
+    ("mesh_auto", CommandKind::Document),
     ("mesh_copy", CommandKind::Document),
     ("seam_add", CommandKind::Document),
     ("seam_delete", CommandKind::Document),
@@ -845,6 +861,7 @@ impl Command {
             Command::DeformSet { .. } => "deform_set",
             Command::DeformVertices { .. } => "deform_vertices",
             Command::MeshSet { .. } => "mesh_set",
+            Command::MeshAuto { .. } => "mesh_auto",
             Command::MeshCopy { .. } => "mesh_copy",
             Command::SeamAdd { .. } => "seam_add",
             Command::SeamDelete { .. } => "seam_delete",
@@ -945,6 +962,7 @@ impl Command {
             | Command::DeformSet { session, .. }
             | Command::DeformVertices { session, .. }
             | Command::MeshSet { session, .. }
+            | Command::MeshAuto { session, .. }
             | Command::MeshCopy { session, .. }
             | Command::SeamAdd { session, .. }
             | Command::SeamDelete { session, .. }
@@ -1020,6 +1038,59 @@ impl BindingParams {
         Self {
             param: x,
             param_y: Some(y),
+        }
+    }
+}
+
+/// How [`Command::MeshAuto`] derives a mesh from a part's alpha.
+///
+/// **Every knob is optional, and none of the defaults are written here.** They
+/// live in `catchlight-editor-core` beside the code that reads them, so the
+/// wire cannot drift from what the editor actually does; absent means "what
+/// the editor would have used". `{"mode": "contour"}` is the default trace.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum AutoMesh {
+    /// Trace the alpha contours: one pinned boundary loop per connected
+    /// component, plus interior fill points if `spacing` asks for them.
+    Contour {
+        /// Alpha strictly above this counts as solid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        threshold: Option<u8>,
+        /// Douglas-Peucker tolerance, in texels: higher is a coarser outline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        simplify: Option<f32>,
+        /// Texels of outward dilation before tracing, so the outline clears
+        /// the art's own edge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        margin: Option<u32>,
+        /// Interior fill-point spacing in texels; 0 is boundary only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spacing: Option<u32>,
+    },
+    /// A regular grid over the bounding box of the solid texels.
+    Grid {
+        /// Alpha strictly above this counts as solid, and is what the
+        /// bounding box is measured from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        threshold: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cols: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u32>,
+    },
+}
+
+impl Default for AutoMesh {
+    /// Contour, every knob the editor's own: what a client that asks for "an
+    /// automesh" and nothing more gets.
+    fn default() -> Self {
+        Self::Contour {
+            threshold: None,
+            simplify: None,
+            margin: None,
+            spacing: None,
         }
     }
 }
@@ -1204,6 +1275,9 @@ pub enum ErrorCode {
     WeldSlotMismatch,
     /// No weld pairs the two seams named.
     UnknownWeld,
+    /// The texture carries no pixel above the alpha threshold, so there is no
+    /// shape to mesh. A client offers a lower threshold rather than an error.
+    NothingToMesh,
     /// This needs a complete model and the session holds an addon fragment.
     /// A session never opens one, so nothing should see this today.
     Fragment,

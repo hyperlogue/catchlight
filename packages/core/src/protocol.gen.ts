@@ -428,6 +428,15 @@ export type Command =
     origin: [number, number],
   }
   | {
+    "cmd": "mesh_auto",
+    session: SessionId,
+    node: NodeId,
+    /**
+     * Absent is [`AutoMesh::Contour`] with every knob at its default.
+     */
+    mode: AutoMesh,
+  }
+  | {
     "cmd": "mesh_copy",
     session: SessionId,
     from: NodeId,
@@ -623,6 +632,46 @@ export type NodePatch = {
 };
 
 /**
+ * How [`Command::MeshAuto`] derives a mesh from a part's alpha.
+ *
+ * **Every knob is optional, and none of the defaults are written here.** They
+ * live in `catchlight-editor-core` beside the code that reads them, so the
+ * wire cannot drift from what the editor actually does; absent means "what
+ * the editor would have used". `{"mode": "contour"}` is the default trace.
+ */
+export type AutoMesh =
+  | {
+    "mode": "contour",
+    /**
+     * Alpha strictly above this counts as solid.
+     */
+    threshold?: number | null,
+    /**
+     * Douglas-Peucker tolerance, in texels: higher is a coarser outline.
+     */
+    simplify?: number | null,
+    /**
+     * Texels of outward dilation before tracing, so the outline clears
+     * the art's own edge.
+     */
+    margin?: number | null,
+    /**
+     * Interior fill-point spacing in texels; 0 is boundary only.
+     */
+    spacing?: number | null,
+  }
+  | {
+    "mode": "grid",
+    /**
+     * Alpha strictly above this counts as solid, and is what the
+     * bounding box is measured from.
+     */
+    threshold?: number | null,
+    cols?: number | null,
+    rows?: number | null,
+  };
+
+/**
  * Which Id [`Command::RenameId`] changes, and to what.
  */
 export type Rename =
@@ -773,6 +822,7 @@ export type ErrorCode =
   | "duplicate_slot"
   | "weld_slot_mismatch"
   | "unknown_weld"
+  | "nothing_to_mesh"
   | "fragment"
   | "edit"
   | "manifest"
@@ -1148,6 +1198,7 @@ export type DocumentCommandTag =
   | "deform_set"
   | "deform_vertices"
   | "mesh_set"
+  | "mesh_auto"
   | "mesh_copy"
   | "seam_add"
   | "seam_delete"
