@@ -1,0 +1,44 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and a running one finishes rather than being cancelled.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: build and deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # The sample model is a Git LFS object; without it the site ships a pointer.
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/configure-pages@v6
+      # Release: this is the bundle a visitor downloads.
+      - run: nix develop -c cargo xtask wasm
+      - run: nix develop -c bun install --frozen-lockfile
+      # Pages serves under /<repo>/, which every asset URL has to carry.
+      - run: nix develop -c bun run --filter catchlight-site build
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: apps/site/dist
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,308 @@
+/*
+ * The default look: Catppuccin Mocha, the same palette the desktop editor
+ * installs (crates/catchlight-editor/src/theme.rs).
+ *
+ * Two rules hold this file together. Every value a host might want to change
+ * is a `--cl-*` custom property on `.catchlight`, so theming is overriding
+ * variables and never rewriting selectors. And every rule lives in
+ * `@layer catchlight`, which loses to any unlayered rule a host writes — so a
+ * host restyles a part without a specificity fight and without `!important`.
+ *
+ * Isolation is the `.catchlight` prefix, not a shadow root: the canvas, the
+ * pointer capture and a host's own overlays all work better in the page's own
+ * tree, and a layered class prefix is enough to keep these rules off it.
+ */
+
+@layer catchlight {
+  .catchlight {
+    /* Palette. */
+    --cl-bg: #1e1e2e;
+    --cl-mantle: #181825;
+    --cl-crust: #11111b;
+    --cl-surface: #313244;
+    --cl-surface-raised: #45475a;
+    --cl-surface-active: #585b70;
+    --cl-border: #45475a;
+    --cl-text: #cdd6f4;
+    --cl-text-dim: #7f849c;
+    --cl-accent: #89b4fa;
+    --cl-accent-soft: #89b4fa33;
+    --cl-warn: #fab387;
+    --cl-danger: #eba0ac;
+
+    /* Metrics. */
+    --cl-radius: 4px;
+    --cl-gap: 6px;
+    --cl-pad: 8px;
+    --cl-panel-width: 220px;
+    --cl-row-height: 22px;
+
+    /* Type. */
+    --cl-font:
+      ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --cl-font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+    --cl-font-size: 13px;
+    --cl-font-size-small: 11px;
+
+    display: grid;
+    grid-template-columns: var(--cl-panel-width) minmax(0, 1fr) var(--cl-panel-width);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "toolbar toolbar toolbar"
+      "left    stage   right"
+      "status  status  status";
+    block-size: 100%;
+    inline-size: 100%;
+    min-block-size: 0;
+    background: var(--cl-crust);
+    color: var(--cl-text);
+    font-family: var(--cl-font);
+    font-size: var(--cl-font-size);
+    line-height: 1.4;
+    /* Range inputs and focus rings pick this up without being restyled. */
+    accent-color: var(--cl-accent);
+    color-scheme: dark;
+  }
+
+  .catchlight *,
+  .catchlight *::before,
+  .catchlight *::after {
+    box-sizing: border-box;
+  }
+
+  .catchlight :focus-visible {
+    outline: 2px solid var(--cl-accent);
+    outline-offset: 1px;
+  }
+
+  /* Toolbar. */
+
+  .catchlight [data-catchlight-toolbar] {
+    grid-area: toolbar;
+    display: flex;
+    align-items: center;
+    gap: var(--cl-gap);
+    padding: var(--cl-pad);
+    background: var(--cl-mantle);
+    border-block-end: 1px solid var(--cl-border);
+  }
+
+  .catchlight [data-catchlight-open] {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--cl-gap);
+    padding: 3px 10px;
+    background: var(--cl-surface);
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+  }
+
+  .catchlight [data-catchlight-open]:hover {
+    background: var(--cl-surface-raised);
+  }
+
+  /* The label is the button; the input itself only has to stay reachable. */
+  .catchlight [data-catchlight-file-open] {
+    inline-size: 1px;
+    block-size: 1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    position: absolute;
+  }
+
+  .catchlight [data-catchlight-save] {
+    padding: 3px 10px;
+    background: var(--cl-surface);
+    color: inherit;
+    font: inherit;
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+  }
+
+  .catchlight [data-catchlight-save]:hover:not(:disabled) {
+    background: var(--cl-surface-raised);
+  }
+
+  .catchlight [data-catchlight-save]:disabled {
+    color: var(--cl-text-dim);
+    cursor: default;
+  }
+
+  /* Panels. */
+
+  .catchlight [data-catchlight-panel] {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    background: var(--cl-bg);
+  }
+
+  .catchlight [data-catchlight-panel="left"] {
+    grid-area: left;
+    border-inline-end: 1px solid var(--cl-border);
+  }
+
+  .catchlight [data-catchlight-panel="right"] {
+    grid-area: right;
+    border-inline-start: 1px solid var(--cl-border);
+  }
+
+  .catchlight [data-catchlight-section] {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    padding: var(--cl-pad);
+    border-block-end: 1px solid var(--cl-border);
+    overflow: auto;
+  }
+
+  .catchlight [data-catchlight-section][data-grow] {
+    flex: 1 1 auto;
+    border-block-end: 0;
+  }
+
+  .catchlight [data-catchlight-heading] {
+    margin: 0 0 var(--cl-gap);
+    color: var(--cl-text-dim);
+    font-size: var(--cl-font-size-small);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* Lists: the session list and the node tree are the same row, twice. */
+
+  .catchlight [data-catchlight-session-list],
+  .catchlight [data-catchlight-node-tree],
+  .catchlight [data-catchlight-node-tree] ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .catchlight [data-catchlight-node-tree] ul {
+    /* The indent is the only thing that says a node is a child. */
+    padding-inline-start: 12px;
+  }
+
+  .catchlight [data-catchlight-session] button,
+  .catchlight [data-catchlight-node-label] {
+    display: block;
+    inline-size: 100%;
+    min-block-size: var(--cl-row-height);
+    padding: 2px 6px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    border: 0;
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .catchlight [data-catchlight-session] button:hover,
+  .catchlight [data-catchlight-node-label]:hover {
+    background: var(--cl-surface);
+  }
+
+  .catchlight [data-catchlight-session][data-dirty] button::after {
+    content: " •";
+    color: var(--cl-warn);
+  }
+
+  .catchlight [data-catchlight-node][data-selected] > [data-catchlight-node-label] {
+    background: var(--cl-accent-soft);
+    box-shadow: inset 2px 0 0 var(--cl-accent);
+  }
+
+  /* Params. */
+
+  .catchlight [data-catchlight-param-list] {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cl-gap);
+  }
+
+  .catchlight [data-catchlight-param-item] {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .catchlight [data-catchlight-param-name] {
+    color: var(--cl-text-dim);
+    font-size: var(--cl-font-size-small);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .catchlight [data-catchlight-param-slider] {
+    inline-size: 100%;
+    margin: 0;
+    cursor: ew-resize;
+  }
+
+  /* The canvas. */
+
+  .catchlight [data-catchlight-stage] {
+    grid-area: stage;
+    position: relative;
+    min-inline-size: 0;
+    min-block-size: 0;
+    overflow: hidden;
+    background: var(--cl-crust);
+  }
+
+  /* The backing store is device pixels the renderer sets; CSS owns the box. */
+  .catchlight [data-catchlight-viewport] {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  .catchlight [data-catchlight-stage][data-dragging] {
+    cursor: grabbing;
+  }
+
+  .catchlight [data-catchlight-stage][data-empty] {
+    display: grid;
+    place-items: center;
+    padding: var(--cl-pad);
+    color: var(--cl-text-dim);
+    text-align: center;
+  }
+
+  /* Status. */
+
+  .catchlight [data-catchlight-status] {
+    grid-area: status;
+    display: flex;
+    align-items: center;
+    gap: calc(var(--cl-gap) * 2);
+    padding: 4px var(--cl-pad);
+    background: var(--cl-mantle);
+    border-block-start: 1px solid var(--cl-border);
+    color: var(--cl-text-dim);
+    font-family: var(--cl-font-mono);
+    font-size: var(--cl-font-size-small);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .catchlight [data-catchlight-status-item][data-dirty] {
+    color: var(--cl-warn);
+  }
+
+  .catchlight [data-catchlight-problem] {
+    margin-inline-start: auto;
+    color: var(--cl-danger);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}

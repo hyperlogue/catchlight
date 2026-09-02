@@ -444,3 +444,6 @@ perf.data
 
 # bun workspace
 node_modules/
+
+# Built by `bun run --filter catchlight-site build`.
+/apps/site/dist/

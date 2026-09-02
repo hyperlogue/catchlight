@@ -1,0 +1,29 @@
+/* The page is the editor: one full-height row, with the failure line above it
+   when there is one. */
+
+html,
+body {
+  margin: 0;
+  block-size: 100%;
+  background: #11111b;
+}
+
+#root {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  block-size: 100vh;
+}
+
+#failure {
+  margin: 0;
+  padding: 8px 12px;
+  background: #181825;
+  color: #eba0ac;
+  font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  border-block-end: 1px solid #45475a;
+}
+
+#editor {
+  min-block-size: 0;
+}

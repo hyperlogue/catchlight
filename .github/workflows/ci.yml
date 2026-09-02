@@ -76,6 +76,10 @@ jobs:
       # not fetch.
       - name: protocol types are current
         run: nix develop -c cargo test -p xtask -- --skip fixtures::
+      # The site imports `@catchlight/wasm`, so the generated package has to
+      # exist before anything typechecks or builds against it.
+      - run: nix develop -c cargo xtask wasm --debug
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test
+      - run: nix develop -c bun run --filter catchlight-site build
