@@ -24,6 +24,11 @@
 //!   is anything but `localhost`, `127.0.0.1` or `[::1]` is refused with 421
 //!   before it is routed.
 //!
+//! - **A texture is shared, not copied.** Payloads are the whole reason this
+//!   listener exists, so a response body is either bytes built for the answer
+//!   or the very [`Arc<[u8]>`](Arc) the model holds, cloned by refcount under
+//!   the session lock and written straight to the socket.
+//!
 //! - **A WebSocket's `Origin` must be allowlisted, and its absence is fine.**
 //!   Browsers always send one, so a foreign page is caught; non-browser
 //!   clients (the CLI, a test) send none and are let through on the token
@@ -380,7 +385,7 @@ fn texture(state: &ServerState, id: &str, tex: &str) -> Response {
             Response::new(200, "OK")
                 .with("Content-Type", mime)
                 .with("X-Catchlight-Encoding", name)
-                .body(data.to_vec())
+                .body(data)
         }
         Ok(None) => Response::text(404, "Not Found", "no such texture"),
         Err(_) => Response::text(404, "Not Found", "no such session"),
@@ -821,7 +826,36 @@ struct Response {
     status: u16,
     reason: &'static str,
     headers: Vec<(&'static str, String)>,
-    body: Vec<u8>,
+    body: Body,
+}
+
+/// What a response carries. A status line or a serialized document is built
+/// for the answer and owned by it; a texture is the model's own payload, held
+/// by refcount so the biggest bodies this server writes are never copied.
+enum Body {
+    Owned(Vec<u8>),
+    Shared(Arc<[u8]>),
+}
+
+impl Body {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Shared(bytes) => bytes,
+        }
+    }
+}
+
+impl From<Vec<u8>> for Body {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Owned(bytes)
+    }
+}
+
+impl From<Arc<[u8]>> for Body {
+    fn from(bytes: Arc<[u8]>) -> Self {
+        Self::Shared(bytes)
+    }
 }
 
 impl Response {
@@ -830,7 +864,7 @@ impl Response {
             status,
             reason,
             headers: Vec::new(),
-            body: Vec::new(),
+            body: Body::Owned(Vec::new()),
         }
     }
 
@@ -845,8 +879,8 @@ impl Response {
         self
     }
 
-    fn body(mut self, bytes: Vec<u8>) -> Self {
-        self.body = bytes;
+    fn body(mut self, bytes: impl Into<Body>) -> Self {
+        self.body = bytes.into();
         self
     }
 }
@@ -858,7 +892,7 @@ fn write_response(writer: &mut impl Write, response: &Response) -> io::Result<()
         "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
         response.status,
         response.reason,
-        response.body.len()
+        response.body.bytes().len()
     );
     for (name, value) in &response.headers {
         head.push_str(name);
@@ -868,7 +902,7 @@ fn write_response(writer: &mut impl Write, response: &Response) -> io::Result<()
     }
     head.push_str("\r\n");
     writer.write_all(head.as_bytes())?;
-    writer.write_all(&response.body)?;
+    writer.write_all(response.body.bytes())?;
     writer.flush()
 }
 
