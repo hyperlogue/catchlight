@@ -32,6 +32,19 @@
 //!   model would make every pointer move a document change and the next
 //!   structure push would erase it.
 //!
+//! - **One tick per animation frame, however many canvases draw.** The puppet
+//!   belongs to the replica, not to a viewport, so advancing it does too:
+//!   [`ReplicaState::frame`] takes the animation frame's own timestamp and
+//!   ticks only when that timestamp moved, deriving `dt` from the last tick.
+//!   Two viewports on one session are two callbacks in one
+//!   `requestAnimationFrame` batch carrying the same `DOMHighResTimeStamp`, so
+//!   the second one finds the puppet already advanced and only redraws it —
+//!   otherwise a second canvas would double every session's physics and
+//!   animation rate. The [`Motion`] the tick reported is remembered and
+//!   returned to *every* caller that frames at that timestamp, not only to the
+//!   one that ticked, or the viewports that did not tick would go clean and
+//!   stop redrawing a puppet that is still moving.
+//!
 //! - **Gizmo math lives here.** TypeScript owns the gesture — which pointer,
 //!   which modifier, when it started — and Rust owns everything that has to
 //!   read the model to answer. [`ReplicaState::node_world_transform`] and
@@ -55,7 +68,8 @@ use catchlight_core::formats::clm::{
     structure_texture_ids, ClmTextureRef, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{
-    Mat4, Model, ModelTexture, Motion, NodeId, ParamId, Puppet, ScratchTransform, TexId, Vec2, Vec3,
+    BlendMode, Mat4, Model, ModelTexture, Motion, NodeId, NodeKind, ParamId, Puppet,
+    ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
@@ -70,6 +84,12 @@ pub struct ReplicaState {
     textures: HashMap<TexId, Arc<[u8]>>,
     /// The revision this document reads as, or `None` while pristine.
     rev: Option<u64>,
+    /// The animation-frame timestamp of the last tick, in milliseconds, or
+    /// `None` before the first one. See [`ReplicaState::frame`].
+    last_frame_ms: Option<f64>,
+    /// What that tick reported, replayed to every later caller framing at the
+    /// same timestamp.
+    motion: Motion,
 }
 
 impl Default for ReplicaState {
@@ -88,6 +108,8 @@ impl ReplicaState {
             puppet,
             textures: HashMap::new(),
             rev: None,
+            last_frame_ms: None,
+            motion: Motion::default(),
         }
     }
 
@@ -358,10 +380,117 @@ impl ReplicaState {
         Some([authored[0] + local.x, authored[1] + local.y, authored[2]])
     }
 
-    /// Evaluate the next frame. The [`Motion`] it returns is why a viewport
-    /// stays dirty: a settled puppet reports none and the loop idles.
+    /// Evaluate one step of `dt` seconds. The raw primitive; a viewport goes
+    /// through [`Self::frame`], which is what keeps two canvases on one
+    /// session from stepping the same puppet twice.
+    ///
+    /// The [`Motion`] it returns is why a viewport stays dirty: a settled
+    /// puppet reports none and the loop idles.
     pub fn tick(&mut self, dt: f32) -> Motion {
         self.puppet.tick(&self.model, dt)
+    }
+
+    /// Advance to the animation frame stamped `now_ms`, and report what is
+    /// still moving.
+    ///
+    /// Ticks **at most once per timestamp**: `dt` is the distance from the
+    /// last tick, and a second caller arriving at the same `now_ms` gets the
+    /// puppet as that tick left it plus the same [`Motion`], having advanced
+    /// nothing. Every viewport drawing this replica calls this once a frame,
+    /// and `requestAnimationFrame` hands every callback in one batch the same
+    /// `DOMHighResTimeStamp`, so equality is the whole signal — see the module
+    /// doc.
+    ///
+    /// `dt` is clamped to 100 ms: a tab that was hidden comes back with a
+    /// timestamp minutes later, and a puppet must resume rather than integrate
+    /// the whole gap in one step.
+    pub fn frame(&mut self, now_ms: f64) -> Motion {
+        if self.last_frame_ms != Some(now_ms) {
+            let dt = self
+                .last_frame_ms
+                .map(|last| ((now_ms - last) / 1000.0).clamp(0.0, 0.1) as f32)
+                .unwrap_or(0.0);
+            self.last_frame_ms = Some(now_ms);
+            self.motion = self.tick(dt);
+        }
+        self.motion
+    }
+
+    /// The world-space axis-aligned box the last tick left the drawn geometry
+    /// in, as `[min_x, min_y, max_x, max_y]`. `None` when nothing is drawn.
+    ///
+    /// A read like any other: bounds are a question about the document and the
+    /// pose in front of the user, so the replica answers them synchronously
+    /// off state it already holds, rather than the page asking the editor and
+    /// waiting a round trip for a number it needs to place a camera.
+    ///
+    /// They are **posed** bounds — every vertex through its part's combined
+    /// deform and its evaluated world transform, the same
+    /// `world · (vertex − origin + deform)` the vertex shader computes — for
+    /// the same reason: a fit frames what is on screen, and a rest-pose box
+    /// would cut off a limb that physics or a param has swung outside it.
+    ///
+    /// What counts as drawn is what the render list counts: a part whose
+    /// `enabled` holds all the way up the tree, whose albedo names a texture
+    /// the document carries, and which opacity has not culled. Upload state is
+    /// the one thing not consulted — that belongs to a render cache, and this
+    /// half has no GPU.
+    pub fn bounds(&self) -> Option<[f32; 4]> {
+        let tree = self.puppet.tree();
+        let transforms = self.puppet.transforms();
+        // `enabled` is ANDed down the tree, so a disabled group hides its whole
+        // subtree. Depth-first visits a parent before its children, which is
+        // what makes one pass enough.
+        let mut enabled_cum = vec![true; self.puppet.len()];
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+
+        tree.traverse_depth_first(|idx| {
+            let Some(node) = self.puppet.get(idx) else {
+                return;
+            };
+            let slot = idx.0 as usize;
+            let enabled = node.enabled
+                && tree
+                    .get_parent(idx)
+                    .and_then(|p| enabled_cum.get(p.0 as usize).copied())
+                    .unwrap_or(true);
+            if let Some(cell) = enabled_cum.get_mut(slot) {
+                *cell = enabled;
+            }
+            if !enabled {
+                return;
+            }
+            let NodeKind::Part(part) = &node.kind else {
+                return;
+            };
+            // A part with no albedo in the document draws nothing, and opacity
+            // 0 culls every blend mode but Darken, whose Min blend ignores
+            // blend factors — both exactly as the collector decides it.
+            if (part.albedo_texture.0 as usize) >= self.model.texture_ids().len() {
+                return;
+            }
+            if part.opacity == 0.0 && part.blend_mode != BlendMode::Darken {
+                return;
+            }
+            let deform = part
+                .deform_stack
+                .is_active()
+                .then(|| part.deform_stack.combined());
+            let world = transforms.get(idx);
+            let origin = part.mesh.origin;
+            for (i, vertex) in part.mesh.vertices.iter().enumerate() {
+                let offset = deform.and_then(|d| d.get(i).copied()).unwrap_or(Vec2::ZERO);
+                let p = world.transform_point3((*vertex - origin + offset).extend(0.0));
+                min = min.min(p.truncate());
+                max = max.max(p.truncate());
+            }
+        });
+
+        // Only an empty sweep leaves the seeds untouched; a NaN vertex would
+        // also poison the box, and a camera fitted to NaN shows nothing at all.
+        (min.x <= max.x && min.y <= max.y && min.is_finite() && max.is_finite())
+            .then_some([min.x, min.y, max.x, max.y])
     }
 
     fn node_idx(&self, node: &str) -> Option<catchlight_core::components::NodeIdx> {
@@ -477,10 +606,21 @@ pub(crate) mod browser {
             Ok(render)
         }
 
-        /// Advance the puppet by `dt` and fill `list` with what to draw.
-        /// Returns what is still moving, so the caller stays dirty for it.
-        pub(crate) fn frame(&mut self, dt: f32, list: &mut RenderList) -> Result<Motion, String> {
-            let motion = self.state.tick(dt);
+        /// Advance the puppet to the animation frame stamped `now_ms` and fill
+        /// `list` with what to draw. Returns what is still moving, so the
+        /// caller stays dirty for it.
+        ///
+        /// The tick happens at most once per `now_ms`; a second viewport
+        /// framing in the same `requestAnimationFrame` batch collects and
+        /// draws the state the first one produced, and hears the same
+        /// [`Motion`]. Collecting is per viewport because the list is: each
+        /// canvas fills its own.
+        pub(crate) fn frame(
+            &mut self,
+            now_ms: f64,
+            list: &mut RenderList,
+        ) -> Result<Motion, String> {
+            let motion = self.state.frame(now_ms);
             let render = self
                 .render
                 .as_mut()
@@ -663,6 +803,14 @@ pub(crate) mod browser {
                 .state
                 .node_world_transform(node)
                 .map(|m| m.to_vec())
+        }
+
+        /// The world-space box the last tick left the drawn geometry in:
+        /// `[min_x, min_y, max_x, max_y]` in world units, Y-up. `undefined`
+        /// when the model draws nothing. What a "fit the model" camera is
+        /// computed from.
+        pub fn bounds(&self) -> Option<Vec<f32>> {
+            self.inner.borrow().state.bounds().map(|b| b.to_vec())
         }
 
         /// The node's authored local translation moved by a world-space delta:
@@ -989,6 +1137,252 @@ mod tests {
         assert!(replica
             .translation_after_world_delta("root/part-deadbeef", 1.0, 1.0)
             .is_none());
+    }
+
+    /// A part named `name` under the root, with a texture of its own so the
+    /// bounds walk counts it as drawn. Returns the node Id.
+    fn add_drawn_part(editor: &CatchlightEditor, session: SessionId, name: &str) -> String {
+        let part = add_node(editor, session, ROOT, "part", name);
+        let key = format!("{name}.png");
+        editor.put_bytes(&key, one_pixel_png());
+        let reply = call(
+            editor,
+            json!({"id": 20, "cmd": "texture_add", "session": session.0,
+                   "node": part, "path": key}),
+        );
+        assert_eq!(reply["reply"], "ok", "reply was {reply}");
+        part
+    }
+
+    /// A square of side `2 * half` centred on the node's own origin.
+    fn set_quad_mesh(editor: &CatchlightEditor, session: SessionId, node: &str, half: f32) {
+        let reply = call(
+            editor,
+            json!({"id": 21, "cmd": "mesh_set", "session": session.0, "node": node,
+                   "verts": [-half, -half, half, -half, half, half, -half, half],
+                   "uvs": [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+                   "indices": [0, 1, 2, 0, 2, 3],
+                   "origin": [0.0, 0.0]}),
+        );
+        assert_eq!(reply["reply"], "ok", "reply was {reply}");
+    }
+
+    fn node_set(editor: &CatchlightEditor, session: SessionId, node: &str, patch: Value) {
+        let mut body = json!({"id": 22, "cmd": "node_set", "session": session.0, "node": node});
+        let (Some(body), Some(patch)) = (body.as_object_mut(), patch.as_object()) else {
+            panic!("node_set takes an object patch");
+        };
+        for (k, v) in patch {
+            body.insert(k.clone(), v.clone());
+        }
+        let reply = call(editor, Value::Object(body.clone()));
+        assert_eq!(reply["reply"], "ok", "reply was {reply}");
+    }
+
+    /// Bounds compare as exact floats: every number below is a sum of small
+    /// powers of two, so the transform walk reproduces it bit for bit.
+    fn assert_bounds(replica: &ReplicaState, expected: [f32; 4]) {
+        assert_eq!(replica.bounds(), Some(expected));
+    }
+
+    #[test]
+    fn bounds_cover_every_drawn_part_where_the_tick_left_it() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let face = add_drawn_part(&editor, session, "face");
+        set_quad_mesh(&editor, session, &face, 1.0);
+        node_set(
+            &editor,
+            session,
+            &face,
+            json!({"translate": [10.0, 20.0, 0.0]}),
+        );
+
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(0.0);
+        assert_bounds(&replica, [9.0, 19.0, 11.0, 21.0]);
+
+        // A second part widens the box, and its own scale reaches its vertices.
+        let hair = add_drawn_part(&editor, session, "hair");
+        set_quad_mesh(&editor, session, &hair, 1.0);
+        node_set(&editor, session, &hair, json!({"scale": [4.0, 2.0]}));
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(16.0);
+        assert_bounds(&replica, [-4.0, -2.0, 11.0, 21.0]);
+
+        // A disabled part is not drawn, so it is not framed either.
+        node_set(&editor, session, &hair, json!({"enabled": false}));
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(32.0);
+        assert_bounds(&replica, [9.0, 19.0, 11.0, 21.0]);
+
+        // Neither is one opacity culled.
+        node_set(
+            &editor,
+            session,
+            &hair,
+            json!({"enabled": true, "opacity": 0.0}),
+        );
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(48.0);
+        assert_bounds(&replica, [9.0, 19.0, 11.0, 21.0]);
+    }
+
+    #[test]
+    fn bounds_are_of_the_posed_mesh_and_not_the_rest_one() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let face = add_drawn_part(&editor, session, "face");
+        set_quad_mesh(&editor, session, &face, 1.0);
+
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(0.0);
+        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
+
+        // Pull the top-right corner (vertex 2) out and the box follows it.
+        // The combine is explicit because a `tick` folds only when the pose
+        // moved, and a deform written between two folds is combined on demand
+        // — see `Puppet::combine_deforms`. Bounds read exactly what the render
+        // list reads, so they are stale in precisely the same places it is.
+        assert!(replica.set_scratch_deform(&face, &[0.0, 0.0, 0.0, 0.0, 4.0, 8.0, 0.0, 0.0]));
+        replica.puppet.combine_deforms();
+        assert_bounds(&replica, [-1.0, -1.0, 5.0, 9.0]);
+
+        // Clearing deactivates the source, and an inactive stack contributes
+        // nothing whether or not anything combined since.
+        assert!(replica.clear_scratch_deform(&face));
+        replica.frame(16.0);
+        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn bounds_are_absent_when_nothing_is_drawn() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+
+        // An empty replica, and then a session with no geometry at all.
+        let mut replica = ReplicaState::new();
+        assert_eq!(replica.bounds(), None);
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(0.0);
+        assert_eq!(replica.bounds(), None);
+
+        // A part with a mesh but no texture draws nothing, so it frames
+        // nothing.
+        let bare = add_node(&editor, session, ROOT, "part", "bare");
+        set_quad_mesh(&editor, session, &bare, 1.0);
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(16.0);
+        assert_eq!(replica.bounds(), None);
+
+        // A textured part with no mesh has no vertices to frame either.
+        let empty = add_drawn_part(&editor, session, "empty");
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(32.0);
+        assert_eq!(replica.bounds(), None, "node {empty} has no vertices");
+    }
+
+    #[test]
+    fn one_animation_frame_ticks_once_however_many_viewports_draw() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let param = call(
+            &editor,
+            json!({"id": 30, "cmd": "param_add", "session": session.0,
+                   "name": "swing", "min": -1.0, "max": 1.0}),
+        )["body"]["param"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let driver = call(
+            &editor,
+            json!({"id": 31, "cmd": "physics_add", "session": session.0, "parent": ROOT,
+                   "kind": "pendulum", "target_params": [param.clone()],
+                   "length": 1.0, "gravity": 1.0}),
+        );
+        assert_eq!(driver["reply"], "ok", "reply was {driver}");
+        let driver = driver["body"]["node"].as_str().unwrap().to_string();
+
+        // A pendulum hanging straight down never moves, so displace the bob:
+        // now every tick is a step of a swing whose position depends on how
+        // much time the puppet was told has passed.
+        let swinging = |editor: &CatchlightEditor| {
+            let mut replica = ReplicaState::new();
+            replica.sync_from_editor(editor.editor(), session);
+            let idx = replica.node_idx(&driver).expect("the driver was baked");
+            assert!(replica.puppet.place_driver(idx, Vec2::new(0.7, 0.7)));
+            replica
+        };
+
+        // One canvas: one call per animation frame.
+        let mut alone = swinging(&editor);
+        // Two canvases on one replica: two calls carrying the same timestamp,
+        // exactly as two `requestAnimationFrame` callbacks in one batch do.
+        let mut shared = swinging(&editor);
+        // The bug this is against: each viewport kept its own `last_ms`, so
+        // each one measured a whole frame and stepped the puppet by it.
+        let mut two_clocks = swinging(&editor);
+
+        let mut motions = Vec::new();
+        let mut previous_ms = 0.0f64;
+        for step in 0..30 {
+            let now_ms = step as f64 * 16.0;
+            alone.frame(now_ms);
+
+            let first = shared.frame(now_ms);
+            let second = shared.frame(now_ms);
+            assert_eq!(
+                first, second,
+                "the second viewport must hear the same motion, or it goes clean \
+                 and stops following a puppet that is still moving",
+            );
+            motions.push(first);
+
+            let dt = ((now_ms - previous_ms) / 1000.0) as f32;
+            two_clocks.tick(dt);
+            two_clocks.tick(dt);
+            previous_ms = now_ms;
+        }
+
+        let alone_value = alone.param_value(&param).expect("the driver claims it");
+        let shared_value = shared.param_value(&param).expect("the driver claims it");
+        assert_eq!(
+            alone_value, shared_value,
+            "a second viewport must not advance the puppet a second time",
+        );
+        // The comparison above is only worth anything if a doubled tick would
+        // have shown, and if the puppet moved at all.
+        assert_ne!(
+            alone_value,
+            two_clocks
+                .param_value(&param)
+                .expect("the driver claims it"),
+            "two dt clocks must land somewhere else, or the assertion above \
+             would hold however the puppet was ticked",
+        );
+        assert!(
+            motions.iter().any(|m: &Motion| m.physics),
+            "the driver never reported motion, so nothing was being compared",
+        );
+    }
+
+    #[test]
+    fn a_frame_at_a_new_timestamp_steps_by_the_time_between_them() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let face = add_drawn_part(&editor, session, "face");
+        set_quad_mesh(&editor, session, &face, 1.0);
+
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        // A still puppet reports no motion however it is framed, and framing
+        // it twice at one timestamp is not an error.
+        assert_eq!(replica.frame(0.0), Motion::default());
+        assert_eq!(replica.frame(0.0), Motion::default());
+        assert_eq!(replica.frame(16.0), Motion::default());
+        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
     }
 
     /// The smallest valid PNG: one opaque pixel.
