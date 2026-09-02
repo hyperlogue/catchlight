@@ -24,6 +24,13 @@ glam = { workspace = true }
 wgpu = { workspace = true }
 anyhow = { workspace = true }
 pollster = { workspace = true }
+# WebSocket framing for the browser transport. Default features carry the
+# handshake helpers (`derive_accept_key`); no TLS -- this listens on loopback.
+tungstenite = "0.30"
+# The per-launch bearer token has to be unguessable, so it comes from the OS.
+getrandom = "0.3"
+# `PUT /files/{key}` carries its storage key in the path, percent-encoded.
+percent-encoding = "2.3"
 
 [lints]
 workspace = true

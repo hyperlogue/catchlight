@@ -1,0 +1,649 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+//! The browser's two channels: messages over a WebSocket, bytes over HTTP.
+//!
+//! Loopback is not a permission — any page the user's browser loads can reach
+//! this port — so most of what follows is about who is refused. The rest
+//! checks that a tab can do its job: send the same commands the Unix socket
+//! takes, hear about edits another connection made, pull a session's structure
+//! against the revision it belongs to, and hand up bytes it fetched itself.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use catchlight_editor_protocol::{
+    Command, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
+};
+use catchlight_editor_server::{
+    bind_http, Editor, HttpOptions, NoStorage, StagingStorage, Storage,
+};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::{Message, WebSocket};
+
+/// Fixed so a failing run says nothing about the machine it ran on.
+const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+const ALLOWED_ORIGIN: &str = "http://example.test";
+const FOREIGN_ORIGIN: &str = "http://evil.test";
+
+// -------------------------------------------------------------- the fixture
+
+struct Server {
+    addr: SocketAddr,
+}
+
+fn start() -> Server {
+    // Nothing here is allowed to touch the filesystem, so the staging layer
+    // stands on `NoStorage`: an upload is the only way bytes get in.
+    let staging = Arc::new(StagingStorage::new(Arc::new(NoStorage)));
+    let editor = Arc::new(Editor::with_storage(staging.clone()));
+    let server = bind_http(
+        editor,
+        "127.0.0.1:0".parse().unwrap(),
+        HttpOptions {
+            allowed_origins: vec![ALLOWED_ORIGIN.to_string()],
+            token: Some(TOKEN.to_string()),
+            max_upload_bytes: 8 * 1024 * 1024,
+            staging: Some(staging),
+        },
+    )
+    .unwrap();
+    let addr = server.addr;
+    std::thread::spawn(move || {
+        let _ = server.serve();
+    });
+    Server { addr }
+}
+
+// ---------------------------------------------------------- a tiny client
+
+struct HttpResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl HttpResponse {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+fn http(
+    addr: SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> HttpResponse {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut head = format!("{method} {target} HTTP/1.1\r\n");
+    if !headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("host")) {
+        head.push_str(&format!("Host: 127.0.0.1:{}\r\n", addr.port()));
+    }
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    if !headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+    {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    stream.flush().unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    let status: u16 = status_line
+        .split(' ')
+        .nth(1)
+        .expect("a status line")
+        .parse()
+        .unwrap();
+    let mut headers = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+        let (name, value) = line.split_once(':').expect("a header");
+        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+    }
+    let length: usize = headers
+        .iter()
+        .find(|(n, _)| n == "content-length")
+        .map(|(_, v)| v.parse().unwrap())
+        .unwrap_or(0);
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).unwrap();
+    HttpResponse {
+        status,
+        headers,
+        body,
+    }
+}
+
+fn bearer() -> String {
+    format!("Bearer {TOKEN}")
+}
+
+type Socket = WebSocket<TcpStream>;
+
+fn connect(addr: SocketAddr, token: &str, origin: Option<&str>) -> Result<Socket, String> {
+    let stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut request = format!("ws://127.0.0.1:{}/ws?token={token}", addr.port())
+        .into_client_request()
+        .unwrap();
+    if let Some(origin) = origin {
+        request
+            .headers_mut()
+            .insert("Origin", origin.parse().unwrap());
+    }
+    tungstenite::client::client(request, stream)
+        .map(|(socket, _)| socket)
+        .map_err(|err| err.to_string())
+}
+
+fn send(socket: &mut Socket, request: Request) {
+    socket
+        .send(Message::text(serde_json::to_string(&request).unwrap()))
+        .unwrap();
+}
+
+/// The next reply to `id`, skipping pushed events.
+fn reply_to(socket: &mut Socket, id: u64) -> Reply {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let reply = read_frame(socket);
+        let seen = match &reply {
+            Reply::Ok { id, .. } | Reply::Err { id, .. } => *id,
+            Reply::Event(_) => continue,
+        };
+        if seen == id {
+            return reply;
+        }
+    }
+    panic!("no reply to request {id}");
+}
+
+fn read_frame(socket: &mut Socket) -> Reply {
+    loop {
+        match socket.read().unwrap() {
+            Message::Text(text) => return serde_json::from_str(text.as_str()).unwrap(),
+            Message::Close(_) => panic!("the server closed the connection"),
+            _ => continue,
+        }
+    }
+}
+
+fn body_of(reply: Reply) -> ResponseBody {
+    match reply {
+        Reply::Ok { body, .. } => body,
+        other => panic!("expected Ok, got {other:?}"),
+    }
+}
+
+fn rev_of(reply: &Reply) -> u64 {
+    match reply {
+        Reply::Ok { rev, .. } => rev.expect("a session command reports its rev"),
+        other => panic!("expected Ok, got {other:?}"),
+    }
+}
+
+fn new_session(socket: &mut Socket, id: u64) -> (SessionId, u64) {
+    send(
+        socket,
+        Request {
+            id,
+            command: Command::SessionNew { name: None },
+        },
+    );
+    let reply = reply_to(socket, id);
+    let rev = rev_of(&reply);
+    match body_of(reply) {
+        ResponseBody::Session { session } => (session, rev),
+        other => panic!("expected Session, got {other:?}"),
+    }
+}
+
+fn root_of(socket: &mut Socket, id: u64, session: SessionId) -> NodeId {
+    send(
+        socket,
+        Request {
+            id,
+            command: Command::NodeTree { session },
+        },
+    );
+    match body_of(reply_to(socket, id)) {
+        ResponseBody::Tree { root } => root.id,
+        other => panic!("expected Tree, got {other:?}"),
+    }
+}
+
+/// An empty model's `.clm` bytes, built in-process so no fixture is needed.
+fn clm_bytes() -> Vec<u8> {
+    #[derive(Debug, Default)]
+    struct Mem(Mutex<HashMap<String, Vec<u8>>>);
+    impl Storage for Mem {
+        fn read(&self, key: &str) -> std::io::Result<Vec<u8>> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, key.to_string()))
+        }
+        fn write(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    let store = Arc::new(Mem::default());
+    let editor = Editor::with_storage(store.clone());
+    let session = match editor.handle(Request {
+        id: 1,
+        command: Command::SessionNew { name: None },
+    }) {
+        Reply::Ok {
+            body: ResponseBody::Session { session },
+            ..
+        } => session,
+        other => panic!("expected Session, got {other:?}"),
+    };
+    editor.handle(Request {
+        id: 2,
+        command: Command::Save {
+            session,
+            path: Some("scratch.clm".into()),
+        },
+    });
+    store.read("scratch.clm").unwrap()
+}
+
+// ---------------------------------------------------------------- the tests
+
+#[test]
+fn the_token_is_readable_only_from_an_allowlisted_origin() {
+    let server = start();
+
+    let allowed = http(
+        server.addr,
+        "GET",
+        "/token",
+        &[("Origin", ALLOWED_ORIGIN)],
+        b"",
+    );
+    assert_eq!(allowed.status, 200);
+    assert_eq!(
+        allowed.header("access-control-allow-origin"),
+        Some(ALLOWED_ORIGIN)
+    );
+    assert_eq!(allowed.header("x-content-type-options"), Some("nosniff"));
+    assert!(String::from_utf8_lossy(&allowed.body).contains(TOKEN));
+
+    // A foreign page may send this request; the browser will not let it read
+    // the answer, because there is no header saying it may.
+    let foreign = http(
+        server.addr,
+        "GET",
+        "/token",
+        &[("Origin", FOREIGN_ORIGIN)],
+        b"",
+    );
+    assert_eq!(foreign.status, 200);
+    assert_eq!(foreign.header("access-control-allow-origin"), None);
+}
+
+#[test]
+fn a_handshake_needs_the_token_and_a_known_origin() {
+    let server = start();
+
+    assert!(connect(server.addr, "not-the-token", None).is_err());
+    assert!(connect(server.addr, TOKEN, Some(FOREIGN_ORIGIN)).is_err());
+    // No Origin at all is a non-browser client: the token is the whole gate.
+    assert!(connect(server.addr, TOKEN, None).is_ok());
+    assert!(connect(server.addr, TOKEN, Some(ALLOWED_ORIGIN)).is_ok());
+}
+
+#[test]
+fn a_command_over_the_socket_answers_with_its_revision() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, rev) = new_session(&mut socket, 1);
+    assert_eq!(session, SessionId(1));
+    assert_eq!(rev, 0);
+}
+
+#[test]
+fn an_edit_on_one_connection_is_pushed_to_the_other() {
+    let server = start();
+    let mut watcher = connect(server.addr, TOKEN, None).unwrap();
+    let mut editor = connect(server.addr, TOKEN, None).unwrap();
+
+    let (session, _) = new_session(&mut editor, 1);
+    let root = root_of(&mut editor, 2, session);
+    send(
+        &mut editor,
+        Request {
+            id: 3,
+            command: Command::NodeAdd {
+                session,
+                parent: root,
+                kind: NodeKindArg::Group,
+                name: Some("Hat".into()),
+            },
+        },
+    );
+    let rev = rev_of(&reply_to(&mut editor, 3));
+
+    // The watcher sent nothing, so everything it hears is pushed. It hears
+    // about the session appearing first, then about the edit.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "no document_changed arrived");
+        if let Reply::Event(catchlight_editor_protocol::Event::DocumentChanged {
+            session: changed,
+            rev: at,
+        }) = read_frame(&mut watcher)
+        {
+            if changed == session && at == rev {
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+fn the_structure_endpoint_pairs_its_bytes_with_the_revision_they_are() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let root = root_of(&mut socket, 2, session);
+    send(
+        &mut socket,
+        Request {
+            id: 3,
+            command: Command::NodeAdd {
+                session,
+                parent: root,
+                kind: NodeKindArg::Group,
+                name: Some("Hat".into()),
+            },
+        },
+    );
+    let reply = reply_to(&mut socket, 3);
+    let rev = rev_of(&reply);
+    let added = match body_of(reply) {
+        ResponseBody::Node { node, .. } => node,
+        other => panic!("expected Node, got {other:?}"),
+    };
+
+    let response = http(
+        server.addr,
+        "GET",
+        &format!("/sessions/{}/structure", session.0),
+        &[("Authorization", &bearer()), ("Origin", ALLOWED_ORIGIN)],
+        b"",
+    );
+    assert_eq!(response.status, 200);
+    assert_eq!(response.header("x-catchlight-rev"), Some(&*rev.to_string()));
+    assert_eq!(
+        response.header("access-control-allow-origin"),
+        Some(ALLOWED_ORIGIN)
+    );
+    let structure = catchlight_core::formats::clm::decode_structure(&response.body).unwrap();
+    assert!(structure.doc.nodes.iter().any(|node| node.id == added));
+
+    let missing = http(
+        server.addr,
+        "GET",
+        "/sessions/999/structure",
+        &[("Authorization", &bearer())],
+        b"",
+    );
+    assert_eq!(missing.status, 404);
+}
+
+#[test]
+fn an_upload_is_what_session_open_reads() {
+    let server = start();
+    let bytes = clm_bytes();
+
+    let put = http(
+        server.addr,
+        "PUT",
+        "/files/model.clm",
+        &[("Authorization", &bearer())],
+        &bytes,
+    );
+    assert_eq!(put.status, 204);
+
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    send(
+        &mut socket,
+        Request {
+            id: 1,
+            command: Command::SessionOpen {
+                path: "model.clm".into(),
+            },
+        },
+    );
+    match body_of(reply_to(&mut socket, 1)) {
+        ResponseBody::Session { .. } => {}
+        other => panic!("expected Session, got {other:?}"),
+    }
+
+    // Nothing was staged under this key, and there is no filesystem behind
+    // the staging layer, so the open fails rather than reading somewhere else.
+    send(
+        &mut socket,
+        Request {
+            id: 2,
+            command: Command::SessionOpen {
+                path: "never-uploaded.clm".into(),
+            },
+        },
+    );
+    assert!(matches!(reply_to(&mut socket, 2), Reply::Err { .. }));
+}
+
+#[test]
+fn a_texture_comes_back_as_the_payload_the_model_holds() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let root = root_of(&mut socket, 2, session);
+    send(
+        &mut socket,
+        Request {
+            id: 3,
+            command: Command::NodeAdd {
+                session,
+                parent: root,
+                kind: NodeKindArg::Part,
+                name: Some("Face".into()),
+            },
+        },
+    );
+    let part = match body_of(reply_to(&mut socket, 3)) {
+        ResponseBody::Node { node, .. } => node,
+        other => panic!("expected Node, got {other:?}"),
+    };
+
+    // The texture arrives the way a tab sends one: an upload, then a command
+    // naming the key it was staged under.
+    let png = one_pixel_png();
+    assert_eq!(
+        http(
+            server.addr,
+            "PUT",
+            "/files/face.png",
+            &[("Authorization", &bearer())],
+            &png
+        )
+        .status,
+        204
+    );
+    send(
+        &mut socket,
+        Request {
+            id: 4,
+            command: Command::TextureAdd {
+                session,
+                node: part,
+                path: "face.png".into(),
+            },
+        },
+    );
+    let texture = match body_of(reply_to(&mut socket, 4)) {
+        ResponseBody::Texture { texture, .. } => texture,
+        other => panic!("expected Texture, got {other:?}"),
+    };
+
+    let response = http(
+        server.addr,
+        "GET",
+        &format!("/sessions/{}/textures/{texture}", session.0),
+        &[("Authorization", &bearer())],
+        b"",
+    );
+    assert_eq!(response.status, 200);
+    assert_eq!(response.header("content-type"), Some("image/png"));
+    assert_eq!(response.header("x-catchlight-encoding"), Some("png"));
+    assert_eq!(response.body, png);
+
+    // An Id outside the charset never reaches a lookup.
+    assert_eq!(
+        http(
+            server.addr,
+            "GET",
+            &format!("/sessions/{}/textures/NOT AN ID", session.0),
+            &[("Authorization", &bearer())],
+            b""
+        )
+        .status,
+        400
+    );
+}
+
+fn one_pixel_png() -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("a 1x1 png encodes");
+    bytes.into_inner()
+}
+
+#[test]
+fn a_foreign_host_header_is_refused_before_anything_is_routed() {
+    let server = start();
+    let response = http(
+        server.addr,
+        "GET",
+        "/token",
+        &[("Host", "evil.example")],
+        b"",
+    );
+    assert_eq!(response.status, 421);
+}
+
+#[test]
+fn bytes_need_the_bearer_token() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+
+    let target = format!("/sessions/{}/structure", session.0);
+    assert_eq!(http(server.addr, "GET", &target, &[], b"").status, 401);
+    assert_eq!(
+        http(
+            server.addr,
+            "GET",
+            &target,
+            &[("Authorization", "Bearer not-the-token")],
+            b""
+        )
+        .status,
+        401
+    );
+    assert_eq!(
+        http(
+            server.addr,
+            "GET",
+            &target,
+            &[("Authorization", &bearer())],
+            b""
+        )
+        .status,
+        200
+    );
+}
+
+#[test]
+fn a_preflight_is_answered_for_an_allowlisted_origin_only() {
+    let server = start();
+    let allowed = http(
+        server.addr,
+        "OPTIONS",
+        "/sessions/1/structure",
+        &[
+            ("Origin", ALLOWED_ORIGIN),
+            ("Access-Control-Request-Method", "GET"),
+        ],
+        b"",
+    );
+    assert_eq!(allowed.status, 204);
+    assert_eq!(
+        allowed.header("access-control-allow-headers"),
+        Some("Authorization, Content-Type")
+    );
+
+    let foreign = http(
+        server.addr,
+        "OPTIONS",
+        "/sessions/1/structure",
+        &[("Origin", FOREIGN_ORIGIN)],
+        b"",
+    );
+    assert_eq!(foreign.status, 204);
+    assert_eq!(foreign.header("access-control-allow-origin"), None);
+}
+
+#[test]
+fn an_upload_over_the_ceiling_is_refused() {
+    let server = start();
+    let response = http(
+        server.addr,
+        "PUT",
+        "/files/too-big.clm",
+        &[
+            ("Authorization", &bearer()),
+            // The body is never sent: the length alone decides.
+            ("Content-Length", "9000000"),
+        ],
+        b"",
+    );
+    assert_eq!(response.status, 413);
+}
