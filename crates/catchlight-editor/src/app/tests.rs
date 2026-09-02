@@ -710,7 +710,7 @@ fn welding_two_seams_keeps_their_slot_sets_one_set() {
         app.send(Command::SeamAdd {
             session,
             node: node.clone(),
-            seam: seam.clone(),
+            seam: Some(seam.clone()),
         });
     }
     app.selection = vec![a.clone()];

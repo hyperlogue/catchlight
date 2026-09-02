@@ -186,6 +186,7 @@ impl EditorError {
                 ModelError::DuplicateSeam(_) => ErrorCode::DuplicateSeam,
                 ModelError::DuplicateSlot(_) => ErrorCode::DuplicateSlot,
                 ModelError::WeldSlotMismatch => ErrorCode::WeldSlotMismatch,
+                ModelError::UnknownWeld => ErrorCode::UnknownWeld,
                 ModelError::Fragment => ErrorCode::Fragment,
                 _ => ErrorCode::Edit,
             },
@@ -390,6 +391,16 @@ impl Session {
             .collect();
         let Self { model, hex, .. } = self;
         Ok((model.add_texture(part, texture, hex)?, dropped))
+    }
+
+    fn seam_add_generated(&mut self, node: &NodeId) -> Result<SeamId, EditorError> {
+        let Self { model, hex, .. } = self;
+        Ok(model.seam_add_generated(node, hex)?)
+    }
+
+    fn slot_add_generated(&mut self, node: &NodeId, seam: &SeamId) -> Result<SlotId, EditorError> {
+        let Self { model, hex, .. } = self;
+        Ok(model.slot_add_generated(node, seam, hex)?)
     }
 
     fn duplicate_subtree(&mut self, node: &NodeId) -> Result<NodeId, EditorError> {
@@ -1096,6 +1107,7 @@ impl Editor {
                     Rename::Node { from, to } => s.model.rename_node_id(&from, to)?,
                     Rename::Param { from, to } => s.model.rename_param_id(&from, to)?,
                     Rename::Texture { from, to } => s.model.rename_tex_id(&from, to)?,
+                    Rename::Seam { node, from, to } => s.model.rename_seam(&node, &from, to)?,
                 }
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -1535,9 +1547,17 @@ impl Editor {
                 node,
                 seam,
             } => self.edit_session(session, |s| {
-                s.model.seam_add(&node, seam)?;
+                let seam = match seam {
+                    Some(seam) => {
+                        s.model.seam_add(&node, seam.clone())?;
+                        seam
+                    }
+                    None => s.seam_add_generated(&node)?,
+                };
                 s.touch();
-                Ok(ResponseBody::Empty)
+                Ok(ResponseBody::Seam {
+                    seam: SeamAddr { node, seam },
+                })
             }),
             Command::SeamDelete {
                 session,
@@ -1554,9 +1574,17 @@ impl Editor {
                 seam,
                 slot,
             } => self.edit_session(session, |s| {
-                s.model.slot_add(&node, &seam, slot)?;
+                let slot = match slot {
+                    Some(slot) => {
+                        s.model.slot_add(&node, &seam, slot.clone())?;
+                        slot
+                    }
+                    None => s.slot_add_generated(&node, &seam)?,
+                };
                 s.touch();
-                Ok(ResponseBody::Empty)
+                Ok(ResponseBody::Slot {
+                    slot: SlotAddr { node, seam, slot },
+                })
             }),
             Command::SlotFill {
                 session,
@@ -1603,6 +1631,22 @@ impl Editor {
                 welds.retain(|w| !pairs_the_same_seams(w, &weld));
                 welds.push(weld);
                 s.model.set_welds(welds)?;
+                s.touch();
+                Ok(ResponseBody::Empty)
+            }),
+            Command::WeldWeight {
+                session,
+                a,
+                b,
+                slot,
+                weight,
+            } => self.edit_session(session, |s| {
+                s.model.set_weld_slot_weight(
+                    (&a.node, &a.seam),
+                    (&b.node, &b.seam),
+                    &slot,
+                    weight,
+                )?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),

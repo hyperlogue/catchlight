@@ -485,11 +485,14 @@ pub enum Command {
         from: NodeId,
         to: NodeId,
     },
-    /// Name a new seam on a part.
+    /// Add a seam to a part.
     SeamAdd {
         session: SessionId,
         node: NodeId,
-        seam: SeamId,
+        /// Absent generates one (`seam-<8 hex>`, re-drawn until it is free on
+        /// the part). The reply names it either way.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seam: Option<SeamId>,
     },
     /// Remove a seam, and every weld that named it.
     SeamDelete {
@@ -504,7 +507,10 @@ pub enum Command {
         session: SessionId,
         node: NodeId,
         seam: SeamId,
-        slot: SlotId,
+        /// Absent generates one (`slot-<8 hex>`), free on every seam welded to
+        /// this one. The reply names it either way.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<SlotId>,
     },
     /// Point a slot at one of the part's vertices.
     SlotFill {
@@ -541,6 +547,21 @@ pub enum Command {
     /// slots, so this is what a commit gate reads.
     UnfilledSlots {
         session: SessionId,
+    },
+    /// Move one slot's share of one weld's meeting point, leaving every other
+    /// weight where it is — what a slider sends. [`Command::WeldSet`] can only
+    /// rewrite a weld whole, so moving one weight through it means reading the
+    /// rest back and sending them again unchanged.
+    ///
+    /// `weight` is the share of the end named `a`, whichever way round the
+    /// weld happens to be stored, and it has to be within `0..=1` — a share
+    /// outside that has no meaning to flip.
+    WeldWeight {
+        session: SessionId,
+        a: SeamAddr,
+        b: SeamAddr,
+        slot: SlotId,
+        weight: f32,
     },
     /// Weld two seams together, replacing any weld already pairing them.
     /// Empty `weights` welds every slot at
@@ -723,6 +744,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("welds", CommandKind::ReplicaQuery),
     ("unfilled_slots", CommandKind::ReplicaQuery),
     ("weld_set", CommandKind::Document),
+    ("weld_weight", CommandKind::Document),
     ("weld_delete", CommandKind::Document),
     ("physics_add", CommandKind::Document),
     ("undo", CommandKind::Document),
@@ -799,6 +821,7 @@ impl Command {
             Command::Seams { .. } => "seams",
             Command::Welds { .. } => "welds",
             Command::UnfilledSlots { .. } => "unfilled_slots",
+            Command::WeldWeight { .. } => "weld_weight",
             Command::WeldSet { .. } => "weld_set",
             Command::WeldDelete { .. } => "weld_delete",
             Command::PhysicsAdd { .. } => "physics_add",
@@ -898,6 +921,7 @@ impl Command {
             | Command::Seams { session, .. }
             | Command::Welds { session }
             | Command::UnfilledSlots { session }
+            | Command::WeldWeight { session, .. }
             | Command::WeldSet { session, .. }
             | Command::WeldDelete { session, .. }
             | Command::PhysicsAdd { session, .. }
@@ -916,9 +940,25 @@ impl Command {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Rename {
-    Node { from: NodeId, to: NodeId },
-    Param { from: ParamId, to: ParamId },
-    Texture { from: TexId, to: TexId },
+    Node {
+        from: NodeId,
+        to: NodeId,
+    },
+    Param {
+        from: ParamId,
+        to: ParamId,
+    },
+    Texture {
+        from: TexId,
+        to: TexId,
+    },
+    /// A seam is scoped to its part, so this one names the part too. Every
+    /// weld that ended on the old Id follows it.
+    Seam {
+        node: NodeId,
+        from: SeamId,
+        to: SeamId,
+    },
 }
 
 /// The param, or the pair of params, a binding is keyed by. With `param_y`
@@ -1166,6 +1206,15 @@ pub enum ResponseBody {
     },
     Param {
         param: ParamId,
+    },
+    /// One seam, named in full: what [`Command::SeamAdd`] answers with, so a
+    /// client that let the editor draw the Id learns which one it drew.
+    Seam {
+        seam: SeamAddr,
+    },
+    /// One slot, named in full, for the same reason.
+    Slot {
+        slot: SlotAddr,
     },
     Params {
         params: Vec<ParamInfo>,

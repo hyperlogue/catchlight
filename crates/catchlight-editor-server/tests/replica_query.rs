@@ -117,14 +117,14 @@ impl Fixture {
             fixture.step(Command::SeamAdd {
                 session,
                 node: node.clone(),
-                seam: seam.clone(),
+                seam: Some(seam.clone()),
             });
             for slot in [&left, &right] {
                 fixture.step(Command::SlotAdd {
                     session,
                     node: node.clone(),
                     seam: seam.clone(),
-                    slot: slot.clone(),
+                    slot: Some(slot.clone()),
                 });
             }
         }

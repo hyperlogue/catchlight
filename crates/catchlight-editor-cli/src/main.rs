@@ -162,6 +162,13 @@ enum RenameCmd {
     Param { from: ParamId, to: ParamId },
     /// Rename a texture's Id.
     Texture { from: TexId, to: TexId },
+    /// Rename a seam's Id on one part. Every weld that ended on it follows.
+    Seam {
+        #[arg(long)]
+        node: NodeId,
+        from: SeamId,
+        to: SeamId,
+    },
 }
 
 #[derive(Subcommand)]
@@ -275,11 +282,12 @@ enum MeshCmd {
 
 #[derive(Subcommand)]
 enum SeamCmd {
-    /// Name a new seam on a part.
+    /// Add a seam to a part. Without `--seam` the editor draws one
+    /// (`seam-<8 hex>`) and the reply says which.
     Add {
         node: NodeId,
         #[arg(long)]
-        seam: SeamId,
+        seam: Option<SeamId>,
     },
     /// Remove a seam, and every weld that named it.
     Delete {
@@ -289,13 +297,14 @@ enum SeamCmd {
     },
     /// Print a part's seams and what fills each slot.
     List { node: NodeId },
-    /// Add a slot. It lands unfilled, and reaches every welded seam.
+    /// Add a slot. It lands unfilled, and reaches every welded seam. Without
+    /// `--slot` the editor draws one (`slot-<8 hex>`).
     SlotAdd {
         node: NodeId,
         #[arg(long)]
         seam: SeamId,
         #[arg(long)]
-        slot: SlotId,
+        slot: Option<SlotId>,
     },
     /// Point a slot at one of the part's vertices.
     SlotFill {
@@ -344,6 +353,23 @@ enum WeldCmd {
         /// vertex is pulled by.
         #[arg(long = "weight")]
         weights: Vec<String>,
+    },
+    /// Move one slot's share of one weld's meeting point, leaving the rest
+    /// alone. `--weight` is the share the *first* seam is pinned by, within
+    /// 0..=1, whichever way round the weld is stored.
+    Weight {
+        #[arg(long = "a-node")]
+        a_node: NodeId,
+        #[arg(long = "a-seam")]
+        a_seam: SeamId,
+        #[arg(long = "b-node")]
+        b_node: NodeId,
+        #[arg(long = "b-seam")]
+        b_seam: SeamId,
+        #[arg(long)]
+        slot: SlotId,
+        #[arg(long)]
+        weight: f32,
     },
     /// Unmake the weld joining two seams, named in either order. Both seams
     /// and their slots stay; only the pairing goes.
@@ -778,6 +804,11 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     from: from.clone(),
                     to: to.clone(),
                 },
+                RenameCmd::Seam { node, from, to } => Rename::Seam {
+                    node: node.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                },
             },
         },
         Cmd::Param { action } => {
@@ -1114,6 +1145,26 @@ fn build_command(cli: &Cli) -> Result<Command> {
                         .iter()
                         .map(|w| parse_weight(w))
                         .collect::<Result<_>>()?,
+                },
+                WeldCmd::Weight {
+                    a_node,
+                    a_seam,
+                    b_node,
+                    b_seam,
+                    slot,
+                    weight,
+                } => Command::WeldWeight {
+                    session,
+                    a: SeamAddr {
+                        node: a_node.clone(),
+                        seam: a_seam.clone(),
+                    },
+                    b: SeamAddr {
+                        node: b_node.clone(),
+                        seam: b_seam.clone(),
+                    },
+                    slot: slot.clone(),
+                    weight: *weight,
                 },
                 WeldCmd::Delete {
                     a_node,
@@ -1512,6 +1563,10 @@ fn print_body(body: &ResponseBody) {
             print_dropped(dropped);
         }
         ResponseBody::Param { param } => println!("param {param}"),
+        ResponseBody::Seam { seam } => println!("seam {} on {}", seam.seam, seam.node),
+        ResponseBody::Slot { slot } => {
+            println!("slot {} in {} on {}", slot.slot, slot.seam, slot.node)
+        }
         ResponseBody::Params { params } => {
             if params.is_empty() {
                 println!("(no params)");
