@@ -388,14 +388,16 @@ fn vec3(x: f32, y: f32, z: f32) -> Option<Vec3> {
 
 /// [`ReplicaState`] with the GPU half attached: what JavaScript holds.
 ///
-/// The renderer is **built with the first viewport, not with the replica**.
+/// **The renderer arrives with the first viewport, and so does the device.**
 /// A `RenderCache`'s slots name GPU state inside one renderer ("one cache, one
 /// renderer"), so the cache is per replica and so is the renderer holding it —
 /// but a renderer's pipelines are compiled against a surface format, and no
-/// format exists until a canvas does. A replica nobody draws therefore costs
-/// no GPU at all and still answers every query. The cache follows one step
-/// later, on the first frame, because that is when a model worth uploading is
-/// likeliest to have arrived.
+/// format exists until a canvas does. So a [`Replica`] is constructed with
+/// nothing at all: it answers every query, holds every texture and poses its
+/// puppet before any GPU exists, and `Viewport::new` is what hands it the
+/// device, queue and adapter it will draw with. The cache follows one step
+/// later still, on the first frame, because that is when a model worth
+/// uploading is likeliest to have arrived.
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod browser {
     use std::cell::RefCell;
@@ -421,28 +423,30 @@ pub(crate) mod browser {
     /// callback and the JS-facing methods on one thread with no overlap.
     pub(crate) struct ReplicaInner {
         pub(crate) state: ReplicaState,
-        adapter: wgpu::Adapter,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
         pub(crate) render: Option<ReplicaRender>,
     }
 
     impl ReplicaInner {
-        /// The one device this tab holds — what a viewport reconfigures its
-        /// surface against.
-        pub(crate) fn device(&self) -> &wgpu::Device {
-            &self.device
+        /// The device this replica draws with, once a viewport has given it
+        /// one — what that viewport reconfigures its surface against.
+        pub(crate) fn device(&self) -> Option<&wgpu::Device> {
+            self.render.as_ref().map(|r| &r.renderer.device)
         }
 
-        /// The renderer for a surface of `format`, compiling its pipelines the
-        /// first time. An `Err` means a second canvas negotiated a different
-        /// swapchain format than the first, which one tab on one device does
-        /// not do — and if it ever did, the pipelines would be wrong for it.
+        /// The renderer for a surface of `format` on `gpu`, compiling its
+        /// pipelines the first time.
+        ///
+        /// The two `Err`s are both "a second viewport disagrees with the
+        /// first": a different device, or a different swapchain format. One
+        /// [`Gpu`] per editor makes the first unreachable and one browser
+        /// makes the second so, but the renderer's pipelines and the cache's
+        /// slots would be wrong for the newcomer, so say it rather than draw
+        /// it.
         pub(crate) fn ensure_renderer(
             &mut self,
+            gpu: &Gpu,
             format: wgpu::TextureFormat,
         ) -> Result<&mut ReplicaRender, String> {
-            let (adapter, device, queue) = (&self.adapter, &self.device, &self.queue);
             let render = self.render.get_or_insert_with(|| ReplicaRender {
                 // `new_autodetect`, not `new`: WebGL2 takes the shader
                 // alpha-discard path because Chromium's software WebGL2 fails
@@ -452,12 +456,17 @@ pub(crate) mod browser {
                 // exactly as in `WgpuRenderer::new`.
                 #[allow(clippy::arc_with_non_send_sync)]
                 renderer: WgpuRenderer::from_pipelines(
-                    device.clone(),
-                    queue.clone(),
-                    Arc::new(Pipelines::new_autodetect(adapter, device, format)),
+                    gpu.device.clone(),
+                    gpu.queue.clone(),
+                    Arc::new(Pipelines::new_autodetect(&gpu.adapter, &gpu.device, format)),
                 ),
                 cache: None,
             });
+            if render.renderer.device != gpu.device {
+                return Err("this replica is already drawing on another device; \
+                     one editor holds one Gpu and every viewport shares it"
+                    .to_string());
+            }
             if render.renderer.shared.surface_format != format {
                 return Err(format!(
                     "this replica's renderer draws {:?} and the canvas wants {format:?}; \
@@ -510,21 +519,25 @@ pub(crate) mod browser {
         }
     }
 
+    impl Default for Replica {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     /// Revisions and session ids cross as `f64`: both are JSON `number`s on
     /// the wire, and a `u64` parameter would reach JavaScript as a `bigint`,
     /// so the one value would have two spellings and every call site would
     /// convert.
     #[wasm_bindgen]
     impl Replica {
-        /// An empty model, no textures, no revision.
+        /// An empty model, no textures, no revision — and no GPU. The device
+        /// arrives with the first viewport.
         #[wasm_bindgen(constructor)]
-        pub fn new(gpu: &Gpu) -> Self {
+        pub fn new() -> Self {
             Self {
                 inner: Rc::new(RefCell::new(ReplicaInner {
                     state: ReplicaState::new(),
-                    adapter: gpu.adapter.clone(),
-                    device: gpu.device.clone(),
-                    queue: gpu.queue.clone(),
                     render: None,
                 })),
             }
