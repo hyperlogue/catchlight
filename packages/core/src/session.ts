@@ -250,6 +250,39 @@ export class Session {
     return cleared;
   }
 
+  /**
+   * The node's evaluated world transform after the last tick: 16 floats,
+   * column-major, or `undefined` when there is no such node.
+   *
+   * Handed back as the typed array Rust wrote, because a caller reads two of
+   * the sixteen — the translation columns — and copying the rest into a tuple
+   * per call buys nothing.
+   */
+  nodeWorldTransform(node: NodeId): Float32Array | undefined {
+    return this.replica.nodeWorldTransform(node);
+  }
+
+  /**
+   * What `[x, y, z]` this node's authored translation becomes if the world
+   * moves by `(dx, dy)` — the delta resolved into the node's parent frame.
+   *
+   * The whole of a translate drag on this side is: this, then a
+   * [`scratchTransform`] to show it, then one `node_set` to author it. The
+   * arithmetic that turns a screen drag into a local translation is Rust's,
+   * because a native editor needs the same answer.
+   */
+  translationAfterWorldDelta(
+    node: NodeId,
+    dx: number,
+    dy: number,
+  ): [number, number, number] | undefined {
+    const moved = this.replica.translationAfterWorldDelta(node, dx, dy);
+    if (!moved) return undefined;
+    const [x, y, z] = moved;
+    if (x === undefined || y === undefined || z === undefined) return undefined;
+    return [x, y, z];
+  }
+
   /** Drops every scratch edit at once. What cancelling a gesture runs. */
   clearAllScratch(): void {
     this.replica.clearAllScratch();
