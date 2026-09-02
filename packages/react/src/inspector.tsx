@@ -264,7 +264,9 @@ function Fields({
             label="Texture"
             value={info.texture ?? NO_TEXTURE}
             options={textureOptions(textures)}
-            commit={(next) => submit({ texture: next })}
+            commit={(next) =>
+              next === NO_TEXTURE ? submit({ clear_texture: true }) : submit({ texture: next })
+            }
           />
         </Row>
       )}
@@ -457,8 +459,6 @@ function CheckInput({
 interface Option {
   value: string;
   label: string;
-  /** A state the model can be in that a command cannot ask for. */
-  disabled?: boolean;
 }
 
 function SelectInput({
@@ -481,15 +481,12 @@ function SelectInput({
       value={value}
       onChange={(event) => {
         const next = event.currentTarget.value;
-        // A disabled option is a state the model can be in and a command
-        // cannot ask for; the browser will not offer it, and neither will this.
-        const picked = options.find((option) => option.value === next);
-        if (!picked || picked.disabled || next === value) return;
+        if (next === value) return;
         void commit(next);
       }}
     >
       {options.map((option) => (
-        <option value={option.value} disabled={option.disabled} key={option.value}>
+        <option value={option.value} key={option.value}>
           {option.label}
         </option>
       ))}
@@ -556,12 +553,12 @@ const XY = ["x", "y"] as const;
 const RGB = ["r", "g", "b"] as const;
 
 /**
- * What a part with no albedo shows.
+ * What a part with no albedo shows, and what picking it authors.
  *
- * Disabled, because `node_set` reads `texture` as "point at this one" and has
- * no spelling for "point at nothing" — the field being absent is how it says
- * unchanged. So the option reports the state and refuses to be an edit that
- * silently does nothing.
+ * `node_set` reads `texture` as "point at this one" and reads the field being
+ * absent as "unchanged", so the empty value cannot travel under that key at
+ * all. `clear_texture` is the spelling for "draw none", which is why this
+ * option commits a different field from every other one in the select.
  */
 const NO_TEXTURE = "";
 
@@ -575,7 +572,7 @@ function blendOptions(current: string): Option[] {
 
 function textureOptions(textures: TexInfo[]): Option[] {
   return [
-    { value: NO_TEXTURE, label: "none", disabled: true },
+    { value: NO_TEXTURE, label: "none" },
     ...textures.map((texture) => ({
       value: texture.id,
       label: `${texture.id} (${texture.width}×${texture.height})`,

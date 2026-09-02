@@ -1020,10 +1020,20 @@ impl Editor {
                 patch,
             } => self.edit_session(session, |s| {
                 let mut dropped = Vec::new();
-                if let Some(tex) = &patch.texture {
-                    if s.model.texture(tex).is_none() {
-                        return Err(EditorError::NoTexture(tex.clone()));
+                // `clear_texture` wins over `texture`: one says "draw none",
+                // the other "draw this", and a patch carrying both means the
+                // former, the way `clear_target_params` beats `target_params`.
+                let albedo = match (patch.clear_texture, &patch.texture) {
+                    (true, _) => Some(None),
+                    (false, Some(tex)) => {
+                        if s.model.texture(tex).is_none() {
+                            return Err(EditorError::NoTexture(tex.clone()));
+                        }
+                        Some(Some(tex.clone()))
                     }
+                    (false, None) => None,
+                };
+                if let Some(albedo) = albedo {
                     if matches!(
                         s.model.node(&node).map(|n| &n.kind),
                         Some(ModelNodeKind::Part(_))
@@ -1031,8 +1041,11 @@ impl Editor {
                         // Repointing the last part drawing a texture deletes
                         // it; the reply says so, because nothing downstream
                         // of this session gets it back.
-                        dropped.extend(s.model.texture_dropped_by_repointing(&node, Some(tex)));
-                        s.model.set_part_albedo(&node, Some(tex.clone()))?;
+                        dropped.extend(
+                            s.model
+                                .texture_dropped_by_repointing(&node, albedo.as_ref()),
+                        );
+                        s.model.set_part_albedo(&node, albedo)?;
                     }
                 }
                 s.model.update_node(&node, |n| apply_patch(n, &patch))??;

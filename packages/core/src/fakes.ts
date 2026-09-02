@@ -40,6 +40,12 @@ export interface FakeDoc {
   root: TreeNode;
   params: ParamInfo[];
   textures: TexInfo[];
+  /**
+   * What each part draws, keyed by node Id — the model's albedo, which is the
+   * one node field this fake tracks. A part missing here draws nothing, and
+   * that is a state a panel renders differently from an unmapped kind.
+   */
+  albedo: Record<string, string>;
   bindings: FakeBinding[];
 }
 
@@ -71,6 +77,7 @@ export function emptyDoc(title: string): FakeDoc {
     root: { id: "root", name: "root", kind: "group", z_order: 0, enabled: true, children: [] },
     params: [],
     textures: [],
+    albedo: {},
     bindings: [],
   };
 }
@@ -162,6 +169,30 @@ export class FakeEditor implements WasmEditor {
         doc.rev += 1;
         this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "node", node }, doc.rev);
+      }
+      // Only the albedo: it is the one node field the fake holds, because
+      // `texture` and `clear_texture` are two spellings of it and a panel has
+      // to be able to tell them apart.
+      case "node_set": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        if (request.clear_texture) delete doc.albedo[request.node];
+        else if (request.texture) doc.albedo[request.node] = request.texture;
+        doc.rev += 1;
+        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        return this.#ok(id, { result: "node", node: request.node }, doc.rev);
+      }
+      // A texture belongs to a part: it arrives named by the node that draws
+      // it, and the model gains both in one edit.
+      case "texture_add": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const texture = `tex-${doc.textures.length + 1}`;
+        doc.textures.push({ id: texture, width: 4, height: 4 });
+        doc.albedo[request.node] = texture;
+        doc.rev += 1;
+        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        return this.#ok(id, { result: "texture", texture, dropped: [] }, doc.rev);
       }
       case "param_add": {
         const doc = this.docs.get(request.session);
@@ -429,7 +460,7 @@ export class FakeReplica implements WasmReplica {
         return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "bindings", bindings } });
       }
       case "node_info": {
-        const node = nodeInfo(doc.root, request.node);
+        const node = nodeInfo(doc, doc.root, request.node);
         if (!node) {
           return JSON.stringify({
             reply: "err",
@@ -523,13 +554,19 @@ export class FakeReplica implements WasmReplica {
 /**
  * The tree row for `node`, as the `node_info` reply carries it.
  *
- * A fake document holds a tree and nothing else, so the transform is the rest
+ * A fake document holds a tree and its albedo, so the transform is the rest
  * pose and the values are defaults. Which fields are *present* is not a
  * default: a panel decides what to draw from the kind carrying a field or not,
  * so the fake omits the same ones the model does — colour on anything but a
- * part or a composite, `mg_*` off a mesh group.
+ * part or a composite, `mg_*` off a mesh group, and `texture` off a part that
+ * draws none.
  */
-function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | undefined {
+function nodeInfo(
+  doc: FakeDoc,
+  tree: TreeNode,
+  node: string,
+  parent?: string,
+): NodeInfo | undefined {
   if (tree.id === node) {
     const drawn = tree.kind === "part" || tree.kind === "composite";
     return {
@@ -552,6 +589,9 @@ function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | und
             mask_threshold: 0.5,
           }
         : {}),
+      ...(tree.kind === "part" && doc.albedo[tree.id] !== undefined
+        ? { texture: doc.albedo[tree.id] }
+        : {}),
       ...(tree.kind === "composite" ? { propagate_meshgroup: false } : {}),
       ...(tree.kind === "mesh_group"
         ? { mg_dynamic: false, mg_translate_children: true }
@@ -559,7 +599,7 @@ function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | und
     };
   }
   for (const child of tree.children) {
-    const found = nodeInfo(child, node, tree.id);
+    const found = nodeInfo(doc, child, node, tree.id);
     if (found) return found;
   }
   return undefined;

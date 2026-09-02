@@ -1005,6 +1005,15 @@ pub struct NodePatch {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<TexId>,
+    /// Draw no texture at all. [`Self::texture`] says "point at this one" and
+    /// absent says "unchanged", so this is the only spelling for "none"; it
+    /// wins over `texture` the way
+    /// [`Command::PhysicsSet::clear_target_params`] wins over its
+    /// `target_params`. Ignored on a node that is not a part. Clearing the
+    /// last part drawing a texture takes the texture with it — see
+    /// [`ResponseBody::Node::dropped`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clear_texture: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_to_root: Option<bool>,
     /// Blend-mode name (Normal | Multiply | ColorDodge | …).

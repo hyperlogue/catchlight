@@ -105,6 +105,16 @@ export type Command =
     opacity?: number | null,
     enabled?: boolean | null,
     texture?: TexId | null,
+    /**
+     * Draw no texture at all. [`Self::texture`] says "point at this one" and
+     * absent says "unchanged", so this is the only spelling for "none"; it
+     * wins over `texture` the way
+     * [`Command::PhysicsSet::clear_target_params`] wins over its
+     * `target_params`. Ignored on a node that is not a part. Clearing the
+     * last part drawing a texture takes the texture with it — see
+     * [`ResponseBody::Node::dropped`].
+     */
+    clear_texture?: boolean,
     lock_to_root?: boolean | null,
     /**
      * Blend-mode name (Normal | Multiply | ColorDodge | …).
@@ -538,6 +548,16 @@ export type NodePatch = {
   opacity?: number | null,
   enabled?: boolean | null,
   texture?: TexId | null,
+  /**
+   * Draw no texture at all. [`Self::texture`] says "point at this one" and
+   * absent says "unchanged", so this is the only spelling for "none"; it
+   * wins over `texture` the way
+   * [`Command::PhysicsSet::clear_target_params`] wins over its
+   * `target_params`. Ignored on a node that is not a part. Clearing the
+   * last part drawing a texture takes the texture with it — see
+   * [`ResponseBody::Node::dropped`].
+   */
+  clear_texture?: boolean,
   lock_to_root?: boolean | null,
   /**
    * Blend-mode name (Normal | Multiply | ColorDodge | …).
