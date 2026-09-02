@@ -11,8 +11,8 @@
  * is this tab's copy of one session — model, puppet and render cache — and it
  * is never mutated locally: it moves only when a backend feeds it a document
  * state at a revision, forward only. The **viewport** draws a replica on a
- * canvas and owns its own frame loop. The **gpu** is one device, acquired once
- * per editor and shared by every replica and viewport under it.
+ * canvas and owns its own frame loop. The **gpu** is one device, acquired from
+ * the first canvas an editor draws on and shared by everything under it.
  *
  * Two things cross the boundary as JSON strings — a command and a query — and
  * everything per-frame or per-pointer-move is a typed method instead, because
@@ -38,7 +38,14 @@ export interface WasmEditor {
   free(): void;
 }
 
-/** One WebGPU (or WebGL2) device, shared by everything below one editor. */
+/**
+ * One WebGPU (or WebGL2) device, shared by everything below one editor.
+ *
+ * It is acquired from a canvas, and on WebGL2 that canvas is the only surface
+ * it can ever present into: an adapter there is enumerated from a context and
+ * draws into the context it came from. WebGPU has no such tie, so a second
+ * canvas works on it and does not on the fallback.
+ */
 export interface WasmGpu {
   /**
    * `max_texture_dimension_2d`: the largest backing store a canvas may have on
@@ -49,6 +56,8 @@ export interface WasmGpu {
   /** `"webgpu"` or `"webgl2"`. */
   backend(): string;
   free(): void;
+  /** What `using` calls. wasm-bindgen emits it; nothing here relies on it. */
+  [Symbol.dispose]?(): void;
 }
 
 /**
@@ -143,13 +152,17 @@ export interface WasmViewport {
 /**
  * The named exports of `@catchlight/wasm`, as this package uses them.
  *
- * `Gpu.acquire` is the one asynchronous call in the module — a WebGPU adapter
- * and device are promises. Everything after it is synchronous, which is what
- * lets a query answer inside a React render and a drag run without a `await`.
+ * `Gpu.acquire` is the one asynchronous call in the module — an adapter and a
+ * device are promises. It takes a canvas because WebGL2 has no other way in:
+ * there the adapter is enumerated from a context, so no device can exist
+ * before the first canvas does. WebGPU ignores the canvas and is tried first.
+ * A `Replica` therefore holds no device at all; the viewport built on it
+ * brings one. Everything after that call is synchronous, which is what lets a
+ * query answer inside a React render and a drag run without an `await`.
  */
 export interface WasmModule {
   CatchlightEditor: new () => WasmEditor;
-  Gpu: { acquire(): Promise<WasmGpu> };
-  Replica: new (gpu: WasmGpu) => WasmReplica;
+  Gpu: { acquire(canvas: HTMLCanvasElement): Promise<WasmGpu> };
+  Replica: new () => WasmReplica;
   Viewport: new (gpu: WasmGpu, replica: WasmReplica, canvas: HTMLCanvasElement) => WasmViewport;
 }

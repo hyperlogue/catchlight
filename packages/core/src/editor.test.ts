@@ -148,15 +148,55 @@ describe("viewports and lifetime", () => {
     expect(view?.invalidated).toBe(1);
   });
 
+  test("a document opens with no device at all", async () => {
+    const { editor, module } = await inTab();
+    const session = await editor.newDocument();
+
+    // On WebGL2 an adapter comes from a canvas, so an editor that acquired one
+    // at creation could not exist before something asked to be drawn — and
+    // reading a tree never needed a GPU anyway.
+    expect(module.gpu.acquiredFrom).toEqual([]);
+    expect(session.tree().id).toBe("root");
+  });
+
+  test("the first canvas acquires the device, and the second shares it", async () => {
+    const { editor, module } = await inTab();
+    const session = await editor.newDocument();
+    const first = { id: "first" } as unknown as HTMLCanvasElement;
+    const second = { id: "second" } as unknown as HTMLCanvasElement;
+
+    const [a, b] = await Promise.all([
+      editor.attach(session, first),
+      editor.attach(session, second),
+    ]);
+
+    // Two viewports mounting in one tick is a React remount, not a reason for
+    // two devices — and the canvas the device came from is the first one.
+    expect(module.gpu.acquiredFrom).toEqual([first]);
+    expect(module.viewports).toHaveLength(2);
+    expect(a).not.toBe(b);
+  });
+
   test("closing frees every replica, the device and the backend", async () => {
     const { editor, module, wasm } = await inTab();
+    const session = await editor.newDocument();
     await editor.newDocument();
-    await editor.newDocument();
+    await editor.attach(session, {} as HTMLCanvasElement);
 
     editor.close();
 
     expect(module.replicas.map((replica) => replica.freed)).toEqual([true, true]);
     expect(module.gpu.freed).toBe(true);
+    expect(wasm.freed).toBe(true);
+  });
+
+  test("closing an editor that never drew anything frees no device", async () => {
+    const { editor, module, wasm } = await inTab();
+    await editor.newDocument();
+
+    editor.close();
+
+    expect(module.gpu.freed).toBe(false);
     expect(wasm.freed).toBe(true);
   });
 });
