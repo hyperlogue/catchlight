@@ -228,23 +228,16 @@ fn canvas_surface(
 /// GLES web backend takes the parameter as `_display_handle` and never reads
 /// it. So this is a token, and the whole reason it must exist is
 /// `wgpu_core::Instance::create_surface`'s `(None, None) =>
-/// MissingDisplayHandle` arm.
+/// MissingDisplayHandle` arm. `DisplayHandle::web` is the safe constructor
+/// `raw-window-handle` ships for exactly this; the struct is still needed
+/// because the descriptor wants `Send + Sync + 'static`, which a borrowed
+/// handle is not.
 #[derive(Debug)]
 struct WebDisplay;
 
 impl wgpu::rwh::HasDisplayHandle for WebDisplay {
     fn display_handle(&self) -> Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
-        let raw = wgpu::rwh::RawDisplayHandle::Web(wgpu::rwh::WebDisplayHandle::new());
-        // SAFETY: `borrow_raw`'s contract is that every non-zero field of the
-        // handle is valid. `WebDisplayHandle` has no fields, so there is
-        // nothing that could be invalid and nothing for the returned lifetime
-        // to outlive — the value borrows `self` but points at none of it.
-        // wgpu 29 exposes no safe constructor, and without this the WebGL2
-        // fallback cannot create a surface at all; see the crate manifest for
-        // why `unsafe_code` is `deny` rather than `forbid` here.
-        #[allow(unsafe_code)]
-        let handle = unsafe { wgpu::rwh::DisplayHandle::borrow_raw(raw) };
-        Ok(handle)
+        Ok(wgpu::rwh::DisplayHandle::web())
     }
 }
 
