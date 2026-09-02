@@ -25,7 +25,7 @@ import {
   MemoryStorage,
   OpfsStorage,
 } from "@catchlight/core";
-import type { Backend, Storage, WasmModule } from "@catchlight/core";
+import type { Backend, Storage } from "@catchlight/core";
 import { CatchlightEditor } from "@catchlight/editor";
 import "@catchlight/editor/theme.css";
 // The generated module initializes itself on import: `cargo xtask wasm` emits
@@ -40,23 +40,12 @@ import "./site.css";
 /** Copied into `public/` from `tests/models/`; see the `sample` script. */
 const SAMPLE = "sample.clm";
 
-/**
- * The generated module, as `@catchlight/core` declares it.
- *
- * The assertion is one mismatch and not a shrug: wasm-bindgen gives every
- * exported class a `[Symbol.dispose]`, which `WasmGpu` does not declare, so
- * `new Replica(gpu)` fails the contravariant check on its parameter. The
- * methods core actually calls all line up. `WasmGpu` gaining `[Symbol.dispose]`
- * would remove this.
- */
-const wasm = catchlight as unknown as WasmModule;
-
 void start();
 
 async function start(): Promise<void> {
   try {
     const server = new URLSearchParams(globalThis.location.search).get("server");
-    const editor = await Editor.create(wasm, await pick(server));
+    const editor = await Editor.create(catchlight, await pick(server));
 
     // Before the mount, so the editor comes up showing something: the panel
     // takes the first document the editor lists as the current one.

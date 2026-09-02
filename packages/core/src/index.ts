@@ -56,6 +56,7 @@ export type {
   WasmEditor,
   WasmGpu,
   WasmModule,
+  WasmOwned,
   WasmReplica,
   WasmViewport,
 } from "./wasm.js";

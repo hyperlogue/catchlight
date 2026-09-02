@@ -21,8 +21,28 @@
 
 import type { NodeId, ParamId, TexId } from "./protocol.gen.js";
 
+/**
+ * What wasm-bindgen puts on every class it exports.
+ *
+ * Both members are required rather than optional, and that is not a style
+ * choice: [`WasmModule`]'s `Viewport` is a construct signature taking a `Gpu`
+ * and a `Replica`, and a construct signature's parameters are checked
+ * contravariantly — so the generated module is assignable to [`WasmModule`]
+ * only if the types here are assignable to the generated classes, and an
+ * optional member is not assignable to a required one. Writing them down is
+ * what lets a host pass the module in without an assertion.
+ *
+ * Nothing in this package calls either one on a value it did not create; a
+ * fake implements both in a line.
+ */
+export interface WasmOwned {
+  free(): void;
+  /** What `using` calls. */
+  [Symbol.dispose](): void;
+}
+
 /** The in-tab editor: an `Editor` from `catchlight-editor-server`. */
-export interface WasmEditor {
+export interface WasmEditor extends WasmOwned {
   /** One JSON `Request` in, one JSON `Reply` out — the wire protocol verbatim. */
   handle(requestJson: string): string;
   /**
@@ -35,7 +55,6 @@ export interface WasmEditor {
   putBytes(key: string, bytes: Uint8Array): void;
   takeBytes(key: string): Uint8Array | undefined;
   stagedKeys(): string[];
-  free(): void;
 }
 
 /**
@@ -46,7 +65,7 @@ export interface WasmEditor {
  * draws into the context it came from. WebGPU has no such tie, so a second
  * canvas works on it and does not on the fallback.
  */
-export interface WasmGpu {
+export interface WasmGpu extends WasmOwned {
   /**
    * `max_texture_dimension_2d`: the largest backing store a canvas may have on
    * either axis. Configuring a surface past it fails and the viewport goes
@@ -55,9 +74,6 @@ export interface WasmGpu {
   maxSize(): number;
   /** `"webgpu"` or `"webgl2"`. */
   backend(): string;
-  free(): void;
-  /** What `using` calls. wasm-bindgen emits it; nothing here relies on it. */
-  [Symbol.dispose]?(): void;
 }
 
 /**
@@ -74,7 +90,7 @@ export interface TextureRequest {
 }
 
 /** One session's model, puppet and render cache, in this tab. */
-export interface WasmReplica {
+export interface WasmReplica extends WasmOwned {
   /** The document revision this replica currently holds. */
   rev(): number;
 
@@ -136,7 +152,7 @@ export interface WasmReplica {
  * The renderer's surface. It owns the frame loop; this side owns the element,
  * because only the page knows how big it is.
  */
-export interface WasmViewport {
+export interface WasmViewport extends WasmOwned {
   /** Marks the picture stale; at most one frame follows. */
   invalidate(): void;
   /** Backing store in device pixels; the caller has set the canvas to match. */
@@ -146,7 +162,6 @@ export interface WasmViewport {
   start(): void;
   /** Cancels it; idempotent, and `start` works again afterwards. */
   stop(): void;
-  free(): void;
 }
 
 /**

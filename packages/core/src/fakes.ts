@@ -213,6 +213,10 @@ export class FakeEditor implements WasmEditor {
     this.freed = true;
   }
 
+  [Symbol.dispose](): void {
+    this.free();
+  }
+
   #opened(id: number, title: string, file: string | null): string {
     const session = this.#nextSession++;
     const doc = emptyDoc(title);
@@ -251,6 +255,9 @@ export class FakeGpu implements WasmGpu {
   }
 }
 
+  [Symbol.dispose](): void {
+    this.free();
+  }
 /** This tab's copy of one document, and what it was told. */
 export class FakeReplica implements WasmReplica {
   doc: FakeDoc | undefined;
@@ -413,6 +420,10 @@ export class FakeReplica implements WasmReplica {
 function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | undefined {
   if (tree.id === node) {
     return {
+
+  [Symbol.dispose](): void {
+    this.free();
+  }
       id: tree.id,
       kind: tree.kind,
       parent: parent ?? null,
@@ -472,6 +483,9 @@ export interface FakeModule {
 
 /** The four classes `@catchlight/wasm` exports, in memory. */
 export function fakeWasm(): FakeModule {
+  [Symbol.dispose](): void {
+    this.free();
+  }
   const gpu = new FakeGpu();
   const replicas: FakeReplica[] = [];
   const viewports: FakeViewport[] = [];
@@ -542,6 +556,7 @@ export class ScriptedBackend implements Backend {
   replies = new Map<string, OkReply>();
 
   #listeners = new Set<(event: Event) => void>();
+  discardedKeys: string[] = [];
   #queue = new FeedQueue();
 
   send(command: Command): Promise<OkReply> {
@@ -576,6 +591,12 @@ export class ScriptedBackend implements Backend {
       const doc = emptyDoc(`session ${session}`);
       doc.rev = target;
       replica.applyStructure(structureBytes(doc), target);
+  discardKey(key: string): Promise<void> {
+    this.discardedKeys.push(key);
+    this.staged.delete(key);
+    return Promise.resolve();
+  }
+
       return replica.rev();
     });
   }
