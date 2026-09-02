@@ -219,7 +219,8 @@
     color: var(--cl-warn);
   }
 
-  .catchlight [data-catchlight-node][data-selected] > [data-catchlight-node-label] {
+  /* The whole row, not just the label: the checkbox belongs to the selection. */
+  .catchlight [data-catchlight-node][data-selected] > [data-catchlight-node-row] {
     background: var(--cl-accent-soft);
     box-shadow: inset 2px 0 0 var(--cl-accent);
   }
@@ -307,5 +308,90 @@
     color: var(--cl-danger);
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* Node tree editing: the toolbar, the row, renaming, and drop targets. */
+
+  .catchlight [data-catchlight-node-actions] {
+    display: flex;
+    gap: 4px;
+    margin-block-end: var(--cl-gap);
+  }
+
+  .catchlight [data-catchlight-node-actions] button,
+  .catchlight [data-catchlight-node-kind] {
+    padding: 1px 6px;
+    background: var(--cl-surface);
+    color: inherit;
+    font: inherit;
+    font-size: var(--cl-font-size-small);
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+  }
+
+  /* The picker takes the slack; the five buttons stay the size of their words. */
+  .catchlight [data-catchlight-node-kind] {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  .catchlight [data-catchlight-node-actions] button:hover:not(:disabled) {
+    background: var(--cl-surface-raised);
+  }
+
+  .catchlight [data-catchlight-node-actions] button:disabled {
+    color: var(--cl-text-dim);
+    cursor: default;
+  }
+
+  .catchlight [data-catchlight-node-row] {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: var(--cl-radius);
+  }
+
+  .catchlight [data-catchlight-node-row][draggable="true"] {
+    cursor: grab;
+  }
+
+  .catchlight [data-catchlight-node-row] > [data-catchlight-node-label] {
+    flex: 1 1 auto;
+    inline-size: auto;
+    min-inline-size: 0;
+  }
+
+  .catchlight [data-catchlight-node-enabled] {
+    flex: none;
+    margin: 0 0 0 2px;
+    inline-size: 11px;
+    block-size: 11px;
+  }
+
+  .catchlight [data-catchlight-node-rename] {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    min-block-size: var(--cl-row-height);
+    padding: 1px 5px;
+    background: var(--cl-crust);
+    color: inherit;
+    font: inherit;
+    border: 1px solid var(--cl-accent);
+    border-radius: var(--cl-radius);
+  }
+
+  /* Where a drop would land: a wash to go inside a row, a line to land beside
+     it — drawn on the item, whose edges are where the node would end up. */
+  .catchlight [data-catchlight-node][data-drop="into"] > [data-catchlight-node-row] {
+    background: var(--cl-surface-active);
+  }
+
+  .catchlight [data-catchlight-node][data-drop="before"] {
+    box-shadow: inset 0 2px 0 var(--cl-accent);
+  }
+
+  .catchlight [data-catchlight-node][data-drop="after"] {
+    box-shadow: inset 0 -2px 0 var(--cl-accent);
   }
 }
