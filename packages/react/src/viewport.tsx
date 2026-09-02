@@ -22,6 +22,15 @@
  * drag pans, primary drag pans while Space is held, wheel zooms about the
  * cursor. Any other pointer event is handed up with its world position, and
  * this component takes no view on what it means.
+ *
+ * **A session is framed once, on the first frame it has anything to frame.**
+ * The default camera is two world units at the origin, which for a model
+ * authored in pixels is a hole punched through one cheek. The box that would
+ * fix that is *posed*, so it does not exist until the renderer has ticked —
+ * hence a retry on animation frames rather than a read at attach. Once per
+ * session, never again: re-fitting on a revision would undo the user's own
+ * zoom on every edit. A host that has its own idea where the camera starts
+ * says so with `defaultCamera`, and that turns this off.
  */
 
 import type { Camera, Session, Viewport as CoreViewport } from "@catchlight/core";
@@ -32,6 +41,7 @@ import { useEditor } from "./editor-context.js";
 import { useLatest } from "./latest.js";
 import {
   DEFAULT_CAMERA,
+  fitCamera,
   panTo,
   worldAt,
   wheelNotches,
@@ -59,6 +69,11 @@ export interface ViewportRootProps extends Omit<ComponentProps<"canvas">, OwnPoi
   /** Where an uncontrolled camera starts. Ignored once it has moved. */
   defaultCamera?: Camera;
   onCameraChange?: (camera: Camera) => void;
+  /**
+   * The canvas's CSS size, whenever it changes. How a host that owns the
+   * camera learns the aspect a fit has to frame against.
+   */
+  onResize?: (size: Size) => void;
   onPointerDown?: PointerHandler;
   onPointerMove?: PointerHandler;
   onPointerUp?: PointerHandler;
@@ -78,6 +93,7 @@ export function ViewportRoot(props: ViewportRootProps) {
     camera,
     defaultCamera,
     onCameraChange,
+    onResize,
     onPointerDown,
     onPointerMove,
     onPointerUp,
@@ -96,11 +112,15 @@ export function ViewportRoot(props: ViewportRootProps) {
   const origin = useRef<Point>([0, 0]);
   const pan = useRef<Pan | undefined>(undefined);
   const space = useRef(false);
+  /** The session this viewport has already framed, so it frames it once. */
+  const fitted = useRef<number | undefined>(undefined);
 
   const cameraNow = useLatest(current);
   const controlled = useLatest(camera !== undefined);
   const changed = useLatest(onCameraChange);
+  const resized = useLatest(onResize);
   const forwarded = useLatest(ref);
+  const autoFits = useLatest(defaultCamera === undefined);
 
   /** One place a new camera goes, wherever the gesture that made it started. */
   const commit = useCallback(
@@ -128,11 +148,12 @@ export function ViewportRoot(props: ViewportRootProps) {
         const rect = canvas.getBoundingClientRect();
         origin.current = [rect.left, rect.top];
       };
-      const resized = (width: number, height: number): void => {
+      const measured = (width: number, height: number): void => {
         size.current = { width, height };
         remeasure();
+        resized.current?.({ width, height });
       };
-      resized(canvas.clientWidth, canvas.clientHeight);
+      measured(canvas.clientWidth, canvas.clientHeight);
 
       let observer: ResizeObserver | undefined;
       if (typeof ResizeObserver !== "undefined") {
@@ -140,8 +161,8 @@ export function ViewportRoot(props: ViewportRootProps) {
           const entry = entries[entries.length - 1];
           if (!entry) return;
           const box = entry.contentBoxSize?.[0];
-          if (box) resized(box.inlineSize, box.blockSize);
-          else resized(entry.contentRect.width, entry.contentRect.height);
+          if (box) measured(box.inlineSize, box.blockSize);
+          else measured(entry.contentRect.width, entry.contentRect.height);
         });
         observer.observe(canvas);
       }
@@ -156,6 +177,27 @@ export function ViewportRoot(props: ViewportRootProps) {
       canvas.addEventListener("wheel", onWheel, { passive: false });
       globalThis.addEventListener?.("scroll", remeasure, { capture: true, passive: true });
       globalThis.addEventListener?.("resize", remeasure, { passive: true });
+
+      // Framing the model, once it has been drawn once. A frame registered
+      // here runs after the renderer's own — rAF callbacks run in the order
+      // they were queued — so the tick that fills the box has already
+      // happened by the first attempt.
+      let frame: number | undefined;
+      let attempts = 0;
+      const tryFit = (): void => {
+        frame = undefined;
+        if (!live || !autoFits.current || fitted.current === session.id) return;
+        const framed = fitCamera(session.bounds(), size.current);
+        if (framed) {
+          fitted.current = session.id;
+          commit(framed);
+          return;
+        }
+        attempts += 1;
+        // A document that draws nothing never gets a box, and this must not
+        // become a callback on every frame for the life of the tab.
+        if (attempts < AUTO_FIT_FRAMES) frame = requestFrame(tryFit);
+      };
 
       const releaseRef = applyRef(forwarded.current, canvas);
 
@@ -172,6 +214,7 @@ export function ViewportRoot(props: ViewportRootProps) {
           const now = cameraNow.current;
           viewport.setCamera(now.center[0], now.center[1], now.height);
           viewport.start();
+          frame = requestFrame(tryFit);
         })
         .catch((cause: unknown) => {
           console.warn("catchlight: attaching the viewport failed", cause);
@@ -179,6 +222,7 @@ export function ViewportRoot(props: ViewportRootProps) {
 
       return () => {
         live = false;
+        cancelFrame(frame);
         observer?.disconnect();
         canvas.removeEventListener("wheel", onWheel);
         globalThis.removeEventListener?.("scroll", remeasure, { capture: true });
@@ -189,7 +233,7 @@ export function ViewportRoot(props: ViewportRootProps) {
         attached?.dispose();
       };
     },
-    [editor, session, commit, cameraNow, forwarded],
+    [editor, session, commit, cameraNow, resized, autoFits, forwarded],
   );
 
   // A camera the host changed. The one a gesture made has already been pushed
@@ -284,21 +328,78 @@ export function ViewportRoot(props: ViewportRootProps) {
 
 export const Viewport = { Root: ViewportRoot };
 
-/**
- * Camera state for a host that wants to drive one: what to pass back in, and
- * what to set from a "frame everything" button.
- */
-export function useViewportCamera(initial: Camera = DEFAULT_CAMERA): {
+/** What [`useViewportCamera`] hands back. Three of the five are props. */
+export interface ViewportCamera {
+  /** Pass to `Viewport.Root` as `camera`. */
   camera: Camera;
-  setCamera: (camera: Camera) => void;
+  /** Pass to `Viewport.Root` as `onCameraChange`. */
   onCameraChange: (camera: Camera) => void;
-} {
+  /** Pass to `Viewport.Root` as `onResize`. What [`fit`] frames against. */
+  onResize: (size: Size) => void;
+  /** Moves the camera outright. */
+  setCamera: (camera: Camera) => void;
+  /**
+   * Frames `session`'s model on the canvas this camera was last told the size
+   * of — what a "Fit" button runs.
+   *
+   * `false` when there is nothing to frame: the box is posed, so a viewport
+   * that has not drawn a frame yet has none, and neither does a document that
+   * draws nothing. The camera is left alone in both cases.
+   */
+  fit: (session: Session) => boolean;
+}
+
+/**
+ * Camera state for a host that wants to drive one.
+ *
+ * The canvas size is held in a ref rather than in state: nothing renders
+ * differently for it, and a viewport that re-rendered its host on every
+ * resize would do it in the middle of a resize.
+ */
+export function useViewportCamera(initial: Camera = DEFAULT_CAMERA): ViewportCamera {
   const [cameraState, setCamera] = useState<Camera>(initial);
-  return { camera: cameraState, setCamera, onCameraChange: setCamera };
+  const size = useRef<Size>({ width: 0, height: 0 });
+
+  const onResize = useCallback((next: Size): void => {
+    size.current = next;
+  }, []);
+
+  const fit = useCallback((session: Session): boolean => {
+    const framed = fitCamera(session.bounds(), size.current);
+    if (!framed) return false;
+    setCamera(framed);
+    return true;
+  }, []);
+
+  return { camera: cameraState, setCamera, onCameraChange: setCamera, onResize, fit };
 }
 
 const PRIMARY = 0;
 const MIDDLE = 1;
+
+/**
+ * How many frames the auto-fit waits for geometry before giving up.
+ *
+ * A document that draws nothing never produces a box, and a callback on every
+ * frame for the life of the tab is exactly what the renderer's own idling
+ * rules exist to avoid. Four seconds at sixty hertz is long enough for a
+ * model whose textures are still decoding.
+ */
+const AUTO_FIT_FRAMES = 240;
+
+/**
+ * One animation frame, where the host has them. A non-browser DOM does not,
+ * and there the fit simply never runs — there is no picture to frame either.
+ */
+function requestFrame(callback: () => void): number | undefined {
+  if (typeof requestAnimationFrame !== "function") return undefined;
+  return requestAnimationFrame(callback);
+}
+
+function cancelFrame(frame: number | undefined): void {
+  if (frame === undefined || typeof cancelAnimationFrame !== "function") return;
+  cancelAnimationFrame(frame);
+}
 
 function screenOf(clientX: number, clientY: number, origin: Point): Point {
   return [clientX - origin[0], clientY - origin[1]];

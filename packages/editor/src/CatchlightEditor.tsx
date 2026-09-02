@@ -19,6 +19,11 @@
  * **A failure is shown, never swallowed.** The parts report through `onError`
  * callbacks and the editor's promises reject; both land in one line at the
  * bottom, because a browser console is not part of the product.
+ *
+ * **The camera is held here, not in the canvas.** The viewport frames a model
+ * by itself the first time it draws one, but "Fit" is a toolbar button and the
+ * toolbar is not inside the stage — so the one piece of view state that two
+ * cells share lives in the component that contains both.
  */
 
 import type { Editor, Session, SessionInfo } from "@catchlight/core";
@@ -36,7 +41,9 @@ import {
   useRevision,
   useSelection,
   useSessions,
+  useViewportCamera,
 } from "@catchlight/react";
+import type { ViewportCamera } from "@catchlight/react";
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -62,6 +69,7 @@ function Shell(): ReactNode {
   const { sessions } = useSessions();
   const [session, setSession] = useState<Session | undefined>(undefined);
   const [problem, setProblem] = useState<string | undefined>(undefined);
+  const view = useViewportCamera();
 
   const opened = useCallback((next: Session): void => {
     setProblem(undefined);
@@ -104,6 +112,10 @@ function Shell(): ReactNode {
     void editor.saveDocument(session).then(() => setProblem(undefined), failed);
   }, [editor, session, failed]);
 
+  const fit = useCallback((): void => {
+    if (session) view.fit(session);
+  }, [session, view]);
+
   const info = session ? sessions.find((each) => each.session === session.id) : undefined;
 
   return (
@@ -121,6 +133,14 @@ function Shell(): ReactNode {
         >
           Save
         </button>
+        <button
+          type="button"
+          data-catchlight-fit=""
+          disabled={session === undefined}
+          onClick={fit}
+        >
+          Fit
+        </button>
       </header>
       {session ? (
         <SelectionProvider session={session}>
@@ -131,7 +151,7 @@ function Shell(): ReactNode {
               <NodeTree.Root session={session} />
             </section>
           </nav>
-          <Stage session={session} />
+          <Stage session={session} view={view} />
           <aside data-catchlight-panel="right">
             <section data-catchlight-section="" data-grow="">
               <h2 data-catchlight-heading="">Params</h2>
@@ -160,6 +180,7 @@ function Shell(): ReactNode {
           <aside data-catchlight-panel="right" />
           <footer data-catchlight-status="" role="status">
             <span data-catchlight-status-item="">no document</span>
+            <Environment />
             <Problem problem={problem} />
           </footer>
         </>
@@ -184,12 +205,18 @@ function Documents({ onSelect }: { onSelect: (info: SessionInfo) => void }): Rea
  * The drag is here rather than in `Shell` because it needs the selection, and
  * the selection only exists once there is a session to publish it against.
  */
-function Stage({ session }: { session: Session }): ReactNode {
+function Stage({ session, view }: { session: Session; view: ViewportCamera }): ReactNode {
   const { node } = useSelection();
   const drag = useNodeDrag(session, node);
   return (
     <div data-catchlight-stage="" data-dragging={drag.dragging ? "" : undefined}>
-      <Viewport.Root session={session} {...drag.handlers} />
+      <Viewport.Root
+        session={session}
+        camera={view.camera}
+        onCameraChange={view.onCameraChange}
+        onResize={view.onResize}
+        {...drag.handlers}
+      />
     </div>
   );
 }
@@ -215,9 +242,47 @@ function Status({
         </span>
       ) : null}
       <span data-catchlight-status-item="">{node ? `selected ${node}` : "nothing selected"}</span>
+      <Environment />
       <Problem problem={problem} />
     </footer>
   );
+}
+
+/**
+ * Where the document is, and which graphics API is drawing it.
+ *
+ * Both are things a person cannot otherwise tell by looking, and both change
+ * what a bug report means: an in-tab editor and a connected one fail
+ * differently, and so do WebGPU and the WebGL2 fallback.
+ */
+function Environment(): ReactNode {
+  const editor = useEditor();
+  const gpu = useGpuBackend(editor);
+  return (
+    <>
+      <span data-catchlight-status-item="" data-catchlight-backend="">
+        {editor.backendKind()}
+      </span>
+      <span data-catchlight-status-item="" data-catchlight-gpu="">
+        {gpu ?? "no device"}
+      </span>
+    </>
+  );
+}
+
+/**
+ * Which graphics API this tab came up on, once a canvas has asked for one.
+ *
+ * A device is acquired at the first viewport and never swapped, so the
+ * subscription fires once and the state settles for the life of the editor.
+ */
+function useGpuBackend(editor: Editor): string | undefined {
+  const [backend, setBackend] = useState<string | undefined>(() => editor.gpuBackend());
+  useEffect(() => {
+    setBackend(editor.gpuBackend());
+    return editor.onGpuChanged(() => setBackend(editor.gpuBackend()));
+  }, [editor]);
+  return backend;
 }
 
 function Problem({ problem }: { problem: string | undefined }): ReactNode {

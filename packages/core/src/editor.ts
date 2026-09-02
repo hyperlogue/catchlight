@@ -42,6 +42,7 @@ export class Editor {
   /** The one acquisition in flight, so two first attaches share a device. */
   #acquiring: Promise<WasmGpu> | undefined;
   #sessions = new Map<SessionId, Session>();
+  #gpuListeners = new Set<() => void>();
   #closed = false;
 
   private constructor(wasm: WasmModule, backend: Backend) {
@@ -62,6 +63,44 @@ export class Editor {
    */
   static create(wasm: WasmModule, backend: Backend): Promise<Editor> {
     return Promise.resolve(new Editor(wasm, backend));
+  }
+
+  /**
+   * Where the document lives: the wasm editor in this tab, or a process this
+   * tab is connected to.
+   *
+   * The one thing above this class that may legitimately branch on which
+   * backend it has — a status line saying which of the two a person is
+   * looking at. Nothing about *behaviour* may read it; that is the seam's
+   * whole point.
+   */
+  backendKind(): Backend["kind"] {
+    return this.#backend.kind;
+  }
+
+  /**
+   * Which graphics API the device came up on: `"webgpu"`, or `"webgl2"` on the
+   * fallback tier.
+   *
+   * `undefined` until the first [`attach`] has acquired a device, because
+   * until then there is nothing that has an answer. [`onGpuChanged`] is how a
+   * label finds out that it now does.
+   */
+  gpuBackend(): string | undefined {
+    return this.#gpu?.backend();
+  }
+
+  /**
+   * Registers `listener`, called once the device exists.
+   *
+   * One notification, at the one moment the answer to [`gpuBackend`] changes:
+   * a device is acquired once per editor and never swapped.
+   */
+  onGpuChanged(listener: () => void): Unsubscribe {
+    this.#gpuListeners.add(listener);
+    return () => {
+      this.#gpuListeners.delete(listener);
+    };
   }
 
   /** An empty document. */
@@ -100,15 +139,19 @@ export class Editor {
    * The editor is asked what the manifest needs before it is imported, because
    * an in-tab editor cannot go looking for a file: every key it will read has
    * to be resolvable first, and only the manifest itself is named by the
-   * command. A connected editor already has its own store, so the staging is
-   * a no-op there.
+   * command. A connected editor already has its own store, so the staging and
+   * the discard that follows it are both no-ops there.
    */
   async importManifest(key: string): Promise<Session> {
     const asked = await this.#backend.send({ cmd: "manifest_requirements", manifest_path: key });
-    for (const required of expectResult(asked.body, "manifest_requirements").textures) {
-      await this.#backend.stageKey(required);
-    }
-    return this.#adopt(await this.#backend.send({ cmd: "session_import", manifest_path: key }));
+    const required = expectResult(asked.body, "manifest_requirements").textures;
+    for (const texture of required) await this.#backend.stageKey(texture);
+    const reply = await this.#backend.send({ cmd: "session_import", manifest_path: key });
+    // The import decoded every one of them into a model that owns its copy, so
+    // holding the encoded bytes as well is the whole model twice. The backend
+    // discards the keys a command named for itself; these it never saw.
+    for (const texture of required) await this.#backend.discardKey(texture);
+    return this.#adopt(reply);
   }
 
   /**
@@ -173,6 +216,9 @@ export class Editor {
     this.#acquiring ??= this.#wasm.Gpu.acquire(canvas).then(
       (gpu) => {
         this.#gpu = gpu;
+        // Copy: a listener that unsubscribes while being told must not shift
+        // the set out from under this loop.
+        for (const listener of [...this.#gpuListeners]) listener();
         return gpu;
       },
       (cause: unknown) => {
@@ -207,6 +253,7 @@ export class Editor {
     this.#gpu?.free();
     this.#gpu = undefined;
     this.#acquiring = undefined;
+    this.#gpuListeners.clear();
     this.#backend.close();
   }
 

@@ -11,6 +11,8 @@
 import type { Camera } from "@catchlight/core";
 
 export type Point = [number, number];
+/** A world-space box, as the replica reports it: `[min_x, min_y, max_x, max_y]`. */
+export type Bounds = [number, number, number, number];
 export interface Size {
   width: number;
   height: number;
@@ -78,6 +80,43 @@ export function panTo(start: Camera, from: Point, size: Size, to: Point): Camera
 }
 
 /**
+ * The camera that frames `bounds` on a canvas of `size`.
+ *
+ * `undefined` when there is nothing to frame — no box, or one whose numbers
+ * are not finite — so a caller leaves the camera exactly where it was rather
+ * than jumping to an invented one.
+ *
+ * The height is what a camera is: one screen height is `camera.height` world
+ * units, and the width follows from the aspect. So framing the box means
+ * covering its height *and* its width divided by the aspect, whichever is
+ * larger — the other axis then has room to spare, which is what putting a
+ * portrait model on a wide canvas should do.
+ *
+ * `padding` is the fraction of extra world to leave around it, so the default
+ * 0.1 is a 5% margin on each of the two tight sides. A box with no extent at
+ * all is a model that is one point: it is centred at the default height, not
+ * zoomed into infinity.
+ */
+export function fitCamera(
+  bounds: Bounds | undefined,
+  size: Size,
+  padding: number = FIT_PADDING,
+): Camera | undefined {
+  if (!bounds) return undefined;
+  const [minX, minY, maxX, maxY] = bounds;
+  if (!bounds.every((value) => Number.isFinite(value))) return undefined;
+  const width = maxX - minX;
+  const height = maxY - minY;
+  // An inverted box is what an empty one degrades to; it frames nothing.
+  if (width < 0 || height < 0) return undefined;
+
+  const aspect = size.width > 0 && size.height > 0 ? size.width / size.height : 1;
+  const covering = Math.max(height, width / aspect);
+  const framed = covering > 0 ? covering * (1 + Math.max(0, padding)) : DEFAULT_CAMERA.height;
+  return { center: [(minX + maxX) / 2, (minY + maxY) / 2], height: clampHeight(framed) };
+}
+
+/**
  * A wheel event as notches. `deltaMode` is what the browser measured in:
  * pixels, lines or pages, and a trackpad reports many small pixel deltas
  * where a mouse reports one notch.
@@ -103,6 +142,8 @@ function clampHeight(height: number): number {
   return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, height));
 }
 
+/** How much world a fit leaves around the box, as a fraction of it. */
+const FIT_PADDING = 0.1;
 const LINES_PER_NOTCH = 3;
 const PIXELS_PER_NOTCH = 100;
 const MIN_HEIGHT = 1e-6;

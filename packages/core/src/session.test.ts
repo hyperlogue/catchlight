@@ -236,6 +236,19 @@ describe("reads", () => {
     }
   });
 
+  test("the posed bounds come straight off the replica", () => {
+    const { backend, replica, session } = open();
+
+    // A replica that has drawn nothing has no box, and a fit has to survive
+    // that rather than invent a camera.
+    expect(session.bounds()).toBeUndefined();
+
+    replica.box = [-8, -1.5, 8, 1.5];
+    expect(session.bounds()).toEqual([-8, -1.5, 8, 1.5]);
+    // A read, so it costs the backend nothing.
+    expect(backend.sent).toHaveLength(0);
+  });
+
   test("a server query goes over the wire and changes nothing", async () => {
     const { backend, session } = open();
     backend.replies.set("status", { body: { result: "empty" }, rev: 1 });

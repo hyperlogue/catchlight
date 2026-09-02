@@ -35,10 +35,11 @@ export { SelectionProvider, useSelection } from "./selection.js";
 export type { Selection, SelectionProviderProps } from "./selection.js";
 
 export { Viewport, ViewportRoot, useViewportCamera } from "./viewport.js";
-export type { ViewportPointerEvent, ViewportRootProps } from "./viewport.js";
+export type { ViewportCamera, ViewportPointerEvent, ViewportRootProps } from "./viewport.js";
 // The arithmetic itself, for a host placing an HTML overlay over the canvas.
 export {
   DEFAULT_CAMERA,
+  fitCamera,
   panTo,
   screenAt,
   wheelNotches,
@@ -46,7 +47,7 @@ export {
   worldPerPixel,
   zoomAbout,
 } from "./camera.js";
-export type { Point, Size } from "./camera.js";
+export type { Bounds, Point, Size } from "./camera.js";
 
 export { useNodeDrag } from "./node-drag.js";
 export type { NodeDrag } from "./node-drag.js";
