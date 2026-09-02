@@ -44,13 +44,20 @@
 //!   so the same command set serves the filesystem, the browser and a blob
 //!   store. [`Command::Preview`] is the one command that is still native — it
 //!   needs the headless renderer, not just bytes.
+//!
+//! - **A model-only read has one implementation.** See [`query`]: the reads
+//!   [`CommandKind::ReplicaQuery`] names are pure functions of the [`Model`],
+//!   so a browser tab holding a replica answers them itself. `dispatch` routes
+//!   those arms into the very same code rather than keeping a second copy.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
+mod query;
 mod storage;
 #[cfg(unix)]
 mod transport;
 
+pub use query::{replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
@@ -102,6 +109,10 @@ pub enum EditorError {
     NoTexture(TexId),
     #[error("{0}")]
     BadTarget(String),
+    /// The command does not belong on the path that was asked to run it —
+    /// a replica handed a command only the editor can apply.
+    #[error("{0}")]
+    BadRequest(String),
     #[error("nothing to undo")]
     NothingToUndo,
     #[error("nothing to redo")]
@@ -138,6 +149,7 @@ impl EditorError {
             Self::NoParam(_) => ErrorCode::NoParam,
             Self::NoTexture(_) => ErrorCode::NoTexture,
             Self::BadTarget(_) => ErrorCode::BadTarget,
+            Self::BadRequest(_) => ErrorCode::BadRequest,
             Self::NothingToUndo => ErrorCode::NothingToUndo,
             Self::NothingToRedo => ErrorCode::NothingToRedo,
             Self::NoSavePath => ErrorCode::NoSavePath,
@@ -761,8 +773,8 @@ impl Editor {
         let root = model.root()?;
         let snap = Arc::new(DocSnapshot {
             rev,
-            root: build_tree(model, root),
-            params: param_infos(model),
+            root: query::build_tree(model, root),
+            params: query::param_infos(model),
         });
         session.snapshot = Some(snap.clone());
         Some(snap)
@@ -954,19 +966,18 @@ impl Editor {
                     },
                 })
             }),
-            Command::Check { session } => self.with_session(session, |s| {
-                Ok(ResponseBody::Warnings {
-                    warnings: s.model.check().into_iter().map(|w| w.message).collect(),
-                })
-            }),
-            Command::NodeTree { session } => self.with_session(session, |s| {
-                // A session holds a complete model, so this is unreachable —
-                // but `Fragment` says so on the wire rather than panicking.
-                let root = s.model.root().ok_or(ModelError::Fragment)?;
-                Ok(ResponseBody::Tree {
-                    root: build_tree(&s.model, root),
-                })
-            }),
+            // The model-only reads. A browser tab answers these against its
+            // own replica, so they live in `query` and the editor runs the
+            // very same code against the session's model.
+            Command::Check { session }
+            | Command::NodeTree { session }
+            | Command::TextureList { session }
+            | Command::ParamList { session }
+            | Command::Seams { session, .. }
+            | Command::Welds { session }
+            | Command::UnfilledSlots { session } => {
+                self.with_model(session, |model| query::replica_query(model, &cmd))?
+            }
             Command::NodeAdd {
                 session,
                 parent,
@@ -1207,20 +1218,6 @@ impl Editor {
                     Ok(ResponseBody::Texture { texture, dropped })
                 })
             }
-            Command::TextureList { session } => self.with_session(session, |s| {
-                let mut textures = Vec::new();
-                for tid in s.model.texture_ids() {
-                    if let Some(t) = s.model.texture(tid) {
-                        let (width, height) = image_dims(&t.data).unwrap_or((0, 0));
-                        textures.push(TexInfo {
-                            id: tid.clone(),
-                            width,
-                            height,
-                        });
-                    }
-                }
-                Ok(ResponseBody::Textures { textures })
-            }),
             Command::ParamAdd {
                 session,
                 name,
@@ -1245,11 +1242,6 @@ impl Editor {
                 })?;
                 s.touch();
                 Ok(ResponseBody::Param { param })
-            }),
-            Command::ParamList { session } => self.with_session(session, |s| {
-                Ok(ResponseBody::Params {
-                    params: param_infos(&s.model),
-                })
             }),
             Command::ParamSet {
                 session,
@@ -1559,33 +1551,6 @@ impl Editor {
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
-            Command::Seams { session, node } => self.with_session(session, |s| {
-                let seams = s
-                    .model
-                    .seams(&node)
-                    .ok_or_else(|| match s.model.node(&node) {
-                        Some(_) => EditorError::Edit(ModelError::NotAPart),
-                        None => EditorError::NoNode(node.clone()),
-                    })?;
-                Ok(ResponseBody::Seams {
-                    seams: seams.iter().map(seam_info).collect(),
-                })
-            }),
-            Command::Welds { session } => self.with_session(session, |s| {
-                Ok(ResponseBody::Welds {
-                    welds: s.model.welds().iter().map(weld_info).collect(),
-                })
-            }),
-            Command::UnfilledSlots { session } => self.with_session(session, |s| {
-                Ok(ResponseBody::UnfilledSlots {
-                    slots: s
-                        .model
-                        .unfilled_slots()
-                        .into_iter()
-                        .map(|(node, seam, slot)| SlotAddr { node, seam, slot })
-                        .collect(),
-                })
-            }),
             Command::WeldSet {
                 session,
                 a,
@@ -1820,27 +1785,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
-    let (name, kind, z_order, enabled, children) = match model.node(id) {
-        Some(n) => (
-            n.name.to_string(),
-            n.kind.name().to_string(),
-            n.z_order,
-            n.enabled,
-            n.children(),
-        ),
-        None => (String::new(), "group".to_string(), 0.0, true, &[][..]),
-    };
-    TreeNode {
-        id: id.clone(),
-        name,
-        kind,
-        z_order,
-        enabled,
-        children: children.iter().map(|c| build_tree(model, c)).collect(),
-    }
-}
-
 /// The binding one request names. A `param_y` makes it a two-param binding
 /// whose grid spans both params' key positions.
 fn binding_key(
@@ -1916,39 +1860,6 @@ fn emptied_reply(node: NodeId, emptied: Vec<(SeamId, SlotId)>) -> ResponseBody {
     }
 }
 
-fn seam_info(seam: &catchlight_core::Seam) -> SeamInfo {
-    SeamInfo {
-        id: seam.id().clone(),
-        slots: seam
-            .slots()
-            .iter()
-            .map(|slot| SlotInfo {
-                id: slot.id().clone(),
-                vertex: slot.vertex(),
-            })
-            .collect(),
-    }
-}
-
-fn weld_info(weld: &ModelWeld) -> WeldInfo {
-    let end = |(node, seam): &(NodeId, SeamId)| SeamAddr {
-        node: node.clone(),
-        seam: seam.clone(),
-    };
-    WeldInfo {
-        a: end(weld.a()),
-        b: end(weld.b()),
-        weights: weld
-            .weights()
-            .iter()
-            .map(|(slot, weight)| SlotWeight {
-                slot: slot.clone(),
-                weight: *weight,
-            })
-            .collect(),
-    }
-}
-
 /// A weld pairs two seams slot by slot, so an empty `weights` means "every
 /// slot, evenly". The two seams already hold the same slots — `slot_add`
 /// propagates along a weld — so either end names them.
@@ -1987,23 +1898,6 @@ pub struct DocSnapshot {
     pub rev: u64,
     pub root: TreeNode,
     pub params: Vec<ParamInfo>,
-}
-
-fn param_infos(model: &Model) -> Vec<ParamInfo> {
-    let mut out = Vec::with_capacity(model.param_ids().len());
-    for pid in model.param_ids() {
-        let Some(p) = model.param(pid) else { continue };
-        out.push(ParamInfo {
-            id: pid.clone(),
-            name: p.name.to_string(),
-            min: p.min,
-            max: p.max,
-            default: p.default,
-            key_positions: p.key_positions.clone(),
-            bindings: model.bindings_of_param(pid).count() as u32,
-        });
-    }
-    out
 }
 
 fn default_name(kind: NodeKindArg) -> String {
