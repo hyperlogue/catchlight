@@ -176,6 +176,17 @@ interface Shot {
  * it, which is what catches a canvas that stopped drawing at that moment.
  */
 const canvasFrame = async (what: string, flat: "must vary" | "may be flat" = "must vary"): Promise<Shot> => {
+  // A document swap rebuilds the viewport, and the rebuild is asynchronous.
+  // Waiting is not the assertion — a canvas that never gets one fails here
+  // with a timeout naming this step, which is the same verdict.
+  await page.waitForFunction(
+    (property: string) =>
+      typeof (document.querySelector("canvas[data-catchlight-viewport]") as unknown as
+        | Record<string, unknown>
+        | null)?.[property] === "function",
+    READBACK,
+    { timeout: 15000 },
+  );
   const read = await page.evaluate(async (property: string) => {
     const canvas = document.querySelector("canvas[data-catchlight-viewport]");
     const readback = canvas ? (canvas as unknown as Record<string, unknown>)[property] : undefined;

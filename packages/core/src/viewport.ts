@@ -67,6 +67,8 @@ export const READBACK = "__catchlightReadback";
 export class Viewport {
   #wasm: WasmViewport;
   #canvas: HTMLCanvasElement;
+  /** What this viewport put on the canvas, so it only ever takes back its own. */
+  #readback: () => Promise<WasmFrame>;
   #observer: ResizeObserver | undefined;
   #onScreen: IntersectionObserver | undefined;
   #unsubscribe: Unsubscribe | undefined;
@@ -98,11 +100,9 @@ export class Viewport {
     this.#maxSize =
       typeof maxSize === "number" && maxSize > 0 ? maxSize : FALLBACK_MAX_BACKING_STORE;
     if (session) this.#unsubscribe = session.onInvalidate(() => this.invalidate());
+    this.#readback = (): Promise<WasmFrame> => this.readback();
     // Not enumerable, so nothing that walks the element trips over it.
-    Object.defineProperty(canvas, READBACK, {
-      value: (): Promise<WasmFrame> => this.readback(),
-      configurable: true,
-    });
+    Object.defineProperty(canvas, READBACK, { value: this.#readback, configurable: true });
   }
 
   /**
@@ -194,8 +194,13 @@ export class Viewport {
     this.stop();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
-    // Before the free: the function it holds would reach a freed renderer.
-    delete (this.#canvas as unknown as Record<string, unknown>)[READBACK];
+    // Before the free, because the function it holds would reach a freed
+    // renderer — and only if it is still this viewport's. A host that swaps
+    // the document on one canvas builds the next viewport before an attach
+    // that lost its race gets here, and that one must not take the live
+    // viewport's hook away with it.
+    const element = this.#canvas as unknown as Record<string, unknown>;
+    if (element[READBACK] === this.#readback) delete element[READBACK];
     this.#wasm.free();
   }
 

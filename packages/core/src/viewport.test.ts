@@ -242,4 +242,18 @@ describe("reading a frame back", () => {
     viewport.dispose();
     expect((canvas as unknown as Record<string, unknown>)[READBACK]).toBeUndefined();
   });
+
+  test("a late dispose does not take a newer viewport's hook away", async () => {
+    const canvas = {} as HTMLCanvasElement;
+    // What a document swap on one canvas does: the outgoing attach loses its
+    // race, the next viewport is already drawing, and the loser disposes.
+    const outgoing = new Viewport(new FakeViewport(), canvas);
+    const live = new FakeViewport();
+    live.frame = { width: 3, height: 1, rgba: new Uint8Array(12) };
+    new Viewport(live, canvas);
+    outgoing.dispose();
+
+    const read = (canvas as unknown as Record<string, () => Promise<unknown>>)[READBACK];
+    expect(await read?.()).toEqual(live.frame);
+  });
 });
