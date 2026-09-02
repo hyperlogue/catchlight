@@ -888,7 +888,9 @@ impl App {
                 }
                 self.armed_cache = None;
             }
-            Rename::Texture { .. } => {}
+            // Nothing here names a texture or a seam by Id: the mesh editor
+            // reads a part's seams back every frame.
+            Rename::Texture { .. } | Rename::Seam { .. } => {}
         }
     }
 
@@ -1261,7 +1263,7 @@ impl App {
                 self.send(Command::SeamAdd {
                     session,
                     node,
-                    seam,
+                    seam: Some(seam),
                 });
             }
             SeamAction::DeleteSeam(seam) => {
@@ -1276,7 +1278,7 @@ impl App {
                     session,
                     node,
                     seam,
-                    slot,
+                    slot: Some(slot),
                 });
             }
             SeamAction::DeleteSlot { seam, slot } => {

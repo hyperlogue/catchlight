@@ -28,7 +28,9 @@
 //!   `Result`.
 //! - **Seams and slots are scoped.** A [`SeamId`] is unique within its part
 //!   and a [`SlotId`] within its seam; neither is unique across a model.
-//!   Nothing here can check that — the model that owns them does.
+//!   Nothing here can check that — the model that owns them does, which is
+//!   why generating one free of collisions is a `Model` method and not a
+//!   constructor here.
 //! - **A [`Name`] is a label, never a key.** It is capped at
 //!   [`MAX_NAME_BYTES`] and otherwise unconstrained: any text, empty,
 //!   duplicated freely. It deliberately does not implement `Hash`, so it
@@ -212,12 +214,13 @@ string_id!(
 string_id!(
     SeamId,
     "The identity of a seam, unique within the part that owns it — not \
-     within the model. Always authored."
+     within the model. Generated as `seam-<8 hex>` by [`SeamId::generate`]."
 );
 string_id!(
     SlotId,
     "The identity of a slot, unique within the seam that owns it — not \
-     within the part or the model. Always authored."
+     within the part or the model. Generated as `slot-<8 hex>` by \
+     [`SlotId::generate`]."
 );
 
 /// The `kind` segment of a generated [`NodeId`]. It records what the node
@@ -331,6 +334,28 @@ impl TexId {
     /// Generates `tex-<8 hex>`. Textures have no parent, so no prefix.
     pub fn generate(hex: &mut impl HexSource) -> Self {
         Self(generated(format!("tex-{:08x}", hex.next_bits())))
+    }
+}
+
+impl SeamId {
+    /// Generates `seam-<8 hex>`.
+    ///
+    /// No prefix, because a seam is scoped to its part and the part is
+    /// whatever the caller asked. Uniqueness there is the model's to check —
+    /// see [`Model::seam_add_generated`](crate::Model::seam_add_generated).
+    pub fn generate(hex: &mut impl HexSource) -> Self {
+        Self(generated(format!("seam-{:08x}", hex.next_bits())))
+    }
+}
+
+impl SlotId {
+    /// Generates `slot-<8 hex>`.
+    ///
+    /// Welded seams share one slot set, so "free" means free on every seam
+    /// this one is welded to — which only the model can tell. See
+    /// [`Model::slot_add_generated`](crate::Model::slot_add_generated).
+    pub fn generate(hex: &mut impl HexSource) -> Self {
+        Self(generated(format!("slot-{:08x}", hex.next_bits())))
     }
 }
 

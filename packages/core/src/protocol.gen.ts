@@ -23,12 +23,12 @@ export type ParamId = string;
 export type TexId = string;
 
 /**
- * The identity of a seam, unique within the part that owns it — not within the model. Always authored.
+ * The identity of a seam, unique within the part that owns it — not within the model. Generated as `seam-<8 hex>` by [`SeamId::generate`].
  */
 export type SeamId = string;
 
 /**
- * The identity of a slot, unique within the seam that owns it — not within the part or the model. Always authored.
+ * The identity of a slot, unique within the seam that owns it — not within the part or the model. Generated as `slot-<8 hex>` by [`SlotId::generate`].
  */
 export type SlotId = string;
 
@@ -418,7 +418,11 @@ export type Command =
     "cmd": "seam_add",
     session: SessionId,
     node: NodeId,
-    seam: SeamId,
+    /**
+     * Absent generates one (`seam-<8 hex>`, re-drawn until it is free on
+     * the part). The reply names it either way.
+     */
+    seam?: SeamId | null,
   }
   | {
     "cmd": "seam_delete",
@@ -431,7 +435,11 @@ export type Command =
     session: SessionId,
     node: NodeId,
     seam: SeamId,
-    slot: SlotId,
+    /**
+     * Absent generates one (`slot-<8 hex>`), free on every seam welded to
+     * this one. The reply names it either way.
+     */
+    slot?: SlotId | null,
   }
   | {
     "cmd": "slot_fill",
@@ -467,6 +475,14 @@ export type Command =
   | {
     "cmd": "unfilled_slots",
     session: SessionId,
+  }
+  | {
+    "cmd": "weld_weight",
+    session: SessionId,
+    a: SeamAddr,
+    b: SeamAddr,
+    slot: SlotId,
+    weight: number,
   }
   | {
     "cmd": "weld_set",
@@ -598,6 +614,12 @@ export type Rename =
     "kind": "texture",
     from: TexId,
     to: TexId,
+  }
+  | {
+    "kind": "seam",
+    node: NodeId,
+    from: SeamId,
+    to: SeamId,
   };
 
 /**
@@ -757,6 +779,14 @@ export type ResponseBody =
   | {
     "result": "param",
     param: ParamId,
+  }
+  | {
+    "result": "seam",
+    seam: SeamAddr,
+  }
+  | {
+    "result": "slot",
+    slot: SlotAddr,
   }
   | {
     "result": "params",
@@ -1098,6 +1128,7 @@ export type DocumentCommandTag =
   | "slot_fill"
   | "slot_clear"
   | "slot_delete"
+  | "weld_weight"
   | "weld_set"
   | "weld_delete"
   | "physics_add"

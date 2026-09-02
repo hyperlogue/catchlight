@@ -8,7 +8,7 @@
 
 use catchlight_editor_protocol::{
     BindingParams, Command, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId, Rename, Reply,
-    Request, ResponseBody, SeamAddr, SeamId, SlotId,
+    Request, ResponseBody, SeamAddr, SeamId, SlotAddr, SlotId,
 };
 use catchlight_editor_server::Editor;
 
@@ -289,14 +289,14 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
         step(Command::SeamAdd {
             session,
             node: node.clone(),
-            seam: seam.clone(),
+            seam: Some(seam.clone()),
         });
         for slot in [&left, &right] {
             step(Command::SlotAdd {
                 session,
                 node: node.clone(),
                 seam: seam.clone(),
-                slot: slot.clone(),
+                slot: Some(slot.clone()),
             });
         }
     }
@@ -443,6 +443,350 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
     ));
 }
 
+fn seam_of(b: ResponseBody) -> SeamAddr {
+    match b {
+        ResponseBody::Seam { seam } => seam,
+        other => panic!("expected a seam, got {other:?}"),
+    }
+}
+
+fn slot_of(b: ResponseBody) -> SlotAddr {
+    match b {
+        ResponseBody::Slot { slot } => slot,
+        other => panic!("expected a slot, got {other:?}"),
+    }
+}
+
+/// A seam and a slot get their Ids the way a node and a param do: name one, or
+/// let the editor draw a free one and read it back off the reply.
+///
+/// The reason it has to be the editor drawing is that "free" is scoped —
+/// within the part for a seam, and across every welded seam for a slot — so a
+/// client counting its own slots gets it wrong the moment one is deleted or a
+/// weld reaches in from somewhere else.
+#[test]
+fn a_seam_and_a_slot_can_be_added_without_naming_one() {
+    let ed = Editor::new();
+    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let root = root(&ed, 2, session);
+
+    let mut next = 3;
+    let mut step = |command: Command| {
+        next += 1;
+        body(&ed, next, command)
+    };
+
+    let part = node_of(step(Command::NodeAdd {
+        session,
+        parent: root,
+        kind: NodeKindArg::Part,
+        name: None,
+    }));
+    step(quad(session, part.clone()));
+
+    // Named: the reply still says what it is, so one code path reads it.
+    let named = SeamId::new("collar").unwrap();
+    let addr = seam_of(step(Command::SeamAdd {
+        session,
+        node: part.clone(),
+        seam: Some(named.clone()),
+    }));
+    assert_eq!(
+        addr,
+        SeamAddr {
+            node: part.clone(),
+            seam: named.clone()
+        }
+    );
+
+    // Unnamed: drawn, free, and reported.
+    let drawn = seam_of(step(Command::SeamAdd {
+        session,
+        node: part.clone(),
+        seam: None,
+    }));
+    assert_eq!(drawn.node, part);
+    assert_ne!(drawn.seam, named);
+    assert!(drawn.seam.as_str().starts_with("seam-"), "{}", drawn.seam);
+
+    let slot = slot_of(step(Command::SlotAdd {
+        session,
+        node: part.clone(),
+        seam: drawn.seam.clone(),
+        slot: None,
+    }));
+    assert_eq!(slot.seam, drawn.seam);
+    assert!(slot.slot.as_str().starts_with("slot-"), "{}", slot.slot);
+
+    // Both landed where the reply said they did.
+    match step(Command::Seams {
+        session,
+        node: part.clone(),
+    }) {
+        ResponseBody::Seams { seams } => {
+            assert_eq!(
+                seams.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+                vec![named, drawn.seam.clone()],
+            );
+            assert_eq!(seams[1].slots[0].id, slot.slot);
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // And a draw for a node that could never carry a seam is still refused.
+    next += 1;
+    assert!(matches!(
+        reply(
+            &ed,
+            next,
+            Command::SeamAdd {
+                session,
+                node: NodeId::new("root").unwrap(),
+                seam: None,
+            }
+        ),
+        Reply::Err { .. }
+    ));
+}
+
+/// A seam is renamed through the same command every other Id is, because it
+/// is the same kind of breaking change — and a weld names a seam, so the
+/// rename has to reach the welds or the pairing points at nothing.
+#[test]
+fn renaming_a_seam_carries_its_welds_and_refuses_a_name_in_use() {
+    let ed = Editor::new();
+    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let root = root(&ed, 2, session);
+
+    let mut next = 3;
+    let mut step = |command: Command| {
+        next += 1;
+        body(&ed, next, command)
+    };
+    let (collar, hem) = (SeamId::new("collar").unwrap(), SeamId::new("hem").unwrap());
+    let slot = SlotId::new("left").unwrap();
+    let mut part = |seam: &SeamId| {
+        let node = node_of(step(Command::NodeAdd {
+            session,
+            parent: root.clone(),
+            kind: NodeKindArg::Part,
+            name: None,
+        }));
+        step(quad(session, node.clone()));
+        step(Command::SeamAdd {
+            session,
+            node: node.clone(),
+            seam: Some(seam.clone()),
+        });
+        step(Command::SlotAdd {
+            session,
+            node: node.clone(),
+            seam: seam.clone(),
+            slot: Some(slot.clone()),
+        });
+        node
+    };
+    let (top, bottom) = (part(&collar), part(&hem));
+    step(Command::WeldSet {
+        session,
+        a: SeamAddr {
+            node: top.clone(),
+            seam: collar.clone(),
+        },
+        b: SeamAddr {
+            node: bottom.clone(),
+            seam: hem.clone(),
+        },
+        weights: Vec::new(),
+    });
+
+    let neck = SeamId::new("neck").unwrap();
+    step(Command::RenameId {
+        session,
+        rename: Rename::Seam {
+            node: top.clone(),
+            from: collar.clone(),
+            to: neck.clone(),
+        },
+    });
+
+    match step(Command::Seams {
+        session,
+        node: top.clone(),
+    }) {
+        ResponseBody::Seams { seams } => assert_eq!(seams[0].id, neck),
+        other => panic!("{other:?}"),
+    }
+    match step(Command::Welds { session }) {
+        ResponseBody::Welds { welds } => {
+            assert_eq!(welds[0].a.seam, neck, "the weld followed the rename");
+            assert_eq!(welds[0].b.seam, hem);
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // The two refusals a client reacts to, under the codes the seam surface
+    // already uses.
+    step(Command::SeamAdd {
+        session,
+        node: top.clone(),
+        seam: Some(collar.clone()),
+    });
+    for (rename, code) in [
+        (
+            Rename::Seam {
+                node: top.clone(),
+                from: SeamId::new("gone").unwrap(),
+                to: SeamId::new("x").unwrap(),
+            },
+            ErrorCode::UnknownSeam,
+        ),
+        (
+            Rename::Seam {
+                node: top.clone(),
+                from: neck.clone(),
+                to: collar.clone(),
+            },
+            ErrorCode::DuplicateSeam,
+        ),
+    ] {
+        next += 1;
+        match reply(&ed, next, Command::RenameId { session, rename }) {
+            Reply::Err { code: got, .. } => assert_eq!(got, code),
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+}
+
+/// One weight at a time, which is what a slider sends. `weld_set` can only
+/// rewrite a weld whole, so moving one weight through it means reading every
+/// other one back and sending it again unchanged.
+#[test]
+fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
+    let ed = Editor::new();
+    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let root = root(&ed, 2, session);
+
+    let mut next = 3;
+    let mut step = |command: Command| {
+        next += 1;
+        body(&ed, next, command)
+    };
+    let (collar, hem) = (SeamId::new("collar").unwrap(), SeamId::new("hem").unwrap());
+    let (left, right) = (SlotId::new("left").unwrap(), SlotId::new("right").unwrap());
+    let mut part = |seam: &SeamId| {
+        let node = node_of(step(Command::NodeAdd {
+            session,
+            parent: root.clone(),
+            kind: NodeKindArg::Part,
+            name: None,
+        }));
+        step(quad(session, node.clone()));
+        step(Command::SeamAdd {
+            session,
+            node: node.clone(),
+            seam: Some(seam.clone()),
+        });
+        for slot in [&left, &right] {
+            step(Command::SlotAdd {
+                session,
+                node: node.clone(),
+                seam: seam.clone(),
+                slot: Some(slot.clone()),
+            });
+        }
+        node
+    };
+    let (top, bottom) = (part(&collar), part(&hem));
+    let a = SeamAddr {
+        node: top.clone(),
+        seam: collar.clone(),
+    };
+    let b = SeamAddr {
+        node: bottom.clone(),
+        seam: hem.clone(),
+    };
+    step(Command::WeldSet {
+        session,
+        a: a.clone(),
+        b: b.clone(),
+        weights: Vec::new(),
+    });
+
+    let weights = |ed: &Editor, id: u64| match body(ed, id, Command::Welds { session }) {
+        ResponseBody::Welds { welds } => welds[0]
+            .weights
+            .iter()
+            .map(|w| (w.slot.to_string(), w.weight))
+            .collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+
+    step(Command::WeldWeight {
+        session,
+        a: a.clone(),
+        b: b.clone(),
+        slot: left.clone(),
+        weight: 0.25,
+    });
+    assert_eq!(
+        weights(&ed, 900),
+        vec![("left".into(), 0.25), ("right".into(), 0.5)],
+        "the slot nobody named kept its weight",
+    );
+
+    // Named the other way round the same number is B's share, so A's is 0.75.
+    step(Command::WeldWeight {
+        session,
+        a: b.clone(),
+        b: a.clone(),
+        slot: left.clone(),
+        weight: 0.25,
+    });
+    assert_eq!(
+        weights(&ed, 901),
+        vec![("left".into(), 0.75), ("right".into(), 0.5)]
+    );
+
+    // A pair nothing welds, and a share that is not one.
+    next += 1;
+    assert!(matches!(
+        reply(
+            &ed,
+            next,
+            Command::WeldWeight {
+                session,
+                a: a.clone(),
+                b: a.clone(),
+                slot: left.clone(),
+                weight: 0.5,
+            }
+        ),
+        Reply::Err {
+            code: ErrorCode::UnknownWeld,
+            ..
+        }
+    ));
+    next += 1;
+    assert!(matches!(
+        reply(
+            &ed,
+            next,
+            Command::WeldWeight {
+                session,
+                a,
+                b,
+                slot: left,
+                weight: 1.5,
+            }
+        ),
+        Reply::Err {
+            code: ErrorCode::Edit,
+            ..
+        }
+    ));
+}
+
 /// A weld comes undone two ways, and only one of them keeps the seams.
 ///
 /// `seam_delete` cascades — it takes the weld because a weld with one end is
@@ -476,13 +820,13 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
         step(Command::SeamAdd {
             session,
             node: node.clone(),
-            seam: seam.clone(),
+            seam: Some(seam.clone()),
         });
         step(Command::SlotAdd {
             session,
             node: node.clone(),
             seam: seam.clone(),
-            slot: slot.clone(),
+            slot: Some(slot.clone()),
         });
         step(Command::SlotFill {
             session,
@@ -610,7 +954,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
         Command::SeamAdd {
             session,
             node: part.clone(),
-            seam: seam.clone(),
+            seam: Some(seam.clone()),
         },
     );
     body(
@@ -620,7 +964,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
             session,
             node: part.clone(),
             seam: seam.clone(),
-            slot: slot.clone(),
+            slot: Some(slot.clone()),
         },
     );
 
@@ -634,7 +978,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
             Command::SeamAdd {
                 session,
                 node: part.clone(),
-                seam: seam.clone(),
+                seam: Some(seam.clone()),
             }
         ),
         ErrorCode::DuplicateSeam
@@ -646,7 +990,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
                 session,
                 node: part.clone(),
                 seam: seam.clone(),
-                slot: slot.clone(),
+                slot: Some(slot.clone()),
             }
         ),
         ErrorCode::DuplicateSlot
@@ -658,7 +1002,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
                 session,
                 node: part.clone(),
                 seam: SeamId::new("nope").unwrap(),
-                slot: slot.clone(),
+                slot: Some(slot.clone()),
             }
         ),
         ErrorCode::UnknownSeam
@@ -694,7 +1038,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
         Command::SeamAdd {
             session,
             node: other.clone(),
-            seam: seam.clone(),
+            seam: Some(seam.clone()),
         },
     );
     assert_eq!(
