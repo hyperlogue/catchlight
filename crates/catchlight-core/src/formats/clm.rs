@@ -5,6 +5,21 @@
 //! `Structure` (one CBOR document) and `Textures` (verbatim source-encoded
 //! bytes, never decoded or cropped).
 //!
+//! There is a second shape on the same wire: a **structure-only** container,
+//! `Structure` beside a `TextureManifest` — the texture table with every
+//! payload taken out. It is what an editor server pushes a replica after each
+//! edit, and what [`Model::replace_structure`](crate::Model::replace_structure)
+//! reads. The `Structure` section is byte-identical in both shapes; only the
+//! payloads are absent. The two shapes are **disjoint and self-describing**:
+//! a manifest section means structure-only, its absence means a complete
+//! file, and each reader refuses the other shape by name
+//! ([`ClmError::StructureOnly`], [`ClmError::NotAStructure`]) rather than
+//! reading a structure as a model whose textures all went missing. The
+//! manifest also carries the model's texture *order* and each texture's
+//! encoding, which the `Structure` document does not: a part names its albedo
+//! and nothing more, so a client fetching a payload it lacks would otherwise
+//! not know how to decode it or where it sits.
+//!
 //! Invariants this module and its reader
 //! ([`Model::from_clm_bytes`](crate::Model::from_clm_bytes)) enforce:
 //!
@@ -245,12 +260,16 @@ pub struct ClmKeyframe {
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
 /// Bumped for every breaking wire change. **1** is the only version
-/// `decode_structure` accepts; there is no migration path and no reader for
+/// `decode_document` accepts; there is no migration path and no reader for
 /// the pre-public v0 arena, which no longer exists in any form.
 pub const FORMAT_VERSION: u16 = 1;
 
 const SECTION_STRUCTURE: u32 = 0;
 const SECTION_TEXTURES: u32 = 1;
+/// The texture table with every payload taken out — what a *structure-only*
+/// container carries in place of `Textures`. Its presence is what tells the
+/// two shapes apart, so neither reader ever guesses.
+const SECTION_TEXTURE_MANIFEST: u32 = 2;
 
 #[derive(Debug, Error)]
 pub enum ClmError {
@@ -264,6 +283,16 @@ pub enum ClmError {
     MissingSection(&'static str),
     #[error("unsupported .clm format_version {0}")]
     UnsupportedVersion(u16),
+    #[error(
+        "these bytes carry a texture manifest, so they are a structure-only container rather \
+         than a complete .clm; read them with decode_structure"
+    )]
+    StructureOnly,
+    #[error(
+        "these bytes carry a texture table, so they are a complete .clm rather than a \
+         structure-only container; read them with decode"
+    )]
+    NotAStructure,
     #[error(transparent)]
     LoadLimit(#[from] crate::load_budget::LoadLimitError),
 }
@@ -273,6 +302,41 @@ pub enum ClmError {
 pub struct ClmFile {
     pub doc: ClmDocument,
     pub textures: Vec<ClmTexture>,
+}
+
+/// A decoded *structure-only* container: the same `Structure` document a
+/// `.clm` carries, plus the texture table with the payloads taken out.
+///
+/// This is what a replica is sent after every edit — see
+/// [`Model::to_structure_bytes`](crate::Model::to_structure_bytes). The
+/// manifest is not decoration: a `Structure` document names a part's albedo
+/// and nothing else, so without it a client that has to *fetch* a texture
+/// knows neither the order the model holds its textures in nor how to decode
+/// the bytes when they arrive.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClmStructure {
+    pub doc: ClmDocument,
+    /// The model's texture order, headers only.
+    pub textures: Vec<ClmTextureRef>,
+}
+
+/// One texture's header without its payload: its Id and how to read the bytes
+/// once they are fetched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClmTextureRef {
+    pub id: TexId,
+    pub encoding: TextureEncoding,
+    pub alpha: TextureAlpha,
+}
+
+impl From<&ClmTexture> for ClmTextureRef {
+    fn from(tex: &ClmTexture) -> Self {
+        Self {
+            id: tex.id.clone(),
+            encoding: tex.encoding,
+            alpha: tex.alpha,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -505,8 +569,84 @@ pub fn encode(doc: &ClmDocument, textures: &[ClmTexture]) -> Result<Vec<u8>, Clm
     Ok(container::write(&MAGIC, FORMAT_VERSION, &sections))
 }
 
+/// Serialize the `Structure` half alone: the same CBOR document
+/// [`encode`] writes, in the same container framing, with the texture
+/// payloads replaced by their headers.
+///
+/// The `Structure` section is byte-for-byte the one [`encode`] would write
+/// for the same document, so a structure push and a save agree about what the
+/// document is.
+pub fn encode_structure(
+    doc: &ClmDocument,
+    textures: &[ClmTextureRef],
+) -> Result<Vec<u8>, ClmError> {
+    let structure = cbor_to_vec(doc)?;
+    let manifest = cbor_to_vec(&textures)?;
+    let sections = [
+        Section {
+            kind: SECTION_STRUCTURE,
+            data: &structure,
+        },
+        Section {
+            kind: SECTION_TEXTURE_MANIFEST,
+            data: &manifest,
+        },
+    ];
+    Ok(container::write(&MAGIC, FORMAT_VERSION, &sections))
+}
+
 pub fn decode(bytes: &[u8]) -> Result<ClmFile, ClmError> {
     decode_with_budget(bytes, &mut crate::load_budget::LoadBudget::default())
+}
+
+/// Read a **structure-only** container: the document plus the texture
+/// manifest, no payloads. A complete `.clm` is refused
+/// ([`ClmError::NotAStructure`]) rather than read as a model with no
+/// textures.
+pub fn decode_structure(bytes: &[u8]) -> Result<ClmStructure, ClmError> {
+    decode_structure_with_budget(bytes, &mut crate::load_budget::LoadBudget::default())
+}
+
+pub fn decode_structure_with_budget(
+    bytes: &[u8],
+    budget: &mut crate::load_budget::LoadBudget,
+) -> Result<ClmStructure, ClmError> {
+    budget.charge(
+        crate::load_budget::LoadResource::EncodedBytes,
+        bytes.len() as u64,
+    )?;
+    let file = container::read(bytes, &MAGIC)?;
+    if file.section(SECTION_TEXTURES).is_some() {
+        return Err(ClmError::NotAStructure);
+    }
+    let structure = file
+        .section(SECTION_STRUCTURE)
+        .ok_or(ClmError::MissingSection("Structure"))?;
+    let doc = decode_document(file.version, structure)?;
+    let manifest = file
+        .section(SECTION_TEXTURE_MANIFEST)
+        .ok_or(ClmError::MissingSection("TextureManifest"))?;
+    let textures: Vec<ClmTextureRef> = cbor_from_slice(manifest)?;
+    budget.charge(
+        crate::load_budget::LoadResource::Textures,
+        textures.len() as u64,
+    )?;
+    Ok(ClmStructure { doc, textures })
+}
+
+/// The textures a structure names, in the model's own order, without
+/// building anything from the document — so a client can fetch the payloads
+/// it lacks before it applies the structure. Each entry carries the encoding
+/// and alpha convention the fetched bytes are read with.
+pub fn structure_texture_ids(bytes: &[u8]) -> Result<Vec<ClmTextureRef>, ClmError> {
+    let file = container::read(bytes, &MAGIC)?;
+    if file.version != FORMAT_VERSION {
+        return Err(ClmError::UnsupportedVersion(file.version));
+    }
+    let manifest = file
+        .section(SECTION_TEXTURE_MANIFEST)
+        .ok_or(ClmError::MissingSection("TextureManifest"))?;
+    cbor_from_slice(manifest)
 }
 
 pub fn decode_with_budget(
@@ -518,10 +658,13 @@ pub fn decode_with_budget(
         bytes.len() as u64,
     )?;
     let file = container::read(bytes, &MAGIC)?;
+    if file.section(SECTION_TEXTURE_MANIFEST).is_some() {
+        return Err(ClmError::StructureOnly);
+    }
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = decode_structure(file.version, structure)?;
+    let doc = decode_document(file.version, structure)?;
     let textures = match file.section(SECTION_TEXTURES) {
         Some(b) => cbor_from_slice(b)?,
         None => Vec::new(),
@@ -529,7 +672,7 @@ pub fn decode_with_budget(
     Ok(ClmFile { doc, textures })
 }
 
-fn decode_structure(version: u16, bytes: &[u8]) -> Result<ClmDocument, ClmError> {
+fn decode_document(version: u16, bytes: &[u8]) -> Result<ClmDocument, ClmError> {
     if version != FORMAT_VERSION {
         return Err(ClmError::UnsupportedVersion(version));
     }

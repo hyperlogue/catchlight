@@ -47,6 +47,25 @@
 //!   never does), so a caller that does not know which it holds decodes once
 //!   and tries both readers against the same [`ClmFile`]; nothing else about
 //!   the container or the document changes between them.
+//! - **A structure carries no bytes, and reading one is the same reading.**
+//!   [`Model::to_structure_bytes`] writes the `Structure` document and a
+//!   manifest of the model's textures, no payloads;
+//!   [`Model::replace_structure`] reads it back against payloads a caller
+//!   supplies by Id. Both sides go through the same document builder as a
+//!   `.clm`, so a structure is held to every rule a file is — including that
+//!   every texture the manifest lists is one a part draws — and a payload the
+//!   caller cannot supply is [`ClmLoadError::MissingTexture`] rather than a
+//!   model with a hole in it. What the manifest says about a texture wins
+//!   over what the lookup hands back, so two replicas given one structure
+//!   hold one model.
+//! - **Replacing keeps the model and moves the clock.**
+//!   [`Model::replace_structure`] and [`Model::replace_from`] keep
+//!   [`Model::identity`] and bump [`Model::generation`]. That is what makes a
+//!   replica cheap: a puppet and a render cache built on the model read "the
+//!   same model, new state", so the puppet rebakes carrying its pose and its
+//!   drivers, and the cache rebuilds keeping every texture whose payload
+//!   `Arc` came back unchanged. The new state is built whole before either
+//!   field moves, so a refused structure leaves the model exactly as it was.
 //!
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -54,10 +73,10 @@ use std::sync::Arc;
 use crate::formats::clm::{
     self as clm, ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMeshGroup, ClmNode,
     ClmNodeKind, ClmParam, ClmPart, ClmSeam, ClmSimplePhysics, ClmSlot, ClmSlotWeight, ClmTexture,
-    ClmWeld, ClmWeldEnd,
+    ClmTextureRef, ClmWeld, ClmWeldEnd,
 };
 use crate::id::{SeamId, SlotId};
-use crate::{charge_clm_structure, LoadBudget};
+use crate::{charge_clm_document, charge_clm_structure, charge_texture_payloads, LoadBudget};
 
 use super::*;
 
@@ -165,6 +184,11 @@ pub enum ClmLoadError {
          player reads a lane by binary search"
     )]
     UnsortedLane { animation: usize, param: String },
+    #[error(
+        "the structure names texture {id:?}, which the caller could not supply; fetch it before \
+         applying the structure"
+    )]
+    MissingTexture { id: String },
 }
 
 /// The slot Ids each of one part's seams holds — what a weld's two ends have
@@ -194,9 +218,10 @@ impl Shape {
 }
 
 impl Model {
-    /// Snapshot the model into a `.clm` document. Total for any Model whose
-    /// deform cells are sized to the meshes they sit on.
-    pub fn to_clm_file(&self) -> Result<ClmFile, ModelError> {
+    /// Snapshot the model's `Structure` document — everything a `.clm`
+    /// carries except the texture payloads. Total for any Model whose deform
+    /// cells are sized to the meshes they sit on.
+    pub fn to_clm_document(&self) -> Result<ClmDocument, ModelError> {
         let order = self.nodes_in_order();
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
@@ -289,6 +314,21 @@ impl Model {
             });
         }
 
+        Ok(ClmDocument {
+            physics: self.physics,
+            nodes,
+            params,
+            bindings,
+            welds,
+            animations: self.animations.clone(),
+        })
+    }
+
+    /// Snapshot the model into a `.clm` document plus its texture table. The
+    /// payloads are copied out of their `Arc`s here, which is what makes this
+    /// the *file* path and [`Self::to_structure_bytes`] the push path.
+    pub fn to_clm_file(&self) -> Result<ClmFile, ModelError> {
+        let doc = self.to_clm_document()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
         for id in &self.texture_order {
             let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
@@ -299,24 +339,36 @@ impl Model {
                 data: (*t.data).clone(),
             });
         }
-
-        Ok(ClmFile {
-            doc: ClmDocument {
-                physics: self.physics,
-                nodes,
-                params,
-                bindings,
-                welds,
-                animations: self.animations.clone(),
-            },
-            textures,
-        })
+        Ok(ClmFile { doc, textures })
     }
 
     /// [`Self::to_clm_file`] then encode.
     pub fn to_clm_bytes(&self) -> Result<Vec<u8>, ModelError> {
         let file = self.to_clm_file()?;
         Ok(clm::encode(&file.doc, &file.textures)?)
+    }
+
+    /// The document alone, as a **structure-only** container: the same
+    /// `Structure` section [`Self::to_clm_bytes`] would write, beside a
+    /// manifest naming the model's textures in order, and no payload bytes at
+    /// all.
+    ///
+    /// This is what a server pushes a replica after every edit, so it never
+    /// touches a texture: writing it costs the document and nothing else, and
+    /// [`Self::replace_structure`] reads it back against payloads the replica
+    /// already holds.
+    pub fn to_structure_bytes(&self) -> Result<Vec<u8>, ModelError> {
+        let doc = self.to_clm_document()?;
+        let mut textures = Vec::with_capacity(self.texture_order.len());
+        for id in &self.texture_order {
+            let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
+            textures.push(ClmTextureRef {
+                id: id.clone(),
+                encoding: t.encoding,
+                alpha: t.alpha,
+            });
+        }
+        Ok(clm::encode_structure(&doc, &textures)?)
     }
 
     /// Read a **complete model**: one root with no parent, nothing dangling.
@@ -347,7 +399,6 @@ impl Model {
 
     fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
         charge_clm_structure(file, budget)?;
-        let doc = &file.doc;
 
         let mut textures = HashMap::with_capacity(file.textures.len());
         let mut texture_order = Vec::with_capacity(file.textures.len());
@@ -368,6 +419,19 @@ impl Model {
             texture_order.push(t.id.clone());
         }
 
+        Self::build(&file.doc, textures, texture_order, shape)
+    }
+
+    /// Every check the reader runs, over a document and a texture table that
+    /// is already in the Model's own form. The one path both a `.clm` and a
+    /// structure push come through, so neither can drift into accepting what
+    /// the other refuses. Charges nothing: its callers charge what they read.
+    fn build(
+        doc: &ClmDocument,
+        textures: HashMap<TexId, ModelTexture>,
+        texture_order: Vec<TexId>,
+        shape: Shape,
+    ) -> Result<Model, ModelError> {
         let mut params = HashMap::with_capacity(doc.params.len());
         let mut param_order = Vec::with_capacity(doc.params.len());
         for p in &doc.params {
@@ -518,9 +582,9 @@ impl Model {
                 _ => None,
             })
             .collect();
-        if let Some(spare) = file.textures.iter().find(|t| !drawn.contains(&t.id)) {
+        if let Some(spare) = texture_order.iter().find(|id| !drawn.contains(id)) {
             return Err(ClmLoadError::UnusedTexture {
-                id: spare.id.to_string(),
+                id: spare.to_string(),
             }
             .into());
         }
@@ -665,6 +729,101 @@ impl Model {
     ) -> Result<Model, ModelError> {
         let file = clm::decode_with_budget(bytes, budget)?;
         Self::from_clm_file_fragment_with_budget(&file, budget)
+    }
+
+    /// Rebuild this model from a **structure-only** container
+    /// ([`Self::to_structure_bytes`]), taking every texture payload from
+    /// `textures` rather than from the bytes.
+    ///
+    /// This is the replica's one edit: a server pushes the document after
+    /// each change and the client applies it over the payloads it already
+    /// holds, so a per-commit sync costs no texture transfer, no decode and
+    /// no re-upload. The lookup supplies the *bytes* and nothing else — a
+    /// texture's Id, its place in the model's texture order, and how to read
+    /// it are the structure's to say — and returning the `Arc` a client
+    /// already holds is what lets a render cache keep the GPU texture it
+    /// uploaded for it.
+    ///
+    /// A texture the lookup cannot supply is
+    /// [`ClmLoadError::MissingTexture`], naming it; use
+    /// [`clm::structure_texture_ids`] to fetch what is missing first. The
+    /// structure is read as a **complete model**, and every check
+    /// [`Self::from_clm_bytes`] runs is run here.
+    ///
+    /// The model **keeps its identity and moves its generation**, so a
+    /// [`crate::Puppet`] and a render cache built on it see the same model in
+    /// a new state: their gates rebake and rebuild rather than refusing. On
+    /// any error the model is untouched — the new state is built whole before
+    /// anything is swapped.
+    pub fn replace_structure(
+        &mut self,
+        structure: &[u8],
+        textures: impl Fn(&TexId) -> Option<ModelTexture>,
+    ) -> Result<(), ModelError> {
+        self.replace_structure_with_budget(structure, textures, &mut LoadBudget::default())
+    }
+
+    pub fn replace_structure_with_budget(
+        &mut self,
+        structure: &[u8],
+        textures: impl Fn(&TexId) -> Option<ModelTexture>,
+        budget: &mut LoadBudget,
+    ) -> Result<(), ModelError> {
+        let structure = clm::decode_structure_with_budget(structure, budget)?;
+
+        let mut table = HashMap::with_capacity(structure.textures.len());
+        let mut order = Vec::with_capacity(structure.textures.len());
+        for want in &structure.textures {
+            let found = textures(&want.id).ok_or_else(|| ClmLoadError::MissingTexture {
+                id: want.id.to_string(),
+            })?;
+            // The structure decides everything but the bytes: two replicas
+            // fed the same structure hold the same model whatever their
+            // stores happen to remember about a payload.
+            let texture = ModelTexture {
+                encoding: want.encoding,
+                alpha: want.alpha,
+                data: found.data,
+            };
+            if table.insert(want.id.clone(), texture).is_some() {
+                return Err(duplicate("texture", &want.id));
+            }
+            order.push(want.id.clone());
+        }
+        charge_texture_payloads(
+            order
+                .iter()
+                .filter_map(|id| table.get(id))
+                .map(|t| t.data.len() as u64),
+            budget,
+        )?;
+        charge_clm_document(&structure.doc, budget)?;
+
+        let next = Self::build(&structure.doc, table, order, Shape::Base)?;
+        self.become_model(next);
+        Ok(())
+    }
+
+    /// [`Self::replace_structure`] from another `Model` in memory: the
+    /// in-tab handoff, where an in-page editor hands its session's model
+    /// straight to the replica.
+    ///
+    /// The structure is cloned and every texture payload is `Arc`-shared with
+    /// `other`, so this costs a shallow copy and no texture work. Identity
+    /// and generation behave exactly as they do across a structure push.
+    pub fn replace_from(&mut self, other: &Model) {
+        self.become_model(other.clone());
+    }
+
+    /// Take `next`'s whole state while keeping this model's identity, then
+    /// move the clock. The two halves are the point: derived objects tell
+    /// models apart by identity and states apart by generation, so keeping
+    /// one and moving the other is exactly "the same model moved".
+    fn become_model(&mut self, next: Model) {
+        let identity = self.identity;
+        *self = next;
+        self.identity = identity;
+        self.bump();
     }
 }
 
@@ -2048,5 +2207,262 @@ mod tests {
             ),
             other => panic!("expected a deform binding, got {other:?}"),
         }
+    }
+
+    // ---- the structure path: a replica's whole edit ---------------------
+
+    /// The textures a model holds, as a replica's store would: keyed by Id,
+    /// payloads `Arc`-shared with the model they came from.
+    fn store(m: &Model) -> HashMap<TexId, ModelTexture> {
+        m.texture_ids()
+            .iter()
+            .filter_map(|id| Some((id.clone(), m.texture(id)?.clone())))
+            .collect()
+    }
+
+    /// The one byte-level promise a structure makes: its `Structure` section
+    /// is the same section the file would have written. A replica that
+    /// applies a structure and then saves has to produce the file the server
+    /// would have.
+    #[test]
+    fn a_structure_carries_the_files_own_structure_section() {
+        let m = sample();
+        let file = clm::decode(&m.to_clm_bytes().unwrap()).unwrap();
+        let structure = clm::decode_structure(&m.to_structure_bytes().unwrap()).unwrap();
+
+        assert_eq!(structure.doc, file.doc);
+        assert_eq!(
+            structure.textures,
+            file.textures
+                .iter()
+                .map(ClmTextureRef::from)
+                .collect::<Vec<_>>(),
+            "the manifest is the texture table with the payloads taken out",
+        );
+        assert!(
+            m.to_structure_bytes().unwrap().len() < m.to_clm_bytes().unwrap().len(),
+            "a structure carries no payloads",
+        );
+        assert_eq!(
+            m.to_structure_bytes().unwrap(),
+            m.to_structure_bytes().unwrap(),
+            "and it is byte-stable like the file it comes from",
+        );
+    }
+
+    /// The two container shapes are disjoint and each reader says so by name,
+    /// rather than reading a structure as a model whose textures all vanished.
+    #[test]
+    fn the_two_container_shapes_refuse_each_other() {
+        let m = sample();
+        assert!(matches!(
+            clm::decode(&m.to_structure_bytes().unwrap()),
+            Err(clm::ClmError::StructureOnly),
+        ));
+        assert!(matches!(
+            clm::decode_structure(&m.to_clm_bytes().unwrap()),
+            Err(clm::ClmError::NotAStructure),
+        ));
+    }
+
+    /// What a client reads before it fetches: the Ids in the model's own
+    /// order, each with the encoding its bytes will need.
+    #[test]
+    fn a_structures_textures_are_listed_without_building_a_model() {
+        let m = sample();
+        let listed = clm::structure_texture_ids(&m.to_structure_bytes().unwrap()).unwrap();
+
+        assert_eq!(
+            listed.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            m.texture_ids(),
+        );
+        let held = m.texture(&listed[0].id).unwrap();
+        assert_eq!(listed[0].encoding, held.encoding);
+        assert_eq!(listed[0].alpha, held.alpha);
+    }
+
+    /// The whole point: the document crosses, the payloads do not, and what
+    /// lands is the model the server holds — same bytes, same texture order.
+    #[test]
+    fn applying_a_structure_rebuilds_the_model_over_the_payloads_it_has() {
+        let server = sample();
+        let mut replica = Model::from_clm_bytes(&server.to_clm_bytes().unwrap()).unwrap();
+        let held = store(&replica);
+
+        replica
+            .replace_structure(&server.to_structure_bytes().unwrap(), |id| {
+                held.get(id).cloned()
+            })
+            .unwrap();
+
+        assert_eq!(
+            replica.to_clm_bytes().unwrap(),
+            server.to_clm_bytes().unwrap()
+        );
+        assert_eq!(replica.texture_ids(), server.texture_ids());
+        for id in replica.texture_ids() {
+            assert!(
+                Arc::ptr_eq(&replica.texture(id).unwrap().data, &held[id].data),
+                "the payload the store held is the payload the model now holds",
+            );
+        }
+    }
+
+    /// A structure is held to every rule a file is: the reader is the same
+    /// reader.
+    #[test]
+    fn a_structure_is_read_as_strictly_as_a_file() {
+        let m = sample();
+        let mut doc = m.to_clm_document().unwrap();
+        doc.nodes[1].parent = Some(NodeId::new("ghost").unwrap());
+        let refs: Vec<ClmTextureRef> = m
+            .texture_ids()
+            .iter()
+            .map(|id| ClmTextureRef {
+                id: id.clone(),
+                encoding: m.texture(id).unwrap().encoding,
+                alpha: m.texture(id).unwrap().alpha,
+            })
+            .collect();
+        let bytes = clm::encode_structure(&doc, &refs).unwrap();
+
+        let mut replica = m.clone();
+        let held = store(&m);
+        let err = replica
+            .replace_structure(&bytes, |id| held.get(id).cloned())
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ModelError::InvalidClm(ClmLoadError::DanglingParent { .. })
+        ));
+    }
+
+    /// A payload the caller cannot supply names itself, and the model it was
+    /// meant for is untouched — the new state is built whole before anything
+    /// is swapped.
+    #[test]
+    fn a_payload_the_caller_lacks_names_itself_and_changes_nothing() {
+        let server = sample();
+        let mut replica = Model::from_clm_bytes(&server.to_clm_bytes().unwrap()).unwrap();
+        let (was, generation) = (replica.to_clm_bytes().unwrap(), replica.generation());
+
+        let err = replica
+            .replace_structure(&server.to_structure_bytes().unwrap(), |_| None)
+            .unwrap_err();
+
+        let wanted = server.texture_ids()[0].to_string();
+        assert!(
+            matches!(&err, ModelError::InvalidClm(ClmLoadError::MissingTexture { id }) if *id == wanted),
+            "got {err:?}",
+        );
+        assert_eq!(replica.to_clm_bytes().unwrap(), was);
+        assert_eq!(
+            replica.generation(),
+            generation,
+            "a refused push is not an edit"
+        );
+    }
+
+    /// The two halves derived objects read: the identity says "the same
+    /// model", the generation says "a new state of it".
+    #[test]
+    fn replacing_keeps_the_identity_and_moves_the_generation() {
+        let server = sample();
+        let mut replica = Model::from_clm_bytes(&server.to_clm_bytes().unwrap()).unwrap();
+        let (identity, generation) = (replica.identity(), replica.generation());
+        let held = store(&replica);
+
+        replica
+            .replace_structure(&server.to_structure_bytes().unwrap(), |id| {
+                held.get(id).cloned()
+            })
+            .unwrap();
+        assert_eq!(replica.identity(), identity);
+        assert!(replica.generation() > generation);
+
+        let before = replica.generation();
+        replica.replace_from(&server);
+        assert_eq!(replica.identity(), identity, "not even from another model");
+        assert!(replica.generation() > before);
+    }
+
+    /// The in-tab handoff: an editor hands its model over and the replica
+    /// shares the payloads rather than copying them.
+    #[test]
+    fn replace_from_shares_the_payloads_it_is_handed() {
+        let server = sample();
+        let mut replica = Model::new();
+        replica.replace_from(&server);
+
+        assert_eq!(
+            replica.to_clm_bytes().unwrap(),
+            server.to_clm_bytes().unwrap()
+        );
+        for id in server.texture_ids() {
+            assert!(Arc::ptr_eq(
+                &replica.texture(id).unwrap().data,
+                &server.texture(id).unwrap().data,
+            ));
+        }
+    }
+
+    /// A puppet's gate reads a replaced model as "the same model moved", so
+    /// its rebake carries what a rebake is documented to carry: the pose, and
+    /// every `SimplePhysics` runtime field.
+    #[test]
+    fn a_puppet_carries_its_pose_and_its_drivers_across_a_replace() {
+        let mut server = sample();
+        let mut replica = Model::from_clm_bytes(&server.to_clm_bytes().unwrap()).unwrap();
+        let held = store(&replica);
+
+        let param = replica.param_ids()[0].clone();
+        let mut puppet = crate::Puppet::new(&replica);
+        puppet.set_param_value(&param, 0.75);
+        for _ in 0..30 {
+            puppet.tick(&replica, 1.0 / 60.0);
+        }
+        let posed = puppet.param_value(&param).unwrap();
+        let swung = physics_state(&puppet);
+        assert!(swung.anchor_initialized, "the pendulum has run");
+
+        // The server edits, and only the structure crosses.
+        let root = server.root().unwrap().clone();
+        server
+            .add_node(
+                &root,
+                ModelNode::new("Added", ModelNodeKind::Group),
+                &mut SeededHex::new(77),
+            )
+            .unwrap();
+        replica
+            .replace_structure(&server.to_structure_bytes().unwrap(), |id| {
+                held.get(id).cloned()
+            })
+            .unwrap();
+
+        puppet.sync(&replica);
+        assert_eq!(
+            puppet.baked_generation(),
+            replica.generation(),
+            "it rebaked"
+        );
+        assert_eq!(puppet.param_value(&param), Some(posed), "the pose crossed");
+        let after = physics_state(&puppet);
+        assert_eq!(after.bob, swung.bob);
+        assert_eq!(after.d_angle, swung.d_angle);
+        assert_eq!(after.spring_vel, swung.spring_vel);
+        assert_eq!(after.anchor, swung.anchor);
+        assert!(after.anchor_initialized);
+    }
+
+    fn physics_state(puppet: &crate::Puppet) -> crate::physics::SimplePhysicsData {
+        puppet
+            .iter()
+            .find_map(|(_, node)| match &node.kind {
+                crate::components::NodeKind::SimplePhysics(p) => Some((**p).clone()),
+                _ => None,
+            })
+            .expect("the sample carries a pendulum")
     }
 }

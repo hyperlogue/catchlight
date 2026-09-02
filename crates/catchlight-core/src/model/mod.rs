@@ -90,8 +90,20 @@
 //!   the same reason: playback reads a lane by binary search.
 //! - **Sibling order is document state.** It is the draw order for equal z
 //!   order, so [`Model::reorder`] is an edit, not view state.
-//! - **Textures stay source-encoded.** A [`ModelTexture`] keeps the author's
-//!   bytes verbatim; decoding is the render cache's job.
+//! - **Textures stay source-encoded, and a payload is immutable.** A
+//!   [`ModelTexture`] keeps the author's bytes verbatim; decoding is the
+//!   render cache's job. Nothing rewrites a payload in place — a new one is a
+//!   new [`TexId`] — so a payload `Arc` that is pointer-equal to one seen
+//!   before *is* the same texture, and a render cache keys its GPU reuse on
+//!   exactly that.
+//! - **A model can be replaced without becoming another model.**
+//!   [`Model::replace_structure`] and [`Model::replace_from`] rebuild the
+//!   whole state in place, keeping [`Model::identity`] and bumping
+//!   [`Model::generation`]. Every derived object then reads "the same model
+//!   moved" and carries what its own rules say it carries. This is the
+//!   replica path: an editor server owns the document and pushes it after
+//!   each edit, and the client holds a model it never mutates locally. See
+//!   [`file`] for the wire shape.
 //! - **Derived values are memoized, never stored.** A binding's dense grid —
 //!   what `crate::fill` derives from its authored cells — is built on first
 //!   read and dropped the moment the cells, the key positions or the mesh it

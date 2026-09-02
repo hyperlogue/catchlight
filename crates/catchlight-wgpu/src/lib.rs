@@ -5,7 +5,7 @@ pub mod renderer;
 
 pub use collect::*;
 pub use headless::{apply_uniform_scratch_deform, RenderContext};
-pub use render_cache::{collect, PrepareOptions, RenderCache};
+pub use render_cache::{collect, CacheStats, PrepareOptions, RenderCache};
 pub use renderer::*;
 
 pub fn create_orthographic_camera(camera_height: f32, aspect: f32) -> glam::Mat4 {
