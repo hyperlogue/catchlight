@@ -13,13 +13,18 @@
  * nothing above it may reach past this file to the transport.
  *
  * **One method per kind of command, and the type picks it.** A command either
- * changes the document, changes only what is drawn, or changes nothing; the
- * three are different enough that a caller must not be able to confuse them,
- * and remembering which calls are "quiet" is exactly the thing a caller
- * forgets. So the split is not a convention here — it is generated from Rust
+ * changes the document, changes only what is drawn, or changes nothing; those
+ * are different enough that a caller must not be able to confuse them, and
+ * remembering which calls are "quiet" is exactly the thing a caller forgets.
+ * So the split is not a convention here — it is generated from Rust
  * (`CommandKind` in `catchlight-editor-protocol`, checked against the enum by
  * `cargo xtask ts` and against the dispatch by a debug assertion in the
  * editor server). Passing `scratch_deform` to `send` does not typecheck.
+ *
+ * Rust splits five ways, not three: presence and scratch are separate paths,
+ * and a read is either answerable from a local model replica or only by the
+ * editor. This class does not route on that yet, so it takes the two unions
+ * that cover the same ground — `QueryCommand` is both query kinds.
  *
  * **A drag is not a revision.** [`sendPresence`] deliberately does not bump
  * `rev`, so a gesture of any length re-renders nothing and costs no undo

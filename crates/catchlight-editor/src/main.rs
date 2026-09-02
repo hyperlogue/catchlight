@@ -2,7 +2,6 @@
 //! `Editor::handle` directly — and start the Unix socket on a background
 //! thread, so a CLI / agent can attach to and co-drive the open puppet.
 
-#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     use std::sync::Arc;
     use std::thread;
@@ -60,6 +59,3 @@ fn main() -> eframe::Result<()> {
         }),
     )
 }
-
-#[cfg(target_arch = "wasm32")]
-fn main() {}

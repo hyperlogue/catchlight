@@ -1564,16 +1564,11 @@ dependencies = [
  "catchlight-editor-protocol",
  "catchlight-editor-server",
  "catchlight-wgpu",
- "console_error_panic_hook",
  "eframe",
  "glam",
  "image",
- "js-sys",
  "pollster 0.3.0",
  "rfd",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
  "wgpu",
 ]
 

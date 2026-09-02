@@ -4,10 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The catchlight editor GUI (egui): one codebase for desktop (embeds the server + socket) and web (wasm via eframe WebRunner)"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
+description = "The desktop editor GUI (egui): embeds the server and its socket"
 
 [dependencies]
 catchlight-editor-server = { workspace = true }
@@ -25,35 +22,7 @@ image = { workspace = true }
 eframe = "0.34.3"
 rfd = "0.17.2"
 catchlight-editor-core.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-console_error_panic_hook = "0.1"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
-version = "0.3"
-features = [
-  "Blob",
-  "Document",
-  "Element",
-  "File",
-  "FileSystemDirectoryHandle",
-  "FileSystemFileHandle",
-  "FileSystemGetFileOptions",
-  "FileSystemWritableFileStream",
-  "HtmlAnchorElement",
-  "HtmlCanvasElement",
-  "Navigator",
-  "Response",
-  "StorageManager",
-  "Url",
-  "Window",
-]
 
 [lints]
 workspace = true
