@@ -3,8 +3,19 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { Camera } from "@catchlight/core";
 
-import { panTo, screenAt, wheelNotches, worldAt, worldPerPixel, zoomAbout } from "./camera.js";
+import {
+  DEFAULT_CAMERA,
+  fitCamera,
+  panTo,
+  screenAt,
+  wheelNotches,
+  worldAt,
+  worldPerPixel,
+  zoomAbout,
+} from "./camera.js";
+import type { Bounds, Size } from "./camera.js";
 
 const size = { width: 800, height: 600 };
 const camera = { center: [0, 0] as [number, number], height: 600 };
@@ -85,3 +96,69 @@ describe("wheel deltas", () => {
     expect(wheelNotches(4, 0)).toBeCloseTo(0.04, 12);
   });
 });
+
+describe("framing a model", () => {
+  test("a wide box is framed by the width, on a canvas wider than it is tall", () => {
+    // 16 x 2 on a 4:3 canvas: the height that shows 16 world units across is
+    // 12, and that is what has to cover the box, not the box's own 2.
+    const framed = fitCamera([-8, -1, 8, 1], size);
+    expect(framed?.center).toEqual([0, 0]);
+    expect(framed?.height).toBeCloseTo(13.2, 9);
+    expect(framed && contains(framed, size, [-8, -1, 8, 1])).toBe(true);
+  });
+
+  test("a tall box is framed by its height", () => {
+    const framed = fitCamera([-1, -8, 1, 8], size);
+    expect(framed?.center).toEqual([0, 0]);
+    expect(framed?.height).toBeCloseTo(17.6, 9);
+    expect(framed && contains(framed, size, [-1, -8, 1, 8])).toBe(true);
+  });
+
+  test("the camera lands on the box, wherever the box is", () => {
+    const box: Bounds = [10, 20, 12, 24];
+    const framed = fitCamera(box, size);
+    expect(framed?.center).toEqual([11, 22]);
+    expect(framed?.height).toBeCloseTo(4.4, 9);
+    expect(framed && contains(framed, size, box)).toBe(true);
+  });
+
+  test("nothing to frame leaves the camera to the caller", () => {
+    expect(fitCamera(undefined, size)).toBeUndefined();
+    // What an empty box degrades to: min past max on both axes.
+    expect(fitCamera([1, 1, -1, -1], size)).toBeUndefined();
+    expect(fitCamera([0, 0, NaN, 1], size)).toBeUndefined();
+    expect(fitCamera([-Infinity, 0, Infinity, 1], size)).toBeUndefined();
+  });
+
+  test("a model that is one point is centred rather than zoomed into", () => {
+    const framed = fitCamera([5, 5, 5, 5], size);
+    expect(framed?.center).toEqual([5, 5]);
+    expect(framed?.height).toBe(DEFAULT_CAMERA.height);
+  });
+
+  test("a canvas with no size yet frames as if it were square", () => {
+    const framed = fitCamera([-8, -1, 8, 1], { width: 0, height: 0 });
+    // Aspect 1, so the box's 16 across needs 16 of height.
+    expect(framed?.height).toBeCloseTo(17.6, 9);
+  });
+
+  test("padding is the margin, and none of it is still a fit", () => {
+    expect(fitCamera([-1, -1, 1, 1], size, 0)?.height).toBe(2);
+    expect(fitCamera([-1, -1, 1, 1], size, 1)?.height).toBe(4);
+  });
+});
+
+/** Whether every corner of `box` lands inside the canvas under `camera`. */
+function contains(camera: Camera, canvas: Size, box: Bounds): boolean {
+  const [minX, minY, maxX, maxY] = box;
+  const corners: Array<[number, number]> = [
+    [minX, minY],
+    [maxX, minY],
+    [minX, maxY],
+    [maxX, maxY],
+  ];
+  return corners.every((corner) => {
+    const [x, y] = screenAt(camera, canvas, corner);
+    return x >= 0 && x <= canvas.width && y >= 0 && y <= canvas.height;
+  });
+}

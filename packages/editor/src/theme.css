@@ -112,7 +112,8 @@
     position: absolute;
   }
 
-  .catchlight [data-catchlight-save] {
+  .catchlight [data-catchlight-save],
+  .catchlight [data-catchlight-fit] {
     padding: 3px 10px;
     background: var(--cl-surface);
     color: inherit;
@@ -122,11 +123,13 @@
     cursor: pointer;
   }
 
-  .catchlight [data-catchlight-save]:hover:not(:disabled) {
+  .catchlight [data-catchlight-save]:hover:not(:disabled),
+  .catchlight [data-catchlight-fit]:hover:not(:disabled) {
     background: var(--cl-surface-raised);
   }
 
-  .catchlight [data-catchlight-save]:disabled {
+  .catchlight [data-catchlight-save]:disabled,
+  .catchlight [data-catchlight-fit]:disabled {
     color: var(--cl-text-dim);
     cursor: default;
   }

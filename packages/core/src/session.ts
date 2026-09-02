@@ -303,6 +303,25 @@ export class Session {
     return [x, y, z];
   }
 
+  /**
+   * The world-space box the last tick left the drawn geometry in:
+   * `[min_x, min_y, max_x, max_y]`, Y-up. `undefined` when the document draws
+   * nothing.
+   *
+   * A read like [`tree`], answered off the replica with no round trip, so a
+   * "frame the model" button is one synchronous call. The box is **posed** —
+   * it covers where the last tick left every drawn vertex, not the rest pose —
+   * which also means it is `undefined` until a viewport has drawn a frame.
+   */
+  bounds(): [number, number, number, number] | undefined {
+    const box = this.replica.bounds();
+    if (!box) return undefined;
+    const [minX, minY, maxX, maxY] = box;
+    if (minX === undefined || minY === undefined) return undefined;
+    if (maxX === undefined || maxY === undefined) return undefined;
+    return [minX, minY, maxX, maxY];
+  }
+
   /** Drops every scratch edit at once. What cancelling a gesture runs. */
   clearAllScratch(): void {
     this.replica.clearAllScratch();

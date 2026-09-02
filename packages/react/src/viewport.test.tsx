@@ -8,10 +8,21 @@ import "./test/setup.js";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Camera } from "@catchlight/core";
 import { StrictMode } from "react";
+import type { ReactNode } from "react";
 
-import { EditorProvider, Viewport } from "./index.js";
-import type { ViewportPointerEvent } from "./index.js";
-import { fire, harness, mount, pointer, settle, stubLayout, wheel } from "./test/harness.js";
+import { DEFAULT_CAMERA, EditorProvider, Viewport, useViewportCamera } from "./index.js";
+import type { ViewportCamera, ViewportPointerEvent } from "./index.js";
+import {
+  fakeReplica,
+  fire,
+  harness,
+  mount,
+  pointer,
+  run,
+  settle,
+  stubLayout,
+  wheel,
+} from "./test/harness.js";
 
 /** An 800x600 canvas at the top-left of the page. */
 let restore: () => void;
@@ -288,3 +299,145 @@ describe("the camera gestures", () => {
     await view.unmount();
   });
 });
+
+describe("framing the model", () => {
+  test("a session is framed on the first frame that has something to frame", async () => {
+    const { editor } = await harness();
+    const session = await editor.newDocument();
+    const cameras: Camera[] = [];
+    const frames = stubFrames();
+
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <Viewport.Root session={session} onCameraChange={(camera) => cameras.push(camera)} />
+      </EditorProvider>,
+    );
+    await settle();
+
+    // The box is posed, so a replica that has not drawn has none — and the
+    // camera must not jump to an invented one meanwhile.
+    await frames.flush();
+    expect(cameras).toEqual([]);
+
+    fakeReplica(session).box = [-8, -1, 8, 1];
+    await frames.flush();
+
+    expect(cameras).toHaveLength(1);
+    expect(cameras[0]?.center).toEqual([0, 0]);
+    expect(cameras[0]?.height).toBeCloseTo(13.2, 9);
+
+    // Once, and not again: an edit that moves the revision must not undo the
+    // zoom the user chose after the model came up.
+    await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
+    await frames.flush();
+    await frames.flush();
+    expect(cameras).toHaveLength(1);
+
+    await view.unmount();
+    frames.restore();
+  });
+
+  test("a host that named a starting camera keeps it", async () => {
+    const { editor } = await harness();
+    const session = await editor.newDocument();
+    const cameras: Camera[] = [];
+    const frames = stubFrames();
+
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <Viewport.Root
+          session={session}
+          defaultCamera={{ center: [1, 2], height: 40 }}
+          onCameraChange={(camera) => cameras.push(camera)}
+        />
+      </EditorProvider>,
+    );
+    await settle();
+
+    fakeReplica(session).box = [-8, -1, 8, 1];
+    await frames.flush();
+    await frames.flush();
+
+    expect(cameras).toEqual([]);
+    await view.unmount();
+    frames.restore();
+  });
+
+  test("the camera hook frames on demand, against the size the canvas reported", async () => {
+    const { editor } = await harness();
+    const session = await editor.newDocument();
+    let api: ViewportCamera | undefined;
+
+    function Host(): ReactNode {
+      const camera = useViewportCamera();
+      api = camera;
+      return (
+        <Viewport.Root
+          session={session}
+          camera={camera.camera}
+          onCameraChange={camera.onCameraChange}
+          onResize={camera.onResize}
+          // The automatic fit off, so what this measures is the button's path.
+          defaultCamera={DEFAULT_CAMERA}
+        />
+      );
+    }
+
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <Host />
+      </EditorProvider>,
+    );
+    await settle();
+
+    // Nothing drawn yet: it says so and leaves the camera alone.
+    expect(api?.fit(session)).toBe(false);
+    expect(api?.camera).toEqual(DEFAULT_CAMERA);
+
+    fakeReplica(session).box = [-8, -1, 8, 1];
+    await run(() => api?.fit(session));
+
+    // 800x600, so the height that covers 16 world units across is 12, plus the
+    // margin.
+    expect(api?.camera.center).toEqual([0, 0]);
+    expect(api?.camera.height).toBeCloseTo(13.2, 9);
+    await view.unmount();
+  });
+});
+
+/**
+ * A hand-driven `requestAnimationFrame`, so a test says when a frame happens.
+ *
+ * The auto-fit retries on frames until the renderer has left a box behind, and
+ * a suite that waited on a real timer would be asserting on a race.
+ */
+function stubFrames(): { flush(): Promise<void>; restore(): void } {
+  const queued = new Map<number, () => void>();
+  let next = 1;
+  const saved = {
+    request: globalThis.requestAnimationFrame,
+    cancel: globalThis.cancelAnimationFrame,
+  };
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    const id = next++;
+    queued.set(id, () => callback(0));
+    return id;
+  }) as typeof requestAnimationFrame;
+  globalThis.cancelAnimationFrame = ((id: number) => {
+    queued.delete(id);
+  }) as typeof cancelAnimationFrame;
+
+  return {
+    flush: async () => {
+      const running = [...queued.values()];
+      queued.clear();
+      await run(() => {
+        for (const frame of running) frame();
+      });
+    },
+    restore: () => {
+      globalThis.requestAnimationFrame = saved.request;
+      globalThis.cancelAnimationFrame = saved.cancel;
+    },
+  };
+}

@@ -89,7 +89,22 @@ describe("opening documents", () => {
       "manifest_requirements",
       "session_import",
     ]);
-    expect(wasm.stagedKeys()).toEqual(["rig/model.json", "rig/tex0.png", "rig/tex1.png"]);
+    // Staged for the import and dropped after it: the model decoded every one
+    // of them and owns its copy, so what is left would be the model twice.
+    expect(wasm.stagedKeys()).toEqual([]);
+  });
+
+  test("opening a file drops the bytes once the model has them", async () => {
+    const { editor, wasm } = await inTab();
+
+    await editor.openFile(new TextEncoder().encode("a model"), "akari.clm");
+    expect(wasm.stagedKeys()).toEqual([]);
+
+    // The same name again is a second document, not a failure: nothing here
+    // depends on the first open's bytes still being around.
+    const second = await editor.openFile(new TextEncoder().encode("a newer model"), "akari.clm");
+    expect(second.id).toBe(2);
+    expect(wasm.stagedKeys()).toEqual([]);
   });
 
   test("saving reports the key and leaves the bytes in the store", async () => {
@@ -215,6 +230,35 @@ describe("viewports and lifetime", () => {
 
     expect(module.gpu.freed).toBe(false);
     expect(wasm.freed).toBe(true);
+  });
+});
+
+describe("what the editor says about itself", () => {
+  test("the backend kind is what a status line reads", async () => {
+    const { editor } = await inTab();
+    expect(editor.backendKind()).toBe("in-tab");
+  });
+
+  test("there is no graphics API until a canvas has asked for one", async () => {
+    const { editor, module } = await inTab();
+    const session = await editor.newDocument();
+    module.gpu.backendName = "webgl2";
+
+    // Opening a document, reading it and running a drag need no device, so
+    // there is nothing truthful to say until an attach happens.
+    expect(editor.gpuBackend()).toBeUndefined();
+
+    let told = 0;
+    const off = editor.onGpuChanged(() => (told += 1));
+    await editor.attach(session, {} as HTMLCanvasElement);
+
+    expect(editor.gpuBackend()).toBe("webgl2");
+    expect(told).toBe(1);
+
+    // One device per editor, acquired once: a second canvas says nothing new.
+    await editor.attach(session, {} as HTMLCanvasElement);
+    expect(told).toBe(1);
+    off();
   });
 });
 

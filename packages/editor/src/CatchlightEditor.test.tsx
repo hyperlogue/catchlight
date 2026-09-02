@@ -14,7 +14,7 @@ import "./test/setup.js";
 import { describe, expect, test } from "bun:test";
 import { Editor, InTabBackend, MemoryStorage } from "@catchlight/core";
 import { fakeWasm } from "@catchlight/core/fakes";
-import type { FakeEditor } from "@catchlight/core/fakes";
+import type { FakeEditor, FakeReplica, FakeViewport } from "@catchlight/core/fakes";
 import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -86,13 +86,56 @@ describe("the assembled editor", () => {
     editor.close();
     stop();
   });
+
+  test("the toolbar frames the model, and the status line says where this is", async () => {
+    const stop = stubObservers();
+    const { editor, viewports } = await fakeStack();
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+
+    // Nothing to frame without a document, the same rule the Save button is on.
+    expect(fit(view).disabled).toBe(true);
+
+    const session = await run(() => editor.newDocument("akari"));
+    await settle();
+    expect(fit(view).disabled).toBe(false);
+
+    // Two facts a person cannot get by looking at the picture, and both change
+    // what a bug report means.
+    expect(text(view, "[data-catchlight-backend]")).toBe("in-tab");
+    expect(text(view, "[data-catchlight-gpu]")).toBe("webgpu");
+
+    // A box off the origin, so a camera that landed on it could not have been
+    // the default one.
+    (session.replica as FakeReplica).box = [10, 20, 12, 24];
+    await run(() => fit(view).click());
+    await settle();
+
+    const drawn = viewports[viewports.length - 1];
+    expect(drawn?.camera?.[0]).toBe(11);
+    expect(drawn?.camera?.[1]).toBe(22);
+    expect(drawn?.camera?.[2]).toBeGreaterThan(0);
+
+    await unmount();
+    editor.close();
+    stop();
+  });
 });
 
 /** A real editor over the fake wasm module: the layer under this one, working. */
 async function fakeEditor(): Promise<Editor> {
+  return (await fakeStack()).editor;
+}
+
+/** The same, plus the fakes underneath, for a test that reads what was drawn. */
+async function fakeStack(): Promise<{
+  editor: Editor;
+  viewports: FakeViewport[];
+}> {
   const module = fakeWasm();
   const wasm = new module.module.CatchlightEditor() as FakeEditor;
-  return Editor.create(module.module, new InTabBackend(wasm, new MemoryStorage()));
+  const editor = await Editor.create(module.module, new InTabBackend(wasm, new MemoryStorage()));
+  return { editor, viewports: module.viewports };
 }
 
 interface Mounted {
@@ -135,9 +178,17 @@ async function settle(): Promise<void> {
 }
 
 function save(view: HTMLElement): HTMLButtonElement {
-  const button = view.querySelector<HTMLButtonElement>("[data-catchlight-save]");
-  if (!button) throw new Error("no save button");
-  return button;
+  return button(view, "[data-catchlight-save]");
+}
+
+function fit(view: HTMLElement): HTMLButtonElement {
+  return button(view, "[data-catchlight-fit]");
+}
+
+function button(view: HTMLElement, selector: string): HTMLButtonElement {
+  const found = view.querySelector<HTMLButtonElement>(selector);
+  if (!found) throw new Error(`no ${selector} button`);
+  return found;
 }
 
 function text(view: HTMLElement, selector: string): string {

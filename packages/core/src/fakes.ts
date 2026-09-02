@@ -242,22 +242,24 @@ export class FakeEditor implements WasmEditor {
 /** One device. Reports a small limit so the clamp is testable. */
 export class FakeGpu implements WasmGpu {
   freed = false;
+  /** What `backend()` answers. A test that cares which tier it is on sets it. */
+  backendName = "webgpu";
   /** Every canvas `acquire` was called with. A device comes from a canvas. */
   acquiredFrom: HTMLCanvasElement[] = [];
   maxSize(): number {
     return 4096;
   }
   backend(): string {
-    return "webgpu";
+    return this.backendName;
   }
   free(): void {
     this.freed = true;
   }
-}
-
   [Symbol.dispose](): void {
     this.free();
   }
+}
+
 /** This tab's copy of one document, and what it was told. */
 export class FakeReplica implements WasmReplica {
   doc: FakeDoc | undefined;
@@ -269,6 +271,8 @@ export class FakeReplica implements WasmReplica {
   scratchTransforms = new Map<string, number[]>();
   /** Authored local translations, which `translationAfterWorldDelta` reads. */
   translations = new Map<string, [number, number, number]>();
+  /** What `bounds()` answers: `[min_x, min_y, max_x, max_y]`, or nothing drawn. */
+  box: [number, number, number, number] | undefined;
   freed = false;
 
   #rev = 0;
@@ -404,8 +408,21 @@ export class FakeReplica implements WasmReplica {
     this.scratchTransforms.clear();
   }
 
+  /**
+   * Whatever a test set, and `undefined` until one does — the fake has no
+   * geometry, and a replica that has drawn nothing is exactly the case a fit
+   * has to survive.
+   */
+  bounds(): Float32Array | undefined {
+    return this.box ? new Float32Array(this.box) : undefined;
+  }
+
   free(): void {
     this.freed = true;
+  }
+
+  [Symbol.dispose](): void {
+    this.free();
   }
 }
 
@@ -420,10 +437,6 @@ export class FakeReplica implements WasmReplica {
 function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | undefined {
   if (tree.id === node) {
     return {
-
-  [Symbol.dispose](): void {
-    this.free();
-  }
       id: tree.id,
       kind: tree.kind,
       parent: parent ?? null,
@@ -470,6 +483,9 @@ export class FakeViewport implements WasmViewport {
   free(): void {
     this.freed += 1;
   }
+  [Symbol.dispose](): void {
+    this.free();
+  }
 }
 
 export interface FakeModule {
@@ -483,9 +499,6 @@ export interface FakeModule {
 
 /** The four classes `@catchlight/wasm` exports, in memory. */
 export function fakeWasm(): FakeModule {
-  [Symbol.dispose](): void {
-    this.free();
-  }
   const gpu = new FakeGpu();
   const replicas: FakeReplica[] = [];
   const viewports: FakeViewport[] = [];
@@ -543,6 +556,7 @@ export class ScriptedBackend implements Backend {
   sent: Command[] = [];
   staged = new Map<string, Uint8Array>();
   stagedKeys: string[] = [];
+  discardedKeys: string[] = [];
   feeds: Array<{ session: number; rev: number }> = [];
   /** The target of each feed that actually ran, coalescing included. */
   runs: number[] = [];
@@ -556,7 +570,6 @@ export class ScriptedBackend implements Backend {
   replies = new Map<string, OkReply>();
 
   #listeners = new Set<(event: Event) => void>();
-  discardedKeys: string[] = [];
   #queue = new FeedQueue();
 
   send(command: Command): Promise<OkReply> {
@@ -578,6 +591,12 @@ export class ScriptedBackend implements Backend {
     return Promise.resolve();
   }
 
+  discardKey(key: string): Promise<void> {
+    this.discardedKeys.push(key);
+    this.staged.delete(key);
+    return Promise.resolve();
+  }
+
   feed(replica: WasmReplica, session: number, rev: number): Promise<number> {
     this.feeds.push({ session, rev });
     return this.#queue.run(session, rev, async (target) => {
@@ -591,12 +610,6 @@ export class ScriptedBackend implements Backend {
       const doc = emptyDoc(`session ${session}`);
       doc.rev = target;
       replica.applyStructure(structureBytes(doc), target);
-  discardKey(key: string): Promise<void> {
-    this.discardedKeys.push(key);
-    this.staged.delete(key);
-    return Promise.resolve();
-  }
-
       return replica.rev();
     });
   }

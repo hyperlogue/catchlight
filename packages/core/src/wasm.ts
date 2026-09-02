@@ -144,8 +144,15 @@ export interface WasmReplica extends WasmOwned {
    * commits. `undefined` when the model holds no such node.
    */
   translationAfterWorldDelta(node: NodeId, dx: number, dy: number): Float32Array | undefined;
-
-  free(): void;
+  /**
+   * The world-space box the last tick left the drawn geometry in:
+   * `[min_x, min_y, max_x, max_y]` in world units, Y-up. `undefined` when the
+   * model draws nothing — an empty document, or one whose every part is
+   * disabled, untextured or fully transparent. What a "frame the model" camera
+   * is computed from, and posed rather than at rest, so a limb physics has
+   * swung out is inside the box.
+   */
+  bounds(): Float32Array | undefined;
 }
 
 /**
