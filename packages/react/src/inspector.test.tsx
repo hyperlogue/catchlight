@@ -82,6 +82,43 @@ describe("the inspector", () => {
     await view.unmount();
   });
 
+  test("the texture select points at one, and clears with its own field", async () => {
+    const { wasm, session, node, view } = await inspecting("part");
+    // Something to clear: a part drawing nothing is already at "none", and a
+    // select that did not move authors nothing either way.
+    wasm.staged.set("hair.png", new TextEncoder().encode("not really a png"));
+    await run(() => session.send({ cmd: "texture_add", node, path: "hair.png" }));
+    await settle();
+
+    const texture = view.container.querySelector(
+      'select[data-catchlight-field="texture"]',
+    ) as HTMLSelectElement;
+    expect(texture.value).toBe("tex-1");
+    // The "none" option is an edit now, not a readout.
+    expect([...texture.options].map((option) => option.value)).toEqual(["", "tex-1"]);
+
+    texture.value = "";
+    await fire(texture, new Event("change", { bubbles: true }));
+    await settle();
+
+    const cleared = nodeSets(wasm);
+    expect(cleared).toHaveLength(1);
+    // `texture` has no spelling for "point at nothing", so the empty value
+    // must not travel under it — `clear_texture` is the whole command.
+    expect(cleared[0]).toMatchObject({ cmd: "node_set", node, clear_texture: true });
+    expect(keys(cleared[0])).toEqual(["clear_texture", "cmd", "id", "node", "session"]);
+
+    // And picking a texture again is still the ordinary field.
+    texture.value = "tex-1";
+    await fire(texture, new Event("change", { bubbles: true }));
+    await settle();
+
+    const pointed = nodeSets(wasm)[1];
+    expect(pointed).toMatchObject({ cmd: "node_set", node, texture: "tex-1" });
+    expect(keys(pointed)).toEqual(["cmd", "id", "node", "session", "texture"]);
+    await view.unmount();
+  });
+
   test("a checkbox commits on the click", async () => {
     const { wasm, session, node, view } = await inspecting("part");
 

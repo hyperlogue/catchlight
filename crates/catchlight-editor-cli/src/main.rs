@@ -204,6 +204,10 @@ enum NodeCmd {
         enabled: Option<bool>,
         #[arg(long)]
         texture: Option<TexId>,
+        /// Draw no texture at all. Wins over `--texture`; the last part
+        /// drawing a texture takes it with it.
+        #[arg(long = "clear-texture")]
+        clear_texture: bool,
         #[arg(long = "lock-to-root")]
         lock_to_root: Option<bool>,
         /// Blend-mode name (Normal | Multiply | ColorDodge | …).
@@ -1240,6 +1244,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
             opacity,
             enabled,
             texture,
+            clear_texture,
             lock_to_root,
             blend_mode,
             tint,
@@ -1260,6 +1265,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
                 opacity: *opacity,
                 enabled: *enabled,
                 texture: texture.clone(),
+                clear_texture: *clear_texture,
                 lock_to_root: *lock_to_root,
                 blend_mode: blend_mode.clone(),
                 tint: tint.as_deref().map(parse_vec3).transpose()?,
