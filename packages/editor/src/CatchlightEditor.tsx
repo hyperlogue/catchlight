@@ -27,11 +27,14 @@
  *
  * **The stage is never unmounted.** The grid's cells are rendered whether or
  * not a document is open; with none, the panels are empty and the canvas
- * draws nothing under a hint. That is what keeps one canvas element alive for
- * the life of the screen — on the WebGL2 tier the device draws on exactly the
- * canvas it was acquired from, so a stage that came and went with its
- * documents could never draw a second one. The presence provider sits above
- * the cells for the same reason, and tolerates having no session.
+ * draws nothing under a hint. So one canvas element lives for the whole
+ * screen. Nothing forces that any more — a WebGPU device draws any canvas, so
+ * a stage that came and went with its documents would work — it is simply
+ * cheaper: a remount would tear down a surface and its stencil and composite
+ * targets and build them again on the next document, and every layout of the
+ * grid would have to be written to keep the element in place anyway. The
+ * presence provider sits above the cells for the same reason, and tolerates
+ * having no session.
  *
  * **Closing the current document moves the screen off it first.** The panels
  * under it read its replica, and the close frees that replica — so the next
@@ -542,40 +545,21 @@ function zoomLabel(zoom: number | undefined): string {
 }
 
 /**
- * Where the document is, and which graphics API is drawing it.
+ * Where the document is: this tab, or a process it is connected to.
  *
- * Both are things a person cannot otherwise tell by looking, and both change
- * what a bug report means: an in-tab editor and a connected one fail
- * differently, and so do WebGPU and the WebGL2 fallback.
+ * Something a person cannot otherwise tell by looking, and it changes what a
+ * bug report means — an in-tab editor and a connected one fail differently.
+ * There is no graphics tier beside it any more: the editor is WebGPU or it is
+ * an error message, so a label reporting which one would only ever say the
+ * same word.
  */
 function Environment(): ReactNode {
   const editor = useEditor();
-  const gpu = useGpuBackend(editor);
   return (
-    <>
-      <span data-catchlight-status-item="" data-catchlight-backend="">
-        {editor.backendKind()}
-      </span>
-      <span data-catchlight-status-item="" data-catchlight-gpu="">
-        {gpu ?? "no device"}
-      </span>
-    </>
+    <span data-catchlight-status-item="" data-catchlight-backend="">
+      {editor.backendKind()}
+    </span>
   );
-}
-
-/**
- * Which graphics API this tab came up on, once a canvas has asked for one.
- *
- * A device is acquired at the first viewport and never swapped, so the
- * subscription fires once and the state settles for the life of the editor.
- */
-function useGpuBackend(editor: Editor): string | undefined {
-  const [backend, setBackend] = useState<string | undefined>(() => editor.gpuBackend());
-  useEffect(() => {
-    setBackend(editor.gpuBackend());
-    return editor.onGpuChanged(() => setBackend(editor.gpuBackend()));
-  }, [editor]);
-  return backend;
 }
 
 function Problem({ problem }: { problem: string | undefined }): ReactNode {

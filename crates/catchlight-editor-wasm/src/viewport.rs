@@ -27,6 +27,13 @@
 //!   including the ones whose call did not tick, or a second canvas would go
 //!   clean and stop following a pendulum the first one is still swinging.
 //!
+//! - **A viewport owns its surface, so a second canvas is ordinary.** The
+//!   canvas becomes a surface here, on the tab's one WebGPU device, and
+//!   nothing about that device is bound to any element. Two viewports on one
+//!   replica are two swapchains sharing one renderer and one cache; the
+//!   editor's habit of keeping a single canvas mounted is now a convenience
+//!   rather than the constraint it was on the WebGL2 tier (see [`Gpu`]).
+//!
 //! - **[`start`] and [`stop`] are repeatable and idempotent.** React mounts,
 //!   unmounts and remounts an effect — StrictMode does it deliberately on every
 //!   mount — so the pair has to survive being run twice with nothing left
@@ -56,6 +63,7 @@
 //! [`invalidate`]: Viewport::invalidate
 //! [`start`]: Viewport::start
 //! [`stop`]: Viewport::stop
+//! [`Gpu`]: crate::Gpu
 //! [`Replica`]: crate::Replica
 
 use std::cell::{Cell, RefCell};
@@ -212,20 +220,16 @@ impl Viewport {
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
 
-        // The GL phase of `Gpu::acquire` already built a surface for the canvas
-        // it was given, because that is where its adapter came from. Take it
-        // rather than build a second one on the same element.
+        // One surface per viewport, on this tab's one device: a WebGPU device
+        // presents to any canvas, so a second viewport on a second element is
+        // an ordinary thing to build rather than an error.
         let surface = gpu.surface_for(canvas).map_err(|e| JsValue::from_str(&e))?;
-        // A WebGL2 device presents to the one canvas its adapter was made
-        // from, so a surface on any other canvas has no format in common with
-        // it. Caught here because `configure_surface` would index an empty
+        // Caught here because `configure_surface` would index an empty
         // capability list instead of saying so.
         if surface.get_capabilities(&gpu.adapter).formats.is_empty() {
-            return Err(JsValue::from_str(if gpu.is_webgl() {
-                "WebGL2 draws one canvas per device; a second viewport needs WebGPU"
-            } else {
-                "this canvas has no surface format in common with the adapter"
-            }));
+            return Err(JsValue::from_str(
+                "this canvas has no surface format in common with the adapter",
+            ));
         }
         let surface = configure_surface(&gpu.adapter, &gpu.device, surface, width, height);
 

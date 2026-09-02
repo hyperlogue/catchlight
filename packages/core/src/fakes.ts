@@ -355,15 +355,10 @@ export class FakeEditor implements WasmEditor {
 /** One device. Reports a small limit so the clamp is testable. */
 export class FakeGpu implements WasmGpu {
   freed = false;
-  /** What `backend()` answers. A test that cares which tier it is on sets it. */
-  backendName = "webgpu";
-  /** Every canvas `acquire` was called with. A device comes from a canvas. */
-  acquiredFrom: HTMLCanvasElement[] = [];
+  /** How many times `acquire` ran. One per editor, however many canvases ask. */
+  acquires = 0;
   maxSize(): number {
     return 4096;
-  }
-  backend(): string {
-    return this.backendName;
   }
   free(): void {
     this.freed = true;
@@ -749,13 +744,13 @@ export function fakeWasm(): FakeModule {
     module: {
       CatchlightEditor: FakeEditor,
       Gpu: {
-        acquire: (canvas: HTMLCanvasElement) => {
+        acquire: () => {
           const failure = made.failNextAcquire;
           if (failure !== undefined) {
             made.failNextAcquire = undefined;
             return Promise.reject(new Error(failure));
           }
-          gpu.acquiredFrom.push(canvas);
+          gpu.acquires += 1;
           return Promise.resolve(gpu);
         },
       },

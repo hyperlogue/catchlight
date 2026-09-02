@@ -116,8 +116,8 @@ describe("a stage with nothing to draw", () => {
 
     await view.render(stage(session));
     await settle();
-    // The same element: on the WebGL2 tier it is the only one the device can
-    // ever draw on, so a fresh one here would be a blank stage for good.
+    // The same element: the canvas is the stage, and a fresh one per document
+    // would rebuild its observers and lose the camera it was framed with.
     expect(view.container.querySelector("canvas")).toBe(canvas);
     expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
 
