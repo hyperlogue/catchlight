@@ -12,28 +12,41 @@
  * `e2e/run.ts` is what starts the servers and calls this twice; run it by hand
  * only to drive something they do not set up.
  *
- * **The browser is a real one, and it draws on WebGL2.** Playwright's own
+ * **The browser is a real one, and it draws on WebGPU.** Playwright's own
  * Chromium download does not run on NixOS, so the executable is an argument
- * and `nix/shell.nix` puts one on `PATH`. Headless Chromium has no WebGPU this
- * editor survives: `--enable-unsafe-webgpu` hands out a SwiftShader adapter
- * that loses its device within a second in plain JavaScript, and fails a
- * 144-byte `createBuffer` under `wgpu`. So the flags below select ANGLE's
- * software rasteriser instead and this exercises the WebGL2 tier, which the
- * editor supports rather than tolerates.
+ * and the e2e dev shell puts one on `PATH`. The editor is WebGPU-only, and
+ * headless Chromium reaches a real device only with the whole flag set below:
+ * `--enable-unsafe-webgpu` to have `navigator.gpu` at all, and
+ * `--use-angle=vulkan` beside `--use-vulkan=native` so it lands on Mesa's
+ * llvmpipe rather than on SwiftShader, whose device dies at the first canvas
+ * configure. The ICD comes from the shell's `XDG_DATA_DIRS`, the same one the
+ * Rust GPU tests find lavapipe through. Dropping any of those flags is the
+ * negative case: the tab reports that it needs WebGPU and this run fails
+ * saying so.
  *
- * **A step that cannot see the picture is not a passing step.** Canvas
- * assertions go through [`canvasShot`], which decodes the screenshot and, for
- * every pose but the deliberate extreme, refuses a frame that is one flat
- * colour: a dead device leaves the page running, the DOM correct and the
- * canvas the colour it was cleared to, and every other check here would still
- * report ok. For the same reason a panic, a trap or a lost device aborts the
- * run where it happens instead of being counted in the summary — after one of
- * those, the next step's timeout would report the wrong failure.
+ * **The picture comes from the renderer, not from a screenshot.** That
+ * configuration never composites the canvas — a screenshot of it is blank
+ * however good the frame is — so [`canvasFrame`] asks the viewport to copy
+ * its own surface back through `Viewport.readback`. The screenshots this
+ * still writes are of the *page*, kept because a human reading a failure
+ * wants to see the DOM: the canvas inside them is blank by construction and
+ * says nothing.
+ *
+ * **A step that cannot see the picture is not a passing step.** For every pose
+ * but the deliberate extreme, a frame that is one flat colour is a failure: a
+ * dead device leaves the page running, the DOM correct and the canvas the
+ * colour it was cleared to, and every other check here would still report ok.
+ * For the same reason a panic, a trap, a lost device or a tab saying it has no
+ * WebGPU aborts the run where it happens instead of being counted in the
+ * summary — after one of those, the next step's timeout would report the wrong
+ * failure.
  */
 
+import { READBACK } from "@catchlight/core";
 import { chromium } from "playwright-core";
 
-import { decodePng, fingerprint, hex, uniformity } from "./png.ts";
+import { fingerprint, hex, uniformity } from "./frame.ts";
+import type { Image } from "./frame.ts";
 
 /**
  * How much of the canvas one colour may cover before the frame reads as blank.
@@ -46,10 +59,43 @@ import { decodePng, fingerprint, hex, uniformity } from "./png.ts";
  */
 const MAX_FLAT_SHARE = 0.995;
 
-/** Lines that mean the page is no longer able to draw, whatever it still shows. */
-const CONSOLE_FATAL = [/panicked at/, /device (?:is |was )?lost/i, /lost the device/i, /context lost/i];
+/**
+ * Lines that mean the page is no longer able to draw, whatever it still shows.
+ *
+ * The WebGPU one is the whole negative case: launched without the flags above,
+ * `Gpu::acquire` rejects with that string and the editor mounts over a canvas
+ * nothing will ever reach. Catching it here is what makes the run say why
+ * rather than time out on a missing viewport.
+ */
+const CONSOLE_FATAL = [
+  /panicked at/,
+  /device (?:is |was )?lost/i,
+  /lost the device/i,
+  /context lost/i,
+  /has no WebGPU/i,
+];
 /** A wasm trap reaches the page as an error and nothing else; hence the extra pattern. */
 const PAGE_FATAL = [...CONSOLE_FATAL, /unreachable/i];
+
+/**
+ * What it takes to hold a WebGPU device in a headless Chromium on llvmpipe.
+ *
+ * Every one of the four graphics flags is load-bearing; see the header.
+ * `CHROMIUM_ARGS` replaces the set outright, which is how the negative case is
+ * run by hand: the old WebGL flags select a browser with no `navigator.gpu`
+ * and this must then fail rather than pass.
+ */
+const DEFAULT_ARGS = [
+  "--headless=new",
+  "--no-sandbox",
+  "--no-first-run",
+  "--disable-dev-shm-usage",
+  "--enable-unsafe-webgpu",
+  "--enable-features=Vulkan",
+  "--use-vulkan=native",
+  "--use-angle=vulkan",
+  "--ignore-gpu-blocklist",
+].join(" ");
 
 const [exe, site, server] = process.argv.slice(2);
 if (!exe || !site) throw new Error("usage: drive.ts <chromium> <site-url> [server-base]");
@@ -57,10 +103,12 @@ const url = server ? `${site}?server=${encodeURIComponent(server)}` : site;
 const shots = process.env.SHOTS ?? ".";
 const tag = server ? "connected" : "intab";
 
+// `headless: false` with `--headless=new` in the arguments: Playwright's own
+// headless switch is not the mode a WebGPU device comes up in.
 const browser = await chromium.launch({
   executablePath: exe,
-  headless: true,
-  args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist", "--no-sandbox"],
+  headless: false,
+  args: (process.env.CHROMIUM_ARGS ?? DEFAULT_ARGS).split(/\s+/).filter(Boolean),
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
@@ -108,37 +156,55 @@ const step = async (name: string, body: () => Promise<void>) => {
 };
 
 interface Shot {
-  bytes: number;
+  size: string;
   hash: number;
   share: number;
   colour: string;
 }
 
-let shotN = 0;
 /**
- * The viewport canvas as the compositor has it, asserted to be a picture.
+ * The frame the viewport is showing, asserted to be a picture.
+ *
+ * The pixels are the renderer's own copy of its surface, reached through the
+ * property a live viewport hangs off its canvas — the element is all a driver
+ * in the page has a handle to. Nothing here goes near the compositor, which in
+ * this browser has never seen the canvas.
  *
  * `flat` is for the one shot where a single colour is the right answer: a
  * param at the end of its range can pose a fixture so a flat-coloured part
  * covers the whole frame. That shot still has to differ from the one before
  * it, which is what catches a canvas that stopped drawing at that moment.
  */
-const canvasShot = async (what: string, flat: "must vary" | "may be flat" = "must vary"): Promise<Shot> => {
-  const png = await page.locator("canvas[data-catchlight-viewport]").first().screenshot({
-    path: `${shots}/${tag}-canvas-${shotN++}.png`,
-  });
-  const image = decodePng(png);
+const canvasFrame = async (what: string, flat: "must vary" | "may be flat" = "must vary"): Promise<Shot> => {
+  const read = await page.evaluate(async (property: string) => {
+    const canvas = document.querySelector("canvas[data-catchlight-viewport]");
+    const readback = canvas ? (canvas as unknown as Record<string, unknown>)[property] : undefined;
+    if (typeof readback !== "function") {
+      throw new Error("the canvas carries no viewport; nothing is drawing it");
+    }
+    const frame = (await readback()) as { width: number; height: number; rgba: Uint8Array };
+    // Through the CDP boundary as an ordinary array of bytes: a typed array is
+    // not part of what `evaluate` is guaranteed to carry across.
+    return { width: frame.width, height: frame.height, rgba: [...frame.rgba] };
+  }, READBACK);
+
+  const image: Image = {
+    width: read.width,
+    height: read.height,
+    channels: 4,
+    data: Uint8Array.from(read.rgba),
+  };
   const uniform = uniformity(image);
   const shot = {
-    bytes: png.length,
+    size: `${image.width}x${image.height}`,
     hash: fingerprint(image),
     share: uniform.share,
     colour: hex(uniform.colour, image.channels),
   };
   if (flat === "must vary" && shot.share > MAX_FLAT_SHARE) {
     throw new Error(
-      `${what}: the canvas is ${(shot.share * 100).toFixed(2)}% ${shot.colour} ` +
-        `over ${image.width}x${image.height} — nothing was drawn`,
+      `${what}: the frame is ${(shot.share * 100).toFixed(2)}% ${shot.colour} ` +
+        `over ${shot.size} — nothing was drawn`,
     );
   }
   return shot;
@@ -183,10 +249,10 @@ try {
       console.log("     status:", (await page.locator("[data-catchlight-status]").textContent())?.trim().slice(0, 80));
     });
   }
-  let before: Shot = { bytes: 0, hash: 0, share: 0, colour: "" };
+  let before: Shot = { size: "", hash: 0, share: 0, colour: "" };
   await step("canvas draws something", async () => {
-    before = await canvasShot("at rest");
-    console.log("     canvas png bytes:", before.bytes, "| flattest colour", before.colour, "covers", `${(before.share * 100).toFixed(1)}%`);
+    before = await canvasFrame("at rest");
+    console.log("     frame:", before.size, "| flattest colour", before.colour, "covers", `${(before.share * 100).toFixed(1)}%`);
   });
   await step("slider poses the puppet", async () => {
     const slider = page.locator("[data-catchlight-param-slider]").first();
@@ -197,7 +263,7 @@ try {
       input.value = v; input.dispatchEvent(new Event("input", { bubbles: true }));
     }, max ?? "1");
     await page.waitForTimeout(800);
-    const after = await canvasShot("with the param at its maximum", "may be flat");
+    const after = await canvasFrame("with the param at its maximum", "may be flat");
     if (after.hash === before.hash) throw new Error("canvas unchanged after slider");
     // Back to the rest pose, so the drag below moves a picture with structure in it.
     const min = await slider.getAttribute("min");
@@ -206,7 +272,7 @@ try {
       input.value = v; input.dispatchEvent(new Event("input", { bubbles: true }));
     }, min ?? "0");
     await page.waitForTimeout(500);
-    before = await canvasShot("back at the rest pose");
+    before = await canvasFrame("back at the rest pose");
   });
   await step("select a node and drag it", async () => {
     const items = page.locator("[data-catchlight-node]");
@@ -219,20 +285,22 @@ try {
     console.log("     status:", status?.trim().slice(0, 120));
     const box = (await page.locator("canvas[data-catchlight-viewport]").first().boundingBox())!;
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
-    const b0 = await canvasShot("before the drag");
+    const b0 = await canvasFrame("before the drag");
     await page.mouse.move(cx, cy);
     await page.mouse.down();
     for (let i = 1; i <= 10; i++) { await page.mouse.move(cx + i * 15, cy + i * 8); await page.waitForTimeout(40); }
     await page.waitForTimeout(200);
-    const mid = await canvasShot("mid-drag");
+    const mid = await canvasFrame("mid-drag");
     await page.mouse.up();
     await page.waitForTimeout(1500);
-    const b1 = await canvasShot("after the commit");
+    const b1 = await canvasFrame("after the commit");
     const rev = await page.locator("[data-catchlight-status]").textContent();
     console.log("     hashes before/mid/after:", b0.hash, mid.hash, b1.hash, "| status:", rev?.trim().slice(0, 120));
     if (mid.hash === b0.hash) throw new Error("no live preview during drag");
     if (b1.hash === b0.hash) throw new Error("canvas unchanged after commit");
   });
+  // The page, for a human reading the run afterwards. The canvas in it is
+  // blank: this browser never composites one.
   await page.screenshot({ path: `${shots}/${tag}-final.png` });
 } catch {
   // reported by step
