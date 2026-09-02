@@ -29,10 +29,10 @@ use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_core::{BindingKey, BindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
     BindingKeyEntry, BindingParams, Command, NodeId, NodePatch, ParamId, ParamInfo, Rename, Reply,
-    Request, ResponseBody, SeamAddr, SeamId, SeamInfo, SessionId, SlotAddr, SlotId, SlotInfo,
-    SlotWeight, TexId, TreeNode, WeldInfo,
+    Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotAddr, SlotId, SlotWeight, TexId,
+    TreeNode, WeldInfo,
 };
-use catchlight_editor_server::Editor;
+use catchlight_editor_server::{seam_info, Editor};
 use eframe::egui;
 
 use crate::camera::EditorCamera;
@@ -2890,7 +2890,7 @@ impl App {
                         // Keyed by the payload's allocation: two parts drawing
                         // one image share a thumbnail, and replacing an image
                         // gets a new one.
-                        let key = Arc::as_ptr(data) as usize;
+                        let key = Arc::as_ptr(data) as *const u8 as usize;
                         let handle = self
                             .thumbs
                             .entry(key)
@@ -3455,21 +3455,6 @@ fn interp_name(m: catchlight_core::interpolate::InterpolateMode) -> &'static str
         I::Stepped => "stepped",
         I::Linear => "linear",
         I::Cubic => "cubic",
-    }
-}
-
-/// The wire spelling of a seam, for the seam panel.
-fn seam_info(seam: &catchlight_core::Seam) -> SeamInfo {
-    SeamInfo {
-        id: seam.id().clone(),
-        slots: seam
-            .slots()
-            .iter()
-            .map(|slot| SlotInfo {
-                id: slot.id().clone(),
-                vertex: slot.vertex(),
-            })
-            .collect(),
     }
 }
 
