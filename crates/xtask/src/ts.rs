@@ -125,6 +125,7 @@ fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::SessionInfo,
         proto::StatusInfo,
         proto::TreeNode,
+        proto::NodeInfo,
         proto::TexInfo,
         proto::ParamInfo,
         proto::SeamInfo,

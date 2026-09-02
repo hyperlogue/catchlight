@@ -4,7 +4,7 @@
 //! it. Everything in here is a pure function of that model, so the tab answers
 //! these without a round trip and the editor answers them the same way, from
 //! the same bytes. That is only true while there is *one* implementation:
-//! `Editor::dispatch` routes its seven `ReplicaQuery` arms straight into
+//! `Editor::dispatch` routes its `ReplicaQuery` arms straight into
 //! [`replica_query`], so a fix to an answer reaches both ends or neither.
 //!
 //! Invariants this module carries:
@@ -20,7 +20,7 @@
 //!   revision it is; the replica that holds it does. So [`replica_reply`]
 //!   takes the `rev` it stamps on the envelope rather than inventing one.
 
-use catchlight_core::{Model, ModelError, ModelWeld};
+use catchlight_core::{Model, ModelError, ModelNode, ModelNodeKind, ModelWeld};
 use catchlight_editor_protocol::*;
 
 use crate::{image_dims, EditorError};
@@ -40,6 +40,14 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
             let root = model.root().ok_or(ModelError::Fragment)?;
             Ok(ResponseBody::Tree {
                 root: build_tree(model, root),
+            })
+        }
+        Command::NodeInfo { node, .. } => {
+            let n = model
+                .node(node)
+                .ok_or_else(|| EditorError::NoNode(node.clone()))?;
+            Ok(ResponseBody::NodeInfo {
+                node: Box::new(node_info(node, n)),
             })
         }
         Command::TextureList { .. } => {
@@ -125,6 +133,67 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
         z_order,
         enabled,
         children: children.iter().map(|c| build_tree(model, c)).collect(),
+    }
+}
+
+/// One node as an inspector reads it: every [`NodePatch`] field under its own
+/// name, and the Id, kind and parent a patch cannot set.
+///
+/// A field the node's kind does not carry stays `None` — the same rule
+/// `apply_patch` applies on the way in, where a colour set on a mesh group is
+/// ignored. So what comes back is exactly what a `node_set` on this node
+/// would keep.
+fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
+    // The colour a drawable carries. A group, mesh group or physics node is
+    // never drawn, so it reports none rather than a default a patch would
+    // then write back into it.
+    let (opacity, blend_mode, tint, screen_tint, mask_threshold) = match &node.kind {
+        ModelNodeKind::Part(p) => (
+            Some(p.opacity),
+            Some(p.blend_mode.as_str().to_string()),
+            Some(p.tint),
+            Some(p.screen_tint),
+            Some(p.mask_threshold),
+        ),
+        ModelNodeKind::Composite(c) => (
+            Some(c.opacity),
+            Some(c.blend_mode.as_str().to_string()),
+            Some(c.tint),
+            Some(c.screen_tint),
+            Some(c.mask_threshold),
+        ),
+        _ => (None, None, None, None, None),
+    };
+    let (mg_dynamic, mg_translate_children) = match &node.kind {
+        ModelNodeKind::MeshGroup(mg) => (Some(mg.dynamic), Some(mg.translate_children)),
+        _ => (None, None),
+    };
+    NodeInfo {
+        id: id.clone(),
+        kind: node.kind.name().to_string(),
+        parent: node.parent().cloned(),
+        name: node.name.to_string(),
+        translate: node.transform.translation,
+        rotate: node.transform.rotation,
+        scale: node.transform.scale,
+        z_order: node.z_order,
+        enabled: node.enabled,
+        lock_to_root: node.lock_to_root,
+        opacity,
+        blend_mode,
+        tint,
+        screen_tint,
+        mask_threshold,
+        texture: match &node.kind {
+            ModelNodeKind::Part(p) => p.albedo().cloned(),
+            _ => None,
+        },
+        propagate_meshgroup: match &node.kind {
+            ModelNodeKind::Composite(c) => Some(c.propagate_meshgroup),
+            _ => None,
+        },
+        mg_dynamic,
+        mg_translate_children,
     }
 }
 

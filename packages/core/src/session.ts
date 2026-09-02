@@ -42,6 +42,7 @@ import type {
   DocumentCommand,
   Event,
   NodeId,
+  NodeInfo,
   ParamId,
   ParamInfo,
   PresenceCommand,
@@ -187,6 +188,25 @@ export class Session {
   /** The node tree, from the root down. */
   tree(): TreeNode {
     return expectResult(this.query({ cmd: "node_tree" }), "tree").root;
+  }
+
+  /**
+   * One node in full: what a `node_set` can change, under the field names it
+   * takes, plus the node's kind and parent.
+   *
+   * `undefined` when the model carries no such node, because a selection can
+   * outlive the node it names — a deleted node is a panel that renders
+   * nothing, not a failed read.
+   */
+  nodeInfo(node: NodeId): NodeInfo | undefined {
+    let body: ResponseBody;
+    try {
+      body = this.query({ cmd: "node_info", node });
+    } catch (cause) {
+      if (cause instanceof ProtocolError && cause.code === "no_node") return undefined;
+      throw cause;
+    }
+    return expectResult(body, "node_info").node;
   }
 
   /** Every texture the model carries, with its dimensions. */

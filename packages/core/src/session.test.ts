@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { ProtocolError } from "./backend.js";
-import { FakeReplica, ScriptedBackend } from "./fakes.js";
+import { emptyDoc, FakeReplica, ScriptedBackend, structureBytes } from "./fakes.js";
 import { Session } from "./session.js";
 
 /** Lets every pending microtask and timer callback run. */
@@ -195,6 +195,31 @@ describe("reads", () => {
     expect(tree.id).toBe("root");
     expect(session.params()).toEqual([]);
     // Nothing was asked of the backend: the model is in this tab.
+    expect(backend.sent).toHaveLength(0);
+  });
+
+  test("a node reads back in full, and a node that is gone reads as undefined", async () => {
+    const { backend, replica, session } = open();
+    const doc = emptyDoc("one part");
+    doc.root.children.push({
+      id: "root/part-1",
+      name: "Body",
+      kind: "part",
+      z_order: 3,
+      enabled: true,
+      children: [],
+    });
+    replica.applyStructure(structureBytes(doc), 1);
+
+    const info = session.nodeInfo("root/part-1");
+    expect(info?.kind).toBe("part");
+    expect(info?.name).toBe("Body");
+    expect(info?.parent).toBe("root");
+    expect(info?.z_order).toBe(3);
+
+    // A selection outlives the node it names, so this is a panel with nothing
+    // to draw rather than a failed read.
+    expect(session.nodeInfo("root/part-9")).toBeUndefined();
     expect(backend.sent).toHaveLength(0);
   });
 

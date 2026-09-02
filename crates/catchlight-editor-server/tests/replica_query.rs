@@ -13,8 +13,8 @@ use std::io::Cursor;
 
 use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_editor_protocol::{
-    Command, CommandKind, ErrorCode, NodeId, NodeKindArg, ParamId, Presence, Reply, Request,
-    ResponseBody, SeamAddr, SeamId, SessionId, SlotId, COMMAND_KINDS,
+    Command, CommandKind, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId, Presence, Reply,
+    Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotId, COMMAND_KINDS,
 };
 use catchlight_editor_server::{replica_query, replica_reply, Editor};
 
@@ -251,6 +251,10 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
     vec![
         Command::Check { session },
         Command::NodeTree { session },
+        Command::NodeInfo {
+            session,
+            node: node.clone(),
+        },
         Command::TextureList { session },
         Command::ParamList { session },
         Command::Seams { session, node },
@@ -344,10 +348,167 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
         }
         other => panic!("expected UnfilledSlots, got {other:?}"),
     }
+    match ok(f.agree(Command::NodeInfo {
+        session,
+        node: f.body_part.clone(),
+    })) {
+        ResponseBody::NodeInfo { node } => {
+            assert_eq!(node.id, f.body_part);
+            assert_eq!(node.kind, "part");
+            assert_eq!(node.parent.as_ref(), Some(&f.group));
+            assert_eq!(node.name, "Body");
+        }
+        other => panic!("expected NodeInfo, got {other:?}"),
+    }
     // `check` reads the same model, warnings and all.
     match ok(f.agree(Command::Check { session })) {
         ResponseBody::Warnings { .. } => {}
         other => panic!("expected Warnings, got {other:?}"),
+    }
+}
+
+/// What an inspector shows: every value a `node_set` authored, read back under
+/// the name that authored it, plus the kind and parent a patch cannot set.
+#[test]
+fn node_info_reads_back_what_a_node_set_wrote() {
+    let f = Fixture::build();
+    let session = f.session;
+    let texture = match ok(f.agree(Command::TextureList { session })) {
+        ResponseBody::Textures { textures } => textures[0].id.clone(),
+        other => panic!("expected Textures, got {other:?}"),
+    };
+
+    f.step(Command::NodeSet {
+        session,
+        node: f.body_part.clone(),
+        patch: NodePatch {
+            name: Some("Torso skin".into()),
+            translate: Some([1.0, -2.0, 3.0]),
+            rotate: Some([0.0, 0.0, 0.5]),
+            scale: Some([2.0, 0.5]),
+            z_order: Some(4.0),
+            opacity: Some(0.25),
+            enabled: Some(false),
+            lock_to_root: Some(true),
+            blend_mode: Some("Multiply".into()),
+            tint: Some([0.1, 0.2, 0.3]),
+            screen_tint: Some([0.4, 0.5, 0.6]),
+            mask_threshold: Some(0.75),
+            ..NodePatch::default()
+        },
+    });
+
+    let node = match ok(f.agree(Command::NodeInfo {
+        session,
+        node: f.body_part.clone(),
+    })) {
+        ResponseBody::NodeInfo { node } => node,
+        other => panic!("expected NodeInfo, got {other:?}"),
+    };
+
+    assert_eq!(node.id, f.body_part);
+    assert_eq!(node.kind, "part");
+    assert_eq!(node.parent.as_ref(), Some(&f.group));
+    assert_eq!(node.name, "Torso skin");
+    assert_eq!(node.translate, [1.0, -2.0, 3.0]);
+    assert_eq!(node.rotate, [0.0, 0.0, 0.5]);
+    assert_eq!(node.scale, [2.0, 0.5]);
+    assert_eq!(node.z_order, 4.0);
+    assert!(!node.enabled);
+    assert!(node.lock_to_root);
+    assert_eq!(node.opacity, Some(0.25));
+    assert_eq!(node.blend_mode.as_deref(), Some("Multiply"));
+    assert_eq!(node.tint, Some([0.1, 0.2, 0.3]));
+    assert_eq!(node.screen_tint, Some([0.4, 0.5, 0.6]));
+    assert_eq!(node.mask_threshold, Some(0.75));
+    // The part draws the fixture's texture, and carries no mesh-group or
+    // composite field to report.
+    assert_eq!(node.texture, Some(texture));
+    assert_eq!(node.propagate_meshgroup, None);
+    assert_eq!(node.mg_dynamic, None);
+    assert_eq!(node.mg_translate_children, None);
+
+    // A group is drawn by nothing, so the colour half is absent rather than
+    // reported at a default a patch would then write back.
+    let group = match ok(f.agree(Command::NodeInfo {
+        session,
+        node: f.group.clone(),
+    })) {
+        ResponseBody::NodeInfo { node } => node,
+        other => panic!("expected NodeInfo, got {other:?}"),
+    };
+    assert_eq!(group.kind, "group");
+    assert_eq!(group.opacity, None);
+    assert_eq!(group.blend_mode, None);
+    assert_eq!(group.tint, None);
+    assert_eq!(group.texture, None);
+    assert_eq!(group.mask_threshold, None);
+}
+
+/// The kind-specific halves the other kinds carry, so each one is read from
+/// the node that actually has it.
+#[test]
+fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
+    let f = Fixture::build();
+    let session = f.session;
+
+    let composite = f.node(Command::NodeAdd {
+        session,
+        parent: f.group.clone(),
+        kind: NodeKindArg::Composite,
+        name: Some("Face".into()),
+    });
+    f.step(Command::NodeSet {
+        session,
+        node: composite.clone(),
+        patch: NodePatch {
+            propagate_meshgroup: Some(true),
+            ..NodePatch::default()
+        },
+    });
+    let mesh_group = f.node(Command::NodeAdd {
+        session,
+        parent: f.group.clone(),
+        kind: NodeKindArg::MeshGroup,
+        name: Some("Cloth".into()),
+    });
+    f.step(Command::NodeSet {
+        session,
+        node: mesh_group.clone(),
+        patch: NodePatch {
+            mg_dynamic: Some(true),
+            mg_translate_children: Some(true),
+            ..NodePatch::default()
+        },
+    });
+
+    match ok(f.agree(Command::NodeInfo {
+        session,
+        node: composite,
+    })) {
+        ResponseBody::NodeInfo { node } => {
+            assert_eq!(node.kind, "composite");
+            assert_eq!(node.propagate_meshgroup, Some(true));
+            assert_eq!(node.opacity, Some(1.0), "a composite is drawn");
+            assert_eq!(node.texture, None, "and never carries one");
+            assert_eq!(node.mg_dynamic, None);
+        }
+        other => panic!("expected NodeInfo, got {other:?}"),
+    }
+    match ok(f.agree(Command::NodeInfo {
+        session,
+        node: mesh_group,
+    })) {
+        ResponseBody::NodeInfo { node } => {
+            assert_eq!(node.kind, "mesh_group");
+            assert_eq!(node.mg_dynamic, Some(true));
+            assert_eq!(node.mg_translate_children, Some(true));
+            // A mesh group is never drawn, so it has no colour to show.
+            assert_eq!(node.opacity, None);
+            assert_eq!(node.blend_mode, None);
+            assert_eq!(node.propagate_meshgroup, None);
+        }
+        other => panic!("expected NodeInfo, got {other:?}"),
     }
 }
 
@@ -364,6 +525,13 @@ fn a_replica_refuses_a_bad_read_the_way_the_editor_does() {
         other => panic!("expected Err, got {other:?}"),
     }
     match f.agree(Command::Seams {
+        session: f.session,
+        node: NodeId::new("nobody").unwrap(),
+    }) {
+        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::NoNode),
+        other => panic!("expected Err, got {other:?}"),
+    }
+    match f.agree(Command::NodeInfo {
         session: f.session,
         node: NodeId::new("nobody").unwrap(),
     }) {

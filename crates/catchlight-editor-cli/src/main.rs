@@ -168,6 +168,9 @@ enum RenameCmd {
 enum NodeCmd {
     /// Print the node tree (Ids and names).
     Tree,
+    /// Print one node in full: everything `node set` can change, plus its
+    /// kind and parent.
+    Info { node: NodeId },
     /// Add a child node.
     Add {
         #[arg(long)]
@@ -1208,6 +1211,10 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
     let session = resolve_session(cli)?;
     Ok(match action {
         NodeCmd::Tree => Command::NodeTree { session },
+        NodeCmd::Info { node } => Command::NodeInfo {
+            session,
+            node: node.clone(),
+        },
         NodeCmd::Add { parent, kind, name } => Command::NodeAdd {
             session,
             parent: parent.clone(),
@@ -1489,6 +1496,7 @@ fn print_body(body: &ResponseBody) {
             }
         }
         ResponseBody::Tree { root } => print_tree(root, 0),
+        ResponseBody::NodeInfo { node } => print_node_info(node),
         ResponseBody::Status { status } => println!(
             "{}{}  nodes={} params={} textures={} rev={}",
             status.title,
@@ -1602,6 +1610,60 @@ fn print_body(body: &ResponseBody) {
 fn print_dropped(dropped: &[TexId]) {
     for t in dropped {
         println!("dropped texture {t}");
+    }
+}
+
+/// One node, a field per line, each under the name `node set` takes — so a
+/// value read here is a value that can be written straight back.
+///
+/// A field this node's kind does not carry is not printed: the reply leaves it
+/// out rather than reporting a default nothing would accept.
+fn print_node_info(node: &NodeInfo) {
+    println!(
+        "{} [{}] {} parent={}",
+        node.id,
+        node.kind,
+        node.name,
+        node.parent
+            .as_ref()
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    let [tx, ty, tz] = node.translate;
+    let [rx, ry, rz] = node.rotate;
+    let [sx, sy] = node.scale;
+    println!("  translate {tx},{ty},{tz}");
+    println!("  rotate {rx},{ry},{rz}");
+    println!("  scale {sx},{sy}");
+    println!("  z-order {}", node.z_order);
+    println!("  enabled {}", node.enabled);
+    println!("  lock-to-root {}", node.lock_to_root);
+    if let Some(opacity) = node.opacity {
+        println!("  opacity {opacity}");
+    }
+    if let Some(mode) = &node.blend_mode {
+        println!("  blend-mode {mode}");
+    }
+    if let Some([r, g, b]) = node.tint {
+        println!("  tint {r},{g},{b}");
+    }
+    if let Some([r, g, b]) = node.screen_tint {
+        println!("  screen-tint {r},{g},{b}");
+    }
+    if let Some(threshold) = node.mask_threshold {
+        println!("  mask-threshold {threshold}");
+    }
+    if let Some(texture) = &node.texture {
+        println!("  texture {texture}");
+    }
+    if let Some(v) = node.propagate_meshgroup {
+        println!("  propagate-meshgroup {v}");
+    }
+    if let Some(v) = node.mg_dynamic {
+        println!("  mg-dynamic {v}");
+    }
+    if let Some(v) = node.mg_translate_children {
+        println!("  mg-translate-children {v}");
     }
 }
 

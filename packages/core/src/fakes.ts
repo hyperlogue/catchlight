@@ -18,6 +18,7 @@
 import type {
   Command,
   Event,
+  NodeInfo,
   ParamInfo,
   ResponseBody,
   SessionInfo,
@@ -320,6 +321,18 @@ export class FakeReplica implements WasmReplica {
           rev: this.#rev,
           body: { result: "textures", textures: doc.textures },
         });
+      case "node_info": {
+        const node = nodeInfo(doc.root, request.node);
+        if (!node) {
+          return JSON.stringify({
+            reply: "err",
+            id,
+            code: "no_node",
+            message: `no node ${request.node}`,
+          });
+        }
+        return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "node_info", node } });
+      }
       default:
         return JSON.stringify({
           reply: "err",
@@ -387,6 +400,36 @@ export class FakeReplica implements WasmReplica {
   free(): void {
     this.freed = true;
   }
+}
+
+/**
+ * The tree row for `node`, as the `node_info` reply carries it.
+ *
+ * A fake document holds a tree and nothing else, so the transform is the rest
+ * pose and the kind-specific fields are absent. What these tests read is the
+ * plumbing — the right node, its parent, and a refusal for one that is gone;
+ * the real values are the Rust suite's business.
+ */
+function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | undefined {
+  if (tree.id === node) {
+    return {
+      id: tree.id,
+      kind: tree.kind,
+      parent: parent ?? null,
+      name: tree.name,
+      translate: [0, 0, 0],
+      rotate: [0, 0, 0],
+      scale: [1, 1],
+      z_order: tree.z_order,
+      enabled: tree.enabled,
+      lock_to_root: false,
+    };
+  }
+  for (const child of tree.children) {
+    const found = nodeInfo(child, node, tree.id);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 /** A renderer that counts what it was told, and draws nothing. */
