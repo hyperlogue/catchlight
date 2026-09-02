@@ -448,6 +448,27 @@ impl SimplePhysicsData {
         self.anchor_initialized = true;
     }
 
+    /// Whether the driver is standing exactly where [`Self::settle_to_rest`]
+    /// would put it: the bob at `anchor + (0, length)` and both velocities
+    /// zero. The inverse of "this driver is still moving", which is what a
+    /// caller watches to know a frame changed nothing.
+    ///
+    /// `eps_sq` bounds the squared displacement from rest *and* each squared
+    /// velocity, so one number covers three quantities in three different
+    /// units. That is deliberate: the caller is `Puppet` and the number is its
+    /// `SETTLE_EPS_SQ`, the same epsilon `settle_physics` calls an anchor
+    /// converged at, so "settled" means one thing across the crate rather than
+    /// two that nearly agree.
+    ///
+    /// A driver that has never seen a world anchor is *not* at rest: its first
+    /// tick snaps the bob under the anchor, which is a move.
+    pub fn is_at_rest(&self, eps_sq: f32) -> bool {
+        self.anchor_initialized
+            && (self.bob - (self.anchor + Vec2::new(0.0, self.length))).length_squared() <= eps_sq
+            && self.spring_vel.length_squared() <= eps_sq
+            && self.d_angle * self.d_angle <= eps_sq
+    }
+
     fn step(&mut self, anchor_world: Vec2, dt: f32) {
         match self.kind {
             PendulumKind::RigidPendulum => {
