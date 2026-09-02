@@ -100,7 +100,8 @@ use catchlight_core::{
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Pose;
 use catchlight_editor_core::{
-    Manifest, ManifestError, ModelManifestExt as _, ModelMeshExt as _, TextureData,
+    contour_automesh, grid_automesh, AlphaMask, ContourKnobs, Manifest, ManifestError, MeshError,
+    ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
 };
 
 /// Per-session undo history depth.
@@ -140,6 +141,16 @@ pub enum EditorError {
     NothingToRedo,
     #[error("session has no file; pass a path to save")]
     NoSavePath,
+    /// The command needs a part and was given something else.
+    #[error("node {0} is not a part")]
+    NotAPart(NodeId),
+    /// The part draws no texture, so there is no alpha to trace.
+    #[error("part {0} draws no texture")]
+    NoAlbedo(NodeId),
+    /// Building the mesh itself failed — an empty alpha mask, a triangulation
+    /// the solver refused.
+    #[error("mesh: {0}")]
+    Mesh(#[from] MeshError),
     #[error("edit: {0}")]
     Edit(#[from] ModelError),
     #[error("manifest: {0}")]
@@ -172,6 +183,14 @@ impl EditorError {
             Self::BadTarget(_) => ErrorCode::BadTarget,
             Self::BadRequest(_) => ErrorCode::BadRequest,
             Self::UnknownWeld => ErrorCode::UnknownWeld,
+            // A node of the wrong kind is the same answer a bad binding
+            // target gets: the command parsed and does not fit what it names.
+            Self::NotAPart(_) => ErrorCode::BadTarget,
+            Self::NoAlbedo(_) => ErrorCode::NoTexture,
+            // Only the empty mask is worth branching on — a client answers it
+            // by offering a lower threshold. The rest is an ordinary refusal.
+            Self::Mesh(MeshError::NothingToMesh) => ErrorCode::NothingToMesh,
+            Self::Mesh(_) => ErrorCode::Edit,
             Self::NothingToUndo => ErrorCode::NothingToUndo,
             Self::NothingToRedo => ErrorCode::NothingToRedo,
             Self::NoSavePath => ErrorCode::NoSavePath,
@@ -1600,6 +1619,16 @@ impl Editor {
                 s.touch();
                 Ok(emptied_reply(node, emptied))
             }),
+            Command::MeshAuto {
+                session,
+                node,
+                mode,
+            } => self.edit_session(session, |s| {
+                let mesh = automesh(&s.model, &node, mode)?;
+                let emptied = s.model.set_mesh_with_refit(&node, mesh)?;
+                s.touch();
+                Ok(emptied_reply(node, emptied))
+            }),
             Command::MeshCopy { session, from, to } => self.edit_session(session, |s| {
                 let mesh = match s.model.node_mesh(&from) {
                     Some(mesh) => mesh.clone(),
@@ -2020,6 +2049,82 @@ fn build_mesh(
         indices,
         origin,
     })
+}
+
+/// The grid `mesh_auto` lays down when the request names no size — the same
+/// one the desktop mesh editor opens on.
+const AUTOMESH_GRID: (u32, u32) = (6, 6);
+
+/// Derive `node`'s mesh from the alpha of the texture it draws.
+///
+/// **The editor traces, because the editor holds the bytes.** A client that
+/// did this itself would decode the image, guess the UV mapping, and send back
+/// a mesh — and any of the three could disagree with what the editor thinks
+/// the part looks like.
+///
+/// **The UV mapping comes from the mesh being replaced, when there is one to
+/// read.** `UvMap::fit` recovers where the texture actually sits relative to
+/// the node's origin, which is not the centered convention for a model
+/// imported with cropped textures; falling back to the texture's own size is
+/// right only for a part that has nothing to fit. Getting this wrong moves the
+/// art rather than failing, so the fit comes first — which is also what the
+/// desktop mesh editor does, so both produce the same mesh.
+fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, EditorError> {
+    let Some(ModelNodeKind::Part(part)) = model.node(node).map(|n| &n.kind) else {
+        return match model.node(node) {
+            Some(_) => Err(EditorError::NotAPart(node.clone())),
+            None => Err(EditorError::NoNode(node.clone())),
+        };
+    };
+    let albedo = part
+        .albedo()
+        .ok_or_else(|| EditorError::NoAlbedo(node.clone()))?;
+    let texture = model
+        .texture(albedo)
+        .ok_or_else(|| EditorError::NoTexture(albedo.clone()))?;
+    let alpha = AlphaMask::decode(&texture.data)
+        .ok_or_else(|| EditorError::Image(format!("texture {albedo} does not decode")))?;
+
+    let mesh = part.mesh();
+    let uv_map = UvMap::fit(&mesh.verts, &mesh.uvs)
+        .unwrap_or_else(|| UvMap::from_texture_size(alpha.width as f32, alpha.height as f32));
+    let origin = mesh.origin;
+
+    let working = match mode {
+        AutoMesh::Contour {
+            threshold,
+            simplify,
+            margin,
+            spacing,
+        } => {
+            let d = ContourKnobs::default();
+            let knobs = ContourKnobs {
+                threshold: threshold.unwrap_or(d.threshold),
+                simplify: simplify.unwrap_or(d.simplify),
+                margin: margin.unwrap_or(d.margin),
+                spacing: spacing.unwrap_or(d.spacing),
+            };
+            contour_automesh(&alpha, &knobs, &uv_map, origin)?
+        }
+        AutoMesh::Grid {
+            threshold,
+            cols,
+            rows,
+        } => grid_automesh(
+            &alpha,
+            threshold.unwrap_or_else(|| ContourKnobs::default().threshold),
+            cols.unwrap_or(AUTOMESH_GRID.0),
+            rows.unwrap_or(AUTOMESH_GRID.1),
+            &uv_map,
+            origin,
+        )?,
+    };
+    // A trace that found no contour at all leaves nothing to triangulate, and
+    // an empty mesh would silently blank the part.
+    if working.vertex_count() < 3 {
+        return Err(MeshError::NothingToMesh.into());
+    }
+    Ok(working.to_mesh(&uv_map, Some(&alpha))?)
 }
 
 /// Re-authoring a mesh empties every slot on the part: which ones is what a

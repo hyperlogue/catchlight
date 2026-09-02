@@ -282,6 +282,33 @@ enum MeshCmd {
         #[arg(long)]
         from: NodeId,
     },
+    /// Derive a part's mesh from its own texture's alpha and apply it (same
+    /// re-fit, same emptying). Contour by default; every knob left off is the
+    /// editor's own.
+    Auto {
+        node: NodeId,
+        /// Lay a regular grid over the solid texels instead of tracing them.
+        #[arg(long, conflicts_with_all = ["simplify", "margin", "spacing"])]
+        grid: bool,
+        /// Alpha strictly above this counts as solid.
+        #[arg(long)]
+        threshold: Option<u8>,
+        /// Contour: Douglas-Peucker tolerance in texels; higher is coarser.
+        #[arg(long)]
+        simplify: Option<f32>,
+        /// Contour: texels of outward dilation before tracing.
+        #[arg(long)]
+        margin: Option<u32>,
+        /// Contour: interior fill-point spacing in texels; 0 is boundary only.
+        #[arg(long)]
+        spacing: Option<u32>,
+        /// Grid: columns of cells.
+        #[arg(long, requires = "grid")]
+        cols: Option<u32>,
+        /// Grid: rows of cells.
+        #[arg(long, requires = "grid")]
+        rows: Option<u32>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1093,6 +1120,33 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     from: from.clone(),
                     to: node.clone(),
+                },
+                MeshCmd::Auto {
+                    node,
+                    grid,
+                    threshold,
+                    simplify,
+                    margin,
+                    spacing,
+                    cols,
+                    rows,
+                } => Command::MeshAuto {
+                    session,
+                    node: node.clone(),
+                    mode: if *grid {
+                        AutoMesh::Grid {
+                            threshold: *threshold,
+                            cols: *cols,
+                            rows: *rows,
+                        }
+                    } else {
+                        AutoMesh::Contour {
+                            threshold: *threshold,
+                            simplify: *simplify,
+                            margin: *margin,
+                            spacing: *spacing,
+                        }
+                    },
                 },
             }
         }

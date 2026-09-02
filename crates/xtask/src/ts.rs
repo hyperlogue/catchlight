@@ -108,6 +108,7 @@ fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::Command,
         proto::NodeKindArg,
         proto::NodePatch,
+        proto::AutoMesh,
         proto::Rename,
         proto::BindingParams,
         proto::BindingKeyEntry,
