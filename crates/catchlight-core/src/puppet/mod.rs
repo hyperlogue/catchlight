@@ -27,8 +27,9 @@
 //!   records [`Model::identity`] and `debug_assert!`s it on every call that
 //!   takes a `&Model`: a puppet animates the model it was built from, and two
 //!   models sitting at the same generation are otherwise indistinguishable.
-//! - **A rebake carries the pose and the drivers, by Id.** Param values,
-//!   driver contributions and every `SimplePhysics` runtime field are saved
+//! - **A rebake carries the pose, the drivers and the scratch transforms, by
+//!   Id.** Param values, driver contributions, every `SimplePhysics` runtime
+//!   field and every [`ScratchTransform`] are saved
 //!   against `ParamId` / `NodeId`, the arena is rebuilt, and they are put back
 //!   where those Ids now live. Anything keyed by slot — every generation memo
 //!   — is dropped, because the slots moved. A param or node the edit removed
@@ -39,6 +40,26 @@
 //!   node and every binding, so both are resolved to a `NodeIdx` / param slot
 //!   once at bake and the loops index dense `Vec`s. Ids reappear only at the
 //!   API edge, through `node_idx` / `node_id` and the pose methods.
+//! - **Scratch state is the writer's, and only the writer ends it.** A
+//!   scratch deform ([`Puppet::set_scratch_deform`]) and a scratch transform
+//!   ([`Puppet::set_scratch_transform`]) are the two halves of an edit in
+//!   progress: the fold re-derives everything else from the model each frame
+//!   and would swallow a drag, so these are re-applied instead — the scratch
+//!   transform right after the bindings fold, before the transform walk, so
+//!   the frame moves the node's dependents too. **A scratch transform is
+//!   absolute**, per field, `None` meaning "keep what the fold produced": the
+//!   numbers a client previews are the numbers it commits. The two halves part
+//!   company at a rebake — a deform is sized by the mesh the bake resolved and
+//!   dies with it, while a transform is five scalars keyed by `NodeId` and
+//!   survives, because the commit that ends a drag *is* a model edit and the
+//!   preview has to outlive it.
+//! - **A tick reports self-driven motion only.** [`Puppet::tick`] returns
+//!   [`Motion`]: a driver away from the rest pose `settle_physics` places
+//!   (`SimplePhysicsData::is_at_rest` at `SETTLE_EPS_SQ`, the same epsilon
+//!   `settle_physics` converges on), or an animation lane that wrote a param.
+//!   A pose, scratch or model change is deliberately not motion — the caller
+//!   made it and already knows to redraw. `Motion` is not `#[must_use]`: most
+//!   callers tick for the frame, not for the answer.
 //! - **`settle_physics` before the first render.** It iterates to the fixed
 //!   point of "anchor → param value → transforms → anchor" so a freshly loaded
 //!   model renders settled instead of swinging into place, and it leaves the
@@ -164,6 +185,64 @@ impl NodeEdits<'_> {
     }
 }
 
+/// A live edit to one node's properties, held by the puppet and re-applied by
+/// every fold — the transform half of an edit in progress, exactly as a
+/// scratch deform is its per-vertex half.
+///
+/// It reaches the same three properties [`NodeEdits`] does, because they are
+/// the three a gesture drags: the local transform, the z order and the
+/// opacity. Every field is optional and `None` means *leave what the fold
+/// produced*, so a drag that only translates does not also pin the rotation a
+/// binding is animating.
+///
+/// **The values are absolute, not deltas.** A field that is `Some` replaces
+/// the node's evaluated property outright, and the number a client previews is
+/// therefore the number it commits — the `node_set` command's patch carries
+/// `translate` / `rotate` / `scale` / `z_order` / `opacity`, optional and
+/// absolute in exactly this shape, so a drag ends by sending back the fields
+/// it has been showing. A delta would have to be added to an authored value
+/// the client would then have to re-derive, and the two could disagree.
+///
+/// The cost of absolute is that a `Some` field also overrides what the
+/// bindings folded into it. That is the right trade for a drag: while the
+/// pointer is down the node goes exactly where the pointer says, and the
+/// binding's contribution comes back the moment the field goes to `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScratchTransform {
+    /// Local translation, in the parent's frame.
+    pub translation: Option<Vec3>,
+    /// Local rotation as Euler XYZ radians, the form [`crate::Transform`]
+    /// holds.
+    pub rotation: Option<Vec3>,
+    /// Local scale. Z is not scaled; a node's transform carries two axes.
+    pub scale: Option<Vec2>,
+    /// Draw order within the parent.
+    pub z_order: Option<f32>,
+    /// Ignored on nodes that carry no opacity — only parts and composites do.
+    pub opacity: Option<f32>,
+}
+
+/// What is still moving after a [`Puppet::tick`], so a viewport can stay dirty
+/// while the puppet animates itself and idle when it does not.
+///
+/// Only self-driven motion counts. A pose change, a scratch edit or a model
+/// edit is not motion: the caller made it and already knows to redraw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Motion {
+    /// A `SimplePhysics` driver is away from its rest pose, so the next tick
+    /// will move it even if nothing else changes.
+    pub physics: bool,
+    /// A playing animation wrote a param this tick.
+    pub animation: bool,
+}
+
+impl Motion {
+    /// Whether anything at all is moving.
+    pub fn any(self) -> bool {
+        self.physics || self.animation
+    }
+}
+
 /// Where a pose puts one param on its own key positions.
 #[derive(Debug, Clone, Copy)]
 struct Located {
@@ -239,6 +318,11 @@ pub struct Puppet {
     animations: Vec<ClmAnimation>,
     play_state: Option<AnimationPlayState>,
 
+    /// Live node edits, re-applied by every fold. Sparse rather than one entry
+    /// per node: a drag holds one or two, and every fold pays for a lookup per
+    /// entry, not per node.
+    scratch_transforms: HashMap<NodeIdx, ScratchTransform>,
+
     /// Reused by the fold: where each param slot sits on its key positions.
     located: Vec<Located>,
 }
@@ -271,6 +355,7 @@ impl Puppet {
             last_anchor_pose_generation: None,
             animations: Vec::new(),
             play_state: None,
+            scratch_transforms: HashMap::new(),
             located: Vec::new(),
         };
         puppet.install(bake::bake(model));
@@ -338,10 +423,21 @@ impl Puppet {
                 }
             })
             .collect();
+        let scratch: Vec<(NodeId, ScratchTransform)> = self
+            .scratch_transforms
+            .iter()
+            .filter_map(|(idx, edit)| Some((self.id_of_node.get(idx.0 as usize)?.clone(), *edit)))
+            .collect();
 
         self.install(bake::bake(model));
         self.baked_generation = model.generation();
 
+        for (id, edit) in scratch {
+            let Some(&idx) = self.node_of_id.get(&id) else {
+                continue;
+            };
+            self.scratch_transforms.insert(idx, edit);
+        }
         for (id, value) in pose {
             self.set_param_value(&id, value);
         }
@@ -394,6 +490,9 @@ impl Puppet {
         self.physics_targets = physics_targets;
         self.param_values_overflow.clear();
         self.param_contributions.clear();
+        // Keyed by slot, and the slots have moved. `sync` re-keys the entries
+        // it saved by Id and puts them back; a bare `install` has none.
+        self.scratch_transforms.clear();
         self.transforms = GlobalTransforms::new();
         self.param_generation = self.param_generation.wrapping_add(1);
         self.last_tick_folded_param_generation = None;
@@ -547,6 +646,115 @@ impl Puppet {
         true
     }
 
+    // ---- scratch transforms ------------------------------------------------
+
+    /// Write the puppet's scratch transform for one node — an edit in
+    /// progress, shown live and never part of the model.
+    ///
+    /// It outlives the folds that follow it exactly as a scratch deform does:
+    /// every [`Self::tick`] re-applies it, at the point in the frame where the
+    /// bindings have folded and nothing downstream has run yet, so the
+    /// transform walk, the `translate_children` filter, mesh-group
+    /// propagation, welds and the deform combine all see the previewed pose
+    /// and the node's dependents move with it. A client writes it once per
+    /// pointer move rather than once per frame.
+    ///
+    /// See [`ScratchTransform`] for what the fields mean and why they are
+    /// absolute. Replaces any scratch transform already on the node; `false`
+    /// when the arena has no such node.
+    ///
+    /// It ends at [`Self::clear_scratch_transform`] or
+    /// [`Self::clear_all_scratch`] — and **only** there. Unlike a scratch
+    /// deform, it survives the rebake a model edit triggers, because the
+    /// commit that ends a drag *is* a model edit and the preview has to
+    /// outlive it or the node flickers back for one frame. A node the edit
+    /// deleted takes its scratch with it.
+    pub fn set_scratch_transform(&mut self, id: NodeIdx, edit: ScratchTransform) -> bool {
+        if self.arena.get(id).is_none() {
+            return false;
+        }
+        self.scratch_transforms.insert(id, edit);
+        self.invalidate_fold();
+        true
+    }
+
+    /// Drop one node's scratch transform. `false` when it had none.
+    pub fn clear_scratch_transform(&mut self, id: NodeIdx) -> bool {
+        if self.scratch_transforms.remove(&id).is_none() {
+            return false;
+        }
+        self.invalidate_fold();
+        true
+    }
+
+    /// End every edit in progress: every scratch transform and every scratch
+    /// deform. What a client calls once when a gesture is committed or
+    /// abandoned, instead of remembering which nodes it touched.
+    pub fn clear_all_scratch(&mut self) {
+        self.scratch_transforms.clear();
+        for i in 0..self.arena.deform_node_ids.len() {
+            let id = self.arena.deform_node_ids[i];
+            self.clear_scratch_deform(id);
+        }
+        self.invalidate_fold();
+    }
+
+    /// The scratch transform standing on a node, if any.
+    pub fn scratch_transform(&self, id: NodeIdx) -> Option<&ScratchTransform> {
+        self.scratch_transforms.get(&id)
+    }
+
+    /// Force the next tick to fold. The fold is memoized on the pose's
+    /// generation, and a scratch edit moves neither the pose nor the model, so
+    /// without this the next tick would skip the fold that applies it.
+    fn invalidate_fold(&mut self) {
+        self.last_tick_folded_param_generation = None;
+        self.last_tick_mesh_group_generation = None;
+    }
+
+    /// Write every scratch transform over what the fold produced. Runs after
+    /// the bindings and before anything that reads a transform.
+    fn apply_scratch_transforms(&mut self) {
+        if self.scratch_transforms.is_empty() {
+            return;
+        }
+        // Moved out so the writes below can take `&mut Arena`; put back before
+        // returning, and nothing here can early-return.
+        let scratch = std::mem::take(&mut self.scratch_transforms);
+        for (&id, edit) in &scratch {
+            let Some(node) = self.arena.get_mut(id) else {
+                continue;
+            };
+            let mut moved = false;
+            if let Some(t) = edit.translation {
+                node.transform.translation = t;
+                moved = true;
+            }
+            if let Some(r) = edit.rotation {
+                node.transform.rotation = r;
+                moved = true;
+            }
+            if let Some(s) = edit.scale {
+                node.transform.scale = s;
+                moved = true;
+            }
+            if let Some(z) = edit.z_order {
+                node.z_order = z;
+            }
+            if let Some(o) = edit.opacity {
+                match &mut node.kind {
+                    NodeKind::Part(part) => part.opacity = o,
+                    NodeKind::Composite(composite) => composite.opacity = o,
+                    _ => {}
+                }
+            }
+            if moved {
+                self.arena.mark_transform_dirty(id);
+            }
+        }
+        self.scratch_transforms = scratch;
+    }
+
     /// Re-evaluate the current frame with a live edit to node properties on
     /// top of the pose — the transform half of an edit in progress, shown
     /// live and never part of the model, exactly as a scratch deform is its
@@ -564,11 +772,14 @@ impl Puppet {
     ///
     /// The edit lives until the next fold. [`Self::tick`] starts from the
     /// model's authored values, so a preview never accumulates and nothing has
-    /// to undo it.
+    /// to undo it — which is also why a caller whose puppet ticks every frame
+    /// wants [`Self::set_scratch_transform`] instead. The closure runs *after*
+    /// the scratch transforms, so it wins over them on any field they share.
     pub fn refold_with_node_edits(&mut self, edit: impl FnOnce(&mut NodeEdits<'_>)) {
         let _span = tracing::trace_span!("refold_with_node_edits").entered();
         self.reset_frame();
         self.apply_params();
+        self.apply_scratch_transforms();
         edit(&mut NodeEdits {
             arena: &mut self.arena,
         });
@@ -1121,18 +1332,24 @@ impl Puppet {
     /// Evaluate the next frame: drivers step, the pose is folded through the
     /// bindings, and transforms and deforms are resolved. Rebakes first when
     /// `model` has moved since the last one.
-    pub fn tick(&mut self, model: &Model, dt: f32) {
-        self.tick_with_root(model, Mat4::IDENTITY, dt);
+    ///
+    /// Returns what is still [`Motion`] afterwards, so a viewport knows
+    /// whether the next frame would differ from this one.
+    pub fn tick(&mut self, model: &Model, dt: f32) -> Motion {
+        self.tick_with_root(model, Mat4::IDENTITY, dt)
     }
 
     /// [`Self::tick`] with `root` folded into the top-level transform, so the
     /// puppet evaluates at an arbitrary world placement. Drivers still sample
     /// the model-local pose, independent of `root`.
-    pub fn tick_with_root(&mut self, model: &Model, root: Mat4, dt: f32) {
+    pub fn tick_with_root(&mut self, model: &Model, root: Mat4, dt: f32) -> Motion {
         let _span = tracing::trace_span!("tick").entered();
         self.sync(model);
         let mut out = std::mem::take(&mut self.transforms);
-        self.tick_animations(dt);
+        let mut motion = Motion {
+            animation: self.tick_animations(dt),
+            physics: false,
+        };
 
         let has_physics = self.physics_enabled && self.has_simple_physics();
         let mut pre_pass_ran = false;
@@ -1159,6 +1376,7 @@ impl Puppet {
             let local = std::mem::take(&mut self.arena.physics_transforms);
             self.tick_physics(&local, dt);
             self.arena.physics_transforms = local;
+            motion.physics = self.drivers_moving();
         }
 
         let params_changed = self.last_tick_folded_param_generation != Some(self.param_generation);
@@ -1169,11 +1387,15 @@ impl Puppet {
         // render the unposed puppet.
         let needs_final_apply = params_changed || pre_pass_ran;
         let has_mesh_group_work = !self.arena.mesh_group_node_ids.is_empty()
-            && !self.param_mesh_group_relevant.is_empty()
+            // A scratch transform moves a node no param names, so the
+            // param-relevance cache cannot see it; while one stands, the
+            // mesh-group passes run on their own account.
+            && (!self.param_mesh_group_relevant.is_empty() || !self.scratch_transforms.is_empty())
             && (needs_final_apply || mesh_group_generation_changed);
         if needs_final_apply {
             self.reset_frame();
             self.apply_params();
+            self.apply_scratch_transforms();
             // Transforms BEFORE the propagation, so a mesh group and its
             // children sit where this frame's pose put them.
             self.arena.compute_transforms_with_root(&mut out, root);
@@ -1199,6 +1421,18 @@ impl Puppet {
             self.last_anchor_pose_generation = Some(anchor_generation);
         }
         self.transforms = out;
+        motion
+    }
+
+    /// Whether any driver is away from the rest pose `settle_physics` puts it
+    /// in, and so will move again on the next tick.
+    fn drivers_moving(&self) -> bool {
+        self.arena.physics_node_ids.iter().any(|&id| {
+            matches!(
+                self.arena.get(id).map(|n| &n.kind),
+                Some(NodeKind::SimplePhysics(p)) if !p.is_at_rest(SETTLE_EPS_SQ)
+            )
+        })
     }
 
     /// Restore the evaluated frame to the model's authored values and clear
@@ -1294,6 +1528,9 @@ impl Puppet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One frame at 60 Hz.
+    const DT: f32 = 1.0 / 60.0;
 
     /// Two models that have not been edited since they were built sit at the
     /// same generation — every loader hands one back at 0 — so the generation
@@ -1496,14 +1733,165 @@ mod tests {
 
         assert!(puppet.play_animation("Blink"));
         assert_eq!(puppet.playing_animation(), Some("Blink"));
-        puppet.tick(&model, 3.0 / 60.0);
+        let motion = puppet.tick(&model, 3.0 / 60.0);
         assert_eq!(
             puppet.param_value(&param),
             Some(1.0),
             "the lane drove the param it names"
         );
+        assert!(motion.animation, "a lane that wrote a param is motion");
+        assert!(!motion.physics, "this model has no drivers");
 
         puppet.stop_animation();
         assert_eq!(puppet.playing_animation(), None);
+        assert!(
+            !puppet.tick(&model, DT).any(),
+            "a stopped clip leaves nothing moving",
+        );
+    }
+
+    /// A scratch transform is the other half of an edit in progress: the fold
+    /// re-derives every node transform from the model, so a drag that is only
+    /// applied once is gone by the next frame. It has to outlive the fold,
+    /// move everything downstream of the node, and outlive the rebake the
+    /// drag's own commit triggers — and then end when, and only when, the
+    /// writer says so.
+    #[test]
+    fn a_scratch_transform_outlives_ticks_and_rebakes_and_dies_with_its_writer() {
+        use crate::id::SeededHex;
+        use crate::model::{ModelNode, ModelNodeKind};
+
+        let mut model = Model::new();
+        let mut hex = SeededHex::new(5);
+        let root = model.root().expect("a fresh model has one root").clone();
+        let parent = model
+            .add_node(
+                &root,
+                ModelNode::new("parent", ModelNodeKind::Group),
+                &mut hex,
+            )
+            .expect("add parent");
+        let child = model
+            .add_node(
+                &parent,
+                ModelNode::new("child", ModelNodeKind::Group),
+                &mut hex,
+            )
+            .expect("add child");
+
+        let mut puppet = Puppet::new(&model);
+        puppet.tick(&model, 0.0);
+        let parent_idx = puppet.node_idx(&parent).expect("parent baked");
+        let child_idx = puppet.node_idx(&child).expect("child baked");
+        let at_rest = puppet.transforms().get(child_idx).w_axis.x;
+
+        let drag = ScratchTransform {
+            translation: Some(Vec3::new(25.0, 0.0, 0.0)),
+            ..ScratchTransform::default()
+        };
+        assert!(puppet.set_scratch_transform(parent_idx, drag));
+        assert_eq!(puppet.scratch_transform(parent_idx), Some(&drag));
+
+        // Two ticks: the second is the one a memoized fold would skip.
+        for _ in 0..2 {
+            puppet.tick(&model, 0.016);
+            assert!(
+                (puppet.transforms().get(parent_idx).w_axis.x - 25.0).abs() < 1e-4,
+                "a tick must not swallow an edit in progress",
+            );
+            assert!(
+                (puppet.transforms().get(child_idx).w_axis.x - at_rest - 25.0).abs() < 1e-4,
+                "the child must follow its previewed parent",
+            );
+        }
+
+        // The commit that ends a drag is a model edit; the preview must not
+        // flicker away for the frame the rebake lands on.
+        model
+            .update_node(&child, |n| n.z_order = 1.0)
+            .expect("edit the model");
+        puppet.tick(&model, 0.0);
+        let parent_idx = puppet.node_idx(&parent).expect("parent still baked");
+        let child_idx = puppet.node_idx(&child).expect("child still baked");
+        assert!(
+            (puppet.transforms().get(child_idx).w_axis.x - at_rest - 25.0).abs() < 1e-4,
+            "a rebake re-keys the scratch by Id rather than dropping it",
+        );
+
+        // The writer's own clear ends it...
+        assert!(puppet.clear_scratch_transform(parent_idx));
+        assert!(!puppet.clear_scratch_transform(parent_idx), "already gone");
+        assert_eq!(puppet.scratch_transform(parent_idx), None);
+        puppet.tick(&model, 0.0);
+        assert!(
+            (puppet.transforms().get(child_idx).w_axis.x - at_rest).abs() < 1e-4,
+            "a cleared preview folds away",
+        );
+
+        // ...and so does clearing the gesture wholesale.
+        assert!(puppet.set_scratch_transform(parent_idx, drag));
+        puppet.clear_all_scratch();
+        assert_eq!(puppet.scratch_transform(parent_idx), None);
+        puppet.tick(&model, 0.0);
+        assert!(
+            (puppet.transforms().get(child_idx).w_axis.x - at_rest).abs() < 1e-4,
+            "clear_all_scratch ends every edit in progress",
+        );
+    }
+
+    /// A viewport redraws while the puppet moves itself and idles when it does
+    /// not, so a tick has to say which it is. A swinging driver is motion; the
+    /// rest pose `settle_physics` leaves behind is not.
+    #[test]
+    fn a_tick_reports_a_swinging_driver_and_stops_once_it_settles() {
+        use crate::formats::clm::ClmPhysics;
+        use crate::id::SeededHex;
+        use crate::model::{ModelNode, ModelNodeKind, ModelPhysics};
+        use crate::physics::PendulumKind;
+
+        let mut model = Model::new();
+        // The bake folds `pixels_per_meter * gravity` into every driver; 1 * 1
+        // leaves the node's own `gravity` as the effective one.
+        model.set_physics(ClmPhysics {
+            pixels_per_meter: 1.0,
+            gravity: 1.0,
+        });
+        let mut hex = SeededHex::new(7);
+        let root = model.root().expect("a fresh model has one root").clone();
+        let mut driver = ModelPhysics::new(PendulumKind::RigidPendulum);
+        driver.gravity = 981.0;
+        driver.length = 100.0;
+        driver.angle_damping = 0.5;
+        let node = model
+            .add_node(
+                &root,
+                ModelNode::new("driver", ModelNodeKind::SimplePhysics(driver)),
+                &mut hex,
+            )
+            .expect("add driver");
+
+        let mut puppet = Puppet::new(&model);
+        let idx = puppet.node_idx(&node).expect("the driver baked");
+
+        puppet.settle_physics(&model);
+        assert!(
+            !puppet.tick(&model, DT).any(),
+            "a driver at rest under a still anchor moves nothing",
+        );
+
+        assert!(puppet.place_driver(idx, Vec2::new(80.0, 60.0)), "displaced");
+        let swinging = puppet.tick(&model, DT);
+        assert!(swinging.physics, "a displaced pendulum is still swinging");
+        assert!(!swinging.animation, "nothing is playing");
+
+        // It keeps saying so while it swings, rather than only on the frame
+        // the displacement was written.
+        assert!(puppet.tick(&model, DT).physics);
+
+        puppet.settle_physics(&model);
+        assert!(
+            !puppet.tick(&model, DT).any(),
+            "settling ends the motion the displacement started",
+        );
     }
 }
