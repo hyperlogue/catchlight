@@ -1569,14 +1569,14 @@ impl<V> DenseMap<V> {
         }
     }
 
-    fn clear(&mut self) {
-        self.slots.clear();
+    /// Take the value at `index` out, leaving the slot empty. What a rebuild
+    /// moving a texture to a slot it did not previously occupy takes it with.
+    fn take(&mut self, index: usize) -> Option<V> {
+        self.slots.get_mut(index).and_then(Option::take)
     }
 
-    /// Drop every slot at or above `len`, keeping the ones below it. What a
-    /// rebuild that names fewer slots than the build before it releases.
-    fn truncate(&mut self, len: usize) {
-        self.slots.truncate(len);
+    fn clear(&mut self) {
+        self.slots.clear();
     }
 
     /// How many slots currently hold a value.
@@ -2519,22 +2519,37 @@ impl WgpuRenderer {
     }
 
     /// Release the GPU state a [`crate::RenderCache`] rebuild is about to
-    /// replace, leaving only what the new build will name.
+    /// replace, leaving only what the new build named again.
     ///
     /// Mesh slots and the whole deform atlas go: mesh ids are handed out
     /// densely from zero on every build, so a rebuild renames every one of
-    /// them and the atlas ranges reserved for the old ones are dead. Texture
-    /// slots at or above `textures` — the new build's texture count — go for
-    /// the same reason; the slots below it stay so `upload_texture`'s
-    /// re-upload memo can still skip a texture the edit did not touch, which
-    /// is what makes [`crate::PrepareOptions::memoize_textures`] worth
-    /// setting.
+    /// them and the atlas ranges reserved for the old ones are dead.
+    ///
+    /// `keep` is `(old slot, new slot)` for every texture the new build wants
+    /// and the last build already uploaded. Those are **moved** into their new
+    /// slots rather than freed; every other texture slot is dropped, so a
+    /// model that shrank strands nothing under a number the new build does not
+    /// address. Moving is the point: a texture removed from the middle of a
+    /// model shifts every later one down a slot, and a sweep that only
+    /// truncated would make each of those a re-decode and a re-upload of an
+    /// image the GPU already holds. A moved texture keeps the debug label its
+    /// first upload gave it, which is the one place a slot number here can go
+    /// stale.
     ///
     /// A rebuild runs from `prepare` or `refresh`, both outside a frame, so
     /// this never strands a recorded pass on a freed buffer.
-    pub(crate) fn release_for_rebuild(&mut self, textures: u32) {
+    pub(crate) fn release_for_rebuild(&mut self, keep: &[(u32, u32)]) {
         self.clear_meshes();
-        self.textures.truncate(textures as usize);
+        let mut moved: Vec<(u32, Texture)> = Vec::with_capacity(keep.len());
+        for &(from, to) in keep {
+            if let Some(texture) = self.textures.take(from as usize) {
+                moved.push((to, texture));
+            }
+        }
+        self.textures.clear();
+        for (to, texture) in moved {
+            self.textures.insert(to as usize, texture);
+        }
     }
 
     /// Everything [`Self::upload_texture`] would refuse, checked without
