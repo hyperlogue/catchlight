@@ -70,7 +70,7 @@ mod transport;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::{bind_http, serve_http, HttpOptions, HttpServer};
-pub use query::{replica_query, replica_reply};
+pub use query::{replica_query, replica_reply, seam_info};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, StagingStorage, Storage};

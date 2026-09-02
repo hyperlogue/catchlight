@@ -145,7 +145,10 @@ pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {
     out
 }
 
-fn seam_info(seam: &catchlight_core::Seam) -> SeamInfo {
+/// The wire spelling of one seam. Public because the egui editor's seam panel
+/// reads seams straight off the model rather than over the protocol, and there
+/// is one spelling of a seam or there are two.
+pub fn seam_info(seam: &catchlight_core::Seam) -> SeamInfo {
     SeamInfo {
         id: seam.id().clone(),
         slots: seam
