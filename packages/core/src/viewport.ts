@@ -2,10 +2,10 @@
  * The canvas half of the viewport: sizing, lifecycle, and what makes a frame
  * happen.
  *
- * The division of labour with Rust is the whole design. The renderer schedules
- * its own `requestAnimationFrame` and decides whether a frame is needed; this
- * side owns the element, because only the page knows how big it is in CSS and
- * only the browser can say what that is in device pixels. Nothing here draws,
+ * The division of labour with Rust is the whole design. The renderer owns the
+ * frame loop, ticks the puppet and decides whether a frame is needed; this side
+ * owns the element, because only the page knows how big it is in CSS and only
+ * the browser can say what that is in device pixels. Nothing here draws,
  * measures a frame time, or holds a copy of the scene.
  *
  * **The backing store is measured in device pixels, exactly once, by the
@@ -31,34 +31,18 @@
  * repeatable.
  */
 
+import type { Unsubscribe } from "./backend.js";
 import type { Session } from "./session.js";
-import type { Unsubscribe } from "./session.js";
+import type { WasmViewport } from "./wasm.js";
 
 /**
- * The renderer's surface, as this package needs it — `Viewport` in
- * `@catchlight/wasm`. Declared structurally, like `WasmEditor`, so the
- * lifecycle can be tested without a GPU.
- */
-export interface WasmViewport {
-  start(): void;
-  stop(): void;
-  invalidate(): void;
-  resize(width: number, height: number): void;
-  setCamera(centerX: number, centerY: number, height: number): void;
-  /** The adapter's `max_texture_dimension_2d`, in device pixels. */
-  maxSize(): number;
-  free(): void;
-}
-
-/**
- * The backing-store ceiling to use when the renderer will not name one.
+ * The backing-store ceiling to use when nobody names one.
  *
- * The real limit is the adapter's `max_texture_dimension_2d`, which
- * [`WasmViewport.maxSize`] reports once a device exists — a canvas above it
- * fails surface configuration and the viewport goes black with no other
- * symptom. This is the floor of that limit across the WebGPU tiers, used only
- * if `maxSize` is unavailable or nonsensical, so the clamp is never a guess
- * when a fact is on hand.
+ * The real limit is the device's `max_texture_dimension_2d`, which `Gpu`
+ * reports once it exists — a canvas above it fails surface configuration and
+ * the viewport goes black with no other symptom. This is the floor of that
+ * limit across the WebGPU tiers, used only when the caller had no device to
+ * ask, so the clamp is never a guess when a fact is on hand.
  */
 const FALLBACK_MAX_BACKING_STORE = 8192;
 
@@ -70,6 +54,7 @@ export class Viewport {
   #onScreen: IntersectionObserver | undefined;
   #unsubscribe: Unsubscribe | undefined;
   #size = { width: 0, height: 0 };
+  #maxSize: number;
   /** What the host asked for. */
   #started = false;
   /** Whether any part of the canvas is on screen. Assumed true until observed. */
@@ -81,9 +66,20 @@ export class Viewport {
     this.#sync();
   };
 
-  constructor(wasm: WasmViewport, canvas: HTMLCanvasElement, session?: Session) {
+  /**
+   * `maxSize` is the device's limit, which the editor asked its `Gpu` for
+   * once; a viewport built without one clamps to the conservative floor.
+   */
+  constructor(
+    wasm: WasmViewport,
+    canvas: HTMLCanvasElement,
+    session?: Session,
+    maxSize?: number,
+  ) {
     this.#wasm = wasm;
     this.#canvas = canvas;
+    this.#maxSize =
+      typeof maxSize === "number" && maxSize > 0 ? maxSize : FALLBACK_MAX_BACKING_STORE;
     if (session) this.#unsubscribe = session.onInvalidate(() => this.invalidate());
   }
 
@@ -192,9 +188,8 @@ export class Viewport {
   }
 
   #resize(size: { width: number; height: number }): void {
-    const max = this.#maxBackingStore();
-    const width = clampBackingStore(size.width, max);
-    const height = clampBackingStore(size.height, max);
+    const width = clampBackingStore(size.width, this.#maxSize);
+    const height = clampBackingStore(size.height, this.#maxSize);
     if (width === this.#size.width && height === this.#size.height) return;
     this.#size = { width, height };
     // Assigning these clears the canvas, so it happens only on a real change —
@@ -202,14 +197,6 @@ export class Viewport {
     this.#canvas.width = width;
     this.#canvas.height = height;
     this.#wasm.resize(width, height);
-  }
-
-  /** The adapter's limit if it reported one, else the conservative floor. */
-  #maxBackingStore(): number {
-    const reported = this.#wasm.maxSize?.();
-    return typeof reported === "number" && reported > 0
-      ? reported
-      : FALLBACK_MAX_BACKING_STORE;
   }
 }
 
