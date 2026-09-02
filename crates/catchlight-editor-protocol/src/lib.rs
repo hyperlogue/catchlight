@@ -552,6 +552,15 @@ pub enum Command {
         #[serde(default)]
         weights: Vec<SlotWeight>,
     },
+    /// Unmake the weld pairing two seams, named in either order. Both seams
+    /// and every slot on them stay; only the pairing goes — which is what
+    /// tells this apart from [`Command::SeamDelete`], the only other way a
+    /// weld comes undone. [`ErrorCode::UnknownWeld`] if nothing pairs them.
+    WeldDelete {
+        session: SessionId,
+        a: SeamAddr,
+        b: SeamAddr,
+    },
     /// Add a SimplePhysics node. `kind` is rigid|spring.
     PhysicsAdd {
         session: SessionId,
@@ -714,6 +723,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("welds", CommandKind::ReplicaQuery),
     ("unfilled_slots", CommandKind::ReplicaQuery),
     ("weld_set", CommandKind::Document),
+    ("weld_delete", CommandKind::Document),
     ("physics_add", CommandKind::Document),
     ("undo", CommandKind::Document),
     ("redo", CommandKind::Document),
@@ -790,6 +800,7 @@ impl Command {
             Command::Welds { .. } => "welds",
             Command::UnfilledSlots { .. } => "unfilled_slots",
             Command::WeldSet { .. } => "weld_set",
+            Command::WeldDelete { .. } => "weld_delete",
             Command::PhysicsAdd { .. } => "physics_add",
             Command::Undo { .. } => "undo",
             Command::Redo { .. } => "redo",
@@ -888,6 +899,7 @@ impl Command {
             | Command::Welds { session }
             | Command::UnfilledSlots { session }
             | Command::WeldSet { session, .. }
+            | Command::WeldDelete { session, .. }
             | Command::PhysicsAdd { session, .. }
             | Command::Undo { session }
             | Command::Redo { session }
@@ -1114,6 +1126,8 @@ pub enum ErrorCode {
     DuplicateSlot,
     /// A weld's two seams must hold the same slots, each weighted once.
     WeldSlotMismatch,
+    /// No weld pairs the two seams named.
+    UnknownWeld,
     /// This needs a complete model and the session holds an addon fragment.
     /// A session never opens one, so nothing should see this today.
     Fragment,

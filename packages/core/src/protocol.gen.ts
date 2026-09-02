@@ -476,6 +476,12 @@ export type Command =
     weights: Array<SlotWeight>,
   }
   | {
+    "cmd": "weld_delete",
+    session: SessionId,
+    a: SeamAddr,
+    b: SeamAddr,
+  }
+  | {
     "cmd": "physics_add",
     session: SessionId,
     parent: NodeId,
@@ -717,6 +723,7 @@ export type ErrorCode =
   | "duplicate_seam"
   | "duplicate_slot"
   | "weld_slot_mismatch"
+  | "unknown_weld"
   | "fragment"
   | "edit"
   | "manifest"
@@ -1092,6 +1099,7 @@ export type DocumentCommandTag =
   | "slot_clear"
   | "slot_delete"
   | "weld_set"
+  | "weld_delete"
   | "physics_add"
   | "undo"
   | "redo";

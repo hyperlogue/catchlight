@@ -345,6 +345,18 @@ enum WeldCmd {
         #[arg(long = "weight")]
         weights: Vec<String>,
     },
+    /// Unmake the weld joining two seams, named in either order. Both seams
+    /// and their slots stay; only the pairing goes.
+    Delete {
+        #[arg(long = "a-node")]
+        a_node: NodeId,
+        #[arg(long = "a-seam")]
+        a_seam: SeamId,
+        #[arg(long = "b-node")]
+        b_node: NodeId,
+        #[arg(long = "b-seam")]
+        b_seam: SeamId,
+    },
     /// List the model's welds.
     List,
 }
@@ -1102,6 +1114,22 @@ fn build_command(cli: &Cli) -> Result<Command> {
                         .iter()
                         .map(|w| parse_weight(w))
                         .collect::<Result<_>>()?,
+                },
+                WeldCmd::Delete {
+                    a_node,
+                    a_seam,
+                    b_node,
+                    b_seam,
+                } => Command::WeldDelete {
+                    session,
+                    a: SeamAddr {
+                        node: a_node.clone(),
+                        seam: a_seam.clone(),
+                    },
+                    b: SeamAddr {
+                        node: b_node.clone(),
+                        seam: b_seam.clone(),
+                    },
                 },
                 WeldCmd::List => Command::Welds { session },
             }

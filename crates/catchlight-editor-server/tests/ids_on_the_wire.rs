@@ -443,6 +443,146 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
     ));
 }
 
+/// A weld comes undone two ways, and only one of them keeps the seams.
+///
+/// `seam_delete` cascades — it takes the weld because a weld with one end is
+/// not a weld — so before `weld_delete` the only way to unpair two seams was
+/// to destroy one of them, along with every slot on it. This pins that the new
+/// command leaves both ends exactly where they were, that either order names
+/// the same weld, and that a pair nothing joins is its own error code rather
+/// than a silent no-op.
+#[test]
+fn a_weld_is_unmade_without_taking_the_seams_with_it() {
+    let ed = Editor::new();
+    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let root = root(&ed, 2, session);
+
+    let mut next = 3;
+    let mut step = |command: Command| {
+        next += 1;
+        body(&ed, next, command)
+    };
+
+    let (collar, hem) = (SeamId::new("collar").unwrap(), SeamId::new("hem").unwrap());
+    let slot = SlotId::new("left").unwrap();
+    let mut part = |seam: &SeamId| {
+        let node = node_of(step(Command::NodeAdd {
+            session,
+            parent: root.clone(),
+            kind: NodeKindArg::Part,
+            name: None,
+        }));
+        step(quad(session, node.clone()));
+        step(Command::SeamAdd {
+            session,
+            node: node.clone(),
+            seam: seam.clone(),
+        });
+        step(Command::SlotAdd {
+            session,
+            node: node.clone(),
+            seam: seam.clone(),
+            slot: slot.clone(),
+        });
+        step(Command::SlotFill {
+            session,
+            node: node.clone(),
+            seam: seam.clone(),
+            slot: slot.clone(),
+            vertex: 0,
+        });
+        node
+    };
+    let (top, bottom) = (part(&collar), part(&hem));
+
+    let ends = |a: bool| {
+        let (one, two) = if a { (&top, &collar) } else { (&bottom, &hem) };
+        SeamAddr {
+            node: one.clone(),
+            seam: two.clone(),
+        }
+    };
+    step(Command::WeldSet {
+        session,
+        a: ends(true),
+        b: ends(false),
+        weights: Vec::new(),
+    });
+    assert!(matches!(
+        step(Command::Welds { session }),
+        ResponseBody::Welds { welds } if welds.len() == 1
+    ));
+
+    // Named the other way round: a weld has no Id, its two ends are what
+    // names it, so B-then-A finds the same one.
+    step(Command::WeldDelete {
+        session,
+        a: ends(false),
+        b: ends(true),
+    });
+    assert!(matches!(
+        step(Command::Welds { session }),
+        ResponseBody::Welds { welds } if welds.is_empty()
+    ));
+
+    // Both seams are still here, with their slots still filled — which is the
+    // whole difference from deleting a seam.
+    for node in [&top, &bottom] {
+        match step(Command::Seams {
+            session,
+            node: node.clone(),
+        }) {
+            ResponseBody::Seams { seams } => {
+                assert_eq!(seams.len(), 1, "the seam outlives the weld");
+                assert_eq!(
+                    seams[0]
+                        .slots
+                        .iter()
+                        .map(|s| (s.id.to_string(), s.vertex))
+                        .collect::<Vec<_>>(),
+                    vec![("left".into(), Some(0))],
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(matches!(
+        step(Command::UnfilledSlots { session }),
+        ResponseBody::UnfilledSlots { slots } if slots.is_empty()
+    ));
+
+    // Undo brings the weld back, so this is one ordinary document edit.
+    step(Command::Undo { session });
+    assert!(matches!(
+        step(Command::Welds { session }),
+        ResponseBody::Welds { welds } if welds.len() == 1
+    ));
+
+    // And a pair nothing joins says so, rather than reporting a delete that
+    // deleted nothing.
+    step(Command::WeldDelete {
+        session,
+        a: ends(true),
+        b: ends(false),
+    });
+    next += 1;
+    assert!(matches!(
+        reply(
+            &ed,
+            next,
+            Command::WeldDelete {
+                session,
+                a: ends(true),
+                b: ends(false),
+            }
+        ),
+        Reply::Err {
+            code: ErrorCode::UnknownWeld,
+            ..
+        }
+    ));
+}
+
 /// Every seam refusal a client has to react to gets its own code, so a mesh
 /// editor can tell "you already used that name" from "that vertex is not on
 /// this part" without reading English.
