@@ -42,7 +42,7 @@ pub(crate) fn catchlight_2d_pass(
     // Size the shared per-format resources to *this* view's target
     // rather than the first window — a render-to-texture or
     // second-window camera has its own dimensions. The stencil is
-    // resized below; render_list_ext sizes the composite / snapshot
+    // resized below; render_lists_ext sizes the composite / snapshot
     // pools itself from (w, h).
     let (w, h) = camera
         .physical_target_size
@@ -83,7 +83,7 @@ pub(crate) fn catchlight_2d_pass(
     let color_view = target.main_texture_view();
     // bevy creates ViewTarget main textures with
     // `CameraMainTextureUsages::default()` = RENDER_ATTACHMENT |
-    // TEXTURE_BINDING | COPY_SRC, so `render_list_ext` can snapshot
+    // TEXTURE_BINDING | COPY_SRC, so `render_lists_ext` can snapshot
     // the framebuffer for the dst-in-shader blend modes
     // (Overlay / ColorBurn / LinearBurn).
     let color_texture: &wgpu::Texture = target.main_texture();

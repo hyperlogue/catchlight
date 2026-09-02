@@ -236,6 +236,7 @@ pub(crate) struct CatchlightRenderInner {
     pub(crate) camera_overflow_warned: bool,
     // Reused across frames so GC doesn't allocate a fresh HashSet every tick.
     live_scratch: HashSet<Entity>,
+    live_models: HashSet<ModelKey>,
 }
 
 impl CatchlightRenderInner {
@@ -374,20 +375,27 @@ pub(crate) fn prepare_puppets(
         gpus,
         puppets,
         live_scratch,
+        live_models,
         ..
     } = &mut *inner;
     live_scratch.clear();
     live_scratch.extend(extracted.iter().map(|(e, _)| e));
+    live_models.clear();
     puppets.retain(|key, puppet| {
         let live = live_scratch.contains(&key.entity) && view_formats.contains(&key.format);
-        if !live {
-            if let Some(gpu) = gpus.get_mut(&puppet.model) {
-                gpu.renderer.release_deform_set(puppet.deform_set);
+        match live {
+            true => {
+                live_models.insert(puppet.model);
+            }
+            false => {
+                if let Some(gpu) = gpus.get_mut(&puppet.model) {
+                    gpu.renderer.release_deform_set(puppet.deform_set);
+                }
             }
         }
         live
     });
-    gpus.retain(|key, _| puppets.values().any(|puppet| puppet.model == *key));
+    gpus.retain(|key, _| live_models.contains(key));
 
     // Close the previous frame's GPU-profiler queries — exactly once per
     // frame, not once per CatchlightCamera. end_frame maps the timestamp
