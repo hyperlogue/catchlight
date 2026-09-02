@@ -13,21 +13,32 @@
 //! - the **puppet** is a component (`CatchlightPuppet`), owned by its entity,
 //!   ticked in the main world against the asset, with the entity's
 //!   `GlobalTransform` as the model's root;
-//! - the **render cache** is render-world state, one per (entity, view
-//!   format), prepared from the model and refreshed from the puppet.
+//! - the **render cache** is render-world state, one per (model, view
+//!   format), prepared from the model and refreshed from every puppet of it.
 //!
-//! Bevy's stages carry catchlight's: **extract** is `RenderCache::refresh`
-//! plus the collect (the main world is paused there, which is the only moment
-//! the live puppet may be read), and **prepare** is `RenderCache::prepare`
-//! (the uploads that survive a frame, kept out of the sync point). A puppet
-//! that appears on one frame therefore draws from the next.
+//! Bevy's stages carry catchlight's: **extract** is
+//! `RenderCache::refresh_puppet` (the main world is paused there, which is the
+//! only moment the live puppet may be read), and **prepare** is
+//! `RenderCache::prepare` (the uploads that survive a frame, kept out of the
+//! sync point). A puppet that appears on one frame therefore draws from the
+//! next.
 //!
-//! **A cache is per entity, not per model.** A renderer holds one puppet's
-//! deforms — a deform lives at a byte range decided by its mesh slot, and every
-//! draw in a frame goes into one submit, so a second puppet's upload would
-//! overwrite the first's before either drew. Sharing the GPU copy of a model
-//! between puppets needs a per-puppet deform region inside `catchlight-wgpu`.
-//! What is shared today is the model itself, which is where the textures live.
+//! **A cache is per model, not per entity.** A model's textures and meshes do
+//! not depend on how it is posed, so fifty entities animating one rig hold one
+//! renderer and one cache between them: one decode and one upload of every
+//! texture, against fifty copies of the same thing before. What an entity owns
+//! is a `DeformSet` — its own slice of that renderer's deform atlas, two floats
+//! per vertex — and the render list collected from its puppet. Every draw of a
+//! frame lands in one submit and `queue.write_buffer` batches at submit start,
+//! so without those slices the second puppet's upload would overwrite the
+//! first's before either drew.
+//!
+//! **A renderer draws once per frame, so z orders within a model.** Every
+//! puppet of a model goes into one `render_lists_ext`; a second call on the
+//! same renderer inside one submit would reset the frame cursors under the
+//! draws already recorded. Models are therefore ordered by their backmost
+//! puppet and drawn one group at a time: two models whose puppets interleave
+//! in z do not interleave on screen.
 //!
 //! **One wgpu across the whole workspace.** `catchlight-bevy` hands bevy's
 //! render world a `Device`, `Queue` and `Arc<Pipelines>` built by

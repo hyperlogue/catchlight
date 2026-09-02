@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
 use bevy::render::renderer::{RenderAdapter, RenderDevice, RenderQueue};
 use bevy::render::view::ViewTarget;
-use catchlight_core::{Model, Puppet};
+use catchlight_core::Model;
 use catchlight_wgpu::{
-    CompositePool, FrameStats, FramebufferSnapshotPool, Pipelines, PrepareOptions, RenderCache,
-    RenderList, StencilTarget, WgpuRenderer,
+    CompositePool, DeformSet, FrameStats, FramebufferSnapshotPool, Pipelines, PrepareOptions,
+    RenderCache, RenderList, StencilTarget, WgpuRenderer,
 };
 
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
@@ -59,32 +59,45 @@ impl CatchlightRenderState {
     pub fn collected_drawables(&self, render_entity: Entity) -> Option<RenderList> {
         let inner = self.inner.lock().ok()?;
         inner
-            .gpus
+            .puppets
             .iter()
-            .find(|(key, gpu)| key.entity == render_entity && gpu.collected)
-            .map(|(_, gpu)| gpu.render_list.clone())
+            .find(|(key, puppet)| key.entity == render_entity && puppet.collected)
+            .map(|(_, puppet)| puppet.render_list.clone())
     }
 
-    /// What the render node last recorded for one render-world entity: the
-    /// tallies `catchlight-wgpu` keeps for the most recent `render_list_ext`
-    /// call on that puppet's renderer. Zeroed until it has drawn once.
+    /// What the render node last recorded for the renderer one render-world
+    /// entity draws through: the tallies `catchlight-wgpu` keeps for the most
+    /// recent `render_lists_ext` call. Zeroed until it has drawn once.
     ///
+    /// A renderer is shared by every puppet of one model, so this is the
+    /// whole frame's tally for that model, not this entity's share of it.
     /// Like [`Self::collected_drawables`], the key is the paired
     /// `RenderEntity`, and this is for tests and debug overlays.
     pub fn frame_stats(&self, render_entity: Entity) -> Option<FrameStats> {
         let inner = self.inner.lock().ok()?;
-        inner
-            .gpus
+        let puppet = inner
+            .puppets
             .iter()
             .find(|(key, _)| key.entity == render_entity)
-            .map(|(_, gpu)| gpu.renderer.frame_stats())
+            .map(|(_, puppet)| puppet)?;
+        Some(inner.gpus.get(&puppet.model)?.renderer.frame_stats())
     }
 
-    /// How many render caches are resident: one per puppet per view format.
-    /// Two puppets of one model hold two, which is what a renderer's single
-    /// deform buffer forces; see the module doc of `crate::lib`.
+    /// How many render caches are resident: one per **model** per view
+    /// format, however many puppets animate it. Two puppets of one model
+    /// hold one between them.
     pub fn resident_caches(&self) -> usize {
         self.inner.lock().map(|inner| inner.gpus.len()).unwrap_or(0)
+    }
+
+    /// How many puppets have render-world state: one per entity per view
+    /// format. Each is a deform set and a render list against the cache its
+    /// model holds.
+    pub fn resident_puppets(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|inner| inner.puppets.len())
+            .unwrap_or(0)
     }
 }
 
@@ -98,76 +111,76 @@ pub(crate) struct FormatResources {
     pub snapshots: FramebufferSnapshotPool,
 }
 
+/// A model's GPU copy, keyed by the model itself rather than by any entity.
+///
+/// The model is held by **pointer identity**, not by `AssetId`: an id survives
+/// its asset's *value* being replaced — a hot reload, an `Assets::insert` —
+/// and the replacement is a different model whose generation counter starts
+/// over, so neither the id nor the generation would notice. A different `Arc`
+/// always means a different model. `ModelGpu` holds that `Arc`, so the address
+/// this key carries cannot be reused while the entry lives.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct RendererKey {
+pub(crate) struct ModelKey {
+    model: usize,
+    pub format: wgpu::TextureFormat,
+}
+
+impl ModelKey {
+    fn new(model: &Arc<Model>, format: wgpu::TextureFormat) -> Self {
+        Self {
+            model: Arc::as_ptr(model) as usize,
+            format,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct PuppetKey {
     pub entity: Entity,
     pub format: wgpu::TextureFormat,
 }
 
-/// One puppet's GPU state for one view format: the renderer that holds it, the
-/// render cache naming its slots, and the drawables the last extract collected.
+/// One model's GPU state for one view format: the renderer that holds it and
+/// the render cache naming its slots. **Every** puppet of that model draws
+/// through it.
 ///
-/// **One cache, one renderer, one puppet.** The first half is
-/// `catchlight-wgpu`'s own rule: a cache's slots name state inside the renderer
-/// that prepared it. The second half is bevy's: a renderer holds exactly one
-/// puppet's deforms, because a deform lives at a byte range decided by its mesh
-/// slot and every draw in a frame is recorded into one submit, so a second
-/// puppet's upload would overwrite the first's before either draws. Two
-/// entities animating one model therefore share the `Model` (one asset, one
-/// `Arc`, one decode) and hold a cache each. Sharing the *GPU* copy needs a
-/// per-puppet deform region in `catchlight-wgpu`, which is a renderer change,
-/// not a bevy one.
-pub(crate) struct PuppetGpu {
+/// **One cache, one renderer, N puppets.** The first half is
+/// `catchlight-wgpu`'s own rule: a cache's slots name state inside the
+/// renderer that prepared it, so two caches on one renderer would overwrite
+/// each other's mesh and texture slots. The second half is what makes 50
+/// puppets of one rig affordable: a model's textures and meshes do not depend
+/// on how it is posed, so N puppets share one decode and one upload of both.
+/// What a puppet owns is in [`PuppetGpu`].
+pub(crate) struct ModelGpu {
     pub renderer: WgpuRenderer,
     pub cache: RenderCache,
-    /// The model the cache was prepared from, held by pointer identity.
-    ///
-    /// Not the `AssetId`: an id survives its asset's *value* being replaced —
-    /// a hot reload, an `Assets::insert` — and the replacement is a different
-    /// model whose generation counter starts over, so neither the id nor the
-    /// generation would notice. A different `Arc` always means a different
-    /// model, and holding this one also keeps it alive for the frame.
+    /// The model the cache was prepared from. Holding it keeps the `Arc` alive
+    /// for as long as [`ModelKey`] names its address.
     pub model: Arc<Model>,
     /// What the cache was prepared with. Changing `CatchlightSettings`
     /// re-prepares, so a texture budget is live rather than fixed at load.
     pub options: PrepareOptions,
+}
+
+/// One puppet's per-frame state against the [`ModelGpu`] it draws through: its
+/// slice of that renderer's deform atlas, and the drawables the last extract
+/// collected.
+///
+/// A deform set is the whole of what a second puppet of one model costs on the
+/// GPU — two floats per vertex — against the textures and meshes it no longer
+/// duplicates.
+pub(crate) struct PuppetGpu {
+    /// Which model's GPU state this puppet draws through. A puppet whose
+    /// entity swapped models points at a different key from the next prepare.
+    pub model: ModelKey,
+    /// This puppet's slice of `model`'s renderer deform atlas. Released back
+    /// to that renderer when the puppet goes.
+    pub deform_set: DeformSet,
     /// Refilled by extraction, drawn by the render node. Empty until the first
-    /// extract after this cache was prepared.
+    /// extract after the cache was prepared.
     pub render_list: RenderList,
     /// Whether `render_list` has been collected against the current cache.
     pub collected: bool,
-}
-
-impl PuppetGpu {
-    /// Rebuild the cache when the entity swapped models, then push this
-    /// frame's deforms at the GPU and collect the drawables to draw.
-    ///
-    /// Runs at extract time, with the main world paused, which is what makes
-    /// reading the live puppet safe: bevy's pipelined rendering may run the
-    /// next main-world frame while the render world draws, and that frame
-    /// overwrites the puppet's combined-deform buffers in place.
-    pub(crate) fn refresh(&mut self, model: &Arc<Model>, puppet: &Puppet, options: PrepareOptions) {
-        if !Arc::ptr_eq(&self.model, model) || self.options != options {
-            match RenderCache::prepare(&mut self.renderer, model, options) {
-                Ok(cache) => {
-                    self.cache = cache;
-                    self.model = model.clone();
-                    self.options = options;
-                    self.collected = false;
-                }
-                Err(error) => {
-                    tracing::error!("catchlight: preparing a swapped model failed: {error}");
-                    return;
-                }
-            }
-        }
-        if let Err(error) = self.cache.refresh(&mut self.renderer, model, puppet) {
-            tracing::error!("catchlight: refreshing the render cache failed: {error}");
-            return;
-        }
-        self.cache.collect_into(puppet, &mut self.render_list);
-        self.collected = true;
-    }
 }
 
 /// Get-or-build the resources for one `ViewTarget` main-texture format
@@ -208,8 +221,12 @@ fn unique_formats(
 
 #[derive(Default)]
 pub(crate) struct CatchlightRenderInner {
-    /// Per-puppet GPU state, keyed by render-world entity and view format.
-    pub gpus: HashMap<RendererKey, PuppetGpu>,
+    /// Per-model GPU state: one renderer and one cache per model per view
+    /// format, shared by every puppet of it.
+    pub gpus: HashMap<ModelKey, ModelGpu>,
+    /// Per-puppet state against those caches, keyed by render-world entity
+    /// and view format.
+    pub puppets: HashMap<PuppetKey, PuppetGpu>,
     pub(crate) formats: HashMap<wgpu::TextureFormat, FormatResources>,
     pub size: (u32, u32),
     /// What the main world's `CatchlightSettings` asked for, copied in at
@@ -223,19 +240,22 @@ pub(crate) struct CatchlightRenderInner {
 
 impl CatchlightRenderInner {
     /// The view formats pipelines have been built for. Extraction walks these
-    /// to find the caches an entity has.
+    /// to find the state an entity has.
     pub(crate) fn formats(&self) -> Vec<wgpu::TextureFormat> {
         self.formats.keys().copied().collect()
     }
 }
 
-/// Prepare system: build a renderer and a render cache for every puppet that
-/// does not have one yet, and drop the ones whose entity is gone.
+/// Prepare system: build a renderer and a render cache for every *model* that
+/// does not have one yet, give every puppet of it a deform set, and drop what
+/// no live entity names any more.
 ///
 /// Preparing here rather than at extract is what keeps the GPU uploads out of
 /// the frame's sync point, at the cost of one frame: a puppet that appears on
 /// frame N gets its cache at the end of frame N and its first collected
-/// drawables at frame N+1's extract, so it draws from N+1 on.
+/// drawables at frame N+1's extract, so it draws from N+1 on. An entity that
+/// swaps models pays the same frame again: extract finds its `PuppetGpu`
+/// pointing at the model it left, stops collecting, and this rebinds it.
 // Invariant: the render-state Mutex is only poisoned on panic, treated as fatal.
 #[allow(clippy::unwrap_used)]
 pub(crate) fn prepare_puppets(
@@ -262,49 +282,112 @@ pub(crate) fn prepare_puppets(
         .collect();
 
     for (entity, ex) in &extracted {
-        for (format, pipelines) in &pipelines {
-            let key = RendererKey {
+        for (format, format_pipelines) in &pipelines {
+            let model_key = ModelKey::new(&ex.model, *format);
+            let CatchlightRenderInner { gpus, puppets, .. } = &mut *inner;
+            let model_gpu = match gpus.entry(model_key) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut renderer = WgpuRenderer::from_pipelines(
+                        device.wgpu_device().clone(),
+                        (**queue.0).clone(),
+                        format_pipelines.clone(),
+                    );
+                    let cache = match RenderCache::prepare(&mut renderer, &ex.model, options) {
+                        Ok(cache) => cache,
+                        Err(error) => {
+                            tracing::error!(
+                                "catchlight: preparing the render cache failed: {error}"
+                            );
+                            continue;
+                        }
+                    };
+                    entry.insert(ModelGpu {
+                        renderer,
+                        cache,
+                        model: ex.model.clone(),
+                        options,
+                    })
+                }
+            };
+
+            // A texture budget is live rather than fixed at load, so a
+            // settings change re-prepares the shared cache. Every puppet of
+            // it then holds a list whose slots name the build that went, so
+            // none may draw until the next extract has collected again.
+            if model_gpu.options != options {
+                match RenderCache::prepare(&mut model_gpu.renderer, &model_gpu.model, options) {
+                    Ok(cache) => {
+                        model_gpu.cache = cache;
+                        model_gpu.options = options;
+                        for puppet in puppets.values_mut() {
+                            if puppet.model == model_key {
+                                puppet.collected = false;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!("catchlight: re-preparing with new options: {error}");
+                    }
+                }
+            }
+
+            let puppet_key = PuppetKey {
                 entity,
                 format: *format,
             };
-            if inner.gpus.contains_key(&key) {
-                continue;
-            }
-            let mut renderer = WgpuRenderer::from_pipelines(
-                device.wgpu_device().clone(),
-                (**queue.0).clone(),
-                pipelines.clone(),
-            );
-            let cache = match RenderCache::prepare(&mut renderer, &ex.model, options) {
-                Ok(cache) => cache,
-                Err(error) => {
-                    tracing::error!("catchlight: preparing the render cache failed: {error}");
-                    continue;
+            match puppets.get_mut(&puppet_key) {
+                // Bound to the model it still animates: nothing to do.
+                Some(puppet) if puppet.model == model_key => {}
+                // The entity swapped models. Its set belongs to the renderer
+                // it left, so hand that one back before taking a new one.
+                Some(puppet) => {
+                    let old = std::mem::replace(&mut puppet.model, model_key);
+                    puppet.collected = false;
+                    puppet.render_list = RenderList::default();
+                    let released = puppet.deform_set;
+                    puppet.deform_set = model_gpu.renderer.acquire_deform_set();
+                    if let Some(old_gpu) = gpus.get_mut(&old) {
+                        old_gpu.renderer.release_deform_set(released);
+                    }
                 }
-            };
-            inner.gpus.insert(
-                key,
-                PuppetGpu {
-                    renderer,
-                    cache,
-                    model: ex.model.clone(),
-                    options,
-                    render_list: RenderList::default(),
-                    collected: false,
-                },
-            );
+                None => {
+                    puppets.insert(
+                        puppet_key,
+                        PuppetGpu {
+                            model: model_key,
+                            deform_set: model_gpu.renderer.acquire_deform_set(),
+                            render_list: RenderList::default(),
+                            collected: false,
+                        },
+                    );
+                }
+            }
         }
     }
 
-    // GC renderers whose render entities are gone (entity despawned, or
+    // GC puppets whose render entities are gone (entity despawned, or
     // `CatchlightPuppet` removed — SyncComponentPlugin despawns the
-    // render-world entity, so the puppet drops out of `extracted`).
+    // render-world entity, so the puppet drops out of `extracted`), then the
+    // model caches no surviving puppet draws through.
     let CatchlightRenderInner {
-        gpus, live_scratch, ..
+        gpus,
+        puppets,
+        live_scratch,
+        ..
     } = &mut *inner;
     live_scratch.clear();
     live_scratch.extend(extracted.iter().map(|(e, _)| e));
-    gpus.retain(|key, _| live_scratch.contains(&key.entity) && view_formats.contains(&key.format));
+    puppets.retain(|key, puppet| {
+        let live = live_scratch.contains(&key.entity) && view_formats.contains(&key.format);
+        if !live {
+            if let Some(gpu) = gpus.get_mut(&puppet.model) {
+                gpu.renderer.release_deform_set(puppet.deform_set);
+            }
+        }
+        live
+    });
+    gpus.retain(|key, _| puppets.values().any(|puppet| puppet.model == *key));
 
     // Close the previous frame's GPU-profiler queries — exactly once per
     // frame, not once per CatchlightCamera. end_frame maps the timestamp

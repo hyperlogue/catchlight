@@ -5,9 +5,9 @@
 //! Bevy's renderer is brought up against whatever adapter is available (on CI
 //! that is mesa's lavapipe, the same CPU Vulkan driver the wgpu suites use) and
 //! the puppets draw into an offscreen `Image` target. What is asserted is what
-//! the split moved: each puppet gets its own render cache prepared from the
-//! shared model asset, and each cache is collected into with *its* puppet's
-//! frame.
+//! the split moved: puppets of one model share the one render cache prepared
+//! from the shared asset, each holding its own deform set, and each is
+//! collected into with *its* puppet's frame.
 
 use std::path::PathBuf;
 
@@ -152,6 +152,23 @@ fn drawn_pixels(pixels: &[u8]) -> usize {
         .count()
 }
 
+/// Drawn pixels left and right of the target's centre column.
+fn drawn_per_half(pixels: &[u8]) -> (usize, usize) {
+    let mut left = 0;
+    let mut right = 0;
+    for (i, p) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        if p[3] == 0 {
+            continue;
+        }
+        if (i as u32) % SIZE < SIZE / 2 {
+            left += 1;
+        } else {
+            right += 1;
+        }
+    }
+    (left, right)
+}
+
 fn render_entity(app: &App, entity: Entity) -> Entity {
     app.world()
         .entity(entity)
@@ -161,12 +178,17 @@ fn render_entity(app: &App, entity: Entity) -> Entity {
 }
 
 #[test]
-fn two_puppets_of_one_model_each_reach_the_gpu_through_their_own_cache() {
+fn two_puppets_of_one_model_share_one_cache_and_both_reach_the_target() {
     let mut app = render_app();
     let target = offscreen_target(&mut app);
     app.world_mut().spawn((
         Camera2d,
-        RenderTarget::Image(target.into()),
+        Camera {
+            // Transparent, so a drawn pixel is an opaque one.
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            ..default()
+        },
+        RenderTarget::Image(target.clone().into()),
         CatchlightCamera,
     ));
 
@@ -175,18 +197,20 @@ fn two_puppets_of_one_model_each_reach_the_gpu_through_their_own_cache() {
         .resource_mut::<Assets<CatchlightModel>>()
         .add(CatchlightModel::new(fixture("welded_seam")));
 
+    // Far enough apart that each lands in its own half of the target, so
+    // "did both draw" is answerable per pixel column.
     let left = app
         .world_mut()
         .spawn((
             CatchlightPuppet::new(model.clone()),
-            Transform::from_xyz(-64.0, 0.0, 0.0),
+            Transform::from_xyz(-60.0, 0.0, 0.0).with_scale(Vec3::splat(0.25)),
         ))
         .id();
     let right = app
         .world_mut()
         .spawn((
             CatchlightPuppet::new(model.clone()),
-            Transform::from_xyz(64.0, 0.0, 1.0),
+            Transform::from_xyz(60.0, 0.0, 1.0).with_scale(Vec3::splat(0.25)),
         ))
         .id();
 
@@ -203,8 +227,13 @@ fn two_puppets_of_one_model_each_reach_the_gpu_through_their_own_cache() {
         .resource::<CatchlightRenderState>();
     assert_eq!(
         state.resident_caches(),
+        1,
+        "two puppets of one model hold one cache between them",
+    );
+    assert_eq!(
+        state.resident_puppets(),
         2,
-        "one cache per puppet per view format",
+        "and a deform set plus a render list each",
     );
 
     let left_list = state
@@ -222,26 +251,42 @@ fn two_puppets_of_one_model_each_reach_the_gpu_through_their_own_cache() {
         right_list.root_drawables.len(),
         "two puppets of one model draw the same set of parts",
     );
+    assert_ne!(
+        left_list.deform_set, right_list.deform_set,
+        "each puppet uploads its frame into its own slice of the atlas",
+    );
 
-    for (name, entity) in [("left", left), ("right", right)] {
-        let stats = state
-            .frame_stats(render_entity(&app, entity))
-            .expect("the puppet has a renderer");
-        assert!(
-            stats.instance_slots_written > 0,
-            "the {name} puppet recorded no draws: {stats:?}",
-        );
-    }
+    let stats = state
+        .frame_stats(render_entity(&app, left))
+        .expect("the puppets have a renderer");
+    assert!(
+        stats.instance_slots_written >= 2,
+        "one frame carried both puppets' draws: {stats:?}",
+    );
+    assert_eq!(
+        stats.instance_buffer_writes, 1,
+        "and staged them under one cursor, flushed once: {stats:?}",
+    );
 
     let x_of = |list: &catchlight_wgpu::RenderList| match &list.root_drawables[0] {
         catchlight_wgpu::DrawableInfo::Part { transform, .. } => transform.to_cols_array()[12],
         other => panic!("expected a part, got {other:?}"),
     };
     assert!(
-        (x_of(&right_list) - x_of(&left_list) - 128.0).abs() < 1e-3,
-        "each puppet's own root transform reached its own cache: {} vs {}",
+        (x_of(&right_list) - x_of(&left_list) - 120.0).abs() < 1e-3,
+        "each puppet's own root transform reached its own list: {} vs {}",
         x_of(&left_list),
         x_of(&right_list),
+    );
+
+    // Pixels, not counts: two puppets whose deform sets collided still report
+    // one cache and two lists, and still draw — at one pose.
+    let pixels = readback(&app, &target);
+    let (left_half, right_half) = drawn_per_half(&pixels);
+    assert!(
+        left_half > 200 && right_half > 200,
+        "both puppets must reach the target: {left_half} left, {right_half} right of {} pixels",
+        SIZE * SIZE,
     );
 }
 
@@ -278,13 +323,15 @@ fn a_despawned_puppet_releases_its_cache() {
     for _ in 0..3 {
         app.update();
     }
+    let state = app
+        .sub_app(bevy::render::RenderApp)
+        .world()
+        .resource::<CatchlightRenderState>();
+    assert_eq!(state.resident_puppets(), 0, "the deform set goes first");
     assert_eq!(
-        app.sub_app(bevy::render::RenderApp)
-            .world()
-            .resource::<CatchlightRenderState>()
-            .resident_caches(),
+        state.resident_caches(),
         0,
-        "the cache and its renderer go with the entity",
+        "and the cache with the last puppet that drew through it",
     );
 }
 
