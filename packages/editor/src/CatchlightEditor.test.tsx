@@ -102,10 +102,9 @@ describe("the assembled editor", () => {
     await settle();
     expect(fit(view).disabled).toBe(false);
 
-    // Two facts a person cannot get by looking at the picture, and both change
-    // what a bug report means.
+    // A fact a person cannot get by looking at the picture, and one that
+    // changes what a bug report means.
     expect(text(view, "[data-catchlight-backend]")).toBe("in-tab");
-    expect(text(view, "[data-catchlight-gpu]")).toBe("webgpu");
 
     // A box off the origin, so a camera that landed on it could not have been
     // the default one.
@@ -236,9 +235,9 @@ describe("the assembled editor", () => {
     await settle();
     expect(view.querySelector("canvas")).toBe(canvas);
     expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
-    // The GL tier's rule, over the fakes: the device came from that one
-    // element, once, and every viewport since was built for it.
-    expect(gpu.acquiredFrom).toEqual([canvas]);
+    // One device for the editor, acquired once, whatever came and went above
+    // it: the canvas outlived two documents and the device outlived both.
+    expect(gpu.acquires).toBe(1);
 
     await unmount();
     editor.close();

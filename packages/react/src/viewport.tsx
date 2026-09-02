@@ -34,10 +34,10 @@
  *
  * **A canvas outlives its document.** `session` may be `undefined`: the
  * element is measured and listened to, and nothing is attached until a
- * session arrives — on the same element, which is the point. The WebGL2
- * tier's device is bound to the first canvas it drew on (see `gpu.rs`), so a
- * host that unmounted its canvas between documents could never draw a second
- * one; keeping the stage mounted with no session is how it does not.
+ * session arrives — on the same element, which is the point. The camera, the
+ * observers and the wheel listener are the element's and survive the document
+ * that was drawn on it, so a host that swapped canvases between documents
+ * would rebuild all three and hand the person a stage that jumped.
  */
 
 import type { Camera, Session, Viewport as CoreViewport } from "@catchlight/core";

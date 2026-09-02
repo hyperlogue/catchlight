@@ -28,11 +28,9 @@ console_error_panic_hook = "0.1"
 # construction — a wgpu surface comes from a canvas — so it is not in the
 # crate's native build and neither is its cost.
 catchlight-wgpu = { workspace = true }
-# `webgl` so a browser with no WebGPU still draws. Under resolver 2 this
-# feature reaches wgpu only on wasm32 builds; a native `cargo test` still gets
-# a wgpu with no GL backend forced on, which is what keeps
-# `create_headless_context`'s `Backends::PRIMARY` note true.
-wgpu = { workspace = true, features = ["webgl"] }
+# No `webgl`: the editor is WebGPU-only (see `gpu.rs`). The runtime keeps its
+# GL fallbacks — this is the one crate that dropped the tier.
+wgpu = { workspace = true }
 glam = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 js-sys = { workspace = true }

@@ -12,10 +12,13 @@
  * over the wasm module, against the origin private file system — so the plain
  * URL is a self-contained editor with no process behind it.
  *
- * **A failure is shown in the page.** No WebGPU and no WebGL2, a server that
- * refuses the token, a sample that will not fetch: each of those is a blank
- * screen with a console message unless someone writes it down, and the console
- * is not where a person looks.
+ * **A failure is shown in the page.** A server that refuses the token, a
+ * sample that will not fetch, a wasm module that will not start: each of those
+ * is a blank screen with a console message unless someone writes it down, and
+ * the console is not where a person looks. A browser with no WebGPU is the
+ * same kind of failure, and it surfaces one step later — the device is
+ * acquired at the first canvas, so the editor mounts and the viewport reports
+ * what it could not have.
  */
 
 import {

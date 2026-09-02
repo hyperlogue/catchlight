@@ -8,13 +8,12 @@
  * `session.ts`) and "where the bytes live" (see `storage.ts`) changeable in
  * one package.
  *
- * **One device, acquired at the first canvas.** Not at creation: on WebGL2 an
- * adapter is enumerated from a canvas context and presents into that same
- * canvas, so no device can exist before something asks to be drawn. So
- * [`attach`] acquires it, once, and every later viewport and replica shares
- * it — and on the WebGL2 fallback the canvas that acquired it is the only one
- * that can be drawn on. Opening a document, reading a tree and running a drag
- * need no device at all.
+ * **One device, acquired at the first attach.** Not at creation: opening a
+ * document, reading a tree and running a drag need no GPU, and a tab that
+ * only ever lists documents should not hold one. So [`attach`] acquires it,
+ * once, and every later viewport and replica shares it. It is a WebGPU device
+ * and it is tied to no canvas, so which element asked for it first means
+ * nothing.
  *
  * **Every session is fed before it is handed out.** A `Session` a caller holds
  * has already been brought to the revision its reply named, so the first thing
@@ -42,7 +41,6 @@ export class Editor {
   /** The one acquisition in flight, so two first attaches share a device. */
   #acquiring: Promise<WasmGpu> | undefined;
   #sessions = new Map<SessionId, Session>();
-  #gpuListeners = new Set<() => void>();
   #closed = false;
 
   private constructor(wasm: WasmModule, backend: Backend) {
@@ -51,7 +49,8 @@ export class Editor {
   }
 
   /**
-   * An editor over `backend`. Touches no GPU: the device waits for a canvas.
+   * An editor over `backend`. Touches no GPU: the device waits for the first
+   * [`attach`].
    *
    * The wasm module is passed in rather than imported so this package never
    * forces 2 MiB of WebAssembly into a bundle that only wanted the types — and
@@ -76,31 +75,6 @@ export class Editor {
    */
   backendKind(): Backend["kind"] {
     return this.#backend.kind;
-  }
-
-  /**
-   * Which graphics API the device came up on: `"webgpu"`, or `"webgl2"` on the
-   * fallback tier.
-   *
-   * `undefined` until the first [`attach`] has acquired a device, because
-   * until then there is nothing that has an answer. [`onGpuChanged`] is how a
-   * label finds out that it now does.
-   */
-  gpuBackend(): string | undefined {
-    return this.#gpu?.backend();
-  }
-
-  /**
-   * Registers `listener`, called once the device exists.
-   *
-   * One notification, at the one moment the answer to [`gpuBackend`] changes:
-   * a device is acquired once per editor and never swapped.
-   */
-  onGpuChanged(listener: () => void): Unsubscribe {
-    this.#gpuListeners.add(listener);
-    return () => {
-      this.#gpuListeners.delete(listener);
-    };
   }
 
   /** An empty document. */
@@ -228,13 +202,16 @@ export class Editor {
   /**
    * Draws `session` on `canvas` until the returned viewport is disposed.
    *
-   * The first call acquires the device, from this canvas. Everything after it
-   * is synchronous — and on the WebGL2 fallback every later canvas is drawn by
-   * a device that belongs to the first one, which is a limit of the backend
-   * rather than of this method.
+   * The first call acquires the device; everything after it is synchronous.
+   * Any number of canvases may be attached, to one session or to several:
+   * they share the device, and a session's replica keeps one renderer and one
+   * render cache however many viewports draw it.
+   *
+   * Rejects when this browser has no WebGPU, with the message the wasm module
+   * writes — the one thing a host has to show a person rather than log.
    */
   async attach(session: Session, canvas: HTMLCanvasElement): Promise<Viewport> {
-    const gpu = await this.#device(canvas);
+    const gpu = await this.#device();
     let view;
     try {
       view = new this.#wasm.Viewport(gpu, session.replica, canvas);
@@ -244,23 +221,20 @@ export class Editor {
     return new Viewport(view, canvas, session, gpu.maxSize());
   }
 
-  /** The device, acquired from `canvas` if this is the first one to ask. */
-  #device(canvas: HTMLCanvasElement): Promise<WasmGpu> {
+  /** The device, acquired if this is the first attach to ask for one. */
+  #device(): Promise<WasmGpu> {
     if (this.#gpu) return Promise.resolve(this.#gpu);
     // Two canvases mounting in the same tick must not race for two devices:
     // the second one waits on the first one's promise.
-    this.#acquiring ??= this.#wasm.Gpu.acquire(canvas).then(
+    this.#acquiring ??= this.#wasm.Gpu.acquire().then(
       (gpu) => {
         this.#gpu = gpu;
-        // Copy: a listener that unsubscribes while being told must not shift
-        // the set out from under this loop.
-        for (const listener of [...this.#gpuListeners]) listener();
         return gpu;
       },
       (cause: unknown) => {
-        // A failure is not a verdict: no adapter on this canvas, or a
-        // transient one, must not be the answer every later attach gets.
-        // Remembering it would make a StrictMode remount unrecoverable.
+        // A failure is not a verdict: a transient one must not be the answer
+        // every later attach gets. Remembering it would make a StrictMode
+        // remount unrecoverable.
         this.#acquiring = undefined;
         throw cause;
       },
@@ -289,7 +263,6 @@ export class Editor {
     this.#gpu?.free();
     this.#gpu = undefined;
     this.#acquiring = undefined;
-    this.#gpuListeners.clear();
     this.#backend.close();
   }
 
