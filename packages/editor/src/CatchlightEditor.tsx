@@ -155,6 +155,10 @@ function Shell(): ReactNode {
           </nav>
           <Stage session={session} view={view} />
           <aside data-catchlight-panel="right">
+            <section data-catchlight-section="">
+              <h2 data-catchlight-heading="">Inspector</h2>
+              <Inspector.Root session={session} onError={failed} />
+            </section>
             <section data-catchlight-section="" data-grow="">
               <h2 data-catchlight-heading="">Params</h2>
               {/* The default row is the slider alone, and a column of
@@ -209,10 +213,6 @@ function Documents({ onSelect }: { onSelect: (info: SessionInfo) => void }): Rea
  */
 function Stage({ session, view }: { session: Session; view: ViewportCamera }): ReactNode {
   const { node } = useSelection();
-            <section data-catchlight-section="">
-              <h2 data-catchlight-heading="">Inspector</h2>
-              <Inspector.Root session={session} onError={failed} />
-            </section>
   const drag = useNodeDrag(session, node);
   return (
     <div data-catchlight-stage="" data-dragging={drag.dragging ? "" : undefined}>
