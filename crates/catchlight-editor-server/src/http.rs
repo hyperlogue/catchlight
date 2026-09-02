@@ -39,6 +39,14 @@
 //!   [`Editor::handle`], so a client's own `node_add` may see
 //!   `document_changed` before its `ok`. A client keyed on `rev` does not
 //!   care; one that assumes reply-then-event does.
+//!
+//! - **An idle socket is proved live, not assumed.** A tab that is only
+//!   watching sends nothing for minutes, and a proxy between it and here reaps
+//!   a connection that carries no bytes. So the reader parks with a timeout of
+//!   [`HttpOptions::ping_interval`] rather than forever: each expiry asks the
+//!   writer for a ping, and silence lasting two intervals ends the connection
+//!   from this side, where the observer can be unsubscribed, instead of
+//!   leaving a thread parked on a socket nobody is on the other end of.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -46,7 +54,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId, TexId};
@@ -63,11 +71,22 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 /// Concurrent connections, WebSockets included. Same budget as the socket.
 const MAX_CONNECTIONS: usize = 64;
-/// Bounds the HTTP phase only: a WebSocket clears its read timeout, because an
-/// idle tab is a live tab.
+/// Bounds the HTTP phase. A WebSocket re-arms this as its keepalive interval
+/// instead, because an idle tab is a live tab but a silent one is not.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default ceiling on a `PUT /files/{key}` body: a `.clm` with its textures.
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
+/// How long a WebSocket may say nothing before it is pinged; two of these with
+/// no answer and the peer is treated as gone.
+const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(30);
+/// How much of a body that has already earned a 413 is read and thrown away.
+/// Closing a socket with bytes still unread in it is a reset, and a sender
+/// reports that reset instead of the status it was sent, so draining first is
+/// what makes the answer arrive at all; over loopback the discarded bytes cost
+/// little more than a memcpy. Past this the trade flips — dragging hundreds of
+/// megabytes across just to be polite costs more than the reset does — and the
+/// connection closes under the sender instead.
+const MAX_DRAIN_BYTES: usize = 8 * 1024 * 1024;
 
 /// How [`serve_http`] authenticates and who it answers.
 #[derive(Debug, Clone)]
@@ -78,6 +97,10 @@ pub struct HttpOptions {
     pub token: Option<String>,
     /// Ceiling on a `PUT /files/{key}` body.
     pub max_upload_bytes: usize,
+    /// How often an idle WebSocket is pinged, and half the silence it puts up
+    /// with before the connection is dropped. The default suits a browser tab;
+    /// shorten it only to exercise the keepalive.
+    pub ping_interval: Duration,
     /// Where `PUT /files/{key}` parks its bytes. This must be the very
     /// [`StagingStorage`] the [`Editor`] was built on, or an upload will not
     /// be visible to the `session_open` that names it. `None` refuses uploads.
@@ -90,6 +113,7 @@ impl Default for HttpOptions {
             allowed_origins: Vec::new(),
             token: None,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
+            ping_interval: DEFAULT_PING_INTERVAL,
             staging: None,
         }
     }
@@ -109,6 +133,7 @@ struct ServerState {
     token: String,
     origins: Vec<String>,
     max_upload_bytes: usize,
+    ping_interval: Duration,
     staging: Option<Arc<StagingStorage>>,
     connections: Arc<ConnectionLimiter>,
 }
@@ -141,6 +166,7 @@ pub fn bind_http(
             token,
             origins,
             max_upload_bytes: options.max_upload_bytes,
+            ping_interval: options.ping_interval,
             staging: options.staging,
             connections: Arc::new(ConnectionLimiter::default()),
         }),
@@ -354,7 +380,7 @@ fn texture(state: &ServerState, id: &str, tex: &str) -> Response {
             Response::new(200, "OK")
                 .with("Content-Type", mime)
                 .with("X-Catchlight-Encoding", name)
-                .body(data.as_ref().clone())
+                .body(data.to_vec())
         }
         Ok(None) => Response::text(404, "Not Found", "no such texture"),
         Err(_) => Response::text(404, "Not Found", "no such session"),
@@ -391,6 +417,9 @@ enum Outbound {
     /// Bytes the reader's [`WebSocket`] produced — a pong, or the echo of a
     /// close. Already framed; the writer replays them verbatim.
     Raw(Vec<u8>),
+    /// Keepalive. The reader asks for it on an idle timeout; only the writer
+    /// may put it on the wire.
+    Ping,
     /// Send a close frame and stop.
     Close,
 }
@@ -480,11 +509,15 @@ fn serve_websocket(
         return;
     }
 
-    // An idle tab is a live tab, so the read side blocks indefinitely; the
-    // write side keeps its timeout so a stuck peer cannot pin a thread.
+    // An idle tab is a live tab, so a read that expires is a cue to ping
+    // rather than a failure; the write side keeps its own timeout so a stuck
+    // peer cannot pin a thread.
+    let ping_interval = state.ping_interval;
+    // Two intervals: one ping lost to a hiccup is not a dead tab.
+    let idle_timeout = ping_interval * 2;
     let leftover = reader.buffer().to_vec();
     let read_half = reader.into_inner();
-    if read_half.set_read_timeout(None).is_err() {
+    if read_half.set_read_timeout(Some(ping_interval)).is_err() {
         return;
     }
 
@@ -500,6 +533,7 @@ fn serve_websocket(
                 Outbound::Raw(bytes) => {
                     out_ws.flush().is_ok() && out_ws.get_mut().write_all(&bytes).is_ok()
                 }
+                Outbound::Ping => out_ws.send(Message::Ping(Vec::new().into())).is_ok(),
                 Outbound::Close => {
                     let _ = out_ws.close(None);
                     let _ = out_ws.flush();
@@ -531,12 +565,31 @@ fn serve_websocket(
         Role::Server,
         Some(config),
     );
+    // Any frame at all counts as proof of life — a pong is only the cheapest
+    // one, and a client that never idles is never pinged.
+    let mut last_heard = Instant::now();
     loop {
-        let text = match in_ws.read() {
-            Ok(Message::Text(text)) => text.as_str().to_string(),
+        let message = match in_ws.read() {
+            Ok(message) => {
+                last_heard = Instant::now();
+                message
+            }
+            Err(tungstenite::Error::Io(err)) if timed_out(&err) => {
+                if last_heard.elapsed() >= idle_timeout {
+                    break;
+                }
+                if tx.send(Outbound::Ping).is_err() {
+                    break;
+                }
+                continue;
+            }
+            Err(_) => break,
+        };
+        let text = match message {
+            Message::Text(text) => text.as_str().to_string(),
             // The protocol is JSON text; a binary frame is a client bug, and
             // it still deserves an answer rather than a silent drop.
-            Ok(Message::Binary(_)) => {
+            Message::Binary(_) => {
                 let err = Reply::Err {
                     id: 0,
                     code: ErrorCode::BadRequest,
@@ -550,10 +603,9 @@ fn serve_websocket(
                 }
                 continue;
             }
-            Ok(Message::Close(_)) => break,
+            Message::Close(_) => break,
             // Ping and Pong are answered inside `read`, through `Bounce`.
-            Ok(_) => continue,
-            Err(_) => break,
+            _ => continue,
         };
         if tx
             .send(Outbound::Text(answer(&state.editor, &text)))
@@ -568,6 +620,16 @@ fn serve_websocket(
     drop(tx);
     let _ = pump.join();
     eprintln!("catchlight-editor-server: websocket closed");
+}
+
+/// A read that expired rather than failed. A socket read timeout surfaces as
+/// `WouldBlock` on unix and `TimedOut` on windows, and tungstenite keeps the
+/// half-read frame either way, so the next read picks it up where it stopped.
+fn timed_out(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 /// One frame in, one reply out. A frame that does not parse is still answered
@@ -684,6 +746,7 @@ fn read_request(
         MAX_REQUEST_BYTES
     };
     if length > ceiling {
+        drain_body(reader, length);
         return Err(BadRequest::BodyTooLarge);
     }
     let mut body = vec![0u8; length];
@@ -706,6 +769,18 @@ fn read_request(
         headers,
         body,
     })
+}
+
+/// Read and throw away a body that has already lost, so the status that
+/// follows is not overtaken by a reset. Nothing is kept: the bytes go to
+/// [`io::sink`] a block at a time, and a body over [`MAX_DRAIN_BYTES`] is not
+/// read at all. Best effort — a sender that lied about its length, or stalled,
+/// only costs the answer it was going to get anyway.
+fn drain_body(reader: &mut BufReader<TcpStream>, length: usize) {
+    if length > MAX_DRAIN_BYTES {
+        return;
+    }
+    let _ = io::copy(&mut reader.by_ref().take(length as u64), &mut io::sink());
 }
 
 fn read_line(reader: &mut impl BufRead, budget: &mut usize) -> Result<Option<String>, BadRequest> {

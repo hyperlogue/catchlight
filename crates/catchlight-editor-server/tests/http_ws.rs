@@ -35,21 +35,25 @@ struct Server {
 }
 
 fn start() -> Server {
+    start_with(|_| {})
+}
+
+/// The fixture with one knob turned — an upload ceiling low enough to hit, or
+/// a keepalive interval a test can afford to wait for.
+fn start_with(tune: impl FnOnce(&mut HttpOptions)) -> Server {
     // Nothing here is allowed to touch the filesystem, so the staging layer
     // stands on `NoStorage`: an upload is the only way bytes get in.
     let staging = Arc::new(StagingStorage::new(Arc::new(NoStorage)));
     let editor = Arc::new(Editor::with_storage(staging.clone()));
-    let server = bind_http(
-        editor,
-        "127.0.0.1:0".parse().unwrap(),
-        HttpOptions {
-            allowed_origins: vec![ALLOWED_ORIGIN.to_string()],
-            token: Some(TOKEN.to_string()),
-            max_upload_bytes: 8 * 1024 * 1024,
-            staging: Some(staging),
-        },
-    )
-    .unwrap();
+    let mut options = HttpOptions {
+        allowed_origins: vec![ALLOWED_ORIGIN.to_string()],
+        token: Some(TOKEN.to_string()),
+        max_upload_bytes: 8 * 1024 * 1024,
+        staging: Some(staging),
+        ..HttpOptions::default()
+    };
+    tune(&mut options);
+    let server = bind_http(editor, "127.0.0.1:0".parse().unwrap(), options).unwrap();
     let addr = server.addr;
     std::thread::spawn(move || {
         let _ = server.serve();
@@ -632,7 +636,7 @@ fn a_preflight_is_answered_for_an_allowlisted_origin_only() {
 }
 
 #[test]
-fn an_upload_over_the_ceiling_is_refused() {
+fn an_upload_far_over_the_ceiling_is_refused_unread() {
     let server = start();
     let response = http(
         server.addr,
@@ -640,10 +644,65 @@ fn an_upload_over_the_ceiling_is_refused() {
         "/files/too-big.clm",
         &[
             ("Authorization", &bearer()),
-            // The body is never sent: the length alone decides.
-            ("Content-Length", "9000000"),
+            // The body is never sent, and at 200 MB it is far past what the
+            // server will drain anyway: the length alone decides, and the
+            // answer waits on no bytes.
+            ("Content-Length", "200000000"),
         ],
         b"",
     );
     assert_eq!(response.status, 413);
+}
+
+/// A body only a little over the ceiling is read and thrown away before the
+/// 413 goes out. Answering with bytes still unread closes the socket on the
+/// sender, and a client reports that reset instead of the status it was sent.
+#[test]
+fn an_upload_over_the_ceiling_is_drained_so_its_413_arrives() {
+    let server = start_with(|options| options.max_upload_bytes = 1024);
+    // Far past what the socket buffers between here and there will hold, so
+    // this write finishes only if the server is genuinely reading the body it
+    // has already refused.
+    let body = vec![0u8; 4 * 1024 * 1024];
+
+    let response = http(
+        server.addr,
+        "PUT",
+        "/files/too-big.clm",
+        &[("Authorization", &bearer())],
+        &body,
+    );
+    assert_eq!(response.status, 413);
+    assert_eq!(response.header("connection"), Some("close"));
+    assert_eq!(String::from_utf8_lossy(&response.body), "body too large");
+}
+
+/// A tab that is only watching sends nothing for minutes, so the server keeps
+/// the connection warm itself and takes the pong as proof the tab is there.
+#[test]
+fn an_idle_socket_is_pinged_and_survives_answering() {
+    let server = start_with(|options| options.ping_interval = Duration::from_millis(500));
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+
+    // Twice: the second ping only arrives if the first pong reset the idle
+    // clock, rather than the connection simply not having run out yet.
+    await_ping(&mut socket);
+    await_ping(&mut socket);
+
+    // And it is still a socket a command goes over.
+    let (session, _) = new_session(&mut socket, 1);
+    assert_eq!(session, SessionId(1));
+}
+
+/// Read until the keepalive ping arrives, then flush the pong tungstenite
+/// queued for it — a queued pong goes out on the next call, not on its own.
+fn await_ping(socket: &mut Socket) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Message::Ping(_) = socket.read().unwrap() {
+            socket.flush().unwrap();
+            return;
+        }
+    }
+    panic!("no keepalive ping arrived");
 }

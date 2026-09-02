@@ -21,6 +21,12 @@
  * `closed` the moment the socket does, rather than hanging until a caller's
  * own timeout — an editor that cannot be reached is not a slow editor.
  *
+ * **The server keeps the socket warm, and nothing here does.** It pings an
+ * idle connection and hangs up on one that has stayed silent for two of its
+ * intervals. The platform's `WebSocket` answers a ping on its own, underneath
+ * [`SocketLike`], which is why this class schedules no heartbeat and why
+ * [`SocketLike`] models no control frames.
+ *
  * `fetch` and the socket constructor are injected so the whole class can be
  * tested against fakes, with no network and no DOM.
  */
