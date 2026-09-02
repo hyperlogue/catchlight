@@ -24,6 +24,10 @@ body {
   border-block-end: 1px solid #45475a;
 }
 
+/* Row 2 by name, not by order: `#failure` is `hidden` until something goes
+   wrong, and a hidden element is no grid item — without this the editor lands
+   in the auto row and is as tall as its own content instead of the window. */
 #editor {
+  grid-row: 2;
   min-block-size: 0;
 }

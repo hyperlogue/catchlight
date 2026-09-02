@@ -34,7 +34,14 @@
     --cl-radius: 4px;
     --cl-gap: 6px;
     --cl-pad: 8px;
-    --cl-panel-width: 220px;
+    /* Wide enough for the widest row either panel holds: the node toolbar's
+       kind picker beside its buttons, and an inspector label beside three
+       number fields. A host that wants narrower panels overrides this, and
+       every rule below wraps or scrolls rather than clipping when it does. */
+    --cl-panel-width: 272px;
+    /* The inspector's label column. Fixed, so the controls line up down the
+       panel however long one label is. */
+    --cl-label-width: 88px;
     --cl-row-height: 22px;
 
     /* Type. */
@@ -45,7 +52,8 @@
     --cl-font-size-small: 11px;
 
     display: grid;
-    grid-template-columns: var(--cl-panel-width) minmax(0, 1fr) var(--cl-panel-width);
+    grid-template-columns:
+      minmax(0, var(--cl-panel-width)) minmax(0, 1fr) minmax(0, var(--cl-panel-width));
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       "toolbar toolbar toolbar"
@@ -80,6 +88,7 @@
   .catchlight [data-catchlight-toolbar] {
     grid-area: toolbar;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--cl-gap);
     padding: var(--cl-pad);
@@ -141,6 +150,9 @@
     flex-direction: column;
     min-block-size: 0;
     background: var(--cl-bg);
+    /* A section that will not shrink any further stops here rather than
+       drawing over the status line. */
+    overflow: hidden;
   }
 
   .catchlight [data-catchlight-panel="left"] {
@@ -153,13 +165,22 @@
     border-inline-start: 1px solid var(--cl-border);
   }
 
+  /*
+   * A section is a heading that stays and a body that scrolls.
+   *
+   * The panel is one flex column of them, so a section taller than the space
+   * left over shrinks; `min-block-size: 0` is what lets it, and the body's own
+   * `overflow` is where the content that no longer fits goes. Scrolling the
+   * body rather than the section keeps the heading in view, which is the only
+   * thing saying which of the three a scrolled-into panel is showing.
+   */
   .catchlight [data-catchlight-section] {
     display: flex;
     flex-direction: column;
     min-block-size: 0;
     padding: var(--cl-pad);
     border-block-end: 1px solid var(--cl-border);
-    overflow: auto;
+    overflow: hidden;
   }
 
   .catchlight [data-catchlight-section][data-grow] {
@@ -167,7 +188,14 @@
     border-block-end: 0;
   }
 
+  .catchlight [data-catchlight-section-body] {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    overflow: auto;
+  }
+
   .catchlight [data-catchlight-heading] {
+    flex: none;
     margin: 0 0 var(--cl-gap);
     color: var(--cl-text-dim);
     font-size: var(--cl-font-size-small);
@@ -191,7 +219,10 @@
     padding-inline-start: 12px;
   }
 
-  .catchlight [data-catchlight-session] button,
+  /* `> button:first-child` and not `button`: the close control is a button in
+     the same row, and a rule that reached it would give it the row's whole
+     width and leave one letter of the title. */
+  .catchlight [data-catchlight-session] > button:first-child,
   .catchlight [data-catchlight-node-label] {
     display: block;
     inline-size: 100%;
@@ -209,12 +240,12 @@
     text-overflow: ellipsis;
   }
 
-  .catchlight [data-catchlight-session] button:hover,
+  .catchlight [data-catchlight-session] > button:first-child:hover,
   .catchlight [data-catchlight-node-label]:hover {
     background: var(--cl-surface);
   }
 
-  .catchlight [data-catchlight-session][data-dirty] button::after {
+  .catchlight [data-catchlight-session][data-dirty] > button:first-child::after {
     content: " •";
     color: var(--cl-warn);
   }
@@ -321,8 +352,14 @@
 
   /* Node tree editing: the toolbar, the row, renaming, and drop targets. */
 
+  /* Six controls in a panel: they wrap onto a second line rather than run off
+     the edge, because a button pushed out of a narrow panel is unreachable.
+     `flex: none` is the other half — this sits above its section's scrolling
+     body, and keeps every line it wrapped onto. */
   .catchlight [data-catchlight-node-actions] {
     display: flex;
+    flex: none;
+    flex-wrap: wrap;
     gap: 4px;
     margin-block-end: var(--cl-gap);
   }
@@ -339,10 +376,12 @@
     cursor: pointer;
   }
 
-  /* The picker takes the slack; the five buttons stay the size of their words. */
+  /* The picker takes the slack; the five buttons stay the size of their words.
+     No `min-inline-size: 0` — a select allowed to shrink past its widest
+     option collapses to its chevron, and the automatic minimum is what keeps
+     the kind readable and pushes the buttons onto the next line instead. */
   .catchlight [data-catchlight-node-kind] {
     flex: 1 1 auto;
-    min-inline-size: 0;
   }
 
   .catchlight [data-catchlight-node-actions] button:hover:not(:disabled) {
@@ -422,7 +461,7 @@
 
   .catchlight [data-catchlight-inspector-row] {
     display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--cl-label-width) minmax(0, 1fr);
     align-items: center;
     gap: var(--cl-gap);
     min-block-size: var(--cl-row-height);
@@ -436,9 +475,11 @@
     text-overflow: ellipsis;
   }
 
-  /* The three components of a vector share the width evenly. */
+  /* The three components of a vector share the width evenly, and wrap onto a
+     second line rather than each shrink to one clipped digit. */
   .catchlight [data-catchlight-inspector-controls] {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 3px;
     min-inline-size: 0;
@@ -456,7 +497,8 @@
   .catchlight [data-catchlight-inspector] input[type="number"],
   .catchlight [data-catchlight-inspector] select {
     flex: 1 1 0;
-    min-inline-size: 0;
+    /* Wide enough for a signed two-digit value; below that the row wraps. */
+    min-inline-size: 4.5ch;
     min-block-size: 20px;
     padding: 1px 4px;
     background: var(--cl-crust);
@@ -510,7 +552,7 @@
   }
 
   .catchlight [data-catchlight-save-as] {
-    inline-size: 12ch;
+    inline-size: 16ch;
     padding: 1px 6px;
     background: var(--cl-crust);
     color: inherit;
@@ -588,15 +630,38 @@
 
   /* Param editing: the add form, one param's own fields, the keypoint strip. */
 
+  /*
+   * Two rows, not five columns: the name owns the first and min/max/default
+   * share the second, with the button beside both.
+   *
+   * One row of five put the name in whatever was left after three number
+   * fields, which in a panel is a couple of characters — and a name field
+   * narrower than its own placeholder tells a person nothing. Splitting it
+   * means the widths hold at any panel width a host sets.
+   */
   .catchlight [data-catchlight-param-add],
   .catchlight [data-catchlight-param-fields] {
     display: grid;
-    grid-template-columns: 1fr 3.5em 3.5em 3.5em auto;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
     gap: 2px;
     align-items: center;
   }
 
+  .catchlight [data-catchlight-param-add-name],
+  .catchlight [data-catchlight-param-rename] {
+    grid-column: 1 / 4;
+  }
+
+  .catchlight [data-catchlight-param-add-submit],
+  .catchlight [data-catchlight-param-delete] {
+    grid-column: 4;
+    grid-row: 1 / span 2;
+  }
+
+  /* A section's controls sit above its scrolling body; `flex: none` is what
+     keeps them their own height while the body takes the squeeze. */
   .catchlight [data-catchlight-param-add] {
+    flex: none;
     margin-block-end: var(--cl-gap);
   }
 
@@ -711,18 +776,20 @@
 
   .catchlight [data-catchlight-binding-add] {
     display: flex;
+    flex-wrap: wrap;
     gap: 2px;
   }
 
   .catchlight [data-catchlight-binding-add] select {
     flex: 1 1 auto;
-    min-inline-size: 0;
+    min-inline-size: 8ch;
   }
 
   .catchlight [data-catchlight-binding] {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    overflow-x: auto;
     padding: var(--cl-gap);
     background: var(--cl-mantle);
     border: 1px solid var(--cl-border);
@@ -731,6 +798,7 @@
 
   .catchlight [data-catchlight-binding-head] {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 2px;
   }
@@ -749,7 +817,7 @@
 
   .catchlight [data-catchlight-binding-cell] {
     flex: 1 1 0;
-    min-inline-size: 0;
+    min-inline-size: 4ch;
     padding: 1px 3px;
     background: var(--cl-crust);
     color: var(--cl-text-dim);

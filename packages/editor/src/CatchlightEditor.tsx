@@ -243,24 +243,27 @@ function Shell(): ReactNode {
         <nav data-catchlight-panel="left">
           <Documents onSelect={choose} onClose={close} current={session?.id} />
           {session ? (
-            <section data-catchlight-section="" data-grow="">
-              <h2 data-catchlight-heading="">Nodes</h2>
-              <NodeTree.Actions session={session} onError={failed} />
+            <Section
+              title="Nodes"
+              grow
+              controls={<NodeTree.Actions session={session} onError={failed} />}
+            >
               <NodeTree.Root session={session} onError={failed} />
-            </section>
+            </Section>
           ) : null}
         </nav>
         <Stage session={session} view={view} />
         <aside data-catchlight-panel="right">
           {session ? (
             <>
-              <section data-catchlight-section="">
-                <h2 data-catchlight-heading="">Inspector</h2>
+              <Section title="Inspector">
                 <Inspector.Root session={session} onError={failed} />
-              </section>
-              <section data-catchlight-section="" data-grow="">
-                <h2 data-catchlight-heading="">Params</h2>
-                <ParamAdd.Root session={session} onError={failed} />
+              </Section>
+              <Section
+                title="Params"
+                grow
+                controls={<ParamAdd.Root session={session} onError={failed} />}
+              >
                 {/* The default row is the slider alone, and a column of
                     unlabelled sliders names nothing. */}
                 <ParamList.Root session={session}>
@@ -272,11 +275,10 @@ function Shell(): ReactNode {
                     </>
                   )}
                 </ParamList.Root>
-              </section>
-              <section data-catchlight-section="">
-                <h2 data-catchlight-heading="">Bindings</h2>
+              </Section>
+              <Section title="Bindings">
                 <Bindings session={session} onError={failed} />
-              </section>
+              </Section>
             </>
           ) : null}
         </aside>
@@ -294,6 +296,39 @@ function Shell(): ReactNode {
         )}
       </PresenceProvider>
     </>
+  );
+}
+
+/**
+ * One section of a panel: a heading, the controls that stay under it, and a
+ * body that scrolls.
+ *
+ * The three-part shape is why this exists rather than a bare `<section>`. A
+ * panel is a flex column of these, so a section whose content outgrows the
+ * space left over has to give somewhere, and the only place that reads
+ * correctly is the body: the heading is what says which section a scrolled
+ * panel is showing, and a toolbar that scrolled out of reach would be worse
+ * than one that never fitted. `grow` marks the section that takes the slack
+ * when the others have what they need — one per panel.
+ */
+function Section({
+  title,
+  grow,
+  controls,
+  children,
+}: {
+  title: string;
+  grow?: boolean;
+  /** Between the heading and the body, and never scrolled away from it. */
+  controls?: ReactNode;
+  children: ReactNode;
+}): ReactNode {
+  return (
+    <section data-catchlight-section="" data-grow={grow ? "" : undefined}>
+      <h2 data-catchlight-heading="">{title}</h2>
+      {controls}
+      <div data-catchlight-section-body="">{children}</div>
+    </section>
   );
 }
 
@@ -406,10 +441,9 @@ function Documents({
   current: SessionId | undefined;
 }): ReactNode {
   return (
-    <section data-catchlight-section="">
-      <h2 data-catchlight-heading="">Documents</h2>
+    <Section title="Documents">
       <SessionList.Root onSelect={onSelect} onClose={onClose} current={current} />
-    </section>
+    </Section>
   );
 }
 
