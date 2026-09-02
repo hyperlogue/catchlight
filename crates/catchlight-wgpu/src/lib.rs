@@ -106,7 +106,27 @@ pub async fn create_surface_context(
         })
         .await?;
 
-    let caps = surface.get_capabilities(&adapter);
+    let context = configure_surface(&adapter, &device, surface, width, height);
+    Ok((device, queue, context))
+}
+
+/// Configure `surface` for a device that **already exists**, with the same
+/// format and compositing choices [`create_surface_context`] makes.
+///
+/// A browser tab holds one device and as many canvases as it has viewports, so
+/// the second surface has nothing left to request: asking for another device
+/// would give each canvas its own GPU-side world and no texture could be
+/// shared between them. This is that path, and it is synchronous — the two
+/// promises WebGPU has are the adapter and the device, and both are already
+/// resolved by the time a canvas appears.
+pub fn configure_surface(
+    adapter: &wgpu::Adapter,
+    device: &wgpu::Device,
+    surface: wgpu::Surface<'static>,
+    width: u32,
+    height: u32,
+) -> SurfaceContext {
+    let caps = surface.get_capabilities(adapter);
     // WebGPU canvas contexts only advertise the non-sRGB swapchain
     // formats (Bgra8Unorm, Rgba8Unorm, Rgba16Float). To get the GPU
     // to encode linear→sRGB on write — which is what the rest of our
@@ -151,18 +171,14 @@ pub async fn create_surface_context(
         view_formats,
         desired_maximum_frame_latency: 2,
     };
-    surface.configure(&device, &config);
+    surface.configure(device, &config);
 
-    Ok((
-        device,
-        queue,
-        SurfaceContext {
-            surface,
-            config,
-            surface_format,
-            render_format,
-        },
-    ))
+    SurfaceContext {
+        surface,
+        config,
+        surface_format,
+        render_format,
+    }
 }
 
 /// Device and queue for headless rendering (tests, the visual baselines, the
