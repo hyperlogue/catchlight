@@ -23,6 +23,14 @@
  * reply; `export_manifest` writes a manifest and a file per texture, so what
  * it staged is whatever appeared while it ran.
  *
+ * The mirror of that holds for the keys a command *reads*: staging is where
+ * the asynchrony stops, not a cache. A `session_open` decodes the `.clm` into
+ * a model that owns its own copy, so leaving the bytes staged keeps a second
+ * whole document — textures and all — alive for the life of the tab. So a
+ * command that read a key into a document discards it once the reply is good;
+ * a query that merely read one (`manifest_requirements`) does not, because the
+ * command it is asked ahead of is about to want the same bytes.
+ *
  * **Events are dispatched before `send` resolves.** They come out of the same
  * synchronous `handle` call, and a caller waiting for the revision its reply
  * promised is waiting for the feed that this dispatch starts.
@@ -74,6 +82,9 @@ export class InTabBackend implements Backend {
 
     const reply = readReply(text, command.cmd);
     if (staged) await this.#drainBytes(editor, staged, reply);
+    // After the reply is read, so a command that failed keeps its bytes: the
+    // caller is entitled to retry it without staging them a second time.
+    if (key !== undefined && consumesKey(command)) editor.takeBytes(key);
     return reply;
   }
 
@@ -86,6 +97,12 @@ export class InTabBackend implements Backend {
     if (this.#live().stagedKeys().includes(key)) return;
     const bytes = await this.#storage.read(key);
     this.#live().putBytes(key, bytes);
+  }
+
+  /** Drops what is staged under `key`. Nothing staged is not an error. */
+  discardKey(key: string): Promise<void> {
+    this.#live().takeBytes(key);
+    return Promise.resolve();
   }
 
   /**
@@ -181,6 +198,23 @@ function readsKey(command: Command): string | undefined {
     default:
       return undefined;
   }
+}
+
+/**
+ * Whether a command reads its key *into* the document, so that what is staged
+ * under it is a second copy the moment the command returns.
+ *
+ * `manifest_requirements` reads a manifest and answers a question about it,
+ * which is why it is not here: `importManifest` asks it and then imports the
+ * same path, and discarding in between would be a trip back to storage for
+ * bytes that were already in hand.
+ */
+function consumesKey(command: Command): boolean {
+  return (
+    command.cmd === "session_open" ||
+    command.cmd === "session_import" ||
+    command.cmd === "texture_add"
+  );
 }
 
 /** Whether a command puts bytes into the editor's store rather than reading them. */

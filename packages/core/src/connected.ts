@@ -172,6 +172,15 @@ export class ConnectedBackend implements Backend {
     return Promise.resolve();
   }
 
+  /**
+   * Nothing, for the same reason: there is no staging map to empty, and the
+   * key names a file in the editor's store that a caller did not ask to
+   * delete.
+   */
+  discardKey(_key: string): Promise<void> {
+    return Promise.resolve();
+  }
+
   feed(replica: WasmReplica, session: number, rev: number): Promise<number> {
     return this.#feeds.run(session, rev, () => this.#fetchInto(replica, session));
   }

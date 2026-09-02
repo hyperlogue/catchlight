@@ -41,7 +41,7 @@ describe("in-tab", () => {
     expect(reply.rev).toBe(1);
   });
 
-  test("stages the key a command names, out of the store", async () => {
+  test("stages the key a command names, out of the store, and then drops it", async () => {
     const editor = new FakeEditor();
     const storage = new MemoryStorage();
     await storage.write("project/akari.clm", new TextEncoder().encode("a model"));
@@ -50,9 +50,29 @@ describe("in-tab", () => {
     await backend.send({ cmd: "session_open", path: "project/akari.clm" });
 
     // The fake refuses an unstaged key, so reaching a `session` reply is the
-    // proof that the bytes were there first.
+    // proof that the bytes were there first — and staging is empty afterwards,
+    // because the model the open built owns its own copy.
     expect(editor.requests.map((r) => r.cmd)).toEqual(["session_open"]);
-    expect(editor.stagedKeys()).toEqual(["project/akari.clm"]);
+    expect(editor.stagedKeys()).toEqual([]);
+
+    // And the key is still openable: the second one stages out of the store
+    // again rather than finding a hole where the bytes used to be.
+    await backend.send({ cmd: "session_open", path: "project/akari.clm" });
+    expect(editor.docs.size).toBe(2);
+  });
+
+  test("a command that failed keeps its bytes staged", async () => {
+    const editor = new FakeEditor();
+    const backend = new InTabBackend(editor, new MemoryStorage());
+    editor.refuse.set("session_open", { code: "io", message: "not a model" });
+    await backend.putBytes("akari.clm", new TextEncoder().encode("a model"));
+
+    await expect(backend.send({ cmd: "session_open", path: "akari.clm" })).rejects.toBeInstanceOf(
+      ProtocolError,
+    );
+
+    // Nothing read them, and the caller may retry without producing them twice.
+    expect(editor.stagedKeys()).toEqual(["akari.clm"]);
   });
 
   test("a key the store does not have fails before any command", async () => {

@@ -104,6 +104,17 @@ export interface Backend {
   stageKey(key: string): Promise<void>;
 
   /**
+   * Says `key` will not be read again, so whatever was staged for it can go.
+   *
+   * The counterpart of [`stageKey`], and only for keys a caller staged by
+   * hand: `send` discards the ones it staged itself. In-tab that empties the
+   * staging map, which otherwise holds a second copy of every document ever
+   * opened. Connected it does nothing at all — there the key names a file in
+   * the editor's own store, and deleting that is not what a caller meant.
+   */
+  discardKey(key: string): Promise<void>;
+
+  /**
    * Brings `replica` to at least `rev`, resolving with the revision it holds
    * afterwards — which may be newer than asked. Feeds for one session are
    * serialized and coalesced.
