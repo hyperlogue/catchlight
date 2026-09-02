@@ -40,6 +40,19 @@
 //!   [`PrepareOptions::memoize_textures`] something to save. A stopgap: the
 //!   arena rework (cl-32i.19) replaces it with slots that are owned rather
 //!   than swept.
+//! - **A rebuild keeps the GPU texture whose payload did not move.** A model
+//!   texture's bytes are immutable, so a slot whose Id and payload `Arc` are
+//!   both what the last build put there already holds the right image: it is
+//!   neither decoded nor re-uploaded, and the [`UvCrop`] the first decode
+//!   returned is kept beside it because nothing would recompute it. This is
+//!   what makes a replica affordable —
+//!   [`Model::replace_structure`](catchlight_core::Model::replace_structure)
+//!   rebuilds the whole model after every server-side edit and hands back the
+//!   same payloads, so a rebuild that changed no texture costs no texture
+//!   work at all. Pointer equality, never a byte compare: a payload is never
+//!   rewritten in place, so the two answer the same question and only one is
+//!   free. [`RenderCache::stats`] counts what each build decoded and what it
+//!   kept.
 //! - **One cache, one renderer.** The GPU state a cache's slots name lives in
 //!   the [`WgpuRenderer`] that prepared it. Two caches sharing a renderer
 //!   would overwrite each other's mesh and texture slots, which is the same
@@ -49,11 +62,13 @@
 //!   images. The remap is applied to the vertex data this cache uploads, so
 //!   the model keeps the UVs its author wrote.
 
+use std::sync::Arc;
+
 use catchlight_core::components::{NodeIdx, NodeKind};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
-    Mesh, MeshIndices, Model, ModelNodeKind, Node, NodeId, NodeTree, Puppet, TexturePrepCache,
-    UvCrop, Vec2,
+    Mesh, MeshIndices, Model, ModelNodeKind, ModelTexture, Node, NodeId, NodeTree, Puppet, TexId,
+    TexturePrepCache, UvCrop, Vec2,
 };
 
 use crate::collect::{Collector, DrawSource, RenderList, NO_SLOT};
@@ -82,6 +97,46 @@ pub struct PrepareOptions {
     pub memoize_textures: bool,
 }
 
+/// What a cache's builds have cost, counted since it was prepared.
+///
+/// Cumulative, so a caller measuring one rebuild takes the difference across
+/// it. `texture_uploads + textures_kept` is the model's texture count summed
+/// over `rebuilds`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    /// Whole-cache builds, including the one [`RenderCache::prepare`] runs.
+    pub rebuilds: u64,
+    /// Textures a build decoded and handed the renderer, because it held no
+    /// GPU texture for that payload. The renderer may still skip the copy
+    /// itself if the decoded pixels match what the slot holds; the decode
+    /// happened either way.
+    pub texture_uploads: u64,
+    /// Textures a build kept: same Id in the same slot, and the same payload
+    /// `Arc`. Neither decoded nor uploaded.
+    pub textures_kept: u64,
+}
+
+/// One texture slot's GPU state, as the build that filled it left it.
+///
+/// The payload is held by `Arc` rather than compared: a [`ModelTexture`]'s
+/// bytes are immutable, so a pointer-equal payload *is* the texture that was
+/// uploaded, and the check costs a word instead of a megabyte.
+#[derive(Debug, Clone)]
+struct UploadedTexture {
+    id: TexId,
+    payload: Arc<Vec<u8>>,
+    /// The crop the decode returned, kept because a rebuild that reuses the
+    /// GPU texture never runs the decode that would produce it again.
+    uv_crop: Option<UvCrop>,
+}
+
+impl UploadedTexture {
+    /// Whether the texture at this slot is the one `model` now wants there.
+    fn is(&self, id: &TexId, texture: &ModelTexture) -> bool {
+        &self.id == id && Arc::ptr_eq(&self.payload, &texture.data)
+    }
+}
+
 /// The renderer's derived copy of a model.
 ///
 /// Prepared from a [`Model`], refreshed from a [`Puppet`], collected into a
@@ -105,6 +160,10 @@ pub struct RenderCache {
     /// The decode memo, when [`PrepareOptions::memoize_textures`] asked for
     /// one.
     texture_memo: Option<TexturePrepCache>,
+    /// What each texture slot holds on the GPU, indexed by slot. Rebuilt on
+    /// every build, and what the next one matches a model's textures against.
+    uploaded: Vec<UploadedTexture>,
+    stats: CacheStats,
     /// Collector scratch, kept here so a caller collecting every frame keeps
     /// its buffers and its pass-through memo.
     collector: Collector,
@@ -142,6 +201,8 @@ impl RenderCache {
             mesh_of_node: Vec::new(),
             texture_count: 0,
             texture_memo: options.memoize_textures.then(TexturePrepCache::default),
+            uploaded: Vec::new(),
+            stats: CacheStats::default(),
             collector: Collector::default(),
         };
         cache.rebuild(renderer, model)?;
@@ -161,6 +222,12 @@ impl RenderCache {
     /// How many textures this cache uploaded.
     pub fn texture_count(&self) -> usize {
         self.texture_count as usize
+    }
+
+    /// What this cache's builds have cost since it was prepared. See
+    /// [`CacheStats`].
+    pub fn stats(&self) -> CacheStats {
+        self.stats
     }
 
     /// How many meshes this cache uploaded. Below the model's meshed-node
@@ -285,24 +352,44 @@ impl RenderCache {
     fn rebuild(&mut self, renderer: &mut WgpuRenderer, model: &Model) -> RendererResult<()> {
         let _span = tracing::trace_span!("render_cache::rebuild").entered();
 
+        let wanted: Vec<(&TexId, &ModelTexture)> = model
+            .texture_ids()
+            .iter()
+            .filter_map(|id| Some((id, model.texture(id)?)))
+            .collect();
+        debug_assert_eq!(
+            wanted.len(),
+            model.texture_ids().len(),
+            "a model's texture order named a texture it does not hold",
+        );
+
+        // Which slots already hold what the model wants there. A payload the
+        // model still shares with the last build is the texture the GPU
+        // already has, so it is neither decoded nor uploaded — which is what
+        // makes replacing a replica's model per commit affordable. Read from
+        // `self.uploaded` rather than taken out of it, so the error paths
+        // below leave the table describing what the renderer still holds.
+        let mut kept: Vec<Option<UploadedTexture>> = Vec::with_capacity(wanted.len());
+        let mut fresh_slots: Vec<usize> = Vec::new();
+        let mut fresh: Vec<catchlight_core::EncodedTexture> = Vec::new();
+        for (slot, (id, texture)) in wanted.iter().enumerate() {
+            match self.uploaded.get(slot) {
+                Some(up) if up.is(id, texture) => kept.push(Some(up.clone())),
+                _ => {
+                    kept.push(None);
+                    fresh_slots.push(slot);
+                    fresh.push((*texture).into());
+                }
+            }
+        }
+
         // Everything fallible runs before anything is released. A failed
         // rebuild must leave the previous build resident: releasing first
         // would strand this cache's tables — and the caller's last-good
         // render list — describing slots the renderer no longer holds, which
         // draws stale contents under new numbers.
-        let textures: Vec<catchlight_core::EncodedTexture> = model
-            .texture_ids()
-            .iter()
-            .filter_map(|id| model.texture(id))
-            .map(Into::into)
-            .collect();
-        debug_assert_eq!(
-            textures.len(),
-            model.texture_ids().len(),
-            "a model's texture order named a texture it does not hold",
-        );
         let prepped = catchlight_core::prepare_textures(
-            textures.as_slice(),
+            fresh.as_slice(),
             self.options.texture_halvings,
             self.texture_memo.as_mut(),
         )
@@ -313,21 +400,39 @@ impl RenderCache {
 
         // Hand back every slot the previous build held before taking new
         // ones, so a model that shrank does not leave GPU buffers and deform
-        // ranges behind under slots nothing names any more. Nothing past
-        // this point fails: every upload below was validated above.
-        renderer.release_for_rebuild(model.texture_ids().len() as u32);
-        for (slot, prep) in prepped.iter().enumerate() {
+        // ranges behind under slots nothing names any more. A kept slot is
+        // below the new count by construction, so the truncation never drops
+        // one. Nothing past this point fails: every upload below was
+        // validated above.
+        renderer.release_for_rebuild(wanted.len() as u32);
+        for (&slot, prep) in fresh_slots.iter().zip(prepped.iter()) {
             renderer.upload_texture(slot as u32, &prep.texture)?;
         }
-        self.texture_count = prepped.len() as u32;
+        self.texture_count = wanted.len() as u32;
+        self.stats.rebuilds += 1;
+        self.stats.texture_uploads += fresh_slots.len() as u64;
+        self.stats.textures_kept += (wanted.len() - fresh_slots.len()) as u64;
+
+        for (&slot, prep) in fresh_slots.iter().zip(prepped.iter()) {
+            kept[slot] = Some(UploadedTexture {
+                id: wanted[slot].0.clone(),
+                payload: wanted[slot].1.data.clone(),
+                uv_crop: prep.uv_crop,
+            });
+        }
+        let uv_crops: Vec<Option<UvCrop>> = kept
+            .iter()
+            .map(|up| up.as_ref().and_then(|up| up.uv_crop))
+            .collect();
+        self.uploaded = kept.into_iter().flatten().collect();
+        debug_assert_eq!(self.uploaded.len(), wanted.len());
 
         // A texture slot is a position in `texture_ids()`, so a part's albedo
         // Id resolves to one by lookup here and by identity everywhere after.
-        let tex_slot_of_id: std::collections::HashMap<_, u32> = model
-            .texture_ids()
+        let tex_slot_of_id: std::collections::HashMap<_, u32> = wanted
             .iter()
             .enumerate()
-            .map(|(slot, id)| (id.clone(), slot as u32))
+            .map(|(slot, (id, _))| ((*id).clone(), slot as u32))
             .collect();
 
         self.node_ids = model.nodes_in_order();
@@ -348,8 +453,8 @@ impl RenderCache {
                 ModelNodeKind::Part(part) => part
                     .albedo()
                     .and_then(|tex| tex_slot_of_id.get(tex))
-                    .and_then(|&s| prepped.get(s as usize))
-                    .and_then(|prep| prep.uv_crop),
+                    .and_then(|&s| uv_crops.get(s as usize).copied())
+                    .flatten(),
                 _ => None,
             };
             let mesh = build_mesh(authored, uv_crop);

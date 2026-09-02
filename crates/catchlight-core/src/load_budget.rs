@@ -219,16 +219,36 @@ pub fn charge_clm_structure(
     file: &crate::formats::clm::ClmFile,
     budget: &mut LoadBudget,
 ) -> Result<(), LoadLimitError> {
+    charge_texture_payloads(file.textures.iter().map(|t| t.data.len() as u64), budget)?;
+    charge_clm_document(&file.doc, budget)
+}
+
+/// The texture half of [`charge_clm_structure`], over payload sizes alone —
+/// so a replica applying a structure charges the payloads it sourced from its
+/// own store rather than ones it read out of a file.
+pub fn charge_texture_payloads(
+    sizes: impl Iterator<Item = u64>,
+    budget: &mut LoadBudget,
+) -> Result<(), LoadLimitError> {
+    let mut count = 0u64;
+    for size in sizes {
+        count += 1;
+        budget.charge(LoadResource::EncodedBytes, size)?;
+    }
+    budget.charge(LoadResource::Textures, count)
+}
+
+/// The document half of [`charge_clm_structure`]: everything a hostile file
+/// could make enormous that is not a texture payload.
+pub fn charge_clm_document(
+    doc: &crate::formats::clm::ClmDocument,
+    budget: &mut LoadBudget,
+) -> Result<(), LoadLimitError> {
     use crate::formats::clm::{ClmBindingValues, ClmMesh, ClmNodeKind};
     use std::collections::HashMap;
 
-    let doc = &file.doc;
-    budget.charge(LoadResource::Textures, file.textures.len() as u64)?;
     budget.charge(LoadResource::Nodes, doc.nodes.len() as u64)?;
     budget.charge(LoadResource::Params, doc.params.len() as u64)?;
-    for texture in &file.textures {
-        budget.charge(LoadResource::EncodedBytes, texture.data.len() as u64)?;
-    }
 
     let mut meshes: HashMap<&crate::id::NodeId, &ClmMesh> = HashMap::new();
     for node in &doc.nodes {
