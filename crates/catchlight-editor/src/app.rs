@@ -1459,6 +1459,7 @@ impl App {
                     max: 1.0,
                     default: 0.0,
                     key_positions: Vec::new(),
+                    param: None,
                 });
             }
             ParamAction::AddParamPair { name } => {
@@ -1476,6 +1477,7 @@ impl App {
                             max: 1.0,
                             default: 0.0,
                             key_positions: Vec::new(),
+                            param: None,
                         }) {
                             Reply::Ok {
                                 body: ResponseBody::Param { param },
@@ -2879,6 +2881,7 @@ impl App {
                         session,
                         node,
                         path: path.display().to_string(),
+                        texture: None,
                     })));
                 }
             }
@@ -3129,6 +3132,7 @@ impl App {
                     parent,
                     kind,
                     name: None,
+                    node: None,
                 });
             }
             TreeAction::AddPhysics { parent } => {
@@ -3143,6 +3147,7 @@ impl App {
                     frequency: None,
                     angle_damping: None,
                     length_damping: None,
+                    node: None,
                 });
             }
             TreeAction::Duplicate(node) => {

@@ -19,6 +19,18 @@
 //!   [`SessionId`] is the exception — a session is not part of any model, so
 //!   it stays an opaque `u64` the server allocates.
 //!
+//! - **An add may name the Id it makes**, under the same word the reply names
+//!   it back with: `node` on [`Command::NodeAdd`] and [`Command::PhysicsAdd`],
+//!   `param` on [`Command::ParamAdd`], `texture` on [`Command::TextureAdd`],
+//!   `seam` and `slot` on the two seam adds. Absent, the editor draws a free
+//!   one; present, it is refused as [`ErrorCode::DuplicateId`] if the model
+//!   already carries it. Either way the reply says which Id was made. So a
+//!   script that authors a rig writes the Ids it means once, rather than
+//!   adding and then renaming — and [`Command::RenameId`] stays what it says
+//!   it is, an author's deliberate break. The field cannot be called `id`: a
+//!   [`Request`] flattens its command next to its own correlation `id`, and
+//!   serde reads two of those as a malformed request.
+//!
 //! - **[`Command::RenameId`] is a breaking change for addons**, and the only
 //!   command that is. An addon names what it needs in the base model by Id;
 //!   renaming one rewrites every reference *inside* this model and none of
@@ -164,6 +176,10 @@ pub enum Command {
         kind: NodeKindArg,
         #[serde(default)]
         name: Option<String>,
+        /// The Id to create it under. Absent generates one; an Id the model
+        /// already carries is [`ErrorCode::DuplicateId`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<NodeId>,
     },
     NodeSet {
         session: SessionId,
@@ -285,6 +301,10 @@ pub enum Command {
         session: SessionId,
         node: NodeId,
         path: String,
+        /// The Id to create it under. Absent generates one; an Id the model
+        /// already carries is [`ErrorCode::DuplicateId`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        texture: Option<TexId>,
     },
     TextureList {
         session: SessionId,
@@ -302,6 +322,10 @@ pub enum Command {
         default: f32,
         #[serde(default)]
         key_positions: Vec<f32>,
+        /// The Id to create it under. Absent generates one; an Id the model
+        /// already carries is [`ErrorCode::DuplicateId`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        param: Option<ParamId>,
     },
     ParamList {
         session: SessionId,
@@ -602,6 +626,10 @@ pub enum Command {
         angle_damping: Option<f32>,
         #[serde(default)]
         length_damping: Option<f32>,
+        /// The Id to create it under. Absent generates one; an Id the model
+        /// already carries is [`ErrorCode::DuplicateId`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<NodeId>,
     },
     Undo {
         session: SessionId,
@@ -1160,6 +1188,8 @@ pub enum ErrorCode {
     UnknownSeam,
     /// The seam carries no such slot.
     UnknownSlot,
+    /// An add named an Id the model already carries.
+    DuplicateId,
     /// The part already carries a seam with that Id.
     DuplicateSeam,
     /// The seam already holds a slot with that Id.
@@ -1548,6 +1578,7 @@ mod tests {
                 parent: node("root"),
                 kind: NodeKindArg::Part,
                 name: Some("Body".into()),
+                node: None,
             },
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -1615,6 +1646,51 @@ mod tests {
             Command::BindingAdd { params, .. } => assert!(params.param_y.is_none()),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A [`Request`] flattens its command next to its own correlation `id`,
+    /// so an add that spelled its chosen Id `id` would send two fields of that
+    /// name and serde would refuse the whole request. Each add names the thing
+    /// it makes instead, under the word the reply names it back with.
+    #[test]
+    fn an_add_names_what_it_makes_rather_than_shadowing_the_requests_id() {
+        let line = serde_json::to_string(&Request {
+            id: 7,
+            command: Command::NodeAdd {
+                session: SessionId(1),
+                parent: node("root"),
+                kind: NodeKindArg::Part,
+                name: None,
+                node: Some(node("hair")),
+            },
+        })
+        .unwrap();
+        assert!(line.contains("\"id\":7"), "{line}");
+        assert!(line.contains("\"node\":\"hair\""), "{line}");
+
+        let back: Request = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.id, 7);
+        match back.command {
+            Command::NodeAdd { node, .. } => assert_eq!(node.unwrap().as_str(), "hair"),
+            other => panic!("{other:?}"),
+        }
+
+        // And an add that names nothing leaves the field off entirely, so the
+        // common case is the shape it always was.
+        let line = serde_json::to_string(&Request {
+            id: 8,
+            command: Command::ParamAdd {
+                session: SessionId(1),
+                name: "Pull".into(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                key_positions: Vec::new(),
+                param: None,
+            },
+        })
+        .unwrap();
+        assert!(!line.contains("\"param\""), "{line}");
     }
 
     #[test]

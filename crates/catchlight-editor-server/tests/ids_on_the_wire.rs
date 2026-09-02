@@ -76,6 +76,7 @@ fn a_renamed_node_answers_to_its_new_id_and_not_its_old_one() {
             parent: root.clone(),
             kind: NodeKindArg::Group,
             name: Some("Hat".into()),
+            node: None,
         },
     ));
     // The Id the editor minted carries its parent as a reading aid, not a
@@ -161,6 +162,7 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
             parent: root,
             kind: NodeKindArg::Group,
             name: None,
+            node: None,
         },
     ));
     let generated = param_of(body(
@@ -173,6 +175,7 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
             max: 1.0,
             default: 0.0,
             key_positions: Vec::new(),
+            param: None,
         },
     ));
     body(
@@ -275,6 +278,7 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
             parent: root.clone(),
             kind: NodeKindArg::Part,
             name: Some(name.into()),
+            node: None,
         }));
         step(quad(session, id.clone()));
         id
@@ -481,6 +485,7 @@ fn a_seam_and_a_slot_can_be_added_without_naming_one() {
         parent: root,
         kind: NodeKindArg::Part,
         name: None,
+        node: None,
     }));
     step(quad(session, part.clone()));
 
@@ -571,6 +576,7 @@ fn renaming_a_seam_carries_its_welds_and_refuses_a_name_in_use() {
             parent: root.clone(),
             kind: NodeKindArg::Part,
             name: None,
+            node: None,
         }));
         step(quad(session, node.clone()));
         step(Command::SeamAdd {
@@ -680,6 +686,7 @@ fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
             parent: root.clone(),
             kind: NodeKindArg::Part,
             name: None,
+            node: None,
         }));
         step(quad(session, node.clone()));
         step(Command::SeamAdd {
@@ -815,6 +822,7 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
             parent: root.clone(),
             kind: NodeKindArg::Part,
             name: None,
+            node: None,
         }));
         step(quad(session, node.clone()));
         step(Command::SeamAdd {
@@ -943,6 +951,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
             parent: root.clone(),
             kind: NodeKindArg::Part,
             name: None,
+            node: None,
         },
     ));
     body(&ed, 4, quad(session, part.clone()));
@@ -1029,6 +1038,7 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
             parent: root,
             kind: NodeKindArg::Part,
             name: None,
+            node: None,
         },
     ));
     body(&ed, 12, quad(session, other.clone()));

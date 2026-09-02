@@ -356,6 +356,7 @@ fn an_edit_on_one_connection_is_pushed_to_the_other() {
                 parent: root,
                 kind: NodeKindArg::Group,
                 name: Some("Hat".into()),
+            node: None,
             },
         },
     );
@@ -393,6 +394,7 @@ fn the_structure_endpoint_pairs_its_bytes_with_the_revision_they_are() {
                 parent: root,
                 kind: NodeKindArg::Group,
                 name: Some("Hat".into()),
+            node: None,
             },
         },
     );
@@ -487,6 +489,7 @@ fn a_texture_comes_back_as_the_payload_the_model_holds() {
                 parent: root,
                 kind: NodeKindArg::Part,
                 name: Some("Face".into()),
+            node: None,
             },
         },
     );
@@ -517,6 +520,7 @@ fn a_texture_comes_back_as_the_payload_the_model_holds() {
                 session,
                 node: part,
                 path: "face.png".into(),
+            texture: None,
             },
         },
     );
