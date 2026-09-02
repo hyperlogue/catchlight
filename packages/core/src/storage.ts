@@ -1,30 +1,33 @@
 /**
- * Where document bytes come from and go.
+ * Where document bytes live in the browser.
  *
- * This is the seam cloud persistence rides on — the whole of it. The document
- * itself lives in this tab's wasm editor; a server holds saved `.clm` files
- * and a lock, and never sees a command. So "remote" is a `Storage` that talks
- * HTTP, not a second transport, and it is deliberately kept off the command
- * channel: a transport is a request/reply stream of small JSON messages, a
- * store is bytes that want progress and resumability because a rig's textures
- * are most of its size.
+ * A store is not a transport, and the split is deliberate: a backend carries
+ * small JSON messages and answers in milliseconds, a store carries a rig whose
+ * textures are most of its size and wants progress, resumability and a quota.
+ * So "the file lives somewhere else" is a `Storage`, never a second command
+ * channel.
  *
- * Running self-contained, a store is OPFS or a file the user picked. Running
- * against a cloud project, it is HTTP — and nothing above this file changes.
+ * Keys are opaque to everything but the editor, which reads exactly two things
+ * out of them: `/` separates segments, so a manifest's texture references
+ * resolve relative to the manifest, and the tail after the last `.` picks a
+ * texture decoder.
  *
- * The wasm editor reads keys synchronously (see the staging note in
- * `catchlight-editor-wasm`), so a caller resolves bytes here first and stages
- * them before naming the key in a command. `openDocument` in `client.ts` is
- * that sequence; nothing else should have to know it.
+ * The in-tab editor reads a key synchronously, so bytes are resolved here
+ * first and staged before a command names the key. That sequence lives in
+ * `in-tab.ts`; nothing above it should have to know the order.
  */
 
 /** A byte store addressed by opaque keys. */
 export interface Storage {
   read(key: string): Promise<Uint8Array>;
   write(key: string, bytes: Uint8Array): Promise<void>;
+  /** Every key, sorted. `prefix` filters by string prefix, not by directory. */
+  list(prefix?: string): Promise<string[]>;
+  /** Removes `key`. Removing one that is not there is not an error. */
+  delete(key: string): Promise<void>;
 }
 
-/** A key that is not in the store. Distinguishable from a transport failure. */
+/** A key that is not in the store. Distinguishable from a backend failure. */
 export class NotFoundError extends Error {
   readonly key: string;
   constructor(key: string) {
@@ -48,36 +51,139 @@ export class MemoryStorage implements Storage {
     return Promise.resolve();
   }
 
-  keys(): string[] {
-    return [...this.#entries.keys()].sort();
+  list(prefix = ""): Promise<string[]> {
+    return Promise.resolve([...this.#entries.keys()].filter((k) => k.startsWith(prefix)).sort());
+  }
+
+  delete(key: string): Promise<void> {
+    this.#entries.delete(key);
+    return Promise.resolve();
   }
 }
 
 /**
- * Bytes fetched from the page's own origin, read-only.
+ * The origin private file system: the browser's own disk, per origin.
  *
- * What a bundled demo model loads through, and what a cloud project's
- * signed-URL reads will look like. Writes are refused rather than silently
- * dropped: a caller that thinks it saved and did not is the worst outcome an
- * authoring tool has.
+ * What a self-contained web editor keeps documents in — no picker, no upload,
+ * survives a reload, and the only quota that applies is the origin's. A key's
+ * `/` segments become directories, which is what makes a manifest and its
+ * textures land next to each other the way the editor resolves them.
+ *
+ * [`OpfsStorage.open`] is the only constructor, because the root handle is a
+ * promise and a store that might not be usable yet is a store every caller has
+ * to check. Under bun, or any host without the API, it refuses up front rather
+ * than failing on the first read.
  */
-export class FetchStorage implements Storage {
-  #base: string;
+export class OpfsStorage implements Storage {
+  #root: DirectoryHandle;
 
-  constructor(base = "") {
-    this.#base = base;
+  private constructor(root: DirectoryHandle) {
+    this.#root = root;
+  }
+
+  /** Whether this host has OPFS at all. False under bun and in a plain Node. */
+  static available(): boolean {
+    return typeof navigator !== "undefined" && !!opfs(navigator)?.storage?.getDirectory;
+  }
+
+  static async open(): Promise<OpfsStorage> {
+    const storage = opfs(globalThis.navigator)?.storage;
+    if (!storage?.getDirectory) {
+      throw new Error("this host has no origin private file system");
+    }
+    return new OpfsStorage(await storage.getDirectory());
   }
 
   async read(key: string): Promise<Uint8Array> {
-    const response = await fetch(this.#base + key);
-    if (response.status === 404) throw new NotFoundError(key);
-    if (!response.ok) {
-      throw new Error(`fetching ${key}: ${response.status} ${response.statusText}`);
-    }
-    return new Uint8Array(await response.arrayBuffer());
+    const file = await this.#file(key, false);
+    if (!file) throw new NotFoundError(key);
+    return new Uint8Array(await (await file.getFile()).arrayBuffer());
   }
 
-  write(key: string): Promise<void> {
-    return Promise.reject(new Error(`${this.constructor.name} is read-only; cannot write ${key}`));
+  async write(key: string, bytes: Uint8Array): Promise<void> {
+    const file = await this.#file(key, true);
+    if (!file) throw new NotFoundError(key);
+    const stream = await file.createWritable();
+    try {
+      await stream.write(bytes);
+    } finally {
+      await stream.close();
+    }
   }
+
+  async list(prefix = ""): Promise<string[]> {
+    const keys: string[] = [];
+    await walk(this.#root, "", keys);
+    return keys.filter((key) => key.startsWith(prefix)).sort();
+  }
+
+  async delete(key: string): Promise<void> {
+    const segments = key.split("/");
+    const name = segments.pop();
+    if (!name) return;
+    const dir = await this.#dir(segments, false);
+    // Missing is not a failure: delete's promise is "it is gone", and it is.
+    if (!dir) return;
+    await dir.removeEntry(name).catch(() => undefined);
+  }
+
+  async #file(key: string, create: boolean): Promise<FileHandle | undefined> {
+    const segments = key.split("/");
+    const name = segments.pop();
+    if (!name) return undefined;
+    const dir = await this.#dir(segments, create);
+    if (!dir) return undefined;
+    try {
+      return await dir.getFileHandle(name, { create });
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #dir(segments: string[], create: boolean): Promise<DirectoryHandle | undefined> {
+    let dir = this.#root;
+    for (const segment of segments) {
+      if (!segment || segment === ".") continue;
+      try {
+        dir = await dir.getDirectoryHandle(segment, { create });
+      } catch {
+        return undefined;
+      }
+    }
+    return dir;
+  }
+}
+
+async function walk(dir: DirectoryHandle, prefix: string, out: string[]): Promise<void> {
+  for await (const [name, handle] of dir.entries()) {
+    const key = prefix ? `${prefix}/${name}` : name;
+    if (handle.kind === "directory") await walk(handle, key, out);
+    else out.push(key);
+  }
+}
+
+/**
+ * The slice of the file system access API this store calls, declared here
+ * rather than taken from `lib.dom` — the directory iteration is newer than the
+ * types some toolchains ship, and a fake needs four methods, not the API.
+ */
+interface DirectoryHandle {
+  kind: "directory";
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<FileHandle>;
+  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<DirectoryHandle>;
+  removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>;
+  entries(): AsyncIterableIterator<[string, DirectoryHandle | FileHandle]>;
+}
+
+interface FileHandle {
+  kind: "file";
+  getFile(): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>;
+  createWritable(): Promise<{ write(data: Uint8Array): Promise<void>; close(): Promise<void> }>;
+}
+
+/** `navigator.storage.getDirectory`, without asserting the host has either. */
+function opfs(
+  nav: unknown,
+): { storage?: { getDirectory?(): Promise<DirectoryHandle> } } | undefined {
+  return nav as { storage?: { getDirectory?(): Promise<DirectoryHandle> } } | undefined;
 }
