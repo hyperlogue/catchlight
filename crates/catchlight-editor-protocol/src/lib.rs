@@ -261,10 +261,14 @@ pub enum Command {
         map_mode: Option<String>,
         #[serde(default)]
         local_only: Option<bool>,
-        /// The one or two params the driver writes (angle, length). Absent =
-        /// unchanged; see `clear_target_params` to detach.
+        /// The one or two params the driver writes (angle, length), in that
+        /// order. A `null` entry is an output nothing is bound to, so
+        /// `[null, "len"]` is a driver whose length drives a param and whose
+        /// angle drives none — a shorter list leaves the outputs past its end
+        /// unbound the same way. Absent = unchanged; see `clear_target_params`
+        /// to detach both.
         #[serde(default)]
-        target_params: Option<Vec<ParamId>>,
+        target_params: Option<Vec<Option<ParamId>>>,
         /// Detach the driven params (wins over `target_params`).
         #[serde(default)]
         clear_target_params: bool,
@@ -613,9 +617,11 @@ pub enum Command {
         #[serde(default)]
         name: Option<String>,
         kind: String,
-        /// The one or two params the driver writes (angle, length).
+        /// The one or two params the driver writes (angle, length), spelled
+        /// the way [`Command::PhysicsSet`] takes them: a `null` entry is an
+        /// output nothing is bound to.
         #[serde(default)]
-        target_params: Vec<ParamId>,
+        target_params: Vec<Option<ParamId>>,
         #[serde(default)]
         length: Option<f32>,
         #[serde(default)]
