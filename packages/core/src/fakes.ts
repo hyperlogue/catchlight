@@ -531,6 +531,7 @@ export function fakeWasm(): FakeModule {
             made.failNextAcquire = undefined;
             return Promise.reject(new Error(failure));
           }
+    const drawn = tree.kind === "part" || tree.kind === "composite";
           gpu.acquiredFrom.push(canvas);
           return Promise.resolve(gpu);
         },
@@ -542,6 +543,19 @@ export function fakeWasm(): FakeModule {
   return made;
 }
 
+      ...(drawn
+        ? {
+            opacity: 1,
+            blend_mode: "Normal",
+            tint: [1, 1, 1] as [number, number, number],
+            screen_tint: [0, 0, 0] as [number, number, number],
+            mask_threshold: 0.5,
+          }
+        : {}),
+      ...(tree.kind === "composite" ? { propagate_meshgroup: false } : {}),
+      ...(tree.kind === "mesh_group"
+        ? { mg_dynamic: false, mg_translate_children: true }
+        : {}),
 /**
  * A backend whose every step a test drives by hand.
  *

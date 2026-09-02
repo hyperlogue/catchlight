@@ -394,4 +394,74 @@
   .catchlight [data-catchlight-node][data-drop="after"] {
     box-shadow: inset 0 -2px 0 var(--cl-accent);
   }
+
+  /* Inspector: a label column and a control column, one row per field. */
+
+  .catchlight [data-catchlight-inspector] {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .catchlight [data-catchlight-inspector-empty] {
+    color: var(--cl-text-dim);
+  }
+
+  .catchlight [data-catchlight-inspector-empty] p {
+    margin: 0;
+  }
+
+  .catchlight [data-catchlight-inspector-row] {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--cl-gap);
+    min-block-size: var(--cl-row-height);
+  }
+
+  .catchlight [data-catchlight-inspector-label] {
+    color: var(--cl-text-dim);
+    font-size: var(--cl-font-size-small);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The three components of a vector share the width evenly. */
+  .catchlight [data-catchlight-inspector-controls] {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-inline-size: 0;
+  }
+
+  .catchlight [data-catchlight-inspector-value] {
+    font-family: var(--cl-font-mono);
+    font-size: var(--cl-font-size-small);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .catchlight [data-catchlight-inspector] input[type="text"],
+  .catchlight [data-catchlight-inspector] input[type="number"],
+  .catchlight [data-catchlight-inspector] select {
+    flex: 1 1 0;
+    min-inline-size: 0;
+    min-block-size: 20px;
+    padding: 1px 4px;
+    background: var(--cl-crust);
+    color: inherit;
+    font: inherit;
+    font-size: var(--cl-font-size-small);
+    border: 1px solid var(--cl-border);
+    border-radius: var(--cl-radius);
+  }
+
+  .catchlight [data-catchlight-inspector] input[type="checkbox"] {
+    flex: none;
+    margin: 0;
+    inline-size: 12px;
+    block-size: 12px;
+  }
 }
