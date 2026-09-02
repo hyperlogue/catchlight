@@ -1,4 +1,4 @@
-//! The renderer on a canvas, and the frame loop that drives it.
+//! One canvas drawing one replica, and the frame loop that drives it.
 //!
 //! Invariants this module carries:
 //!
@@ -15,9 +15,16 @@
 //!   synchronously would render a gesture's worth of frames the compositor
 //!   never shows, which is the shape of drag jank rather than a cure for it.
 //!
-//! - **Nothing is drawn while nothing is stale.** A started viewport still
-//!   wakes on every animation frame, but a clean one returns without touching
-//!   the GPU or acquiring a surface texture. An idle editor costs a predicate.
+//! - **Nothing is drawn while nothing is stale, and motion is what keeps it
+//!   stale.** A started viewport still wakes on every animation frame, but a
+//!   clean one returns without touching the GPU or acquiring a surface
+//!   texture. A frame that drew stays dirty exactly while
+//!   [`Puppet::tick`](catchlight_core::Puppet::tick) reports
+//!   [`Motion`](catchlight_core::Motion): physics settling and an animation
+//!   playing draw themselves, and everything else — a pose change, a scratch
+//!   edit, a structure push — is someone calling [`invalidate`]. So a settled
+//!   puppet costs a predicate per frame and a swinging one keeps drawing with
+//!   nobody asking.
 //!
 //! - **[`start`] and [`stop`] are repeatable and idempotent.** React mounts,
 //!   unmounts and remounts an effect — StrictMode does it deliberately on every
@@ -28,23 +35,33 @@
 //!   `clientWidth` or `devicePixelRatio`: CSS pixels are the page's business,
 //!   and a renderer that measured the DOM itself would fight the layout it is
 //!   embedded in. The canvas's backing store and the surface configuration are
-//!   the same two numbers, passed in together by whoever resized it.
+//!   the same two numbers, passed in together by whoever resized it. What
+//!   bounds them is the device's `max_texture_dimension_2d`, which the page
+//!   reads once from [`Gpu::maxSize`](crate::Gpu::max_size) — a surface above
+//!   it fails to configure and the canvas goes black with no other symptom.
+//!
+//! - **The GPU state belongs to the replica, not to the canvas.** The
+//!   renderer, its cache and its textures live on the [`Replica`] this draws;
+//!   what a viewport owns is its surface, its stencil and its composite pool,
+//!   all three sized to this canvas alone. Two viewports on one session
+//!   therefore cost two swapchains and not two copies of the model.
 //!
 //! [`invalidate`]: Viewport::invalidate
 //! [`start`]: Viewport::start
 //! [`stop`]: Viewport::stop
+//! [`Replica`]: crate::Replica
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use catchlight_editor_protocol::SessionId;
-use catchlight_editor_server::Editor;
 use catchlight_wgpu::{
-    create_orthographic_camera_at, create_surface_context, CompositePool, PrepareOptions,
-    RenderCache, RenderList, StencilTarget, SurfaceContext, WgpuRenderer,
+    configure_surface, create_orthographic_camera_at, CompositePool, RenderList, StencilTarget,
+    SurfaceContext,
 };
-use std::sync::Arc;
 use wasm_bindgen::prelude::*;
+
+use crate::replica::browser::ReplicaInner;
+use crate::{Gpu, Replica};
 
 /// The background a model is composited over. Deliberately opaque: the editor
 /// draws its own checkerboard behind the canvas when it wants one, and an
@@ -67,11 +84,10 @@ struct Camera {
 /// callback and the JS-facing methods are two paths into the same state, and
 /// the browser runs them on one thread with no overlap.
 struct Inner {
-    editor: Arc<Editor>,
-    session: SessionId,
-    renderer: WgpuRenderer,
+    /// The session being drawn. Shared: the renderer and the cache are its,
+    /// and another viewport may be showing the same one.
+    replica: Rc<RefCell<ReplicaInner>>,
     surface: SurfaceContext,
-    cache: RenderCache,
     stencil: StencilTarget,
     composites: CompositePool,
     list: RenderList,
@@ -103,50 +119,47 @@ impl Inner {
         let view_proj =
             create_orthographic_camera_at(self.camera.height, aspect, self.camera.center);
 
-        let Self {
-            editor,
-            session,
-            renderer,
-            cache,
-            list,
-            ..
-        } = self;
-        editor
-            .with_puppet(*session, |model, puppet| {
-                puppet.tick(model, dt);
-                cache.refresh(renderer, model, puppet)?;
-                cache.collect_into(puppet, list);
-                Ok(())
-            })
-            .map_err(|e| e.to_string())?
-            .map_err(|e: catchlight_wgpu::RendererError| e.to_string())?;
+        let mut replica = self
+            .replica
+            .try_borrow_mut()
+            .map_err(|_| "the replica is already borrowed on this frame".to_string())?;
+        // Stale again while the puppet is still moving itself, so physics
+        // settles and an animation plays with nobody calling `invalidate`.
+        if replica.frame(dt, &mut self.list)?.any() {
+            self.dirty = true;
+        }
 
         // A surface that will not hand over a texture is not an error: the
         // canvas was resized, or the tab was hidden and came back. Reconfigure
         // and stay stale so the next frame tries again.
         let Some((frame, view)) = self.surface.acquire() else {
-            self.surface.reconfigure(&self.renderer.device);
+            self.surface.reconfigure(replica.device());
             self.dirty = true;
             return Ok(false);
         };
 
+        let render = replica
+            .render
+            .as_mut()
+            .ok_or("this viewport's replica lost its renderer")?;
         self.stencil.ensure_size_for_pipelines(
-            &self.renderer.shared,
-            &self.renderer.device,
+            &render.renderer.shared,
+            &render.renderer.device,
             width,
             height,
         );
         self.composites.ensure_size(width, height);
 
         let mut encoder =
-            self.renderer
+            render
+                .renderer
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("catchlight viewport"),
                 });
-        self.renderer.begin_camera_submit();
-        self.renderer.update_camera(view_proj);
-        let result = self.renderer.render_list(
+        render.renderer.begin_camera_submit();
+        render.renderer.update_camera(view_proj);
+        let result = render.renderer.render_list(
             &self.list,
             &mut encoder,
             &view,
@@ -156,7 +169,7 @@ impl Inner {
             height,
             Some(CLEAR),
         );
-        self.renderer.queue.submit(Some(encoder.finish()));
+        render.renderer.queue.submit(Some(encoder.finish()));
         frame.present();
         result.map_err(|e| e.to_string())?;
         Ok(true)
@@ -166,7 +179,7 @@ impl Inner {
 /// The frame callback, shared between the viewport and the browser's schedule.
 type FrameCallback = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
 
-/// One canvas, drawing one session.
+/// One canvas, drawing one replica.
 #[wasm_bindgen]
 pub struct Viewport {
     inner: Rc<RefCell<Inner>>,
@@ -178,42 +191,51 @@ pub struct Viewport {
     pending: Rc<Cell<Option<i32>>>,
 }
 
+#[wasm_bindgen]
 impl Viewport {
-    pub(crate) async fn attach(
-        editor: Arc<Editor>,
-        session: SessionId,
+    /// Draws `replica` on `canvas`, from now until [`Viewport::stop`].
+    ///
+    /// Synchronous: the device already exists, and configuring a surface for a
+    /// device in hand does not await. The canvas's current `width`/`height`
+    /// are the initial backing store.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        gpu: &Gpu,
+        replica: &Replica,
         canvas: web_sys::HtmlCanvasElement,
-    ) -> Result<Self, String> {
+    ) -> Result<Viewport, JsValue> {
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
 
-        let instance = wgpu::Instance::default();
-        let surface = instance
+        let surface = gpu
+            .instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .map_err(|e| format!("creating a surface for the canvas: {e}"))?;
-        let (device, queue, surface) = create_surface_context(&instance, surface, width, height)
-            .await
-            .map_err(|e| format!("no WebGPU device for this canvas: {e}"))?;
+            .map_err(|e| JsValue::from_str(&format!("creating a surface for the canvas: {e}")))?;
+        let surface = configure_surface(&gpu.adapter, &gpu.device, surface, width, height);
 
-        let mut renderer = WgpuRenderer::new(device, queue, surface.render_format).await;
-        let cache = editor
-            .with_model(session, |model| {
-                RenderCache::prepare(&mut renderer, model, PrepareOptions::default())
-            })
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("preparing the render cache: {e}"))?;
-
-        let stencil =
-            StencilTarget::new_for_pipelines(&renderer.shared, &renderer.device, width, height);
-        let composites = CompositePool::new(width, height);
+        let shared = replica.inner();
+        let (stencil, composites) = {
+            let mut inner = shared
+                .try_borrow_mut()
+                .map_err(|_| JsValue::from_str("this replica is busy drawing another canvas"))?;
+            let render = inner
+                .ensure_renderer(surface.render_format)
+                .map_err(|e| JsValue::from_str(&e))?;
+            (
+                StencilTarget::new_for_pipelines(
+                    &render.renderer.shared,
+                    &render.renderer.device,
+                    width,
+                    height,
+                ),
+                CompositePool::new(width, height),
+            )
+        };
 
         Ok(Self {
             inner: Rc::new(RefCell::new(Inner {
-                editor,
-                session,
-                renderer,
+                replica: shared,
                 surface,
-                cache,
                 stencil,
                 composites,
                 list: RenderList::default(),
@@ -232,33 +254,11 @@ impl Viewport {
             pending: Rc::new(Cell::new(None)),
         })
     }
-}
 
-#[wasm_bindgen]
-impl Viewport {
     /// Marks the picture stale. At most one frame follows, however many times
     /// this is called before it runs.
     pub fn invalidate(&self) {
         self.inner.borrow_mut().dirty = true;
-    }
-
-    /// The largest backing store this adapter will configure a surface for,
-    /// in device pixels on either axis.
-    ///
-    /// The page cannot work this out for itself: it is an adapter limit, and no
-    /// adapter exists until [`attach`] has awaited one. A canvas above it fails
-    /// surface configuration and the viewport goes black with no other symptom,
-    /// so the size the page reports is clamped to this rather than to a guess.
-    ///
-    /// [`attach`]: crate::CatchlightEditor::attach
-    #[wasm_bindgen(js_name = maxSize)]
-    pub fn max_size(&self) -> u32 {
-        self.inner
-            .borrow()
-            .renderer
-            .device
-            .limits()
-            .max_texture_dimension_2d
     }
 
     /// Reconfigures for a canvas whose backing store is now `width` × `height`
@@ -271,9 +271,15 @@ impl Viewport {
             return;
         }
         inner.size = (width, height);
-        let device = inner.renderer.device.clone();
-        inner.surface.resize(&device, width, height);
         inner.dirty = true;
+        // Borrowed only for the handle: the surface is this viewport's, the
+        // device is the tab's, and the frame in flight may hold the replica.
+        let Ok(replica) = inner.replica.try_borrow() else {
+            return;
+        };
+        let device = replica.device().clone();
+        drop(replica);
+        inner.surface.resize(&device, width, height);
     }
 
     /// Points the camera at `(center_x, center_y)` in world units, framing

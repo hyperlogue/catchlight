@@ -11,17 +11,28 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+catchlight-core = { workspace = true }
 catchlight-editor-server = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+# Only to author a one-pixel PNG for the texture tests; nothing in the crate
+# decodes an image.
+image = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = "0.1"
-# The viewport. Browser-only by construction — a wgpu surface comes from a
-# canvas — so it is not in the crate's native build and neither is its cost.
+# The GPU half: the device, the render cache and the viewport. Browser-only by
+# construction — a wgpu surface comes from a canvas — so it is not in the
+# crate's native build and neither is its cost.
 catchlight-wgpu = { workspace = true }
-wgpu = { workspace = true }
+# `webgl` so a browser with no WebGPU still draws. Under resolver 2 this
+# feature reaches wgpu only on wasm32 builds; a native `cargo test` still gets
+# a wgpu with no GL backend forced on, which is what keeps
+# `create_headless_context`'s `Backends::PRIMARY` note true.
+wgpu = { workspace = true, features = ["webgl"] }
 glam = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 js-sys = { workspace = true }

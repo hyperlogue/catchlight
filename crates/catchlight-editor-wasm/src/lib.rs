@@ -28,8 +28,19 @@
 //!   that was not staged is a plain `NotFound`, which is the honest answer —
 //!   the layer that knows how to fetch it is above this one.
 //!
+//! - **The tab holds a replica, and Rust never calls JavaScript.** What the
+//!   page draws and reads per frame is a [`ReplicaState`] of one session, fed
+//!   only by the two paths that type documents; commands are still the
+//!   protocol. Nothing here takes a JS callback: an answer is a return value,
+//!   and an [`Event`] the editor emitted waits in a queue until
+//!   [`drain_events`] pulls it. A push would have to cross the boundary from
+//!   inside a lock the editor holds, and would put the browser's scheduler in
+//!   the middle of a command.
+//!
 //! [`handle`]: CatchlightEditor::handle
+//! [`drain_events`]: CatchlightEditor::drain_events
 //! [`put_bytes`]: CatchlightEditor::put_bytes
+//! [`Event`]: catchlight_editor_protocol::Event
 //! [`Request`]: catchlight_editor_protocol::Request
 //! [`Reply`]: catchlight_editor_protocol::Reply
 
@@ -37,10 +48,18 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-#[cfg(target_arch = "wasm32")]
-use catchlight_editor_protocol::SessionId;
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use catchlight_editor_server::{Editor, Storage};
+
+mod replica;
+#[cfg(target_arch = "wasm32")]
+pub use replica::Replica;
+pub use replica::ReplicaState;
+
+#[cfg(target_arch = "wasm32")]
+mod gpu;
+#[cfg(target_arch = "wasm32")]
+pub use gpu::Gpu;
 
 #[cfg(target_arch = "wasm32")]
 mod viewport;
@@ -94,13 +113,16 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The editor, its sessions, and the bytes staged for them.
+/// The editor, its sessions, the bytes staged for them, and the events it has
+/// emitted since the page last looked.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct CatchlightEditor {
-    /// Shared because a [`Viewport`] outlives any one call and draws the same
-    /// sessions this answers commands about.
-    editor: Arc<Editor>,
+    editor: Editor,
     staged: Arc<StagedStorage>,
+    /// Serialized [`Event`]s in emission order, waiting to be pulled.
+    ///
+    /// [`Event`]: catchlight_editor_protocol::Event
+    events: Arc<Mutex<Vec<String>>>,
 }
 
 impl Default for CatchlightEditor {
@@ -112,10 +134,30 @@ impl Default for CatchlightEditor {
 impl CatchlightEditor {
     fn new_inner() -> Self {
         let staged = Arc::new(StagedStorage::default());
+        let events: Arc<Mutex<Vec<String>>> = Arc::default();
+        let editor = Editor::with_storage(staged.clone());
+        let sink = events.clone();
+        // The observer holds the queue and nothing else — never the editor,
+        // which owns it, and never anything from JavaScript. The handle is
+        // dropped on the floor: this subscription lasts exactly as long as the
+        // editor it is attached to.
+        editor.subscribe(Box::new(move |event| {
+            if let Ok(json) = serde_json::to_string(event) {
+                lock(&sink).push(json);
+            }
+        }));
         Self {
-            editor: Arc::new(Editor::with_storage(staged.clone())),
+            editor,
             staged,
+            events,
         }
+    }
+
+    /// The editor underneath, for a [`ReplicaState`] taking its session's
+    /// model in-tab. Not on the JS surface: JavaScript reaches it through the
+    /// protocol, and a replica names it by passing this whole object back.
+    pub fn editor(&self) -> &Editor {
+        &self.editor
     }
 
     /// The protocol round trip, as Rust. [`CatchlightEditor::handle`] is this
@@ -181,30 +223,20 @@ impl CatchlightEditor {
     pub fn staged_keys(&self) -> Vec<String> {
         self.staged.keys()
     }
-}
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-impl CatchlightEditor {
-    /// Draws `session` on `canvas`, from now until the viewport is stopped.
+    /// Every [`Event`] emitted since the last drain, each serialized, in the
+    /// order they happened — and the queue is empty afterwards.
     ///
-    /// Asynchronous because WebGPU is: asking for an adapter and a device are
-    /// both promises, and they are the only two. Everything after this — a
-    /// resize, a camera move, a frame — is synchronous, which is what keeps the
-    /// frame loop off the microtask queue.
+    /// A pull rather than a callback: an observer runs on the thread that ran
+    /// the command, which for the in-tab editor is the middle of
+    /// [`Self::handle`], and calling into JavaScript from there would let a
+    /// listener re-enter the editor before the command it is hearing about has
+    /// finished returning.
     ///
-    /// `session` is an `f64` because a session id crosses the JSON protocol as
-    /// a `number` and has to be the same value here. A `u64` parameter would
-    /// reach JavaScript as a `bigint`, so the one id would have two spellings
-    /// and every call site would convert.
-    pub async fn attach(
-        &self,
-        canvas: web_sys::HtmlCanvasElement,
-        session: f64,
-    ) -> Result<Viewport, JsValue> {
-        Viewport::attach(self.editor.clone(), SessionId(session as u64), canvas)
-            .await
-            .map_err(|message| JsValue::from_str(&message))
+    /// [`Event`]: catchlight_editor_protocol::Event
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = drainEvents))]
+    pub fn drain_events(&self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.events))
     }
 }
 
