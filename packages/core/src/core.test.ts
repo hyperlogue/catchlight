@@ -187,7 +187,7 @@ describe("Session revisions", () => {
     });
 
     for (let i = 0; i < 100; i++) {
-      await session.sendPresence({ cmd: "scratch_deform", node: "hair", offsets: [] });
+      await session.sendPresence({ cmd: "presence_set", pose: [] });
     }
 
     expect(session.getRevision()).toBe(0);
@@ -233,7 +233,7 @@ describe("Generated wire types", () => {
   test("a command cannot be sent by the wrong method", () => {
     const session = new Session(new Transport(new FakeWasm()), 1);
 
-    // @ts-expect-error — `scratch_deform` is a presence command. Sending it
+    // @ts-expect-error — `scratch_deform` is a scratch command. Sending it
     // through `send` would bump the revision and re-render every panel on
     // every pointer move, which is the bug this split exists to prevent.
     void (() => session.send({ cmd: "scratch_deform", node: "hair", offsets: [] }));
@@ -271,7 +271,7 @@ describe("Viewport", () => {
     });
 
     for (let i = 0; i < 20; i++) {
-      await session.sendPresence({ cmd: "scratch_deform", node: "hair", offsets: [] });
+      await session.sendPresence({ cmd: "presence_set", pose: [] });
     }
 
     // Twenty repaints asked for, no revision: React saw nothing, the canvas

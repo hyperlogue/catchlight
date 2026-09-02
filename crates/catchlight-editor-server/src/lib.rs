@@ -20,10 +20,17 @@
 //! - **A drag never snapshots the model; a commit does.**
 //!   [`Command::ScratchDeform`] writes the session puppet's scratch deform and
 //!   returns without touching `rev`, so a drag of any length costs no undo
-//!   entries. [`Command::DeformVertices`] authors the same offsets into the
+//!   entries. It is the only command a client with its own puppet may serve
+//!   itself instead of sending here. [`Command::DeformVertices`] authors the same offsets into the
 //!   model and costs exactly one. Everything that edits the document goes
 //!   through [`Editor::edit_session`], which is the single place an undo
 //!   snapshot is taken.
+//!
+//! - **An observer never runs under a lock.** [`Editor::subscribe`] registers
+//!   a callback for every [`Event`], and a callback's whole reason to exist is
+//!   to read the session it was just told about. So every emission point
+//!   collects what to say, drops the sessions map and the session guard, and
+//!   only then calls out. Re-entering [`Editor`] from an observer is expected.
 //!
 //! - **The undo budget counts shared bytes once.** See [`History`]: 64
 //!   snapshots of one model hold its textures once, not 64 times.
@@ -403,9 +410,24 @@ impl Session {
     }
 }
 
+/// A callback the editor hands every [`Event`] to.
+///
+/// It is called with no editor lock held, from whichever thread ran the
+/// command, so it may call straight back into [`Editor`] — a transport
+/// observer does exactly that, reading the session it was told changed.
+pub type Observer = Box<dyn Fn(&Event) + Send + Sync>;
+
+/// One registered [`Observer`], shared so the list can be copied out from
+/// under the lock before any of them is called.
+type SharedObserver = Arc<dyn Fn(&Event) + Send + Sync>;
+
 pub struct Editor {
     sessions: Mutex<HashMap<SessionId, Arc<Mutex<Session>>>>,
     next_id: AtomicU64,
+    /// Everyone listening for [`Event`]s, by the handle [`Editor::subscribe`]
+    /// gave out.
+    observers: Mutex<Vec<(u64, SharedObserver)>>,
+    next_observer: AtomicU64,
     /// Resolves the keys the protocol calls `path`. See [`storage`].
     storage: Arc<dyn Storage>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -431,6 +453,8 @@ impl Editor {
         Self {
             sessions: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            observers: Mutex::new(Vec::new()),
+            next_observer: AtomicU64::new(1),
             storage,
             #[cfg(not(target_arch = "wasm32"))]
             preview_seq: AtomicU64::new(0),
@@ -442,19 +466,33 @@ impl Editor {
     /// Apply one request and produce its reply. Synchronous and the single
     /// funnel for every client (in-process or socket).
     pub fn handle(&self, req: Request) -> Reply {
-        // A command the protocol classifies as `Presence` or `Query` must not
-        // move any session's revision. That classification is what a client
-        // picks its send method by — a presence command that quietly bumped
-        // `rev` would re-render every panel on every pointer move, and a query
-        // that did would skip the re-render entirely. Checked here rather than
-        // per arm so it holds for commands nobody thought to test.
+        // `Document` is the one kind that may move a session's revision.
+        // That classification is what a client picks its send method by — a
+        // presence or scratch command that quietly bumped `rev` would
+        // re-render every panel on every pointer move, and a query that did
+        // would skip the re-render entirely. Checked here rather than per arm
+        // so it holds for commands nobody thought to test.
         #[cfg(debug_assertions)]
         let kind = req.command.kind();
         #[cfg(debug_assertions)]
         let revs_before = self.revs();
 
+        // Read before dispatch consumes the command. A create/open/import
+        // names its session only in the reply, so the body has the last word.
+        let addressed = req.command.session();
+
         let reply = match self.dispatch(req.command) {
-            Ok(body) => Reply::Ok { id: req.id, body },
+            Ok(body) => {
+                let session = match &body {
+                    ResponseBody::Session { session } => Some(*session),
+                    _ => addressed,
+                };
+                Reply::Ok {
+                    id: req.id,
+                    rev: session.and_then(|id| self.rev(id)),
+                    body,
+                }
+            }
             Err(e) => Reply::Err {
                 id: req.id,
                 code: e.code(),
@@ -472,6 +510,59 @@ impl Editor {
             );
         }
         reply
+    }
+
+    /// One session's revision, or `None` if it is not open — which is what a
+    /// `session_close` reply reports, its session having just gone.
+    fn rev(&self, id: SessionId) -> Option<u64> {
+        let session = self.session(id).ok()?;
+        let rev = lock(&session).rev;
+        Some(rev)
+    }
+
+    /// Register `observer` for every [`Event`] this editor emits, and hand
+    /// back the handle [`Editor::unsubscribe`] takes.
+    ///
+    /// The callback runs on whichever thread ran the command, with no editor
+    /// lock held.
+    pub fn subscribe(&self, observer: Observer) -> u64 {
+        let handle = self.next_observer.fetch_add(1, Ordering::Relaxed);
+        lock(&self.observers).push((handle, Arc::from(observer)));
+        handle
+    }
+
+    /// Drop the observer `handle` names. Unknown handles are ignored, so
+    /// unsubscribing twice is safe.
+    pub fn unsubscribe(&self, handle: u64) {
+        lock(&self.observers).retain(|(h, _)| *h != handle);
+    }
+
+    /// Hand `event` to every observer.
+    ///
+    /// The list is copied out and the guard dropped before the first call: an
+    /// observer reads the editor, and one that subscribed or unsubscribed
+    /// from inside a callback would otherwise deadlock on this very lock.
+    fn notify(&self, event: Event) {
+        let observers: Vec<SharedObserver> = {
+            let guard = lock(&self.observers);
+            guard.iter().map(|(_, o)| o.clone()).collect()
+        };
+        for observer in observers {
+            observer(&event);
+        }
+    }
+
+    /// Say that `session`'s document now reads as `rev`. Every revision move
+    /// routes through here, and so does a save — a title bar reads `dirty` the
+    /// same way it reads the tree.
+    fn notify_document(&self, session: SessionId, rev: u64) {
+        self.notify(Event::DocumentChanged { session, rev });
+    }
+
+    /// Say that the set of open sessions changed. Carries nothing: an
+    /// observer that cares re-reads the list.
+    fn notify_sessions(&self) {
+        self.notify(Event::SessionsChanged);
     }
 
     /// Every open session's revision, for the debug check in [`Self::handle`].
@@ -495,8 +586,11 @@ impl Editor {
         SessionId(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
+    /// The one place a session joins the editor — and so the one place
+    /// `SessionsChanged` is emitted. The map guard is dropped first.
     fn insert_session(&self, id: SessionId, session: Session) {
         lock(&self.sessions).insert(id, Arc::new(Mutex::new(session)));
+        self.notify_sessions();
     }
 
     fn session(&self, id: SessionId) -> Result<Arc<Mutex<Session>>, EditorError> {
@@ -529,10 +623,12 @@ impl Editor {
 
     /// Record that the caller durably persisted the bytes from `save_bytes`.
     pub fn mark_saved(&self, id: SessionId) -> Result<(), EditorError> {
-        self.with_session(id, |s| {
+        let rev = self.with_session(id, |s| {
             s.saved_rev = s.rev;
-            Ok(())
-        })
+            Ok(s.rev)
+        })?;
+        self.notify_document(id, rev);
+        Ok(())
     }
 
     /// Undo/redo stack depths — the history panel's scrub range.
@@ -618,21 +714,32 @@ impl Editor {
         id: SessionId,
         f: impl FnOnce(&mut Session) -> Result<R, EditorError>,
     ) -> Result<R, EditorError> {
-        let session = self.session(id)?;
-        let mut session = lock(&session);
-        let before = session.rev;
-        let snapshot = session.model.clone();
-        let result = f(&mut session);
-        match &result {
-            Ok(_) if session.rev != before => session.push_undo(snapshot),
-            Ok(_) => {}
-            Err(_) => {
-                // A failed command must leave no partial edit behind —
-                // multi-step commands can fail midway through mutating.
-                session.model = snapshot;
-                session.rev = before;
-                session.puppet = None;
+        let handle = self.session(id)?;
+        let (result, moved) = {
+            let mut session = lock(&handle);
+            let before = session.rev;
+            let snapshot = session.model.clone();
+            let result = f(&mut session);
+            let mut moved = None;
+            match &result {
+                Ok(_) if session.rev != before => {
+                    session.push_undo(snapshot);
+                    moved = Some(session.rev);
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    // A failed command must leave no partial edit behind —
+                    // multi-step commands can fail midway through mutating.
+                    session.model = snapshot;
+                    session.rev = before;
+                    session.puppet = None;
+                }
             }
+            (result, moved)
+        };
+        // Outside the guard: an observer reads the session it was told about.
+        if let Some(rev) = moved {
+            self.notify_document(id, rev);
         }
         result
     }
@@ -691,6 +798,30 @@ impl Editor {
         Ok(f(model, puppet))
     }
 
+    /// Read a manifest and the storage keys its textures live at.
+    ///
+    /// The one place a manifest's texture references are resolved:
+    /// [`Command::SessionImport`] reads those keys, and
+    /// [`Command::ManifestRequirements`] reports them, so a client that stages
+    /// bytes itself stages exactly what the import will ask for.
+    fn read_manifest(&self, manifest_path: &str) -> Result<(Manifest, Vec<String>), EditorError> {
+        let json = String::from_utf8(self.storage.read(manifest_path)?).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{manifest_path}: manifest is not UTF-8: {e}"),
+            )
+        })?;
+        let manifest = Manifest::from_json(&json)?;
+        // Texture references are relative to the manifest's own key.
+        let base = parent_key(manifest_path);
+        let keys = manifest
+            .textures
+            .iter()
+            .map(|t| join_key(base, &t.path))
+            .collect();
+        Ok((manifest, keys))
+    }
+
     fn dispatch(&self, cmd: Command) -> Result<ResponseBody, EditorError> {
         match cmd {
             Command::SessionNew { name } => {
@@ -707,18 +838,10 @@ impl Editor {
                 Ok(ResponseBody::Session { session: id })
             }
             Command::SessionImport { manifest_path } => {
-                let json = String::from_utf8(self.storage.read(&manifest_path)?).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("{manifest_path}: manifest is not UTF-8: {e}"),
-                    )
-                })?;
-                let manifest = Manifest::from_json(&json)?;
-                // Texture references are relative to the manifest's own key.
-                let base = parent_key(&manifest_path).to_string();
+                let (manifest, keys) = self.read_manifest(&manifest_path)?;
                 let mut data = HashMap::new();
-                for t in &manifest.textures {
-                    let bytes = self.storage.read(&join_key(&base, &t.path))?;
+                for (t, key) in manifest.textures.iter().zip(&keys) {
+                    let bytes = self.storage.read(key)?;
                     data.insert(
                         t.id.clone(),
                         TextureData {
@@ -736,6 +859,10 @@ impl Editor {
                 };
                 self.insert_session(id, Session::new(model, title, None));
                 Ok(ResponseBody::Session { session: id })
+            }
+            Command::ManifestRequirements { manifest_path } => {
+                let (_, textures) = self.read_manifest(&manifest_path)?;
+                Ok(ResponseBody::ManifestRequirements { textures })
             }
             Command::SessionList => {
                 let handles: Vec<_> = lock(&self.sessions)
@@ -758,9 +885,9 @@ impl Editor {
                 Ok(ResponseBody::Sessions { sessions })
             }
             Command::SessionClose { session } => {
-                lock(&self.sessions)
-                    .remove(&session)
-                    .ok_or(EditorError::NoSession(session))?;
+                let removed = lock(&self.sessions).remove(&session);
+                removed.ok_or(EditorError::NoSession(session))?;
+                self.notify_sessions();
                 Ok(ResponseBody::Empty)
             }
             Command::Save { session, path } => {
@@ -775,9 +902,14 @@ impl Editor {
                 };
                 // The store owns write atomicity; see `storage`.
                 self.storage.write(&key, &bytes)?;
-                let mut s = lock(&handle);
-                s.file = Some(key.clone());
-                s.saved_rev = rev;
+                {
+                    let mut s = lock(&handle);
+                    s.file = Some(key.clone());
+                    s.saved_rev = rev;
+                }
+                // A save moves no revision but does flip `dirty`, which a
+                // title bar reads the same way it reads the tree.
+                self.notify_document(session, rev);
                 Ok(ResponseBody::Saved { path: key })
             }
             Command::ExportManifest { session, path } => {
@@ -1473,12 +1605,22 @@ impl Editor {
             }),
             Command::Undo { session } => {
                 let handle = self.session(session)?;
-                lock(&handle).undo()?;
+                let rev = {
+                    let mut s = lock(&handle);
+                    s.undo()?;
+                    s.rev
+                };
+                self.notify_document(session, rev);
                 Ok(ResponseBody::Empty)
             }
             Command::Redo { session } => {
                 let handle = self.session(session)?;
-                lock(&handle).redo()?;
+                let rev = {
+                    let mut s = lock(&handle);
+                    s.redo()?;
+                    s.rev
+                };
+                self.notify_document(session, rev);
                 Ok(ResponseBody::Empty)
             }
             Command::PhysicsAdd {
@@ -1541,7 +1683,7 @@ impl Editor {
                 node,
                 offsets,
             } => {
-                // The presence path: a drag shows on the puppet and leaves the
+                // The scratch path: a drag shows on the puppet and leaves the
                 // model, its revision and its undo history alone.
                 let handle = self.session(session)?;
                 let mut s = lock(&handle);
@@ -2193,6 +2335,154 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Events, and who hears them.
+    ///
+    /// The observer reads the editor from inside the callback, which is the
+    /// point: an emission that still held the sessions map or a session guard
+    /// would deadlock here rather than in whatever transport ships first.
+    #[test]
+    fn an_observer_hears_every_change_until_it_unsubscribes() {
+        let ed = Arc::new(Editor::new());
+        let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let weak = Arc::downgrade(&ed);
+        let handle = ed.subscribe(Box::new(move |event| {
+            if let (Event::DocumentChanged { session, .. }, Some(ed)) = (event, weak.upgrade()) {
+                // Re-entering the editor from an observer is the normal case.
+                ed.with_model(*session, |m| m.node_count()).unwrap();
+            }
+            lock(&sink).push(event.clone());
+        }));
+
+        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        assert!(
+            matches!(lock(&seen).as_slice(), [Event::SessionsChanged]),
+            "a new session changes the set of open sessions",
+        );
+        lock(&seen).clear();
+
+        body(ed.handle(req(
+            2,
+            Command::NodeAdd {
+                session: s,
+                parent: NodeId::new("root").unwrap(),
+                kind: NodeKindArg::Group,
+                name: None,
+            },
+        )));
+        match lock(&seen).as_slice() {
+            [Event::DocumentChanged { session, rev }] => {
+                assert_eq!(*session, s);
+                assert_eq!(*rev, 1, "the event carries the revision after the edit");
+            }
+            other => panic!("expected one DocumentChanged, got {other:?}"),
+        }
+        lock(&seen).clear();
+
+        body(ed.handle(req(3, Command::SessionClose { session: s })));
+        assert!(matches!(lock(&seen).as_slice(), [Event::SessionsChanged]));
+        lock(&seen).clear();
+
+        ed.unsubscribe(handle);
+        let s = session_of(body(ed.handle(req(4, Command::SessionNew { name: None }))));
+        body(ed.handle(req(
+            5,
+            Command::NodeAdd {
+                session: s,
+                parent: NodeId::new("root").unwrap(),
+                kind: NodeKindArg::Group,
+                name: None,
+            },
+        )));
+        assert!(
+            lock(&seen).is_empty(),
+            "an unsubscribed observer hears nothing",
+        );
+    }
+
+    /// Every reply that names a session says which revision it reflects, so a
+    /// client can tell a stale read from a fresh one without asking again.
+    #[test]
+    fn a_reply_carries_the_revision_it_reflects() {
+        let ed = Editor::new();
+        let (s, rev) = match ed.handle(req(1, Command::SessionNew { name: None })) {
+            Reply::Ok { body, rev, .. } => (session_of(body), rev),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(rev, Some(0), "a new session reports the rev it starts at");
+        assert!(
+            matches!(
+                ed.handle(req(2, Command::SessionList)),
+                Reply::Ok { rev: None, .. }
+            ),
+            "an editor-level read names no session and so no revision",
+        );
+
+        let add = |id| {
+            ed.handle(req(
+                id,
+                Command::NodeAdd {
+                    session: s,
+                    parent: NodeId::new("root").unwrap(),
+                    kind: NodeKindArg::Group,
+                    name: None,
+                },
+            ))
+        };
+        assert!(matches!(add(3), Reply::Ok { rev: Some(1), .. }));
+        // A read of the same session reports it too, unmoved.
+        assert!(matches!(
+            ed.handle(req(4, Command::NodeTree { session: s })),
+            Reply::Ok { rev: Some(1), .. }
+        ));
+        assert!(matches!(
+            ed.handle(req(5, Command::SessionClose { session: s })),
+            Reply::Ok { rev: None, .. }
+        ));
+    }
+
+    /// What a browser asks before it stages bytes: exactly the keys the import
+    /// will read, resolved against the manifest's own key.
+    #[test]
+    fn manifest_requirements_names_the_keys_the_import_reads() {
+        let dir = std::env::temp_dir().join(format!("catchlight-reqs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut img = image::RgbaImage::new(8, 8);
+        for px in img.pixels_mut() {
+            *px = image::Rgba([10, 20, 30, 255]);
+        }
+        img.save(dir.join("face.png")).unwrap();
+        let manifest = dir.join("m.json");
+        std::fs::write(
+            &manifest,
+            r#"{"textures":[{"id":"face","path":"face.png"}],
+               "nodes":[{"id":"face","kind":"part","texture":"face","mesh":{"auto":"quad"}}]}"#,
+        )
+        .unwrap();
+
+        let ed = Editor::new();
+        let manifest_path = manifest.display().to_string();
+        match body(ed.handle(req(
+            1,
+            Command::ManifestRequirements {
+                manifest_path: manifest_path.clone(),
+            },
+        ))) {
+            ResponseBody::ManifestRequirements { textures } => assert_eq!(
+                textures,
+                vec![dir.join("face.png").display().to_string()],
+                "a texture reference resolves against the manifest's key",
+            ),
+            other => panic!("{other:?}"),
+        }
+        // The keys are the import's keys: it reads them and nothing else.
+        session_of(body(
+            ed.handle(req(2, Command::SessionImport { manifest_path })),
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn body(reply: Reply) -> ResponseBody {

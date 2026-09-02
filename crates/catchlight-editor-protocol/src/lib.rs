@@ -55,18 +55,26 @@
 //!
 //! - **A `path` field is an opaque storage key.** [`Command::SessionOpen`],
 //!   [`Command::Save`], [`Command::SessionImport`],
-//!   [`Command::ExportManifest`] and [`Command::TextureAdd`] each name bytes
-//!   with one string, and what that string addresses is the server's store:
+//!   [`Command::ManifestRequirements`], [`Command::ExportManifest`] and
+//!   [`Command::TextureAdd`] each name bytes with one string, and what that string addresses is the server's store:
 //!   a filesystem path natively, an OPFS entry or a fetched URL in the
 //!   browser, a blob key in the cloud. Only two things read a key's shape —
 //!   `/` separates segments so a manifest's texture references resolve
 //!   relative to the manifest, and the tail after the last `.` picks a texture
 //!   decoder. A client that builds keys should not assume more.
 //!
-//! The document path ([`Command::NodeSet`] and friends) bumps the session's
-//! revision, records undo and is saved. The presence path
-//! ([`Command::PresenceSet`], [`Command::ScratchDeform`]) does none of those:
-//! it is what a live drag and a shared camera ride on.
+//! - **Every command says what it does, in one place.** [`COMMAND_KINDS`]
+//!   gives each one a [`CommandKind`], and that is what a client routes by.
+//!   `Document` moves the session's revision, records undo and is saved.
+//!   `Presence` publishes shared view state and moves nothing. `Scratch` shows
+//!   a live edit on a puppet and never authors it. `ReplicaQuery` is a pure
+//!   function of the [`Model`](catchlight_core::Model), so a client holding a
+//!   replica answers it without asking the editor. `ServerQuery` needs the
+//!   editor's own state, its store or its renderer, so only the editor can.
+//!
+//! - **A reply says which revision it reflects.** [`Reply::Ok`] carries the
+//!   addressed session's `rev` *after* the command, so a client can tell a
+//!   stale read from a fresh one without a second round trip.
 
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +117,15 @@ pub enum Command {
         path: String,
     },
     SessionImport {
+        manifest_path: String,
+    },
+    /// The storage keys [`Command::SessionImport`] would read for this
+    /// manifest, resolved relative to the manifest's own key.
+    ///
+    /// A client whose store is not the editor's — a browser staging bytes it
+    /// fetched — asks this first and stages exactly these keys, so the import
+    /// itself never has to go looking for a file that is not there yet.
+    ManifestRequirements {
         manifest_path: String,
     },
     SessionList,
@@ -557,8 +574,8 @@ pub enum Command {
         session: SessionId,
     },
     /// Show a deform on the session's puppet without authoring it: the live
-    /// half of a vertex drag. On the presence path, so a drag of any length
-    /// produces no revision and no undo entry; committing it is
+    /// half of a vertex drag. A [`CommandKind::Scratch`], so a drag of any
+    /// length produces no revision and no undo entry; committing it is
     /// [`Command::DeformVertices`], which produces exactly one.
     ///
     /// `offsets` is `[dx, dy, …]` matching the node's mesh; an empty list
@@ -591,16 +608,26 @@ pub enum Command {
 pub enum CommandKind {
     /// Changes the document, or which documents exist. The session's `rev`
     /// moves — or its saved/open state does, which a title bar reads the same
-    /// way — so every view has to re-read.
+    /// way — so every view has to re-read. The only kind that moves `rev`.
     Document,
-    /// Changes what is drawn without changing the document: the drag path.
-    /// No revision, no undo entry, and deliberately invisible to a panel.
+    /// Publishes shared view state: pose, camera, selection. It goes to the
+    /// editor because other clients read it back, and it changes no document.
     Presence,
-    /// Reads. Nothing a later command would see differently.
+    /// Shows a live edit on a puppet without authoring it — the drag path.
+    /// No revision, no undo entry, and nothing to read back: whoever owns the
+    /// puppet being drawn serves it. A client with a local replica serves its
+    /// own; a client on the socket gets the editor's.
+    Scratch,
+    /// A read that is a pure function of the model. A client holding a replica
+    /// of the model answers it without a round trip; the editor answers it the
+    /// same way, from the same bytes.
+    ReplicaQuery,
+    /// A read that needs the editor itself: its session bookkeeping, its
+    /// store, or its renderer. A replica cannot answer one.
     ///
     /// `export_manifest` is here despite writing bytes: what it writes lands
     /// in the store, not in the session, and no view of the document changes.
-    Query,
+    ServerQuery,
 }
 
 /// Every command's wire tag paired with its [`CommandKind`].
@@ -613,13 +640,14 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("session_new", CommandKind::Document),
     ("session_open", CommandKind::Document),
     ("session_import", CommandKind::Document),
-    ("session_list", CommandKind::Query),
+    ("manifest_requirements", CommandKind::ServerQuery),
+    ("session_list", CommandKind::ServerQuery),
     ("session_close", CommandKind::Document),
     ("save", CommandKind::Document),
-    ("export_manifest", CommandKind::Query),
-    ("status", CommandKind::Query),
-    ("check", CommandKind::Query),
-    ("node_tree", CommandKind::Query),
+    ("export_manifest", CommandKind::ServerQuery),
+    ("status", CommandKind::ServerQuery),
+    ("check", CommandKind::ReplicaQuery),
+    ("node_tree", CommandKind::ReplicaQuery),
     ("node_add", CommandKind::Document),
     ("node_set", CommandKind::Document),
     ("node_reparent", CommandKind::Document),
@@ -635,9 +663,9 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("physics_globals", CommandKind::Document),
     ("node_delete", CommandKind::Document),
     ("texture_add", CommandKind::Document),
-    ("texture_list", CommandKind::Query),
+    ("texture_list", CommandKind::ReplicaQuery),
     ("param_add", CommandKind::Document),
-    ("param_list", CommandKind::Query),
+    ("param_list", CommandKind::ReplicaQuery),
     ("param_set", CommandKind::Document),
     ("param_delete", CommandKind::Document),
     ("param_key_insert", CommandKind::Document),
@@ -663,17 +691,17 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("slot_fill", CommandKind::Document),
     ("slot_clear", CommandKind::Document),
     ("slot_delete", CommandKind::Document),
-    ("seams", CommandKind::Query),
-    ("welds", CommandKind::Query),
-    ("unfilled_slots", CommandKind::Query),
+    ("seams", CommandKind::ReplicaQuery),
+    ("welds", CommandKind::ReplicaQuery),
+    ("unfilled_slots", CommandKind::ReplicaQuery),
     ("weld_set", CommandKind::Document),
     ("physics_add", CommandKind::Document),
     ("undo", CommandKind::Document),
     ("redo", CommandKind::Document),
     ("presence_set", CommandKind::Presence),
-    ("presence_get", CommandKind::Query),
-    ("scratch_deform", CommandKind::Presence),
-    ("preview", CommandKind::Query),
+    ("presence_get", CommandKind::ServerQuery),
+    ("scratch_deform", CommandKind::Scratch),
+    ("preview", CommandKind::ServerQuery),
 ];
 
 impl Command {
@@ -686,6 +714,7 @@ impl Command {
             Command::SessionNew { .. } => "session_new",
             Command::SessionOpen { .. } => "session_open",
             Command::SessionImport { .. } => "session_import",
+            Command::ManifestRequirements { .. } => "manifest_requirements",
             Command::SessionList => "session_list",
             Command::SessionClose { .. } => "session_close",
             Command::Save { .. } => "save",
@@ -755,8 +784,10 @@ impl Command {
     /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Document`].
     /// That case is unreachable — `xtask ts` fails the build on it — but the
     /// fallback still has to be the conservative one: calling an edit a
-    /// `Document` costs a redundant redraw, while calling it a `Query` loses
-    /// the notification entirely and leaves a panel showing stale data.
+    /// `Document` costs a redundant redraw, while calling it any of the other
+    /// four loses the notification entirely and leaves a panel showing stale
+    /// data. It also sends the command to whoever owns the document, which is
+    /// the only place an unknown command can be safely applied.
     pub fn kind(&self) -> CommandKind {
         let tag = self.tag();
         COMMAND_KINDS
@@ -764,6 +795,84 @@ impl Command {
             .find(|(name, _)| *name == tag)
             .map(|(_, kind)| *kind)
             .unwrap_or(CommandKind::Document)
+    }
+
+    /// The session this command addresses, if it addresses one.
+    ///
+    /// `None` for the editor-level commands: the ones that make a session
+    /// ([`Command::SessionNew`] and friends, which name it in their *reply*),
+    /// and the ones that read the editor rather than a document.
+    ///
+    /// Exhaustive by construction, like [`Command::tag`] — a new variant does
+    /// not compile until it says whether it names a session.
+    pub fn session(&self) -> Option<SessionId> {
+        match self {
+            Command::SessionNew { .. }
+            | Command::SessionOpen { .. }
+            | Command::SessionImport { .. }
+            | Command::ManifestRequirements { .. }
+            | Command::SessionList => None,
+            Command::SessionClose { session }
+            | Command::Save { session, .. }
+            | Command::ExportManifest { session, .. }
+            | Command::Status { session }
+            | Command::Check { session }
+            | Command::NodeTree { session }
+            | Command::NodeAdd { session, .. }
+            | Command::NodeSet { session, .. }
+            | Command::NodeReparent { session, .. }
+            | Command::NodeReorder { session, .. }
+            | Command::NodeMove { session, .. }
+            | Command::NodeDuplicate { session, .. }
+            | Command::RenameId { session, .. }
+            | Command::MaskAdd { session, .. }
+            | Command::MaskSet { session, .. }
+            | Command::MaskReorder { session, .. }
+            | Command::MaskDelete { session, .. }
+            | Command::PhysicsSet { session, .. }
+            | Command::PhysicsGlobals { session, .. }
+            | Command::NodeDelete { session, .. }
+            | Command::TextureAdd { session, .. }
+            | Command::TextureList { session }
+            | Command::ParamAdd { session, .. }
+            | Command::ParamList { session }
+            | Command::ParamSet { session, .. }
+            | Command::ParamDelete { session, .. }
+            | Command::ParamKeyInsert { session, .. }
+            | Command::ParamKeyDelete { session, .. }
+            | Command::ParamKeyMove { session, .. }
+            | Command::ParamFlip { session, .. }
+            | Command::BindingAdd { session, .. }
+            | Command::BindingKey { session, .. }
+            | Command::BindingKeys { session, .. }
+            | Command::BindingUnset { session, .. }
+            | Command::BindingReset { session, .. }
+            | Command::BindingDelete { session, .. }
+            | Command::BindingInterpolate { session, .. }
+            | Command::BindingInvert { session, .. }
+            | Command::BindingCopyKey { session, .. }
+            | Command::DeformSet { session, .. }
+            | Command::DeformVertices { session, .. }
+            | Command::MeshSet { session, .. }
+            | Command::MeshCopy { session, .. }
+            | Command::SeamAdd { session, .. }
+            | Command::SeamDelete { session, .. }
+            | Command::SlotAdd { session, .. }
+            | Command::SlotFill { session, .. }
+            | Command::SlotClear { session, .. }
+            | Command::SlotDelete { session, .. }
+            | Command::Seams { session, .. }
+            | Command::Welds { session }
+            | Command::UnfilledSlots { session }
+            | Command::WeldSet { session, .. }
+            | Command::PhysicsAdd { session, .. }
+            | Command::Undo { session }
+            | Command::Redo { session }
+            | Command::PresenceSet { session, .. }
+            | Command::PresenceGet { session }
+            | Command::ScratchDeform { session, .. }
+            | Command::Preview { session, .. } => Some(*session),
+        }
     }
 }
 
@@ -917,6 +1026,16 @@ pub struct ParamPose {
 pub enum Reply {
     Ok {
         id: u64,
+        /// The addressed session's revision *after* this command, so a client
+        /// knows what its reply describes without a second round trip.
+        ///
+        /// Present whenever the command named a session — including one it
+        /// only read, and including the create/open/import commands, which
+        /// report the revision of the session they just made. Absent for the
+        /// editor-level commands that name no session at all, and for a
+        /// `session_close`, whose session is gone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<u64>,
         body: ResponseBody,
     },
     /// `code` is what a client branches on; `message` is for a person.
@@ -1050,6 +1169,11 @@ pub enum ResponseBody {
         node: NodeId,
         slots: Vec<SeamSlot>,
     },
+    /// Storage keys an import needs, already resolved against the manifest's
+    /// own key — so a client stages them verbatim.
+    ManifestRequirements {
+        textures: Vec<String>,
+    },
 }
 
 /// Ephemeral shared view state. Rides its own path — decoupled from the document
@@ -1079,6 +1203,11 @@ pub enum Event {
     /// The document changed; `rev` is the session's new revision. Observers
     /// re-read when their last-seen rev is older.
     DocumentChanged { session: SessionId, rev: u64 },
+    /// The set of open sessions changed: one was created, opened, imported or
+    /// closed. Carries nothing — an observer that cares re-reads
+    /// [`Command::SessionList`], which is the only answer that is not already
+    /// stale by the time it arrives.
+    SessionsChanged,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1301,12 +1430,14 @@ mod tests {
     fn reply_variants_roundtrip() {
         let ok = Reply::Ok {
             id: 7,
+            rev: Some(4),
             body: ResponseBody::Session {
                 session: SessionId(3),
             },
         };
         let s = serde_json::to_string(&ok).unwrap();
         assert!(s.contains("\"reply\":\"ok\""));
+        assert!(s.contains("\"rev\":4"), "{s}");
         assert!(s.contains("\"result\":\"session\""));
         let evt = Reply::Event(Event::DocumentChanged {
             session: SessionId(3),
@@ -1337,6 +1468,69 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// An editor-level command answers with no revision at all, rather than
+    /// with a zero a client could mistake for a fresh session.
+    #[test]
+    fn a_reply_that_names_no_session_carries_no_revision() {
+        let s = serde_json::to_string(&Reply::Ok {
+            id: 1,
+            rev: None,
+            body: ResponseBody::Sessions {
+                sessions: Vec::new(),
+            },
+        })
+        .unwrap();
+        assert!(!s.contains("rev"), "{s}");
+        let back: Reply = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, Reply::Ok { rev: None, .. }));
+    }
+
+    /// The kind table is what a client routes by, so the two reads that a
+    /// replica cannot answer must not drift into `ReplicaQuery`.
+    #[test]
+    fn a_read_that_needs_the_editor_is_not_a_replica_query() {
+        let session = SessionId(1);
+        assert_eq!(
+            Command::NodeTree { session }.kind(),
+            CommandKind::ReplicaQuery
+        );
+        assert_eq!(Command::Status { session }.kind(), CommandKind::ServerQuery);
+        assert_eq!(
+            Command::PresenceGet { session }.kind(),
+            CommandKind::ServerQuery
+        );
+        assert_eq!(
+            Command::ScratchDeform {
+                session,
+                node: node("hair"),
+                offsets: Vec::new(),
+            }
+            .kind(),
+            CommandKind::Scratch
+        );
+    }
+
+    /// `Reply::rev` is filled from here, so a session-addressing command that
+    /// forgot to report one would answer with a revision of `None`.
+    #[test]
+    fn a_command_names_the_session_it_addresses() {
+        assert_eq!(
+            Command::Undo {
+                session: SessionId(5)
+            }
+            .session(),
+            Some(SessionId(5))
+        );
+        assert_eq!(Command::SessionList.session(), None);
+        assert_eq!(
+            Command::ManifestRequirements {
+                manifest_path: "m.json".into()
+            }
+            .session(),
+            None
+        );
     }
 
     #[test]

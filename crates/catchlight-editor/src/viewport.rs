@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use catchlight_core::id::ParamId;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 use catchlight_core::Vec2;
 use catchlight_core::{Model, Pose, Puppet};
 use catchlight_wgpu::{
@@ -316,7 +316,41 @@ fn apply_previews(edits: &mut catchlight_core::NodeEdits<'_>, previews: &[NodePr
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+use catchlight_wgpu::read_texture_to_rgba;
+
+fn make_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("viewport-target"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        // TEXTURE_BINDING so egui samples it; COPY_SRC for the renderer's
+        // framebuffer-snapshot blend passes.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[EGUI_VIEW_FORMAT],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let egui_view = target.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(EGUI_VIEW_FORMAT),
+        ..Default::default()
+    });
+    (target, view, egui_view)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -549,38 +583,4 @@ mod tests {
         assert!(list.root_drawables.is_empty());
         assert!(list.composite_children.is_empty());
     }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-use catchlight_wgpu::read_texture_to_rgba;
-
-fn make_target(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("viewport-target"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: FORMAT,
-        // TEXTURE_BINDING so egui samples it; COPY_SRC for the renderer's
-        // framebuffer-snapshot blend passes.
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[EGUI_VIEW_FORMAT],
-    });
-    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let egui_view = target.create_view(&wgpu::TextureViewDescriptor {
-        format: Some(EGUI_VIEW_FORMAT),
-        ..Default::default()
-    });
-    (target, view, egui_view)
 }

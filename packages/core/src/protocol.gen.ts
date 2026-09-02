@@ -46,6 +46,10 @@ export type Command =
     manifest_path: string,
   }
   | {
+    "cmd": "manifest_requirements",
+    manifest_path: string,
+  }
+  | {
     "cmd": "session_list"
   }
   | {
@@ -640,6 +644,17 @@ export type Reply =
   | {
     "reply": "ok",
     id: number,
+    /**
+     * The addressed session's revision *after* this command, so a client
+     * knows what its reply describes without a second round trip.
+     *
+     * Present whenever the command named a session — including one it
+     * only read, and including the create/open/import commands, which
+     * report the revision of the session they just made. Absent for the
+     * editor-level commands that name no session at all, and for a
+     * `session_close`, whose session is gone.
+     */
+    rev?: number | null,
     body: ResponseBody,
   }
   | {
@@ -765,13 +780,21 @@ export type ResponseBody =
     "result": "emptied",
     node: NodeId,
     slots: Array<SeamSlot>,
+  }
+  | {
+    "result": "manifest_requirements",
+    textures: Array<string>,
   };
 
-export type Event = {
-  "event": "document_changed",
-  session: SessionId,
-  rev: number,
-};
+export type Event =
+  | {
+    "event": "document_changed",
+    session: SessionId,
+    rev: number,
+  }
+  | {
+    "event": "sessions_changed"
+  };
 
 export type SessionInfo = {
   session: SessionId,
@@ -864,7 +887,8 @@ export type PreviewInfo = {
  * A command that changes the document, or which documents exist.
  *
  * The session's revision moves, so every view of it re-reads. These are the
- * commands that cost an undo entry and a React render.
+ * commands that cost an undo entry and a React render, and the only ones
+ * that must reach the editor that owns the document.
  */
 export type DocumentCommandTag =
   | "session_new"
@@ -920,30 +944,62 @@ export type DocumentCommandTag =
 export type DocumentCommand = Extract<Command, { cmd: DocumentCommandTag }>;
 
 /**
- * A command that changes what is drawn without changing the document.
+ * A command that publishes shared view state: pose, camera, selection.
  *
- * The drag path. No revision, no undo entry, and deliberately invisible to a
- * panel: a gesture of any length repaints the canvas and re-renders nothing.
+ * It goes to the editor because other clients read it back, and it changes no
+ * document: no revision, no undo entry, invisible to a panel.
  */
 export type PresenceCommandTag =
-  | "presence_set"
-  | "scratch_deform";
+  | "presence_set";
 export type PresenceCommand = Extract<Command, { cmd: PresenceCommandTag }>;
 
 /**
- * A command that reads. Nothing a later command would see differently.
+ * A command that shows a live edit on a puppet without authoring it.
+ *
+ * The drag path. Whoever owns the puppet being drawn serves it — a client
+ * with a local replica serves its own, and never asks the editor. A gesture
+ * of any length repaints the canvas and re-renders nothing.
  */
-export type QueryCommandTag =
-  | "session_list"
-  | "export_manifest"
-  | "status"
+export type ScratchCommandTag =
+  | "scratch_deform";
+export type ScratchCommand = Extract<Command, { cmd: ScratchCommandTag }>;
+
+/**
+ * A read that is a pure function of the model.
+ *
+ * A client holding a replica answers it locally, with no round trip. The
+ * editor answers it the same way, from the same bytes.
+ */
+export type ReplicaQueryCommandTag =
   | "check"
   | "node_tree"
   | "texture_list"
   | "param_list"
   | "seams"
   | "welds"
-  | "unfilled_slots"
+  | "unfilled_slots";
+export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag }>;
+
+/**
+ * A read that needs the editor itself: its session bookkeeping, its store or
+ * its renderer.
+ *
+ * A replica cannot answer one, so these always go over the wire.
+ */
+export type ServerQueryCommandTag =
+  | "manifest_requirements"
+  | "session_list"
+  | "export_manifest"
+  | "status"
   | "presence_get"
   | "preview";
-export type QueryCommand = Extract<Command, { cmd: QueryCommandTag }>;
+export type ServerQueryCommand = Extract<Command, { cmd: ServerQueryCommandTag }>;
+
+/**
+ * A command that reads, whoever answers it.
+ *
+ * The union of the two query kinds, for a caller that only cares that nothing
+ * changed. A client routes on the halves; a caller sends either.
+ */
+export type QueryCommandTag = ReplicaQueryCommandTag | ServerQueryCommandTag;
+export type QueryCommand = ReplicaQueryCommand | ServerQueryCommand;

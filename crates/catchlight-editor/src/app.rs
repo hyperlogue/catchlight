@@ -51,7 +51,7 @@ use crate::tree_panel::{TreeAction, TreePanel};
 use crate::viewport::{NodePreview, ViewportRenderer};
 
 mod selection;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests;
 
 pub struct App {
@@ -125,12 +125,8 @@ pub struct App {
 
     /// A PNG snapshot readback runs after the next render.
     snapshot_requested: bool,
-    /// Autosave debounce: the rev last written, the last rev seen, and when it
-    /// changed (egui time).
-    autosave_rev: u64,
+    /// The document revision this app has already reacted to.
     last_rev_seen: u64,
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    rev_changed_at: f64,
     /// A previous session's autosave waiting for the user's restore decision.
     pending_restore: Option<Vec<u8>>,
     /// An Id rename waiting to be confirmed. See [`IdRename`].
@@ -286,9 +282,7 @@ impl App {
             lasso_points: Vec::new(),
             mesh_edit: None,
             snapshot_requested: false,
-            autosave_rev: 0,
             last_rev_seen: 0,
-            rev_changed_at: 0.0,
             pending_restore: None,
             texture_drop: None,
             id_rename: None,
@@ -339,7 +333,6 @@ impl App {
         self.lasso_points.clear();
         self.mesh_edit = None;
         self.snapshot_requested = false;
-        self.autosave_rev = 0;
         self.last_rev_seen = 0;
         self.rendered = None;
         self.rendered_rev = u64::MAX;
@@ -361,7 +354,6 @@ impl App {
     }
 
     /// Send a session-opening command and adopt the new session.
-    #[cfg(not(target_arch = "wasm32"))]
     fn open_session(&mut self, command: Command, title: String) {
         if let Reply::Ok {
             body: ResponseBody::Session { session },
@@ -1740,9 +1732,6 @@ impl eframe::App for App {
             });
         }
 
-        #[cfg(target_arch = "wasm32")]
-        self.autosave_tick(ui.ctx(), rev);
-
         if let Some(snap) = &snapshot {
             self.refresh_armed_cache(snap);
         } else {
@@ -1907,7 +1896,6 @@ impl eframe::App for App {
 
 impl App {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
-        #[cfg(not(target_arch = "wasm32"))]
         {
             if ui.button("Import…").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
@@ -1953,27 +1941,6 @@ impl App {
                         }) {
                             self.status = format!("saved -> {path}");
                         }
-                    }
-                }
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            if ui.button("Open…").clicked() {
-                crate::io::pick_clm(self.io_queue.clone());
-            }
-            if ui.button("Download .clm").clicked() && !self.blocked_from_saving() {
-                if let Some(session) = self.session {
-                    let name = format!("{}.clm", self.title);
-                    match self.editor.save_bytes(session) {
-                        Ok(bytes) => match crate::io::download_bytes(&name, &bytes) {
-                            Ok(()) => {
-                                let _ = self.editor.mark_saved(session);
-                                self.status = format!("downloaded {name}");
-                            }
-                            Err(e) => self.status = e,
-                        },
-                        Err(e) => self.status = format!("save: {e}"),
                     }
                 }
             }
@@ -2371,33 +2338,6 @@ impl App {
         }
     }
 
-    /// Debounced single-slot OPFS autosave: write when the document sat
-    /// unchanged for a moment past the last autosaved rev. Serialization goes
-    /// through the model directly so the dirty flag stays honest.
-    #[cfg(target_arch = "wasm32")]
-    fn autosave_tick(&mut self, ctx: &egui::Context, rev: u64) {
-        const SETTLE_SECONDS: f64 = 3.0;
-        let Some(session) = self.session else { return };
-        let now = ctx.input(|i| i.time);
-        if rev != self.last_rev_seen {
-            self.last_rev_seen = rev;
-            self.rev_changed_at = now;
-        }
-        if rev == 0 || rev == self.autosave_rev {
-            return;
-        }
-        if now - self.rev_changed_at < SETTLE_SECONDS {
-            // Wake up again to fire the debounce without user input.
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-            return;
-        }
-        let editor = self.editor.clone();
-        if let Ok(Ok(bytes)) = editor.with_model(session, |m| m.to_clm_bytes()) {
-            crate::io::autosave_write(self.io_queue.clone(), bytes);
-            self.autosave_rev = rev;
-        }
-    }
-
     /// `Model::check()`'s findings. Most are cosmetic; the three about seams
     /// are not — an unfilled slot is a weld that no longer closes, and the two
     /// about a weld's seams mean the model will not save at all.
@@ -2471,15 +2411,14 @@ impl App {
         }
     }
 
-    /// Read the rendered target back and hand it out as a PNG (save dialog on
-    /// native, download on web).
+    /// Read the rendered target back and offer it as a PNG through the save
+    /// dialog.
     fn take_snapshot(&mut self) {
         let Some(viewport) = self.viewport.as_ref() else {
             return;
         };
         let (device, queue, texture, w, h) = viewport.snapshot_source();
         let name = format!("{}.png", self.title);
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let png = pollster::block_on(catchlight_wgpu::read_texture_to_rgba(
                 &device, &queue, &texture, w, h,
@@ -2501,27 +2440,6 @@ impl App {
                 }
                 None => self.status = "snapshot readback failed".into(),
             }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let io_queue = self.io_queue.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let png = catchlight_wgpu::read_texture_to_rgba(&device, &queue, &texture, w, h)
-                    .await
-                    .ok()
-                    .and_then(|px| crate::snapshot::encode_png(px, w, h));
-                match png {
-                    Some(png) => match crate::io::download_bytes(&name, &png) {
-                        Ok(()) => {
-                            io_queue.push(crate::io::IoEvent::Status(format!("downloaded {name}")))
-                        }
-                        Err(e) => io_queue.push(crate::io::IoEvent::Error(e)),
-                    },
-                    None => {
-                        io_queue.push(crate::io::IoEvent::Error("snapshot readback failed".into()))
-                    }
-                }
-            });
         }
     }
 
@@ -2949,7 +2867,6 @@ impl App {
                 .add_enabled(enabled, egui::Button::new("＋ add…"))
                 .on_disabled_hover_text("select a part to give the texture to");
             if add.clicked() {
-                #[cfg(not(target_arch = "wasm32"))]
                 if let (Some(node), Some(path)) = (
                     selected_part.clone(),
                     rfd::FileDialog::new()
@@ -2962,8 +2879,6 @@ impl App {
                         path: path.display().to_string(),
                     })));
                 }
-                #[cfg(target_arch = "wasm32")]
-                crate::io::pick_texture(self.io_queue.clone());
             }
         });
         egui::ScrollArea::vertical()
@@ -3502,7 +3417,6 @@ fn thumb_texture(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::Texture
     ctx.load_texture(name, color, egui::TextureOptions::LINEAR)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn file_title(path: &std::path::Path) -> String {
     catchlight_editor_server::file_stem(path)
 }

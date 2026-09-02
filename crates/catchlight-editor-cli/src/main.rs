@@ -1513,6 +1513,14 @@ fn print_body(body: &ResponseBody) {
             )
         }
         ResponseBody::Saved { path } => println!("saved -> {path}"),
+        ResponseBody::ManifestRequirements { textures } => {
+            if textures.is_empty() {
+                println!("(no textures)");
+            }
+            for key in textures {
+                println!("texture {key}");
+            }
+        }
         ResponseBody::Presence { presence } => match presence {
             None => println!("(no presence)"),
             Some(p) => {

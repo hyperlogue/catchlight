@@ -179,13 +179,15 @@ fn command_tags(decls: &[Decl]) -> Result<Vec<String>> {
     Ok(tags)
 }
 
-/// Splits the `Command` union three ways, by what applying a command does.
+/// Splits the `Command` union five ways, by what applying a command does.
 ///
 /// This is the whole reason `COMMAND_KINDS` exists. TypeScript cannot see that
-/// `scratch_deform` leaves the document alone and `node_set` does not, so a
+/// `scratch_deform` leaves the document alone and `node_set` does not, or that
+/// `node_tree` is answerable from a local replica and `status` is not, so a
 /// client that took one `Command` would have to remember which of its calls
-/// are quiet — exactly the thing nobody remembers. With the split, a session
-/// exposes one method per kind and picking the wrong one does not typecheck.
+/// are quiet and which can be served without a round trip — exactly the thing
+/// nobody remembers. With the split, a client exposes one method per kind and
+/// picking the wrong one does not typecheck.
 ///
 /// Every tag the union carries must appear in `COMMAND_KINDS`, and every entry
 /// in `COMMAND_KINDS` must be a tag the union carries. Either half failing is
@@ -214,6 +216,7 @@ fn kind_aliases(tags: Vec<String>) -> Result<String> {
     }
 
     let mut out = String::new();
+    let mut emitted: BTreeSet<&str> = BTreeSet::new();
     for (kind, name, doc) in KIND_ALIASES {
         let arms: Vec<&str> = tags
             .iter()
@@ -227,6 +230,7 @@ fn kind_aliases(tags: Vec<String>) -> Result<String> {
         if arms.is_empty() {
             bail!("no command is classified {kind:?}; the split would be empty");
         }
+        emitted.extend(arms.iter().copied());
         out.push('\n');
         push_comment(&mut out, doc, 0);
         out.push_str(&format!("\nexport type {name}Tag ="));
@@ -237,27 +241,65 @@ fn kind_aliases(tags: Vec<String>) -> Result<String> {
             ";\nexport type {name} = Extract<Command, {{ cmd: {name}Tag }}>;\n"
         ));
     }
+    // `KIND_ALIASES` is hand-listed too, so a kind added to `CommandKind` and
+    // not to it would classify commands in Rust that reach TypeScript in no
+    // alias at all — the same silent gap, one level up.
+    let unaliased: Vec<&str> = found.difference(&emitted).copied().collect();
+    if !unaliased.is_empty() {
+        bail!(
+            "KIND_ALIASES in crates/xtask/src/ts.rs emits no TypeScript alias for {}.\n\
+             Add the missing CommandKind there.",
+            unaliased.join(", ")
+        );
+    }
+    out.push_str(UNION_ALIASES);
     Ok(out)
 }
 
-/// The three splits, their TypeScript names, and what each one means to a
+/// The one alias that is a union of two kinds rather than a kind of its own.
+///
+/// A read is a read: which side can answer it is a routing decision, not
+/// something a caller picks a method by. So `query` takes both, and the two
+/// halves stay separate for the router that has to tell them apart.
+const UNION_ALIASES: &str = r#"
+/**
+ * A command that reads, whoever answers it.
+ *
+ * The union of the two query kinds, for a caller that only cares that nothing
+ * changed. A client routes on the halves; a caller sends either.
+ */
+export type QueryCommandTag = ReplicaQueryCommandTag | ServerQueryCommandTag;
+export type QueryCommand = ReplicaQueryCommand | ServerQueryCommand;
+"#;
+
+/// The five splits, their TypeScript names, and what each one means to a
 /// client. The doc text lands in the generated module, where it is the only
 /// explanation a TypeScript reader gets.
 const KIND_ALIASES: &[(proto::CommandKind, &str, &str)] = &[
     (
         proto::CommandKind::Document,
         "DocumentCommand",
-        "/**\n * A command that changes the document, or which documents exist.\n *\n          * The session's revision moves, so every view of it re-reads. These are the\n          * commands that cost an undo entry and a React render.\n */",
+        "/**\n * A command that changes the document, or which documents exist.\n *\n          * The session's revision moves, so every view of it re-reads. These are the\n          * commands that cost an undo entry and a React render, and the only ones\n          * that must reach the editor that owns the document.\n */",
     ),
     (
         proto::CommandKind::Presence,
         "PresenceCommand",
-        "/**\n * A command that changes what is drawn without changing the document.\n *\n          * The drag path. No revision, no undo entry, and deliberately invisible to a\n          * panel: a gesture of any length repaints the canvas and re-renders nothing.\n */",
+        "/**\n * A command that publishes shared view state: pose, camera, selection.\n *\n          * It goes to the editor because other clients read it back, and it changes no\n          * document: no revision, no undo entry, invisible to a panel.\n */",
     ),
     (
-        proto::CommandKind::Query,
-        "QueryCommand",
-        "/**\n * A command that reads. Nothing a later command would see differently.\n */",
+        proto::CommandKind::Scratch,
+        "ScratchCommand",
+        "/**\n * A command that shows a live edit on a puppet without authoring it.\n *\n          * The drag path. Whoever owns the puppet being drawn serves it — a client\n          * with a local replica serves its own, and never asks the editor. A gesture\n          * of any length repaints the canvas and re-renders nothing.\n */",
+    ),
+    (
+        proto::CommandKind::ReplicaQuery,
+        "ReplicaQueryCommand",
+        "/**\n * A read that is a pure function of the model.\n *\n          * A client holding a replica answers it locally, with no round trip. The\n          * editor answers it the same way, from the same bytes.\n */",
+    ),
+    (
+        proto::CommandKind::ServerQuery,
+        "ServerQueryCommand",
+        "/**\n * A read that needs the editor itself: its session bookkeeping, its store or\n * its renderer.\n *\n          * A replica cannot answer one, so these always go over the wire.\n */",
     ),
 ];
 
@@ -572,5 +614,21 @@ mod tests {
             "a tag is listed twice"
         );
         kind_aliases(tags).expect("every command is classified");
+    }
+
+    /// A client routes by kind, so every kind has to reach TypeScript as its
+    /// own alias. A `CommandKind` that `KIND_ALIASES` forgot would leave its
+    /// commands in no union at all, and nothing else would notice.
+    #[test]
+    fn every_kind_reaches_typescript_as_its_own_alias() {
+        let cfg = Config::new().with_large_int("number");
+        let module = render(&declarations(&cfg)).expect("the module renders");
+        for (_, name, _) in KIND_ALIASES {
+            assert!(
+                module.contains(&format!("export type {name}Tag =")),
+                "the generated module declares no {name}",
+            );
+        }
+        assert!(module.contains("export type QueryCommand = "));
     }
 }
