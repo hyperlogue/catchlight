@@ -32,6 +32,13 @@
 //!   model would make every pointer move a document change and the next
 //!   structure push would erase it.
 //!
+//! - **Gizmo math lives here.** TypeScript owns the gesture — which pointer,
+//!   which modifier, when it started — and Rust owns everything that has to
+//!   read the model to answer. [`ReplicaState::node_world_transform`] and
+//!   [`ReplicaState::translation_after_world_delta`] are the two numbers a
+//!   node drag needs, so the page never rebuilds a transform hierarchy it
+//!   would then have to keep in step with the one that draws.
+//!
 //! - **Texture payloads are held by Id, beside the model.** A structure names
 //!   its textures and carries none of their bytes, so the tab fetches what it
 //!   lacks once and every later structure is applied over the same `Arc`s —
@@ -48,7 +55,7 @@ use catchlight_core::formats::clm::{
     structure_texture_ids, ClmTextureRef, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{
-    Model, ModelTexture, Motion, NodeId, ParamId, Puppet, ScratchTransform, TexId, Vec2, Vec3,
+    Mat4, Model, ModelTexture, Motion, NodeId, ParamId, Puppet, ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
@@ -299,6 +306,56 @@ impl ReplicaState {
     /// gesture calls instead of remembering which nodes it touched.
     pub fn clear_all_scratch(&mut self) {
         self.puppet.clear_all_scratch();
+    }
+
+    // ---- gizmo math --------------------------------------------------------
+
+    /// The node's evaluated world transform after the last tick, as 16 floats
+    /// in column-major order. `None` for a node the document does not have.
+    ///
+    /// This is where a handle is drawn, so it is the *evaluated* transform —
+    /// bindings, physics, mesh groups and any standing scratch already folded
+    /// in — and not the authored one. A puppet that has never ticked reports
+    /// the identity, which is what an unposed model is.
+    pub fn node_world_transform(&self, node: &str) -> Option<[f32; 16]> {
+        let idx = self.node_idx(node)?;
+        Some(self.puppet.transforms().get(idx).to_cols_array())
+    }
+
+    /// The node's **authored** local translation moved by a world-space delta,
+    /// as `[x, y, z]`. `None` for a node the document does not have.
+    ///
+    /// This is the other half of a drag: the pointer moves in world units, and
+    /// what a `node_set` patch commits is a local translation. So the delta is
+    /// mapped through the inverse of the parent's evaluated world transform —
+    /// as a *direction*, which takes the parent's rotation and scale and drops
+    /// its position — and added to what the model actually stores. Z is left
+    /// alone: a drag is two-dimensional and the authored depth is not its to
+    /// change.
+    ///
+    /// Starting from the authored value rather than the evaluated one is what
+    /// makes preview and commit agree: the same number goes to
+    /// [`Self::set_scratch_transform`] while the pointer is down and into the
+    /// patch when it lifts.
+    ///
+    /// A node with no parent is its own frame, so the delta is already local.
+    /// A parent whose scale collapsed has no invertible frame and the node
+    /// does not move, rather than moving to NaN and being committed there.
+    pub fn translation_after_world_delta(&self, node: &str, dx: f32, dy: f32) -> Option<[f32; 3]> {
+        let id = node.parse::<NodeId>().ok()?;
+        let authored = self.model.node(&id)?.transform.translation;
+        let parent = self
+            .model
+            .node(&id)
+            .and_then(|n| n.parent())
+            .and_then(|p| self.puppet.node_idx(p))
+            .map(|idx| self.puppet.transforms().get(idx))
+            .unwrap_or(Mat4::IDENTITY);
+        let local = parent.inverse().transform_vector3(Vec3::new(dx, dy, 0.0));
+        if !local.is_finite() {
+            return Some(authored);
+        }
+        Some([authored[0] + local.x, authored[1] + local.y, authored[2]])
     }
 
     /// Evaluate the next frame. The [`Motion`] it returns is why a viewport
@@ -583,6 +640,33 @@ pub(crate) mod browser {
         pub fn clear_all_scratch(&self) {
             self.inner.borrow_mut().state.clear_all_scratch();
         }
+
+        /// The node's evaluated world transform after the last tick: 16 floats,
+        /// column-major. Where a gizmo draws its handles.
+        #[wasm_bindgen(js_name = nodeWorldTransform)]
+        pub fn node_world_transform(&self, node: &str) -> Option<Vec<f32>> {
+            self.inner
+                .borrow()
+                .state
+                .node_world_transform(node)
+                .map(|m| m.to_vec())
+        }
+
+        /// The node's authored local translation moved by a world-space delta:
+        /// 3 floats. What a drag previews and then commits.
+        #[wasm_bindgen(js_name = translationAfterWorldDelta)]
+        pub fn translation_after_world_delta(
+            &self,
+            node: &str,
+            dx: f32,
+            dy: f32,
+        ) -> Option<Vec<f32>> {
+            self.inner
+                .borrow()
+                .state
+                .translation_after_world_delta(node, dx, dy)
+                .map(|t| t.to_vec())
+        }
     }
 }
 
@@ -828,6 +912,70 @@ mod tests {
             ),
             "an unknown node is false, not a panic",
         );
+    }
+
+    #[test]
+    fn a_node_world_transform_is_where_the_last_tick_put_it() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let node = add_node(&editor, session, ROOT, "group", "head");
+        let moved = call(
+            &editor,
+            json!({"id": 3, "cmd": "node_set", "session": session.0,
+                   "node": node, "translate": [4.0, 5.0, 0.0]}),
+        );
+        assert_eq!(moved["reply"], "ok", "reply was {moved}");
+
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        replica.tick(0.0);
+
+        let m = replica.node_world_transform(&node).unwrap();
+        assert_eq!(m.len(), 16);
+        // Column-major: the translation is the last column.
+        assert_eq!((m[12], m[13]), (4.0, 5.0), "matrix was {m:?}");
+        assert!(replica.node_world_transform("root/part-deadbeef").is_none());
+    }
+
+    #[test]
+    fn a_world_delta_lands_in_the_parents_frame() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let parent = add_node(&editor, session, ROOT, "group", "torso");
+        let child = add_node(&editor, session, &parent, "group", "head");
+        // The parent doubles everything under it, so a world delta of 2 is a
+        // local delta of 1.
+        call(
+            &editor,
+            json!({"id": 3, "cmd": "node_set", "session": session.0,
+                   "node": parent, "scale": [2.0, 2.0]}),
+        );
+        call(
+            &editor,
+            json!({"id": 4, "cmd": "node_set", "session": session.0,
+                   "node": child, "translate": [1.0, 0.0, 7.0]}),
+        );
+
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        replica.tick(0.0);
+
+        let t = replica
+            .translation_after_world_delta(&child, 2.0, 4.0)
+            .unwrap();
+        assert_eq!(t[0], 2.0, "x moved by half the world delta, got {t:?}");
+        assert_eq!(t[1], 2.0, "y moved by half the world delta, got {t:?}");
+        assert_eq!(t[2], 7.0, "a drag never touches the authored depth");
+
+        // A node with no parent is already its own frame.
+        let root = replica
+            .translation_after_world_delta(ROOT, 3.0, 0.0)
+            .unwrap();
+        assert_eq!(root[0], 3.0, "root moved by the world delta, got {root:?}");
+
+        assert!(replica
+            .translation_after_world_delta("root/part-deadbeef", 1.0, 1.0)
+            .is_none());
     }
 
     /// The smallest valid PNG: one opaque pixel.
