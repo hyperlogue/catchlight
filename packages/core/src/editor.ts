@@ -8,11 +8,13 @@
  * `session.ts`) and "where the bytes live" (see `storage.ts`) changeable in
  * one package.
  *
- * **One device, acquired once.** [`Editor.create`] is asynchronous for exactly
- * that reason: a WebGPU adapter is a promise, and every replica and viewport
- * under this editor shares the device it hands back. After that, opening a
- * document, reading a tree and running a drag are all synchronous or one
- * round trip.
+ * **One device, acquired at the first canvas.** Not at creation: on WebGL2 an
+ * adapter is enumerated from a canvas context and presents into that same
+ * canvas, so no device can exist before something asks to be drawn. So
+ * [`attach`] acquires it, once, and every later viewport and replica shares
+ * it — and on the WebGL2 fallback the canvas that acquired it is the only one
+ * that can be drawn on. Opening a document, reading a tree and running a drag
+ * need no device at all.
  *
  * **Every session is fed before it is handed out.** A `Session` a caller holds
  * has already been brought to the revision its reply named, so the first thing
@@ -36,27 +38,30 @@ import { Viewport } from "./viewport.js";
 export class Editor {
   #wasm: WasmModule;
   #backend: Backend;
-  #gpu: WasmGpu;
+  #gpu: WasmGpu | undefined;
+  /** The one acquisition in flight, so two first attaches share a device. */
+  #acquiring: Promise<WasmGpu> | undefined;
   #sessions = new Map<SessionId, Session>();
   #closed = false;
 
-  private constructor(wasm: WasmModule, backend: Backend, gpu: WasmGpu) {
+  private constructor(wasm: WasmModule, backend: Backend) {
     this.#wasm = wasm;
     this.#backend = backend;
-    this.#gpu = gpu;
   }
 
   /**
-   * Acquires the GPU and returns an editor over `backend`.
+   * An editor over `backend`. Touches no GPU: the device waits for a canvas.
    *
    * The wasm module is passed in rather than imported so this package never
    * forces 2 MiB of WebAssembly into a bundle that only wanted the types — and
    * so the whole thing is testable against a fake. The backend is built from
    * the same module when it is the in-tab one.
+   *
+   * Asynchronous only to keep the option: a host that already awaits this must
+   * not have to change when something here does need to be awaited.
    */
-  static async create(wasm: WasmModule, backend: Backend): Promise<Editor> {
-    const gpu = await wasm.Gpu.acquire();
-    return new Editor(wasm, backend, gpu);
+  static create(wasm: WasmModule, backend: Backend): Promise<Editor> {
+    return Promise.resolve(new Editor(wasm, backend));
   }
 
   /** An empty document. */
@@ -144,17 +149,32 @@ export class Editor {
   /**
    * Draws `session` on `canvas` until the returned viewport is disposed.
    *
-   * Asynchronous only to keep the option: the device already exists, so the
-   * renderer is built synchronously underneath.
+   * The first call acquires the device, from this canvas. Everything after it
+   * is synchronous — and on the WebGL2 fallback every later canvas is drawn by
+   * a device that belongs to the first one, which is a limit of the backend
+   * rather than of this method.
    */
   async attach(session: Session, canvas: HTMLCanvasElement): Promise<Viewport> {
+    const gpu = await this.#device(canvas);
     let view;
     try {
-      view = new this.#wasm.Viewport(this.#gpu, session.replica, canvas);
+      view = new this.#wasm.Viewport(gpu, session.replica, canvas);
     } catch (cause) {
       throw asProtocolError(cause, "bad_reply");
     }
-    return new Viewport(view, canvas, session, this.#gpu.maxSize());
+    return new Viewport(view, canvas, session, gpu.maxSize());
+  }
+
+  /** The device, acquired from `canvas` if this is the first one to ask. */
+  #device(canvas: HTMLCanvasElement): Promise<WasmGpu> {
+    if (this.#gpu) return Promise.resolve(this.#gpu);
+    // Two canvases mounting in the same tick must not race for two devices:
+    // the second one waits on the first one's promise.
+    this.#acquiring ??= this.#wasm.Gpu.acquire(canvas).then((gpu) => {
+      this.#gpu = gpu;
+      return gpu;
+    });
+    return this.#acquiring;
   }
 
   /**
@@ -169,13 +189,15 @@ export class Editor {
     return this.#backend.send(command);
   }
 
-  /** Frees every replica, the device, and the backend. Idempotent. */
+  /** Frees every replica, the device if one was ever acquired, and the backend. */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     for (const session of this.#sessions.values()) session.close();
     this.#sessions.clear();
-    this.#gpu.free();
+    this.#gpu?.free();
+    this.#gpu = undefined;
+    this.#acquiring = undefined;
     this.#backend.close();
   }
 
@@ -186,12 +208,12 @@ export class Editor {
   }
 
   async #adoptId(id: SessionId, rev: number): Promise<Session> {
-    const session = new Session(this.#backend, id, new this.#wasm.Replica(this.#gpu));
+    const session = new Session(this.#backend, id, new this.#wasm.Replica());
     try {
       await session.catchUp(rev);
     } catch (cause) {
       // A replica that never loaded is not a session anybody can use, and it
-      // holds GPU memory until something frees it.
+      // holds its model until something frees it.
       session.close();
       throw asProtocolError(cause);
     }

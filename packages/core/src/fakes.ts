@@ -237,6 +237,8 @@ export class FakeEditor implements WasmEditor {
 /** One device. Reports a small limit so the clamp is testable. */
 export class FakeGpu implements WasmGpu {
   freed = false;
+  /** Every canvas `acquire` was called with. A device comes from a canvas. */
+  acquiredFrom: HTMLCanvasElement[] = [];
   maxSize(): number {
     return 4096;
   }
@@ -430,7 +432,7 @@ export function fakeWasm(): FakeModule {
   const viewports: FakeViewport[] = [];
 
   class TrackedReplica extends FakeReplica {
-    constructor(_gpu: WasmGpu) {
+    constructor() {
       super();
       replicas.push(this);
     }
@@ -446,7 +448,12 @@ export function fakeWasm(): FakeModule {
   return {
     module: {
       CatchlightEditor: FakeEditor,
-      Gpu: { acquire: () => Promise.resolve(gpu) },
+      Gpu: {
+        acquire: (canvas: HTMLCanvasElement) => {
+          gpu.acquiredFrom.push(canvas);
+          return Promise.resolve(gpu);
+        },
+      },
       Replica: TrackedReplica,
       Viewport: TrackedViewport,
     },
