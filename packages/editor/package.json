@@ -1,0 +1,29 @@
+{
+  "name": "@catchlight/editor",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./theme.css": "./src/theme.css"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "peerDependencies": {
+    "@catchlight/core": "workspace:*",
+    "@catchlight/react": "workspace:*",
+    "react": "^19"
+  },
+  "devDependencies": {
+    "@catchlight/core": "workspace:*",
+    "@catchlight/react": "workspace:*",
+    "@happy-dom/global-registrator": "^20.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "happy-dom": "^20.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}
