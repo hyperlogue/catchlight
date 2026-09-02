@@ -1,0 +1,8 @@
+{
+  "//": "The smoke test is Bun code, not browser code: it wants bun's globals rather than vite's, and it imports its own modules by their real filenames because bun runs the sources.",
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  },
+  "include": ["**/*.ts"]
+}

@@ -62,6 +62,12 @@ in
         # XDG_DATA_DIRS, so the loader finds lavapipe beside any real driver --
         # no VK_ICD_FILENAMES needed.
         pkgs.mesa
+
+        # The browser `bun run --filter catchlight-site e2e` drives. Playwright's
+        # own download is a prebuilt binary that does not run here, so the test
+        # takes the executable as an argument and this is what it finds on PATH.
+        # A large closure, and the only reason this shell is not small.
+        pkgs.chromium
       ];
 
     env = lib.optionalAttrs stdenv.hostPlatform.isLinux {
