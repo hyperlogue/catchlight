@@ -83,6 +83,7 @@ cargo fmt --all --check
 cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d -p catchlight-editor-server -p catchlight-editor-wasm
 cargo test -p xtask -- --skip fixtures::
 cargo xtask wasm --debug && bun install --frozen-lockfile && bun run typecheck && bun test && bun run --filter catchlight-site build
+cargo build -p catchlight-editor-server -p catchlight-editor-cli && bun run --filter catchlight-site e2e
 cargo test --workspace
 ```
 
@@ -176,6 +177,9 @@ that enforces them, not here. Add new ones there.
   a send that resolves once the replica caught up, feeds that never overlap,
   bulk over HTTP and never the socket, why a store is not a transport, and
   when a viewport is allowed to idle
+- `apps/site/e2e/run.ts`, `drive.ts` — the browser smoke test: the built site
+  and both backends, why the browser is an argument, and what a flat canvas
+  means
 - `packages/react/src/index.ts` — hooks are the primitive, no mirror,
   TypeScript owns gestures and Rust owns what reads the model
 - `packages/editor/src/index.ts` — layout only, theming is CSS variables under

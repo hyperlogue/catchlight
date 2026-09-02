@@ -64,7 +64,12 @@ jobs:
     name: web workspace
     runs-on: ubuntu-latest
     steps:
+      # The site ships `public/sample.clm`, and the browser smoke test opens a
+      # second fixture; both are Git LFS objects, so without this the build
+      # bundles a pointer file and the tab comes up on nothing.
       - uses: actions/checkout@v7
+        with:
+          lfs: true
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
@@ -72,8 +77,8 @@ jobs:
       # committed. The generator's own tests regenerate and byte-compare, and
       # hold the command classification to the enum; they are the one guard,
       # run here as the same `cargo test` a contributor runs locally. The
-      # fixture tests are skipped because they read LFS objects this job does
-      # not fetch.
+      # fixture tests are skipped because they belong to the model fixtures
+      # rather than to the generator, and `cargo test --workspace` owns them.
       - name: protocol types are current
         run: nix develop -c cargo test -p xtask -- --skip fixtures::
       # The site imports `@catchlight/wasm`, so the generated package has to
@@ -83,3 +88,10 @@ jobs:
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test
       - run: nix develop -c bun run --filter catchlight-site build
+      # The smoke test drives the built site in a real browser, against both
+      # backends; the connected one is a server process with an agent editing
+      # its document over the Unix socket, so those two binaries have to exist
+      # first. Chromium comes from the dev shell: it has no usable WebGPU
+      # headless, so what this covers is the WebGL2 tier.
+      - run: nix develop -c cargo build -p catchlight-editor-server -p catchlight-editor-cli
+      - run: nix develop -c bun run --filter catchlight-site e2e

@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --project tsconfig.json",
-    "sample": "cp ../../tests/models/quad_over_bg.clm public/sample.clm"
+    "typecheck": "tsc --project tsconfig.json && tsc --project e2e/tsconfig.json",
+    "sample": "cp ../../tests/models/quad_over_bg.clm public/sample.clm",
+    "e2e": "bun run e2e/run.ts"
   },
   "dependencies": {
     "@catchlight/core": "workspace:*",
@@ -22,6 +23,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "playwright-core": "1.62.1",
     "typescript": "^5.9.3",
     "vite": "^8.2.2"
   }
