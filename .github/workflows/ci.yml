@@ -12,6 +12,11 @@ env:
 # linker and the runtime libraries are exactly the ones `nix/shell.nix` pins
 # for local development. Linux only: catchlight-editor-cli talks over a Unix
 # socket, so there is nothing to gain from a Windows or macOS runner yet.
+#
+# One step enters a different shell. `nix develop .#e2e` is the same shell plus
+# the Chromium the browser smoke test drives, and it is only ever entered by
+# that one step: chromium's closure is the largest thing in any of this, and
+# every other job would otherwise download it to run `cargo` and `bun`.
 jobs:
   deny:
     name: cargo deny
@@ -91,7 +96,9 @@ jobs:
       # The smoke test drives the built site in a real browser, against both
       # backends; the connected one is a server process with an agent editing
       # its document over the Unix socket, so those two binaries have to exist
-      # first. Chromium comes from the dev shell: it has no usable WebGPU
-      # headless, so what this covers is the WebGL2 tier.
+      # first. The editor is WebGPU-only, and the browser reaches a device
+      # through the same Mesa ICD the Rust GPU tests use; the flags that get it
+      # there are in `apps/site/e2e/drive.ts`.
       - run: nix develop -c cargo build -p catchlight-editor-server -p catchlight-editor-cli
-      - run: nix develop -c bun run --filter catchlight-site e2e
+      # The one step that wants the browser, and the only one that pays for it.
+      - run: nix develop .#e2e -c bun run --filter catchlight-site e2e
