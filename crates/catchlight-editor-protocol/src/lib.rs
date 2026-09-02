@@ -434,6 +434,15 @@ pub enum Command {
         from: [u32; 2],
         to: [u32; 2],
     },
+    /// Every binding on one node: what drives it, how it reads between its
+    /// cells, and the grid the author keyed.
+    ///
+    /// [`ParamInfo::bindings`] counts what a param drives and names none of
+    /// it, so this is the read a binding panel is drawn from.
+    BindingList {
+        session: SessionId,
+        node: NodeId,
+    },
     /// Author a deform keypoint from an affine applied to the part's rest mesh.
     DeformSet {
         session: SessionId,
@@ -690,6 +699,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("binding_interpolate", CommandKind::Document),
     ("binding_invert", CommandKind::Document),
     ("binding_copy_key", CommandKind::Document),
+    ("binding_list", CommandKind::ReplicaQuery),
     ("deform_set", CommandKind::Document),
     ("deform_vertices", CommandKind::Document),
     ("mesh_set", CommandKind::Document),
@@ -765,6 +775,7 @@ impl Command {
             Command::BindingInterpolate { .. } => "binding_interpolate",
             Command::BindingInvert { .. } => "binding_invert",
             Command::BindingCopyKey { .. } => "binding_copy_key",
+            Command::BindingList { .. } => "binding_list",
             Command::DeformSet { .. } => "deform_set",
             Command::DeformVertices { .. } => "deform_vertices",
             Command::MeshSet { .. } => "mesh_set",
@@ -862,6 +873,7 @@ impl Command {
             | Command::BindingInterpolate { session, .. }
             | Command::BindingInvert { session, .. }
             | Command::BindingCopyKey { session, .. }
+            | Command::BindingList { session, .. }
             | Command::DeformSet { session, .. }
             | Command::DeformVertices { session, .. }
             | Command::MeshSet { session, .. }
@@ -1135,6 +1147,10 @@ pub enum ResponseBody {
     Params {
         params: Vec<ParamInfo>,
     },
+    /// Every binding on one node, in the order the model holds them.
+    Bindings {
+        bindings: Vec<BindingInfo>,
+    },
     Texture {
         texture: TexId,
         /// Textures the edit deleted, because the part that had been drawing
@@ -1274,6 +1290,48 @@ pub struct ParamInfo {
     #[serde(default)]
     pub key_positions: Vec<f32>,
     pub bindings: u32,
+}
+
+/// One binding, as a panel draws it: the params driving it, the property it
+/// drives, how it reads between cells, and the grid the author keyed.
+///
+/// **The grid is `[y][x]`** — the transpose of the `cell: [x, y]` every
+/// binding command takes, so `keys[cell[1]][cell[0]]` is the cell
+/// [`Command::BindingKey`] would write. It is the full product of the params'
+/// key positions, [`Self::width`] by [`Self::height`], with one row when
+/// there is no `param_y`.
+///
+/// **A `null` in `keys` is a cell nobody authored.** The model stores only the
+/// cells a rigger set and derives the rest at puppet build, and "unset" is a
+/// state they act on — it is not a zero. The exception is a `deform` binding,
+/// which authors per-vertex offsets rather than one number: every one of its
+/// cells reads `null` here and [`Self::authored`] is the only thing that says
+/// which are set. For every other target `authored[y][x]` is exactly
+/// `keys[y][x] != null`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingInfo {
+    /// The property driven, spelled the way [`Command::BindingAdd`] and every
+    /// other binding command take it — plus `deform`, which only the deform
+    /// commands author.
+    pub target: String,
+    /// The param along the grid's x axis.
+    pub param: ParamId,
+    /// The param along the grid's y axis. Absent when the grid is one row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param_y: Option<ParamId>,
+    /// nearest | stepped | linear | cubic — the name
+    /// [`Command::BindingInterpolate`] takes back.
+    pub interpolate: String,
+    /// How many key positions `param` has, so how wide the grid is.
+    pub width: u32,
+    /// How many key positions `param_y` has, or 1.
+    pub height: u32,
+    /// The authored value at each cell, `[y][x]`, `null` where nothing was
+    /// authored.
+    pub keys: Vec<Vec<Option<f32>>>,
+    /// Whether each cell was authored at all, `[y][x]`.
+    pub authored: Vec<Vec<bool>>,
 }
 
 /// A seam and what currently fills it.

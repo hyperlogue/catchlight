@@ -505,6 +505,11 @@ enum BindingCmd {
         #[arg(long)]
         target: String,
     },
+    /// List a node's bindings, each with its authored key grid.
+    List {
+        #[arg(long)]
+        node: NodeId,
+    },
     /// Author the value evaluated at `--from` into `--to`.
     CopyKey {
         #[command(flatten)]
@@ -907,6 +912,10 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     params: params.wire(),
                     node: node.clone(),
                     target: target.clone(),
+                },
+                BindingCmd::List { node } => Command::BindingList {
+                    session,
+                    node: node.clone(),
                 },
                 BindingCmd::CopyKey {
                     params,
@@ -1486,6 +1495,35 @@ fn print_body(body: &ResponseBody) {
                 );
             }
         }
+        ResponseBody::Bindings { bindings } => {
+            if bindings.is_empty() {
+                println!("(no bindings)");
+            }
+            for b in bindings {
+                let params = match &b.param_y {
+                    Some(y) => format!("{} x {}", b.param, y),
+                    None => b.param.to_string(),
+                };
+                println!(
+                    "binding {}  {}  {}  {}x{}",
+                    b.target, params, b.interpolate, b.width, b.height
+                );
+                for (y, row) in b.keys.iter().enumerate() {
+                    let cells: Vec<String> = row
+                        .iter()
+                        .enumerate()
+                        .map(|(x, value)| match value {
+                            Some(v) => format!("{v}"),
+                            // Authored with no scalar of its own: a deform
+                            // cell, which holds a vertex list.
+                            None if authored(b, x, y) => "set".into(),
+                            None => "-".into(),
+                        })
+                        .collect();
+                    println!("  y={y}: [{}]", cells.join(" "));
+                }
+            }
+        }
         ResponseBody::Texture { texture, dropped } => {
             println!("texture {texture}");
             print_dropped(dropped);
@@ -1602,6 +1640,17 @@ fn print_body(body: &ResponseBody) {
             }
         }
     }
+}
+
+/// Whether the author set that cell at all — the only thing that says so for
+/// a deform binding, whose cells hold a vertex list rather than a number.
+fn authored(binding: &BindingInfo, x: usize, y: usize) -> bool {
+    binding
+        .authored
+        .get(y)
+        .and_then(|row| row.get(x))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// What an edit deleted on its way through. A texture with no part drawing it

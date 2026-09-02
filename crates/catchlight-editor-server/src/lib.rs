@@ -993,6 +993,7 @@ impl Editor {
             | Command::NodeInfo { session, .. }
             | Command::TextureList { session }
             | Command::ParamList { session }
+            | Command::BindingList { session, .. }
             | Command::Seams { session, .. }
             | Command::Welds { session }
             | Command::UnfilledSlots { session } => {
