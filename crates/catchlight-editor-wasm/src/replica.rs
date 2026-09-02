@@ -30,7 +30,8 @@
 //!   feed triggers precisely because the model does not carry them, and a
 //!   commit turns into a command like any other edit. Writing them into the
 //!   model would make every pointer move a document change and the next
-//!   structure push would erase it.
+//!   structure push would erase it. A scratch deform is also **summed before
+//!   the write returns** — see [`ReplicaState::combine_scratch_deforms`].
 //!
 //! - **One tick per animation frame, however many canvases draw.** The puppet
 //!   belongs to the replica, not to a viewport, so advancing it does too:
@@ -273,14 +274,22 @@ impl ReplicaState {
         };
         let (pairs, _odd) = offsets.as_chunks::<2>();
         let pairs: Vec<Vec2> = pairs.iter().map(|p| Vec2::new(p[0], p[1])).collect();
-        self.puppet.set_scratch_deform(idx, &pairs)
+        if !self.puppet.set_scratch_deform(idx, &pairs) {
+            return false;
+        }
+        self.combine_scratch_deforms();
+        true
     }
 
     pub fn clear_scratch_deform(&mut self, node: &str) -> bool {
         let Some(idx) = self.node_idx(node) else {
             return false;
         };
-        self.puppet.clear_scratch_deform(idx)
+        if !self.puppet.clear_scratch_deform(idx) {
+            return false;
+        }
+        self.combine_scratch_deforms();
+        true
     }
 
     /// Write a node's scratch transform. Every field is absolute, and a field
@@ -328,6 +337,26 @@ impl ReplicaState {
     /// gesture calls instead of remembering which nodes it touched.
     pub fn clear_all_scratch(&mut self) {
         self.puppet.clear_all_scratch();
+        self.combine_scratch_deforms();
+    }
+
+    /// Sum every deform stack's active sources into the offsets a read and a
+    /// draw actually look at, which is the caller's job and so this one's.
+    ///
+    /// A tick combines, but only on a frame that folded, and a scratch deform
+    /// moves neither the pose nor the model: it sets the stack's dirty flag
+    /// and nothing else. So on a still session — no physics, no animation, the
+    /// pointer the only thing moving — no later tick would ever sum it, and
+    /// the drag would reach neither [`Self::bounds`] nor the deform generation
+    /// a render cache gates its upload on. Every scratch-deform write here
+    /// ends with this, exactly as the server's `ScratchDeform` command does.
+    ///
+    /// Combining is a whole pass over the deform nodes, so it stays out of
+    /// [`Puppet::set_scratch_deform`] itself: a caller writing several nodes —
+    /// [`Puppet::clear_all_scratch`] is one — wants one pass, not one per
+    /// node.
+    fn combine_scratch_deforms(&mut self) {
+        self.puppet.combine_deforms();
     }
 
     // ---- gizmo math --------------------------------------------------------
@@ -1241,13 +1270,10 @@ mod tests {
         replica.frame(0.0);
         assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
 
-        // Pull the top-right corner (vertex 2) out and the box follows it.
-        // The combine is explicit because a `tick` folds only when the pose
-        // moved, and a deform written between two folds is combined on demand
-        // — see `Puppet::combine_deforms`. Bounds read exactly what the render
-        // list reads, so they are stale in precisely the same places it is.
+        // Pull the top-right corner (vertex 2) out and the box follows it,
+        // with no tick in between — the write combines. Bounds read exactly
+        // what the render list reads.
         assert!(replica.set_scratch_deform(&face, &[0.0, 0.0, 0.0, 0.0, 4.0, 8.0, 0.0, 0.0]));
-        replica.puppet.combine_deforms();
         assert_bounds(&replica, [-1.0, -1.0, 5.0, 9.0]);
 
         // Clearing deactivates the source, and an inactive stack contributes
@@ -1255,6 +1281,55 @@ mod tests {
         assert!(replica.clear_scratch_deform(&face));
         replica.frame(16.0);
         assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
+    }
+
+    /// The part's deform generation: what a render cache gates its upload on,
+    /// so a deform that does not move it never reaches the screen.
+    fn deform_generation(replica: &ReplicaState, node: &str) -> u64 {
+        let idx = replica.node_idx(node).expect("the node was baked");
+        let Some(NodeKind::Part(part)) = replica.puppet.get(idx).map(|n| &n.kind) else {
+            panic!("{node} is not a baked part");
+        };
+        part.deform_stack.generation()
+    }
+
+    #[test]
+    fn a_scratch_deform_reaches_the_frame_with_no_pose_change() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let face = add_drawn_part(&editor, session, "face");
+        set_quad_mesh(&editor, session, &face, 1.0);
+
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        replica.frame(0.0);
+        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
+        let at_rest = deform_generation(&replica, &face);
+
+        // Nothing here moves the pose: no param, no driver, no model edit. A
+        // tick folds only when one of those did, so a write that did not
+        // combine would leave this drag in its source slot forever — the bug
+        // this is against.
+        assert!(replica.set_scratch_deform(&face, &[0.0, 0.0, 0.0, 0.0, 4.0, 8.0, 0.0, 0.0]));
+        assert_bounds(&replica, [-1.0, -1.0, 5.0, 9.0]);
+        let dragged = deform_generation(&replica, &face);
+        assert_ne!(
+            dragged, at_rest,
+            "the deform generation is what gates the upload; unmoved, the \
+             renderer goes on drawing the rest mesh",
+        );
+
+        // The frames after it keep the drag: they fold nothing, and a scratch
+        // source is the one source a fold would not rebuild anyway.
+        assert_eq!(replica.frame(16.0), Motion::default());
+        assert_bounds(&replica, [-1.0, -1.0, 5.0, 9.0]);
+        assert_eq!(deform_generation(&replica, &face), dragged);
+
+        // Clearing is the same story in reverse: the rest box is back before
+        // any tick, and the generation moves so the renderer hears about it.
+        assert!(replica.clear_scratch_deform(&face));
+        assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
+        assert_ne!(deform_generation(&replica, &face), dragged);
     }
 
     #[test]
