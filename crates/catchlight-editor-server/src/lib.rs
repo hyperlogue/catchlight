@@ -126,6 +126,9 @@ pub enum EditorError {
     /// a replica handed a command only the editor can apply.
     #[error("{0}")]
     BadRequest(String),
+    /// The two seams named are not welded to each other.
+    #[error("no weld pairs those two seams")]
+    UnknownWeld,
     #[error("nothing to undo")]
     NothingToUndo,
     #[error("nothing to redo")]
@@ -163,6 +166,7 @@ impl EditorError {
             Self::NoTexture(_) => ErrorCode::NoTexture,
             Self::BadTarget(_) => ErrorCode::BadTarget,
             Self::BadRequest(_) => ErrorCode::BadRequest,
+            Self::UnknownWeld => ErrorCode::UnknownWeld,
             Self::NothingToUndo => ErrorCode::NothingToUndo,
             Self::NothingToRedo => ErrorCode::NothingToRedo,
             Self::NoSavePath => ErrorCode::NoSavePath,
@@ -1602,6 +1606,20 @@ impl Editor {
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
+            Command::WeldDelete { session, a, b } => self.edit_session(session, |s| {
+                // A seam delete already unmakes a weld, by taking one of its
+                // ends with it. This is the edit that leaves both seams and
+                // their slots exactly where they are.
+                let mut welds = s.model.welds().to_vec();
+                let before = welds.len();
+                welds.retain(|w| !joins(w, &a, &b));
+                if welds.len() == before {
+                    return Err(EditorError::UnknownWeld);
+                }
+                s.model.set_welds(welds)?;
+                s.touch();
+                Ok(ResponseBody::Empty)
+            }),
             Command::Undo { session } => {
                 let handle = self.session(session)?;
                 let rev = {
@@ -1923,6 +1941,13 @@ fn build_weld(
 /// Two welds join the same pair of seams, in either order.
 fn pairs_the_same_seams(one: &ModelWeld, other: &ModelWeld) -> bool {
     (one.a() == other.a() && one.b() == other.b()) || (one.a() == other.b() && one.b() == other.a())
+}
+
+/// Whether `weld` is the one joining these two seams. A weld has no Id of its
+/// own — its two ends are what names it — so either order finds it.
+fn joins(weld: &ModelWeld, a: &SeamAddr, b: &SeamAddr) -> bool {
+    let is = |end: &(NodeId, SeamId), addr: &SeamAddr| end.0 == addr.node && end.1 == addr.seam;
+    (is(weld.a(), a) && is(weld.b(), b)) || (is(weld.a(), b) && is(weld.b(), a))
 }
 
 /// In-process document view handed to observers (the GUI); refs are stable for
