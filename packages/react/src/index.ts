@@ -73,4 +73,9 @@ export type { SessionListRootProps } from "./session-list.js";
 export { FileOpen, FileOpenRoot } from "./file-open.js";
 export type { FileOpenRootProps } from "./file-open.js";
 
+export { useNodePatch } from "./node-patch.js";
+export type { NodePatchFn } from "./node-patch.js";
+export { BLEND_MODES, Inspector, InspectorRoot } from "./inspector.js";
+export type { InspectorRootProps } from "./inspector.js";
+
 export type { Camera, NodeInfo } from "@catchlight/core";

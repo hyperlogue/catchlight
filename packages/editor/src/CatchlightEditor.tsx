@@ -31,6 +31,7 @@ import {
   EditorProvider,
   FileOpen,
   NodeTree,
+  Inspector,
   ParamList,
   ParamSlider,
   SelectionProvider,
@@ -208,6 +209,10 @@ function Documents({ onSelect }: { onSelect: (info: SessionInfo) => void }): Rea
  */
 function Stage({ session, view }: { session: Session; view: ViewportCamera }): ReactNode {
   const { node } = useSelection();
+            <section data-catchlight-section="">
+              <h2 data-catchlight-heading="">Inspector</h2>
+              <Inspector.Root session={session} onError={failed} />
+            </section>
   const drag = useNodeDrag(session, node);
   return (
     <div data-catchlight-stage="" data-dragging={drag.dragging ? "" : undefined}>
