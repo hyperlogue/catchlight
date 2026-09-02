@@ -14,6 +14,9 @@
  * after it is the one point where the preview and the document agree. A
  * refused send clears too, because then the document never moved and the
  * preview is a lie.
+ *
+ * With no session — a stage that is showing nothing — every handler is a
+ * no-op, so a host can keep the canvas mounted between documents.
  */
 
 import type { NodeId, Session } from "@catchlight/core";
@@ -39,23 +42,23 @@ interface Drag {
   translate: [number, number, number] | undefined;
 }
 
-export function useNodeDrag(session: Session, node: NodeId | undefined): NodeDrag {
+export function useNodeDrag(session: Session | undefined, node: NodeId | undefined): NodeDrag {
   const [dragging, setDragging] = useState(false);
   const drag = useRef<Drag | undefined>(undefined);
 
   const onPointerDown = useCallback(
     ({ world, event }: ViewportPointerEvent): void => {
-      if (node === undefined || event.button !== 0) return;
+      if (!session || node === undefined || event.button !== 0) return;
       drag.current = { pointerId: event.pointerId, node, from: world, translate: undefined };
       setDragging(true);
     },
-    [node],
+    [session, node],
   );
 
   const onPointerMove = useCallback(
     ({ world, event }: ViewportPointerEvent): void => {
       const active = drag.current;
-      if (!active || active.pointerId !== event.pointerId) return;
+      if (!active || active.pointerId !== event.pointerId || !session) return;
       const moved = session.translationAfterWorldDelta(
         active.node,
         world[0] - active.from[0],
@@ -74,6 +77,8 @@ export function useNodeDrag(session: Session, node: NodeId | undefined): NodeDra
       if (!active || active.pointerId !== event.pointerId) return;
       drag.current = undefined;
       setDragging(false);
+      // The document went away under the gesture: nothing to author or clear.
+      if (!session) return;
       const translate = active.translate;
       if (!translate) {
         // A press that never moved: nothing to author, and authoring it anyway
@@ -100,7 +105,7 @@ export function useNodeDrag(session: Session, node: NodeId | undefined): NodeDra
       if (!active || active.pointerId !== event.pointerId) return;
       drag.current = undefined;
       setDragging(false);
-      session.clearScratchTransform(active.node);
+      session?.clearScratchTransform(active.node);
     },
     [session],
   );

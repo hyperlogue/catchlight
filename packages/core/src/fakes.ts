@@ -16,10 +16,12 @@
  */
 
 import type {
+  BindingInfo,
   Command,
   Event,
   NodeInfo,
   ParamInfo,
+  Presence,
   ResponseBody,
   SessionInfo,
   TexInfo,
@@ -38,6 +40,27 @@ export interface FakeDoc {
   root: TreeNode;
   params: ParamInfo[];
   textures: TexInfo[];
+  bindings: FakeBinding[];
+}
+
+/**
+ * A binding as the fake stores it: the cells a command authored, and nothing
+ * derived.
+ *
+ * Sparse like the model's own, so `binding_list` has holes to report — but
+ * *only* the cells a command named. The real model also authors the identity
+ * at the rest cell alongside a binding's first key; that is a model rule the
+ * Rust suite pins, and a fake that copied it would make these tests depend on
+ * it.
+ */
+export interface FakeBinding {
+  node: string;
+  target: string;
+  param: string;
+  param_y?: string | null;
+  interpolate: string;
+  /** `value: null` is authored with no scalar of its own, as a deform cell is. */
+  cells: { x: number; y: number; value: number | null }[];
 }
 
 export function emptyDoc(title: string): FakeDoc {
@@ -48,6 +71,7 @@ export function emptyDoc(title: string): FakeDoc {
     root: { id: "root", name: "root", kind: "group", z_order: 0, enabled: true, children: [] },
     params: [],
     textures: [],
+    bindings: [],
   };
 }
 
@@ -69,6 +93,8 @@ export class FakeEditor implements WasmEditor {
   requirements: string[] = [];
   /** Commands to refuse instead of running, keyed by `cmd`. */
   refuse = new Map<string, { code: string; message: string }>();
+  /** What `presence_set` last stored per session, and `presence_get` answers. */
+  presence = new Map<number, Presence>();
   freed = false;
 
   #events: string[] = [];
@@ -154,6 +180,37 @@ export class FakeEditor implements WasmEditor {
         this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "param", param }, doc.rev);
       }
+      case "param_delete": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        doc.params = doc.params.filter((p) => p.id !== request.param);
+        doc.bindings = doc.bindings.filter(
+          (b) => b.param !== request.param && b.param_y !== request.param,
+        );
+        return this.#changed(id, request.session, doc);
+      }
+      case "binding_add": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        binding(doc, request);
+        return this.#changed(id, request.session, doc);
+      }
+      case "binding_key": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const b = binding(doc, request);
+        const [x, y] = request.cell;
+        const at = b.cells.find((c) => c.x === x && c.y === y);
+        if (at) at.value = request.value;
+        else b.cells.push({ x, y, value: request.value });
+        return this.#changed(id, request.session, doc);
+      }
+      case "binding_delete": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        doc.bindings = doc.bindings.filter((b) => !addresses(b, request));
+        return this.#changed(id, request.session, doc);
+      }
       case "save": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
@@ -169,8 +226,26 @@ export class FakeEditor implements WasmEditor {
         this.staged.set("tex0.png", new TextEncoder().encode("a texture"));
         return this.#ok(id, { result: "saved", path: request.path }, doc.rev);
       }
-      case "presence_set":
-        return this.#ok(id, { result: "empty" }, this.docs.get(request.session)?.rev);
+      case "session_close": {
+        if (!this.docs.delete(request.session)) return this.#noSession(id, request.session);
+        this.presence.delete(request.session);
+        this.#emit({ event: "sessions_changed" });
+        // No rev: the session it would have named is gone.
+        return this.#ok(id, { result: "empty" });
+      }
+      case "presence_set": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const { cmd: _cmd, id: _id, session, ...presence } = request;
+        this.presence.set(session, presence);
+        return this.#ok(id, { result: "empty" }, doc.rev);
+      }
+      case "presence_get": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        const presence = this.presence.get(request.session) ?? null;
+        return this.#ok(id, { result: "presence", presence }, doc.rev);
+      }
       default: {
         const session = "session" in request ? (request.session as number) : undefined;
         return this.#ok(
@@ -180,6 +255,13 @@ export class FakeEditor implements WasmEditor {
         );
       }
     }
+  }
+
+  /** Moves the document on and answers `empty`, as an edit with no Id does. */
+  #changed(id: number, session: number, doc: FakeDoc): string {
+    doc.rev += 1;
+    this.#emit({ event: "document_changed", session, rev: doc.rev });
+    return this.#ok(id, { result: "empty" }, doc.rev);
   }
 
   /** What a replica gets when it syncs from this editor. */
@@ -332,6 +414,20 @@ export class FakeReplica implements WasmReplica {
           rev: this.#rev,
           body: { result: "textures", textures: doc.textures },
         });
+      case "binding_list": {
+        if (!holds(doc.root, request.node)) {
+          return JSON.stringify({
+            reply: "err",
+            id,
+            code: "no_node",
+            message: `no node ${request.node}`,
+          });
+        }
+        const bindings = doc.bindings
+          .filter((b) => b.node === request.node)
+          .map((b) => bindingInfo(doc, b));
+        return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "bindings", bindings } });
+      }
       case "node_info": {
         const node = nodeInfo(doc.root, request.node);
         if (!node) {
@@ -398,9 +494,7 @@ export class FakeReplica implements WasmReplica {
 
   /** Whether the fed document names `node` anywhere in its tree. */
   #holds(node: string): boolean {
-    const walk = (tree: TreeNode): boolean =>
-      tree.id === node || tree.children.some(walk);
-    return this.doc ? walk(this.doc.root) : false;
+    return this.doc ? holds(this.doc.root, node) : false;
   }
 
   clearAllScratch(): void {
@@ -430,9 +524,10 @@ export class FakeReplica implements WasmReplica {
  * The tree row for `node`, as the `node_info` reply carries it.
  *
  * A fake document holds a tree and nothing else, so the transform is the rest
- * pose and the kind-specific fields are absent. What these tests read is the
- * plumbing — the right node, its parent, and a refusal for one that is gone;
- * the real values are the Rust suite's business.
+ * pose and the values are defaults. Which fields are *present* is not a
+ * default: a panel decides what to draw from the kind carrying a field or not,
+ * so the fake omits the same ones the model does — colour on anything but a
+ * part or a composite, `mg_*` off a mesh group.
  */
 function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | undefined {
   if (tree.id === node) {
@@ -468,6 +563,81 @@ function nodeInfo(tree: TreeNode, node: string, parent?: string): NodeInfo | und
     if (found) return found;
   }
   return undefined;
+}
+
+/** Whether `tree` names `node` anywhere under it. */
+function holds(tree: TreeNode, node: string): boolean {
+  return tree.id === node || tree.children.some((child) => holds(child, node));
+}
+
+/** Whether `binding` is the one a command addresses. */
+function addresses(
+  binding: FakeBinding,
+  at: { node: string; target: string; param: string; param_y?: string | null },
+): boolean {
+  return (
+    binding.node === at.node &&
+    binding.target === at.target &&
+    binding.param === at.param &&
+    (binding.param_y ?? null) === (at.param_y ?? null)
+  );
+}
+
+/** The binding a command addresses, created if this is the first mention. */
+function binding(
+  doc: FakeDoc,
+  at: { node: string; target: string; param: string; param_y?: string | null },
+): FakeBinding {
+  const found = doc.bindings.find((b) => addresses(b, at));
+  if (found) return found;
+  const made: FakeBinding = {
+    node: at.node,
+    target: at.target,
+    param: at.param,
+    param_y: at.param_y ?? null,
+    interpolate: "linear",
+    cells: [],
+  };
+  doc.bindings.push(made);
+  return made;
+}
+
+/**
+ * A binding's grid, as `binding_list` reports it: the product of its params'
+ * key positions, with the cells nobody authored left null.
+ *
+ * Built here rather than stored, because the grid is sized by the params and
+ * the model stores only the authored cells — a fake that stored a rectangle
+ * would answer a question the real one derives.
+ */
+function bindingInfo(doc: FakeDoc, b: FakeBinding): BindingInfo {
+  const keyCount = (param: string): number =>
+    Math.max(1, doc.params.find((p) => p.id === param)?.key_positions.length ?? 1);
+  const width = keyCount(b.param);
+  const height = b.param_y ? keyCount(b.param_y) : 1;
+  const keys: (number | null)[][] = [];
+  const authored: boolean[][] = [];
+  for (let y = 0; y < height; y++) {
+    keys.push(new Array<number | null>(width).fill(null));
+    authored.push(new Array<boolean>(width).fill(false));
+  }
+  for (const cell of b.cells) {
+    const row = keys[cell.y];
+    const flags = authored[cell.y];
+    if (!row || !flags || cell.x >= width) continue;
+    row[cell.x] = cell.value;
+    flags[cell.x] = true;
+  }
+  return {
+    target: b.target,
+    param: b.param,
+    param_y: b.param_y ?? null,
+    interpolate: b.interpolate,
+    width,
+    height,
+    keys,
+    authored,
+  };
 }
 
 /** A renderer that counts what it was told, and draws nothing. */
@@ -609,6 +779,11 @@ export class ScriptedBackend implements Backend {
     this.discardedKeys.push(key);
     this.staged.delete(key);
     return Promise.resolve();
+  }
+
+  /** Whatever a test staged under `key`; nothing there is "not in this tab". */
+  readBytes(key: string): Promise<Uint8Array | undefined> {
+    return Promise.resolve(this.staged.get(key));
   }
 
   feed(replica: WasmReplica, session: number, rev: number): Promise<number> {

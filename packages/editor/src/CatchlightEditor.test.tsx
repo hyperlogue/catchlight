@@ -14,7 +14,7 @@ import "./test/setup.js";
 import { describe, expect, test } from "bun:test";
 import { Editor, InTabBackend, MemoryStorage } from "@catchlight/core";
 import { fakeWasm } from "@catchlight/core/fakes";
-import type { FakeEditor, FakeReplica, FakeViewport } from "@catchlight/core/fakes";
+import type { FakeEditor, FakeGpu, FakeReplica, FakeViewport } from "@catchlight/core/fakes";
 import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -76,8 +76,10 @@ describe("the assembled editor", () => {
     expect(view.querySelector("[data-catchlight-node][data-selected]")).not.toBeNull();
     expect(text(view, "[data-catchlight-status]")).toContain("selected");
 
-    // The default row is a bare slider, so the name is this package's doing.
-    expect(text(view, "[data-catchlight-param-name]")).toBe("head:yaw");
+    // The default row is a bare slider, so the fields around it are this
+    // package's doing — and the name is one a person can edit, not a label.
+    const name = view.querySelector<HTMLInputElement>("[data-catchlight-param-rename]");
+    expect(name?.value).toBe("head:yaw");
     const slider = view.querySelector<HTMLInputElement>("[data-catchlight-param-slider]");
     expect(slider?.min).toBe("-1");
     expect(slider?.max).toBe("1");
@@ -120,6 +122,158 @@ describe("the assembled editor", () => {
     editor.close();
     stop();
   });
+
+  test("New opens a document, Save As downloads it, and closing the last one empties the screen", async () => {
+    const stop = stubObservers();
+    const download = stubDownload();
+    const { editor, wasm } = await fakeStack();
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+
+    await run(() => button(view, "[data-catchlight-new]").click());
+    await settle();
+    expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
+    expect(text(view, "[data-catchlight-status]")).toContain("untitled");
+    expect(text(view, "[data-catchlight-file]")).toBe("not saved yet");
+
+    const input = view.querySelector<HTMLInputElement>("[data-catchlight-save-as]");
+    const form = view.querySelector<HTMLFormElement>("[data-catchlight-file-save]");
+    if (!input || !form) throw new Error("no save-as form in the toolbar");
+    input.value = "copy";
+    await run(() => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    await settle();
+
+    // The command named the key, the bytes came back out as a file of that
+    // name, and the status line says so.
+    expect(wasm.requests.find((request) => request.cmd === "save")).toMatchObject({
+      path: "copy.clm",
+    });
+    expect(download.names).toEqual(["copy.clm"]);
+    expect(text(view, "[data-catchlight-notice]")).toBe("downloaded copy.clm");
+
+    await run(() => button(view, "[data-catchlight-session-close]").click());
+    await settle();
+    await settle();
+
+    expect(wasm.requests.map((request) => request.cmd)).toContain("session_close");
+    expect(view.querySelector("[data-catchlight-stage][data-empty]")).not.toBeNull();
+    expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(0);
+    expect(save(view).disabled).toBe(true);
+
+    await unmount();
+    editor.close();
+    download.restore();
+    stop();
+  });
+
+  test("closing the current document switches to another; closing another leaves it", async () => {
+    const stop = stubObservers();
+    const { editor } = await fakeStack();
+    const first = await editor.newDocument("akari");
+    await editor.newDocument("beni");
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+
+    expect(text(view, "[data-catchlight-status]")).toContain("akari");
+    const current = "[data-catchlight-session][data-current]";
+    expect(view.querySelector(current)?.getAttribute("data-session")).toBe(String(first.id));
+
+    await run(() => button(view, `${current} [data-catchlight-session-close]`).click());
+    await settle();
+    await settle();
+
+    expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
+    expect(text(view, "[data-catchlight-status]")).toContain("beni");
+    expect(view.querySelector("[data-catchlight-stage][data-empty]")).toBeNull();
+    // The closed one's replica is gone, and the screen never read it again.
+    expect((first.replica as FakeReplica).freed).toBe(true);
+
+    await run(() => editor.newDocument("chika"));
+    await settle();
+    const rows = view.querySelectorAll<HTMLElement>("[data-catchlight-session]");
+    expect(rows).toHaveLength(2);
+    await run(() =>
+      rows[1]?.querySelector<HTMLButtonElement>("[data-catchlight-session-close]")?.click(),
+    );
+    await settle();
+    await settle();
+
+    expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
+    expect(text(view, "[data-catchlight-status]")).toContain("beni");
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
+  test("one canvas element outlives every document: empty, open, close all, open again", async () => {
+    const stop = stubObservers();
+    const { editor, gpu, viewports } = await fakeStack();
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+
+    // Empty, and the canvas is already there, drawn on by nothing.
+    const canvas = view.querySelector("canvas");
+    if (!canvas) throw new Error("no canvas in the empty state");
+    expect(view.querySelector("[data-catchlight-stage][data-empty]")).not.toBeNull();
+    expect(viewports).toHaveLength(0);
+
+    await run(() => editor.newDocument("akari"));
+    await settle();
+    expect(view.querySelector("canvas")).toBe(canvas);
+    expect(view.querySelector("[data-catchlight-stage][data-empty]")).toBeNull();
+    expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
+
+    await run(() => button(view, "[data-catchlight-session-close]").click());
+    await settle();
+    await settle();
+    expect(view.querySelector("[data-catchlight-stage][data-empty]")).not.toBeNull();
+    expect(view.querySelector("canvas")).toBe(canvas);
+    expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(0);
+
+    await run(() => button(view, "[data-catchlight-new]").click());
+    await settle();
+    expect(view.querySelector("canvas")).toBe(canvas);
+    expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
+    // The GL tier's rule, over the fakes: the device came from that one
+    // element, once, and every viewport since was built for it.
+    expect(gpu.acquiredFrom).toEqual([canvas]);
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
+  test("the zoom readout follows the camera, relative to the fit", async () => {
+    const stop = stubObservers();
+    const { editor } = await fakeStack();
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    const session = await run(() => editor.newDocument("akari"));
+    await settle();
+
+    // No fit yet, so nothing to be relative to.
+    expect(text(view, "[data-catchlight-zoom]")).toBe("–");
+
+    (session.replica as FakeReplica).box = [10, 20, 12, 24];
+    await run(() => fit(view).click());
+    expect(text(view, "[data-catchlight-zoom]")).toBe("100%");
+
+    // One notch in on the canvas, the wheel gesture the viewport owns.
+    const canvas = view.querySelector("canvas");
+    if (!canvas) throw new Error("no canvas");
+    await run(() =>
+      canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true })),
+    );
+    expect(text(view, "[data-catchlight-zoom]")).toBe("110%");
+
+    await run(() => button(view, "[data-catchlight-camera-reset]").click());
+    expect(text(view, "[data-catchlight-zoom]")).toBe("100%");
+
+    await unmount();
+    editor.close();
+    stop();
+  });
 });
 
 /** A real editor over the fake wasm module: the layer under this one, working. */
@@ -130,12 +284,37 @@ async function fakeEditor(): Promise<Editor> {
 /** The same, plus the fakes underneath, for a test that reads what was drawn. */
 async function fakeStack(): Promise<{
   editor: Editor;
+  wasm: FakeEditor;
+  gpu: FakeGpu;
   viewports: FakeViewport[];
 }> {
   const module = fakeWasm();
   const wasm = new module.module.CatchlightEditor() as FakeEditor;
   const editor = await Editor.create(module.module, new InTabBackend(wasm, new MemoryStorage()));
-  return { editor, viewports: module.viewports };
+  return { editor, wasm, gpu: module.gpu, viewports: module.viewports };
+}
+
+/** Catches the name a download went out under; happy-dom would navigate to it otherwise. */
+function stubDownload(): { names: string[]; restore(): void } {
+  const names: string[] = [];
+  const saved = {
+    create: URL.createObjectURL,
+    revoke: URL.revokeObjectURL,
+    click: HTMLAnchorElement.prototype.click,
+  };
+  URL.createObjectURL = (): string => "blob:test";
+  URL.revokeObjectURL = (): void => {};
+  HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElement): void {
+    if (this.hasAttribute("data-catchlight-download")) names.push(this.download);
+  };
+  return {
+    names,
+    restore: () => {
+      URL.createObjectURL = saved.create;
+      URL.revokeObjectURL = saved.revoke;
+      HTMLAnchorElement.prototype.click = saved.click;
+    },
+  };
 }
 
 interface Mounted {

@@ -181,6 +181,15 @@ export class ConnectedBackend implements Backend {
     return Promise.resolve();
   }
 
+  /**
+   * `undefined`: a save landed in the editor's own store, on the machine the
+   * person is sitting at, and there is no route that reads a key back — nor a
+   * reason for one while the file is already where it was asked to go.
+   */
+  readBytes(_key: string): Promise<Uint8Array | undefined> {
+    return Promise.resolve(undefined);
+  }
+
   feed(replica: WasmReplica, session: number, rev: number): Promise<number> {
     return this.#feeds.run(session, rev, () => this.#fetchInto(replica, session));
   }

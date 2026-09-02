@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { Editor, fileKey } from "./editor.js";
-import { FakeEditor, fakeWasm } from "./fakes.js";
+import { FakeEditor, fakeWasm, readStructure } from "./fakes.js";
 import { InTabBackend } from "./in-tab.js";
 import { MemoryStorage } from "./storage.js";
 
@@ -116,6 +116,63 @@ describe("opening documents", () => {
 
     // With no key it saves where it saved last.
     expect(await editor.saveDocument(session)).toBe("out/akari.clm");
+  });
+
+  test("a saved document reads back as the bytes the editor wrote", async () => {
+    const { editor, wasm } = await inTab();
+    const session = await editor.newDocument("akari");
+
+    const key = await editor.saveDocument(session, "akari.clm");
+    const bytes = await editor.readDocument(key);
+
+    // What a download hands the browser: the store's copy, which is what the
+    // editor staged for the save — not a re-serialization here.
+    if (!bytes) throw new Error("the store handed back nothing");
+    expect(readStructure(bytes).title).toBe(wasm.snapshot(session.id).title);
+    // And a key nobody wrote is an error, never an empty download.
+    await expect(editor.readDocument("nowhere.clm")).rejects.toThrow("nowhere.clm");
+  });
+
+  test("closing a document frees its replica and tells the list", async () => {
+    const { editor, wasm, module } = await inTab();
+    const session = await editor.newDocument("akari");
+    let changes = 0;
+    const off = editor.onSessionsChanged(() => {
+      changes += 1;
+    });
+
+    await editor.closeDocument(session.id);
+
+    expect(wasm.requests.map((request) => request.cmd)).toEqual(["session_new", "session_close"]);
+    expect(await editor.listSessions()).toEqual([]);
+    expect(editor.session(session.id)).toBeUndefined();
+    expect(module.replicas[0]?.freed).toBe(true);
+    expect(changes).toBe(1);
+    off();
+
+    // A session this tab never attached — one an agent opened — closes too.
+    wasm.handle(JSON.stringify({ id: 99, cmd: "session_new", name: "from an agent" }));
+    wasm.drainEvents();
+    const [info] = await editor.listSessions();
+    if (!info) throw new Error("the editor listed no sessions");
+    await editor.closeDocument(info.session);
+    expect(await editor.listSessions()).toEqual([]);
+  });
+
+  test("a document that moved reaches onSessionsChanged too", async () => {
+    const { editor } = await inTab();
+    const session = await editor.newDocument();
+    let changes = 0;
+    const off = editor.onSessionsChanged(() => {
+      changes += 1;
+    });
+
+    // The list carries the revision, the node count and the dirty flag, and
+    // an edit moves all three — a list that only refreshed on open and close
+    // would show a document as clean forever.
+    await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" });
+    expect(changes).toBe(1);
+    off();
   });
 
   test("a session an agent opened can be followed by id", async () => {
