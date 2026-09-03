@@ -40,6 +40,13 @@
  * WebGPU aborts the run where it happens instead of being counted in the
  * summary — after one of those, the next step's timeout would report the wrong
  * failure.
+ *
+ * **The tripwire watches the page, not only its console.** A console line and
+ * an uncaught error are two of the three places such a death shows up. The
+ * third is the editor's own problem line, and it is the one the negative case
+ * lands in: a viewport that cannot attach hands the reason to its host, which
+ * writes it into the status line and logs nothing. So [`checkProblem`] reads
+ * that element wherever a step is about to depend on the picture.
  */
 
 import { READBACK } from "@catchlight/core";
@@ -64,8 +71,9 @@ const MAX_FLAT_SHARE = 0.995;
  *
  * The WebGPU one is the whole negative case: launched without the flags above,
  * `Gpu::acquire` rejects with that string and the editor mounts over a canvas
- * nothing will ever reach. Catching it here is what makes the run say why
- * rather than time out on a missing viewport.
+ * nothing will ever reach. Catching it is what makes the run say why rather
+ * than time out on a missing viewport — from the console when nothing handled
+ * the rejection, and from the problem line when the editor did.
  */
 const CONSOLE_FATAL = [
   /panicked at/,
@@ -155,6 +163,30 @@ const step = async (name: string, body: () => Promise<void>) => {
   }
 };
 
+/**
+ * The editor's own problem line, read for a reason to stop.
+ *
+ * A failure the editor *handles* reaches neither of the tripwire's other two
+ * sources: the viewport hands a failed attach to its host, and the host puts
+ * the sentence in this one element. Without this read the negative case dies
+ * on the next step's fifteen-second timeout and never says WebGPU.
+ *
+ * `evaluate` rather than a locator, because the element is absent on a healthy
+ * page and a locator would wait thirty seconds to discover that.
+ */
+const checkProblem = async (): Promise<void> => {
+  const said = await page
+    .evaluate(() => document.querySelector("[data-catchlight-problem]")?.textContent?.trim() ?? "")
+    .catch(() => "");
+  if (!said) return;
+  const line = `[problem] ${said}`;
+  if (!PAGE_FATAL.some((pattern) => pattern.test(line))) return;
+  watch(line, PAGE_FATAL);
+  // The tripwire has already rejected; this only stops the caller walking into
+  // a wait whose answer no longer matters.
+  throw new Error(`the page can no longer draw: ${line}`);
+};
+
 interface Shot {
   size: string;
   hash: number;
@@ -176,6 +208,9 @@ interface Shot {
  * it, which is what catches a canvas that stopped drawing at that moment.
  */
 const canvasFrame = async (what: string, flat: "must vary" | "may be flat" = "must vary"): Promise<Shot> => {
+  // Before the wait below, so a viewport that will never arrive is reported as
+  // the reason it did not rather than as this step timing out.
+  await checkProblem();
   // A document swap rebuilds the viewport, and the rebuild is asynchronous.
   // Waiting is not the assertion — a canvas that never gets one fails here
   // with a timeout naming this step, which is the same verdict.
@@ -233,6 +268,9 @@ try {
     await page.locator("canvas[data-catchlight-viewport]").first().waitFor({ timeout: 20000 });
     await page.locator("[data-catchlight-node]").first().waitFor({ timeout: 20000 });
     await page.waitForTimeout(1500);
+    // The device is acquired at the first attach, so this is the earliest step
+    // a browser without WebGPU can be told apart from a slow one.
+    await checkProblem();
   });
   if (server && process.env.AGENT_CMD) {
     await step("an agent's edit over the socket reaches the tab", async () => {
