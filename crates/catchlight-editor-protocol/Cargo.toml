@@ -18,7 +18,7 @@ ts-rs = { workspace = true, optional = true }
 [features]
 # Emit the TypeScript declarations for every type on this wire. Off by default:
 # a client that speaks the protocol never needs the generator, only the file it
-# wrote. `cargo xtask ts` turns it on and regenerates
+# wrote. `cargo xtask generate typescript` turns it on and regenerates
 # `packages/core/src/protocol.gen.ts`; CI fails if that file has drifted.
 ts = ["dep:ts-rs", "catchlight-core/ts"]
 
