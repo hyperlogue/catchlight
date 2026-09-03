@@ -1138,6 +1138,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
                             threshold: *threshold,
                             cols: *cols,
                             rows: *rows,
+                            axes_x: None,
+                            axes_y: None,
+                            margin: None,
                         }
                     } else {
                         AutoMesh::Contour {
@@ -1145,6 +1148,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
                             simplify: *simplify,
                             margin: *margin,
                             spacing: *spacing,
+                            rings: None,
+                            min_distance: None,
+                            mirror_x: None,
                         }
                     },
                 },

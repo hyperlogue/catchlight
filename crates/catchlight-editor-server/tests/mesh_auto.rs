@@ -243,6 +243,9 @@ fn a_grid_lays_down_the_lattice_it_was_asked_for() {
             threshold: None,
             cols: Some(3),
             rows: Some(2),
+            axes_x: None,
+            axes_y: None,
+            margin: None,
         },
     );
 
@@ -281,6 +284,9 @@ fn an_omitted_knob_is_the_editors_default() {
                 simplify: Some(6.0),
                 margin: Some(4),
                 spacing: Some(0),
+                rings: Some(Vec::new()),
+                min_distance: Some(0.0),
+                mirror_x: None,
             },
         );
         f.mesh(&part)
@@ -305,6 +311,9 @@ fn an_omitted_knob_is_the_editors_default() {
                 simplify: None,
                 margin: None,
                 spacing: Some(8),
+                rings: None,
+                min_distance: None,
+                mirror_x: None,
             },
         );
         f.mesh(&part)
@@ -420,16 +429,22 @@ fn every_refusal_has_its_own_code() {
             simplify: None,
             margin: None,
             spacing: None,
+            rings: None,
+            min_distance: None,
+            mirror_x: None,
         },
         AutoMesh::Grid {
             threshold: Some(255),
             cols: None,
             rows: None,
+            axes_x: None,
+            axes_y: None,
+            margin: None,
         },
     ] {
         assert!(
             matches!(
-                f.auto(&part, mode),
+                f.auto(&part, mode.clone()),
                 Reply::Err {
                     code: ErrorCode::NothingToMesh,
                     ..
@@ -442,4 +457,90 @@ fn every_refusal_has_its_own_code() {
     // None of the refusals moved the document: the part still draws what it
     // drew and carries no mesh it did not have.
     assert!(f.mesh(&part).verts.is_empty());
+}
+
+/// The knobs the trace grew toward inochi-creator's automesh: rings and a
+/// minimum spacing on a contour, named axes and a fractional margin on a
+/// grid. They are fields on the mode a client already sends, and each one
+/// moves the mesh in the direction it says.
+#[test]
+fn the_added_knobs_reach_the_trace() {
+    fn contour(
+        rings: Option<Vec<f32>>,
+        spacing: Option<u32>,
+        min_distance: Option<f32>,
+    ) -> AutoMesh {
+        AutoMesh::Contour {
+            threshold: None,
+            simplify: None,
+            margin: None,
+            spacing,
+            rings,
+            min_distance,
+            mirror_x: None,
+        }
+    }
+    let mut f = Fixture::new();
+    let traced = |f: &mut Fixture, mode: AutoMesh| {
+        let part = f.part("blob.png");
+        f.auto(&part, mode);
+        f.mesh(&part)
+    };
+
+    let outline = traced(&mut f, AutoMesh::default());
+    let ringed = traced(&mut f, contour(Some(vec![0.6, 0.3]), None, None));
+    assert!(
+        ringed.verts.len() > outline.verts.len(),
+        "rings fill the inside of the outline: {} vertices against {}",
+        ringed.verts.len() / 2,
+        outline.verts.len() / 2,
+    );
+
+    let dense = traced(&mut f, contour(None, Some(6), None));
+    let thinned = traced(&mut f, contour(None, Some(6), Some(12.0)));
+    assert!(
+        thinned.verts.len() < dense.verts.len(),
+        "12 texels apart thins a 6-texel fill: {} vertices against {}",
+        thinned.verts.len() / 2,
+        dense.verts.len() / 2,
+    );
+
+    // Named axes replace `cols`/`rows`, so the lattice is exactly as long as
+    // the two lists rather than the 7 × 7 a default grid lays down.
+    let grid = traced(
+        &mut f,
+        AutoMesh::Grid {
+            threshold: None,
+            cols: None,
+            rows: None,
+            axes_x: Some(vec![0.0, 0.5, 1.0]),
+            axes_y: Some(vec![0.0, 1.0]),
+            margin: None,
+        },
+    );
+    assert_eq!(grid.verts.len() / 2, 3 * 2);
+
+    // A margin is a fraction of the solid box, so half of it on each side of
+    // a 32-texel square reaches the texture's own edges: local ±32 rather
+    // than the ±17 one texel of margin gives.
+    let wide = traced(
+        &mut f,
+        AutoMesh::Grid {
+            threshold: None,
+            cols: Some(1),
+            rows: Some(1),
+            axes_x: None,
+            axes_y: None,
+            margin: Some(0.5),
+        },
+    );
+    let [min_x, min_y, max_x, max_y] = bounds(&wide.verts);
+    assert!(
+        (min_x + 32.0).abs() < 0.01
+            && (min_y + 32.0).abs() < 0.01
+            && (max_x - 32.0).abs() < 0.01
+            && (max_y - 32.0).abs() < 0.01,
+        "the box grew by half of itself: {:?}",
+        bounds(&wide.verts),
+    );
 }

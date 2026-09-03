@@ -1049,12 +1049,13 @@ impl BindingParams {
 /// live in `catchlight-editor-core` beside the code that reads them, so the
 /// wire cannot drift from what the editor actually does; absent means "what
 /// the editor would have used". `{"mode": "contour"}` is the default trace.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum AutoMesh {
     /// Trace the alpha contours: one pinned boundary loop per connected
-    /// component, plus interior fill points if `spacing` asks for them.
+    /// component, plus the free interior vertices `rings` and `spacing` ask
+    /// for.
     Contour {
         /// Alpha strictly above this counts as solid.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1069,8 +1070,27 @@ pub enum AutoMesh {
         /// Interior fill-point spacing in texels; 0 is boundary only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spacing: Option<u32>,
+        /// One ring of free vertices per factor, the traced outline scaled
+        /// about its own centroid: 0 is the centroid itself, 1 the outline.
+        /// A factor above 1 is clamped to 1 — `margin` already dilates the
+        /// mask before tracing, and a vertex outside the pinned loop would
+        /// only make triangles the alpha cull drops. Empty places no rings,
+        /// which is the default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rings: Option<Vec<f32>>,
+        /// Texels: a free vertex closer than this to one already placed is
+        /// dropped, so rings and fill do not crowd the outline. The pinned
+        /// outline itself is never thinned.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_distance: Option<f32>,
+        /// Texel x of a vertical mirror line: free vertices are generated
+        /// from `x <= mirror_x` and reflected across it, so a symmetric part
+        /// gets a symmetric interior. The outline is traced from the alpha
+        /// and is not mirrored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mirror_x: Option<f32>,
     },
-    /// A regular grid over the bounding box of the solid texels.
+    /// A grid over the bounding box of the solid texels.
     Grid {
         /// Alpha strictly above this counts as solid, and is what the
         /// bounding box is measured from.
@@ -1080,6 +1100,21 @@ pub enum AutoMesh {
         cols: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rows: Option<u32>,
+        /// Grid lines as fractions of the solid bounding box — 0 its left
+        /// edge, 1 its right — so the grid need not be uniform. Values
+        /// outside `0..=1` put a line outside the box. Present, it replaces
+        /// both `cols` and `margin` on this axis. A grid is mirrored by
+        /// asking for symmetric fractions, which is why there is no mirror
+        /// knob here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axes_x: Option<Vec<f32>>,
+        /// The same, down, replacing `rows`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axes_y: Option<Vec<f32>>,
+        /// Fraction of the bounding box added outside it on both sides, when
+        /// the lines come from `cols`/`rows`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        margin: Option<f32>,
     },
 }
 
@@ -1092,6 +1127,9 @@ impl Default for AutoMesh {
             simplify: None,
             margin: None,
             spacing: None,
+            rings: None,
+            min_distance: None,
+            mirror_x: None,
         }
     }
 }

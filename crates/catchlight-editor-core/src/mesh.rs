@@ -450,7 +450,7 @@ fn orient(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
 // ---- automesh ----
 
 /// Contour automesh knobs (texel units).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ContourKnobs {
     /// Alpha above this counts as solid.
     pub threshold: u8,
@@ -460,6 +460,22 @@ pub struct ContourKnobs {
     pub margin: u32,
     /// Interior fill-point spacing; 0 = boundary only.
     pub spacing: u32,
+    /// Scale factors about each component's centroid, one ring of free
+    /// vertices each. Empty places no rings. A factor is clamped into
+    /// `0..=1`: 0 is the centroid itself, 1 the outline, and above 1 has no
+    /// work left to do here — [`ContourKnobs::margin`] already dilates the
+    /// mask before tracing, so a vertex outside the pinned loop would only
+    /// make triangles alpha culling drops.
+    pub rings: Vec<f32>,
+    /// Texels: a free vertex closer than this to one already placed is
+    /// dropped. 0 drops only coincident ones, which the triangulation refuses
+    /// anyway.
+    pub min_distance: f32,
+    /// Texel x of a vertical mirror line. Free vertices are generated from
+    /// `x <= mirror_x` and reflected across it, so their set is symmetric
+    /// whatever the art is. The pinned outline is not mirrored: it is traced
+    /// from the alpha, and the alpha is the authority on where the art ends.
+    pub mirror_x: Option<f32>,
 }
 
 impl Default for ContourKnobs {
@@ -469,13 +485,101 @@ impl Default for ContourKnobs {
             simplify: 6.0,
             margin: 4,
             spacing: 0,
+            rings: Vec::new(),
+            min_distance: 0.0,
+            mirror_x: None,
+        }
+    }
+}
+
+/// Grid automesh knobs.
+#[derive(Debug, Clone)]
+pub struct GridKnobs {
+    /// Alpha above this counts as solid, and is what the bounding box is
+    /// measured from.
+    pub threshold: u8,
+    /// Cells across, when [`GridKnobs::axes_x`] is empty.
+    pub cols: u32,
+    /// Cells down, when [`GridKnobs::axes_y`] is empty.
+    pub rows: u32,
+    /// Grid lines as fractions of the solid bounding box — 0 its left edge, 1
+    /// its right — so the grid need not be uniform. Values outside `0..=1`
+    /// are allowed and put a line outside the box. Empty means `cols` evenly
+    /// spaced instead; present, it replaces `cols` *and*
+    /// [`GridKnobs::margin`] on this axis. Symmetric fractions are what a
+    /// mirrored grid is: there is no separate mirror knob because
+    /// `[-0.1, 0, 0.5, 1, 1.1]` already says it.
+    pub axes_x: Vec<f32>,
+    /// The same, down, replacing `rows`.
+    pub axes_y: Vec<f32>,
+    /// Fraction of the box added outside it on both sides, when the lines
+    /// come from `cols`/`rows`. `None` is one texel — enough that the
+    /// outermost solid texels sit inside the outer cells rather than on their
+    /// edge, and what a grid has always used.
+    pub margin: Option<f32>,
+}
+
+impl Default for GridKnobs {
+    fn default() -> Self {
+        Self {
+            threshold: 16,
+            cols: 6,
+            rows: 6,
+            axes_x: Vec::new(),
+            axes_y: Vec::new(),
+            margin: None,
+        }
+    }
+}
+
+/// Places the vertices no constraint pins — rings and interior fill — and
+/// holds what [`ContourKnobs::min_distance`] and [`ContourKnobs::mirror_x`]
+/// need to judge one: every texel-space position already in the mesh, the
+/// pinned outline's included.
+struct FreeVerts<'a> {
+    uv_map: &'a UvMap,
+    dims: [f32; 2],
+    min_d2: f32,
+    mirror_x: Option<f32>,
+    placed: Vec<[f32; 2]>,
+}
+
+impl FreeVerts<'_> {
+    /// A vertex the mesh already carries, so the next free one can be judged
+    /// against it.
+    fn record(&mut self, texel: [f32; 2]) {
+        self.placed.push(texel);
+    }
+
+    /// One free vertex, plus its reflection when a mirror line is set. A
+    /// candidate on the far side of the line is dropped: that half of the
+    /// mesh is the near half's reflection, not its own.
+    fn place(&mut self, mesh: &mut WorkingMesh, texel: [f32; 2]) {
+        match self.mirror_x {
+            Some(m) if texel[0] > m => (),
+            Some(m) => {
+                self.place_one(mesh, texel);
+                self.place_one(mesh, [2.0 * m - texel[0], texel[1]]);
+            }
+            None => self.place_one(mesh, texel),
+        }
+    }
+
+    fn place_one(&mut self, mesh: &mut WorkingMesh, texel: [f32; 2]) {
+        if self.placed.iter().any(|q| dist2(*q, texel) < self.min_d2) {
+            return;
+        }
+        let uv = [texel[0] / self.dims[0], texel[1] / self.dims[1]];
+        if mesh.add_vertex(self.uv_map.local(uv)).is_ok() {
+            self.placed.push(texel);
         }
     }
 }
 
 /// Trace the texture's alpha contours into a boundary-constrained working
-/// mesh: one pinned loop per connected component, plus optional interior fill
-/// points. Vertices land in node-local space through `uv_map`.
+/// mesh: one pinned loop per connected component, plus the free interior
+/// vertices `rings` and `spacing` ask for. Vertices land in node-local space
+/// through `uv_map`.
 pub fn contour_automesh(
     alpha: &AlphaMask,
     knobs: &ContourKnobs,
@@ -499,8 +603,22 @@ pub fn contour_automesh(
         constraints: Vec::new(),
         origin,
     };
-    let texel_uv =
-        |p: [f32; 2]| -> [f32; 2] { [p[0] / alpha.width as f32, p[1] / alpha.height as f32] };
+    let mut free = FreeVerts {
+        uv_map,
+        dims: [alpha.width as f32, alpha.height as f32],
+        // NaN compares false against every distance, so a bad number filters
+        // nothing rather than everything; `max` folds it to the default.
+        min_d2: {
+            let d = knobs.min_distance.max(0.0);
+            d * d
+        },
+        mirror_x: knobs.mirror_x.filter(|m| m.is_finite()),
+        placed: Vec::new(),
+    };
+
+    // The pinned outlines first: rings hang off them, and `min_distance`
+    // measures a free vertex against them.
+    let mut outlines: Vec<Vec<[f32; 2]>> = Vec::new();
     for contour in loops {
         if contour.len() < 3 {
             continue;
@@ -511,9 +629,12 @@ pub fn contour_automesh(
         }
         let mut ids = Vec::with_capacity(simplified.len());
         for p in &simplified {
-            let local = uv_map.local(texel_uv(*p));
+            let local = uv_map.local([p[0] / alpha.width as f32, p[1] / alpha.height as f32]);
             match mesh.add_vertex(local) {
-                Ok(id) => ids.push(id),
+                Ok(id) => {
+                    ids.push(id);
+                    free.record(*p);
+                }
                 Err(_) => continue, // coincident with an earlier contour point
             }
         }
@@ -524,6 +645,25 @@ pub fn contour_automesh(
             // offending pin rather than fail the whole trace.
             let _ = mesh.add_constraint(a, b);
         }
+        outlines.push(simplified);
+    }
+
+    // Rings: the outline scaled about its own centroid, resampled by
+    // arclength. A ring's vertex count falls with its scale (a ring at 0.5
+    // gets half the outline's), which keeps the density across rings roughly
+    // even and ties it to `simplify` rather than to a knob of its own.
+    for outline in &outlines {
+        let c = centroid(outline);
+        for &factor in &knobs.rings {
+            if !factor.is_finite() {
+                continue;
+            }
+            let factor = factor.clamp(0.0, 1.0);
+            let n = ((outline.len() as f32 * factor).round() as usize).max(1);
+            for p in ring_points(outline, c, factor, n) {
+                free.place(&mut mesh, p);
+            }
+        }
     }
 
     if knobs.spacing > 0 {
@@ -533,8 +673,7 @@ pub fn contour_automesh(
             let mut x = s / 2;
             while x < w {
                 if interior(&solid, w, h, x, y, s / 2) {
-                    let local = uv_map.local(texel_uv([x as f32, y as f32]));
-                    let _ = mesh.add_vertex(local);
+                    free.place(&mut mesh, [x as f32, y as f32]);
                 }
                 x += s;
             }
@@ -544,12 +683,57 @@ pub fn contour_automesh(
     Ok(mesh)
 }
 
-/// Regular grid over the solid texels' bounding box.
+fn centroid(points: &[[f32; 2]]) -> [f32; 2] {
+    let n = points.len().max(1) as f32;
+    let sum = points
+        .iter()
+        .fold([0.0f32, 0.0], |a, p| [a[0] + p[0], a[1] + p[1]]);
+    [sum[0] / n, sum[1] / n]
+}
+
+/// `n` points spaced evenly along `outline` scaled by `factor` about `c`.
+/// A degenerate ring (factor 0, or a loop of no length) is the centre itself.
+fn ring_points(outline: &[[f32; 2]], c: [f32; 2], factor: f32, n: usize) -> Vec<[f32; 2]> {
+    let scaled: Vec<[f32; 2]> = outline
+        .iter()
+        .map(|p| [c[0] + (p[0] - c[0]) * factor, c[1] + (p[1] - c[1]) * factor])
+        .collect();
+    // Cumulative arclength around the closed loop.
+    let mut acc = Vec::with_capacity(scaled.len() + 1);
+    let mut total = 0.0f32;
+    acc.push(0.0);
+    for k in 0..scaled.len() {
+        total += dist2(scaled[k], scaled[(k + 1) % scaled.len()]).sqrt();
+        acc.push(total);
+    }
+    if total <= f32::EPSILON {
+        return vec![c];
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut seg = 0usize;
+    for i in 0..n {
+        let target = total * i as f32 / n as f32;
+        while seg + 2 < acc.len() && acc[seg + 1] < target {
+            seg += 1;
+        }
+        let span = acc[seg + 1] - acc[seg];
+        let t = if span <= f32::EPSILON {
+            0.0
+        } else {
+            (target - acc[seg]) / span
+        };
+        let a = scaled[seg];
+        let b = scaled[(seg + 1) % scaled.len()];
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+    out
+}
+
+/// A grid over the solid texels' bounding box — uniform, or on the lines
+/// `axes_x`/`axes_y` name.
 pub fn grid_automesh(
     alpha: &AlphaMask,
-    threshold: u8,
-    cols: u32,
-    rows: u32,
+    knobs: &GridKnobs,
     uv_map: &UvMap,
     origin: [f32; 2],
 ) -> Result<WorkingMesh, MeshError> {
@@ -558,7 +742,7 @@ pub fn grid_automesh(
     let mut max = [i64::MIN, i64::MIN];
     for y in 0..h {
         for x in 0..w {
-            if alpha.at(x, y) > threshold {
+            if alpha.at(x, y) > knobs.threshold {
                 min = [min[0].min(x), min[1].min(y)];
                 max = [max[0].max(x), max[1].max(y)];
             }
@@ -567,23 +751,60 @@ pub fn grid_automesh(
     if min[0] > max[0] {
         return Err(MeshError::NothingToMesh);
     }
-    // One texel of margin so boundary texels stay inside the outer cells.
-    let min = [(min[0] - 1) as f32, (min[1] - 1) as f32];
-    let max = [(max[0] + 2) as f32, (max[1] + 2) as f32];
-    let (cols, rows) = (cols.max(1), rows.max(1));
+    // The box in continuous texel coordinates: the near edge of the first
+    // solid texel to the far edge of the last, so fraction 1 is the far edge
+    // of the art rather than the middle of its last texel.
+    let lo = [min[0] as f32, min[1] as f32];
+    let size = [(max[0] + 1 - min[0]) as f32, (max[1] + 1 - min[1]) as f32];
+
+    let lines = |given: &[f32], n: u32, lo: f32, size: f32| -> Vec<f32> {
+        let named: Vec<f32> = given
+            .iter()
+            .filter(|f| f.is_finite())
+            .map(|f| lo + f * size)
+            .collect();
+        if !named.is_empty() {
+            let mut named = named;
+            named.sort_by(f32::total_cmp);
+            return named;
+        }
+        // One texel outside the box on each side, or the fraction asked for.
+        let pad = knobs
+            .margin
+            .filter(|m| m.is_finite())
+            .map_or(1.0, |m| m * size);
+        let (a, b) = (lo - pad, lo + size + pad);
+        let n = n.max(1);
+        (0..=n).map(|i| a + (b - a) * i as f32 / n as f32).collect()
+    };
+    // Named lines can repeat or land a hair apart; two vertices on top of one
+    // another corrupt the triangulation, so the grid is deduplicated in the
+    // space the vertices land in rather than in fractions.
+    let dedup = |mut v: Vec<f32>| -> Vec<f32> {
+        v.dedup_by(|a, b| (*a - *b).abs() < MIN_VERTEX_DISTANCE);
+        v
+    };
+    let xs = dedup(
+        lines(&knobs.axes_x, knobs.cols, lo[0], size[0])
+            .into_iter()
+            .map(|tx| uv_map.local([tx / alpha.width as f32, 0.0])[0])
+            .collect(),
+    );
+    let ys = dedup(
+        lines(&knobs.axes_y, knobs.rows, lo[1], size[1])
+            .into_iter()
+            .map(|ty| uv_map.local([0.0, ty / alpha.height as f32])[1])
+            .collect(),
+    );
+
     let mut mesh = WorkingMesh {
         verts: Vec::new(),
         constraints: Vec::new(),
         origin,
     };
-    for j in 0..=rows {
-        for i in 0..=cols {
-            let fx = i as f32 / cols as f32;
-            let fy = j as f32 / rows as f32;
-            let tx = min[0] + fx * (max[0] - min[0]);
-            let ty = min[1] + fy * (max[1] - min[1]);
-            let local = uv_map.local([tx / alpha.width as f32, ty / alpha.height as f32]);
-            mesh.add_vertex(local)?;
+    for &y in &ys {
+        for &x in &xs {
+            mesh.add_vertex([x, y])?;
         }
     }
     Ok(mesh)
@@ -1047,6 +1268,289 @@ mod tests {
             assert!((uv[0] - q.uvs[i * 2]).abs() < 1e-4);
             assert!((uv[1] - q.uvs[i * 2 + 1]).abs() < 1e-4);
         }
+    }
+
+    /// A solid square of texels, on a transparent field: an outline and a
+    /// centroid a test can predict.
+    fn square_mask() -> AlphaMask {
+        let size = 64u32;
+        let mut alpha = vec![0u8; (size * size) as usize];
+        for y in 16..48u32 {
+            for x in 16..48u32 {
+                alpha[(y * size + x) as usize] = 255;
+            }
+        }
+        AlphaMask {
+            width: size,
+            height: size,
+            alpha,
+        }
+    }
+
+    /// A rectangle whose centre is *not* the texture's, so mirroring about
+    /// the texture's middle has something to do.
+    fn offset_mask() -> AlphaMask {
+        let size = 64u32;
+        let mut alpha = vec![0u8; (size * size) as usize];
+        for y in 16..48u32 {
+            for x in 8..40u32 {
+                alpha[(y * size + x) as usize] = 255;
+            }
+        }
+        AlphaMask {
+            width: size,
+            height: size,
+            alpha,
+        }
+    }
+
+    /// The vertices no constraint pins — rings and interior fill. They are
+    /// added after the outlines, so they are the tail of the list.
+    fn free_verts(mesh: &WorkingMesh) -> Vec<[f32; 2]> {
+        let pinned = mesh
+            .constraints
+            .iter()
+            .map(|&(a, b)| a.max(b) + 1)
+            .max()
+            .unwrap_or(0);
+        (pinned..mesh.vertex_count() as u32)
+            .map(|i| mesh.pos(i))
+            .collect()
+    }
+
+    fn tracing_knobs() -> ContourKnobs {
+        // No dilation, so the outline is the square itself and the radii a
+        // ring lands at are the ones arithmetic predicts.
+        ContourKnobs {
+            simplify: 2.0,
+            margin: 0,
+            ..ContourKnobs::default()
+        }
+    }
+
+    #[test]
+    fn rings_land_at_the_radius_they_name() {
+        let alpha = square_mask();
+        let uv_map = UvMap::from_texture_size(64.0, 64.0);
+        // The square spans texel centres 16.5..47.5, which is local ±15.5
+        // under the centered convention, centred on the origin.
+        let half = 15.5f32;
+
+        let plain = contour_automesh(&alpha, &tracing_knobs(), &uv_map, [0.0, 0.0]).unwrap();
+        assert!(free_verts(&plain).is_empty(), "no rings by default");
+
+        for &factor in &[0.5f32, 0.25] {
+            let knobs = ContourKnobs {
+                rings: vec![factor],
+                ..tracing_knobs()
+            };
+            let mesh = contour_automesh(&alpha, &knobs, &uv_map, [0.0, 0.0]).unwrap();
+            let ring = free_verts(&mesh);
+            assert!(!ring.is_empty(), "ring {factor} placed vertices");
+            // Every ring vertex sits on the square scaled by `factor` about
+            // its centre, so its Chebyshev radius is exactly that.
+            for p in &ring {
+                let radius = p[0].abs().max(p[1].abs());
+                assert!(
+                    (radius - half * factor).abs() < 0.5,
+                    "ring {factor} vertex {p:?} is at radius {radius}, not {}",
+                    half * factor,
+                );
+            }
+        }
+
+        // Factor 0 is the centroid itself: one vertex, at the middle.
+        let knobs = ContourKnobs {
+            rings: vec![0.0],
+            ..tracing_knobs()
+        };
+        let mesh = contour_automesh(&alpha, &knobs, &uv_map, [0.0, 0.0]).unwrap();
+        let centre = free_verts(&mesh);
+        assert_eq!(centre.len(), 1);
+        assert!(
+            centre[0][0].abs() < 0.5 && centre[0][1].abs() < 0.5,
+            "{centre:?}"
+        );
+
+        // Above 1 is clamped to the outline, which is where `margin` already
+        // put the mesh's edge: it never lands outside the pinned loop.
+        let knobs = ContourKnobs {
+            rings: vec![4.0],
+            ..tracing_knobs()
+        };
+        let mesh = contour_automesh(&alpha, &knobs, &uv_map, [0.0, 0.0]).unwrap();
+        for p in free_verts(&mesh) {
+            let radius = p[0].abs().max(p[1].abs());
+            assert!(radius <= half + 0.5, "vertex {p:?} escaped the outline");
+        }
+    }
+
+    #[test]
+    fn min_distance_thins_the_free_vertices_and_never_the_outline() {
+        let alpha = square_mask();
+        let uv_map = UvMap::from_texture_size(64.0, 64.0);
+        let base = ContourKnobs {
+            spacing: 6,
+            ..tracing_knobs()
+        };
+        let dense = contour_automesh(&alpha, &base, &uv_map, [0.0, 0.0]).unwrap();
+
+        let thinned = contour_automesh(
+            &alpha,
+            &ContourKnobs {
+                min_distance: 10.0,
+                ..base.clone()
+            },
+            &uv_map,
+            [0.0, 0.0],
+        )
+        .unwrap();
+
+        assert!(
+            free_verts(&thinned).len() < free_verts(&dense).len(),
+            "10 texels apart thins a 6-texel fill",
+        );
+        assert!(!free_verts(&thinned).is_empty(), "and does not empty it");
+        // Nothing kept is closer than the distance asked for.
+        let kept = free_verts(&thinned);
+        for (i, a) in kept.iter().enumerate() {
+            for b in &kept[i + 1..] {
+                assert!(dist2(*a, *b).sqrt() >= 10.0 - 1e-3, "{a:?} and {b:?} crowd");
+            }
+        }
+        // The pinned loop is untouched: same constraints as without it.
+        assert_eq!(thinned.constraints, dense.constraints);
+
+        // Zero is what the trace has always done — only coincident vertices go.
+        let same = contour_automesh(
+            &alpha,
+            &ContourKnobs {
+                min_distance: 0.0,
+                ..base
+            },
+            &uv_map,
+            [0.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(same.verts, dense.verts);
+    }
+
+    #[test]
+    fn a_mirror_line_makes_the_free_vertices_symmetric() {
+        let alpha = offset_mask();
+        let uv_map = UvMap::from_texture_size(64.0, 64.0);
+        // Texel x 32 is the texture's middle, which is local x 0.
+        let knobs = ContourKnobs {
+            spacing: 6,
+            mirror_x: Some(32.0),
+            ..tracing_knobs()
+        };
+        let mesh = contour_automesh(&alpha, &knobs, &uv_map, [0.0, 0.0]).unwrap();
+        let free = free_verts(&mesh);
+        assert!(free.len() >= 4, "the fill placed something: {}", free.len());
+
+        for p in &free {
+            let mirrored = [-p[0], p[1]];
+            assert!(
+                free.iter().any(|q| dist2(*q, mirrored) < 1e-4),
+                "{p:?} has no reflection in {free:?}",
+            );
+        }
+        // The art is off-centre, so the mirror really moved something: some
+        // free vertex sits on the empty side of the line.
+        assert!(
+            free.iter().any(|p| p[0] > 1.0),
+            "the reflection reached past the mirror line",
+        );
+    }
+
+    #[test]
+    fn a_grid_puts_its_lines_where_the_axes_ask() {
+        let alpha = square_mask();
+        let uv_map = UvMap::from_texture_size(64.0, 64.0);
+        // The solid box is texels 16..48, which is local −16..16.
+        let mesh = grid_automesh(
+            &alpha,
+            &GridKnobs {
+                axes_x: vec![0.0, 0.5, 1.0],
+                axes_y: vec![0.0, 1.0],
+                ..GridKnobs::default()
+            },
+            &uv_map,
+            [0.0, 0.0],
+        )
+        .unwrap();
+        // Rows come out with y descending: v grows downward.
+        let want = [
+            [-16.0, 16.0],
+            [0.0, 16.0],
+            [16.0, 16.0],
+            [-16.0, -16.0],
+            [0.0, -16.0],
+            [16.0, -16.0],
+        ];
+        assert_eq!(mesh.vertex_count(), want.len());
+        for (i, w) in want.iter().enumerate() {
+            let p = mesh.pos(i as u32);
+            assert!(
+                (p[0] - w[0]).abs() < 0.01 && (p[1] - w[1]).abs() < 0.01,
+                "vertex {i} is {p:?}, not {w:?}",
+            );
+        }
+
+        // Fractions outside 0..=1 put lines outside the box, and repeated
+        // ones collapse rather than stacking two vertices in one place.
+        let outside = grid_automesh(
+            &alpha,
+            &GridKnobs {
+                axes_x: vec![1.5, -0.5, -0.5],
+                axes_y: vec![0.5],
+                ..GridKnobs::default()
+            },
+            &uv_map,
+            [0.0, 0.0],
+        )
+        .unwrap();
+        // Half a box (16 texels) outside each edge: texels 0 and 64, which
+        // is local −32 and 32.
+        assert_eq!(outside.vertex_count(), 2, "the repeat collapsed");
+        assert!(
+            (outside.pos(0)[0] + 32.0).abs() < 0.01,
+            "sorted, −0.5 first"
+        );
+        assert!((outside.pos(1)[0] - 32.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_grid_margin_is_a_fraction_of_the_box_and_defaults_to_one_texel() {
+        let alpha = square_mask();
+        let uv_map = UvMap::from_texture_size(64.0, 64.0);
+        let one_cell = |margin| {
+            grid_automesh(
+                &alpha,
+                &GridKnobs {
+                    cols: 1,
+                    rows: 1,
+                    margin,
+                    ..GridKnobs::default()
+                },
+                &uv_map,
+                [0.0, 0.0],
+            )
+            .unwrap()
+        };
+        // Absent: the box is texels 15..49, local ±17 — what a grid has
+        // always laid down.
+        let default = one_cell(None);
+        assert!(
+            (default.pos(0)[0] + 17.0).abs() < 0.01,
+            "{:?}",
+            default.pos(0)
+        );
+        // Half the box (32 texels) outside each side: texels 0..64, local ±32.
+        let wide = one_cell(Some(0.5));
+        assert!((wide.pos(0)[0] + 32.0).abs() < 0.01, "{:?}", wide.pos(0));
+        assert!((wide.pos(0)[1] - 32.0).abs() < 0.01, "{:?}", wide.pos(0));
     }
 
     #[test]

@@ -26,7 +26,7 @@
 use std::collections::HashSet;
 
 use catchlight_editor_core::{
-    contour_automesh, grid_automesh, AlphaMask, ContourKnobs, UvMap, WorkingMesh,
+    contour_automesh, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, UvMap, WorkingMesh,
 };
 use catchlight_editor_protocol::{NodeId, SeamAddr, SeamId, SeamInfo, SlotId, WeldInfo};
 use eframe::egui;
@@ -787,9 +787,12 @@ impl MeshEditState {
                 if let Some(alpha) = &self.alpha {
                     match grid_automesh(
                         alpha,
-                        self.knobs.threshold,
-                        self.grid_cols,
-                        self.grid_rows,
+                        &GridKnobs {
+                            threshold: self.knobs.threshold,
+                            cols: self.grid_cols,
+                            rows: self.grid_rows,
+                            ..GridKnobs::default()
+                        },
                         &self.uv_map,
                         self.working.origin,
                     ) {
