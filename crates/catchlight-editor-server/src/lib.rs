@@ -102,8 +102,8 @@ use catchlight_core::{
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Pose;
 use catchlight_editor_core::{
-    contour_automesh, grid_automesh, AlphaMask, ContourKnobs, Manifest, ManifestError, MeshError,
-    ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
+    contour_automesh, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, Manifest, ManifestError,
+    MeshError, ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
 };
 
 /// Per-session undo history depth.
@@ -2070,10 +2070,6 @@ fn build_mesh(
     })
 }
 
-/// The grid `mesh_auto` lays down when the request names no size — the same
-/// one the desktop mesh editor opens on.
-const AUTOMESH_GRID: (u32, u32) = (6, 6);
-
 /// Derive `node`'s mesh from the alpha of the texture it draws.
 ///
 /// **The editor traces, because the editor holds the bytes.** A client that
@@ -2115,6 +2111,9 @@ fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, Edi
             simplify,
             margin,
             spacing,
+            rings,
+            min_distance,
+            mirror_x,
         } => {
             let d = ContourKnobs::default();
             let knobs = ContourKnobs {
@@ -2122,6 +2121,11 @@ fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, Edi
                 simplify: simplify.unwrap_or(d.simplify),
                 margin: margin.unwrap_or(d.margin),
                 spacing: spacing.unwrap_or(d.spacing),
+                rings: rings.unwrap_or(d.rings),
+                min_distance: min_distance.unwrap_or(d.min_distance),
+                // `or`, not `unwrap_or`: the editor's own answer here is
+                // "no mirror line", so an absent knob stays absent.
+                mirror_x: mirror_x.or(d.mirror_x),
             };
             contour_automesh(&alpha, &knobs, &uv_map, origin)?
         }
@@ -2129,14 +2133,23 @@ fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, Edi
             threshold,
             cols,
             rows,
-        } => grid_automesh(
-            &alpha,
-            threshold.unwrap_or_else(|| ContourKnobs::default().threshold),
-            cols.unwrap_or(AUTOMESH_GRID.0),
-            rows.unwrap_or(AUTOMESH_GRID.1),
-            &uv_map,
-            origin,
-        )?,
+            axes_x,
+            axes_y,
+            margin,
+        } => {
+            let d = GridKnobs::default();
+            let knobs = GridKnobs {
+                threshold: threshold.unwrap_or(d.threshold),
+                cols: cols.unwrap_or(d.cols),
+                rows: rows.unwrap_or(d.rows),
+                axes_x: axes_x.unwrap_or(d.axes_x),
+                axes_y: axes_y.unwrap_or(d.axes_y),
+                // Absent stays absent: the default margin is one texel,
+                // which no fraction of the box names.
+                margin: margin.or(d.margin),
+            };
+            grid_automesh(&alpha, &knobs, &uv_map, origin)?
+        }
     };
     // A trace that found no contour at all leaves nothing to triangulate, and
     // an empty mesh would silently blank the part.

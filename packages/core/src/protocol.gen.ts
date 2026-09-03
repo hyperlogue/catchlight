@@ -659,6 +659,28 @@ export type AutoMesh =
      * Interior fill-point spacing in texels; 0 is boundary only.
      */
     spacing?: number | null,
+    /**
+     * One ring of free vertices per factor, the traced outline scaled
+     * about its own centroid: 0 is the centroid itself, 1 the outline.
+     * A factor above 1 is clamped to 1 — `margin` already dilates the
+     * mask before tracing, and a vertex outside the pinned loop would
+     * only make triangles the alpha cull drops. Empty places no rings,
+     * which is the default.
+     */
+    rings?: Array<number> | null,
+    /**
+     * Texels: a free vertex closer than this to one already placed is
+     * dropped, so rings and fill do not crowd the outline. The pinned
+     * outline itself is never thinned.
+     */
+    min_distance?: number | null,
+    /**
+     * Texel x of a vertical mirror line: free vertices are generated
+     * from `x <= mirror_x` and reflected across it, so a symmetric part
+     * gets a symmetric interior. The outline is traced from the alpha
+     * and is not mirrored.
+     */
+    mirror_x?: number | null,
   }
   | {
     "mode": "grid",
@@ -669,6 +691,24 @@ export type AutoMesh =
     threshold?: number | null,
     cols?: number | null,
     rows?: number | null,
+    /**
+     * Grid lines as fractions of the solid bounding box — 0 its left
+     * edge, 1 its right — so the grid need not be uniform. Values
+     * outside `0..=1` put a line outside the box. Present, it replaces
+     * both `cols` and `margin` on this axis. A grid is mirrored by
+     * asking for symmetric fractions, which is why there is no mirror
+     * knob here.
+     */
+    axes_x?: Array<number> | null,
+    /**
+     * The same, down, replacing `rows`.
+     */
+    axes_y?: Array<number> | null,
+    /**
+     * Fraction of the bounding box added outside it on both sides, when
+     * the lines come from `cols`/`rows`.
+     */
+    margin?: number | null,
   };
 
 /**
