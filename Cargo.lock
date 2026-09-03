@@ -6287,6 +6287,8 @@ dependencies = [
  "catchlight-editor-protocol",
  "catchlight-import-inochi2d",
  "image",
+ "serde_json",
+ "syn 2.0.118",
  "ts-rs",
 ]
 

@@ -11,14 +11,23 @@ publish = false
 anyhow = { workspace = true }
 catchlight-core = { path = "../catchlight-core" }
 catchlight-import-inochi2d = { path = "../catchlight-import-inochi2d" }
-# `xtask ts` reads the wire types through `ts-rs`, so it is the one place in
-# the workspace that turns the `ts` feature on. Cargo unifies features across a
-# build, so `cargo test --workspace` compiles the protocol crate with it — which
-# is deliberate: the feature-gated derives get linted and type-checked on every
-# CI run rather than only when someone regenerates.
+# `xtask generate typescript` reads the wire types through `ts-rs`, so it is the
+# one place in the workspace that turns the `ts` feature on. Cargo unifies
+# features across a build, so `cargo test --workspace` compiles the protocol
+# crate with it — which is deliberate: the feature-gated derives get linted and
+# type-checked on every CI run rather than only when someone regenerates.
 catchlight-editor-protocol = { path = "../catchlight-editor-protocol", features = ["ts"] }
 ts-rs = { workspace = true }
 image = { workspace = true }
+# `xtask generate python` parses the protocol crate's own source instead: a
+# `ts-rs` declaration is text, and Python needs `u32` and `f32` to stay apart.
+# Build-time only, and nothing but xtask depends on it.
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
+[dev-dependencies]
+# For the one test that holds a generated Python shape against what `serde`
+# actually writes. Only the tests need it.
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

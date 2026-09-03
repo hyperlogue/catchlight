@@ -696,7 +696,7 @@ pub enum Command {
 /// What applying a [`Command`] does to the document it addresses.
 ///
 /// This is the fact the whole notification story hangs on, and it is written
-/// down exactly once — in [`COMMAND_KINDS`]. `cargo xtask ts` splits the
+/// down exactly once — in [`COMMAND_KINDS`]. `cargo xtask generate` splits the
 /// TypeScript `Command` union on it, so a client picks its send method by
 /// type rather than by remembering which calls are "quiet"; the editor server
 /// asserts against it in debug builds (see `Editor::handle`).
@@ -728,10 +728,11 @@ pub enum CommandKind {
 
 /// Every command's wire tag paired with its [`CommandKind`].
 ///
-/// Hand-maintained, and held to the enum by two tests: `xtask ts` checks this
-/// list against the variants `ts-rs` sees, so a new command cannot reach
-/// TypeScript unclassified, and [`Command::kind`] resolves through here, so a
-/// tag missing from the list panics the first time it is dispatched.
+/// Hand-maintained, and held to the enum by two tests: `xtask generate` checks
+/// this list against the variants each emitter sees, so a new command cannot
+/// reach TypeScript or Python unclassified, and [`Command::kind`] resolves
+/// through here, so a tag missing from the list panics the first time it is
+/// dispatched.
 pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("session_new", CommandKind::Document),
     ("session_open", CommandKind::Document),
@@ -888,7 +889,7 @@ impl Command {
     /// What applying this command does to the document.
     ///
     /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Document`].
-    /// That case is unreachable — `xtask ts` fails the build on it — but the
+    /// That case is unreachable — `xtask generate` fails the build on it — but the
     /// fallback still has to be the conservative one: calling an edit a
     /// `Document` costs a redundant redraw, while calling it any of the other
     /// four loses the notification entirely and leaves a panel showing stale

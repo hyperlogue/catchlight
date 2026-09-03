@@ -25,7 +25,7 @@ ts-rs = { workspace = true, optional = true }
 [features]
 # Emit TypeScript declarations for the types the editor protocol re-exports —
 # the five Id newtypes. Off by default: nothing in a normal build, a wasm build
-# or a consumer's dependency graph pulls it in. `cargo xtask ts` turns it on.
+# or a consumer's dependency graph pulls it in. `cargo xtask generate` turns it on.
 ts = ["dep:ts-rs"]
 
 [dev-dependencies]

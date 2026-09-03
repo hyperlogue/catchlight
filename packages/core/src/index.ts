@@ -12,8 +12,9 @@
  * is what a [`Viewport`] draws, and moves only when the backend feeds it.
  *
  * The wire types are re-exported whole from `protocol.gen.ts`, which
- * `cargo xtask ts` writes from the Rust enums. A consumer builds commands and
- * reads replies against the same declarations the editor compiles.
+ * `cargo xtask generate` writes from the Rust enums. A consumer builds
+ * commands and reads replies against the same declarations the editor
+ * compiles.
  */
 
 export * from "./protocol.gen.js";
