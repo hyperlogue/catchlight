@@ -30,6 +30,13 @@
 //!   or the very [`Arc<[u8]>`](Arc) the model holds, cloned by refcount under
 //!   the session lock and written straight to the socket.
 //!
+//! - **An upload lives until the command that names it succeeds.**
+//!   `PUT /files/{key}` parks bytes in the editor's [`StagingStorage`] and
+//!   answers 204; the `session_open`, `session_import` or `texture_add` that
+//!   names the key reads them into a document and releases them there. Nothing
+//!   here expires an upload, so a key a tab stages and never names is held
+//!   until the process ends.
+//!
 //! - **A WebSocket's `Origin` must be allowlisted, and its absence is fine.**
 //!   Browsers always send one, so a foreign page is caught; non-browser
 //!   clients (the CLI, a test) send none and are let through on the token

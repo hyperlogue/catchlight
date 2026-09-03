@@ -25,6 +25,16 @@
 //! the key the command will name, `read` finds them there before it asks the
 //! backing store, and `write` always goes to the backing store, clearing the
 //! staged copy so a save is visible to the next read.
+//!
+//! **Staging is released by the read that consumed it, and a released key was
+//! never a file.** [`Storage::release`] is how a command that read a key *into
+//! a document* says so. A staging map nothing empties holds a second whole
+//! copy — textures and all — of every document the server was handed, for the
+//! life of the process. The answer is also the fact the caller needs: a key
+//! that released was a transient upload, not a file, so the session opened
+//! from it has nowhere to save back to and a bare `save` refuses rather than
+//! writing into the server's working directory. Only a command that succeeded
+//! releases; a failed one leaves its bytes staged so the caller may retry.
 
 use std::collections::HashMap;
 use std::io;
@@ -39,6 +49,17 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
 
     /// Replaces the value at `key`, atomically (see the module docs).
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
+
+    /// The bytes at `key` were read into a document; if they were transient,
+    /// drop them and say so.
+    ///
+    /// `true` means the key named an upload this store was holding for exactly
+    /// that read and is holding no longer — which is also how a caller learns
+    /// the key was never a file. A store whose keys are durable keeps them and
+    /// returns `false`, which is the default.
+    fn release(&self, _key: &str) -> bool {
+        false
+    }
 }
 
 /// The key a relative reference inside `key`'s document resolves against —
@@ -124,8 +145,9 @@ impl Storage for FileStorage {
 
 /// A [`Storage`] with an in-memory staging area in front of it.
 ///
-/// `put` holds bytes under the key a later command will name; `take` removes
-/// them again. Reads check the staging map first, so
+/// `put` holds bytes under the key a later command will name; `take` and
+/// [`release`](Storage::release) remove them again. Reads check the staging
+/// map first, so
 /// `session_open { path: "model.clm" }` resolves against an upload the server
 /// never wrote anywhere. Writes never land in the map — a save is a save, so
 /// it goes to `backing` and drops whatever was staged under that key, leaving
@@ -179,6 +201,10 @@ impl Storage for StagingStorage {
         self.backing.write(key, bytes)?;
         lock(&self.staged).remove(key);
         Ok(())
+    }
+
+    fn release(&self, key: &str) -> bool {
+        lock(&self.staged).remove(key).is_some()
     }
 }
 
@@ -253,6 +279,25 @@ mod tests {
         assert_eq!(backing.read("model.clm").unwrap(), b"saved");
         assert!(staging.staged_keys().is_empty());
         assert_eq!(staging.read("model.clm").unwrap(), b"saved");
+    }
+
+    #[test]
+    fn release_drops_an_upload_and_says_it_was_one() {
+        let staging = StagingStorage::new(Arc::new(NoStorage));
+        staging.put("model.clm", b"uploaded".to_vec());
+        assert!(staging.release("model.clm"));
+        assert!(staging.staged_keys().is_empty());
+        // A key the store never staged is not this store's to drop, and the
+        // `false` is what tells a caller the key may name a real file.
+        assert!(!staging.release("model.clm"));
+        assert!(!staging.release("on-disk.clm"));
+        assert!(!NoStorage.release("model.clm"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_storage_keeps_the_keys_it_is_asked_to_release() {
+        assert!(!FileStorage.release("models/akari.clm"));
     }
 
     #[cfg(not(target_arch = "wasm32"))]

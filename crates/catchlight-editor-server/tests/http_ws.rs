@@ -15,11 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use catchlight_editor_protocol::{
-    Command, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
+    Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId, SessionInfo,
 };
-use catchlight_editor_server::{
-    bind_http, Editor, HttpOptions, NoStorage, StagingStorage, Storage,
-};
+use catchlight_editor_server::{bind_http, Editor, HttpOptions, StagingStorage, Storage};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Message, WebSocket};
 
@@ -32,6 +30,11 @@ const FOREIGN_ORIGIN: &str = "http://evil.test";
 
 struct Server {
     addr: SocketAddr,
+    /// The very staging map the uploads land in, so a test can ask what the
+    /// server is still holding after a command read it.
+    staging: Arc<StagingStorage>,
+    /// What a save writes through to.
+    store: Arc<Mem>,
 }
 
 fn start() -> Server {
@@ -42,14 +45,16 @@ fn start() -> Server {
 /// a keepalive interval a test can afford to wait for.
 fn start_with(tune: impl FnOnce(&mut HttpOptions)) -> Server {
     // Nothing here is allowed to touch the filesystem, so the staging layer
-    // stands on `NoStorage`: an upload is the only way bytes get in.
-    let staging = Arc::new(StagingStorage::new(Arc::new(NoStorage)));
+    // stands on a store in memory: an upload is the only way bytes get in, and
+    // a save lands where a test can read it back.
+    let store = Arc::new(Mem::default());
+    let staging = Arc::new(StagingStorage::new(store.clone()));
     let editor = Arc::new(Editor::with_storage(staging.clone()));
     let mut options = HttpOptions {
         allowed_origins: vec![ALLOWED_ORIGIN.to_string()],
         token: Some(TOKEN.to_string()),
         max_upload_bytes: 8 * 1024 * 1024,
-        staging: Some(staging),
+        staging: Some(staging.clone()),
         ..HttpOptions::default()
     };
     tune(&mut options);
@@ -58,7 +63,34 @@ fn start_with(tune: impl FnOnce(&mut HttpOptions)) -> Server {
     std::thread::spawn(move || {
         let _ = server.serve();
     });
-    Server { addr }
+    Server {
+        addr,
+        staging,
+        store,
+    }
+}
+
+/// A byte store in memory. These tests write no files.
+#[derive(Debug, Default)]
+struct Mem(Mutex<HashMap<String, Vec<u8>>>);
+
+impl Storage for Mem {
+    fn read(&self, key: &str) -> std::io::Result<Vec<u8>> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, key.to_string()))
+    }
+
+    fn write(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), bytes.to_vec());
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------- a tiny client
@@ -241,28 +273,55 @@ fn root_of(socket: &mut Socket, id: u64, session: SessionId) -> NodeId {
     }
 }
 
+/// Open the document staged under `key`, expecting it to succeed.
+fn open_session(socket: &mut Socket, id: u64, key: &str) -> SessionId {
+    send(
+        socket,
+        Request {
+            id,
+            command: Command::SessionOpen {
+                path: key.to_string(),
+            },
+        },
+    );
+    match body_of(reply_to(socket, id)) {
+        ResponseBody::Session { session } => session,
+        other => panic!("expected Session, got {other:?}"),
+    }
+}
+
+/// The `session_list` entry for `session`.
+fn session_info(socket: &mut Socket, id: u64, session: SessionId) -> SessionInfo {
+    send(
+        socket,
+        Request {
+            id,
+            command: Command::SessionList,
+        },
+    );
+    match body_of(reply_to(socket, id)) {
+        ResponseBody::Sessions { sessions } => sessions
+            .into_iter()
+            .find(|s| s.session == session)
+            .expect("the session this test opened is listed"),
+        other => panic!("expected Sessions, got {other:?}"),
+    }
+}
+
+/// Stage `bytes` under `key`, the way a tab hands up a file it read.
+fn upload(server: &Server, key: &str, bytes: &[u8]) {
+    let put = http(
+        server.addr,
+        "PUT",
+        &format!("/files/{key}"),
+        &[("Authorization", &bearer())],
+        bytes,
+    );
+    assert_eq!(put.status, 204, "PUT /files/{key}");
+}
+
 /// An empty model's `.clm` bytes, built in-process so no fixture is needed.
 fn clm_bytes() -> Vec<u8> {
-    #[derive(Debug, Default)]
-    struct Mem(Mutex<HashMap<String, Vec<u8>>>);
-    impl Storage for Mem {
-        fn read(&self, key: &str) -> std::io::Result<Vec<u8>> {
-            self.0
-                .lock()
-                .unwrap()
-                .get(key)
-                .cloned()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, key.to_string()))
-        }
-        fn write(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
-            self.0
-                .lock()
-                .unwrap()
-                .insert(key.to_string(), bytes.to_vec());
-            Ok(())
-        }
-    }
-
     let store = Arc::new(Mem::default());
     let editor = Editor::with_storage(store.clone());
     let session = match editor.handle(Request {
@@ -436,14 +495,7 @@ fn an_upload_is_what_session_open_reads() {
     let server = start();
     let bytes = clm_bytes();
 
-    let put = http(
-        server.addr,
-        "PUT",
-        "/files/model.clm",
-        &[("Authorization", &bearer())],
-        &bytes,
-    );
-    assert_eq!(put.status, 204);
+    upload(&server, "model.clm", &bytes);
 
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
     send(
@@ -472,6 +524,160 @@ fn an_upload_is_what_session_open_reads() {
         },
     );
     assert!(matches!(reply_to(&mut socket, 2), Reply::Err { .. }));
+}
+
+#[test]
+fn an_open_releases_the_upload_it_read_and_claims_no_file() {
+    let server = start();
+    upload(&server, "model.clm", &clm_bytes());
+
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let session = open_session(&mut socket, 1, "model.clm");
+
+    // The model owns its own copy, so the server holds no second one. Without
+    // this every `.clm` a tab opened stayed in memory for the process life.
+    assert!(
+        server.staging.staged_keys().is_empty(),
+        "still staged: {:?}",
+        server.staging.staged_keys()
+    );
+    // And an upload is not a file: the key named bytes in flight, not
+    // something on the far side of the store.
+    let info = session_info(&mut socket, 2, session);
+    assert_eq!(info.file, None);
+    // The title still comes from the key, which is what a person recognizes.
+    assert_eq!(info.title, "model");
+}
+
+#[test]
+fn a_session_opened_from_an_upload_has_nowhere_to_save_until_it_is_told() {
+    let server = start();
+    upload(&server, "model.clm", &clm_bytes());
+
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let session = open_session(&mut socket, 1, "model.clm");
+
+    // A bare save would otherwise write `model.clm` into the server's working
+    // directory — a file the tab never asked for and cannot see.
+    send(
+        &mut socket,
+        Request {
+            id: 2,
+            command: Command::Save {
+                session,
+                path: None,
+            },
+        },
+    );
+    match reply_to(&mut socket, 2) {
+        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::NoSavePath),
+        other => panic!("expected Err, got {other:?}"),
+    }
+
+    // Named, it saves through to the backing store and keeps the key.
+    send(
+        &mut socket,
+        Request {
+            id: 3,
+            command: Command::Save {
+                session,
+                path: Some("saved/model.clm".into()),
+            },
+        },
+    );
+    match body_of(reply_to(&mut socket, 3)) {
+        ResponseBody::Saved { path } => assert_eq!(path, "saved/model.clm"),
+        other => panic!("expected Saved, got {other:?}"),
+    }
+    let written = server.store.read("saved/model.clm").expect("a save landed");
+    catchlight_core::Model::from_clm_bytes(&written).expect("the saved bytes load as a model");
+    assert_eq!(
+        session_info(&mut socket, 4, session).file.as_deref(),
+        Some("saved/model.clm")
+    );
+}
+
+#[test]
+fn a_failed_open_leaves_its_bytes_staged_to_retry() {
+    let server = start();
+    upload(&server, "broken.clm", b"not a model file");
+
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    send(
+        &mut socket,
+        Request {
+            id: 1,
+            command: Command::SessionOpen {
+                path: "broken.clm".into(),
+            },
+        },
+    );
+    assert!(matches!(reply_to(&mut socket, 1), Reply::Err { .. }));
+
+    // The upload is the caller's only copy: dropping it on a failure would
+    // make a retry a re-upload.
+    assert_eq!(server.staging.staged_keys(), vec!["broken.clm".to_string()]);
+}
+
+#[test]
+fn a_texture_add_releases_the_image_it_read() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let root = root_of(&mut socket, 2, session);
+    send(
+        &mut socket,
+        Request {
+            id: 3,
+            command: Command::NodeAdd {
+                session,
+                parent: root,
+                kind: NodeKindArg::Part,
+                name: Some("Face".into()),
+                node: None,
+            },
+        },
+    );
+    let part = match body_of(reply_to(&mut socket, 3)) {
+        ResponseBody::Node { node, .. } => node,
+        other => panic!("expected Node, got {other:?}"),
+    };
+
+    upload(&server, "face.png", &one_pixel_png());
+    send(
+        &mut socket,
+        Request {
+            id: 4,
+            command: Command::TextureAdd {
+                session,
+                node: part.clone(),
+                path: "face.png".into(),
+                texture: None,
+            },
+        },
+    );
+    assert!(matches!(
+        body_of(reply_to(&mut socket, 4)),
+        ResponseBody::Texture { .. }
+    ));
+    assert!(server.staging.staged_keys().is_empty());
+
+    // A texture that failed to decode keeps its upload for the retry.
+    upload(&server, "torn.png", b"PNG-ish but not");
+    send(
+        &mut socket,
+        Request {
+            id: 5,
+            command: Command::TextureAdd {
+                session,
+                node: part,
+                path: "torn.png".into(),
+                texture: None,
+            },
+        },
+    );
+    assert!(matches!(reply_to(&mut socket, 5), Reply::Err { .. }));
+    assert_eq!(server.staging.staged_keys(), vec!["torn.png".to_string()]);
 }
 
 #[test]
