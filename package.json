@@ -7,7 +7,7 @@
     "apps/*"
   ],
   "scripts": {
-    "wasm": "cargo xtask wasm",
+    "build-wasm": "cargo xtask build-wasm",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test"
   },
