@@ -22,3 +22,8 @@ packages = ["catchlight"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  # Waits out the editor's 30 s socket timeout for real. Skip with
+  # `-m "not slow"` when a tight loop matters more than the proof.
+  "slow: takes tens of seconds",
+]
