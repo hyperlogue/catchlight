@@ -1,12 +1,16 @@
 /**
- * The canvas: that attach and detach are inverses, that a pointer arrives in
- * world units, and that the two camera gestures are the component's own.
+ * The canvas: that attach and detach are inverses, that an attach that failed
+ * is reported rather than logged, that a pointer arrives in world units, and
+ * that the two camera gestures are the component's own.
  */
 
 import "./test/setup.js";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Editor, InTabBackend, MemoryStorage } from "@catchlight/core";
 import type { Camera } from "@catchlight/core";
+import { fakeWasm } from "@catchlight/core/fakes";
+import type { FakeEditor } from "@catchlight/core/fakes";
 import { StrictMode } from "react";
 import type { ReactNode } from "react";
 
@@ -95,6 +99,47 @@ describe("attaching", () => {
 
     await view.unmount();
     expect(seen).toBeNull();
+  });
+});
+
+describe("an attach that cannot happen", () => {
+  test("the reason goes to the host, which is the only place a person reads it", async () => {
+    const editor = await editorWithoutADevice(NO_WEBGPU);
+    const session = await editor.newDocument();
+    const seen: unknown[] = [];
+
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <Viewport.Root session={session} onError={(cause) => seen.push(cause)} />
+      </EditorProvider>,
+    );
+    await settle();
+    await settle();
+
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as Error).message).toBe(NO_WEBGPU);
+    await view.unmount();
+  });
+
+  test("with no handler it falls back to the console, and that is all it is", async () => {
+    const editor = await editorWithoutADevice(NO_WEBGPU);
+    const session = await editor.newDocument();
+    const warned = stubWarn();
+
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <Viewport.Root session={session} />
+      </EditorProvider>,
+    );
+    await settle();
+    await settle();
+
+    expect(warned.calls).toHaveLength(1);
+    expect(String(warned.calls[0]?.[0])).toContain("attaching the viewport failed");
+    expect((warned.calls[0]?.[1] as Error).message).toBe(NO_WEBGPU);
+
+    warned.restore();
+    await view.unmount();
   });
 });
 
@@ -485,6 +530,38 @@ describe("framing the model", () => {
     frames.restore();
   });
 });
+
+/** What the wasm module says when the browser has no device to give. */
+const NO_WEBGPU = "this browser has no WebGPU, which the catchlight editor requires";
+
+/**
+ * The harness's stack, with the one device acquisition rigged to fail.
+ *
+ * The failure is the real path rather than a stubbed `attach`: the editor
+ * acquires its device on the first attach, so a browser without WebGPU rejects
+ * exactly here and with exactly this message.
+ */
+async function editorWithoutADevice(message: string): Promise<Editor> {
+  const module = fakeWasm();
+  module.failNextAcquire = message;
+  const wasm = new module.module.CatchlightEditor() as FakeEditor;
+  return Editor.create(module.module, new InTabBackend(wasm, new MemoryStorage()));
+}
+
+/** Catches the fallback's warning, so the suite reads it instead of printing it. */
+function stubWarn(): { calls: unknown[][]; restore(): void } {
+  const calls: unknown[][] = [];
+  const saved = console.warn;
+  console.warn = (...args: unknown[]): void => {
+    calls.push(args);
+  };
+  return {
+    calls,
+    restore: () => {
+      console.warn = saved;
+    },
+  };
+}
 
 /**
  * A hand-driven `requestAnimationFrame`, so a test says when a frame happens.
