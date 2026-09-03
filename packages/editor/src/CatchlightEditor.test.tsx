@@ -108,9 +108,10 @@ describe("the assembled editor", () => {
     await settle();
     expect(fit(view).disabled).toBe(false);
 
-    // A fact a person cannot get by looking at the picture, and one that
-    // changes what a bug report means.
+    // Two facts a person cannot get by looking at the picture, and both change
+    // what a bug report means.
     expect(text(view, "[data-catchlight-backend]")).toBe("in-tab");
+    expect(text(view, "[data-catchlight-tier]")).toBe("webgpu");
 
     // A box off the origin, so a camera that landed on it could not have been
     // the default one.
@@ -241,9 +242,11 @@ describe("the assembled editor", () => {
     await settle();
     expect(view.querySelector("canvas")).toBe(canvas);
     expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
-    // One device for the editor, acquired once, whatever came and went above
-    // it: the canvas outlived two documents and the device outlived both.
-    expect(gpu.acquires).toBe(1);
+    // One device for the editor, acquired once from that one element,
+    // whatever came and went above it: the canvas outlived two documents and
+    // the device outlived both. On the fallback tier that element is also the
+    // only one the device can present into, which is why the stage keeps it.
+    expect(gpu.acquiredFrom).toEqual([canvas]);
 
     await unmount();
     editor.close();
@@ -253,9 +256,10 @@ describe("the assembled editor", () => {
   test("a canvas that cannot be attached says so, instead of coming up blank", async () => {
     const stop = stubObservers();
     const { editor, module } = await fakeStack();
-    // What a browser with no WebGPU does: the device the first attach asks for
-    // never arrives, and the stage is the one cell with nothing else to say.
-    module.failNextAcquire = "this browser has no WebGPU, which the catchlight editor requires";
+    // What a browser with neither tier does: the device the first attach asks
+    // for never arrives, and the stage is the one cell with nothing else to say.
+    module.failNextAcquire =
+      "the catchlight editor needs WebGPU or WebGL2 to draw and this browser offered neither";
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
@@ -263,7 +267,7 @@ describe("the assembled editor", () => {
     await settle();
     await settle();
 
-    expect(text(view, "[data-catchlight-problem]")).toContain("no WebGPU");
+    expect(text(view, "[data-catchlight-problem]")).toContain("needs WebGPU or WebGL2");
 
     await unmount();
     editor.close();

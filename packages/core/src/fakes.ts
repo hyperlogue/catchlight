@@ -366,6 +366,13 @@ export class FakeGpu implements WasmGpu {
   [Symbol.dispose](): void {
     this.free();
   }
+  /** What `tier()` answers. A test that cares which tier it is on sets it. */
+  tierName = "webgpu";
+  tier(): string {
+    return this.tierName;
+  }
+  /** Every canvas `acquire` was called with. A device comes from a canvas. */
+  acquiredFrom: HTMLCanvasElement[] = [];
 }
 
 /** This tab's copy of one document, and what it was told. */
@@ -750,13 +757,14 @@ export function fakeWasm(): FakeModule {
     module: {
       CatchlightEditor: FakeEditor,
       Gpu: {
-        acquire: () => {
+        acquire: (canvas: HTMLCanvasElement) => {
           const failure = made.failNextAcquire;
           if (failure !== undefined) {
             made.failNextAcquire = undefined;
             return Promise.reject(new Error(failure));
           }
           gpu.acquires += 1;
+          gpu.acquiredFrom.push(canvas);
           return Promise.resolve(gpu);
         },
       },
