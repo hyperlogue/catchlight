@@ -30,6 +30,15 @@
 //!   or the very [`Arc<[u8]>`](Arc) the model holds, cloned by refcount under
 //!   the session lock and written straight to the socket.
 //!
+//! - **The token is checked before a body is read.** `PUT /files/{key}` may
+//!   carry [`HttpOptions::max_upload_bytes`] — a quarter of a gigabyte by
+//!   default — and buffering that for a request that turns out to have no
+//!   token is memory any page on any origin could spend. So a connection
+//!   reads the request line and the headers, settles `Host`, origin and
+//!   bearer token against those alone, and only then reads the body. A
+//!   request refused there is answered with its body still in the socket,
+//!   which is one more reason no response here keeps its connection alive.
+//!
 //! - **An upload lives until the command that names it succeeds.**
 //!   `PUT /files/{key}` parks bytes in the editor's [`StagingStorage`] and
 //!   answers 204; the `session_open`, `session_import` or `texture_add` that
@@ -266,8 +275,8 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     let mut reader = BufReader::new(read_half);
     let mut writer = stream;
 
-    let request = match read_request(&mut reader, state.max_upload_bytes) {
-        Ok(request) => request,
+    let (mut request, body_len) = match read_head(&mut reader) {
+        Ok(head) => head,
         Err(BadRequest::Closed | BadRequest::Io) => return,
         Err(err) => {
             let _ = write_response(&mut writer, &err.response());
@@ -304,6 +313,15 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
     }
 
     if request.method == "GET" && request.path == "/ws" {
+        // The handshake hands the reader to the socket, so a declared body
+        // would be read as frames rather than skipped. No handshake has one.
+        if body_len != 0 {
+            let _ = write_response(
+                &mut writer,
+                &Response::text(400, "Bad Request", "a handshake carries no body"),
+            );
+            return;
+        }
         serve_websocket(
             state,
             request,
@@ -315,26 +333,48 @@ fn serve_connection(state: &ServerState, stream: TcpStream) {
         return;
     }
 
+    // The gate closes on the head alone. A refusal here leaves the body
+    // unread and the connection is dropped under it, which is what keeps an
+    // unauthenticated caller from spending the upload ceiling.
+    if !opens_without_a_token(&request) && !bearer_matches(&request, &state.token) {
+        let _ = write_response(
+            &mut writer,
+            &cors(
+                Response::text(401, "Unauthorized", "missing or wrong bearer token"),
+                allowed.as_deref(),
+            ),
+        );
+        return;
+    }
+
+    request.body = match read_body(&mut reader, &request, body_len, state.max_upload_bytes) {
+        Ok(body) => body,
+        Err(BadRequest::Closed | BadRequest::Io) => return,
+        Err(err) => {
+            let _ = write_response(&mut writer, &err.response());
+            return;
+        }
+    };
+
     let response = route(state, &request, allowed.as_deref());
     let _ = write_response(&mut writer, &response);
 }
 
+/// The one door the token does not gate: the CORS headers, not the token, are
+/// what keep a foreign page from reading `GET /token`.
+fn opens_without_a_token(request: &HttpRequest) -> bool {
+    request.method == "GET" && request.path == "/token"
+}
+
+/// Dispatch a request the gate in [`serve_connection`] has already let
+/// through. Only [`opens_without_a_token`] arrives here unauthenticated.
 fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> Response {
-    // Unauthenticated on purpose: the CORS headers, not the token, are what
-    // keep a foreign page from reading this.
-    if request.method == "GET" && request.path == "/token" {
+    if opens_without_a_token(request) {
         return cors(
             Response::new(200, "OK")
                 .with("Content-Type", "application/json")
                 .with("X-Content-Type-Options", "nosniff")
                 .body(format!("{{\"token\":\"{}\"}}", state.token).into_bytes()),
-            allowed,
-        );
-    }
-
-    if !bearer_matches(request, &state.token) {
-        return cors(
-            Response::text(401, "Unauthorized", "missing or wrong bearer token"),
             allowed,
         );
     }
@@ -722,10 +762,10 @@ impl BadRequest {
     }
 }
 
-fn read_request(
-    reader: &mut BufReader<TcpStream>,
-    max_body: usize,
-) -> Result<HttpRequest, BadRequest> {
+/// The request line and the headers, plus the body length they declare. The
+/// body itself is left in the socket for [`read_body`], so nothing is buffered
+/// on behalf of a request that has not been authenticated yet.
+fn read_head(reader: &mut BufReader<TcpStream>) -> Result<(HttpRequest, usize), BadRequest> {
     let mut budget = MAX_HEADER_BYTES;
     let Some(start) = read_line(reader, &mut budget)? else {
         return Err(BadRequest::Closed);
@@ -768,20 +808,6 @@ fn read_request(
             .map_err(|_| BadRequest::Malformed("bad content-length"))?,
         None => 0,
     };
-    // The generous ceiling belongs to the one endpoint that takes a payload;
-    // every other route is buffered before it is authenticated, so it gets the
-    // frame-sized cap instead.
-    let ceiling = if method == "PUT" && target.starts_with("/files/") {
-        max_body
-    } else {
-        MAX_REQUEST_BYTES
-    };
-    if length > ceiling {
-        drain_body(reader, length);
-        return Err(BadRequest::BodyTooLarge);
-    }
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).map_err(|_| BadRequest::Io)?;
 
     let (path, raw_query) = match target.split_once('?') {
         Some((path, query)) => (path.to_string(), query),
@@ -793,13 +819,40 @@ fn read_request(
         query.insert(decode(key), decode(value));
     }
 
-    Ok(HttpRequest {
-        method,
-        path,
-        query,
-        headers,
-        body,
-    })
+    Ok((
+        HttpRequest {
+            method,
+            path,
+            query,
+            headers,
+            body: Vec::new(),
+        },
+        length,
+    ))
+}
+
+/// The body the head declared, read once the request has earned it. The
+/// generous ceiling belongs to the one endpoint that takes a payload; every
+/// other route is buffered whole into one reply, so it gets the frame-sized
+/// cap instead.
+fn read_body(
+    reader: &mut BufReader<TcpStream>,
+    request: &HttpRequest,
+    length: usize,
+    max_body: usize,
+) -> Result<Vec<u8>, BadRequest> {
+    let ceiling = if request.method == "PUT" && request.path.starts_with("/files/") {
+        max_body
+    } else {
+        MAX_REQUEST_BYTES
+    };
+    if length > ceiling {
+        drain_body(reader, length);
+        return Err(BadRequest::BodyTooLarge);
+    }
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).map_err(|_| BadRequest::Io)?;
+    Ok(body)
 }
 
 /// Read and throw away a body that has already lost, so the status that

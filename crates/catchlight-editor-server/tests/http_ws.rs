@@ -926,6 +926,34 @@ fn an_upload_over_the_ceiling_is_drained_so_its_413_arrives() {
     assert_eq!(String::from_utf8_lossy(&response.body), "body too large");
 }
 
+/// An upload without a token is refused against its headers alone. The body
+/// is never sent, so an answer that waits for one never arrives; the length
+/// here is well under the ceiling, which leaves the token as the only thing
+/// that can decide.
+#[test]
+fn an_unauthorized_upload_is_answered_before_its_body() {
+    let server = start();
+    let started = Instant::now();
+    let response = http(
+        server.addr,
+        "PUT",
+        "/files/not-yours.clm",
+        &[
+            ("Authorization", "Bearer not-the-token"),
+            ("Content-Length", "4000000"),
+        ],
+        b"",
+    );
+    assert_eq!(response.status, 401);
+    assert_eq!(response.header("connection"), Some("close"));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the 401 waited on a body that was never sent"
+    );
+    // And nothing was staged under a key the caller had no right to name.
+    assert!(server.staging.staged_keys().is_empty());
+}
+
 /// A tab that is only watching sends nothing for minutes, so the server keeps
 /// the connection warm itself and takes the pong as proof the tab is there.
 #[test]
