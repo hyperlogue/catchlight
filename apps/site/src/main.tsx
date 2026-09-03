@@ -15,10 +15,12 @@
  * **A failure is shown in the page.** A server that refuses the token, a
  * sample that will not fetch, a wasm module that will not start: each of those
  * is a blank screen with a console message unless someone writes it down, and
- * the console is not where a person looks. A browser with no WebGPU is the
- * same kind of failure, and it surfaces one step later — the device is
- * acquired at the first canvas, so the editor mounts and the viewport reports
- * what it could not have.
+ * the console is not where a person looks. A browser with neither WebGPU nor
+ * WebGL2 is the same kind of failure, and it surfaces one step later — the
+ * device is acquired at the first attach, so the editor mounts and the
+ * viewport reports what it could not have. Which of the two tiers did answer
+ * is in the editor's own status line, because the two draw the same picture at
+ * different costs and a bug report wants to say which one it saw.
  */
 
 import {
@@ -30,6 +32,8 @@ import {
 } from "@catchlight/core";
 import type { Backend, Storage } from "@catchlight/core";
 import { CatchlightEditor } from "@catchlight/editor";
+// Only the probe door below uses this, and only when the URL asks for it.
+import { fitCamera } from "@catchlight/react";
 import "@catchlight/editor/theme.css";
 // The generated module initializes itself on import: `cargo xtask wasm` emits
 // wasm-bindgen's bundler target, whose `.wasm` is an ESM import rather than a
@@ -55,6 +59,7 @@ async function start(): Promise<void> {
     if (server === null) await sample(editor);
 
     mount(editor);
+    probe(editor);
   } catch (cause) {
     report(cause);
   }
@@ -110,6 +115,27 @@ function mount(editor: Editor): void {
       <CatchlightEditor editor={editor} />
     </StrictMode>,
   );
+}
+
+/**
+ * A door for the browser smoke test, shut unless the URL asks for it.
+ *
+ * `?probe=1` puts the editor on `globalThis` so a driver in the page can
+ * attach a second viewport. That is the one thing about the WebGL2 tier no
+ * unit test can show — an extra canvas borrows the main one's surface, and
+ * whether the main canvas survives that is a question only a real browser
+ * answers. Nothing reaches this on an ordinary load, and nothing in the editor
+ * reads it.
+ *
+ * `fitCamera` rides along because the test's second viewport has to be framed
+ * the way the editor frames the first. It is the same function the React
+ * viewport calls when it opens a document, so a driver that calls it with the
+ * same bounds and the same size gets the same camera, and the two canvases can
+ * then be compared pixel for pixel.
+ */
+function probe(editor: Editor): void {
+  if (!new URLSearchParams(globalThis.location.search).has("probe")) return;
+  (globalThis as unknown as Record<string, unknown>).__catchlightProbe = { editor, fitCamera };
 }
 
 /** One `<pre>`, appended to. Several things can go wrong on one load. */

@@ -96,9 +96,9 @@ jobs:
       # The smoke test drives the built site in a real browser, against both
       # backends; the connected one is a server process with an agent editing
       # its document over the Unix socket, so those two binaries have to exist
-      # first. The editor is WebGPU-only, and the browser reaches a device
-      # through the same Mesa ICD the Rust GPU tests use; the flags that get it
-      # there are in `apps/site/e2e/drive.ts`.
+      # first. It runs once per GPU tier the browser can be forced into, and
+      # the browser reaches a device through the same Mesa ICD the Rust GPU
+      # tests use; the flags that get it there are in `apps/site/e2e/drive.ts`.
       - run: nix develop -c cargo build -p catchlight-editor-server -p catchlight-editor-cli
       # The Python client launches that server binary once per test and saves a
       # model the editor's own reader opens back, so it runs here, not in a job

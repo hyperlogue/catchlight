@@ -104,7 +104,7 @@ describe("attaching", () => {
 
 describe("an attach that cannot happen", () => {
   test("the reason goes to the host, which is the only place a person reads it", async () => {
-    const editor = await editorWithoutADevice(NO_WEBGPU);
+    const editor = await editorWithoutADevice(NO_DEVICE);
     const session = await editor.newDocument();
     const seen: unknown[] = [];
 
@@ -117,12 +117,12 @@ describe("an attach that cannot happen", () => {
     await settle();
 
     expect(seen).toHaveLength(1);
-    expect((seen[0] as Error).message).toBe(NO_WEBGPU);
+    expect((seen[0] as Error).message).toBe(NO_DEVICE);
     await view.unmount();
   });
 
   test("with no handler it falls back to the console, and that is all it is", async () => {
-    const editor = await editorWithoutADevice(NO_WEBGPU);
+    const editor = await editorWithoutADevice(NO_DEVICE);
     const session = await editor.newDocument();
     const warned = stubWarn();
 
@@ -136,7 +136,7 @@ describe("an attach that cannot happen", () => {
 
     expect(warned.calls).toHaveLength(1);
     expect(String(warned.calls[0]?.[0])).toContain("attaching the viewport failed");
-    expect((warned.calls[0]?.[1] as Error).message).toBe(NO_WEBGPU);
+    expect((warned.calls[0]?.[1] as Error).message).toBe(NO_DEVICE);
 
     warned.restore();
     await view.unmount();
@@ -532,14 +532,14 @@ describe("framing the model", () => {
 });
 
 /** What the wasm module says when the browser has no device to give. */
-const NO_WEBGPU = "this browser has no WebGPU, which the catchlight editor requires";
+const NO_DEVICE = "the catchlight editor needs WebGPU or WebGL2 to draw and this browser offered neither";
 
 /**
  * The harness's stack, with the one device acquisition rigged to fail.
  *
  * The failure is the real path rather than a stubbed `attach`: the editor
- * acquires its device on the first attach, so a browser without WebGPU rejects
- * exactly here and with exactly this message.
+ * acquires its device on the first attach, so a browser with neither tier
+ * rejects exactly here and with exactly this message.
  */
 async function editorWithoutADevice(message: string): Promise<Editor> {
   const module = fakeWasm();

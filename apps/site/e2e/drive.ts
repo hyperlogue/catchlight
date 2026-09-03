@@ -3,50 +3,51 @@
  *
  * ```text
  * bun run apps/site/e2e/drive.ts <chromium-exe> <site-url> [server-base]
+ *   TIER=webgpu|webgl2|none  which tier this run is for; webgpu by default
  *   OPEN_FILE=<path.clm>  opens a model through the file input
  *   AGENT_CMD=<shell>     (connected only) an edit over the Unix socket that must reach the tab
  *   AGENT_CWD=<dir>       where that command runs; this process's directory otherwise
  *   SHOTS=<dir>           where canvas screenshots land
+ *   CHROMIUM_ARGS=<args>  replaces the flag set `TIER` would choose
  * ```
  *
- * `e2e/run.ts` is what starts the servers and calls this twice; run it by hand
- * only to drive something they do not set up.
+ * `e2e/run.ts` is what starts the servers and calls this once per pass; run it
+ * by hand only to drive something they do not set up.
  *
- * **The browser is a real one, and it draws on WebGPU.** Playwright's own
- * Chromium download does not run on NixOS, so the executable is an argument
- * and the e2e dev shell puts one on `PATH`. The editor is WebGPU-only, and
- * headless Chromium reaches a real device only with the whole flag set below:
- * `--enable-unsafe-webgpu` to have `navigator.gpu` at all, and
- * `--use-angle=vulkan` beside `--use-vulkan=native` so it lands on Mesa's
- * llvmpipe rather than on SwiftShader, whose device dies at the first canvas
- * configure. The ICD comes from the shell's `XDG_DATA_DIRS`, the same one the
- * Rust GPU tests find lavapipe through. Dropping any of those flags is the
- * negative case: the tab reports that it needs WebGPU and this run fails
- * saying so.
+ * **The browser is a real one, and `TIER` says which tier it may draw on.**
+ * Playwright's own Chromium download does not run on NixOS, so the executable
+ * is an argument and the e2e dev shell puts one on `PATH`. The editor draws on
+ * WebGPU where a browser has it and on WebGL2 where it does not, and both are
+ * worth a pass because the fallback is what an iOS device below Safari 26
+ * gets. So this launches Chromium with the flag set for the tier under test
+ * ([`ARGS`]) and then asserts that the tab reports *that* tier: a WebGPU run
+ * that quietly fell back would otherwise pass as a WebGPU run, which is the
+ * one failure this file exists to catch. `TIER=none` is the negative case —
+ * both tiers switched off — and it passes when the tab says what it needs.
  *
- * **The picture comes from the renderer, not from a screenshot.** That
- * configuration never composites the canvas — a screenshot of it is blank
- * however good the frame is — so [`canvasFrame`] asks the viewport to copy
- * its own surface back through `Viewport.readback`. The screenshots this
- * still writes are of the *page*, kept because a human reading a failure
- * wants to see the DOM: the canvas inside them is blank by construction and
- * says nothing.
+ * **The picture comes from the renderer, not from a screenshot.** A headless
+ * Chromium holding a WebGPU device never composites the canvas — a screenshot
+ * of it is blank however good the frame is — so [`canvasFrame`] asks the
+ * viewport for its own copy through `Viewport.readback`, which answers the
+ * same shape on either tier. The screenshots this still writes are of the
+ * *page*, kept because a human reading a failure wants to see the DOM.
  *
  * **A step that cannot see the picture is not a passing step.** For every pose
  * but the deliberate extreme, a frame that is one flat colour is a failure: a
  * dead device leaves the page running, the DOM correct and the canvas the
  * colour it was cleared to, and every other check here would still report ok.
  * For the same reason a panic, a trap, a lost device or a tab saying it has no
- * WebGPU aborts the run where it happens instead of being counted in the
- * summary — after one of those, the next step's timeout would report the wrong
- * failure.
+ * tier to draw on aborts the run where it happens instead of being counted in
+ * the summary — after one of those, the next step's timeout would report the
+ * wrong failure.
  *
  * **The tripwire watches the page, not only its console.** A console line and
  * an uncaught error are two of the three places such a death shows up. The
- * third is the editor's own problem line, and it is the one the negative case
+ * third is the editor's own problem line, and it is the one a failed attach
  * lands in: a viewport that cannot attach hands the reason to its host, which
  * writes it into the status line and logs nothing. So [`checkProblem`] reads
- * that element wherever a step is about to depend on the picture.
+ * that element wherever a step is about to depend on the picture — and the
+ * negative run waits for that same element to fill in.
  */
 
 import { READBACK } from "@catchlight/core";
@@ -67,57 +68,83 @@ import type { Image } from "./frame.ts";
 const MAX_FLAT_SHARE = 0.995;
 
 /**
+ * What the tab says when it found neither tier, verbatim enough to match.
+ *
+ * The expected end of a `TIER=none` run and a fatality in every other one:
+ * `Gpu::acquire` rejects with this and the editor mounts over a canvas nothing
+ * will ever reach.
+ */
+const NO_DEVICE = /needs WebGPU or WebGL2/i;
+
+/**
  * Lines that mean the page is no longer able to draw, whatever it still shows.
  *
- * The WebGPU one is the whole negative case: launched without the flags above,
- * `Gpu::acquire` rejects with that string and the editor mounts over a canvas
- * nothing will ever reach. Catching it is what makes the run say why rather
- * than time out on a missing viewport — from the console when nothing handled
- * the rejection, and from the problem line when the editor did.
+ * Catching them is what makes a run say why rather than time out on a missing
+ * viewport — from the console when nothing handled the rejection, and from the
+ * problem line when the editor did. [`NO_DEVICE`] is on the list for every run
+ * but the negative one, where it is the answer being asked for.
  */
 const CONSOLE_FATAL = [
   /panicked at/,
   /device (?:is |was )?lost/i,
   /lost the device/i,
   /context lost/i,
-  /has no WebGPU/i,
+  ...(process.env.TIER === "none" ? [] : [NO_DEVICE]),
 ];
 /** A wasm trap reaches the page as an error and nothing else; hence the extra pattern. */
 const PAGE_FATAL = [...CONSOLE_FATAL, /unreachable/i];
 
-/**
- * What it takes to hold a WebGPU device in a headless Chromium on llvmpipe.
- *
- * Every one of the four graphics flags is load-bearing; see the header.
- * `CHROMIUM_ARGS` replaces the set outright, which is how the negative case is
- * run by hand: the old WebGL flags select a browser with no `navigator.gpu`
- * and this must then fail rather than pass.
- */
-const DEFAULT_ARGS = [
-  "--headless=new",
-  "--no-sandbox",
-  "--no-first-run",
-  "--disable-dev-shm-usage",
-  "--enable-unsafe-webgpu",
+/** Headless, and none of it about graphics. */
+const BASE_ARGS = ["--headless=new", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage"];
+
+/** What puts both tiers on Mesa's llvmpipe rather than on SwiftShader. */
+const REAL_GPU = [
   "--enable-features=Vulkan",
   "--use-vulkan=native",
   "--use-angle=vulkan",
   "--ignore-gpu-blocklist",
-].join(" ");
+];
+
+/**
+ * What a headless Chromium needs to reach a real GPU of either kind, and what
+ * it takes to withhold one.
+ *
+ * `--use-angle=vulkan` beside `--use-vulkan=native` is what lands both tiers on
+ * Mesa's llvmpipe rather than on SwiftShader, whose WebGPU device dies at the
+ * first canvas configure; the ICD comes from the shell's `XDG_DATA_DIRS`, the
+ * same one the Rust GPU tests find lavapipe through. On top of that the tiers
+ * differ in one switch each: `--enable-unsafe-webgpu` is what gives the tab a
+ * `navigator.gpu` at all, and `--disable-features=WebGPU` is what takes it
+ * away, which is how the fallback is reached in a browser that would otherwise
+ * have preferred WebGPU. `none` takes WebGL away as well, and is the only
+ * configuration in which the editor is supposed to refuse to draw.
+ *
+ * `CHROMIUM_ARGS` replaces whichever set `TIER` chose, for driving a browser
+ * these do not describe.
+ */
+const ARGS: Record<string, string[]> = {
+  webgpu: [...BASE_ARGS, ...REAL_GPU, "--enable-unsafe-webgpu"],
+  webgl2: [...BASE_ARGS, ...REAL_GPU, "--disable-features=WebGPU"],
+  none: [...BASE_ARGS, "--disable-features=WebGPU", "--disable-webgl"],
+};
 
 const [exe, site, server] = process.argv.slice(2);
 if (!exe || !site) throw new Error("usage: drive.ts <chromium> <site-url> [server-base]");
-const url = server ? `${site}?server=${encodeURIComponent(server)}` : site;
+/** The probe door is asked for only where a second viewport is under test. */
+const probe = process.env.TIER === "webgl2" ? "probe=1" : "";
+const query = [server ? `server=${encodeURIComponent(server)}` : "", probe].filter(Boolean).join("&");
+const url = query ? `${site}?${query}` : site;
 const shots = process.env.SHOTS ?? ".";
-const tag = server ? "connected" : "intab";
+/** Which tier this pass is for: what the browser is launched as, and what the tab must report. */
+const tier = process.env.TIER ?? "webgpu";
+const chosen = ARGS[tier];
+if (!chosen) throw new Error(`TIER=${tier} is not one of ${Object.keys(ARGS).join(", ")}`);
+const args = process.env.CHROMIUM_ARGS?.split(/\s+/).filter(Boolean) ?? chosen;
+const tag = `${server ? "connected" : "intab"}-${tier}`;
 
 // `headless: false` with `--headless=new` in the arguments: Playwright's own
 // headless switch is not the mode a WebGPU device comes up in.
-const browser = await chromium.launch({
-  executablePath: exe,
-  headless: false,
-  args: (process.env.CHROMIUM_ARGS ?? DEFAULT_ARGS).split(/\s+/).filter(Boolean),
-});
+const browser = await chromium.launch({ executablePath: exe, headless: false, args });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
 let failed = false;
@@ -187,12 +214,41 @@ const checkProblem = async (): Promise<void> => {
   throw new Error(`the page can no longer draw: ${line}`);
 };
 
+/** What the status line says the device came up on, or "" before there is one. */
+const tierSaid = async (): Promise<string> =>
+  await page
+    .evaluate(() => document.querySelector("[data-catchlight-tier]")?.textContent?.trim() ?? "")
+    .catch(() => "");
+
 interface Shot {
   size: string;
   hash: number;
   share: number;
   colour: string;
+  /** The pixels behind the numbers, for a step that compares two canvases. */
+  image: Image;
 }
+
+/**
+ * How far two canvases drawing the same thing may differ, per channel.
+ *
+ * Zero is what a correct blit gives, and what the WebGL2 run has been
+ * observed to give. The margin is for an sRGB surface rounding a channel by
+ * one on the way through, which is a rounding difference and not a drawing
+ * one; anything larger is a different picture.
+ */
+const MAX_CHANNEL_DRIFT = 2;
+
+/** The largest absolute per-channel difference between two frames. */
+const maxChannelDifference = (a: Image, b: Image): number => {
+  let worst = 0;
+  const length = Math.min(a.data.length, b.data.length);
+  for (let at = 0; at < length; at++) {
+    const difference = Math.abs(a.data[at]! - b.data[at]!);
+    if (difference > worst) worst = difference;
+  }
+  return worst;
+};
 
 /**
  * The frame the viewport is showing, asserted to be a picture.
@@ -207,7 +263,11 @@ interface Shot {
  * covers the whole frame. That shot still has to differ from the one before
  * it, which is what catches a canvas that stopped drawing at that moment.
  */
-const canvasFrame = async (what: string, flat: "must vary" | "may be flat" = "must vary"): Promise<Shot> => {
+const canvasFrame = async (
+  what: string,
+  flat: "must vary" | "may be flat" = "must vary",
+  selector = "canvas[data-catchlight-viewport]",
+): Promise<Shot> => {
   // Before the wait below, so a viewport that will never arrive is reported as
   // the reason it did not rather than as this step timing out.
   await checkProblem();
@@ -215,16 +275,16 @@ const canvasFrame = async (what: string, flat: "must vary" | "may be flat" = "mu
   // Waiting is not the assertion — a canvas that never gets one fails here
   // with a timeout naming this step, which is the same verdict.
   await page.waitForFunction(
-    (property: string) =>
-      typeof (document.querySelector("canvas[data-catchlight-viewport]") as unknown as
-        | Record<string, unknown>
-        | null)?.[property] === "function",
-    READBACK,
+    ([property, which]: string[]) =>
+      typeof (document.querySelector(which!) as unknown as Record<string, unknown> | null)?.[
+        property!
+      ] === "function",
+    [READBACK, selector],
     { timeout: 15000 },
   );
-  const read = await page.evaluate(async (property: string) => {
-    const canvas = document.querySelector("canvas[data-catchlight-viewport]");
-    const readback = canvas ? (canvas as unknown as Record<string, unknown>)[property] : undefined;
+  const read = await page.evaluate(async ([property, which]: string[]) => {
+    const canvas = document.querySelector(which!);
+    const readback = canvas ? (canvas as unknown as Record<string, unknown>)[property!] : undefined;
     if (typeof readback !== "function") {
       throw new Error("the canvas carries no viewport; nothing is drawing it");
     }
@@ -232,7 +292,7 @@ const canvasFrame = async (what: string, flat: "must vary" | "may be flat" = "mu
     // Through the CDP boundary as an ordinary array of bytes: a typed array is
     // not part of what `evaluate` is guaranteed to carry across.
     return { width: frame.width, height: frame.height, rgba: [...frame.rgba] };
-  }, READBACK);
+  }, [READBACK, selector]);
 
   const image: Image = {
     width: read.width,
@@ -246,6 +306,7 @@ const canvasFrame = async (what: string, flat: "must vary" | "may be flat" = "mu
     hash: fingerprint(image),
     share: uniform.share,
     colour: hex(uniform.colour, image.channels),
+    image,
   };
   if (flat === "must vary" && shot.share > MAX_FLAT_SHARE) {
     throw new Error(
@@ -264,12 +325,68 @@ try {
     const hidden = await pre.evaluate((el) => (el as HTMLElement).hidden).catch(() => true);
     if (!hidden) throw new Error(`page reported: ${(await pre.textContent())?.trim()}`);
   });
+  if (tier === "none") {
+    await step("the tab says what it needs", async () => {
+      // The device is asked for at the first attach, so the sentence appears
+      // once the editor has mounted and its viewport has tried. A wait rather
+      // than a read: the mount, the sample and the attach are three awaits
+      // deep and none of them is this file's to sequence.
+      await page.waitForFunction(
+        (want: string) =>
+          new RegExp(want, "i").test(
+            document.querySelector("[data-catchlight-problem]")?.textContent ?? "",
+          ),
+        NO_DEVICE.source,
+        { timeout: 30000 },
+      );
+      const said = await page.locator("[data-catchlight-problem]").textContent();
+      console.log("     problem:", said?.trim().slice(0, 160));
+      console.log("     tier:", await tierSaid());
+    });
+    await page.screenshot({ path: `${shots}/${tag}-final.png` });
+  } else {
+    await draws();
+  }
+} catch {
+  // reported by step
+} finally {
+  if (fatal !== null) console.log(`fatal: ${fatal}`);
+  const bad = logs.filter((l) => /error|pageerror|warn|http 4|http 5/i.test(l));
+  console.log(`console lines: ${logs.length}, errors/warnings: ${bad.length}`);
+  for (const l of bad.slice(0, 15)) console.log("   ", l.slice(0, 300));
+  await browser.close();
+  process.exit(failed ? 1 : 0);
+}
+
+/** Everything a run that is supposed to draw does once the page has loaded. */
+async function draws(): Promise<void> {
+  await step(`the tab draws on ${tier}`, async () => {
+    // Before anything looks at a picture: a WebGPU run that quietly fell
+    // back to WebGL2 draws a perfectly good frame, and every other check
+    // here would pass while the tier under test went untested.
+    await page
+      .waitForFunction(
+        () => (document.querySelector("[data-catchlight-tier]")?.textContent ?? "") !== "no device",
+        undefined,
+        { timeout: 20000 },
+      )
+      .catch(async (cause: unknown) => {
+        // A device that never arrived says so in the problem line, and that
+        // sentence is a better failure than this wait running out.
+        await checkProblem();
+        throw cause;
+      });
+    const said = await tierSaid();
+    console.log("     tier:", said);
+    if (said !== tier) throw new Error(`the tab draws on ${said}, not on ${tier}`);
+  });
+
   await step("document open", async () => {
     await page.locator("canvas[data-catchlight-viewport]").first().waitFor({ timeout: 20000 });
     await page.locator("[data-catchlight-node]").first().waitFor({ timeout: 20000 });
     await page.waitForTimeout(1500);
     // The device is acquired at the first attach, so this is the earliest step
-    // a browser without WebGPU can be told apart from a slow one.
+    // a browser with no tier at all can be told apart from a slow one.
     await checkProblem();
   });
   if (server && process.env.AGENT_CMD) {
@@ -298,11 +415,112 @@ try {
       console.log("     status:", (await page.locator("[data-catchlight-status]").textContent())?.trim().slice(0, 80));
     });
   }
-  let before: Shot = { size: "", hash: 0, share: 0, colour: "" };
+  let before: Shot = {
+    size: "",
+    hash: 0,
+    share: 0,
+    colour: "",
+    image: { width: 0, height: 0, channels: 4, data: new Uint8Array() },
+  };
   await step("canvas draws something", async () => {
     before = await canvasFrame("at rest");
     console.log("     frame:", before.size, "| flattest colour", before.colour, "covers", `${(before.share * 100).toFixed(1)}%`);
   });
+  if (tier === "webgl2") {
+    await step("a second canvas draws the same picture, and the first is untouched", async () => {
+      // The whole of what the fallback tier does differently: an extra
+      // viewport has no surface of its own, so it borrows the main canvas's,
+      // presents through it and copies the rectangle out before the main view
+      // takes the surface back. Two things can go wrong and only a browser can
+      // say so. The extra's picture could come out upside down, mis-scaled or
+      // in the wrong colours, which is why it is compared to the main one
+      // rather than merely checked for not being flat. And the borrowing could
+      // leave a mark on the main canvas, which is why that hash has to be the
+      // one it had before the extra existed.
+      const before = await canvasFrame("the main canvas before a second one exists");
+      const failure = await page.evaluate(async () => {
+        const door = (globalThis as unknown as Record<string, any>).__catchlightProbe;
+        if (!door) return "the page has no probe door";
+        const { editor, fitCamera } = door;
+        const main = document.querySelector("canvas[data-catchlight-viewport]");
+        if (!main) return "no main canvas to match";
+        // Two different measurements of the same element, and both are
+        // needed. The layout box is fractional and is what the resize
+        // observer turns into a backing store, and the rounded pair is what
+        // the React viewport passed to `fitCamera` when it framed this
+        // document, so it is what reproduces the camera.
+        const box = main.getBoundingClientRect();
+        const framing = { width: main.clientWidth, height: main.clientHeight };
+        const open = await editor.listSessions();
+        const info = open[open.length - 1];
+        if (!info) return "no document to draw twice";
+        const session = await editor.attachSession(info);
+
+        const canvas = document.createElement("canvas");
+        canvas.setAttribute("data-e2e-extra", "");
+        // Laid over the main canvas, at its position and its size, and
+        // invisible. The position is not decoration: a fractional CSS box
+        // snaps to a different number of device rows depending on where it
+        // starts, so the same 732.42 css pixels are 733 device rows here and
+        // 732 in the corner of the page — a difference the comparison below
+        // would rightly call a different picture. `opacity` keeps it out of
+        // the screenshots and out of nobody's way; the readback goes to the
+        // renderer and never to the compositor.
+        canvas.style.cssText =
+          `position:fixed;left:${box.left}px;top:${box.top}px;` +
+          `pointer-events:none;opacity:0;` +
+          `width:${box.width}px;height:${box.height}px`;
+        document.body.appendChild(canvas);
+        const view = await editor.attach(session, canvas);
+
+        // The camera the React viewport computed when it opened this
+        // document: same function, same bounds, same size, same padding.
+        const framed = fitCamera(session.bounds(), framing);
+        if (!framed) return "the document has no bounds to frame";
+        view.setCamera(framed.center[0], framed.center[1], framed.height);
+        view.start();
+        (globalThis as unknown as Record<string, unknown>).__catchlightProbeView = view;
+        return "";
+      });
+      if (failure) throw new Error(failure);
+      await page.waitForTimeout(1200);
+
+      const extra = await canvasFrame("the second canvas", "must vary", "canvas[data-e2e-extra]");
+      const after = await canvasFrame("the main canvas while a second one draws");
+      if (extra.size !== after.size) {
+        throw new Error(`the second canvas is ${extra.size} where the first is ${after.size}`);
+      }
+      const worst = maxChannelDifference(extra.image, after.image);
+      console.log(
+        "     second:",
+        extra.size,
+        worst === 0
+          ? "| identical to the first, byte for byte"
+          : `| at most ${worst} per channel off the first`,
+        "| hashes", extra.hash, "and", after.hash,
+        "| main hash", before.hash, "->", after.hash,
+      );
+      if (worst > MAX_CHANNEL_DRIFT) {
+        throw new Error(
+          `the second canvas differs from the first by ${worst} per channel; ` +
+            "it is not drawing the same picture",
+        );
+      }
+      if (after.hash !== before.hash) {
+        throw new Error("the second viewport changed what the main canvas shows");
+      }
+
+      // Taken down before the steps below, so what they measure is the editor
+      // and not this.
+      await page.evaluate(() => {
+        const held = globalThis as unknown as Record<string, any>;
+        held.__catchlightProbeView?.dispose?.();
+        held.__catchlightProbeView = undefined;
+        document.querySelector("[data-e2e-extra]")?.remove();
+      });
+      await page.waitForTimeout(300);
+    });
+  }
   await step("slider poses the puppet", async () => {
     const slider = page.locator("[data-catchlight-param-slider]").first();
     if (!(await slider.count())) { console.log("     (no params in this model)"); return; }
@@ -348,16 +566,7 @@ try {
     if (mid.hash === b0.hash) throw new Error("no live preview during drag");
     if (b1.hash === b0.hash) throw new Error("canvas unchanged after commit");
   });
-  // The page, for a human reading the run afterwards. The canvas in it is
-  // blank: this browser never composites one.
+  // The page, for a human reading the run afterwards. On the WebGPU tier the
+  // canvas in it is blank, because that browser never composites one.
   await page.screenshot({ path: `${shots}/${tag}-final.png` });
-} catch {
-  // reported by step
-} finally {
-  if (fatal !== null) console.log(`fatal: ${fatal}`);
-  const bad = logs.filter((l) => /error|pageerror|warn|http 4|http 5/i.test(l));
-  console.log(`console lines: ${logs.length}, errors/warnings: ${bad.length}`);
-  for (const l of bad.slice(0, 15)) console.log("   ", l.slice(0, 300));
-  await browser.close();
-  process.exit(failed ? 1 : 0);
 }

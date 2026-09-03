@@ -177,19 +177,25 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor-wasm/src/replica.rs` — the revision moves forward
   only, the two ways the document changes and neither is local, pose and
   scratch never reach the model, gizmo math lives here
-- `crates/catchlight-editor-wasm/src/gpu.rs` — one device per tab and any
-  number of canvases, why the GL tier is gone, one message for no WebGPU
-- `crates/catchlight-editor-wasm/src/viewport.rs` — who owns the frame loop,
-  what `invalidate` promises, motion keeps a frame dirty, GPU state belongs to
-  the replica, `readback` is the one promise after acquire
+- `crates/catchlight-editor-wasm/src/gpu.rs` — one device per tab on both
+  tiers, two instances tried in order, a GL surface is a colour target only so
+  the first canvas is the GL device's one surface and outlives the rest, one
+  message for neither tier
+- `crates/catchlight-editor-wasm/src/viewport.rs` — who owns the frame loop on
+  each tier, how a frame reaches the canvas on each tier, an extra GL viewport
+  renders inside the main canvas before the main view and is hidden in time
+  not by clipping, its size cap, what `invalidate` promises, motion keeps a
+  frame dirty, GPU state belongs to the replica, `readback` is the one promise
+  after acquire
 - `packages/core/src/backend.ts`, `session.ts`, `in-tab.ts`, `connected.ts`,
   `editor.ts`, `storage.ts`, `viewport.ts` — one seam and where the editor is,
   a send that resolves once the replica caught up, feeds that never overlap,
   bulk over HTTP and never the socket, why a store is not a transport, and
   when a viewport is allowed to idle
-- `apps/site/e2e/run.ts`, `drive.ts` — the browser smoke test: the built site
-  and both backends, why the browser is an argument, a WebGPU device on
-  llvmpipe that never composites, and what a flat frame means
+- `apps/site/e2e/run.ts`, `drive.ts` — the browser smoke test: the built site,
+  both backends and every GPU tier the browser can be forced into, why the
+  browser is an argument, a WebGPU device on llvmpipe that never composites,
+  and what a flat frame means
 - `packages/react/src/index.ts` — hooks are the primitive, no mirror,
   TypeScript owns gestures and Rust owns what reads the model
 - `packages/editor/src/index.ts` — layout only, theming is CSS variables under
@@ -233,9 +239,9 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 
 # Decisions
 
-- The editor is **web-first**: React over a wasm replica, **WebGPU-only** (the
-  runtime keeps its WebGL fallback); the desktop egui app is frozen. The
-  runtime is tier-1 on **Windows**.
+- The editor is **web-first**: React over a wasm replica, **WebGPU with a
+  WebGL2 tier** because iOS reaches WebGPU only from Safari 26; the desktop
+  egui app is frozen. The runtime is tier-1 on **Windows**.
 - **The editor owns the document; the tab holds a replica.** The `Editor` runs
   in the tab (Pages) or in a local process an agent also drives; the browser
   never mutates its model locally, reads answer from the replica synchronously,

@@ -25,6 +25,15 @@
  * socket, which is the one thing no unit test can show: a command from outside
  * the browser landing in the tab's replica.
  *
+ * **Both graphics tiers, and the browser that has neither.** The editor draws
+ * on WebGPU where a browser offers it and on WebGL2 where it does not, and the
+ * fallback is not a detail: it is what an iOS device that cannot run Safari 26
+ * gets. So a third pass launches the same in-tab tab with WebGPU switched off
+ * and asserts the picture on the tier underneath, and a fourth switches both
+ * off and asserts the sentence the tab shows instead of a blank canvas. Which
+ * tier a pass ran on is asserted in the tab, not assumed from the flags: see
+ * `drive.ts`.
+ *
  * **The socket is private to the run.** `default_socket_path` is derived from
  * `XDG_RUNTIME_DIR`, so pointing that at a temporary directory keeps the
  * server and the CLI talking to each other and not to whatever editor the
@@ -41,7 +50,7 @@ import { fileURLToPath } from "node:url";
 /** Opened by the server, edited by the agent, and what the tab shows first. */
 const SERVER_MODEL = "tests/models/quad_over_bg.clm";
 /**
- * Opened through the file input, in both passes.
+ * Opened through the file input, in every pass that draws.
  *
  * Not the default sample: `quad_over_bg` is a red disk on a blue ground, and
  * the viewport's default camera frames it so the disk covers the canvas edge
@@ -101,12 +110,20 @@ try {
   await reachable(`${origin}/`, "site", preview);
   await reachable(`${serverBase}/token`, "server", server);
 
-  const intab = await drive("in-tab", [chromium, `${origin}/`], {});
-  const connected = await drive("connected", [chromium, `${origin}/`, serverBase], {
-    AGENT_CMD:
-      `target/debug/catchlight-editor-cli node add --session 1 --parent root --kind group --name ${AGENT_NODE}`,
-  });
-  code = intab === 0 && connected === 0 ? 0 : 1;
+  // In order: the two backends on WebGPU, then the fallback tier, then the
+  // browser that has neither. Sequential because they share one site, one
+  // editor server and one machine's GPU.
+  const passes = [
+    await drive("in-tab, WebGPU", [chromium, `${origin}/`], { TIER: "webgpu" }),
+    await drive("connected, WebGPU", [chromium, `${origin}/`, serverBase], {
+      TIER: "webgpu",
+      AGENT_CMD:
+        `target/debug/catchlight-editor-cli node add --session 1 --parent root --kind group --name ${AGENT_NODE}`,
+    }),
+    await drive("in-tab, WebGL2", [chromium, `${origin}/`], { TIER: "webgl2" }),
+    await drive("in-tab, neither tier", [chromium, `${origin}/`], { TIER: "none" }),
+  ];
+  code = passes.every((exit) => exit === 0) ? 0 : 1;
 } finally {
   for (const child of [preview, server]) {
     child.kill();
@@ -115,7 +132,7 @@ try {
   if (code !== 0) {
     for (const name of ["site", "server"]) await tail(name);
   }
-  console.log(code === 0 ? "\ne2e: both backends passed" : "\ne2e: FAILED");
+  console.log(code === 0 ? "\ne2e: both backends and both tiers passed" : "\ne2e: FAILED");
   process.exit(code);
 }
 

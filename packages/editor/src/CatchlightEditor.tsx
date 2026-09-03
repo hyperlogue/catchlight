@@ -19,9 +19,9 @@
  * **A failure is shown, never swallowed.** The parts report through `onError`
  * callbacks and the editor's promises reject; both land in one line at the
  * bottom, because a browser console is not part of the product. The canvas is
- * on the same wire and has the most to say: the editor is WebGPU or it is an
- * error message, so a browser without it fails the attach and that sentence is
- * the only thing on the screen that explains an empty stage.
+ * on the same wire and has the most to say: it draws on WebGPU or on WebGL2,
+ * and a browser with neither fails the attach — that sentence is then the only
+ * thing on the screen that explains an empty stage.
  *
  * **The camera is held here, not in the canvas.** The viewport frames a model
  * by itself the first time it draws one, but "Fit" is a toolbar button and the
@@ -31,13 +31,12 @@
  * **The stage is never unmounted.** The grid's cells are rendered whether or
  * not a document is open; with none, the panels are empty and the canvas
  * draws nothing under a hint. So one canvas element lives for the whole
- * screen. Nothing forces that any more — a WebGPU device draws any canvas, so
- * a stage that came and went with its documents would work — it is simply
- * cheaper: a remount would tear down a surface and its stencil and composite
- * targets and build them again on the next document, and every layout of the
- * grid would have to be written to keep the element in place anyway. The
- * presence provider sits above the cells for the same reason, and tolerates
- * having no session.
+ * screen. Nothing forces that — a device on either tier draws whatever canvas
+ * a viewport was handed — it is simply cheaper: a remount would tear down a
+ * surface and its stencil and composite targets and build them again on the
+ * next document, and every layout of the grid would have to be written to keep
+ * the element in place anyway. The presence provider sits above the cells for
+ * the same reason, and tolerates having no session.
  *
  * **Closing the current document moves the screen off it first.** The panels
  * under it read its replica, and the close frees that replica — so the next
@@ -463,9 +462,9 @@ function Documents({
  * cells supplies.
  *
  * `onError` is the shell's, like every other part's: an attach that fails —
- * a browser with no WebGPU is the one that matters — has nowhere else to be
- * read, and the stage under it looks exactly like a document that draws
- * nothing.
+ * a browser with neither graphics tier is the one that matters — has nowhere
+ * else to be read, and the stage under it looks exactly like a document that
+ * draws nothing.
  */
 function Stage({
   session,
@@ -556,21 +555,41 @@ function zoomLabel(zoom: number | undefined): string {
 }
 
 /**
- * Where the document is: this tab, or a process it is connected to.
+ * Where the document is, and which graphics tier is drawing it.
  *
- * Something a person cannot otherwise tell by looking, and it changes what a
- * bug report means — an in-tab editor and a connected one fail differently.
- * There is no graphics tier beside it any more: the editor is WebGPU or it is
- * an error message, so a label reporting which one would only ever say the
- * same word.
+ * Two facts a person cannot get by looking at the picture, and both change
+ * what a bug report means: an in-tab editor and a connected one fail
+ * differently, and so do WebGPU and the WebGL2 fallback.
  */
 function Environment(): ReactNode {
   const editor = useEditor();
+  const tier = useGpuTier(editor);
   return (
-    <span data-catchlight-status-item="" data-catchlight-backend="">
-      {editor.backendKind()}
-    </span>
+    <>
+      <span data-catchlight-status-item="" data-catchlight-backend="">
+        {editor.backendKind()}
+      </span>
+      <span data-catchlight-status-item="" data-catchlight-tier="">
+        {tier ?? "no device"}
+      </span>
+    </>
   );
+}
+
+/**
+ * Which graphics tier this tab came up on, once a canvas has asked for a
+ * device.
+ *
+ * A device is acquired at the first viewport and never swapped, so the
+ * subscription fires once and the state settles for the life of the editor.
+ */
+function useGpuTier(editor: Editor): string | undefined {
+  const [tier, setTier] = useState<string | undefined>(() => editor.gpuTier());
+  useEffect(() => {
+    setTier(editor.gpuTier());
+    return editor.onGpuChanged(() => setTier(editor.gpuTier()));
+  }, [editor]);
+  return tier;
 }
 
 function Problem({ problem }: { problem: string | undefined }): ReactNode {

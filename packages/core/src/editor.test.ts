@@ -242,8 +242,11 @@ describe("viewports and lifetime", () => {
     ]);
 
     // Two viewports mounting in one tick is a React remount, not a reason for
-    // two devices; the second waits on the first one's acquisition.
+    // two devices; the second waits on the first one's acquisition. Which
+    // canvas the device came from matters on the fallback tier, where it is
+    // the one the device can present into: it is the first.
     expect(module.gpu.acquires).toBe(1);
+    expect(module.gpu.acquiredFrom).toEqual([first]);
     expect(module.viewports).toHaveLength(2);
     expect(a).not.toBe(b);
   });
@@ -251,16 +254,17 @@ describe("viewports and lifetime", () => {
   test("an acquisition that failed is tried again, not remembered", async () => {
     const { editor, module } = await inTab();
     const session = await editor.newDocument();
-    module.failNextAcquire = "this browser has no WebGPU";
+    module.failNextAcquire = "this browser needs WebGPU or WebGL2";
 
     await expect(editor.attach(session, {} as HTMLCanvasElement)).rejects.toThrow(
-      "this browser has no WebGPU",
+      "this browser needs WebGPU or WebGL2",
     );
 
-    // The next mount is a new chance — StrictMode's second one, or a device
-    // that answers where a moment ago none did.
-    await editor.attach(session, {} as HTMLCanvasElement);
-    expect(module.gpu.acquires).toBe(1);
+    // The next mount is a new chance — StrictMode's second one, or a canvas
+    // that can be acquired from where the first could not.
+    const canvas = { id: "second" } as unknown as HTMLCanvasElement;
+    await editor.attach(session, canvas);
+    expect(module.gpu.acquiredFrom).toEqual([canvas]);
     expect(module.viewports).toHaveLength(1);
   });
 
@@ -292,6 +296,28 @@ describe("what the editor says about itself", () => {
   test("the backend kind is what a status line reads", async () => {
     const { editor } = await inTab();
     expect(editor.backendKind()).toBe("in-tab");
+  });
+
+  test("there is no graphics tier until a canvas has asked for a device", async () => {
+    const { editor, module } = await inTab();
+    const session = await editor.newDocument();
+    module.gpu.tierName = "webgl2";
+
+    // Opening a document, reading it and running a drag need no device, so
+    // there is nothing truthful to say until an attach happens.
+    expect(editor.gpuTier()).toBeUndefined();
+
+    let told = 0;
+    const off = editor.onGpuChanged(() => (told += 1));
+    await editor.attach(session, {} as HTMLCanvasElement);
+
+    expect(editor.gpuTier()).toBe("webgl2");
+    expect(told).toBe(1);
+
+    // One device per editor, acquired once: a second canvas says nothing new.
+    await editor.attach(session, {} as HTMLCanvasElement);
+    expect(told).toBe(1);
+    off();
   });
 });
 

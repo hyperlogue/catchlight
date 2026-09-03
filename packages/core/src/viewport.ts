@@ -26,8 +26,9 @@
  * a screenshot of one is blank while the picture is correct — the browser
  * smoke test has to ask the renderer instead. The element is what a driver
  * already has a handle to, so a live viewport hangs [`READBACK`] off it and
- * takes it back on dispose. Nothing in the editor reads that property, and
- * nothing about the drawing depends on it.
+ * takes it back on dispose. What answers is the tier's business and reads the
+ * same either way: device pixels, RGBA, row-major. Nothing in the editor reads
+ * that property, and nothing about the drawing depends on it.
  *
  * **A viewport nobody can see does not run.** Started is what the host asked
  * for; running is that *and* the canvas being on screen *and* the page being
@@ -49,8 +50,8 @@ import type { WasmFrame, WasmViewport } from "./wasm.js";
  * The real limit is the device's `max_texture_dimension_2d`, which `Gpu`
  * reports once it exists — a canvas above it fails surface configuration and
  * the viewport goes black with no other symptom. This is the floor of that
- * limit across the WebGPU tiers, used only when the caller had no device to
- * ask, so the clamp is never a guess when a fact is on hand.
+ * limit across the tiers a browser offers, used only when the caller had no
+ * device to ask, so the clamp is never a guess when a fact is on hand.
  */
 const FALLBACK_MAX_BACKING_STORE = 8192;
 

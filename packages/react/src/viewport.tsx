@@ -9,9 +9,9 @@
  * arrival rather than stored.
  *
  * **A failed attach is the host's to show, not the console's.** The editor
- * wants a WebGPU device, and a browser without one rejects with the sentence
- * a person has to read; it leaves here through `onError`, the way every other
- * part in this package reports a failure. Without a handler it is warned to
+ * wants a device on either graphics tier, and a browser with neither rejects
+ * with the sentence a person has to read; it leaves here through `onError`,
+ * the way every other part in this package reports a failure. Without a handler it is warned to
  * the console, which is a fallback for a developer and not a product surface:
  * a host that mounts this and passes nothing shows a person a blank canvas
  * and no reason for it.
@@ -105,8 +105,8 @@ export interface ViewportRootProps
   onPointerCancel?: PointerHandler;
   /**
    * A viewport that could not be attached, with the reason. The one a host
-   * must not drop: a browser with no WebGPU rejects here, and nothing else on
-   * the screen says why the canvas stayed empty.
+   * must not drop: a browser with neither WebGPU nor WebGL2 rejects here, and
+   * nothing else on the screen says why the canvas stayed empty.
    */
   onError?: (cause: unknown) => void;
 }
