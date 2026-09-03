@@ -836,9 +836,11 @@ impl Editor {
 
     /// Run a document edit `f` against a session, auto-capturing a pre-edit undo
     /// snapshot that is pushed only when the edit succeeds and actually changed
-    /// the document (rev bumped). The snapshot deep-copies every mesh and
-    /// binding grid (only texture bytes are Arc-shared), which is why read-only
-    /// commands stay on `with_session`.
+    /// the document (rev bumped). The snapshot is a shallow clone — meshes,
+    /// binding grids and texture payloads all ride behind an `Arc` and are
+    /// copied only when something edits them (see [`History`]) — but it still
+    /// walks and copies the whole tree, which is why read-only commands stay
+    /// on `with_session`.
     fn edit_session<R>(
         &self,
         id: SessionId,
