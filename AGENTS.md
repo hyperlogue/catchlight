@@ -154,8 +154,8 @@ that enforces them, not here. Add new ones there.
   undo budget, an observer never runs under a lock, each session draws its own
   Ids, the editor traces a part's alpha; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the browser
-  transport and why loopback is not a permission; `storage.rs` — a `path` is a
-  storage key, and an upload is not a file on disk
+  transport, why loopback is not a permission, and the token before the body;
+  `storage.rs` — a `path` is a storage key, and an upload is not a file on disk
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording
   never authors
 - `crates/catchlight-editor/src/mesh_edit.rs` — when the seam tool is reachable,
