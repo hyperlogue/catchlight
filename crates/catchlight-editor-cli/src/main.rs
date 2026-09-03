@@ -1899,6 +1899,9 @@ fn print_node_info(node: &NodeInfo) {
     if let Some(texture) = &node.texture {
         println!("  texture {texture}");
     }
+    if let (Some(verts), Some(tris)) = (node.vertex_count, node.triangle_count) {
+        println!("  mesh {verts} verts, {tris} tris");
+    }
     if let Some(v) = node.propagate_meshgroup {
         println!("  propagate-meshgroup {v}");
     }

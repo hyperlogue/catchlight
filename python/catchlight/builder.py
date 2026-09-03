@@ -17,7 +17,8 @@ Invariants this module enforces:
 - **A part is complete when `part` returns.** The node, its texture, its place
   and its mesh are four commands and this makes all four, so a model built here
   never has the half-built part — textured, unmeshed — that [`Builder.check`]
-  is there to catch.
+  is there to catch and that [`Builder.mesh_size`] reads back as an empty
+  mesh.
 
 - **A binding's keys are param values, not cell indices.** The wire keys a
   binding by the index of a param's key position, and the position a script
@@ -48,9 +49,11 @@ from .protocol_gen import (
     BindingAdd,
     BindingKey,
     Check,
+    CommandNodeInfo,
     MeshAuto,
     NodeAdd,
     NodeId,
+    NodeInfo,
     NodeKindArg,
     NodeSet,
     ParamAdd,
@@ -59,6 +62,7 @@ from .protocol_gen import (
     ParamKeyInsert,
     ParamList,
     ResponseBodyNode,
+    ResponseBodyNodeInfo,
     ResponseBodyParam,
     ResponseBodyParams,
     ResponseBodyWarnings,
@@ -266,6 +270,27 @@ class Builder:
         )
 
     # -- reading and writing
+
+    def info(self, node: NodeId) -> NodeInfo:
+        """Everything the editor reports about one node."""
+        body = self.client.send(CommandNodeInfo(session=self.session, node=node))
+        if not isinstance(body, ResponseBodyNodeInfo):
+            raise BuilderError(f"node_info answered {body!r}")
+        return body.node
+
+    def mesh_size(self, node: NodeId) -> tuple[int, int]:
+        """How many vertices and triangles `node`'s mesh holds.
+
+        A part is meshed when this is not `(0, 0)`, which is the question
+        `check`'s "textured but its mesh has no triangles" lint answers in
+        prose. A node of a kind that holds no mesh at all — a group, a
+        composite, a physics driver — raises, because the answer for one of
+        those is not a count.
+        """
+        info = self.info(node)
+        if info.vertex_count is None or info.triangle_count is None:
+            raise BuilderError(f"node {node!r} is a {info.kind}, which holds no mesh")
+        return info.vertex_count, info.triangle_count
 
     def check(self) -> list[str]:
         """The editor's own lints on this model, and what `problems` becomes."""

@@ -15,7 +15,7 @@
 //!   the one an editor should keep in front of the author until it is
 //!   repaired.
 
-use crate::formats::clm::{ClmBindingValues, ClmIndices};
+use crate::formats::clm::ClmBindingValues;
 
 use super::*;
 use crate::model::binding::BindingTarget;
@@ -59,10 +59,7 @@ impl Model {
                             ),
                         ));
                     }
-                    let tris = match &mesh.indices {
-                        ClmIndices::U16(v) => v.len() / 3,
-                        ClmIndices::U32(v) => v.len() / 3,
-                    };
+                    let tris = mesh.triangle_count();
                     if tris == 0 && p.albedo().is_some() {
                         out.push(warn(
                             id.clone(),

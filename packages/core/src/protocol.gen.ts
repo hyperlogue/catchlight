@@ -1022,8 +1022,8 @@ export type TreeNode = {
 };
 
 /**
- * One node in full: what [`NodePatch`] can set, plus the three things it
- * cannot — the node's Id, its kind and its parent.
+ * One node in full: what [`NodePatch`] can set, plus what it cannot — the
+ * node's Id, its kind, its parent, and the size of the mesh it holds.
  *
  * **The settable fields carry [`NodePatch`]'s own names.** An inspector reads
  * a value here, edits it, and sends it straight back in a
@@ -1032,9 +1032,9 @@ export type TreeNode = {
  *
  * A field a node's kind does not carry is absent, the way it is ignored on
  * the way in: the colour fields reach parts and composites only, `texture`
- * only a part, `mg_*` only a mesh group. `texture` is also absent on a part
- * that draws none, which `kind` tells apart from a node that could not have
- * one.
+ * only a part, `mg_*` only a mesh group, and the two mesh counts only the
+ * kinds that hold a mesh. `texture` is also absent on a part that draws
+ * none, which `kind` tells apart from a node that could not have one.
  */
 export type NodeInfo = {
   /**
@@ -1072,6 +1072,19 @@ export type NodeInfo = {
    * The part's albedo texture, absent when it draws none.
    */
   texture?: TexId | null,
+  /**
+   * How many vertices the node's mesh holds. Absent on a kind that carries
+   * no mesh — a part and a mesh group carry one, nothing else does — so
+   * `0` is a mesh with no vertices rather than a node that could not have
+   * had any. A client asking "has this part been meshed" reads this rather
+   * than [`Command::Check`], whose textured-but-untriangulated warning is a
+   * message for a person.
+   */
+  vertex_count?: number | null,
+  /**
+   * How many triangles that mesh holds, absent under the same rule.
+   */
+  triangle_count?: number | null,
   /**
    * Composite: forward mesh-group deformation to children.
    */

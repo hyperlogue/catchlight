@@ -352,9 +352,9 @@ class NodeTree:
 @dataclass(frozen=True, kw_only=True)
 class CommandNodeInfo:
     """Everything an inspector shows for one node: what [`NodePatch`] can set,
-    under the same field names, plus the node's kind, its parent and its
-    Id. What [`Command::NodeTree`] carries is what a tree row draws;
-    this is the rest.
+    under the same field names, plus the node's kind, its parent, its Id
+    and the size of the mesh it holds. What [`Command::NodeTree`] carries
+    is what a tree row draws; this is the rest.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -2827,8 +2827,8 @@ class TreeNode:
 
 @dataclass(frozen=True, kw_only=True)
 class NodeInfo:
-    """One node in full: what [`NodePatch`] can set, plus the three things it
-    cannot — the node's Id, its kind and its parent.
+    """One node in full: what [`NodePatch`] can set, plus what it cannot — the
+    node's Id, its kind, its parent, and the size of the mesh it holds.
 
     **The settable fields carry [`NodePatch`]'s own names.** An inspector reads
     a value here, edits it, and sends it straight back in a
@@ -2837,9 +2837,9 @@ class NodeInfo:
 
     A field a node's kind does not carry is absent, the way it is ignored on
     the way in: the colour fields reach parts and composites only, `texture`
-    only a part, `mg_*` only a mesh group. `texture` is also absent on a part
-    that draws none, which `kind` tells apart from a node that could not have
-    one.
+    only a part, `mg_*` only a mesh group, and the two mesh counts only the
+    kinds that hold a mesh. `texture` is also absent on a part that draws
+    none, which `kind` tells apart from a node that could not have one.
     """
 
     # What the node is addressed by, here and in the file.
@@ -2865,6 +2865,15 @@ class NodeInfo:
     mask_threshold: float | None = None
     # The part's albedo texture, absent when it draws none.
     texture: TexId | None = None
+    # How many vertices the node's mesh holds. Absent on a kind that carries
+    # no mesh — a part and a mesh group carry one, nothing else does — so
+    # `0` is a mesh with no vertices rather than a node that could not have
+    # had any. A client asking "has this part been meshed" reads this rather
+    # than [`Command::Check`], whose textured-but-untriangulated warning is a
+    # message for a person.
+    vertex_count: int | None = None
+    # How many triangles that mesh holds, absent under the same rule.
+    triangle_count: int | None = None
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
     mg_dynamic: bool | None = None

@@ -155,7 +155,8 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
 }
 
 /// One node as an inspector reads it: every [`NodePatch`] field under its own
-/// name, and the Id, kind and parent a patch cannot set.
+/// name, and the four things a patch cannot set — the Id, the kind, the parent
+/// and the size of the mesh the node holds.
 ///
 /// A field the node's kind does not carry stays `None` — the same rule
 /// `apply_patch` applies on the way in, where a colour set on a mesh group is
@@ -186,6 +187,15 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
         ModelNodeKind::MeshGroup(mg) => (Some(mg.dynamic), Some(mg.translate_children)),
         _ => (None, None),
     };
+    // Only the two kinds that hold a mesh report its size, so an empty mesh
+    // reads as 0 and a kind that could never have one reads as absent.
+    let (vertex_count, triangle_count) = match node.mesh() {
+        Some(mesh) => (
+            Some(mesh.vertex_count() as u32),
+            Some(mesh.triangle_count() as u32),
+        ),
+        None => (None, None),
+    };
     NodeInfo {
         id: id.clone(),
         kind: node.kind.name().to_string(),
@@ -206,6 +216,8 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             ModelNodeKind::Part(p) => p.albedo().cloned(),
             _ => None,
         },
+        vertex_count,
+        triangle_count,
         propagate_meshgroup: match &node.kind {
             ModelNodeKind::Composite(c) => Some(c.propagate_meshgroup),
             _ => None,
