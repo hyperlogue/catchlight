@@ -12,11 +12,6 @@ env:
 # linker and the runtime libraries are exactly the ones `nix/shell.nix` pins
 # for local development. Linux only: catchlight-editor-cli talks over a Unix
 # socket, so there is nothing to gain from a Windows or macOS runner yet.
-#
-# One step enters a different shell. `nix develop .#e2e` is the same shell plus
-# the Chromium the browser smoke test drives, and it is only ever entered by
-# that one step: chromium's closure is the largest thing in any of this, and
-# every other job would otherwise download it to run `cargo` and `bun`.
 jobs:
   deny:
     name: cargo deny
@@ -105,4 +100,4 @@ jobs:
       # of its own.
       - run: nix develop -c bash -c 'cd python && uv run pytest -q'
       # The one step that wants the browser, and the only one that pays for it.
-      - run: nix develop .#e2e -c bun run --filter catchlight-site e2e
+      - run: nix develop -c bun run --filter catchlight-site e2e

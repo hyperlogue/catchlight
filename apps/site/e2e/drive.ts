@@ -16,7 +16,7 @@
  *
  * **The browser is a real one, and `TIER` says which tier it may draw on.**
  * Playwright's own Chromium download does not run on NixOS, so the executable
- * is an argument and the e2e dev shell puts one on `PATH`. The editor draws on
+ * is an argument and the dev shell puts one on `PATH`. The editor draws on
  * WebGPU where a browser has it and on WebGL2 where it does not, and both are
  * worth a pass because the fallback is what an iOS device below Safari 26
  * gets. So this launches Chromium with the flag set for the tier under test
