@@ -33,7 +33,9 @@
  *
  * **Events are dispatched before `send` resolves.** They come out of the same
  * synchronous `handle` call, and a caller waiting for the revision its reply
- * promised is waiting for the feed that this dispatch starts.
+ * promised is waiting for the feed that this dispatch starts. Nothing here can
+ * lose one either, which is why a `Session`'s bounded wait never fires against
+ * this backend: the replica is already at the revision when `send` returns.
  */
 
 import type { Command, Event } from "./protocol.gen.js";

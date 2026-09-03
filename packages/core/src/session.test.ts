@@ -6,12 +6,20 @@
 import { describe, expect, test } from "bun:test";
 
 import { ProtocolError } from "./backend.js";
-import { emptyDoc, FakeReplica, ScriptedBackend, structureBytes } from "./fakes.js";
+import { emptyDoc, FakeReplica, GuardedReplica, ScriptedBackend, structureBytes } from "./fakes.js";
 import { Session } from "./session.js";
+
+/** A re-feed timeout a suite can wait out, and no microtask can beat. */
+const TIMEOUT = 5;
 
 /** Lets every pending microtask and timer callback run. */
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Waits `ms`, for the timers this suite has to outlast rather than race. */
+function after(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function open(id = 1): { backend: ScriptedBackend; replica: FakeReplica; session: Session } {
@@ -116,6 +124,64 @@ describe("a document command and its revision", () => {
     expect(backend.runs).toEqual([2, 4]);
     expect(replica.rev()).toBe(4);
     expect(replica.applied.map((a) => a.rev)).toEqual([2, 4]);
+  });
+
+  test("a lost frame becomes one re-feed, and the send still waits for the revision", async () => {
+    const backend = new ScriptedBackend();
+    const replica = new FakeReplica();
+    const session = new Session(backend, 1, replica, TIMEOUT);
+    backend.replies.set("node_add", { body: { result: "node", node: "root/group-7" }, rev: 5 });
+
+    const sending = session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
+    await tick();
+    // The editor moved to 5 and the frame that says so never arrived: nothing
+    // else will ever bring the replica there.
+    expect(replica.rev()).toBe(0);
+    expect(backend.feeds).toHaveLength(0);
+
+    const body = await sending;
+
+    expect(body).toEqual({ result: "node", node: "root/group-7" });
+    // Resolved at the revision it was promised, and by a feed — the one path
+    // into the replica — rather than by giving up on the wait.
+    expect(replica.rev()).toBe(5);
+    expect(session.getRevision()).toBe(5);
+    expect(backend.feeds).toEqual([{ session: 1, rev: 5 }]);
+  });
+
+  test("a send that caught up on its own event never re-feeds", async () => {
+    const backend = new ScriptedBackend();
+    const replica = new FakeReplica();
+    const session = new Session(backend, 1, replica, TIMEOUT);
+    backend.replies.set("node_add", { body: { result: "node", node: "n" }, rev: 5 });
+
+    const sending = session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
+    backend.changed(1, 5);
+    await sending;
+    await after(TIMEOUT * 4);
+
+    // One feed, the event's. A timer left armed behind a settled send is a
+    // second structure fetch for an edit that already landed.
+    expect(backend.runs).toEqual([5]);
+    expect(replica.rev()).toBe(5);
+  });
+
+  test("a re-feed that fails rejects the command it was waiting for", async () => {
+    const backend = new ScriptedBackend();
+    const session = new Session(backend, 1, new FakeReplica(), TIMEOUT);
+    backend.replies.set("node_add", { body: { result: "node", node: "n" }, rev: 5 });
+    backend.failFeed = "the re-feed could not be read";
+
+    let caught: unknown;
+    try {
+      await session.send({ cmd: "node_add", parent: "root", kind: "group", name: null });
+    } catch (cause) {
+      caught = cause;
+    }
+
+    // Awaited rather than asserted through `expect().rejects`, which reports
+    // a rejection arriving on a timer as an error of its own.
+    expect(caught).toMatchObject({ code: "feed" });
   });
 
   test("an event for another session is not this one's business", async () => {
@@ -269,6 +335,40 @@ describe("closing", () => {
     expect(replica.freed).toBe(true);
     expect(replica.rev()).toBe(0);
     expect(backend.feeds).toHaveLength(0);
+  });
+
+  test("a feed still reading the replica keeps it alive until it lets go", async () => {
+    const backend = new ScriptedBackend();
+    const replica = new GuardedReplica();
+    const session = new Session(backend, 1, replica);
+    let release!: () => void;
+    backend.hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    backend.changed(1, 3);
+    await tick();
+
+    const complaints: unknown[][] = [];
+    const wasError = console.error;
+    console.error = (...args: unknown[]): void => {
+      complaints.push(args);
+    };
+    try {
+      session.close();
+      // The feed is mid-fetch and holds a pointer into it, so freeing here
+      // is the use-after-free this test exists for.
+      expect(replica.freed).toBe(false);
+      release();
+      await tick();
+    } finally {
+      console.error = wasError;
+    }
+
+    expect(replica.usedAfterFree).toEqual([]);
+    expect(complaints).toEqual([]);
+    // Freed on the way out of the feed, so closing still ends the model.
+    expect(replica.freed).toBe(true);
   });
 });
 
