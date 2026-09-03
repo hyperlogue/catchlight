@@ -13,6 +13,15 @@
 //! resolve a manifest's texture references relative to the manifest. Nothing
 //! parses a key beyond that: a backend is free to treat it as flat.
 //!
+//! **A relative key resolves against the store, not against the process.**
+//! [`FileStorage`] carries a root directory fixed at construction — the
+//! current directory when nobody says otherwise — and a relative key joins
+//! onto it, so where a document lands is a property of the store a server was
+//! built with rather than of whatever directory the process happens to be in
+//! when a read arrives. An absolute key is already a path and joins onto
+//! nothing, which is what keeps `session_open /abs/model.clm` meaning the file
+//! it names.
+//!
 //! A write is expected to be **atomic** — a reader either sees the previous
 //! bytes or the new ones, never a truncated file. [`FileStorage`] gets this
 //! from temp-then-rename; a backend that cannot must say so in its own docs,
@@ -118,22 +127,57 @@ fn unconfigured(key: &str) -> io::Error {
     )
 }
 
-/// The local filesystem, with keys read as paths.
+/// The local filesystem, with keys read as paths under a root directory.
+///
+/// A relative key joins onto the root; an absolute key is itself. The root is
+/// read once, here, so nothing a process does to its working directory later
+/// moves a session's document.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FileStorage;
+#[derive(Debug, Clone)]
+pub struct FileStorage {
+    root: PathBuf,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FileStorage {
+    /// A store whose relative keys resolve against `root`.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// The directory relative keys resolve against.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The path `key` names. `Path::join` returns an absolute argument
+    /// unchanged, which is the whole of the absolute-key rule.
+    fn path(&self, key: &str) -> PathBuf {
+        self.root.join(key)
+    }
+}
+
+/// Rooted at the current directory, so a server nobody configured behaves as
+/// it always did. A working directory that cannot be read leaves `.`, which
+/// resolves the same way.
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for FileStorage {
+    fn default() -> Self {
+        Self::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Storage for FileStorage {
     fn read(&self, key: &str) -> io::Result<Vec<u8>> {
-        std::fs::read(Path::new(key))
+        std::fs::read(self.path(key))
     }
 
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
         // Temp-then-rename: an interrupted save must not truncate the user's
         // only copy. The temp sits beside the target so the rename stays on
         // one filesystem.
-        let path = PathBuf::from(key);
+        let path = self.path(key);
         let tmp = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
             Some(ext) => format!("{ext}.tmp"),
             None => "tmp".to_string(),
@@ -297,20 +341,66 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn file_storage_keeps_the_keys_it_is_asked_to_release() {
-        assert!(!FileStorage.release("models/akari.clm"));
+        assert!(!FileStorage::default().release("models/akari.clm"));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn file_storage_write_is_visible_to_read() {
-        let dir = std::env::temp_dir().join(format!("cl-storage-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("visible");
+        let store = FileStorage::default();
         let key = dir.join("m.clm").display().to_string();
-        FileStorage.write(&key, b"hello").unwrap();
-        assert_eq!(FileStorage.read(&key).unwrap(), b"hello");
+        store.write(&key, b"hello").unwrap();
+        assert_eq!(store.read(&key).unwrap(), b"hello");
         // Overwrite goes through the same temp-then-rename path.
-        FileStorage.write(&key, b"world!").unwrap();
-        assert_eq!(FileStorage.read(&key).unwrap(), b"world!");
+        store.write(&key, b"world!").unwrap();
+        assert_eq!(store.read(&key).unwrap(), b"world!");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The root is what a relative key means; an absolute key means itself.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_relative_key_lands_under_the_root_and_an_absolute_one_does_not() {
+        let root = scratch_dir("root");
+        let elsewhere = scratch_dir("elsewhere");
+        let store = FileStorage::new(&root);
+
+        store.write("m.clm", b"under the root").unwrap();
+        assert_eq!(store.read("m.clm").unwrap(), b"under the root");
+        // Not "wherever the process happens to be": the bytes are in the root.
+        assert_eq!(
+            std::fs::read(root.join("m.clm")).unwrap(),
+            b"under the root"
+        );
+
+        let absolute = elsewhere.join("m.clm").display().to_string();
+        store.write(&absolute, b"its own path").unwrap();
+        assert_eq!(store.read(&absolute).unwrap(), b"its own path");
+        assert_eq!(std::fs::read(&absolute).unwrap(), b"its own path");
+        // The absolute key joined onto nothing, so the root has one file.
+        let mut under_root: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        under_root.sort();
+        assert_eq!(under_root, vec!["m.clm".to_string()]);
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&elsewhere).ok();
+    }
+
+    /// A directory of this run's own, named after nothing but the test.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scratch_dir(what: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let nth = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("cl-storage-{}-{what}-{nth}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        // A failure here surfaces as the first write's error, inside the test.
+        std::fs::create_dir_all(&dir).ok();
+        dir
     }
 }
