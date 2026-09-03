@@ -8,6 +8,14 @@
  * the cleanup may run before it resolves — the resolution is then disposed on
  * arrival rather than stored.
  *
+ * **A failed attach is the host's to show, not the console's.** The editor
+ * wants a WebGPU device, and a browser without one rejects with the sentence
+ * a person has to read; it leaves here through `onError`, the way every other
+ * part in this package reports a failure. Without a handler it is warned to
+ * the console, which is a fallback for a developer and not a product surface:
+ * a host that mounts this and passes nothing shows a person a blank canvas
+ * and no reason for it.
+ *
  * **The canvas size is measured by the observer, never by a pointer handler.**
  * A pointer event that read `clientHeight` would force layout on every move,
  * which is exactly the frame the renderer wanted. The element's origin is read
@@ -69,7 +77,9 @@ export interface ViewportPointerEvent {
 type PointerHandler = (event: ViewportPointerEvent) => void;
 type OwnPointerProps = "onPointerDown" | "onPointerMove" | "onPointerUp" | "onPointerCancel";
 
-export interface ViewportRootProps extends Omit<ComponentProps<"canvas">, OwnPointerProps> {
+// `onError` is also a DOM event on every element; this one wins.
+export interface ViewportRootProps
+  extends Omit<ComponentProps<"canvas">, OwnPointerProps | "onError"> {
   /** What to draw. `undefined` keeps the canvas, drawing nothing, until one arrives. */
   session: Session | undefined;
   /** Controlled camera. With this set, the component moves only when the host says so. */
@@ -93,6 +103,12 @@ export interface ViewportRootProps extends Omit<ComponentProps<"canvas">, OwnPoi
   onPointerMove?: PointerHandler;
   onPointerUp?: PointerHandler;
   onPointerCancel?: PointerHandler;
+  /**
+   * A viewport that could not be attached, with the reason. The one a host
+   * must not drop: a browser with no WebGPU rejects here, and nothing else on
+   * the screen says why the canvas stayed empty.
+   */
+  onError?: (cause: unknown) => void;
 }
 
 /** A pan in flight: the pointer, and where it started from. */
@@ -114,6 +130,7 @@ export function ViewportRoot(props: ViewportRootProps) {
     onPointerMove,
     onPointerUp,
     onPointerCancel,
+    onError,
     style,
     ref,
     ...rest
@@ -138,6 +155,7 @@ export function ViewportRoot(props: ViewportRootProps) {
   const resized = useLatest(onResize);
   const forwarded = useLatest(ref);
   const autoFits = useLatest(defaultCamera === undefined);
+  const failed = useLatest(onError);
 
   /** One place a new camera goes, wherever the gesture that made it started. */
   const commit = useCallback(
@@ -237,7 +255,9 @@ export function ViewportRoot(props: ViewportRootProps) {
             frame = requestFrame(tryFit);
           })
           .catch((cause: unknown) => {
-            console.warn("catchlight: attaching the viewport failed", cause);
+            const report = failed.current;
+            if (report) report(cause);
+            else console.warn("catchlight: attaching the viewport failed", cause);
           });
       }
 
@@ -254,7 +274,7 @@ export function ViewportRoot(props: ViewportRootProps) {
         attached?.dispose();
       };
     },
-    [editor, session, commit, cameraNow, framed, resized, autoFits, forwarded],
+    [editor, session, commit, cameraNow, framed, resized, autoFits, forwarded, failed],
   );
 
   // A camera the host changed. The one a gesture made has already been pushed

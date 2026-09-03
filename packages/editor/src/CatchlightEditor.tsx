@@ -18,7 +18,10 @@
  *
  * **A failure is shown, never swallowed.** The parts report through `onError`
  * callbacks and the editor's promises reject; both land in one line at the
- * bottom, because a browser console is not part of the product.
+ * bottom, because a browser console is not part of the product. The canvas is
+ * on the same wire and has the most to say: the editor is WebGPU or it is an
+ * error message, so a browser without it fails the attach and that sentence is
+ * the only thing on the screen that explains an empty stage.
  *
  * **The camera is held here, not in the canvas.** The viewport frames a model
  * by itself the first time it draws one, but "Fit" is a toolbar button and the
@@ -255,7 +258,7 @@ function Shell(): ReactNode {
             </Section>
           ) : null}
         </nav>
-        <Stage session={session} view={view} />
+        <Stage session={session} view={view} onError={failed} />
         <aside data-catchlight-panel="right">
           {session ? (
             <>
@@ -458,13 +461,20 @@ function Documents({
  * drawn on by nothing and the hint sits over it. The drag is here rather than
  * in `Shell` because it needs the selection, which the provider above the
  * cells supplies.
+ *
+ * `onError` is the shell's, like every other part's: an attach that fails —
+ * a browser with no WebGPU is the one that matters — has nowhere else to be
+ * read, and the stage under it looks exactly like a document that draws
+ * nothing.
  */
 function Stage({
   session,
   view,
+  onError,
 }: {
   session: Session | undefined;
   view: ViewportCamera;
+  onError: (cause: unknown) => void;
 }): ReactNode {
   const { node } = useSelection();
   const drag = useNodeDrag(session, node);
@@ -480,6 +490,7 @@ function Stage({
         onCameraChange={view.onCameraChange}
         onFit={view.onFit}
         onResize={view.onResize}
+        onError={onError}
         {...drag.handlers}
       />
       {session ? null : (

@@ -14,7 +14,13 @@ import "./test/setup.js";
 import { describe, expect, test } from "bun:test";
 import { Editor, InTabBackend, MemoryStorage } from "@catchlight/core";
 import { fakeWasm } from "@catchlight/core/fakes";
-import type { FakeEditor, FakeGpu, FakeReplica, FakeViewport } from "@catchlight/core/fakes";
+import type {
+  FakeEditor,
+  FakeGpu,
+  FakeModule,
+  FakeReplica,
+  FakeViewport,
+} from "@catchlight/core/fakes";
 import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -244,6 +250,26 @@ describe("the assembled editor", () => {
     stop();
   });
 
+  test("a canvas that cannot be attached says so, instead of coming up blank", async () => {
+    const stop = stubObservers();
+    const { editor, module } = await fakeStack();
+    // What a browser with no WebGPU does: the device the first attach asks for
+    // never arrives, and the stage is the one cell with nothing else to say.
+    module.failNextAcquire = "this browser has no WebGPU, which the catchlight editor requires";
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+
+    await run(() => editor.newDocument("akari"));
+    await settle();
+    await settle();
+
+    expect(text(view, "[data-catchlight-problem]")).toContain("no WebGPU");
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
   test("the zoom readout follows the camera, relative to the fit", async () => {
     const stop = stubObservers();
     const { editor } = await fakeStack();
@@ -286,11 +312,12 @@ async function fakeStack(): Promise<{
   wasm: FakeEditor;
   gpu: FakeGpu;
   viewports: FakeViewport[];
+  module: FakeModule;
 }> {
   const module = fakeWasm();
   const wasm = new module.module.CatchlightEditor() as FakeEditor;
   const editor = await Editor.create(module.module, new InTabBackend(wasm, new MemoryStorage()));
-  return { editor, wasm, gpu: module.gpu, viewports: module.viewports };
+  return { editor, wasm, gpu: module.gpu, viewports: module.viewports, module };
 }
 
 /** Catches the name a download went out under; happy-dom would navigate to it otherwise. */
