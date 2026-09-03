@@ -155,7 +155,8 @@ that enforces them, not here. Add new ones there.
   Ids, the editor traces a part's alpha; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the browser
   transport, why loopback is not a permission, and the token before the body;
-  `storage.rs` — a `path` is a storage key, and an upload is not a file on disk
+  `storage.rs` — a `path` is a storage key, a relative one resolves against
+  the store root, and an upload is not a file on disk
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording
   never authors
 - `crates/catchlight-editor/src/mesh_edit.rs` — when the seam tool is reachable,
@@ -210,9 +211,10 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
   — print the render list and write a PNG.
 - `cargo run -p catchlight-editor [-- <model.clm>]` — the editor GUI.
 - `cargo run -p catchlight-editor-cli` — thin client for an editor session.
-- `cargo run -p catchlight-editor-server -- --http 127.0.0.1:9377 --allow-origin http://localhost:5173 [<model.clm>]`
+- `cargo run -p catchlight-editor-server -- [--socket <path>] [--store <dir>] --http 127.0.0.1:9377 --allow-origin http://localhost:5173 [<model.clm>]`
   — the local editor a browser tab and an agent drive together; prints its URL
-  and per-launch token.
+  and per-launch token. `--socket` gives a harness a socket of its own and
+  `--store` names the directory a relative model path resolves against.
 - `bun run --filter catchlight-site dev` — the web editor at
   `http://localhost:5173/`: in-tab by default, `?server=http://127.0.0.1:9377`
   to use the local editor above.

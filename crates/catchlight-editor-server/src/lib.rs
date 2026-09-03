@@ -561,11 +561,11 @@ pub struct Editor {
 
 impl Editor {
     /// An editor over the ambient default store: the filesystem natively,
-    /// [`NoStorage`] on wasm — where the host must supply one with
-    /// [`Editor::with_storage`].
+    /// rooted at the current directory, [`NoStorage`] on wasm — where the host
+    /// must supply one with [`Editor::with_storage`].
     pub fn new() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
-        let storage = Arc::new(FileStorage);
+        let storage = Arc::new(FileStorage::default());
         #[cfg(target_arch = "wasm32")]
         let storage = Arc::new(NoStorage);
         Self::with_storage(storage)
