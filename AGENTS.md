@@ -88,6 +88,7 @@ cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgp
 cargo test -p xtask -- --skip fixtures::
 cargo xtask wasm --debug && bun install --frozen-lockfile && bun run typecheck && bun test && bun run --filter catchlight-site build
 cargo build -p catchlight-editor-server -p catchlight-editor-cli && nix develop .#e2e -c bun run --filter catchlight-site e2e
+cd python && uv run pytest
 cargo test --workspace
 ```
 

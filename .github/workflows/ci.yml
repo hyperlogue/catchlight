@@ -100,5 +100,9 @@ jobs:
       # through the same Mesa ICD the Rust GPU tests use; the flags that get it
       # there are in `apps/site/e2e/drive.ts`.
       - run: nix develop -c cargo build -p catchlight-editor-server -p catchlight-editor-cli
+      # The Python client launches that server binary once per test and saves a
+      # model the editor's own reader opens back, so it runs here, not in a job
+      # of its own.
+      - run: nix develop -c bash -c 'cd python && uv run pytest -q'
       # The one step that wants the browser, and the only one that pays for it.
       - run: nix develop .#e2e -c bun run --filter catchlight-site e2e
