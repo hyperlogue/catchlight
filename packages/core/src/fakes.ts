@@ -940,3 +940,49 @@ export function fakeFetch(routes: Record<string, () => HttpResponse>): {
     },
   };
 }
+
+/**
+ * A replica that behaves like a freed wasm object: every call into it after
+ * `free` throws the way wasm-bindgen does, and says so.
+ *
+ * [`FakeReplica`] keeps answering after `free`, which is what a fake should do
+ * for the suites that only care about the rules. This one is for the one rule
+ * that is about the pointer: a feed still reading a replica the session closed
+ * out from under it is a use-after-free nobody sees until it reaches Rust.
+ */
+export class GuardedReplica extends FakeReplica {
+  /** Every call that reached this replica after it was freed. */
+  usedAfterFree: string[] = [];
+
+  override rev(): number {
+    this.#live("rev");
+    return super.rev();
+  }
+
+  override texturesNeeded(structure: Uint8Array): string {
+    this.#live("texturesNeeded");
+    return super.texturesNeeded(structure);
+  }
+
+  override putTexture(id: string): void {
+    this.#live("putTexture");
+    super.putTexture(id);
+  }
+
+  override applyStructure(structure: Uint8Array, rev: number): boolean {
+    this.#live("applyStructure");
+    return super.applyStructure(structure, rev);
+  }
+
+  override syncFromEditor(editor: WasmEditor, session: number): number {
+    this.#live("syncFromEditor");
+    return super.syncFromEditor(editor, session);
+  }
+
+  /** wasm-bindgen throws a string, so this does too. */
+  #live(call: string): void {
+    if (!this.freed) return;
+    this.usedAfterFree.push(call);
+    throw "null pointer passed to rust";
+  }
+}

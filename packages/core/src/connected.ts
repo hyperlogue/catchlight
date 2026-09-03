@@ -19,7 +19,10 @@
  *
  * **A dead socket fails everything.** Every pending request rejects with
  * `closed` the moment the socket does, rather than hanging until a caller's
- * own timeout — an editor that cannot be reached is not a slow editor.
+ * own timeout — an editor that cannot be reached is not a slow editor. A frame
+ * lost on a socket that stays up is the case this cannot see: a `Session`
+ * bounds its own wait and asks for [`feed`] again, which is why nothing here
+ * tracks which events it should have received.
  *
  * **The server keeps the socket warm, and nothing here does.** It pings an
  * idle connection and hangs up on one that has stayed silent for two of its

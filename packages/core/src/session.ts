@@ -17,6 +17,16 @@
  * ends when the feed completes, never by feeding from `send`: two paths into
  * the replica is how two versions of one revision get applied.
  *
+ * **That wait is bounded.** A `document_changed` frame can be lost on a socket
+ * that stays up, and nothing else would ever bring the replica to the revision
+ * a caller is waiting for. So a wait that reaches [`CATCH_UP_TIMEOUT_MS`]
+ * re-feeds — through [`catchUp`], the same path the missing event would have
+ * taken, so the backend's queue still serializes it and there is still one way
+ * into the replica. The send then resolves when the replica lands, and rejects
+ * when that feed cannot bring it there. In-tab the timer never fires: that
+ * editor emits its events inside the `send` it is answering, so the replica is
+ * already at the revision when `send` looks at it.
+ *
  * **One method per kind of command, and the type picks it.** The split is
  * generated from Rust (`CommandKind` in `catchlight-editor-protocol`), so
  * passing `scratch_deform` to [`send`] does not typecheck. A document command
@@ -96,11 +106,22 @@ export interface ScratchTransform {
   opacity?: number;
 }
 
+/**
+ * How long a `send` waits for the frame that moves the replica before it
+ * stops trusting the socket and re-feeds.
+ *
+ * Long enough that a slow structure fetch settles it rather than the timer,
+ * short enough that a lost frame does not read as a hung editor.
+ */
+export const CATCH_UP_TIMEOUT_MS = 4000;
+
 /** A `send` waiting for the replica to reach the revision its reply named. */
 interface Waiter {
   rev: number;
   resolve(): void;
   reject(error: ProtocolError): void;
+  /** Armed until the waiter settles: what turns a lost frame into a re-feed. */
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /** A document the editor has open, and this tab's replica of it. */
@@ -124,12 +145,20 @@ export class Session {
   #offEvents: Unsubscribe;
   #nextQueryId = 1;
   #closed = false;
+  #freed = false;
+  #timeout: number;
 
-  constructor(backend: Backend, id: SessionId, replica: WasmReplica) {
+  /**
+   * `timeout` is how long a [`send`] waits for the frame that should move the
+   * replica before it re-feeds; it defaults to [`CATCH_UP_TIMEOUT_MS`] and is
+   * a parameter so a test does not have to wait out a real one.
+   */
+  constructor(backend: Backend, id: SessionId, replica: WasmReplica, timeout?: number) {
     this.#backend = backend;
     this.id = id;
     this.replica = replica;
     this.#revision = replica.rev();
+    this.#timeout = timeout ?? CATCH_UP_TIMEOUT_MS;
     this.#offEvents = backend.onEvent((event) => this.#observe(event));
   }
 
@@ -409,6 +438,9 @@ export class Session {
       throw this.#failure;
     } finally {
       this.#feeding -= 1;
+      // A close during the feed left the freeing to whoever was still reading
+      // the replica, which was this.
+      if (this.#closed) this.#free();
     }
     this.#failure = undefined;
     if (this.#closed) return;
@@ -422,6 +454,12 @@ export class Session {
    * The document itself stays open on the backend — `session_close` is a
    * command, and this is not it. Anything still waiting on a revision rejects
    * rather than hanging on a replica that is gone.
+   *
+   * Synchronous, and the replica can outlive it by one feed: a feed that is
+   * mid-fetch holds a pointer into it, and freeing under that hand is the
+   * use-after-free wasm reports as a null pointer passed to Rust. Such a feed
+   * finishes writing into a replica nobody will read and frees it on the way
+   * out. No event can start another one — this unsubscribes first.
    */
   close(): void {
     if (this.#closed) return;
@@ -433,6 +471,13 @@ export class Session {
     this.#listeners.clear();
     this.#redraw.clear();
     this.#errors.clear();
+    this.#free();
+  }
+
+  /** Frees the replica once nothing is reading it. Runs at most once. */
+  #free(): void {
+    if (this.#freed || this.#feeding > 0) return;
+    this.#freed = true;
     this.replica.free();
   }
 
@@ -447,8 +492,11 @@ export class Session {
   #observe(event: Event): void {
     if (event.event !== "document_changed" || event.session !== this.id) return;
     // A feed nobody awaited still has to fail loudly: the commands waiting on
-    // this revision reject, and anyone watching is told.
+    // this revision reject, and anyone watching is told. Unless the session was
+    // closed while it ran — then nobody asked for the document any more, and
+    // the failure is the close.
     void this.catchUp(event.rev).catch((cause: unknown) => {
+      if (this.#closed) return;
       const error = asProtocolError(cause);
       this.#failWaiters(error);
       this.#report(error);
@@ -462,7 +510,8 @@ export class Session {
    * started can have failed before this was ever called — so a replica that is
    * behind with nothing in flight and a failure behind it is not waited for.
    * Waiting there is a promise that never settles, which is the one outcome a
-   * command must not have.
+   * command must not have. Nor is a lost frame: the timer this arms is what
+   * bounds the one wait that is otherwise open-ended.
    */
   #reached(rev: number): Promise<void> {
     if (this.replica.rev() >= rev) return Promise.resolve();
@@ -473,8 +522,52 @@ export class Session {
     }
     if (this.#feeding === 0 && this.#failure) return Promise.reject(this.#failure);
     return new Promise<void>((resolve, reject) => {
-      this.#waiters.push({ rev, resolve, reject });
+      const waiter: Waiter = { rev, resolve, reject, timer: undefined };
+      waiter.timer = setTimeout(() => void this.#refeed(waiter), this.#timeout);
+      this.#waiters.push(waiter);
     });
+  }
+
+  /**
+   * Fetches the document once more for a waiter whose frame never came.
+   *
+   * A feed rather than anything cleverer because a feed is the only way into
+   * the replica; the backend's queue is what keeps it from overlapping one
+   * already running, at the cost of one extra structure fetch when the frame
+   * was merely slow. One attempt: a replica still short of the revision after
+   * a whole feed is an editor answering for state older than the reply it
+   * sent, which no amount of asking again fixes.
+   */
+  async #refeed(waiter: Waiter): Promise<void> {
+    waiter.timer = undefined;
+    if (!this.#waiters.includes(waiter)) return;
+    try {
+      await this.catchUp(waiter.rev);
+    } catch (cause) {
+      if (this.#drop(waiter)) waiter.reject(asProtocolError(cause));
+      return;
+    }
+    // Gone from the list means the feed released it, or a close rejected it.
+    if (!this.#drop(waiter)) return;
+    if (this.replica.rev() >= waiter.rev) {
+      waiter.resolve();
+      return;
+    }
+    waiter.reject(
+      new ProtocolError({
+        code: "feed",
+        message: `session ${this.id} never reached revision ${waiter.rev}`,
+      }),
+    );
+  }
+
+  /** Takes `waiter` off the list, answering whether it was still on it. */
+  #drop(waiter: Waiter): boolean {
+    const at = this.#waiters.indexOf(waiter);
+    if (at < 0) return false;
+    this.#waiters.splice(at, 1);
+    if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+    return true;
   }
 
   /** Takes the revision from the replica and tells whoever is watching. */
@@ -493,13 +586,20 @@ export class Session {
     const rev = this.replica.rev();
     const waiting = this.#waiters;
     this.#waiters = waiting.filter((waiter) => waiter.rev > rev);
-    for (const waiter of waiting) if (waiter.rev <= rev) waiter.resolve();
+    for (const waiter of waiting) {
+      if (waiter.rev > rev) continue;
+      if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
   }
 
   #failWaiters(error: ProtocolError): void {
     const waiting = this.#waiters;
     this.#waiters = [];
-    for (const waiter of waiting) waiter.reject(error);
+    for (const waiter of waiting) {
+      if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
   }
 
   #report(error: ProtocolError): void {
