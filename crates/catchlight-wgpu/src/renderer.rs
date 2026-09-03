@@ -1937,6 +1937,12 @@ impl WgpuRenderer {
         queue: wgpu::Queue,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
+        // `Arc`, not `Rc`: `Pipelines` holds wgpu resources that lose Send and
+        // Sync only on wasm32 with wgpu's `webgl` feature. The same type is a
+        // render-world resource in catchlight-bevy, where Send + Sync is
+        // required, so the atomic refcount is what makes sharing legal at all
+        // and costs nothing beside compiling ~18 pipelines.
+        #[allow(clippy::arc_with_non_send_sync)]
         let shared = std::sync::Arc::new(Pipelines::new(&device, surface_format));
         Self::from_pipelines(device, queue, shared)
     }
@@ -1953,6 +1959,8 @@ impl WgpuRenderer {
         queue: wgpu::Queue,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
+        // `Arc` for the reason given in `new` above.
+        #[allow(clippy::arc_with_non_send_sync)]
         let shared =
             std::sync::Arc::new(Pipelines::new_autodetect(adapter, &device, surface_format));
         Self::from_pipelines(device, queue, shared)
