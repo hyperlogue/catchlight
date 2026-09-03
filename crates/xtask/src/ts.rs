@@ -38,7 +38,7 @@
 //!   `#[serde(flatten)]` inlines, so its declaration would restate the whole
 //!   `Command` union a second time. The envelope is `{ id: number } & Command`
 //!   in TypeScript, and building it is the transport's job — see
-//!   `packages/core/src/transport.ts`.
+//!   `packages/core/src/backend.ts`.
 //!
 //! Building the protocol crate with `ts` on prints one `ts-rs` warning:
 //! `SessionId`'s `#[serde(transparent)]` is an attribute it does not parse. It

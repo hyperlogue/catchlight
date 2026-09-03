@@ -413,7 +413,8 @@ fn texture(state: &ServerState, id: &str, tex: &str) -> Response {
                 .body(data)
         }
         Ok(None) => Response::text(404, "Not Found", "no such texture"),
-        Err(_) => Response::text(404, "Not Found", "no such session"),
+        Err(EditorError::NoSession(_)) => Response::text(404, "Not Found", "no such session"),
+        Err(err) => Response::text(500, "Internal Server Error", &err.to_string()),
     }
 }
 
