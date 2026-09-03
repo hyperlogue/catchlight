@@ -76,8 +76,7 @@ files.
 # Build, test, lint
 
 CI (`.github/workflows/ci.yml`) runs all but `cargo test` through
-`nix develop -c` — the browser smoke test through `nix develop .#e2e -c`, the
-same shell plus Chromium — so the local commands are the CI commands; the Rust
+`nix develop -c`, so the local commands are the CI commands; the Rust
 test suite is local-only for now:
 
 ```

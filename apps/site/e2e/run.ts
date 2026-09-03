@@ -1,9 +1,8 @@
 /**
  * The web editor's smoke test: serve what Pages would ship, and drive it.
  *
- * Run it from the browser shell: `nix develop .#e2e -c bun run --filter
- * catchlight-site e2e`. That shell is the default one plus a Chromium, kept
- * apart so no other job pays for the closure.
+ * Run it from the dev shell: `bun run --filter catchlight-site e2e`. The
+ * Chromium it drives is in that shell.
  *
  * ```text
  * bun run --filter catchlight-site e2e
@@ -74,7 +73,7 @@ const shots = at("target", "e2e");
 
 const chromium = process.env.CHROMIUM ?? Bun.which("chromium");
 if (!chromium) {
-  fail("no chromium: run this inside `nix develop .#e2e`, or set CHROMIUM=<exe>");
+  fail("no chromium: run this inside `nix develop`, or set CHROMIUM=<exe>");
 }
 
 await mkdir(shots, { recursive: true });

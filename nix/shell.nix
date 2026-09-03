@@ -1,12 +1,6 @@
 {
   pkgs,
   rustToolchain,
-  # The browser the web editor's smoke test drives. Off by default: chromium
-  # is by far the largest closure this shell can pull, and only one CI job and
-  # one local command ever run the test. `devShells.e2e` in `flake.nix` is this
-  # same shell with it on, and it inherits mesa below — which is where the
-  # Vulkan ICD headless Chromium needs comes from.
-  withBrowser ? false,
 }: let
   inherit (pkgs) stdenv lib;
 
@@ -32,10 +26,7 @@
   ]);
 in
   mkShell {
-    name =
-      if withBrowser
-      then "catchlight-e2e"
-      else "catchlight-dev";
+    name = "catchlight-dev";
 
     nativeBuildInputs = [
       rustToolchain
@@ -72,11 +63,12 @@ in
         # no VK_ICD_FILENAMES needed. The browser test needs it too: headless
         # Chromium reaches a WebGPU device through this same ICD.
         pkgs.mesa
-      ]
-      ++ lib.optionals (withBrowser && stdenv.hostPlatform.isLinux) [
+
         # The browser `bun run --filter catchlight-site e2e` drives. Playwright's
         # own download is a prebuilt binary that does not run here, so the test
         # takes the executable as an argument and this is what it finds on PATH.
+        # The largest closure in the shell, and in the one shell on purpose: a
+        # second shell only the smoke test entered was one more thing to know.
         pkgs.chromium
       ];
 

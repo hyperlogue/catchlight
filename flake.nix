@@ -38,20 +38,8 @@
           fenix.packages.${system}.targets.wasm32-unknown-unknown.stable.rust-std
         ];
       in {
-        devShells = {
-          default = import ./nix/shell.nix {
-            inherit pkgs rustToolchain;
-          };
-
-          # The same shell plus the browser the web editor's smoke test drives.
-          # Its own output because chromium's closure is the largest thing any
-          # of this pulls, and every CI job but one would download it for
-          # nothing: `nix develop .#e2e -c bun run --filter catchlight-site e2e`
-          # is the only command that wants it.
-          e2e = import ./nix/shell.nix {
-            inherit pkgs rustToolchain;
-            withBrowser = true;
-          };
+        devShells.default = import ./nix/shell.nix {
+          inherit pkgs rustToolchain;
         };
 
         formatter = pkgs.alejandra;
