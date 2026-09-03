@@ -107,6 +107,18 @@ impl Storage for StagedStorage {
         lock(&self.0).insert(key.to_string(), bytes.to_vec());
         Ok(())
     }
+
+    /// Nothing is released here, and the `false` is load-bearing.
+    ///
+    /// A staged key in the tab is not a transient upload: it is a real key in
+    /// the store above, staged from it, and a session opened from one is saved
+    /// back under it — so `false` is what keeps that `file` on the session.
+    /// The TypeScript layer drains the staging map itself once its command's
+    /// reply is good (see `consumesKey` in `packages/core/src/in-tab.ts`),
+    /// which is where the knowledge of which keys are the store's lives.
+    fn release(&self, _key: &str) -> bool {
+        false
+    }
 }
 
 /// A poisoned staging map means a panic already happened somewhere else; the

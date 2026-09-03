@@ -47,7 +47,9 @@
 //! - **A `path` is a storage key, not a filesystem path.** See [`storage`]:
 //!   every command that names bytes resolves its key through a [`Storage`],
 //!   so the same command set serves the filesystem, the browser and a blob
-//!   store. [`Command::Preview`] is the one command that is still native — it
+//!   store, and a command that read a key *into* a document releases it — so a
+//!   session opened from a transient upload holds no `file` to save back to.
+//!   [`Command::Preview`] is the one command that is still native — it
 //!   needs the headless renderer, not just bytes.
 //!
 //! - **A model-only read has one implementation.** See [`query`]: the reads
@@ -962,7 +964,11 @@ impl Editor {
                 let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
                 let id = self.alloc_id();
                 let title = key_stem(&path);
-                self.insert_session(id, Session::new(id, model, title, Some(path)));
+                // The model owns its own copy now, so the store may drop a
+                // staged upload — and a key that was one is not a file this
+                // session can save back to. See [`storage`].
+                let file = (!self.storage.release(&path)).then_some(path);
+                self.insert_session(id, Session::new(id, model, title, file));
                 Ok(ResponseBody::Session { session: id })
             }
             Command::SessionImport { manifest_path } => {
@@ -979,6 +985,12 @@ impl Editor {
                     );
                 }
                 let model = Model::from_manifest(&manifest, &data)?;
+                // Everything the import read is in the model; release what was
+                // staged for it. An import already has no `file`.
+                self.storage.release(&manifest_path);
+                for key in &keys {
+                    self.storage.release(key);
+                }
                 let id = self.alloc_id();
                 let title = if manifest.name.is_empty() {
                     key_stem(&manifest_path)
@@ -1337,21 +1349,26 @@ impl Editor {
                 // Read outside `edit_session`: the store is not the session's
                 // to borrow, and a failed read must not open an edit.
                 let bytes = self.storage.read(&path)?;
-                self.edit_session(session, move |s| {
+                let encoding = encoding_from_path(&path);
+                let added = self.edit_session(session, move |s| {
                     let bytes = bytes;
                     image_dims(&bytes)?; // validate it decodes
                     let (texture, dropped) = s.add_texture(
                         &node,
                         id,
                         ModelTexture {
-                            encoding: encoding_from_path(&path),
+                            encoding,
                             alpha: TextureAlpha::Straight,
                             data: bytes.into(),
                         },
                     )?;
                     s.touch();
                     Ok(ResponseBody::Texture { texture, dropped })
-                })
+                })?;
+                // Only now: a command that failed keeps its bytes staged so
+                // the caller may retry without uploading them again.
+                self.storage.release(&path);
+                Ok(added)
             }
             Command::ParamAdd {
                 session,
