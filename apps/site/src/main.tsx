@@ -35,7 +35,7 @@ import { CatchlightEditor } from "@catchlight/editor";
 // Only the probe door below uses this, and only when the URL asks for it.
 import { fitCamera } from "@catchlight/react";
 import "@catchlight/editor/theme.css";
-// The generated module initializes itself on import: `cargo xtask wasm` emits
+// The generated module initializes itself on import: `cargo xtask build-wasm` emits
 // wasm-bindgen's bundler target, whose `.wasm` is an ESM import rather than a
 // fetch this page would have to sequence.
 import * as catchlight from "@catchlight/wasm";

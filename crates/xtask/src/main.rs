@@ -5,7 +5,7 @@
 //! Commands:
 //!   cargo xtask import <model.inx|.inp> [-o <model.clm>]
 //!   cargo xtask gen-fixture <name>
-//!   cargo xtask wasm [--debug]
+//!   cargo xtask build-wasm [--debug]
 //!   cargo xtask generate [typescript|python]
 
 mod fixtures;
@@ -20,7 +20,7 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("import") => import(&args[1..]),
         Some("gen-fixture") => gen_fixture(&args[1..]),
-        Some("wasm") => wasm::run(&args[1..]),
+        Some("build-wasm") => wasm::run(&args[1..]),
         Some("generate") => generate::run(&args[1..]),
         _ => {
             print_usage();
@@ -42,7 +42,7 @@ fn print_usage() {
         "      names: {}",
         fixtures::names().collect::<Vec<_>>().join(", ")
     );
-    eprintln!("  wasm [--debug]");
+    eprintln!("  build-wasm [--debug]");
     eprintln!("      Build @catchlight/wasm into packages/wasm/ (generated, not committed).");
     eprintln!("  generate [typescript|python]");
     eprintln!("      Write the editor protocol out in the languages that speak it:");
