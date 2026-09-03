@@ -209,8 +209,8 @@ export type Command =
      * order. A `null` entry is an output nothing is bound to, so
      * `[null, "len"]` is a driver whose length drives a param and whose
      * angle drives none — a shorter list leaves the outputs past its end
-     * unbound the same way. Absent = unchanged; see `clear_target_params`
-     * to detach both.
+     * unbound the same way, and a third entry is refused. Absent =
+     * unchanged; see `clear_target_params` to detach both.
      */
     target_params: Array<ParamId | null> | null,
     /**
