@@ -394,6 +394,8 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
             assert_eq!(node.kind, "part");
             assert_eq!(node.parent.as_ref(), Some(&f.group));
             assert_eq!(node.name, "Body");
+            assert_eq!(node.vertex_count, Some(4), "the fixture's quad");
+            assert_eq!(node.triangle_count, Some(2));
         }
         other => panic!("expected NodeInfo, got {other:?}"),
     }
@@ -480,6 +482,8 @@ fn node_info_reads_back_what_a_node_set_wrote() {
     assert_eq!(group.tint, None);
     assert_eq!(group.texture, None);
     assert_eq!(group.mask_threshold, None);
+    assert_eq!(group.vertex_count, None, "a group holds no mesh");
+    assert_eq!(group.triangle_count, None);
 }
 
 /// The kind-specific halves the other kinds carry, so each one is read from
@@ -530,6 +534,7 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
             assert_eq!(node.propagate_meshgroup, Some(true));
             assert_eq!(node.opacity, Some(1.0), "a composite is drawn");
             assert_eq!(node.texture, None, "and never carries one");
+            assert_eq!(node.vertex_count, None, "and holds no mesh");
             assert_eq!(node.mg_dynamic, None);
         }
         other => panic!("expected NodeInfo, got {other:?}"),
@@ -542,13 +547,62 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
             assert_eq!(node.kind, "mesh_group");
             assert_eq!(node.mg_dynamic, Some(true));
             assert_eq!(node.mg_translate_children, Some(true));
-            // A mesh group is never drawn, so it has no colour to show.
+            // A mesh group is never drawn, so it has no colour to show — but
+            // it does hold a mesh, so it reports an empty one rather than
+            // none at all.
             assert_eq!(node.opacity, None);
             assert_eq!(node.blend_mode, None);
             assert_eq!(node.propagate_meshgroup, None);
+            assert_eq!(node.vertex_count, Some(0));
+            assert_eq!(node.triangle_count, Some(0));
         }
         other => panic!("expected NodeInfo, got {other:?}"),
     }
+}
+
+/// What the "textured but its mesh has no triangles" lint stands in for. A
+/// client asking whether a part has been meshed reads the counts off the node
+/// rather than parsing a warning written for a person, so an unmeshed part has
+/// to answer that read — as an empty mesh, which is what it has.
+#[test]
+fn node_info_counts_the_mesh_a_part_holds() {
+    let f = Fixture::build();
+    let session = f.session;
+    let counts = |node: &NodeId| match ok(f.agree(Command::NodeInfo {
+        session,
+        node: node.clone(),
+    })) {
+        ResponseBody::NodeInfo { node } => (node.vertex_count, node.triangle_count),
+        other => panic!("expected NodeInfo, got {other:?}"),
+    };
+
+    let bare = f.node(Command::NodeAdd {
+        session,
+        parent: f.group.clone(),
+        kind: NodeKindArg::Part,
+        name: Some("Bare".into()),
+        node: None,
+    });
+    assert_eq!(counts(&bare), (Some(0), Some(0)));
+
+    f.step(Command::MeshSet {
+        session,
+        node: bare.clone(),
+        verts: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+        uvs: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+        indices: vec![0, 1, 2],
+        origin: [0.0, 0.0],
+    });
+    assert_eq!(counts(&bare), (Some(3), Some(1)));
+
+    // And the counts follow the mesh, so a re-mesh is visible without a
+    // second read of anything else.
+    f.step(Command::MeshCopy {
+        session,
+        from: f.body_part.clone(),
+        to: bare.clone(),
+    });
+    assert_eq!(counts(&bare), (Some(4), Some(2)), "the fixture's quad");
 }
 
 /// A refusal has to match too: a client that fell back to the editor after a

@@ -147,6 +147,15 @@ impl ClmMesh {
     pub fn vertex_count(&self) -> usize {
         self.verts.len() / 2
     }
+
+    /// How many triangles the mesh has — `indices` is a flat triangle list, so
+    /// a trailing partial triangle counts for nothing.
+    pub fn triangle_count(&self) -> usize {
+        match &self.indices {
+            ClmIndices::U16(v) => v.len() / 3,
+            ClmIndices::U32(v) => v.len() / 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

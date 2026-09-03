@@ -561,7 +561,9 @@ export class FakeReplica implements WasmReplica {
  * default: a panel decides what to draw from the kind carrying a field or not,
  * so the fake omits the same ones the model does — colour on anything but a
  * part or a composite, `mg_*` off a mesh group, and `texture` off a part that
- * draws none.
+ * draws none. A fake holds no mesh, so the two kinds that carry one report an
+ * empty mesh rather than no mesh at all, which is what an unmeshed part in a
+ * real model reports.
  */
 function nodeInfo(
   doc: FakeDoc,
@@ -593,6 +595,9 @@ function nodeInfo(
         : {}),
       ...(tree.kind === "part" && doc.albedo[tree.id] !== undefined
         ? { texture: doc.albedo[tree.id] }
+        : {}),
+      ...(tree.kind === "part" || tree.kind === "mesh_group"
+        ? { vertex_count: 0, triangle_count: 0 }
         : {}),
       ...(tree.kind === "composite" ? { propagate_meshgroup: false } : {}),
       ...(tree.kind === "mesh_group"

@@ -117,9 +117,9 @@ def test_the_lint_that_stands_for_a_mesh_fires_on_a_part_without_one(
 ) -> None:
     """What the empty warning list above is worth.
 
-    The protocol reports no vertex count, so "this part has a mesh" is read off
-    `check`. That only means something if the same read fails for a part the
-    builder did not mesh — which is what this asserts.
+    `check` is the editor's prose about a half-built part, and a caller that
+    reads it has to see it fire for a part the builder did not mesh. The count
+    behind the lint is asserted separately, on the node itself.
     """
     session = client.new()
     body = client.send(
@@ -132,6 +132,32 @@ def test_the_lint_that_stands_for_a_mesh_fires_on_a_part_without_one(
 
     Builder(client, session).mesh(node)
     assert _warnings(client, session) == []
+
+
+def test_a_part_reports_the_mesh_it_was_built_with(
+    client: Client, tmp_path: Path
+) -> None:
+    """The count behind the lint, read off the node rather than off `check`."""
+    built = Builder.new(client)
+    part = built.part("Body", write_png(tmp_path / "body.png"))
+    verts, tris = built.mesh_size(part)
+    assert verts > 0 and tris > 0
+
+    # A part nobody meshed carries an empty mesh, which is the state the
+    # "no triangles" lint is about — and the same read says so.
+    body = client.send(
+        NodeAdd(
+            session=built.session, parent="root", kind=NodeKindArg.PART, name="Bare"
+        )
+    )
+    assert isinstance(body, ResponseBodyNode)
+    assert built.mesh_size(body.node) == (0, 0)
+
+    # A group holds no mesh at all, which is not a count of zero.
+    group = built.group("Head")
+    with pytest.raises(BuilderError, match="no mesh"):
+        built.mesh_size(group)
+    assert built.info(group).vertex_count is None
 
 
 def test_a_binding_with_no_keys_is_still_a_binding(client: Client, tmp_path: Path) -> None:

@@ -282,6 +282,10 @@ describe("reads", () => {
     expect(info?.name).toBe("Body");
     expect(info?.parent).toBe("root");
     expect(info?.z_order).toBe(3);
+    // A part carries a mesh, so it reports its size — an empty one here,
+    // which is what an unmeshed part reports in a real model too.
+    expect(info?.vertex_count).toBe(0);
+    expect(info?.triangle_count).toBe(0);
 
     // A selection outlives the node it names, so this is a panel with nothing
     // to draw rather than a failed read.

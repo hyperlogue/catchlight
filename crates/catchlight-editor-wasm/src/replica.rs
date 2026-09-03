@@ -1016,6 +1016,45 @@ mod tests {
         assert_eq!(replica.sync_from_editor(editor.editor(), session), 1);
     }
 
+    /// How big a node's mesh is reaches the tab without a round trip: the
+    /// counts ride `node_info`, which the replica answers from its own model.
+    #[test]
+    fn a_replica_answers_the_mesh_counts_a_node_carries() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let part = add_node(&editor, session, ROOT, "part", "face");
+        let meshed = call(
+            &editor,
+            json!({"id": 4, "cmd": "mesh_set", "session": session.0, "node": part,
+                   "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+                   "uvs": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+                   "indices": [0, 1, 2], "origin": [0.0, 0.0]}),
+        );
+        assert_eq!(meshed["reply"], "ok", "reply was {meshed}");
+
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        let info: Value = serde_json::from_str(&replica.query(
+            &json!({"id": 9, "cmd": "node_info", "session": session.0, "node": part}).to_string(),
+        ))
+        .unwrap();
+        assert_eq!(info["reply"], "ok", "reply was {info}");
+        assert_eq!(info["body"]["node"]["vertex_count"], 3, "info was {info}");
+        assert_eq!(info["body"]["node"]["triangle_count"], 1, "info was {info}");
+
+        // A group could not hold a mesh, so it reports no count at all.
+        let group = add_node(&editor, session, ROOT, "group", "head");
+        replica.sync_from_editor(editor.editor(), session);
+        let info: Value = serde_json::from_str(&replica.query(
+            &json!({"id": 10, "cmd": "node_info", "session": session.0, "node": group}).to_string(),
+        ))
+        .unwrap();
+        assert!(
+            info["body"]["node"]["vertex_count"].is_null(),
+            "info was {info}"
+        );
+    }
+
     #[test]
     fn a_document_command_is_refused_by_a_replica() {
         let replica = ReplicaState::new();
