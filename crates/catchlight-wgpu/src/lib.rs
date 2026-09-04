@@ -1,3 +1,57 @@
+//! The wgpu rendering backend: it turns a posed [`catchlight_core::Puppet`]
+//! into pixels.
+//!
+//! Three pieces, in the order a frame uses them. A [`RenderCache`] holds one
+//! model's GPU state, uploaded once by `prepare` and kept in step with
+//! `refresh`. [`collect`] flattens one posed puppet into a [`RenderList`],
+//! which names cache slots rather than Ids. [`WgpuRenderer`] draws those
+//! lists, and [`RenderContext`] is the same thing with a target and a
+//! readback attached for anything rendering without a window.
+//!
+//! **One cache per model, serving every puppet of it.** A cache's slots name
+//! GPU state inside the renderer that prepared it, so a renderer holds one
+//! cache and no more; two models are two `(renderer, cache)` pairs over
+//! shared pipelines. `crates/catchlight-wgpu/src/render_cache.rs` states the
+//! rule and what `prepare` owns against `refresh`.
+//!
+//! # One puppet, headless
+//!
+//! ```no_run
+//! use catchlight_core::{load_model, ModelFormat, Pose, Puppet};
+//! use catchlight_wgpu::{collect, Framing, PrepareOptions, RenderCache, RenderContext};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let bytes = std::fs::read("model.clm")?;
+//! let model = load_model(&bytes, ModelFormat::Clm)?;
+//!
+//! // The device and the target. Both are expensive; build them once and
+//! // keep them for as long as you are drawing this model.
+//! let mut ctx = pollster::block_on(RenderContext::new(960, 1600))?;
+//! let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())?;
+//! let mut puppet = Puppet::new(&model);
+//!
+//! // Per frame: pose, evaluate, push what moved, flatten, draw.
+//! let pose = Pose::new();
+//! puppet.apply_pose(&pose);
+//! puppet.tick(&model, 1.0 / 60.0);
+//! cache.refresh(&mut ctx.renderer, &model, &puppet)?;
+//! let list = collect(&cache, &puppet);
+//! let pixels = ctx.render_rgba(&list, Framing::centered(5000.0), 960, 1600, None)?;
+//! # let _ = pixels;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `render_rgba` resizes when the size changes and reads the target back; a
+//! caller drawing to a window uses `WgpuRenderer::render_lists_ext` against
+//! its own surface view instead and never reads back. Several puppets of the
+//! one model share the cache: tick each, `refresh` each, `collect` each, and
+//! hand the lists to `RenderContext::render_many` for one submit.
+//!
+//! For the shape a host engine wants — who owns the model, the puppet and the
+//! cache across frames, and how they hang off entities — see
+//! `crates/catchlight-bevy`.
+
 pub mod collect;
 pub mod headless;
 pub mod render_cache;
