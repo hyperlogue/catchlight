@@ -14,7 +14,7 @@ mod common;
 
 use catchlight_clm::diff::diff;
 use catchlight_clm::{fragment, Error};
-use catchlight_core::id::{NodeId, SeamId, TexId};
+use catchlight_core::id::{NodeId, SlotId, TexId};
 use catchlight_core::{InstallError, Model, Required, Requirement};
 
 use common::{decode, read, tmp};
@@ -309,11 +309,11 @@ fn set_part_albedo(clm: &mut catchlight_core::formats::clm::ClmFile, node: &str,
     }
 }
 
-/// A weld that reaches into a base part needs the seam, not just the node —
-/// the one requirement that carries two Ids.
+/// A weld that reaches into a base part needs each slot it pairs there, not
+/// just the node — the one requirement kind that carries two Ids.
 #[test]
-fn a_weld_reaching_into_the_base_requires_the_seam() {
-    let dir = tmp("addons-requirements-seam");
+fn a_weld_reaching_into_the_base_requires_its_slots() {
+    let dir = tmp("addons-requirements-slot");
     let addon = dir.join("lower.clm");
     fragment::extract(&common::fixture("welded_seam"), &["node-2".into()], &addon).unwrap();
 
@@ -327,10 +327,17 @@ fn a_weld_reaching_into_the_base_requires_the_seam() {
                 owner: "node-2".to_string(),
             },
             Requirement {
-                id: Required::Seam(
-                    NodeId::new("node-1").unwrap(),
-                    SeamId::new("weld-0-a").unwrap(),
-                ),
+                id: Required::Slot(NodeId::new("node-1").unwrap(), SlotId::new("s0").unwrap(),),
+                field: "weld end",
+                owner: "node-2".to_string(),
+            },
+            Requirement {
+                id: Required::Slot(NodeId::new("node-1").unwrap(), SlotId::new("s1").unwrap(),),
+                field: "weld end",
+                owner: "node-2".to_string(),
+            },
+            Requirement {
+                id: Required::Slot(NodeId::new("node-1").unwrap(), SlotId::new("s2").unwrap(),),
                 field: "weld end",
                 owner: "node-2".to_string(),
             },
@@ -338,8 +345,45 @@ fn a_weld_reaching_into_the_base_requires_the_seam() {
     );
     assert_eq!(
         fragment::render_line(&requirements[1]),
-        "seam\tnode-1\tweld-0-a\tweld end\tnode-2"
+        "slot\tnode-1\ts0\tweld end\tnode-2"
     );
+}
+
+/// A weld whose pairs are all gone still reaches the base part, so the file
+/// scan names the part — and agrees with the model's own scan.
+#[test]
+fn a_weld_with_no_pairs_still_requires_the_part() {
+    let dir = tmp("addons-requirements-empty-weld");
+    let extracted = dir.join("lower.clm");
+    fragment::extract(
+        &common::fixture("welded_seam"),
+        &["node-2".into()],
+        &extracted,
+    )
+    .unwrap();
+
+    let mut clm = decode(&extracted);
+    for weld in &mut clm.doc.welds {
+        weld.pairs.clear();
+    }
+    let addon = common::write_clm(&dir, "lower-no-pairs.clm", &clm);
+
+    let requirements = fragment::requirements(&addon).unwrap();
+    assert!(
+        requirements.contains(&Requirement {
+            id: Required::Part(NodeId::new("node-1").unwrap()),
+            field: "weld end",
+            owner: "node-2".to_string(),
+        }),
+        "{requirements:?}"
+    );
+    let by_model: Vec<Requirement> = Model::from_clm_bytes_fragment(&read(&addon))
+        .unwrap()
+        .requirements()
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(requirements, by_model);
 }
 
 #[test]
@@ -440,7 +484,7 @@ fn the_binary_extracts_merges_and_lists_requirements() {
     let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(parsed[0]["kind"], "node");
     assert_eq!(parsed[0]["id"], "root");
-    assert_eq!(parsed[0]["seam"], serde_json::Value::Null);
+    assert_eq!(parsed[0]["slot"], serde_json::Value::Null);
     assert_eq!(parsed[1]["kind"], "part");
     assert_eq!(parsed[1]["field"], "mask source");
 

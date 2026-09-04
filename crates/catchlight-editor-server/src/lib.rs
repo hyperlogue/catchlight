@@ -78,7 +78,7 @@ mod transport;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::{bind_http, serve_http, HttpOptions, HttpServer};
-pub use query::{replica_query, replica_reply, seam_info};
+pub use query::{replica_query, replica_reply, slot_info, weld_info};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, StagingStorage, Storage};
@@ -97,7 +97,7 @@ use catchlight_core::Vec2;
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, Model, ModelComposite, ModelError,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
-    ModelWeld, Puppet, DEFAULT_SLOT_WEIGHT,
+    ModelWeld, Puppet,
 };
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
@@ -135,8 +135,8 @@ pub enum EditorError {
     /// a replica handed a command only the editor can apply.
     #[error("{0}")]
     BadRequest(String),
-    /// The two seams named are not welded to each other.
-    #[error("no weld pairs those two seams")]
+    /// The two parts named are not welded to each other.
+    #[error("no weld pairs those two parts")]
     UnknownWeld,
     #[error("nothing to undo")]
     NothingToUndo,
@@ -202,12 +202,14 @@ impl EditorError {
                 ModelError::UnknownNode => ErrorCode::NoNode,
                 ModelError::UnknownParam => ErrorCode::NoParam,
                 ModelError::UnknownTexture => ErrorCode::NoTexture,
-                ModelError::UnknownSeam => ErrorCode::UnknownSeam,
                 ModelError::UnknownSlot => ErrorCode::UnknownSlot,
                 ModelError::DuplicateId(_) => ErrorCode::DuplicateId,
-                ModelError::DuplicateSeam(_) => ErrorCode::DuplicateSeam,
                 ModelError::DuplicateSlot(_) => ErrorCode::DuplicateSlot,
-                ModelError::WeldSlotMismatch => ErrorCode::WeldSlotMismatch,
+                ModelError::WeldUnknownSlot(_) => ErrorCode::WeldUnknownSlot,
+                ModelError::WeldSlotPairedTwice(_) => ErrorCode::WeldSlotPairedTwice,
+                ModelError::WeldSelfPaired | ModelError::WeldEndNotAPart => ErrorCode::BadWeldEnd,
+                ModelError::DuplicateWeld => ErrorCode::DuplicateWeld,
+                ModelError::WeldWeightOutOfRange => ErrorCode::WeldWeightOutOfRange,
                 ModelError::UnknownWeld => ErrorCode::UnknownWeld,
                 ModelError::Fragment => ErrorCode::Fragment,
                 _ => ErrorCode::Edit,
@@ -471,14 +473,9 @@ impl Session {
         Ok((id, dropped))
     }
 
-    fn seam_add_generated(&mut self, node: &NodeId) -> Result<SeamId, EditorError> {
+    fn slot_add_generated(&mut self, node: &NodeId) -> Result<SlotId, EditorError> {
         let Self { model, hex, .. } = self;
-        Ok(model.seam_add_generated(node, hex)?)
-    }
-
-    fn slot_add_generated(&mut self, node: &NodeId, seam: &SeamId) -> Result<SlotId, EditorError> {
-        let Self { model, hex, .. } = self;
-        Ok(model.slot_add_generated(node, seam, hex)?)
+        Ok(model.slot_add_generated(node, hex)?)
     }
 
     fn duplicate_subtree(&mut self, node: &NodeId) -> Result<NodeId, EditorError> {
@@ -1100,7 +1097,7 @@ impl Editor {
             | Command::TextureList { session }
             | Command::ParamList { session }
             | Command::BindingList { session, .. }
-            | Command::Seams { session, .. }
+            | Command::Slots { session, .. }
             | Command::Welds { session }
             | Command::UnfilledSlots { session } => {
                 self.with_model(session, |model| query::replica_query(model, &cmd))?
@@ -1199,7 +1196,7 @@ impl Editor {
                     Rename::Node { from, to } => s.model.rename_node_id(&from, to)?,
                     Rename::Param { from, to } => s.model.rename_param_id(&from, to)?,
                     Rename::Texture { from, to } => s.model.rename_tex_id(&from, to)?,
-                    Rename::Seam { node, from, to } => s.model.rename_seam(&node, &from, to)?,
+                    Rename::Slot { node, from, to } => s.model.rename_slot(&node, &from, to)?,
                 }
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -1613,78 +1610,48 @@ impl Editor {
                 s.touch();
                 Ok(emptied_reply(to, emptied))
             }),
-            Command::SeamAdd {
-                session,
-                node,
-                seam,
-            } => self.edit_session(session, |s| {
-                let seam = match seam {
-                    Some(seam) => {
-                        s.model.seam_add(&node, seam.clone())?;
-                        seam
-                    }
-                    None => s.seam_add_generated(&node)?,
-                };
-                s.touch();
-                Ok(ResponseBody::Seam {
-                    seam: SeamAddr { node, seam },
-                })
-            }),
-            Command::SeamDelete {
-                session,
-                node,
-                seam,
-            } => self.edit_session(session, |s| {
-                s.model.seam_delete(&node, &seam)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
             Command::SlotAdd {
                 session,
                 node,
-                seam,
                 slot,
             } => self.edit_session(session, |s| {
                 let slot = match slot {
                     Some(slot) => {
-                        s.model.slot_add(&node, &seam, slot.clone())?;
+                        s.model.slot_add(&node, slot.clone())?;
                         slot
                     }
-                    None => s.slot_add_generated(&node, &seam)?,
+                    None => s.slot_add_generated(&node)?,
                 };
                 s.touch();
                 Ok(ResponseBody::Slot {
-                    slot: SlotAddr { node, seam, slot },
+                    slot: SlotAddr { node, slot },
                 })
             }),
             Command::SlotFill {
                 session,
                 node,
-                seam,
                 slot,
                 vertex,
             } => self.edit_session(session, |s| {
-                s.model.slot_fill(&node, &seam, &slot, vertex)?;
+                s.model.slot_fill(&node, &slot, vertex)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::SlotClear {
                 session,
                 node,
-                seam,
                 slot,
             } => self.edit_session(session, |s| {
-                s.model.slot_clear(&node, &seam, &slot)?;
+                s.model.slot_clear(&node, &slot)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::SlotDelete {
                 session,
                 node,
-                seam,
                 slot,
             } => self.edit_session(session, |s| {
-                s.model.slot_delete(&node, &seam, &slot)?;
+                s.model.slot_delete(&node, &slot)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1692,14 +1659,14 @@ impl Editor {
                 session,
                 a,
                 b,
-                weights,
+                pairs,
             } => self.edit_session(session, |s| {
-                let weld = build_weld(&s.model, a, b, weights)?;
+                let weld = build_weld(a, b, pairs);
                 let mut welds = s.model.welds().to_vec();
-                // One weld per pair of seams: setting a pair that is already
+                // One weld per pair of parts: setting a pair that is already
                 // welded replaces it rather than stacking a second weld the
-                // solver would fight over.
-                welds.retain(|w| !pairs_the_same_seams(w, &weld));
+                // model would refuse.
+                welds.retain(|w| !pairs_the_same_parts(w, &weld));
                 welds.push(weld);
                 s.model.set_welds(welds)?;
                 s.touch();
@@ -1712,19 +1679,14 @@ impl Editor {
                 slot,
                 weight,
             } => self.edit_session(session, |s| {
-                s.model.set_weld_slot_weight(
-                    (&a.node, &a.seam),
-                    (&b.node, &b.seam),
-                    &slot,
-                    weight,
-                )?;
+                s.model.set_weld_slot_weight(&a, &b, &slot, weight)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::WeldDelete { session, a, b } => self.edit_session(session, |s| {
-                // A seam delete already unmakes a weld, by taking one of its
-                // ends with it. This is the edit that leaves both seams and
-                // their slots exactly where they are.
+                // Deleting either part already unmakes a weld, by taking one
+                // of its ends with it. This is the edit that leaves both parts
+                // and their slots exactly where they are.
                 let mut welds = s.model.welds().to_vec();
                 let before = welds.len();
                 welds.retain(|w| !joins(w, &a, &b));
@@ -2103,52 +2065,40 @@ fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, Edi
 /// Re-authoring a mesh empties every slot on the part: which ones is what a
 /// commit gate and a "refill these" prompt are built from, so it is the
 /// reply rather than something the client has to go and ask for.
-fn emptied_reply(node: NodeId, emptied: Vec<(SeamId, SlotId)>) -> ResponseBody {
+fn emptied_reply(node: NodeId, emptied: Vec<SlotId>) -> ResponseBody {
     ResponseBody::Emptied {
         node,
-        slots: emptied
-            .into_iter()
-            .map(|(seam, slot)| SeamSlot { seam, slot })
-            .collect(),
+        slots: emptied,
     }
 }
 
-/// A weld pairs two seams slot by slot, so an empty `weights` means "every
-/// slot, evenly". The two seams already hold the same slots — `slot_add`
-/// propagates along a weld — so either end names them.
-fn build_weld(
-    model: &Model,
-    a: SeamAddr,
-    b: SeamAddr,
-    weights: Vec<SlotWeight>,
-) -> Result<ModelWeld, EditorError> {
-    let weights = if weights.is_empty() {
-        let seam = model
-            .seam(&a.node, &a.seam)
-            .ok_or(ModelError::UnknownSeam)?;
-        seam.slots()
-            .iter()
-            .map(|slot| (slot.id().clone(), DEFAULT_SLOT_WEIGHT))
-            .collect()
-    } else {
-        weights
+/// A weld is two parts and the pairs between them, exactly as the wire says.
+/// Empty `pairs` records the two parts as welded and joins nothing yet; the
+/// model checks every pair against the slots each part carries.
+fn build_weld(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> ModelWeld {
+    ModelWeld::new(
+        a,
+        b,
+        pairs
             .into_iter()
-            .map(|w| (w.slot, w.weight))
-            .collect::<Vec<_>>()
-    };
-    Ok(ModelWeld::new((a.node, a.seam), (b.node, b.seam), weights))
+            .map(|p| catchlight_core::SlotPair {
+                a: p.a,
+                b: p.b,
+                weight: p.weight,
+            })
+            .collect(),
+    )
 }
 
-/// Two welds join the same pair of seams, in either order.
-fn pairs_the_same_seams(one: &ModelWeld, other: &ModelWeld) -> bool {
+/// Two welds join the same pair of parts, in either order.
+fn pairs_the_same_parts(one: &ModelWeld, other: &ModelWeld) -> bool {
     (one.a() == other.a() && one.b() == other.b()) || (one.a() == other.b() && one.b() == other.a())
 }
 
-/// Whether `weld` is the one joining these two seams. A weld has no Id of its
+/// Whether `weld` is the one joining these two parts. A weld has no Id of its
 /// own — its two ends are what names it — so either order finds it.
-fn joins(weld: &ModelWeld, a: &SeamAddr, b: &SeamAddr) -> bool {
-    let is = |end: &(NodeId, SeamId), addr: &SeamAddr| end.0 == addr.node && end.1 == addr.seam;
-    (is(weld.a(), a) && is(weld.b(), b)) || (is(weld.a(), b) && is(weld.b(), a))
+fn joins(weld: &ModelWeld, a: &NodeId, b: &NodeId) -> bool {
+    (weld.a() == a && weld.b() == b) || (weld.a() == b && weld.b() == a)
 }
 
 /// In-process document view handed to observers (the GUI); refs are stable for

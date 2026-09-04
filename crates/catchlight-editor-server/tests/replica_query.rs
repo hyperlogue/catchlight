@@ -15,7 +15,7 @@ use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_editor_protocol::{
     BindingInfo, BindingTarget, BlendMode, Command, CommandKind, ErrorCode, Interpolate, NodeId,
     NodeKind, NodeKindArg, NodePatch, ParamId, Presence, Reply, Request, ResponseBody,
-    ScalarTarget, SeamAddr, SeamId, SessionId, SlotId, COMMAND_KINDS,
+    ScalarTarget, SessionId, SlotId, SlotPair, COMMAND_KINDS,
 };
 use catchlight_editor_server::{replica_query, replica_reply, Editor};
 
@@ -40,7 +40,7 @@ fn png() -> Vec<u8> {
 }
 
 /// Everything the seven reads have to chew on: a tree with two parts, a param
-/// with a binding, a texture, two welded seams, and one slot nothing fills.
+/// with a binding, a texture, two welded parts, and one slot nothing fills.
 struct Fixture {
     editor: Editor,
     session: SessionId,
@@ -112,21 +112,14 @@ impl Fixture {
             .add_texture_bytes(session, &body_part, TextureEncoding::Png, png())
             .expect("the part takes a texture");
 
-        // Two seams, welded. `left` is filled on both ends; `right` is left
+        // Two parts, welded. `left` is filled on both ends; `right` is left
         // empty on the skirt, so `unfilled_slots` has something to report.
-        let (collar, hem) = (SeamId::new("collar").unwrap(), SeamId::new("hem").unwrap());
         let (left, right) = (SlotId::new("left").unwrap(), SlotId::new("right").unwrap());
-        for (node, seam) in [(&body_part, &collar), (&skirt, &hem)] {
-            fixture.step(Command::SeamAdd {
-                session,
-                node: node.clone(),
-                seam: Some(seam.clone()),
-            });
+        for node in [&body_part, &skirt] {
             for slot in [&left, &right] {
                 fixture.step(Command::SlotAdd {
                     session,
                     node: node.clone(),
-                    seam: seam.clone(),
                     slot: Some(slot.clone()),
                 });
             }
@@ -135,7 +128,6 @@ impl Fixture {
             fixture.step(Command::SlotFill {
                 session,
                 node: body_part.clone(),
-                seam: collar.clone(),
                 slot: slot.clone(),
                 vertex: i as u32,
             });
@@ -143,21 +135,21 @@ impl Fixture {
         fixture.step(Command::SlotFill {
             session,
             node: skirt.clone(),
-            seam: hem.clone(),
             slot: left.clone(),
             vertex: 2,
         });
         fixture.step(Command::WeldSet {
             session,
-            a: SeamAddr {
-                node: body_part.clone(),
-                seam: collar,
-            },
-            b: SeamAddr {
-                node: skirt,
-                seam: hem,
-            },
-            weights: Vec::new(),
+            a: body_part.clone(),
+            b: skirt,
+            pairs: [&left, &right]
+                .into_iter()
+                .map(|s| SlotPair {
+                    a: s.clone(),
+                    b: s.clone(),
+                    weight: 0.5,
+                })
+                .collect(),
         });
 
         Self {
@@ -187,7 +179,7 @@ impl Fixture {
         }
     }
 
-    /// A part with a quad, so its seam slots have vertices to point at.
+    /// A part with a quad, so its slots have vertices to point at.
     fn part(&self, parent: &NodeId, name: &str) -> NodeId {
         let node = self.node(Command::NodeAdd {
             session: self.session,
@@ -285,7 +277,7 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
             session,
             node: node.clone(),
         },
-        Command::Seams { session, node },
+        Command::Slots { session, node },
         Command::Welds { session },
         Command::UnfilledSlots { session },
     ]
@@ -365,15 +357,12 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
         }
         other => panic!("expected Textures, got {other:?}"),
     }
-    match ok(f.agree(Command::Seams {
+    match ok(f.agree(Command::Slots {
         session,
         node: f.body_part.clone(),
     })) {
-        ResponseBody::Seams { seams } => {
-            assert_eq!(seams.len(), 1);
-            assert_eq!(seams[0].slots.len(), 2);
-        }
-        other => panic!("expected Seams, got {other:?}"),
+        ResponseBody::Slots { slots } => assert_eq!(slots.len(), 2),
+        other => panic!("expected Slots, got {other:?}"),
     }
     match ok(f.agree(Command::Welds { session })) {
         ResponseBody::Welds { welds } => assert_eq!(welds.len(), 1),
@@ -611,14 +600,14 @@ fn node_info_counts_the_mesh_a_part_holds() {
 #[test]
 fn a_replica_refuses_a_bad_read_the_way_the_editor_does() {
     let f = Fixture::build();
-    match f.agree(Command::Seams {
+    match f.agree(Command::Slots {
         session: f.session,
         node: f.group.clone(),
     }) {
-        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::Edit, "a group carries no seams"),
+        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::Edit, "a group carries no slots"),
         other => panic!("expected Err, got {other:?}"),
     }
-    match f.agree(Command::Seams {
+    match f.agree(Command::Slots {
         session: f.session,
         node: NodeId::new("nobody").unwrap(),
     }) {

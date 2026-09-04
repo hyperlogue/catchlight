@@ -215,10 +215,7 @@ ParamId = str
 # The identity of a texture. Unique within a model; generated as `tex-<8 hex>` by [`TexId::generate`].
 TexId = str
 
-# The identity of a seam, unique within the part that owns it — not within the model. Generated as `seam-<8 hex>` by [`SeamId::generate`].
-SeamId = str
-
-# The identity of a slot, unique within the seam that owns it — not within the part or the model. Generated as `slot-<8 hex>` by [`SlotId::generate`].
+# The identity of a slot, unique within the part that owns it — not within the model. Generated as `slot-<8 hex>` by [`SlotId::generate`].
 SlotId = str
 
 
@@ -1153,7 +1150,7 @@ class DeformVertices:
 class MeshSet:
     """Replace a Part/MeshGroup mesh; every deform binding on the node is
     re-fitted onto the new topology in the same undoable step. Answers
-    with the seam slots the new mesh emptied.
+    with the slots the new mesh emptied.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1227,48 +1224,9 @@ class MeshCopy:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SeamAdd:
-    """Add a seam to a part."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "seam_add"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
-
-    session: SessionId
-    node: NodeId
-    # Absent generates one (`seam-<8 hex>`, re-drawn until it is free on
-    # the part). The reply names it either way.
-    seam: SeamId | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class SeamDelete:
-    """Remove a seam, and every weld that named it."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "seam_delete"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
-
-    session: SessionId
-    node: NodeId
-    seam: SeamId
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class SlotAdd:
-    """Add a slot to a seam. The slot lands unfilled, and reaches every seam
-    welded to this one at [`catchlight_core::DEFAULT_SLOT_WEIGHT`] — a
-    weld pairs two seams slot by slot, so their slot sets are one set.
+    """Add a slot to a part. The slot lands unfilled and pairs nothing: a
+    weld is what pairs it with a slot on another part.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1278,9 +1236,8 @@ class SlotAdd:
 
     session: SessionId
     node: NodeId
-    seam: SeamId
-    # Absent generates one (`slot-<8 hex>`), free on every seam welded to
-    # this one. The reply names it either way.
+    # Absent generates one (`slot-<8 hex>`, re-drawn until it is free on
+    # the part). The reply names it either way.
     slot: SlotId | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -1299,7 +1256,6 @@ class SlotFill:
 
     session: SessionId
     node: NodeId
-    seam: SeamId
     slot: SlotId
     vertex: int
 
@@ -1310,7 +1266,9 @@ class SlotFill:
 
 @dataclass(frozen=True, kw_only=True)
 class SlotClear:
-    """Unfill a slot. Welds keep it and skip it until it is filled again."""
+    """Unfill a slot. The weld pairs that name it keep it and skip it until it
+    is filled again.
+    """
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_clear"
@@ -1319,7 +1277,6 @@ class SlotClear:
 
     session: SessionId
     node: NodeId
-    seam: SeamId
     slot: SlotId
 
     def to_wire(self) -> dict[str, Any]:
@@ -1329,7 +1286,9 @@ class SlotClear:
 
 @dataclass(frozen=True, kw_only=True)
 class SlotDelete:
-    """Remove a slot — from this seam and from every seam welded to it."""
+    """Remove a slot from a part, and with it the weld pairs that named it.
+    No other part's slots move.
+    """
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_delete"
@@ -1338,7 +1297,6 @@ class SlotDelete:
 
     session: SessionId
     node: NodeId
-    seam: SeamId
     slot: SlotId
 
     def to_wire(self) -> dict[str, Any]:
@@ -1347,11 +1305,11 @@ class SlotDelete:
 
 
 @dataclass(frozen=True, kw_only=True)
-class Seams:
-    """The seams a part carries, with what fills each slot."""
+class Slots:
+    """The slots a part carries, with what fills each."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "seams"
+    TAG: ClassVar[str] = "slots"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
 
@@ -1399,14 +1357,14 @@ class UnfilledSlots:
 
 @dataclass(frozen=True, kw_only=True)
 class WeldWeight:
-    """Move one slot's share of one weld's meeting point, leaving every other
+    """Move one pair's share of one weld's meeting point, leaving every other
     weight where it is — what a slider sends. [`Command::WeldSet`] can only
     rewrite a weld whole, so moving one weight through it means reading the
     rest back and sending them again unchanged.
 
-    `weight` is the share of the end named `a`, whichever way round the
-    weld happens to be stored, and it has to be within `0..=1` — a share
-    outside that has no meaning to flip.
+    `slot` is a slot on `a`. `weight` is the share of the part named `a`,
+    whichever way round the weld happens to be stored, and it has to be
+    within `0..=1` — a share outside that has no meaning to flip.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1415,8 +1373,8 @@ class WeldWeight:
     KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
 
     session: SessionId
-    a: SeamAddr
-    b: SeamAddr
+    a: NodeId
+    b: NodeId
     slot: SlotId
     weight: float
 
@@ -1427,9 +1385,9 @@ class WeldWeight:
 
 @dataclass(frozen=True, kw_only=True)
 class WeldSet:
-    """Weld two seams together, replacing any weld already pairing them.
-    Empty `weights` welds every slot at
-    [`catchlight_core::DEFAULT_SLOT_WEIGHT`].
+    """Weld two parts together, replacing any weld already pairing them. Each
+    pair names a slot on `a` and a slot on `b`; empty `pairs` records the
+    two parts as welded and joins nothing yet.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1438,9 +1396,9 @@ class WeldSet:
     KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
 
     session: SessionId
-    a: SeamAddr
-    b: SeamAddr
-    weights: list[SlotWeight] = field(default_factory=list)
+    a: NodeId
+    b: NodeId
+    pairs: list[SlotPair] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1449,10 +1407,9 @@ class WeldSet:
 
 @dataclass(frozen=True, kw_only=True)
 class WeldDelete:
-    """Unmake the weld pairing two seams, named in either order. Both seams
-    and every slot on them stay; only the pairing goes — which is what
-    tells this apart from [`Command::SeamDelete`], the only other way a
-    weld comes undone. [`ErrorCode::UnknownWeld`] if nothing pairs them.
+    """Unmake the weld pairing two parts, named in either order. Both parts
+    and every slot on them stay; only the pairing goes.
+    [`ErrorCode::UnknownWeld`] if nothing pairs them.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1461,8 +1418,8 @@ class WeldDelete:
     KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
 
     session: SessionId
-    a: SeamAddr
-    b: SeamAddr
+    a: NodeId
+    b: NodeId
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1659,13 +1616,11 @@ Command = (
     | MeshSet
     | MeshAuto
     | MeshCopy
-    | SeamAdd
-    | SeamDelete
     | SlotAdd
     | SlotFill
     | SlotClear
     | SlotDelete
-    | Seams
+    | Slots
     | Welds
     | UnfilledSlots
     | WeldWeight
@@ -1732,13 +1687,11 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "mesh_set": MeshSet,
     "mesh_auto": MeshAuto,
     "mesh_copy": MeshCopy,
-    "seam_add": SeamAdd,
-    "seam_delete": SeamDelete,
     "slot_add": SlotAdd,
     "slot_fill": SlotFill,
     "slot_clear": SlotClear,
     "slot_delete": SlotDelete,
-    "seams": Seams,
+    "slots": Slots,
     "welds": Welds,
     "unfilled_slots": UnfilledSlots,
     "weld_weight": WeldWeight,
@@ -1818,13 +1771,11 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "mesh_set": CommandKind.DOCUMENT,
     "mesh_auto": CommandKind.DOCUMENT,
     "mesh_copy": CommandKind.DOCUMENT,
-    "seam_add": CommandKind.DOCUMENT,
-    "seam_delete": CommandKind.DOCUMENT,
     "slot_add": CommandKind.DOCUMENT,
     "slot_fill": CommandKind.DOCUMENT,
     "slot_clear": CommandKind.DOCUMENT,
     "slot_delete": CommandKind.DOCUMENT,
-    "seams": CommandKind.REPLICA_QUERY,
+    "slots": CommandKind.REPLICA_QUERY,
     "welds": CommandKind.REPLICA_QUERY,
     "unfilled_slots": CommandKind.REPLICA_QUERY,
     "weld_weight": CommandKind.DOCUMENT,
@@ -1886,8 +1837,6 @@ DocumentCommand = (
     | MeshSet
     | MeshAuto
     | MeshCopy
-    | SeamAdd
-    | SeamDelete
     | SlotAdd
     | SlotFill
     | SlotClear
@@ -1924,7 +1873,7 @@ ReplicaQueryCommand = (
     | TextureList
     | ParamList
     | BindingList
-    | Seams
+    | Slots
     | Welds
     | UnfilledSlots
 )
@@ -2272,20 +2221,20 @@ class RenameTexture:
 
 
 @dataclass(frozen=True, kw_only=True)
-class RenameSeam:
-    """A seam is scoped to its part, so this one names the part too. Every
-    weld that ended on the old Id follows it.
+class RenameSlot:
+    """A slot is scoped to its part, so this one names the part too. Every
+    weld pair that named the old Id follows it.
     """
 
     TAG_FIELD: ClassVar[str] = "kind"
-    TAG: ClassVar[str] = "seam"
+    TAG: ClassVar[str] = "slot"
     WIRE: ClassVar[Mapping[str, str]] = {
         "from_": "from",
     }
 
     node: NodeId
-    from_: SeamId
-    to: SeamId
+    from_: SlotId
+    to: SlotId
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -2297,14 +2246,14 @@ Rename = (
     RenameNode
     | RenameParam
     | RenameTexture
-    | RenameSeam
+    | RenameSlot
 )
 
 RENAME_VARIANTS: dict[str, type[Rename]] = {
     "node": RenameNode,
     "param": RenameParam,
     "texture": RenameTexture,
-    "seam": RenameSeam,
+    "slot": RenameSlot,
 }
 
 
@@ -2345,35 +2294,23 @@ class ParamPose:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SeamAddr:
-    """One end of a weld: the seam, and the part carrying it."""
-
-    node: NodeId
-    seam: SeamId
-
-
-@dataclass(frozen=True, kw_only=True)
 class SlotAddr:
-    """One slot of a model, named in full."""
+    """One slot of a model, named in full: a [`SlotId`] is unique within its part,
+    so it travels beside the node carrying it.
+    """
 
     node: NodeId
-    seam: SeamId
     slot: SlotId
 
 
 @dataclass(frozen=True, kw_only=True)
-class SeamSlot:
-    """One slot of a part's seam — the part is whatever carries the reply."""
+class SlotPair:
+    """One pair a weld holds: a slot on its `a` part, a slot on its `b` part, and
+    `a`'s share of the point the two vertices are pulled toward.
+    """
 
-    seam: SeamId
-    slot: SlotId
-
-
-@dataclass(frozen=True, kw_only=True)
-class SlotWeight:
-    """A slot's share of the point its two welded vertices are pulled toward."""
-
-    slot: SlotId
+    a: SlotId
+    b: SlotId
     weight: float
 
 
@@ -2471,7 +2408,7 @@ def parse_reply(message: Mapping[str, Any]) -> Reply:
 
 class ErrorCode(StrEnum):
     """Why a command was refused. A client that has to react — a commit gate
-    waiting on unfilled slots, a mesh editor offering to refill a seam —
+    waiting on unfilled slots, a mesh editor offering to refill a slot —
     branches on this rather than on the message text.
     """
 
@@ -2494,19 +2431,23 @@ class ErrorCode(StrEnum):
     NOTHING_TO_REDO = "nothing_to_redo"
     # A save with no path, on a session that has no file of its own.
     NO_SAVE_PATH = "no_save_path"
-    # The part carries no such seam.
-    UNKNOWN_SEAM = "unknown_seam"
-    # The seam carries no such slot.
+    # The part carries no such slot.
     UNKNOWN_SLOT = "unknown_slot"
     # An add named an Id the model already carries.
     DUPLICATE_ID = "duplicate_id"
-    # The part already carries a seam with that Id.
-    DUPLICATE_SEAM = "duplicate_seam"
-    # The seam already holds a slot with that Id.
+    # The part already carries a slot with that Id.
     DUPLICATE_SLOT = "duplicate_slot"
-    # A weld's two seams must hold the same slots, each weighted once.
-    WELD_SLOT_MISMATCH = "weld_slot_mismatch"
-    # No weld pairs the two seams named.
+    # A weld pairs a slot the part on that side does not carry.
+    WELD_UNKNOWN_SLOT = "weld_unknown_slot"
+    # A weld pairs one slot twice.
+    WELD_SLOT_PAIRED_TWICE = "weld_slot_paired_twice"
+    # A weld's two ends are the same node, or one of them is not a part.
+    BAD_WELD_END = "bad_weld_end"
+    # Those two parts are already welded; one weld records a part pair.
+    DUPLICATE_WELD = "duplicate_weld"
+    # A weight is a share of a meeting point, so it must be within `0..=1`.
+    WELD_WEIGHT_OUT_OF_RANGE = "weld_weight_out_of_range"
+    # No weld pairs the two parts named.
     UNKNOWN_WELD = "unknown_weld"
     # The texture carries no pixel above the alpha threshold, so there is no
     # shape to mesh. A client offers a lower threshold rather than an error.
@@ -2591,24 +2532,10 @@ class ResponseBodyParam:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ResponseBodySeam:
-    """One seam, named in full: what [`Command::SeamAdd`] answers with, so a
+class ResponseBodySlot:
+    """One slot, named in full: what [`Command::SlotAdd`] answers with, so a
     client that let the editor draw the Id learns which one it drew.
     """
-
-    TAG_FIELD: ClassVar[str] = "result"
-    TAG: ClassVar[str] = "seam"
-
-    seam: SeamAddr
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class ResponseBodySlot:
-    """One slot, named in full, for the same reason."""
 
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "slot"
@@ -2765,11 +2692,11 @@ class ResponseBodyPresence:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ResponseBodySeams:
+class ResponseBodySlots:
     TAG_FIELD: ClassVar[str] = "result"
-    TAG: ClassVar[str] = "seams"
+    TAG: ClassVar[str] = "slots"
 
-    seams: list[SeamInfo]
+    slots: list[SlotInfo]
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -2804,13 +2731,13 @@ class ResponseBodyUnfilledSlots:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodyEmptied:
-    """The slots a mesh edit emptied on `node`, in seam-then-slot order."""
+    """The slots a mesh edit emptied on `node`, in the part's slot order."""
 
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "emptied"
 
     node: NodeId
-    slots: list[SeamSlot]
+    slots: list[SlotId]
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -2839,7 +2766,6 @@ ResponseBody = (
     | ResponseBodySessions
     | ResponseBodyNode
     | ResponseBodyParam
-    | ResponseBodySeam
     | ResponseBodySlot
     | ResponseBodyParams
     | ResponseBodyBindings
@@ -2852,7 +2778,7 @@ ResponseBody = (
     | ResponseBodyPreview
     | ResponseBodySaved
     | ResponseBodyPresence
-    | ResponseBodySeams
+    | ResponseBodySlots
     | ResponseBodyWelds
     | ResponseBodyUnfilledSlots
     | ResponseBodyEmptied
@@ -2865,7 +2791,6 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "sessions": ResponseBodySessions,
     "node": ResponseBodyNode,
     "param": ResponseBodyParam,
-    "seam": ResponseBodySeam,
     "slot": ResponseBodySlot,
     "params": ResponseBodyParams,
     "bindings": ResponseBodyBindings,
@@ -2878,7 +2803,7 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "preview": ResponseBodyPreview,
     "saved": ResponseBodySaved,
     "presence": ResponseBodyPresence,
-    "seams": ResponseBodySeams,
+    "slots": ResponseBodySlots,
     "welds": ResponseBodyWelds,
     "unfilled_slots": ResponseBodyUnfilledSlots,
     "emptied": ResponseBodyEmptied,
@@ -3099,16 +3024,10 @@ class BindingInfo:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SeamInfo:
-    """A seam and what currently fills it."""
-
-    id: SeamId
-    slots: list[SlotInfo]
-
-
-@dataclass(frozen=True, kw_only=True)
 class SlotInfo:
-    """One slot; `vertex` absent means unfilled, and welds skip it."""
+    """One slot; `vertex` absent means unfilled, and the weld pairs naming it
+    skip it.
+    """
 
     id: SlotId
     vertex: int | None = None
@@ -3116,9 +3035,11 @@ class SlotInfo:
 
 @dataclass(frozen=True, kw_only=True)
 class WeldInfo:
-    a: SeamAddr
-    b: SeamAddr
-    weights: list[SlotWeight]
+    """One weld: the two parts it joins, and the slot pairs between them."""
+
+    a: NodeId
+    b: NodeId
+    pairs: list[SlotPair]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3135,7 +3056,6 @@ __all__ = [
     "NodeId",
     "ParamId",
     "TexId",
-    "SeamId",
     "SlotId",
     "SessionNew",
     "SessionOpen",
@@ -3188,13 +3108,11 @@ __all__ = [
     "MeshSet",
     "MeshAuto",
     "MeshCopy",
-    "SeamAdd",
-    "SeamDelete",
     "SlotAdd",
     "SlotFill",
     "SlotClear",
     "SlotDelete",
-    "Seams",
+    "Slots",
     "Welds",
     "UnfilledSlots",
     "WeldWeight",
@@ -3236,17 +3154,15 @@ __all__ = [
     "RenameNode",
     "RenameParam",
     "RenameTexture",
-    "RenameSeam",
+    "RenameSlot",
     "Rename",
     "RENAME_VARIANTS",
     "parse_rename",
     "BindingParams",
     "BindingKeyEntry",
     "ParamPose",
-    "SeamAddr",
     "SlotAddr",
-    "SeamSlot",
-    "SlotWeight",
+    "SlotPair",
     "Presence",
     "Camera",
     "ReplyOk",
@@ -3261,7 +3177,6 @@ __all__ = [
     "ResponseBodySessions",
     "ResponseBodyNode",
     "ResponseBodyParam",
-    "ResponseBodySeam",
     "ResponseBodySlot",
     "ResponseBodyParams",
     "ResponseBodyBindings",
@@ -3274,7 +3189,7 @@ __all__ = [
     "ResponseBodyPreview",
     "ResponseBodySaved",
     "ResponseBodyPresence",
-    "ResponseBodySeams",
+    "ResponseBodySlots",
     "ResponseBodyWelds",
     "ResponseBodyUnfilledSlots",
     "ResponseBodyEmptied",
@@ -3294,7 +3209,6 @@ __all__ = [
     "TexInfo",
     "ParamInfo",
     "BindingInfo",
-    "SeamInfo",
     "SlotInfo",
     "WeldInfo",
     "PreviewInfo",

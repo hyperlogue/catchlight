@@ -64,7 +64,7 @@ fn identity(model: &Model) -> Vec<String> {
             "weld {:?} {:?} {:?} {:?}",
             w.a(),
             w.b(),
-            w.weights(),
+            w.pairs(),
             w.resolve(model),
         ));
     }
@@ -99,9 +99,9 @@ fn every_committed_fixture_round_trips_byte_for_byte() {
     }
 }
 
-/// The one fixture with a weld: it is the only committed proof that seams
-/// survive a real file, and the vertex pairs they resolve to are what the
-/// weld baseline renders.
+/// The one fixture with a weld: it is the only committed proof that slot
+/// pairs survive a real file, and the vertex pairs they resolve to are what
+/// the weld baseline renders.
 #[test]
 fn the_welded_fixture_keeps_its_vertex_pairs() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).expect("welded_seam.clm");

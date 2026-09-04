@@ -29,13 +29,12 @@ use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
     ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument,
     ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
-    ClmNodeKind, ClmParam, ClmPart, ClmSeam, ClmSimplePhysics, ClmSlot, ClmSlotWeight,
-    ClmTransform, ClmWeld, ClmWeldEnd,
+    ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmTransform, ClmWeld,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
-use catchlight_core::{Model, NodeId, NodeIdx, NodeKind, ParamId, SeamId, SlotId, Vec2};
+use catchlight_core::{Model, NodeId, NodeIdx, NodeKind, ParamId, SlotId, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -536,25 +535,21 @@ fn part(mesh: ClmMesh) -> ClmPart {
         screen_tint: [0.0; 3],
         masks: Vec::new(),
         mask_threshold: 0.5,
-        seams: Vec::new(),
+        slots: Vec::new(),
     }
 }
 
-/// A part carrying one seam, whose slots `s0..` name the vertices `verts` —
-/// what a weld pairs.
-fn welded_part(mesh: ClmMesh, seam: &str, verts: &[u32]) -> ClmPart {
+/// A part whose slots `s0..` name the vertices `verts` — what a weld pairs.
+fn welded_part(mesh: ClmMesh, verts: &[u32]) -> ClmPart {
     ClmPart {
-        seams: vec![ClmSeam {
-            id: SeamId::new(seam).unwrap(),
-            slots: verts
-                .iter()
-                .enumerate()
-                .map(|(i, &vertex)| ClmSlot {
-                    id: SlotId::new(format!("s{i}")).unwrap(),
-                    vertex: Some(vertex),
-                })
-                .collect(),
-        }],
+        slots: verts
+            .iter()
+            .enumerate()
+            .map(|(i, &vertex)| ClmSlot {
+                id: SlotId::new(format!("s{i}")).unwrap(),
+                vertex: Some(vertex),
+            })
+            .collect(),
         ..part(mesh)
     }
 }
@@ -823,7 +818,7 @@ fn mesh_group_fixture(dynamic: bool, translate_children: bool) -> FixtureFile {
     file(nodes, params, Vec::new())
 }
 
-/// Two parts welded seam to seam, each with its own deform binding, so the
+/// Two parts welded slot to slot, each with its own deform binding, so the
 /// weld pass has something to pull together.
 fn weld_fixture() -> FixtureFile {
     let nodes = vec![
@@ -832,13 +827,13 @@ fn weld_fixture() -> FixtureFile {
             Some(0),
             "A",
             [-4.0, 0.0],
-            ClmNodeKind::Part(welded_part(quad(4.0, 4.0), "weld-0-a", &[1, 2])),
+            ClmNodeKind::Part(welded_part(quad(4.0, 4.0), &[1, 2])),
         ),
         at(
             Some(0),
             "B",
             [4.0, 0.0],
-            ClmNodeKind::Part(welded_part(quad(4.0, 4.0), "weld-0-b", &[0, 3])),
+            ClmNodeKind::Part(welded_part(quad(4.0, 4.0), &[0, 3])),
         ),
     ];
     let b = |node: usize, values: ClmBindingValues| {
@@ -865,21 +860,17 @@ fn weld_fixture() -> FixtureFile {
         ]),
     ];
     let welds = vec![ClmWeld {
-        a: ClmWeldEnd {
-            node: nid(1),
-            seam: SeamId::new("weld-0-a").unwrap(),
-        },
-        b: ClmWeldEnd {
-            node: nid(2),
-            seam: SeamId::new("weld-0-b").unwrap(),
-        },
-        weights: vec![
-            ClmSlotWeight {
-                slot: SlotId::new("s0").unwrap(),
+        a: nid(1),
+        b: nid(2),
+        pairs: vec![
+            ClmSlotPair {
+                a: SlotId::new("s0").unwrap(),
+                b: SlotId::new("s0").unwrap(),
                 weight: 0.5,
             },
-            ClmSlotWeight {
-                slot: SlotId::new("s1").unwrap(),
+            ClmSlotPair {
+                a: SlotId::new("s1").unwrap(),
+                b: SlotId::new("s1").unwrap(),
                 weight: 0.25,
             },
         ],

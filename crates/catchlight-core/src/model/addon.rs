@@ -23,8 +23,8 @@
 //!   ([`InstallError::Collision`]) instead of renaming around it: renaming
 //!   would silently break the addon's own internal references, and refusing
 //!   is what gives outfit slots for free — two addons that both provide
-//!   `shoes` are alternatives, and only one is installed at a time. A seam Id
-//!   is unique per part rather than per model, so an addon's seams cannot
+//!   `shoes` are alternatives, and only one is installed at a time. A slot Id
+//!   is unique per part rather than per model, so an addon's slots cannot
 //!   collide on their own: the part carrying them collides first.
 //! - **An addon carries the textures its own parts draw.** A texture's only
 //!   user is a part's albedo, so an addon that reached into the base for one
@@ -91,9 +91,9 @@ pub enum Required {
     /// prints as a requirement's kind; see [`Model::mask_add`] for the rule.
     Part(NodeId),
     Param(ParamId),
-    /// A seam on a base part, which needs the part and the seam both — what
-    /// one end of a weld names.
-    Seam(NodeId, SeamId),
+    /// A slot on a base part, which needs the part and the slot both — what
+    /// one side of a weld's pairs names.
+    Slot(NodeId, SlotId),
 }
 
 impl fmt::Display for Required {
@@ -102,8 +102,8 @@ impl fmt::Display for Required {
             Self::Node(id) => write!(f, "node {:?}", id.as_str()),
             Self::Part(id) => write!(f, "part {:?}", id.as_str()),
             Self::Param(id) => write!(f, "param {:?}", id.as_str()),
-            Self::Seam(node, seam) => {
-                write!(f, "seam {:?} on part {:?}", seam.as_str(), node.as_str())
+            Self::Slot(node, slot) => {
+                write!(f, "slot {:?} on part {:?}", slot.as_str(), node.as_str())
             }
         }
     }
@@ -148,7 +148,7 @@ impl Requirements {
     /// have to be parts and the ones a weld end reaches through.
     pub fn nodes(&self) -> impl Iterator<Item = &NodeId> {
         sorted(self.entries.iter().filter_map(|r| match &r.id {
-            Required::Node(id) | Required::Part(id) | Required::Seam(id, _) => Some(id),
+            Required::Node(id) | Required::Part(id) | Required::Slot(id, _) => Some(id),
             _ => None,
         }))
     }
@@ -160,9 +160,9 @@ impl Requirements {
         }))
     }
 
-    pub fn seams(&self) -> impl Iterator<Item = (&NodeId, &SeamId)> {
+    pub fn slots(&self) -> impl Iterator<Item = (&NodeId, &SlotId)> {
         sorted(self.entries.iter().filter_map(|r| match &r.id {
-            Required::Seam(node, seam) => Some((node, seam)),
+            Required::Slot(node, slot) => Some((node, slot)),
             _ => None,
         }))
     }
@@ -217,13 +217,10 @@ pub enum InstallError {
         field: &'static str,
         owner: String,
     },
-    #[error("the addon welds seam {seam:?} on its own node {node:?}, which carries no such seam")]
-    UnknownSeam { node: String, seam: String },
-    #[error(
-        "the addon's weld between seam {a:?} and seam {b:?} does not weight each of the two \
-         seams' slots exactly once"
-    )]
-    WeldSlotMismatch { a: String, b: String },
+    #[error("the addon welds slot {slot:?} on node {node:?}, which carries no such slot")]
+    WeldUnknownSlot { node: String, slot: String },
+    #[error("the addon's weld between {a:?} and {b:?} pairs slot {slot:?} twice")]
+    WeldSlotPairedTwice { a: String, b: String, slot: String },
 }
 
 /// What one [`Model::install`] put into a base model, so [`Model::uninstall`]
@@ -321,13 +318,29 @@ impl Model {
         }
 
         for w in &self.welds {
-            for (end, far) in [(&w.a, &w.b), (&w.b, &w.a)] {
-                if !self.nodes.contains_key(&end.0) {
+            for (end, far, slot_of) in [
+                (
+                    &w.a,
+                    &w.b,
+                    (|p: &SlotPair| &p.a) as fn(&SlotPair) -> &SlotId,
+                ),
+                (&w.b, &w.a, |p: &SlotPair| &p.b),
+            ] {
+                if self.nodes.contains_key(end) {
+                    continue;
+                }
+                // One requirement per base slot the weld pairs: the part and
+                // the slot on it are needed together. A weld with no pairs
+                // still names the part.
+                for pair in w.pairs() {
                     need(
-                        Required::Seam(end.0.clone(), end.1.clone()),
+                        Required::Slot(end.clone(), slot_of(pair).clone()),
                         "weld end",
-                        &far.0,
+                        far,
                     );
+                }
+                if w.pairs().is_empty() {
+                    need(Required::Part(end.clone()), "weld end", far);
                 }
             }
         }
@@ -462,7 +475,7 @@ impl Model {
                     .map(|n| &n.kind)
                     .is_some_and(is_mask_source),
                 Required::Param(id) => self.params.contains_key(id),
-                Required::Seam(node, seam) => self.seam(node, seam).is_some(),
+                Required::Slot(node, slot) => self.slot(node, slot).is_some(),
             };
             if !held {
                 return Err(InstallError::Missing {
@@ -473,33 +486,34 @@ impl Model {
             }
         }
 
-        // Both ends of every weld resolve now: one in the addon, one in
-        // whichever of the two models carries it.
+        // Every pair of every weld resolves now: one side in the addon, the
+        // other in whichever of the two models carries it.
         for w in &addon.welds {
-            let seam_of = |end: &(NodeId, SeamId)| {
-                addon
-                    .seam(&end.0, &end.1)
-                    .or_else(|| self.seam(&end.0, &end.1))
-                    .ok_or_else(|| InstallError::UnknownSeam {
-                        node: end.0.to_string(),
-                        seam: end.1.to_string(),
-                    })
+            let carries = |node: &NodeId, slot: &SlotId| {
+                addon.slot(node, slot).is_some() || self.slot(node, slot).is_some()
             };
-            let (a, b) = (seam_of(&w.a)?, seam_of(&w.b)?);
-            let mismatch = || InstallError::WeldSlotMismatch {
-                a: w.a.1.to_string(),
-                b: w.b.1.to_string(),
-            };
-            if a.slots.len() != b.slots.len()
-                || !a.slots.iter().all(|s| b.slot(&s.id).is_some())
-                || w.weights.len() != a.slots.len()
-            {
-                return Err(mismatch());
-            }
-            let mut seen = HashSet::with_capacity(w.weights.len());
-            for (slot, _) in w.weights.iter() {
-                if a.slot(slot).is_none() || !seen.insert(slot) {
-                    return Err(mismatch());
+            let mut seen_a = HashSet::with_capacity(w.pairs().len());
+            let mut seen_b = HashSet::with_capacity(w.pairs().len());
+            for pair in w.pairs() {
+                for (node, slot) in [(w.a(), &pair.a), (w.b(), &pair.b)] {
+                    if !carries(node, slot) {
+                        return Err(InstallError::WeldUnknownSlot {
+                            node: node.to_string(),
+                            slot: slot.to_string(),
+                        });
+                    }
+                }
+                for (seen, slot) in [&mut seen_a, &mut seen_b]
+                    .into_iter()
+                    .zip([&pair.a, &pair.b])
+                {
+                    if !seen.insert(slot) {
+                        return Err(InstallError::WeldSlotPairedTwice {
+                            a: w.a().to_string(),
+                            b: w.b().to_string(),
+                            slot: slot.to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -560,7 +574,7 @@ impl Model {
             welds: self
                 .welds
                 .iter()
-                .filter(|w| inside(&w.a.0) || inside(&w.b.0))
+                .filter(|w| inside(&w.a) || inside(&w.b))
                 .cloned()
                 .collect(),
             nodes,
@@ -627,7 +641,7 @@ impl Model {
         // it, and removing them orphans it. Uninstall is total, so it sweeps.
         self.gc_textures();
         retain_less(&mut self.welds, &installed.welds, |w| {
-            !removed.contains(&w.a.0) && !removed.contains(&w.b.0)
+            !removed.contains(&w.a) && !removed.contains(&w.b)
         });
         retain_less(&mut self.animations, &installed.animations, |_| true);
         self.bump();
@@ -682,10 +696,6 @@ mod tests {
         }
     }
 
-    fn seam_id(s: &str) -> SeamId {
-        SeamId::new(s).unwrap()
-    }
-
     fn slot_id(s: &str) -> SlotId {
         SlotId::new(s).unwrap()
     }
@@ -699,8 +709,8 @@ mod tests {
     }
 
     /// A base model an addon can be authored against: a `body` part carrying
-    /// the seam `hem` and drawing the one texture, a `head` group to hang
-    /// things under, and one param.
+    /// the slots `left` and `right` and drawing the one texture, a `head`
+    /// group to hang things under, and one param.
     struct Base {
         m: Model,
         root: NodeId,
@@ -736,11 +746,9 @@ mod tests {
                 &mut hex,
             )
             .unwrap();
-        m.seam_add(&body, seam_id("hem")).unwrap();
         for (slot, vertex) in [("left", 0), ("right", 1)] {
-            m.slot_add(&body, &seam_id("hem"), slot_id(slot)).unwrap();
-            m.slot_fill(&body, &seam_id("hem"), &slot_id(slot), vertex)
-                .unwrap();
+            m.slot_add(&body, slot_id(slot)).unwrap();
+            m.slot_fill(&body, &slot_id(slot), vertex).unwrap();
         }
         Base {
             m,
@@ -764,7 +772,7 @@ mod tests {
 
     /// A hat under `head` that reaches into the base every way a fragment can:
     /// a base parent, a base part as a mask source, a base param through a
-    /// binding and through a pendulum, and a weld into the base's `hem`. Its
+    /// binding and through a pendulum, and a weld into the base's `Body`. Its
     /// texture is its own — that is the one reference an addon never makes.
     fn hat_addon(b: &Base) -> Model {
         author(b, |m, hex| {
@@ -782,17 +790,26 @@ mod tests {
             m.add_binding(&key).unwrap();
             m.set_deform_vertices(&key, [1, 0], vec![0.5; 8]).unwrap();
 
-            m.seam_add(&hat, seam_id("brim")).unwrap();
             for (slot, vertex) in [("left", 2), ("right", 3)] {
-                m.slot_add(&hat, &seam_id("brim"), slot_id(slot)).unwrap();
-                m.slot_fill(&hat, &seam_id("brim"), &slot_id(slot), vertex)
-                    .unwrap();
+                m.slot_add(&hat, slot_id(slot)).unwrap();
+                m.slot_fill(&hat, &slot_id(slot), vertex).unwrap();
             }
             let mut welds = m.welds().to_vec();
             welds.push(ModelWeld::new(
-                (hat.clone(), seam_id("brim")),
-                (b.body.clone(), seam_id("hem")),
-                vec![(slot_id("left"), 0.5), (slot_id("right"), 0.25)],
+                hat.clone(),
+                b.body.clone(),
+                vec![
+                    SlotPair {
+                        a: slot_id("left"),
+                        b: slot_id("left"),
+                        weight: 0.5,
+                    },
+                    SlotPair {
+                        a: slot_id("right"),
+                        b: slot_id("right"),
+                        weight: 0.25,
+                    },
+                ],
             ));
             m.set_welds(welds).unwrap();
 
@@ -862,7 +879,12 @@ mod tests {
                     sway.to_string()
                 ),
                 (
-                    format!("seam \"hem\" on part {:?}", b.body.as_str()),
+                    format!("slot \"left\" on part {:?}", b.body.as_str()),
+                    "weld end",
+                    hat.to_string()
+                ),
+                (
+                    format!("slot \"right\" on part {:?}", b.body.as_str()),
                     "weld end",
                     hat.to_string()
                 ),
@@ -870,7 +892,7 @@ mod tests {
         );
         assert_eq!(addon.requirements().nodes().count(), 2);
         assert_eq!(addon.requirements().params().count(), 1);
-        assert_eq!(addon.requirements().seams().count(), 1);
+        assert_eq!(addon.requirements().slots().count(), 2);
     }
 
     /// A complete model needs nothing: its own invariants say every Id it
@@ -939,20 +961,46 @@ mod tests {
         assert_eq!(stripped.generation(), before, "no half-install");
     }
 
-    /// A weld end is one requirement, not two: the part and the seam on it.
+    /// A weld end is one requirement per slot it pairs, not one for the part:
+    /// the part and the slot on it are needed together.
     #[test]
-    fn a_missing_seam_is_named_with_the_part_that_should_carry_it() {
+    fn a_missing_slot_is_named_with_the_part_that_should_carry_it() {
         let b = base();
         let addon = hat_addon(&b);
         let mut stripped = b.m.clone();
-        stripped.seam_delete(&b.body, &seam_id("hem")).unwrap();
+        stripped.slot_delete(&b.body, &slot_id("left")).unwrap();
 
         assert_eq!(
             stripped.install(&addon).unwrap_err(),
             InstallError::Missing {
-                id: Required::Seam(b.body.clone(), seam_id("hem")),
+                id: Required::Slot(b.body.clone(), slot_id("left")),
                 field: "weld end",
                 owner: named(&addon, "Hat").to_string(),
+            }
+        );
+    }
+
+    /// A weld whose pairs were all dropped still reaches the base part, so
+    /// the part is a requirement even with no slot to name.
+    #[test]
+    fn a_weld_with_no_pairs_still_requires_the_part() {
+        let b = base();
+        let mut addon = hat_addon(&b);
+        let hat = named(&addon, "Hat");
+        addon.mask_delete(&hat, 0).unwrap();
+        for slot in ["left", "right"] {
+            addon.slot_delete(&hat, &slot_id(slot)).unwrap();
+        }
+        assert!(addon.welds().iter().all(|w| w.pairs().is_empty()));
+        let mut stripped = b.m.clone();
+        stripped.delete_node(&b.body).unwrap();
+
+        assert_eq!(
+            stripped.install(&addon).unwrap_err(),
+            InstallError::Missing {
+                id: Required::Part(b.body.clone()),
+                field: "weld end",
+                owner: hat.to_string(),
             }
         );
     }
@@ -1116,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn a_weld_from_an_addon_resolves_against_the_base_seam_after_install() {
+    fn a_weld_from_an_addon_resolves_against_the_base_part_after_install() {
         let mut b = base();
         let addon = hat_addon(&b);
         assert!(
@@ -1128,7 +1176,7 @@ mod tests {
         let weld =
             b.m.welds()
                 .iter()
-                .find(|w| w.a().0 == named(&b.m, "Hat"))
+                .find(|w| w.a() == &named(&b.m, "Hat"))
                 .unwrap();
         let pairs = weld.resolve(&b.m);
         assert_eq!(pairs.len(), 2);
@@ -1335,7 +1383,7 @@ mod tests {
             !addon
                 .check()
                 .iter()
-                .any(|w| w.message.contains("carries no such seam")),
+                .any(|w| w.message.contains("no longer a part")),
             "{:?}",
             addon.check()
         );

@@ -8,7 +8,7 @@
 
 use catchlight_editor_protocol::{
     BindingParams, BindingTarget, Command, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId,
-    Rename, Reply, Request, ResponseBody, ScalarTarget, SeamAddr, SeamId, SlotAddr, SlotId,
+    Rename, Reply, Request, ResponseBody, ScalarTarget, SlotAddr, SlotId, SlotPair,
 };
 use catchlight_editor_server::Editor;
 
@@ -51,7 +51,7 @@ fn root(ed: &Editor, id: u64, session: catchlight_editor_protocol::SessionId) ->
     }
 }
 
-/// A quad, so a part has vertices for its seam slots to point at.
+/// A quad, so a part has vertices for its slots to point at.
 fn quad(session: catchlight_editor_protocol::SessionId, node: NodeId) -> Command {
     Command::MeshSet {
         session,
@@ -257,12 +257,12 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
     );
 }
 
-/// The seam surface end to end: name a seam, give it slots, fill them from
-/// the part's own vertices, weld two seams together, then re-author a mesh
-/// and watch the slots it emptied come back in the reply and in
-/// `UnfilledSlots` — which is what a commit gate reads.
+/// The slot surface end to end: give a part slots, fill them from its own
+/// vertices, weld two parts pair by pair, then re-author a mesh and watch the
+/// slots it emptied come back in the reply and in `UnfilledSlots` — which is
+/// what a commit gate reads.
 #[test]
-fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
+fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     let ed = Editor::new();
     let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
     let root = root(&ed, 2, session);
@@ -285,21 +285,13 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
     };
     let (body_part, hem_part) = (part("Body"), part("Skirt"));
 
-    let collar = SeamId::new("collar").unwrap();
-    let hem = SeamId::new("hem").unwrap();
     let (left, right) = (SlotId::new("left").unwrap(), SlotId::new("right").unwrap());
 
-    for (node, seam) in [(&body_part, &collar), (&hem_part, &hem)] {
-        step(Command::SeamAdd {
-            session,
-            node: node.clone(),
-            seam: Some(seam.clone()),
-        });
+    for node in [&body_part, &hem_part] {
         for slot in [&left, &right] {
             step(Command::SlotAdd {
                 session,
                 node: node.clone(),
-                seam: seam.clone(),
                 slot: Some(slot.clone()),
             });
         }
@@ -308,29 +300,24 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
         step(Command::SlotFill {
             session,
             node: body_part.clone(),
-            seam: collar.clone(),
             slot: slot.clone(),
             vertex: i as u32,
         });
         step(Command::SlotFill {
             session,
             node: hem_part.clone(),
-            seam: hem.clone(),
             slot: slot.clone(),
             vertex: (i + 2) as u32,
         });
     }
 
-    match step(Command::Seams {
+    match step(Command::Slots {
         session,
         node: body_part.clone(),
     }) {
-        ResponseBody::Seams { seams } => {
-            assert_eq!(seams.len(), 1);
-            assert_eq!(seams[0].id, collar);
+        ResponseBody::Slots { slots } => {
             assert_eq!(
-                seams[0]
-                    .slots
+                slots
                     .iter()
                     .map(|s| (s.id.to_string(), s.vertex))
                     .collect::<Vec<_>>(),
@@ -344,44 +331,43 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
         ResponseBody::UnfilledSlots { slots } if slots.is_empty()
     ));
 
-    // Weld them. Empty weights means every slot meets midway.
+    // Weld them, a pair at a time.
+    let pairs = |weight: f32| {
+        [&left, &right]
+            .into_iter()
+            .map(|s| SlotPair {
+                a: s.clone(),
+                b: s.clone(),
+                weight,
+            })
+            .collect::<Vec<_>>()
+    };
     step(Command::WeldSet {
         session,
-        a: SeamAddr {
-            node: body_part.clone(),
-            seam: collar.clone(),
-        },
-        b: SeamAddr {
-            node: hem_part.clone(),
-            seam: hem.clone(),
-        },
-        weights: Vec::new(),
+        a: body_part.clone(),
+        b: hem_part.clone(),
+        pairs: pairs(catchlight_core::DEFAULT_SLOT_WEIGHT),
     });
     match step(Command::Welds { session }) {
         ResponseBody::Welds { welds } => {
             assert_eq!(welds.len(), 1);
-            assert_eq!(welds[0].a.node, body_part);
-            assert_eq!(welds[0].b.seam, hem);
-            assert_eq!(welds[0].weights.len(), 2);
+            assert_eq!(welds[0].a, body_part);
+            assert_eq!(welds[0].b, hem_part);
+            assert_eq!(welds[0].pairs.len(), 2);
             assert!(welds[0]
-                .weights
+                .pairs
                 .iter()
-                .all(|w| (w.weight - catchlight_core::DEFAULT_SLOT_WEIGHT).abs() < 1e-6));
+                .all(|p| (p.weight - catchlight_core::DEFAULT_SLOT_WEIGHT).abs() < 1e-6));
         }
         other => panic!("{other:?}"),
     }
-    // Setting the same pair again replaces the weld rather than stacking one.
+    // Setting the same pair of parts again replaces the weld rather than
+    // stacking one the model would refuse.
     step(Command::WeldSet {
         session,
-        a: SeamAddr {
-            node: hem_part.clone(),
-            seam: hem.clone(),
-        },
-        b: SeamAddr {
-            node: body_part.clone(),
-            seam: collar.clone(),
-        },
-        weights: Vec::new(),
+        a: hem_part.clone(),
+        b: body_part.clone(),
+        pairs: pairs(catchlight_core::DEFAULT_SLOT_WEIGHT),
     });
     assert!(matches!(
         step(Command::Welds { session }),
@@ -389,19 +375,13 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
     ));
 
     // Re-author the body's mesh: every slot on it empties, and the reply says
-    // which. The weld keeps both slots and skips the ones nothing fills.
+    // which. The weld keeps both pairs and skips the ones nothing fills.
     match step(quad(session, body_part.clone())) {
         ResponseBody::Emptied { node, slots } => {
             assert_eq!(node, body_part);
             assert_eq!(
-                slots
-                    .iter()
-                    .map(|s| (s.seam.to_string(), s.slot.to_string()))
-                    .collect::<Vec<_>>(),
-                vec![
-                    ("collar".into(), "left".into()),
-                    ("collar".into(), "right".into())
-                ],
+                slots.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                vec!["left".to_string(), "right".to_string()],
             );
         }
         other => panic!("{other:?}"),
@@ -409,15 +389,13 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
     match step(Command::UnfilledSlots { session }) {
         ResponseBody::UnfilledSlots { slots } => {
             assert_eq!(slots.len(), 2, "the commit gate sees both");
-            assert!(slots
-                .iter()
-                .all(|s| s.node == body_part && s.seam == collar));
+            assert!(slots.iter().all(|s| s.node == body_part));
         }
         other => panic!("{other:?}"),
     }
     assert!(matches!(
         step(Command::Welds { session }),
-        ResponseBody::Welds { welds } if welds.len() == 1 && welds[0].weights.len() == 2
+        ResponseBody::Welds { welds } if welds.len() == 1 && welds[0].pairs.len() == 2
     ));
 
     // Refilling clears the gate.
@@ -425,7 +403,6 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
         step(Command::SlotFill {
             session,
             node: body_part.clone(),
-            seam: collar.clone(),
             slot: slot.clone(),
             vertex: i as u32,
         });
@@ -435,23 +412,18 @@ fn a_seam_survives_a_mesh_edit_and_says_what_it_lost() {
         ResponseBody::UnfilledSlots { slots } if slots.is_empty()
     ));
 
-    // Deleting a seam takes the weld that named it.
-    step(Command::SeamDelete {
-        session,
-        node: body_part.clone(),
-        seam: collar,
-    });
+    // Deleting a slot takes the pairs that named it; the weld itself stays.
+    for slot in [&left, &right] {
+        step(Command::SlotDelete {
+            session,
+            node: body_part.clone(),
+            slot: slot.clone(),
+        });
+    }
     assert!(matches!(
         step(Command::Welds { session }),
-        ResponseBody::Welds { welds } if welds.is_empty()
+        ResponseBody::Welds { welds } if welds.len() == 1 && welds[0].pairs.is_empty()
     ));
-}
-
-fn seam_of(b: ResponseBody) -> SeamAddr {
-    match b {
-        ResponseBody::Seam { seam } => seam,
-        other => panic!("expected a seam, got {other:?}"),
-    }
 }
 
 fn slot_of(b: ResponseBody) -> SlotAddr {
@@ -461,15 +433,14 @@ fn slot_of(b: ResponseBody) -> SlotAddr {
     }
 }
 
-/// A seam and a slot get their Ids the way a node and a param do: name one, or
-/// let the editor draw a free one and read it back off the reply.
+/// A slot gets its Id the way a node and a param do: name one, or let the
+/// editor draw a free one and read it back off the reply.
 ///
-/// The reason it has to be the editor drawing is that "free" is scoped —
-/// within the part for a seam, and across every welded seam for a slot — so a
-/// client counting its own slots gets it wrong the moment one is deleted or a
-/// weld reaches in from somewhere else.
+/// The reason it has to be the editor drawing is that "free" is scoped to the
+/// part, so a client counting its own slots gets it wrong the moment one is
+/// deleted.
 #[test]
-fn a_seam_and_a_slot_can_be_added_without_naming_one() {
+fn a_slot_can_be_added_without_naming_one() {
     let ed = Editor::new();
     let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
     let root = root(&ed, 2, session);
@@ -490,75 +461,65 @@ fn a_seam_and_a_slot_can_be_added_without_naming_one() {
     step(quad(session, part.clone()));
 
     // Named: the reply still says what it is, so one code path reads it.
-    let named = SeamId::new("collar").unwrap();
-    let addr = seam_of(step(Command::SeamAdd {
+    let named = SlotId::new("collar").unwrap();
+    let addr = slot_of(step(Command::SlotAdd {
         session,
         node: part.clone(),
-        seam: Some(named.clone()),
+        slot: Some(named.clone()),
     }));
     assert_eq!(
         addr,
-        SeamAddr {
+        SlotAddr {
             node: part.clone(),
-            seam: named.clone()
+            slot: named.clone()
         }
     );
 
     // Unnamed: drawn, free, and reported.
-    let drawn = seam_of(step(Command::SeamAdd {
+    let drawn = slot_of(step(Command::SlotAdd {
         session,
         node: part.clone(),
-        seam: None,
-    }));
-    assert_eq!(drawn.node, part);
-    assert_ne!(drawn.seam, named);
-    assert!(drawn.seam.as_str().starts_with("seam-"), "{}", drawn.seam);
-
-    let slot = slot_of(step(Command::SlotAdd {
-        session,
-        node: part.clone(),
-        seam: drawn.seam.clone(),
         slot: None,
     }));
-    assert_eq!(slot.seam, drawn.seam);
-    assert!(slot.slot.as_str().starts_with("slot-"), "{}", slot.slot);
+    assert_eq!(drawn.node, part);
+    assert_ne!(drawn.slot, named);
+    assert!(drawn.slot.as_str().starts_with("slot-"), "{}", drawn.slot);
 
     // Both landed where the reply said they did.
-    match step(Command::Seams {
+    match step(Command::Slots {
         session,
         node: part.clone(),
     }) {
-        ResponseBody::Seams { seams } => {
+        ResponseBody::Slots { slots } => {
             assert_eq!(
-                seams.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
-                vec![named, drawn.seam.clone()],
+                slots.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+                vec![named, drawn.slot.clone()],
             );
-            assert_eq!(seams[1].slots[0].id, slot.slot);
         }
         other => panic!("{other:?}"),
     }
 
-    // And a draw for a node that could never carry a seam is still refused.
+    // And a draw for a node that could never carry a slot is still refused.
     next += 1;
     assert!(matches!(
         reply(
             &ed,
             next,
-            Command::SeamAdd {
+            Command::SlotAdd {
                 session,
                 node: NodeId::new("root").unwrap(),
-                seam: None,
+                slot: None,
             }
         ),
         Reply::Err { .. }
     ));
 }
 
-/// A seam is renamed through the same command every other Id is, because it
-/// is the same kind of breaking change — and a weld names a seam, so the
-/// rename has to reach the welds or the pairing points at nothing.
+/// A slot is renamed through the same command every other Id is, because it
+/// is the same kind of breaking change — and a weld pairs slots, so the
+/// rename has to reach the pairs or one of them points at nothing.
 #[test]
-fn renaming_a_seam_carries_its_welds_and_refuses_a_name_in_use() {
+fn renaming_a_slot_carries_its_weld_pairs_and_refuses_a_name_in_use() {
     let ed = Editor::new();
     let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
     let root = root(&ed, 2, session);
@@ -568,9 +529,8 @@ fn renaming_a_seam_carries_its_welds_and_refuses_a_name_in_use() {
         next += 1;
         body(&ed, next, command)
     };
-    let (collar, hem) = (SeamId::new("collar").unwrap(), SeamId::new("hem").unwrap());
     let slot = SlotId::new("left").unwrap();
-    let mut part = |seam: &SeamId| {
+    let mut part = || {
         let node = node_of(step(Command::NodeAdd {
             session,
             parent: root.clone(),
@@ -579,81 +539,76 @@ fn renaming_a_seam_carries_its_welds_and_refuses_a_name_in_use() {
             node: None,
         }));
         step(quad(session, node.clone()));
-        step(Command::SeamAdd {
-            session,
-            node: node.clone(),
-            seam: Some(seam.clone()),
-        });
         step(Command::SlotAdd {
             session,
             node: node.clone(),
-            seam: seam.clone(),
             slot: Some(slot.clone()),
         });
         node
     };
-    let (top, bottom) = (part(&collar), part(&hem));
+    let (top, bottom) = (part(), part());
     step(Command::WeldSet {
         session,
-        a: SeamAddr {
-            node: top.clone(),
-            seam: collar.clone(),
-        },
-        b: SeamAddr {
-            node: bottom.clone(),
-            seam: hem.clone(),
-        },
-        weights: Vec::new(),
+        a: top.clone(),
+        b: bottom.clone(),
+        pairs: vec![SlotPair {
+            a: slot.clone(),
+            b: slot.clone(),
+            weight: 0.5,
+        }],
     });
 
-    let neck = SeamId::new("neck").unwrap();
+    let neck = SlotId::new("neck").unwrap();
     step(Command::RenameId {
         session,
-        rename: Rename::Seam {
+        rename: Rename::Slot {
             node: top.clone(),
-            from: collar.clone(),
+            from: slot.clone(),
             to: neck.clone(),
         },
     });
 
-    match step(Command::Seams {
+    match step(Command::Slots {
         session,
         node: top.clone(),
     }) {
-        ResponseBody::Seams { seams } => assert_eq!(seams[0].id, neck),
+        ResponseBody::Slots { slots } => assert_eq!(slots[0].id, neck),
         other => panic!("{other:?}"),
     }
     match step(Command::Welds { session }) {
         ResponseBody::Welds { welds } => {
-            assert_eq!(welds[0].a.seam, neck, "the weld followed the rename");
-            assert_eq!(welds[0].b.seam, hem);
+            assert_eq!(welds[0].pairs[0].a, neck, "the pair followed the rename");
+            assert_eq!(
+                welds[0].pairs[0].b, slot,
+                "and the far part's slot is not this rename's business"
+            );
         }
         other => panic!("{other:?}"),
     }
 
-    // The two refusals a client reacts to, under the codes the seam surface
+    // The two refusals a client reacts to, under the codes the slot surface
     // already uses.
-    step(Command::SeamAdd {
+    step(Command::SlotAdd {
         session,
         node: top.clone(),
-        seam: Some(collar.clone()),
+        slot: Some(slot.clone()),
     });
     for (rename, code) in [
         (
-            Rename::Seam {
+            Rename::Slot {
                 node: top.clone(),
-                from: SeamId::new("gone").unwrap(),
-                to: SeamId::new("x").unwrap(),
+                from: SlotId::new("gone").unwrap(),
+                to: SlotId::new("x").unwrap(),
             },
-            ErrorCode::UnknownSeam,
+            ErrorCode::UnknownSlot,
         ),
         (
-            Rename::Seam {
+            Rename::Slot {
                 node: top.clone(),
                 from: neck.clone(),
-                to: collar.clone(),
+                to: slot.clone(),
             },
-            ErrorCode::DuplicateSeam,
+            ErrorCode::DuplicateSlot,
         ),
     ] {
         next += 1;
@@ -678,9 +633,8 @@ fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
         next += 1;
         body(&ed, next, command)
     };
-    let (collar, hem) = (SeamId::new("collar").unwrap(), SeamId::new("hem").unwrap());
     let (left, right) = (SlotId::new("left").unwrap(), SlotId::new("right").unwrap());
-    let mut part = |seam: &SeamId| {
+    let mut part = || {
         let node = node_of(step(Command::NodeAdd {
             session,
             parent: root.clone(),
@@ -689,42 +643,35 @@ fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
             node: None,
         }));
         step(quad(session, node.clone()));
-        step(Command::SeamAdd {
-            session,
-            node: node.clone(),
-            seam: Some(seam.clone()),
-        });
         for slot in [&left, &right] {
             step(Command::SlotAdd {
                 session,
                 node: node.clone(),
-                seam: seam.clone(),
                 slot: Some(slot.clone()),
             });
         }
         node
     };
-    let (top, bottom) = (part(&collar), part(&hem));
-    let a = SeamAddr {
-        node: top.clone(),
-        seam: collar.clone(),
-    };
-    let b = SeamAddr {
-        node: bottom.clone(),
-        seam: hem.clone(),
-    };
+    let (a, b) = (part(), part());
     step(Command::WeldSet {
         session,
         a: a.clone(),
         b: b.clone(),
-        weights: Vec::new(),
+        pairs: [&left, &right]
+            .into_iter()
+            .map(|s| SlotPair {
+                a: s.clone(),
+                b: s.clone(),
+                weight: 0.5,
+            })
+            .collect(),
     });
 
     let weights = |ed: &Editor, id: u64| match body(ed, id, Command::Welds { session }) {
         ResponseBody::Welds { welds } => welds[0]
-            .weights
+            .pairs
             .iter()
-            .map(|w| (w.slot.to_string(), w.weight))
+            .map(|p| (p.a.to_string(), p.weight))
             .collect::<Vec<_>>(),
         other => panic!("{other:?}"),
     };
@@ -739,7 +686,7 @@ fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
     assert_eq!(
         weights(&ed, 900),
         vec![("left".into(), 0.25), ("right".into(), 0.5)],
-        "the slot nobody named kept its weight",
+        "the pair nobody named kept its weight",
     );
 
     // Named the other way round the same number is B's share, so A's is 0.75.
@@ -788,22 +735,22 @@ fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
             }
         ),
         Reply::Err {
-            code: ErrorCode::Edit,
+            code: ErrorCode::WeldWeightOutOfRange,
             ..
         }
     ));
 }
 
-/// A weld comes undone two ways, and only one of them keeps the seams.
+/// A weld comes undone two ways, and only one of them keeps the parts.
 ///
-/// `seam_delete` cascades — it takes the weld because a weld with one end is
-/// not a weld — so before `weld_delete` the only way to unpair two seams was
+/// Deleting a part cascades — it takes the weld because a weld with one end is
+/// not a weld — so before `weld_delete` the only way to unpair two parts was
 /// to destroy one of them, along with every slot on it. This pins that the new
 /// command leaves both ends exactly where they were, that either order names
 /// the same weld, and that a pair nothing joins is its own error code rather
 /// than a silent no-op.
 #[test]
-fn a_weld_is_unmade_without_taking_the_seams_with_it() {
+fn a_weld_is_unmade_without_taking_the_parts_with_it() {
     let ed = Editor::new();
     let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
     let root = root(&ed, 2, session);
@@ -814,9 +761,8 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
         body(&ed, next, command)
     };
 
-    let (collar, hem) = (SeamId::new("collar").unwrap(), SeamId::new("hem").unwrap());
     let slot = SlotId::new("left").unwrap();
-    let mut part = |seam: &SeamId| {
+    let mut part = || {
         let node = node_of(step(Command::NodeAdd {
             session,
             parent: root.clone(),
@@ -825,40 +771,30 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
             node: None,
         }));
         step(quad(session, node.clone()));
-        step(Command::SeamAdd {
-            session,
-            node: node.clone(),
-            seam: Some(seam.clone()),
-        });
         step(Command::SlotAdd {
             session,
             node: node.clone(),
-            seam: seam.clone(),
             slot: Some(slot.clone()),
         });
         step(Command::SlotFill {
             session,
             node: node.clone(),
-            seam: seam.clone(),
             slot: slot.clone(),
             vertex: 0,
         });
         node
     };
-    let (top, bottom) = (part(&collar), part(&hem));
+    let (top, bottom) = (part(), part());
 
-    let ends = |a: bool| {
-        let (one, two) = if a { (&top, &collar) } else { (&bottom, &hem) };
-        SeamAddr {
-            node: one.clone(),
-            seam: two.clone(),
-        }
-    };
     step(Command::WeldSet {
         session,
-        a: ends(true),
-        b: ends(false),
-        weights: Vec::new(),
+        a: top.clone(),
+        b: bottom.clone(),
+        pairs: vec![SlotPair {
+            a: slot.clone(),
+            b: slot.clone(),
+            weight: 0.5,
+        }],
     });
     assert!(matches!(
         step(Command::Welds { session }),
@@ -869,30 +805,29 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
     // names it, so B-then-A finds the same one.
     step(Command::WeldDelete {
         session,
-        a: ends(false),
-        b: ends(true),
+        a: bottom.clone(),
+        b: top.clone(),
     });
     assert!(matches!(
         step(Command::Welds { session }),
         ResponseBody::Welds { welds } if welds.is_empty()
     ));
 
-    // Both seams are still here, with their slots still filled — which is the
-    // whole difference from deleting a seam.
+    // Both parts are still here, with their slots still filled — which is the
+    // whole difference from deleting a slot.
     for node in [&top, &bottom] {
-        match step(Command::Seams {
+        match step(Command::Slots {
             session,
             node: node.clone(),
         }) {
-            ResponseBody::Seams { seams } => {
-                assert_eq!(seams.len(), 1, "the seam outlives the weld");
+            ResponseBody::Slots { slots } => {
                 assert_eq!(
-                    seams[0]
-                        .slots
+                    slots
                         .iter()
                         .map(|s| (s.id.to_string(), s.vertex))
                         .collect::<Vec<_>>(),
                     vec![("left".into(), Some(0))],
+                    "the slot outlives the weld",
                 );
             }
             other => panic!("{other:?}"),
@@ -914,8 +849,8 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
     // deleted nothing.
     step(Command::WeldDelete {
         session,
-        a: ends(true),
-        b: ends(false),
+        a: top.clone(),
+        b: bottom.clone(),
     });
     next += 1;
     assert!(matches!(
@@ -924,8 +859,8 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
             next,
             Command::WeldDelete {
                 session,
-                a: ends(true),
-                b: ends(false),
+                a: top,
+                b: bottom,
             }
         ),
         Reply::Err {
@@ -935,11 +870,11 @@ fn a_weld_is_unmade_without_taking_the_seams_with_it() {
     ));
 }
 
-/// Every seam refusal a client has to react to gets its own code, so a mesh
+/// Every slot refusal a client has to react to gets its own code, so a mesh
 /// editor can tell "you already used that name" from "that vertex is not on
 /// this part" without reading English.
 #[test]
-fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
+fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
     let ed = Editor::new();
     let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
     let root = root(&ed, 2, session);
@@ -955,24 +890,13 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
         },
     ));
     body(&ed, 4, quad(session, part.clone()));
-    let seam = SeamId::new("collar").unwrap();
     let slot = SlotId::new("left").unwrap();
     body(
         &ed,
         5,
-        Command::SeamAdd {
-            session,
-            node: part.clone(),
-            seam: Some(seam.clone()),
-        },
-    );
-    body(
-        &ed,
-        6,
         Command::SlotAdd {
             session,
             node: part.clone(),
-            seam: seam.clone(),
             slot: Some(slot.clone()),
         },
     );
@@ -983,22 +907,10 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
     };
     assert_eq!(
         code(
-            7,
-            Command::SeamAdd {
-                session,
-                node: part.clone(),
-                seam: Some(seam.clone()),
-            }
-        ),
-        ErrorCode::DuplicateSeam
-    );
-    assert_eq!(
-        code(
-            8,
+            6,
             Command::SlotAdd {
                 session,
                 node: part.clone(),
-                seam: seam.clone(),
                 slot: Some(slot.clone()),
             }
         ),
@@ -1006,64 +918,107 @@ fn the_seam_errors_a_client_reacts_to_have_their_own_codes() {
     );
     assert_eq!(
         code(
-            9,
-            Command::SlotAdd {
-                session,
-                node: part.clone(),
-                seam: SeamId::new("nope").unwrap(),
-                slot: Some(slot.clone()),
-            }
-        ),
-        ErrorCode::UnknownSeam
-    );
-    assert_eq!(
-        code(
-            10,
+            7,
             Command::SlotClear {
                 session,
                 node: part.clone(),
-                seam: seam.clone(),
                 slot: SlotId::new("nope").unwrap(),
             }
         ),
         ErrorCode::UnknownSlot
     );
-    // A weld whose two seams hold different slots cannot be written, so it is
-    // refused where it is made.
+    // A weld the file could not carry is refused where it is made.
     let other = node_of(body(
         &ed,
-        11,
+        8,
         Command::NodeAdd {
             session,
-            parent: root,
+            parent: root.clone(),
             kind: NodeKindArg::Part,
             name: None,
             node: None,
         },
     ));
-    body(&ed, 12, quad(session, other.clone()));
+    body(&ed, 9, quad(session, other.clone()));
+    let pair = |a: &str, b: &str| SlotPair {
+        a: SlotId::new(a).unwrap(),
+        b: SlotId::new(b).unwrap(),
+        weight: 0.5,
+    };
+    assert_eq!(
+        code(
+            10,
+            Command::WeldSet {
+                session,
+                a: part.clone(),
+                b: other.clone(),
+                pairs: vec![pair("left", "nope")],
+            }
+        ),
+        ErrorCode::WeldUnknownSlot,
+        "a pair naming a slot the far part does not carry"
+    );
     body(
         &ed,
-        13,
-        Command::SeamAdd {
+        11,
+        Command::SlotAdd {
             session,
             node: other.clone(),
-            seam: Some(seam.clone()),
+            slot: Some(slot.clone()),
         },
+    );
+    assert_eq!(
+        code(
+            12,
+            Command::WeldSet {
+                session,
+                a: part.clone(),
+                b: other.clone(),
+                pairs: vec![pair("left", "left"), pair("left", "left")],
+            }
+        ),
+        ErrorCode::WeldSlotPairedTwice
+    );
+    assert_eq!(
+        code(
+            13,
+            Command::WeldSet {
+                session,
+                a: part.clone(),
+                b: other.clone(),
+                pairs: vec![SlotPair {
+                    a: slot.clone(),
+                    b: slot.clone(),
+                    weight: 1.5,
+                }],
+            }
+        ),
+        ErrorCode::WeldWeightOutOfRange
     );
     assert_eq!(
         code(
             14,
             Command::WeldSet {
                 session,
-                a: SeamAddr {
-                    node: part,
-                    seam: seam.clone(),
-                },
-                b: SeamAddr { node: other, seam },
-                weights: Vec::new(),
+                a: part.clone(),
+                b: part.clone(),
+                pairs: Vec::new(),
             }
         ),
-        ErrorCode::WeldSlotMismatch
+        ErrorCode::BadWeldEnd,
+        "a part is not welded to itself"
+    );
+    assert_eq!(
+        code(
+            15,
+            Command::WeldSet {
+                session,
+                a: part,
+                b: root,
+                pairs: Vec::new(),
+            }
+        ),
+        ErrorCode::BadWeldEnd,
+        "and only a part carries slots to pair"
     );
 }

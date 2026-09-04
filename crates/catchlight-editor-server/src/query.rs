@@ -85,13 +85,13 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
                     .collect::<Result<Vec<_>, _>>()?,
             })
         }
-        Command::Seams { node, .. } => {
-            let seams = model.seams(node).ok_or_else(|| match model.node(node) {
+        Command::Slots { node, .. } => {
+            let slots = model.slots(node).ok_or_else(|| match model.node(node) {
                 Some(_) => EditorError::Edit(ModelError::NotAPart),
                 None => EditorError::NoNode(node.clone()),
             })?;
-            Ok(ResponseBody::Seams {
-                seams: seams.iter().map(seam_info).collect(),
+            Ok(ResponseBody::Slots {
+                slots: slots.iter().map(slot_info).collect(),
             })
         }
         Command::Welds { .. } => Ok(ResponseBody::Welds {
@@ -101,7 +101,7 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
             slots: model
                 .unfilled_slots()
                 .into_iter()
-                .map(|(node, seam, slot)| SlotAddr { node, seam, slot })
+                .map(|(node, slot)| SlotAddr { node, slot })
                 .collect(),
         }),
         other => Err(EditorError::BadRequest(format!(
@@ -291,37 +291,28 @@ pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {
     out
 }
 
-/// The wire spelling of one seam. Public because the egui editor's seam panel
-/// reads seams straight off the model rather than over the protocol, and there
-/// is one spelling of a seam or there are two.
-pub fn seam_info(seam: &catchlight_core::Seam) -> SeamInfo {
-    SeamInfo {
-        id: seam.id().clone(),
-        slots: seam
-            .slots()
-            .iter()
-            .map(|slot| SlotInfo {
-                id: slot.id().clone(),
-                vertex: slot.vertex(),
-            })
-            .collect(),
+/// The wire spelling of one slot. Public because the egui editor's slot panel
+/// reads a part's slots straight off the model rather than over the protocol,
+/// and there is one spelling of a slot or there are two.
+pub fn slot_info(slot: &catchlight_core::Slot) -> SlotInfo {
+    SlotInfo {
+        id: slot.id().clone(),
+        vertex: slot.vertex(),
     }
 }
 
-fn weld_info(weld: &ModelWeld) -> WeldInfo {
-    let end = |(node, seam): &(NodeId, SeamId)| SeamAddr {
-        node: node.clone(),
-        seam: seam.clone(),
-    };
+/// The wire spelling of one weld, public for the same reason.
+pub fn weld_info(weld: &ModelWeld) -> WeldInfo {
     WeldInfo {
-        a: end(weld.a()),
-        b: end(weld.b()),
-        weights: weld
-            .weights()
+        a: weld.a().clone(),
+        b: weld.b().clone(),
+        pairs: weld
+            .pairs()
             .iter()
-            .map(|(slot, weight)| SlotWeight {
-                slot: slot.clone(),
-                weight: *weight,
+            .map(|pair| SlotPair {
+                a: pair.a.clone(),
+                b: pair.b.clone(),
+                weight: pair.weight,
             })
             .collect(),
     }

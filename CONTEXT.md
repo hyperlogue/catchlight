@@ -110,16 +110,17 @@ A drawable's rule for being clipped by another node's shape: the source node,
 and whether what the source covers is kept or cut away.
 _Avoid_: mask binding
 
-**Seam**:
-A named set of slots on a part, each filled by one of the part's vertices or
-left unfilled, so that welds can refer to vertices by slot. Whoever owns the
-part fills its seams; re-authoring the mesh empties every slot, and the author
-must fill them again.
-_Avoid_: vertex ref
+**Slot**:
+A named handle on a part, filled by one of the part's vertices or left
+unfilled, so that welds can refer to vertices by name. Whoever owns the part
+fills its slots; re-authoring the mesh empties every slot, and the author must
+fill them again. A slot is unique within its part, never across a model.
+_Avoid_: seam, vertex ref
 
 **Weld**:
-A pairing of two parts' seams, slot by slot. Each pair of vertices is pulled
-toward a shared point after all other deformation, so the seam stays closed.
+A pairing of two parts, slot by slot: each pair names a slot on each side and
+a weight. Each pair of vertices is pulled toward a shared point after all
+other deformation, so the join stays closed. One weld per pair of parts.
 
 ### Params and posing
 

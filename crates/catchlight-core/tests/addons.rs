@@ -8,13 +8,13 @@ use catchlight_core::formats::clm::{
     ClmAnimation, ClmBinding, ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMesh, TextureAlpha,
     TextureEncoding,
 };
-use catchlight_core::id::{Name, NodeId, ParamId, SeamId, SeededHex, SlotId, TexId};
+use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, SlotId, TexId};
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::PendulumKind;
 use catchlight_core::{
     target_of, BindingKey, BindingTarget, HexSource, InstallError, MaskMode, Model, ModelComposite,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
-    ModelWeld, Puppet, ScalarTarget,
+    ModelWeld, Puppet, ScalarTarget, SlotPair,
 };
 
 // ---------------------------------------------------------------- generator
@@ -70,7 +70,7 @@ const SCALARS: [ScalarTarget; 4] = [
 ];
 
 /// A random but well-formed model: a tree of every node kind, params, shared
-/// textures, masks, physics targets, one- and two-param bindings, welded seams
+/// textures, masks, physics targets, one- and two-param bindings, welded slots
 /// and an animation.
 fn random_model(rng: &mut Rng) -> Model {
     let mut hex = SeededHex::new(rng.bits());
@@ -199,19 +199,28 @@ fn random_model(rng: &mut Rng) -> Model {
     if parts.len() >= 2 {
         let a = parts[0].clone();
         let b = parts[1].clone();
-        let seam = SeamId::new("edge").unwrap();
         let slots = [SlotId::new("s0").unwrap(), SlotId::new("s1").unwrap()];
         for (i, node) in [&a, &b].into_iter().enumerate() {
-            m.seam_add(node, seam.clone()).unwrap();
             for (j, slot) in slots.iter().enumerate() {
-                m.slot_add(node, &seam, slot.clone()).unwrap();
-                m.slot_fill(node, &seam, slot, (i + j) as u32).unwrap();
+                m.slot_add(node, slot.clone()).unwrap();
+                m.slot_fill(node, slot, (i + j) as u32).unwrap();
             }
         }
         m.set_welds(vec![ModelWeld::new(
-            (a, seam.clone()),
-            (b, seam),
-            vec![(slots[0].clone(), 0.5), (slots[1].clone(), 0.25)],
+            a,
+            b,
+            vec![
+                SlotPair {
+                    a: slots[0].clone(),
+                    b: slots[0].clone(),
+                    weight: 0.5,
+                },
+                SlotPair {
+                    a: slots[1].clone(),
+                    b: slots[1].clone(),
+                    weight: 0.25,
+                },
+            ],
         )])
         .unwrap();
     }
@@ -246,14 +255,8 @@ fn canonical(m: &Model) -> ClmFile {
     doc.nodes.sort_by(|a, b| a.id.cmp(&b.id));
     doc.params.sort_by(|a, b| a.id.cmp(&b.id));
     doc.bindings.sort_by_key(binding_key);
-    doc.welds.sort_by_key(|w| {
-        (
-            w.a.node.to_string(),
-            w.a.seam.to_string(),
-            w.b.node.to_string(),
-            w.b.seam.to_string(),
-        )
-    });
+    doc.welds
+        .sort_by_key(|w| (w.a.to_string(), w.b.to_string()));
     doc.animations.sort_by(|a, b| a.name.cmp(&b.name));
     file.textures.sort_by(|a, b| a.id.cmp(&b.id));
     file

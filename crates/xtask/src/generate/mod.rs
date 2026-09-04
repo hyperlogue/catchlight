@@ -117,7 +117,6 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::NodeId,
         proto::ParamId,
         proto::TexId,
-        proto::SeamId,
         proto::SlotId,
         proto::Command,
         proto::NodeKindArg,
@@ -136,10 +135,8 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::BindingParams,
         proto::BindingKeyEntry,
         proto::ParamPose,
-        proto::SeamAddr,
         proto::SlotAddr,
-        proto::SeamSlot,
-        proto::SlotWeight,
+        proto::SlotPair,
         proto::Presence,
         proto::Camera,
         proto::Reply,
@@ -153,7 +150,6 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::TexInfo,
         proto::ParamInfo,
         proto::BindingInfo,
-        proto::SeamInfo,
         proto::SlotInfo,
         proto::WeldInfo,
         proto::PreviewInfo,
@@ -373,10 +369,10 @@ mod tests {
     fn check_closed_names_a_type_left_off_the_list() {
         let cfg = config();
         let decls = decls![&cfg, proto::WeldInfo];
-        let err = check_closed(&decls).expect_err("WeldInfo names SeamAddr and SlotWeight");
+        let err = check_closed(&decls).expect_err("WeldInfo names NodeId and SlotPair");
         let message = err.to_string();
-        assert!(message.contains("SeamAddr"), "{message}");
-        assert!(message.contains("SlotWeight"), "{message}");
+        assert!(message.contains("NodeId"), "{message}");
+        assert!(message.contains("SlotPair"), "{message}");
     }
 
     #[test]

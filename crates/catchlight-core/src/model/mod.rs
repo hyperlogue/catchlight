@@ -31,13 +31,13 @@
 //!   [`Model::is_fragment`] is which shape this is. Neither shape has a
 //!   cycle, and no reference that resolves inside the model may dangle:
 //!   deleting a node drops every mask, binding and weld that
-//!   pointed into the removed subtree, deleting a seam drops the welds that
-//!   named it, and deleting a param or texture nulls out whatever referenced
-//!   it. Renaming rewrites instead — a node's new Id reaches its weld ends
-//!   like everything else. Cross-references (a part's albedo, a mask's source,
-//!   a physics target, a weld's ends) are private and only reachable through
-//!   methods that check them, which is what makes [`Model::to_clm_file`]
-//!   total.
+//!   pointed into the removed subtree, deleting a slot drops the weld pairs
+//!   that named it, and deleting a param or texture nulls out whatever
+//!   referenced it. Renaming rewrites instead — a node's new Id reaches its
+//!   weld ends like everything else. Cross-references (a part's albedo, a
+//!   mask's source, a physics target, a weld's ends) are private and only
+//!   reachable through methods that check them, which is what makes
+//!   [`Model::to_clm_file`] total.
 //! - **Every texture has a user, and a part's albedo is the only user kind.**
 //!   There is no adding a texture and finding it a part later:
 //!   [`Model::add_texture`] takes the part it is for and sets its albedo in
@@ -56,11 +56,10 @@
 //!   siblings are the only way an Id ever changes — each rewrites every
 //!   reference to it. The root's Id starts out `root`; a model read from a
 //!   `.clm`, which stores no Ids, gets `node-<arena index>` for the rest.
-//!   A [`SeamId`] and a [`SlotId`] are scoped rather than model-wide, so the
-//!   same rules apply within their scope: [`Model::seam_add_generated`] draws
-//!   until the Id is free on the part, [`Model::slot_add_generated`] until it
-//!   is free on every seam welded to this one, and [`Model::rename_seam`] is
-//!   the one way a seam's Id changes.
+//!   A [`SlotId`] is scoped to its part rather than model-wide, so the same
+//!   rules apply within that scope: [`Model::slot_add_generated`] draws until
+//!   the Id is free on the part, and [`Model::rename_slot`] is the one way a
+//!   slot's Id changes.
 //! - **A mask source is a drawable.** The renderer rasterizes a source's own
 //!   drawing into the mask, so [`Model::mask_add`] takes a part or a
 //!   composite and refuses everything else — a mesh group is never drawn, and
@@ -77,17 +76,17 @@
 //!   of the binding — a [`BindingKey`] names one or two params and its grid is
 //!   the product of their key positions — so a pose is a plain map
 //!   `ParamId -> f32` and nothing else carries a second dimension.
-//! - **A weld pairs seams, never vertex indices.** A part carries named
-//!   [`Seam`]s of named [`Slot`]s, each filled by one of its vertices or
-//!   *unfilled*; a [`ModelWeld`] names two of them and weights the slots they
-//!   share. Which vertex fills a slot is the part owner's decision, so an
-//!   addon's weld into a base part survives the base part being re-meshed:
-//!   [`Model::set_node_mesh`] empties every slot on the part and hands back
-//!   the list to refill, and until they are refilled the weld solves the slots
-//!   it still resolves rather than tearing the mesh. Two welded seams share
-//!   one slot set — [`Model::slot_add`] and [`Model::slot_delete`] reach every
-//!   seam welded to the one they are given, directly or through a chain — so
-//!   no edit can leave a weld the file cannot express.
+//! - **A weld pairs slots, never vertex indices.** A part carries named
+//!   [`Slot`]s, each filled by one of its vertices or *unfilled*; a
+//!   [`ModelWeld`] names two parts and pairs their slots, one
+//!   [`SlotPair`] at a time. Which vertex fills a slot is the part owner's
+//!   decision, so an addon's weld into a base part survives the base being
+//!   re-meshed: [`Model::set_node_mesh`] empties every slot on the part and
+//!   hands back the list to refill, and until they are refilled the weld
+//!   solves the pairs it still resolves rather than tearing the mesh.
+//!   A slot is its part's own — no edit to one part's slots reaches another
+//!   part, and [`Model::slot_delete`] drops the pairs that named it the way
+//!   deleting a node drops the bindings that pointed at it.
 //! - **An animation lane names a live param.** Animations are authored data
 //!   like everything else here, so [`Model::set_animations`] refuses a lane
 //!   over an unknown param and [`Model::delete_param`] drops the lanes that
@@ -149,7 +148,7 @@ use crate::formats::clm::{
     self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha,
     TextureEncoding,
 };
-use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SeamId, SlotId, TexId};
+use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
@@ -189,17 +188,21 @@ pub enum ModelError {
     NotAPart,
     #[error("a mask source must be a part or a composite")]
     NotAMaskSource,
-    #[error("part carries no such seam")]
-    UnknownSeam,
-    #[error("seam carries no such slot")]
+    #[error("part carries no such slot")]
     UnknownSlot,
-    #[error("seam {0:?} is already on this part")]
-    DuplicateSeam(String),
-    #[error("slot {0:?} is already in this seam")]
+    #[error("slot {0:?} is already on this part")]
     DuplicateSlot(String),
-    #[error("a weld's two seams must hold the same slots, each weighted once")]
-    WeldSlotMismatch,
-    #[error("no weld pairs those two seams")]
+    #[error("a weld pairs two different parts, never a part with itself")]
+    WeldSelfPaired,
+    #[error("a weld's end is not a part")]
+    WeldEndNotAPart,
+    #[error("those two parts are already welded; one weld records a part pair")]
+    DuplicateWeld,
+    #[error("a weld pairs slot {0:?}, which the part on that side does not carry")]
+    WeldUnknownSlot(String),
+    #[error("a weld pairs slot {0:?} twice")]
+    WeldSlotPairedTwice(String),
+    #[error("no weld pairs those two parts")]
     UnknownWeld,
     #[error("a slot weight is a share of a meeting point, so it must be within 0..=1")]
     WeldWeightOutOfRange,
@@ -292,41 +295,15 @@ pub struct Model {
     binding_index: OnceLock<HashMap<BindingKey, usize>>,
 }
 
-/// The share of the meeting point a slot added to a welded seam starts at:
-/// the two sides meet midway.
+/// The share of the meeting point a slot pair starts at: the two sides meet
+/// midway.
 pub const DEFAULT_SLOT_WEIGHT: f32 = 0.5;
 
-/// A named set of slots on a part, each filled by one of the part's vertices.
-/// A seam is what a [`ModelWeld`] names, so a weld refers to a vertex without
-/// ever storing a vertex index.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Seam {
-    id: SeamId,
-    slots: Vec<Slot>,
-}
-
-impl Seam {
-    pub fn id(&self) -> &SeamId {
-        &self.id
-    }
-
-    /// The seam's slots, in authored order.
-    pub fn slots(&self) -> &[Slot] {
-        &self.slots
-    }
-
-    pub fn slot(&self, id: &SlotId) -> Option<&Slot> {
-        self.slots.iter().find(|s| &s.id == id)
-    }
-
-    fn slot_mut(&mut self, id: &SlotId) -> Option<&mut Slot> {
-        self.slots.iter_mut().find(|s| &s.id == id)
-    }
-}
-
-/// One named place in a seam, filled by one of the part's vertices or by
-/// nothing. An *unfilled* slot is what re-authoring the part's mesh leaves
-/// behind: a weld skips it until the part's author fills it again.
+/// One named handle on a part, filled by one of the part's vertices or by
+/// nothing. A [`ModelWeld`] pairs slots, so it names a vertex without ever
+/// storing a vertex index. An *unfilled* slot is what re-authoring the part's
+/// mesh leaves behind: a weld skips the pairs naming it until the part's
+/// author fills it again.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slot {
     id: SlotId,
@@ -344,79 +321,78 @@ impl Slot {
     }
 }
 
-/// A weld: two parts' seams paired slot by slot, each pair pulled to a
-/// weighted meeting point after every other deformation so the seam stays
-/// closed. Both ends name a seam, so nothing here goes stale when a part is
-/// re-meshed.
+/// One pair a weld holds: a slot on the A part, a slot on the B part, and
+/// A's share of the point the two are pulled to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotPair {
+    /// The slot on the weld's A part.
+    pub a: SlotId,
+    /// The slot on the weld's B part.
+    pub b: SlotId,
+    /// A's share of the meeting point in `[0, 1]`: 1.0 pins A and snaps B
+    /// to it, 0.5 meets midway.
+    pub weight: f32,
+}
+
+/// A weld: two parts, and the slot pairs between them. Each pair is pulled to
+/// a weighted meeting point after every other deformation, so the parts stay
+/// joined. Both ends name a part and the pairs name slots, so nothing here
+/// goes stale when a part is re-meshed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelWeld {
-    a: (NodeId, SeamId),
-    b: (NodeId, SeamId),
-    weights: Arc<Vec<(SlotId, f32)>>,
+    a: NodeId,
+    b: NodeId,
+    pairs: Arc<Vec<SlotPair>>,
 }
 
 impl ModelWeld {
-    pub fn new(a: (NodeId, SeamId), b: (NodeId, SeamId), weights: Vec<(SlotId, f32)>) -> Self {
+    pub fn new(a: NodeId, b: NodeId, pairs: Vec<SlotPair>) -> Self {
         Self {
             a,
             b,
-            weights: Arc::new(weights),
+            pairs: Arc::new(pairs),
         }
     }
 
-    /// The part and seam this weld's A side names.
-    pub fn a(&self) -> &(NodeId, SeamId) {
+    /// The part this weld's A side names.
+    pub fn a(&self) -> &NodeId {
         &self.a
     }
 
-    /// The part and seam this weld's B side names.
-    pub fn b(&self) -> &(NodeId, SeamId) {
+    /// The part this weld's B side names.
+    pub fn b(&self) -> &NodeId {
         &self.b
     }
 
-    /// A's share of the meeting point, one entry per slot the two seams
-    /// share, in authored order.
-    pub fn weights(&self) -> &[(SlotId, f32)] {
-        &self.weights
+    /// The slot pairs, in authored order.
+    pub fn pairs(&self) -> &[SlotPair] {
+        &self.pairs
     }
 
-    /// Follow one end through a seam rename. A weld names a seam, so the
-    /// rename has to reach in here or the pairing resolves to nothing.
-    fn rename_end(&mut self, was: &(NodeId, SeamId), to: &SeamId) {
-        if &self.a == was {
-            self.a.1 = to.clone();
-        }
-        if &self.b == was {
-            self.b.1 = to.clone();
-        }
-    }
-
-    /// The vertex pairs this weld solves, in weight order. A slot that is
-    /// unfilled on either end is skipped — a seam under repair holds the rest
-    /// of itself closed instead of tearing the mesh — so the result can be
-    /// shorter than [`Self::weights`], or empty.
+    /// The vertex pairs this weld solves, in pair order. A pair whose slot is
+    /// unfilled on either end is skipped — a part under repair holds the rest
+    /// of the join closed instead of tearing the mesh — so the result can be
+    /// shorter than [`Self::pairs`], or empty.
     pub fn resolve(&self, model: &Model) -> Vec<ModelWeldPair> {
-        let (Some(a), Some(b)) = (
-            model.seam(&self.a.0, &self.a.1),
-            model.seam(&self.b.0, &self.b.1),
-        ) else {
+        let (Some(a), Some(b)) = (model.slots(&self.a), model.slots(&self.b)) else {
             return Vec::new();
         };
-        self.weights
+        let find = |slots: &[Slot], id: &SlotId| slots.iter().find(|s| &s.id == id)?.vertex;
+        self.pairs
             .iter()
-            .filter_map(|(slot, weight)| {
+            .filter_map(|pair| {
                 Some(ModelWeldPair {
-                    a_vert: a.slot(slot)?.vertex?,
-                    b_vert: b.slot(slot)?.vertex?,
-                    weight: *weight,
+                    a_vert: find(a, &pair.a)?,
+                    b_vert: find(b, &pair.b)?,
+                    weight: pair.weight,
                 })
             })
             .collect()
     }
 }
 
-/// One resolved pair of welded vertices, one from each part: what a weld's
-/// slot pair becomes once both slots are filled. A Model never stores these —
+/// One resolved pair of welded vertices, one from each part: what a
+/// [`SlotPair`] becomes once both slots are filled. A Model never stores these —
 /// [`ModelWeld::resolve`] derives them — but the runtime takes them
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -535,14 +511,14 @@ pub struct ModelPart {
     /// Albedo texture, or `None` for an unmapped part (the renderer culls it).
     albedo: Option<TexId>,
     masks: Vec<ModelMask>,
-    /// The vertex slots welds name, filled by this part's author. Only
-    /// [`Model`]'s seam methods build one, so a slot is always in mesh range
+    /// The vertex slots welds pair, filled by this part's author. Only
+    /// [`Model`]'s slot methods build one, so a slot is always in mesh range
     /// or unfilled.
-    seams: Vec<Seam>,
+    slots: Vec<Slot>,
 }
 
 impl ModelPart {
-    /// An opaque, unmasked, untextured part drawing `mesh`, with no seams.
+    /// An opaque, unmasked, untextured part drawing `mesh`, with no slots.
     pub fn new(mesh: impl Into<ModelMesh>) -> Self {
         Self {
             opacity: 1.0,
@@ -553,7 +529,7 @@ impl ModelPart {
             mesh: mesh.into(),
             albedo: None,
             masks: Vec::new(),
-            seams: Vec::new(),
+            slots: Vec::new(),
         }
     }
 
@@ -569,9 +545,9 @@ impl ModelPart {
         &self.masks
     }
 
-    /// The part's seams, in authored order.
-    pub fn seams(&self) -> &[Seam] {
-        &self.seams
+    /// The part's slots, in authored order.
+    pub fn slots(&self) -> &[Slot] {
+        &self.slots
     }
 }
 
@@ -1101,7 +1077,7 @@ impl Model {
         }
         self.bindings.retain(|b| !removed.contains(&b.key.node));
         self.welds
-            .retain(|w| !removed.contains(&w.a.0) && !removed.contains(&w.b.0));
+            .retain(|w| !removed.contains(&w.a) && !removed.contains(&w.b));
         self.gc_textures();
         self.bump();
         Ok(())
@@ -1293,11 +1269,11 @@ impl Model {
             }
         }
         for w in &mut self.welds {
-            if &w.a.0 == old {
-                w.a.0 = new.clone();
+            if &w.a == old {
+                w.a = new.clone();
             }
-            if &w.b.0 == old {
-                w.b.0 = new.clone();
+            if &w.b == old {
+                w.b = new.clone();
             }
         }
         for r in &mut self.roots {
@@ -1454,17 +1430,17 @@ impl Model {
     /// that are sized to it move in one step, so no reader ever sees offsets
     /// fitted to a mesh that is gone.
     ///
-    /// Seams are *not* refitted. Which vertex fills a slot is a claim about
+    /// Slots are *not* refitted. Which vertex fills a slot is a claim about
     /// the mesh that just went away, and guessing a new one would defeat the
     /// point of naming vertices by slot — so every slot on the part is
-    /// emptied and returned, in seam then slot order, for its author to
-    /// refill. Welds that named those slots skip them meanwhile.
+    /// emptied and returned, in slot order, for its author to refill. The
+    /// weld pairs that named those slots skip them meanwhile.
     pub fn set_node_mesh_with(
         &mut self,
         id: &NodeId,
         mesh: ClmMesh,
         mut refit: impl FnMut(&ClmMesh, &ClmMesh, &[f32]) -> Vec<f32>,
-    ) -> Result<Vec<(SeamId, SlotId)>, ModelError> {
+    ) -> Result<Vec<SlotId>, ModelError> {
         validate_mesh(&mesh)?;
         let old = match self.nodes.get(id).and_then(ModelNode::mesh) {
             Some(m) => m.clone(),
@@ -1494,11 +1470,9 @@ impl Model {
         }
         let mut emptied = Vec::new();
         if let Some(ModelNodeKind::Part(part)) = self.nodes.get_mut(id).map(|n| &mut n.kind) {
-            for seam in &mut part.seams {
-                for slot in &mut seam.slots {
-                    slot.vertex = None;
-                    emptied.push((seam.id.clone(), slot.id.clone()));
-                }
+            for slot in &mut part.slots {
+                slot.vertex = None;
+                emptied.push(slot.id.clone());
             }
         }
         self.bump();
@@ -1507,12 +1481,8 @@ impl Model {
 
     /// Replace a meshed node's mesh, resizing every authored deform cell on it
     /// to the new vertex count (new vertices start at zero offset). Empties
-    /// the part's seams the same way [`Self::set_node_mesh_with`] does.
-    pub fn set_node_mesh(
-        &mut self,
-        id: &NodeId,
-        mesh: ClmMesh,
-    ) -> Result<Vec<(SeamId, SlotId)>, ModelError> {
+    /// the part's slots the same way [`Self::set_node_mesh_with`] does.
+    pub fn set_node_mesh(&mut self, id: &NodeId, mesh: ClmMesh) -> Result<Vec<SlotId>, ModelError> {
         self.set_node_mesh_with(id, mesh, |_, new, offsets| {
             let mut out = offsets.to_vec();
             out.resize(new.verts.len(), 0.0);
@@ -1590,184 +1560,113 @@ impl Model {
         Ok(())
     }
 
-    // ---- seams ----
+    // ---- slots ----
 
-    /// The seams on a part, in authored order, or `None` for a node that is
+    /// The slots on a part, in authored order, or `None` for a node that is
     /// not a part.
-    pub fn seams(&self, id: &NodeId) -> Option<&[Seam]> {
+    pub fn slots(&self, id: &NodeId) -> Option<&[Slot]> {
         match &self.node(id)?.kind {
-            ModelNodeKind::Part(p) => Some(p.seams()),
+            ModelNodeKind::Part(p) => Some(p.slots()),
             _ => None,
         }
     }
 
-    /// One seam on one part.
-    pub fn seam(&self, id: &NodeId, seam: &SeamId) -> Option<&Seam> {
-        self.seams(id)?.iter().find(|s| &s.id == seam)
+    /// One slot on one part.
+    pub fn slot(&self, id: &NodeId, slot: &SlotId) -> Option<&Slot> {
+        self.slots(id)?.iter().find(|s| &s.id == slot)
     }
 
     /// Every slot in the model no vertex fills, in model order — what a mesh
     /// edit left behind for its author to refill.
-    pub fn unfilled_slots(&self) -> Vec<(NodeId, SeamId, SlotId)> {
+    pub fn unfilled_slots(&self) -> Vec<(NodeId, SlotId)> {
         let mut out = Vec::new();
         for id in self.nodes_in_order() {
-            let Some(seams) = self.seams(&id) else {
+            let Some(slots) = self.slots(&id) else {
                 continue;
             };
-            for seam in seams {
-                for slot in &seam.slots {
-                    if slot.vertex.is_none() {
-                        out.push((id.clone(), seam.id.clone(), slot.id.clone()));
-                    }
+            for slot in slots {
+                if slot.vertex.is_none() {
+                    out.push((id.clone(), slot.id.clone()));
                 }
             }
         }
         out
     }
 
-    /// Add an empty seam to a part.
-    pub fn seam_add(&mut self, id: &NodeId, seam: SeamId) -> Result<(), ModelError> {
+    /// Add an unfilled slot to a part. A slot is the part's own, so this
+    /// reaches no other part: a weld pairs two parts' slots by Id and gains
+    /// nothing until a pair names this one.
+    pub fn slot_add(&mut self, id: &NodeId, slot: SlotId) -> Result<(), ModelError> {
         let part = self.part_mut(id)?;
-        if part.seams.iter().any(|s| s.id == seam) {
-            return Err(ModelError::DuplicateSeam(seam.to_string()));
+        if part.slots.iter().any(|s| s.id == slot) {
+            return Err(ModelError::DuplicateSlot(slot.to_string()));
         }
-        part.seams.push(Seam {
-            id: seam,
-            slots: Vec::new(),
+        part.slots.push(Slot {
+            id: slot,
+            vertex: None,
         });
         self.bump();
         Ok(())
     }
 
-    /// Add an empty seam under a generated Id (`seam-<8 hex>`, re-drawn until
-    /// it is free on this part).
+    /// Add an unfilled slot under a generated Id (`slot-<8 hex>`, re-drawn
+    /// until it is free on this part).
     ///
-    /// A part is where a [`SeamId`] has to be unique, so this is where the
+    /// A part is where a [`SlotId`] has to be unique, so this is where the
     /// draw can be checked — [`crate::id`] cannot see the part.
-    pub fn seam_add_generated(
-        &mut self,
-        id: &NodeId,
-        hex: &mut impl HexSource,
-    ) -> Result<SeamId, ModelError> {
-        // Refuse a node that could not carry a seam before minting one for it.
-        self.part_mut(id)?;
-        let seam = self.mint(SeamId::generate, |m, s| m.seam(id, s).is_some(), hex)?;
-        self.seam_add(id, seam.clone())?;
-        Ok(seam)
-    }
-
-    /// Rename a seam on one part, rewriting every weld end that named it.
-    ///
-    /// A weld names a seam rather than a vertex, so a rename that did not
-    /// carry the welds would leave them pointing at a seam the part no longer
-    /// has — the pairing would survive in the file and resolve to nothing.
-    /// Like every other rename this is breaking for an addon that named the
-    /// old Id; there is no alias.
-    pub fn rename_seam(
-        &mut self,
-        id: &NodeId,
-        from: &SeamId,
-        to: SeamId,
-    ) -> Result<(), ModelError> {
-        let part = self.part_mut(id)?;
-        let Some(at) = part.seams.iter().position(|s| &s.id == from) else {
-            return Err(ModelError::UnknownSeam);
-        };
-        if &to != from && part.seams.iter().any(|s| s.id == to) {
-            return Err(ModelError::DuplicateSeam(to.to_string()));
-        }
-        part.seams[at].id = to.clone();
-        let was = (id.clone(), from.clone());
-        for w in &mut self.welds {
-            w.rename_end(&was, &to);
-        }
-        self.bump();
-        Ok(())
-    }
-
-    /// Remove a seam, and with it every weld that named it. A weld with one
-    /// end is not a weld, so this cascades the way deleting a node drops the
-    /// masks and bindings that pointed at it.
-    pub fn seam_delete(&mut self, id: &NodeId, seam: &SeamId) -> Result<(), ModelError> {
-        let part = self.part_mut(id)?;
-        let Some(at) = part.seams.iter().position(|s| &s.id == seam) else {
-            return Err(ModelError::UnknownSeam);
-        };
-        part.seams.remove(at);
-        let end = (id.clone(), seam.clone());
-        self.welds.retain(|w| w.a != end && w.b != end);
-        self.bump();
-        Ok(())
-    }
-
-    /// Add an unfilled slot to a seam. Welded seams share one slot set, so
-    /// every seam this one is welded to — directly or through a chain of
-    /// welds — gains the same slot, and every weld between them weights it at
-    /// [`DEFAULT_SLOT_WEIGHT`]. Without that reach an edit to one part could
-    /// leave a weld the file cannot express.
-    pub fn slot_add(&mut self, id: &NodeId, seam: &SeamId, slot: SlotId) -> Result<(), ModelError> {
-        if self.seam_mut(id, seam)?.slot(&slot).is_some() {
-            return Err(ModelError::DuplicateSlot(slot.to_string()));
-        }
-        let welded = self.weld_component(id, seam);
-        for (node, seam) in &welded {
-            if let Ok(s) = self.seam_mut(node, seam) {
-                if s.slot(&slot).is_none() {
-                    s.slots.push(Slot {
-                        id: slot.clone(),
-                        vertex: None,
-                    });
-                }
-            }
-        }
-        for w in &mut self.welds {
-            if welded.contains(&w.a) && !w.weights.iter().any(|(s, _)| s == &slot) {
-                Arc::make_mut(&mut w.weights).push((slot.clone(), DEFAULT_SLOT_WEIGHT));
-            }
-        }
-        self.bump();
-        Ok(())
-    }
-
-    /// Add an unfilled slot under a generated Id (`slot-<8 hex>`), re-drawn
-    /// until it is free everywhere it is about to land.
-    ///
-    /// That is every seam welded to this one, directly or through a chain,
-    /// because [`Self::slot_add`] puts it on all of them and would treat a
-    /// collision there as the same slot. A complete model would answer the
-    /// same from this seam alone — [`Self::set_welds`] refuses two seams that
-    /// do not already hold one slot set — but a fragment's weld may name a
-    /// seam the model does not carry, and the check should say what it means.
     pub fn slot_add_generated(
         &mut self,
         id: &NodeId,
-        seam: &SeamId,
         hex: &mut impl HexSource,
     ) -> Result<SlotId, ModelError> {
-        // Refuse an unknown seam before minting a slot for it.
-        self.seam_mut(id, seam)?;
-        let welded = self.weld_component(id, seam);
-        let slot = self.mint(
-            SlotId::generate,
-            |m, slot| {
-                welded
-                    .iter()
-                    .any(|(node, seam)| m.seam(node, seam).is_some_and(|s| s.slot(slot).is_some()))
-            },
-            hex,
-        )?;
-        self.slot_add(id, seam, slot.clone())?;
+        // Refuse a node that could not carry a slot before minting one for it.
+        self.part_mut(id)?;
+        let slot = self.mint(SlotId::generate, |m, s| m.slot(id, s).is_some(), hex)?;
+        self.slot_add(id, slot.clone())?;
         Ok(slot)
     }
 
-    /// Point a slot at one of the part's vertices.
-    pub fn slot_fill(
+    /// Rename a slot on one part, rewriting every weld pair that named it.
+    ///
+    /// A weld pairs slots rather than vertices, so a rename that did not carry
+    /// the welds would leave them pairing a slot the part no longer has — the
+    /// pair would survive in the file and resolve to nothing. Like every other
+    /// rename this is breaking for an addon that named the old Id; there is no
+    /// alias.
+    pub fn rename_slot(
         &mut self,
         id: &NodeId,
-        seam: &SeamId,
-        slot: &SlotId,
-        vertex: u32,
+        from: &SlotId,
+        to: SlotId,
     ) -> Result<(), ModelError> {
+        let part = self.part_mut(id)?;
+        let Some(at) = part.slots.iter().position(|s| &s.id == from) else {
+            return Err(ModelError::UnknownSlot);
+        };
+        if &to != from && part.slots.iter().any(|s| s.id == to) {
+            return Err(ModelError::DuplicateSlot(to.to_string()));
+        }
+        part.slots[at].id = to.clone();
+        for w in &mut self.welds {
+            let (renames_a, renames_b) = (&w.a == id, &w.b == id);
+            if !renames_a && !renames_b {
+                continue;
+            }
+            for pair in Arc::make_mut(&mut w.pairs) {
+                if renames_a && &pair.a == from {
+                    pair.a = to.clone();
+                }
+                if renames_b && &pair.b == from {
+                    pair.b = to.clone();
+                }
+            }
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Point a slot at one of the part's vertices.
+    pub fn slot_fill(&mut self, id: &NodeId, slot: &SlotId, vertex: u32) -> Result<(), ModelError> {
         let vertices = match self.node(id).map(|n| &n.kind) {
             Some(ModelNodeKind::Part(p)) => p.mesh().vertex_count(),
             Some(_) => return Err(ModelError::NotAPart),
@@ -1776,52 +1675,35 @@ impl Model {
         if vertex as usize >= vertices {
             return Err(ModelError::IndexOutOfRange);
         }
-        self.seam_mut(id, seam)?
-            .slot_mut(slot)
-            .ok_or(ModelError::UnknownSlot)?
-            .vertex = Some(vertex);
+        self.slot_mut(id, slot)?.vertex = Some(vertex);
         self.bump();
         Ok(())
     }
 
-    /// Empty a slot without removing it: the welds that name it skip it until
-    /// it is filled again.
-    pub fn slot_clear(
-        &mut self,
-        id: &NodeId,
-        seam: &SeamId,
-        slot: &SlotId,
-    ) -> Result<(), ModelError> {
-        self.seam_mut(id, seam)?
-            .slot_mut(slot)
-            .ok_or(ModelError::UnknownSlot)?
-            .vertex = None;
+    /// Empty a slot without removing it: the weld pairs that name it skip it
+    /// until it is filled again.
+    pub fn slot_clear(&mut self, id: &NodeId, slot: &SlotId) -> Result<(), ModelError> {
+        self.slot_mut(id, slot)?.vertex = None;
         self.bump();
         Ok(())
     }
 
-    /// Remove a slot from a seam, from every seam welded to it, and from the
-    /// weights of the welds between them — the other half of the shared slot
-    /// set [`Self::slot_add`] maintains.
-    pub fn slot_delete(
-        &mut self,
-        id: &NodeId,
-        seam: &SeamId,
-        slot: &SlotId,
-    ) -> Result<(), ModelError> {
-        if self.seam_mut(id, seam)?.slot(slot).is_none() {
+    /// Remove a slot from a part, and with it every weld pair that named it.
+    /// No other part's slots move — a weld left with no pairs stays, because
+    /// it still records which two parts are joined.
+    pub fn slot_delete(&mut self, id: &NodeId, slot: &SlotId) -> Result<(), ModelError> {
+        let part = self.part_mut(id)?;
+        let Some(at) = part.slots.iter().position(|s| &s.id == slot) else {
             return Err(ModelError::UnknownSlot);
-        }
-        let welded = self.weld_component(id, seam);
-        for (node, seam) in &welded {
-            if let Ok(s) = self.seam_mut(node, seam) {
-                s.slots.retain(|x| &x.id != slot);
-            }
-        }
+        };
+        part.slots.remove(at);
         for w in &mut self.welds {
-            if welded.contains(&w.a) {
-                Arc::make_mut(&mut w.weights).retain(|(s, _)| s != slot);
+            let (drops_a, drops_b) = (&w.a == id, &w.b == id);
+            if !drops_a && !drops_b {
+                continue;
             }
+            Arc::make_mut(&mut w.pairs)
+                .retain(|p| !(drops_a && &p.a == slot) && !(drops_b && &p.b == slot));
         }
         self.bump();
         Ok(())
@@ -1837,36 +1719,12 @@ impl Model {
         }
     }
 
-    fn seam_mut(&mut self, id: &NodeId, seam: &SeamId) -> Result<&mut Seam, ModelError> {
+    fn slot_mut(&mut self, id: &NodeId, slot: &SlotId) -> Result<&mut Slot, ModelError> {
         self.part_mut(id)?
-            .seams
+            .slots
             .iter_mut()
-            .find(|s| &s.id == seam)
-            .ok_or(ModelError::UnknownSeam)
-    }
-
-    /// Every seam reachable from this one through welds, including it. Welds
-    /// chain (A-B, B-C), so a slot set is shared across the whole component,
-    /// not just across one pair.
-    fn weld_component(&self, id: &NodeId, seam: &SeamId) -> HashSet<(NodeId, SeamId)> {
-        let start = (id.clone(), seam.clone());
-        let mut seen = HashSet::from([start.clone()]);
-        let mut queue = vec![start];
-        while let Some(end) = queue.pop() {
-            for w in &self.welds {
-                let far = if w.a == end {
-                    &w.b
-                } else if w.b == end {
-                    &w.a
-                } else {
-                    continue;
-                };
-                if seen.insert(far.clone()) {
-                    queue.push(far.clone());
-                }
-            }
-        }
-        seen
+            .find(|s| &s.id == slot)
+            .ok_or(ModelError::UnknownSlot)
     }
 
     // ---- params ----
@@ -2111,84 +1969,91 @@ impl Model {
         &self.welds
     }
 
-    /// Set one slot's share of one weld's meeting point.
+    /// Set one pair's share of one weld's meeting point.
     ///
     /// The only way to move a single weight before this was to rewrite the
     /// whole weld, which is a poor fit for a slider: a partial
     /// [`Self::set_welds`] list is refused, so a caller had to read every
     /// other weight back and send it again unchanged.
     ///
-    /// **`weight` is the share of `a`**, the end this call names first, and a
-    /// weld may be stored either way round — [`Self::set_welds`] keeps the
-    /// order it was given. So naming the ends the other way round stores
-    /// `1 - weight`, and the number means the same thing whichever way the
-    /// caller says it. That only holds while a weight is a share, which is why
-    /// one outside `0..=1` is refused here rather than clamped in the solver.
+    /// `slot` is a slot on `a`. **`weight` is the share of `a`**, the part
+    /// this call names first, and a weld may be stored either way round —
+    /// [`Self::set_welds`] keeps the order it was given. So naming the parts
+    /// the other way round stores `1 - weight`, and the number means the same
+    /// thing whichever way the caller says it. That only holds while a weight
+    /// is a share, which is why one outside `0..=1` is refused here rather
+    /// than clamped in the solver.
     pub fn set_weld_slot_weight(
         &mut self,
-        a: (&NodeId, &SeamId),
-        b: (&NodeId, &SeamId),
+        a: &NodeId,
+        b: &NodeId,
         slot: &SlotId,
         weight: f32,
     ) -> Result<(), ModelError> {
         if !(0.0..=1.0).contains(&weight) {
             return Err(ModelError::WeldWeightOutOfRange);
         }
-        let names = |end: &(NodeId, SeamId), (node, seam): (&NodeId, &SeamId)| {
-            &end.0 == node && &end.1 == seam
-        };
         let weld = self
             .welds
             .iter_mut()
-            .find(|w| (names(&w.a, a) && names(&w.b, b)) || (names(&w.a, b) && names(&w.b, a)))
+            .find(|w| (&w.a == a && &w.b == b) || (&w.a == b && &w.b == a))
             .ok_or(ModelError::UnknownWeld)?;
-        let share = if names(&weld.a, a) {
-            weight
-        } else {
-            1.0 - weight
-        };
-        let weights = Arc::make_mut(&mut weld.weights);
-        let at = weights
+        let forward = &weld.a == a;
+        let share = if forward { weight } else { 1.0 - weight };
+        let pairs = Arc::make_mut(&mut weld.pairs);
+        let at = pairs
             .iter()
-            .position(|(s, _)| s == slot)
+            .position(|p| if forward { &p.a } else { &p.b } == slot)
             .ok_or(ModelError::UnknownSlot)?;
-        weights[at].1 = share;
+        pairs[at].weight = share;
         self.bump();
         Ok(())
     }
 
-    /// Replace the weld list. Each end must name a live part and a seam that
-    /// part carries; the two seams must hold the same slots, and the weights
-    /// must name each of those slots exactly once. A slot either end leaves
-    /// unfilled is fine — [`ModelWeld::resolve`] skips it.
+    /// Replace the weld list. A weld's two ends must be different live parts,
+    /// one record per unordered part pair, and each pair must name a slot the
+    /// part on that side carries, no slot twice within one weld, with a weight
+    /// within `0..=1`. A slot either end leaves unfilled is fine —
+    /// [`ModelWeld::resolve`] skips the pair.
     ///
     /// In a **fragment**, an end naming a node the fragment does not carry is
     /// a weld into the base model: only the end this model can see is
     /// validated, and [`Model::install`] checks the other against the base.
     pub fn set_welds(&mut self, welds: Vec<ModelWeld>) -> Result<(), ModelError> {
         let fragment = self.is_fragment();
+        let mut recorded: HashSet<(&NodeId, &NodeId)> = HashSet::with_capacity(welds.len());
         for w in &welds {
+            if w.a == w.b {
+                return Err(ModelError::WeldSelfPaired);
+            }
             let ends = [
                 self.weld_end(&w.a, fragment)?,
                 self.weld_end(&w.b, fragment)?,
             ];
-            if let [Some(a), Some(b)] = ends {
-                if a.slots.len() != b.slots.len()
-                    || !a.slots.iter().all(|s| b.slot(&s.id).is_some())
-                {
-                    return Err(ModelError::WeldSlotMismatch);
-                }
+            let key = if w.a < w.b {
+                (&w.a, &w.b)
+            } else {
+                (&w.b, &w.a)
+            };
+            if !recorded.insert(key) {
+                return Err(ModelError::DuplicateWeld);
             }
-            for seam in ends.into_iter().flatten() {
-                if w.weights.len() != seam.slots.len() {
-                    return Err(ModelError::WeldSlotMismatch);
+            let mut seen_a = HashSet::with_capacity(w.pairs.len());
+            let mut seen_b = HashSet::with_capacity(w.pairs.len());
+            for pair in w.pairs.iter() {
+                if !(0.0..=1.0).contains(&pair.weight) {
+                    return Err(ModelError::WeldWeightOutOfRange);
                 }
-            }
-            let mut seen = HashSet::with_capacity(w.weights.len());
-            for (slot, _) in w.weights.iter() {
-                let known = ends.into_iter().flatten().all(|s| s.slot(slot).is_some());
-                if !known || !seen.insert(slot) {
-                    return Err(ModelError::WeldSlotMismatch);
+                for (slots, slot) in ends.into_iter().zip([&pair.a, &pair.b]) {
+                    if slots.is_some_and(|carried| !carried.iter().any(|s| &s.id == slot)) {
+                        return Err(ModelError::WeldUnknownSlot(slot.to_string()));
+                    }
+                }
+                if !seen_a.insert(&pair.a) {
+                    return Err(ModelError::WeldSlotPairedTwice(pair.a.to_string()));
+                }
+                if !seen_b.insert(&pair.b) {
+                    return Err(ModelError::WeldSlotPairedTwice(pair.b.to_string()));
                 }
             }
         }
@@ -2197,21 +2062,12 @@ impl Model {
         Ok(())
     }
 
-    /// The seam one end of a weld names, or why it does not name one.
+    /// The slots one end of a weld carries, or why that end is not a part.
     /// `Ok(None)` is a fragment's end reaching into the base model.
-    fn weld_end(
-        &self,
-        end: &(NodeId, SeamId),
-        fragment: bool,
-    ) -> Result<Option<&Seam>, ModelError> {
-        match self.node(&end.0).map(|n| &n.kind) {
-            Some(ModelNodeKind::Part(p)) => p
-                .seams
-                .iter()
-                .find(|s| s.id == end.1)
-                .map(Some)
-                .ok_or(ModelError::UnknownSeam),
-            Some(_) => Err(ModelError::NotAPart),
+    fn weld_end(&self, end: &NodeId, fragment: bool) -> Result<Option<&[Slot]>, ModelError> {
+        match self.node(end).map(|n| &n.kind) {
+            Some(ModelNodeKind::Part(p)) => Ok(Some(p.slots())),
+            Some(_) => Err(ModelError::WeldEndNotAPart),
             None if fragment => Ok(None),
             None => Err(ModelError::UnknownNode),
         }
@@ -2264,13 +2120,18 @@ impl Model {
             );
         }
         for weld in &self.welds {
-            bytes = bytes.saturating_add(
-                weld.weights
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<(SlotId, f32)>()),
-            );
-            for (slot, _) in weld.weights.iter() {
-                bytes = bytes.saturating_add(slot.as_str().len());
+            bytes = bytes
+                .saturating_add(weld.a.as_str().len())
+                .saturating_add(weld.b.as_str().len())
+                .saturating_add(
+                    weld.pairs
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<SlotPair>()),
+                );
+            for pair in weld.pairs.iter() {
+                bytes = bytes
+                    .saturating_add(pair.a.as_str().len())
+                    .saturating_add(pair.b.as_str().len());
             }
         }
         for (id, node) in &self.nodes {
@@ -2290,15 +2151,13 @@ impl Model {
                     .saturating_add(masks.len().saturating_mul(std::mem::size_of::<ModelMask>()));
             }
             if let ModelNodeKind::Part(part) = &node.kind {
-                for seam in &part.seams {
-                    bytes = bytes.saturating_add(seam.id.as_str().len()).saturating_add(
-                        seam.slots
-                            .capacity()
-                            .saturating_mul(std::mem::size_of::<Slot>()),
-                    );
-                    for slot in &seam.slots {
-                        bytes = bytes.saturating_add(slot.id.as_str().len());
-                    }
+                bytes = bytes.saturating_add(
+                    part.slots
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<Slot>()),
+                );
+                for slot in &part.slots {
+                    bytes = bytes.saturating_add(slot.id.as_str().len());
                 }
             }
         }
@@ -2594,18 +2453,21 @@ mod tests {
             .model
             .mask_add(&composite, &part, MaskMode::Mask)
             .unwrap();
-        let other = fixture.other.clone();
-        fixture.model.seam_add(&part, seam("collar")).unwrap();
-        fixture.model.seam_add(&other, seam("hem")).unwrap();
         fixture
-    }
-
-    fn seam(id: &str) -> SeamId {
-        SeamId::new(id).unwrap()
     }
 
     fn slot(id: &str) -> SlotId {
         SlotId::new(id).unwrap()
+    }
+
+    /// A pair joining the same slot Id on both sides, which is how every
+    /// fixture here names them.
+    fn pair(id: &str, weight: f32) -> SlotPair {
+        SlotPair {
+            a: slot(id),
+            b: slot(id),
+            weight,
+        }
     }
 
     fn scalar_key(r: &Fixture) -> BindingKey {
@@ -2847,52 +2709,35 @@ mod tests {
                 }),
             ),
             (
-                "seam_add",
-                Box::new(|r| r.model.seam_add(&r.part, seam("cuff")).unwrap()),
-            ),
-            (
-                "seam_delete",
-                Box::new(|r| r.model.seam_delete(&r.part, &seam("collar")).unwrap()),
-            ),
-            (
                 "slot_add",
+                Box::new(|r| r.model.slot_add(&r.part, slot("s")).unwrap()),
+            ),
+            (
+                "rename_slot",
                 Box::new(|r| {
-                    r.model
-                        .slot_add(&r.part, &seam("collar"), slot("s"))
-                        .unwrap()
+                    r.model.slot_add(&r.part, slot("s")).unwrap();
+                    r.model.rename_slot(&r.part, &slot("s"), slot("t")).unwrap();
                 }),
             ),
             (
                 "slot_fill",
                 Box::new(|r| {
-                    r.model
-                        .slot_add(&r.part, &seam("collar"), slot("s"))
-                        .unwrap();
-                    r.model
-                        .slot_fill(&r.part, &seam("collar"), &slot("s"), 2)
-                        .unwrap();
+                    r.model.slot_add(&r.part, slot("s")).unwrap();
+                    r.model.slot_fill(&r.part, &slot("s"), 2).unwrap();
                 }),
             ),
             (
                 "slot_clear",
                 Box::new(|r| {
-                    r.model
-                        .slot_add(&r.part, &seam("collar"), slot("s"))
-                        .unwrap();
-                    r.model
-                        .slot_clear(&r.part, &seam("collar"), &slot("s"))
-                        .unwrap();
+                    r.model.slot_add(&r.part, slot("s")).unwrap();
+                    r.model.slot_clear(&r.part, &slot("s")).unwrap();
                 }),
             ),
             (
                 "slot_delete",
                 Box::new(|r| {
-                    r.model
-                        .slot_add(&r.part, &seam("collar"), slot("s"))
-                        .unwrap();
-                    r.model
-                        .slot_delete(&r.part, &seam("collar"), &slot("s"))
-                        .unwrap();
+                    r.model.slot_add(&r.part, slot("s")).unwrap();
+                    r.model.slot_delete(&r.part, &slot("s")).unwrap();
                 }),
             ),
             (
@@ -2973,8 +2818,8 @@ mod tests {
                 Box::new(|r| {
                     r.model
                         .set_welds(vec![ModelWeld::new(
-                            (r.part.clone(), seam("collar")),
-                            (r.other.clone(), seam("hem")),
+                            r.part.clone(),
+                            r.other.clone(),
                             Vec::new(),
                         )])
                         .unwrap()
@@ -3111,188 +2956,167 @@ mod tests {
         }
     }
 
-    /// Two welded parts: `collar` on `part` and `hem` on `other`, each holding
-    /// slots `l` and `r`, filled and welded.
+    /// Two welded parts, each carrying slots `l` and `r`, filled and paired.
     fn welded_fixture() -> Fixture {
         let mut r = fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
-        for (node, s, verts) in [
-            (&part, seam("collar"), [0u32, 1]),
-            (&other, seam("hem"), [2, 3]),
-        ] {
+        for (node, verts) in [(&part, [0u32, 1]), (&other, [2, 3])] {
             for (id, vertex) in [(slot("l"), verts[0]), (slot("r"), verts[1])] {
-                r.model.slot_add(node, &s, id.clone()).unwrap();
-                r.model.slot_fill(node, &s, &id, vertex).unwrap();
+                r.model.slot_add(node, id.clone()).unwrap();
+                r.model.slot_fill(node, &id, vertex).unwrap();
             }
         }
         r.model
             .set_welds(vec![ModelWeld::new(
-                (part, seam("collar")),
-                (other, seam("hem")),
-                vec![(slot("l"), 1.0), (slot("r"), 0.25)],
+                part,
+                other,
+                vec![pair("l", 1.0), pair("r", 0.25)],
             )])
             .unwrap();
         r
     }
 
-    /// A generated seam Id is drawn until it is free on the part, the way a
-    /// node's is drawn until it is free in the model — a seam is scoped to its
+    /// A generated slot Id is drawn until it is free on the part, the way a
+    /// node's is drawn until it is free in the model — a slot is scoped to its
     /// part, so that is where "free" is decided.
     #[test]
-    fn a_generated_seam_id_is_redrawn_until_it_is_free() {
+    fn a_generated_slot_id_is_redrawn_until_it_is_free() {
         let mut r = fixture();
         let part = r.part.clone();
         // Pin the draw, then take its first two results by hand so the mint
         // has something to collide with.
         let taken = {
             let mut hex = SeededHex::new(11);
-            [SeamId::generate(&mut hex), SeamId::generate(&mut hex)]
+            [SlotId::generate(&mut hex), SlotId::generate(&mut hex)]
         };
-        for seam in &taken {
-            r.model.seam_add(&part, seam.clone()).unwrap();
+        for id in &taken {
+            r.model.slot_add(&part, id.clone()).unwrap();
         }
 
         let mut hex = SeededHex::new(11);
-        let minted = r.model.seam_add_generated(&part, &mut hex).unwrap();
+        let minted = r.model.slot_add_generated(&part, &mut hex).unwrap();
 
         assert!(!taken.contains(&minted), "{minted} collides");
-        assert!(minted.as_str().starts_with("seam-"), "{minted}");
-        assert!(r.model.seam(&part, &minted).is_some());
-        // A node that cannot carry a seam is refused before anything is drawn.
+        assert!(minted.as_str().starts_with("slot-"), "{minted}");
+        assert!(r.model.slot(&part, &minted).is_some());
+        // A node that cannot carry a slot is refused before anything is drawn.
         let root = r.root.clone();
         assert!(matches!(
-            r.model.seam_add_generated(&root, &mut hex),
+            r.model.slot_add_generated(&root, &mut hex),
             Err(ModelError::NotAPart)
         ));
     }
 
-    /// A generated slot Id is drawn until it is free, and lands on every seam
-    /// welded to this one — a weld pairs slot by slot, so a slot on one end is
-    /// a slot on both, and a draw that collided anywhere in the component
-    /// would merge two slots rather than make one.
+    /// A slot is its part's own: the same Id on two parts is two slots, and a
+    /// weld is what says one is paired with the other.
     #[test]
-    fn a_generated_slot_id_is_free_across_the_weld() {
+    fn a_slot_id_is_free_on_every_other_part() {
         let mut r = welded_fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
-        let taken = {
-            let mut hex = SeededHex::new(23);
-            SlotId::generate(&mut hex)
-        };
-        r.model
-            .slot_add(&part, &seam("collar"), taken.clone())
-            .unwrap();
+
+        r.model.slot_add(&part, slot("m")).unwrap();
         assert!(
-            r.model
-                .seam(&other, &seam("hem"))
-                .unwrap()
-                .slot(&taken)
-                .is_some(),
-            "the weld carried it to the far seam",
+            r.model.slot(&other, &slot("m")).is_none(),
+            "an edit to one part's slots reaches no other part",
         );
-
-        let mut hex = SeededHex::new(23);
-        let minted = r
-            .model
-            .slot_add_generated(&part, &seam("collar"), &mut hex)
-            .unwrap();
-
-        assert_ne!(minted, taken, "the first draw was taken");
-        assert!(minted.as_str().starts_with("slot-"), "{minted}");
-        for (node, s) in [(&part, seam("collar")), (&other, seam("hem"))] {
-            assert!(r.model.seam(node, &s).unwrap().slot(&minted).is_some());
-        }
-        // An unknown seam is refused before anything is drawn.
-        assert!(matches!(
-            r.model.slot_add_generated(&part, &seam("nope"), &mut hex),
-            Err(ModelError::UnknownSeam)
-        ));
+        assert_eq!(
+            r.model.welds()[0].pairs().len(),
+            2,
+            "and pairs nothing on its own",
+        );
+        r.model.slot_add(&other, slot("m")).unwrap();
+        assert!(r.model.slot(&other, &slot("m")).is_some());
     }
 
-    /// A weld names a seam, so renaming one has to reach into the welds or the
-    /// pairing survives pointing at a seam the part no longer has.
+    /// A weld pairs slots, so renaming one has to reach into the welds or the
+    /// pair survives naming a slot the part no longer has.
     #[test]
-    fn renaming_a_seam_carries_the_welds_that_named_it() {
+    fn renaming_a_slot_carries_the_weld_pairs_that_named_it() {
         let mut r = welded_fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
         let before = r.model.welds()[0].resolve(&r.model);
 
         r.model
-            .rename_seam(&part, &seam("collar"), seam("neck"))
+            .rename_slot(&part, &slot("l"), slot("neck"))
             .unwrap();
 
-        assert!(r.model.seam(&part, &seam("collar")).is_none());
-        assert!(r.model.seam(&part, &seam("neck")).is_some());
-        assert_eq!(r.model.welds()[0].a(), &(part.clone(), seam("neck")));
-        assert_eq!(r.model.welds()[0].b(), &(other, seam("hem")));
+        assert!(r.model.slot(&part, &slot("l")).is_none());
+        assert!(r.model.slot(&part, &slot("neck")).is_some());
+        assert_eq!(r.model.welds()[0].pairs()[0].a, slot("neck"));
+        assert_eq!(
+            r.model.welds()[0].pairs()[0].b,
+            slot("l"),
+            "the far part's slot is not this rename's business",
+        );
+        assert!(
+            r.model.slot(&other, &slot("l")).is_some(),
+            "and the far part keeps the slot it had",
+        );
         assert_eq!(
             r.model.welds()[0].resolve(&r.model),
             before,
             "the weld solves exactly what it did before",
         );
 
-        // The refusals: a seam that is not there, and a name that is.
+        // The refusals: a slot that is not there, and a name that is.
         assert!(matches!(
-            r.model.rename_seam(&part, &seam("collar"), seam("x")),
-            Err(ModelError::UnknownSeam)
+            r.model.rename_slot(&part, &slot("l"), slot("x")),
+            Err(ModelError::UnknownSlot)
         ));
-        r.model.seam_add(&part, seam("cuff")).unwrap();
         assert!(matches!(
-            r.model.rename_seam(&part, &seam("neck"), seam("cuff")),
-            Err(ModelError::DuplicateSeam(_))
+            r.model.rename_slot(&part, &slot("neck"), slot("r")),
+            Err(ModelError::DuplicateSlot(id)) if id == "r"
         ));
-        // Renaming a seam to what it is already called is not a collision.
+        // Renaming a slot to what it is already called is not a collision.
         r.model
-            .rename_seam(&part, &seam("neck"), seam("neck"))
+            .rename_slot(&part, &slot("neck"), slot("neck"))
             .unwrap();
     }
 
     /// One weight at a time, and the number means the same thing whichever
-    /// end the caller names first — a weld is stored in whatever order the
+    /// part the caller names first — a weld is stored in whatever order the
     /// last `set_welds` gave it.
     #[test]
     fn a_slot_weight_is_a_share_of_the_end_it_is_named_against() {
         let mut r = welded_fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
-        let a = (&part, &seam("collar"));
-        let b = (&other, &seam("hem"));
 
         r.model
-            .set_weld_slot_weight(a, b, &slot("l"), 0.25)
+            .set_weld_slot_weight(&part, &other, &slot("l"), 0.25)
             .unwrap();
-        assert_eq!(r.model.welds()[0].weights()[0], (slot("l"), 0.25));
-        // The other slot on the same weld is untouched.
-        assert_eq!(r.model.welds()[0].weights()[1], (slot("r"), 0.25));
+        assert_eq!(r.model.welds()[0].pairs()[0].weight, 0.25);
+        // The other pair on the same weld is untouched.
+        assert_eq!(r.model.welds()[0].pairs()[1].weight, 0.25);
 
-        // Named the other way round, 0.25 is B's share, so A's is 0.75.
+        // Named the other way round, 0.25 is B's share, so A's is 0.75 — and
+        // `slot` is read on the part named first, which is now `other`.
         r.model
-            .set_weld_slot_weight(b, a, &slot("l"), 0.25)
+            .set_weld_slot_weight(&other, &part, &slot("l"), 0.25)
             .unwrap();
-        assert_eq!(r.model.welds()[0].weights()[0], (slot("l"), 0.75));
+        assert_eq!(r.model.welds()[0].pairs()[0].weight, 0.75);
 
-        assert!(matches!(
-            r.model.set_weld_slot_weight(a, b, &slot("gone"), 0.5),
-            Err(ModelError::UnknownSlot)
-        ));
         assert!(matches!(
             r.model
-                .set_weld_slot_weight(a, (&part, &seam("collar")), &slot("l"), 0.5),
+                .set_weld_slot_weight(&part, &other, &slot("gone"), 0.5),
+            Err(ModelError::UnknownSlot)
+        ));
+        let root = r.root.clone();
+        assert!(matches!(
+            r.model.set_weld_slot_weight(&part, &root, &slot("l"), 0.5),
             Err(ModelError::UnknownWeld)
         ));
-        // A share outside 0..=1 has no meaning to invert, so it is refused
-        // rather than clamped somewhere the caller cannot see.
-        assert!(matches!(
-            r.model.set_weld_slot_weight(a, b, &slot("l"), 1.5),
-            Err(ModelError::WeldWeightOutOfRange)
-        ));
-        assert!(matches!(
-            r.model.set_weld_slot_weight(a, b, &slot("l"), f32::NAN),
-            Err(ModelError::WeldWeightOutOfRange)
-        ));
+        assert!(
+            matches!(
+                r.model.set_weld_slot_weight(&part, &other, &slot("l"), 1.5),
+                Err(ModelError::WeldWeightOutOfRange)
+            ),
+            "a share outside 0..=1 has no meaning to flip",
+        );
     }
 
     /// The point of naming vertices by slot: a mesh edit invalidates which
     /// vertex a slot meant, so the edit empties every slot on the part and
-    /// hands them back. The weld survives it, covering the slots that still
+    /// hands them back. The weld survives it, covering the pairs that still
     /// resolve.
     #[test]
     fn re_meshing_a_part_empties_its_slots_and_reports_them() {
@@ -3315,37 +3139,28 @@ mod tests {
         );
 
         let emptied = r.model.set_node_mesh(&part, quad()).unwrap();
-        assert_eq!(
-            emptied,
-            vec![(seam("collar"), slot("l")), (seam("collar"), slot("r"))],
-        );
+        assert_eq!(emptied, vec![slot("l"), slot("r")]);
         assert_eq!(
             r.model.unfilled_slots(),
-            vec![
-                (part.clone(), seam("collar"), slot("l")),
-                (part.clone(), seam("collar"), slot("r")),
-            ],
+            vec![(part.clone(), slot("l")), (part.clone(), slot("r"))],
         );
         assert!(
             r.model
-                .seams(&other)
+                .slots(&other)
                 .unwrap()
                 .iter()
-                .flat_map(Seam::slots)
                 .all(|s| s.vertex().is_some()),
             "the far part's slots are none of this edit's business",
         );
 
         let weld = &r.model.welds()[0];
-        assert_eq!(weld.weights().len(), 2, "the weld itself is untouched");
+        assert_eq!(weld.pairs().len(), 2, "the weld itself is untouched");
         assert!(
             weld.resolve(&r.model).is_empty(),
             "an unfilled slot is skipped, not guessed at",
         );
 
-        r.model
-            .slot_fill(&part, &seam("collar"), &slot("r"), 3)
-            .unwrap();
+        r.model.slot_fill(&part, &slot("r"), 3).unwrap();
         assert_eq!(
             r.model.welds()[0].resolve(&r.model),
             vec![ModelWeldPair {
@@ -3353,194 +3168,173 @@ mod tests {
                 b_vert: 3,
                 weight: 0.25
             }],
-            "a half-repaired seam solves the slots it has",
+            "a half-repaired part solves the pairs it has",
         );
         assert!(r.model.to_clm_bytes().is_ok());
     }
 
-    /// Welded seams hold one slot set between them, so adding or removing a
-    /// slot at one end reaches every seam the welds chain to. Without that a
-    /// single edit could leave a weld `.clm` cannot express.
+    /// Deleting a slot takes the pairs that named it out of every weld the
+    /// part is an end of, and touches nothing else — the way deleting a node
+    /// drops the bindings that pointed at it.
     #[test]
-    fn a_welded_seam_shares_its_slot_set_along_the_chain() {
+    fn deleting_a_slot_drops_the_pairs_that_named_it() {
         let mut r = welded_fixture();
         let (part, other) = (r.part.clone(), r.other.clone());
-        let third = r.node("third", part_kind());
-        r.model.seam_add(&third, seam("cuff")).unwrap();
-        for id in [slot("l"), slot("r")] {
-            r.model.slot_add(&third, &seam("cuff"), id).unwrap();
-        }
-        let mut welds = r.model.welds().to_vec();
-        welds.push(ModelWeld::new(
-            (other.clone(), seam("hem")),
-            (third.clone(), seam("cuff")),
-            vec![(slot("l"), 0.5), (slot("r"), 0.5)],
-        ));
-        r.model.set_welds(welds).unwrap();
 
-        let chain = [
-            (part.clone(), seam("collar")),
-            (other.clone(), seam("hem")),
-            (third.clone(), seam("cuff")),
-        ];
-        r.model.slot_add(&part, &seam("collar"), slot("m")).unwrap();
-        for (node, s) in &chain {
-            let found = r.model.seam(node, s).unwrap();
-            assert_eq!(found.slots().len(), 3, "{s} did not gain the slot");
-            assert_eq!(
-                found.slot(&slot("m")).unwrap().vertex(),
-                None,
-                "a slot starts unfilled wherever it lands",
-            );
-        }
-        for w in r.model.welds() {
-            assert_eq!(w.weights().last(), Some(&(slot("m"), DEFAULT_SLOT_WEIGHT)));
-        }
+        r.model.slot_delete(&part, &slot("l")).unwrap();
+
+        assert!(r.model.slot(&part, &slot("l")).is_none());
         assert!(
-            r.model.to_clm_bytes().is_ok(),
-            "the file can express what the edit produced",
+            r.model.slot(&other, &slot("l")).is_some(),
+            "the far part keeps its own slot",
         );
-
-        r.model
-            .slot_delete(&third, &seam("cuff"), &slot("l"))
-            .unwrap();
-        for (node, s) in &chain {
-            assert!(
-                r.model.seam(node, s).unwrap().slot(&slot("l")).is_none(),
-                "{s} kept a slot the chain dropped",
-            );
-        }
-        for w in r.model.welds() {
-            assert!(!w.weights().iter().any(|(s, _)| s == &slot("l")));
-        }
+        let pairs = r.model.welds()[0].pairs();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(
+            (pairs[0].a.clone(), pairs[0].b.clone()),
+            (slot("r"), slot("r"))
+        );
         assert!(r.model.to_clm_bytes().is_ok());
+
+        r.model.slot_delete(&other, &slot("r")).unwrap();
+        assert_eq!(r.model.welds().len(), 1, "a weld with no pairs stays");
+        assert!(r.model.welds()[0].pairs().is_empty());
     }
 
     #[test]
-    fn seam_edits_are_checked_before_they_land() {
+    fn slot_edits_are_checked_before_they_land() {
         let mut r = fixture();
         let (part, composite) = (r.part.clone(), r.composite.clone());
         let ghost = NodeId::new("ghost").unwrap();
 
         assert!(matches!(
-            r.model.seam_add(&composite, seam("collar")),
+            r.model.slot_add(&composite, slot("l")),
             Err(ModelError::NotAPart)
         ));
         assert!(matches!(
-            r.model.seam_add(&ghost, seam("collar")),
+            r.model.slot_add(&ghost, slot("l")),
             Err(ModelError::UnknownNode)
         ));
-        assert!(matches!(
-            r.model.seam_add(&part, seam("collar")),
-            Err(ModelError::DuplicateSeam(id)) if id == "collar"
-        ));
-        assert!(matches!(
-            r.model.slot_add(&part, &seam("ghost"), slot("l")),
-            Err(ModelError::UnknownSeam)
-        ));
 
-        r.model.slot_add(&part, &seam("collar"), slot("l")).unwrap();
+        r.model.slot_add(&part, slot("l")).unwrap();
         assert!(matches!(
-            r.model.slot_add(&part, &seam("collar"), slot("l")),
+            r.model.slot_add(&part, slot("l")),
             Err(ModelError::DuplicateSlot(id)) if id == "l"
         ));
         assert!(matches!(
-            r.model.slot_fill(&part, &seam("collar"), &slot("ghost"), 0),
+            r.model.slot_fill(&part, &slot("ghost"), 0),
             Err(ModelError::UnknownSlot)
         ));
         assert!(
             matches!(
-                r.model.slot_fill(&part, &seam("collar"), &slot("l"), 4),
+                r.model.slot_fill(&part, &slot("l"), 4),
                 Err(ModelError::IndexOutOfRange)
             ),
             "the fixture's part draws a quad, so vertex 4 is off the end",
         );
 
-        r.model
-            .slot_fill(&part, &seam("collar"), &slot("l"), 3)
-            .unwrap();
-        let filled = |m: &Model| {
-            m.seam(&part, &seam("collar"))
-                .unwrap()
-                .slot(&slot("l"))
-                .unwrap()
-                .vertex()
-        };
+        r.model.slot_fill(&part, &slot("l"), 3).unwrap();
+        let filled = |m: &Model| m.slot(&part, &slot("l")).unwrap().vertex();
         assert_eq!(filled(&r.model), Some(3));
-        r.model
-            .slot_clear(&part, &seam("collar"), &slot("l"))
-            .unwrap();
+        r.model.slot_clear(&part, &slot("l")).unwrap();
         assert_eq!(filled(&r.model), None);
 
         assert!(matches!(
-            r.model.slot_delete(&part, &seam("collar"), &slot("ghost")),
+            r.model.slot_delete(&part, &slot("ghost")),
             Err(ModelError::UnknownSlot)
         ));
         assert!(
-            r.model.seams(&composite).is_none(),
-            "only a part carries seams",
+            r.model.slots(&composite).is_none(),
+            "only a part carries slots",
         );
     }
 
     #[test]
-    fn a_weld_needs_two_seams_holding_the_same_slots() {
+    fn a_weld_joins_two_parts_and_pairs_slots_they_carry() {
         let mut r = welded_fixture();
-        let (part, other) = (r.part.clone(), r.other.clone());
-        let weld = |weights: Vec<(SlotId, f32)>| {
-            vec![ModelWeld::new(
-                (part.clone(), seam("collar")),
-                (other.clone(), seam("hem")),
-                weights,
-            )]
-        };
+        let (part, other, composite) = (r.part.clone(), r.other.clone(), r.composite.clone());
+        let weld = |pairs: Vec<SlotPair>| vec![ModelWeld::new(part.clone(), other.clone(), pairs)];
 
-        r.model.seam_add(&part, seam("solo")).unwrap();
-        r.model.slot_add(&part, &seam("solo"), slot("l")).unwrap();
         assert!(
             matches!(
-                r.model.set_welds(vec![ModelWeld::new(
-                    (part.clone(), seam("solo")),
-                    (other.clone(), seam("hem")),
-                    vec![(slot("l"), 1.0)],
-                )]),
-                Err(ModelError::WeldSlotMismatch)
+                r.model
+                    .set_welds(vec![ModelWeld::new(part.clone(), part.clone(), Vec::new())]),
+                Err(ModelError::WeldSelfPaired)
             ),
-            "one end holds a slot the other does not",
-        );
-        assert!(
-            matches!(
-                r.model.set_welds(weld(vec![(slot("l"), 1.0)])),
-                Err(ModelError::WeldSlotMismatch)
-            ),
-            "a shared slot with no weight has nothing to solve to",
+            "a part is not welded to itself",
         );
         assert!(
             matches!(
                 r.model
-                    .set_welds(weld(vec![(slot("l"), 1.0), (slot("l"), 0.5)])),
-                Err(ModelError::WeldSlotMismatch)
+                    .set_welds(vec![ModelWeld::new(part.clone(), composite, Vec::new())]),
+                Err(ModelError::WeldEndNotAPart)
             ),
-            "one slot, two weights",
+            "only a part carries slots to pair",
+        );
+        assert!(matches!(
+            r.model.set_welds(vec![ModelWeld::new(
+                part.clone(),
+                NodeId::new("ghost").unwrap(),
+                Vec::new()
+            )]),
+            Err(ModelError::UnknownNode)
+        ));
+        assert!(
+            matches!(
+                r.model.set_welds(vec![
+                    ModelWeld::new(part.clone(), other.clone(), Vec::new()),
+                    ModelWeld::new(other.clone(), part.clone(), Vec::new()),
+                ]),
+                Err(ModelError::DuplicateWeld)
+            ),
+            "one record per unordered part pair, found in either order",
         );
         assert!(
             matches!(
-                r.model
-                    .set_welds(weld(vec![(slot("l"), 1.0), (slot("ghost"), 0.5)])),
-                Err(ModelError::WeldSlotMismatch)
+                r.model.set_welds(weld(vec![pair("ghost", 0.5)])),
+                Err(ModelError::WeldUnknownSlot(id)) if id == "ghost"
             ),
-            "a weight for a slot neither seam holds",
+            "a pair naming a slot its part does not carry",
+        );
+        assert!(
+            matches!(
+                r.model.set_welds(weld(vec![pair("l", 0.5), pair("l", 0.25)])),
+                Err(ModelError::WeldSlotPairedTwice(id)) if id == "l"
+            ),
+            "one slot, two pairs",
+        );
+        assert!(
+            matches!(
+                r.model.set_welds(weld(vec![pair("l", 1.5)])),
+                Err(ModelError::WeldWeightOutOfRange)
+            ),
+            "a weight is a share of a meeting point",
         );
         assert_eq!(
             r.model.welds().len(),
             1,
             "a refused weld list leaves the old one in place",
         );
+        assert_eq!(r.model.welds()[0].pairs().len(), 2);
 
-        r.model.seam_delete(&other, &seam("hem")).unwrap();
+        // A weld may pair slots with different Ids on the two sides, and one
+        // side's slot may be left out of the pairing altogether.
+        r.model.slot_add(&part, slot("m")).unwrap();
+        r.model
+            .set_welds(weld(vec![SlotPair {
+                a: slot("m"),
+                b: slot("r"),
+                weight: 0.5,
+            }]))
+            .unwrap();
+        assert!(r.model.to_clm_bytes().is_ok());
+
+        let other_clone = other.clone();
+        r.model.delete_node(&other_clone).unwrap();
         assert!(
             r.model.welds().is_empty(),
-            "deleting a seam takes the welds that named it, the way deleting a \
-             node takes the masks that named it",
+            "deleting a node takes the welds that named it, the way it takes \
+             the masks that named it",
         );
     }
 
@@ -3812,11 +3606,7 @@ mod tests {
             .set_physics_targets(&physics, [Some(param.clone()), None])
             .unwrap();
         r.model
-            .set_welds(vec![ModelWeld::new(
-                (part.clone(), seam("collar")),
-                (other, seam("hem")),
-                Vec::new(),
-            )])
+            .set_welds(vec![ModelWeld::new(part.clone(), other, Vec::new())])
             .unwrap();
         let key = BindingKey::new(param.clone(), part.clone(), BindingTarget::Deform);
         r.model
@@ -3843,7 +3633,7 @@ mod tests {
         );
         // the binding that drives it, and the weld that ends on it
         assert_eq!(r.model.bindings().next().unwrap().node(), &new_node);
-        assert_eq!(r.model.welds()[0].a().0, new_node);
+        assert_eq!(r.model.welds()[0].a(), &new_node);
         assert!(r.model.to_clm_bytes().is_ok());
 
         r.model
@@ -4172,8 +3962,8 @@ mod tests {
         ));
         assert!(matches!(
             r.model.set_welds(vec![ModelWeld::new(
-                (r.part.clone(), seam("collar")),
-                (orphan_node, seam("hem")),
+                r.part.clone(),
+                orphan_node,
                 Vec::new(),
             )]),
             Err(ModelError::UnknownNode)
@@ -4181,24 +3971,24 @@ mod tests {
         assert!(
             matches!(
                 r.model.set_welds(vec![ModelWeld::new(
-                    (r.part.clone(), seam("collar")),
-                    (r.composite.clone(), seam("hem")),
+                    r.part.clone(),
+                    r.composite.clone(),
                     Vec::new(),
                 )]),
-                Err(ModelError::NotAPart)
+                Err(ModelError::WeldEndNotAPart)
             ),
-            "a weld's seam has to hang on a part",
+            "a weld's end has to be a part",
         );
         assert!(
             matches!(
                 r.model.set_welds(vec![ModelWeld::new(
-                    (r.part.clone(), seam("collar")),
-                    (r.other.clone(), seam("ghost")),
-                    Vec::new(),
+                    r.part.clone(),
+                    r.other.clone(),
+                    vec![pair("ghost", 0.5)],
                 )]),
-                Err(ModelError::UnknownSeam)
+                Err(ModelError::WeldUnknownSlot(_))
             ),
-            "a weld's seam has to be one the part carries",
+            "a weld's pair has to name a slot the part carries",
         );
         // A node cloned out of another model cannot smuggle its Ids in.
         let mut foreign = ModelPart::new(quad());

@@ -27,11 +27,11 @@ use std::path::{Path, PathBuf};
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{
     ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument, ClmFile,
-    ClmIndices, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSeam, ClmSlot, ClmSlotWeight,
-    ClmTexture, ClmTransform, ClmWeld, ClmWeldEnd, TextureAlpha, TextureEncoding,
+    ClmIndices, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSlot, ClmSlotPair, ClmTexture,
+    ClmTransform, ClmWeld, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::{Model, NodeId, ParamId, SeamId, SlotId, TexId};
+use catchlight_core::{Model, NodeId, ParamId, SlotId, TexId};
 
 /// Builds a fixture's structure document and its texture table.
 type Build = fn() -> (ClmDocument, Vec<ClmTexture>);
@@ -226,7 +226,7 @@ fn quad_part(albedo: usize, half: f32) -> ClmPart {
         screen_tint: [0.0, 0.0, 0.0],
         masks: Vec::new(),
         mask_threshold: 0.5,
-        seams: Vec::new(),
+        slots: Vec::new(),
     }
 }
 
@@ -428,7 +428,6 @@ const SEAM_WEIGHTS: [f32; COLS] = [1.0, 0.5, 0.0];
 /// three regimes at once: the lower part stretching up to follow the upper,
 /// both meeting midway, and the upper's corner staying pinned to the lower.
 fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
-    let (seam_a, seam_b) = (seam_id("a"), seam_id("b"));
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
     let upper = push(
@@ -436,7 +435,7 @@ fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
         Some(root),
         ClmNode {
             name: "upper".into(),
-            ..part_node(grid_part(0, Growth::Up, &seam_a))
+            ..part_node(grid_part(0, Growth::Up))
         },
     );
     let lower = push(
@@ -444,7 +443,7 @@ fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
         Some(root),
         ClmNode {
             name: "lower".into(),
-            ..part_node(grid_part(1, Growth::Down, &seam_b))
+            ..part_node(grid_part(1, Growth::Down))
         },
     );
 
@@ -487,17 +486,12 @@ fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
         // Both grids order their seam row first, so slot `s<i>` names the
         // coincident vertex on each side.
         welds: vec![ClmWeld {
-            a: ClmWeldEnd {
-                node: nid(upper),
-                seam: seam_a,
-            },
-            b: ClmWeldEnd {
-                node: nid(lower),
-                seam: seam_b,
-            },
-            weights: (0..COLS)
-                .map(|i| ClmSlotWeight {
-                    slot: slot_id(i),
+            a: nid(upper),
+            b: nid(lower),
+            pairs: (0..COLS)
+                .map(|i| ClmSlotPair {
+                    a: slot_id(i),
+                    b: slot_id(i),
                     weight: SEAM_WEIGHTS[i],
                 })
                 .collect(),
@@ -513,13 +507,8 @@ fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
     )
 }
 
-/// The seam Ids the one weld's two ends carry, and the slot Ids they fill —
-/// the names `Model::to_clm_file` synthesizes for a weld, so a round trip
-/// through the file leaves them alone.
-fn seam_id(side: &str) -> SeamId {
-    SeamId::new(format!("weld-0-{side}")).expect("a generated seam id")
-}
-
+/// The slot Ids both parts carry, one per column of the shared seam row —
+/// the same Id on each side, which is how the one weld pairs them.
 fn slot_id(i: usize) -> SlotId {
     SlotId::new(format!("s{i}")).expect("a generated slot id")
 }
@@ -536,7 +525,7 @@ enum Growth {
 /// both parts' seam vertices land at indices 0..COLS, which is what the weld
 /// pairs reference. UVs put v = 0 at the part's topmost row, so both textures
 /// sit upright in world space.
-fn grid_part(albedo: usize, growth: Growth, seam: &SeamId) -> ClmPart {
+fn grid_part(albedo: usize, growth: Growth) -> ClmPart {
     let y_top = match growth {
         Growth::Up => PART_H,
         Growth::Down => 0.0,
@@ -586,15 +575,12 @@ fn grid_part(albedo: usize, growth: Growth, seam: &SeamId) -> ClmPart {
         mask_threshold: 0.5,
         // The welded row: slot `s<i>` is filled by the seam vertex `i`, which
         // both grids order first.
-        seams: vec![ClmSeam {
-            id: seam.clone(),
-            slots: (0..COLS)
-                .map(|i| ClmSlot {
-                    id: slot_id(i),
-                    vertex: Some(i as u32),
-                })
-                .collect(),
-        }],
+        slots: (0..COLS)
+            .map(|i| ClmSlot {
+                id: slot_id(i),
+                vertex: Some(i as u32),
+            })
+            .collect(),
     }
 }
 
@@ -756,11 +742,12 @@ mod tests {
             .count();
         assert_eq!(parts, 2, "two welded grid Parts");
         let weld = committed.welds.first().unwrap();
-        let weights: Vec<f32> = weld.weights.iter().map(|w| w.weight).collect();
+        let weights: Vec<f32> = weld.pairs.iter().map(|p| p.weight).collect();
         assert_eq!(weights, SEAM_WEIGHTS, "all three weight regimes");
-        // Each weight names a slot both ends fill with the coincident vertex.
-        for (i, w) in weld.weights.iter().enumerate() {
-            assert_eq!(w.slot, slot_id(i));
+        // Each pair names the slot both parts fill with the coincident vertex.
+        for (i, p) in weld.pairs.iter().enumerate() {
+            assert_eq!(p.a, slot_id(i));
+            assert_eq!(p.b, slot_id(i));
         }
         assert_eq!(committed.params.len(), 1);
         assert_eq!(committed.params[0].name, "pull");

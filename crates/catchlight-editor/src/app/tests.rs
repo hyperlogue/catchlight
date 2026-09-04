@@ -6,7 +6,8 @@
 
 use super::*;
 use crate::inspector::PhysicsPatch;
-use catchlight_editor_protocol::ScalarTarget;
+use crate::mesh_edit::SlotAction;
+use catchlight_editor_protocol::{ScalarTarget, SlotId, SlotPair};
 
 fn welded_seam() -> Vec<u8> {
     std::fs::read(concat!(
@@ -596,34 +597,22 @@ fn the_physics_inspector_aims_a_driver_at_both_of_its_params() {
     assert_eq!(targets(&editor), [None, None]);
 }
 
-/// The seam repair round trip. Re-meshing a part empties every slot on it,
+/// The slot repair round trip. Re-meshing a part empties every slot on it,
 /// because which vertex fills a slot is a claim about the mesh that just went
-/// away. The mode stays open on the seam tool, the model will not save while
+/// away. The mode stays open on the slot tool, the model will not save while
 /// a slot is empty, and refilling every one of them clears the gate.
 #[test]
-fn a_mesh_edit_empties_a_seam_and_the_gate_holds_until_it_is_refilled() {
+fn a_mesh_edit_empties_the_slots_and_the_gate_holds_until_they_are_refilled() {
     let (editor, session, mut app) = app_on(&welded_seam());
     let node = first_meshed_node(&editor, session);
-    let seams = editor
+    let slots: Vec<SlotId> = editor
         .with_model(session, |m| {
-            m.seams(&node)
-                .map(|s| {
-                    s.iter()
-                        .map(|seam| {
-                            (
-                                seam.id().clone(),
-                                seam.slots()
-                                    .iter()
-                                    .map(|slot| slot.id().clone())
-                                    .collect::<Vec<_>>(),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
+            m.slots(&node)
+                .map(|s| s.iter().map(|slot| slot.id().clone()).collect())
                 .unwrap_or_default()
         })
         .unwrap();
-    assert!(!seams.is_empty(), "welded_seam's parts carry seams");
+    assert!(!slots.is_empty(), "welded_seam's parts carry slots");
     assert!(app.commit_block().is_empty(), "nothing to repair yet");
 
     app.selection = vec![node.clone()];
@@ -635,7 +624,7 @@ fn a_mesh_edit_empties_a_seam_and_the_gate_holds_until_it_is_refilled() {
     let blocked = app.commit_block();
     assert_eq!(
         blocked.len(),
-        seams.iter().map(|(_, slots)| slots.len()).sum::<usize>(),
+        slots.len(),
         "every slot on the re-meshed part is emptied",
     );
     assert!(blocked.iter().all(|a| a.node == node));
@@ -645,7 +634,7 @@ fn a_mesh_edit_empties_a_seam_and_the_gate_holds_until_it_is_refilled() {
     );
     assert!(app.status.contains("cannot save"), "{}", app.status);
 
-    // The mode stayed open on the seam tool, on the document's own mesh.
+    // The mode stayed open on the slot tool, on the document's own mesh.
     let mesh = app
         .mesh_edit
         .as_ref()
@@ -654,14 +643,11 @@ fn a_mesh_edit_empties_a_seam_and_the_gate_holds_until_it_is_refilled() {
     assert_eq!(mesh.emptied.len(), blocked.len());
 
     // Refill each slot with a vertex of the new mesh — what clicking one does.
-    for (seam, slots) in &seams {
-        for (i, slot) in slots.iter().enumerate() {
-            app.apply_seam_action(SeamAction::FillSlot {
-                seam: seam.clone(),
-                slot: slot.clone(),
-                vertex: i as u32,
-            });
-        }
+    for (i, slot) in slots.iter().enumerate() {
+        app.apply_slot_action(SlotAction::FillSlot {
+            slot: slot.clone(),
+            vertex: i as u32,
+        });
     }
     assert!(app.commit_block().is_empty(), "the gate clears on refill");
     assert!(!app.blocked_from_saving());
@@ -675,10 +661,10 @@ fn a_mesh_edit_empties_a_seam_and_the_gate_holds_until_it_is_refilled() {
     );
 }
 
-/// The other way out: deleting the seam. A weld that named it goes with it,
-/// which is the point — the author has decided that seam no longer exists.
+/// The other way out: deleting the slot. The weld pairs that named it go with
+/// it, which is the point — the author has decided that slot no longer exists.
 #[test]
-fn deleting_the_seam_is_the_other_way_past_the_commit_gate() {
+fn deleting_the_slot_is_the_other_way_past_the_commit_gate() {
     let (editor, session, mut app) = app_on(&welded_seam());
     let node = first_meshed_node(&editor, session);
     app.selection = vec![node.clone()];
@@ -687,36 +673,36 @@ fn deleting_the_seam_is_the_other_way_past_the_commit_gate() {
     app.apply_mesh_edit();
     assert!(!app.commit_block().is_empty());
 
-    let seams: Vec<catchlight_core::SeamId> = editor
+    let slots: Vec<SlotId> = editor
         .with_model(session, |m| {
-            m.seams(&node)
-                .map(|s| s.iter().map(|seam| seam.id().clone()).collect())
+            m.slots(&node)
+                .map(|s| s.iter().map(|slot| slot.id().clone()).collect())
                 .unwrap_or_default()
         })
         .unwrap();
-    for seam in seams {
-        app.apply_seam_action(SeamAction::DeleteSeam(seam));
+    for slot in slots {
+        app.apply_slot_action(SlotAction::DeleteSlot(slot));
     }
     assert!(app.commit_block().is_empty());
     assert!(
         editor
-            .with_model(session, |m| m.welds().is_empty())
+            .with_model(session, |m| m.welds()[0].pairs().is_empty())
             .unwrap(),
-        "deleting a seam takes the welds that named it",
+        "deleting a slot takes the weld pairs that named it",
     );
 }
 
-/// The seam tool builds a weld: two seams, slot by slot. `slot_add` reaches
-/// every seam welded to the one it is called on, so the two slot sets are one
-/// set and the weld can never pair mismatched seams.
+/// The slot tool builds a weld: two parts, then a pair at a time. A slot is
+/// its part's own, so adding one on one side reaches nothing until a pair
+/// names it.
 #[test]
-fn welding_two_seams_keeps_their_slot_sets_one_set() {
+fn welding_two_parts_pairs_a_slot_on_each() {
     let (editor, session, mut app) = app_on(&welded_seam());
     let mut parts: Vec<NodeId> = editor
         .with_model(session, |m| {
             let mut ids: Vec<NodeId> = m
                 .node_ids()
-                .filter(|id| m.seams(id).is_some())
+                .filter(|id| m.slots(id).is_some())
                 .cloned()
                 .collect();
             ids.sort();
@@ -726,99 +712,102 @@ fn welding_two_seams_keeps_their_slot_sets_one_set() {
     let b = parts.pop().expect("two parts");
     let a = parts.pop().expect("two parts");
 
-    // A fresh seam on each part, welded, then a slot added on one side only.
-    let seam = catchlight_core::SeamId::new("hem").unwrap();
+    // A fresh slot on each part, and a weld naming just that one pair.
+    let hem = SlotId::new("hem").unwrap();
     for node in [&a, &b] {
-        app.send(Command::SeamAdd {
+        app.send(Command::SlotAdd {
             session,
             node: node.clone(),
-            seam: Some(seam.clone()),
+            slot: Some(hem.clone()),
         });
     }
     app.selection = vec![a.clone()];
     app.enter_mesh_edit();
-    app.apply_seam_action(SeamAction::Weld {
-        seam: seam.clone(),
-        other: SeamAddr {
-            node: b.clone(),
-            seam: seam.clone(),
-        },
-    });
-    app.apply_seam_action(SeamAction::AddSlot {
-        seam: seam.clone(),
-        slot: catchlight_core::SlotId::new("left").unwrap(),
+    app.apply_slot_action(SlotAction::WeldPairs {
+        other: b.clone(),
+        pairs: vec![SlotPair {
+            a: hem.clone(),
+            b: hem.clone(),
+            weight: catchlight_core::DEFAULT_SLOT_WEIGHT,
+        }],
     });
 
-    let (slots_a, slots_b, weights) = editor
+    let (slots_a, slots_b, pairs) = editor
         .with_model(session, |m| {
             let slots = |node: &NodeId| {
-                m.seam(node, &seam)
-                    .map(|s| {
-                        s.slots()
-                            .iter()
-                            .map(|slot| slot.id().to_string())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
+                m.slots(node)
+                    .map(|s| s.iter().map(|slot| slot.id().to_string()).collect())
+                    .unwrap_or_else(Vec::new)
             };
-            let weights = m
+            let pairs = m
                 .welds()
                 .iter()
-                .find(|w| w.a().1 == seam || w.b().1 == seam)
-                .map(|w| w.weights().to_vec())
+                .find(|w| (w.a() == &a && w.b() == &b) || (w.a() == &b && w.b() == &a))
+                .map(|w| w.pairs().to_vec())
                 .unwrap_or_default();
-            (slots(&a), slots(&b), weights)
+            (slots(&a), slots(&b), pairs)
         })
         .unwrap();
-    assert_eq!(slots_a, vec!["left".to_string()]);
+    assert!(slots_a.contains(&"hem".to_string()));
     assert_eq!(
-        slots_b, slots_a,
-        "a slot added to one welded seam reaches the other",
+        slots_a, slots_b,
+        "the fixture's two parts carry the same slot Ids",
     );
-    assert_eq!(weights.len(), 1);
     assert_eq!(
-        weights[0].1,
-        catchlight_core::DEFAULT_SLOT_WEIGHT,
-        "a slot that arrives through a weld arrives at the default weight",
+        pairs.len(),
+        1,
+        "setting a weld replaces the one already pairing the two parts",
     );
+    assert_eq!(pairs[0].weight, catchlight_core::DEFAULT_SLOT_WEIGHT);
 
-    // ...and the weight slider replaces the weld, keeping every other slot.
-    app.apply_seam_action(SeamAction::SetWeight {
-        seam: seam.clone(),
-        other: SeamAddr {
-            node: b.clone(),
-            seam: seam.clone(),
-        },
-        slot: catchlight_core::SlotId::new("left").unwrap(),
+    // ...and the weight slider moves one pair, leaving the weld otherwise as
+    // it is.
+    app.apply_slot_action(SlotAction::SetWeight {
+        a: a.clone(),
+        b: b.clone(),
+        slot: hem.clone(),
         weight: 0.25,
     });
-    let weights = editor
+    let pairs = editor
         .with_model(session, |m| {
             m.welds()
                 .iter()
-                .find(|w| w.a().1 == seam || w.b().1 == seam)
-                .map(|w| w.weights().to_vec())
+                .find(|w| (w.a() == &a && w.b() == &b) || (w.a() == &b && w.b() == &a))
+                .map(|w| w.pairs().to_vec())
                 .unwrap_or_default()
         })
         .unwrap();
-    assert_eq!(weights.len(), 1);
-    assert!((weights[0].1 - 0.25).abs() < 1e-6, "{weights:?}");
+    assert_eq!(pairs.len(), 1);
+    assert!((pairs[0].weight - 0.25).abs() < 1e-6, "{pairs:?}");
+
+    // And the weld comes undone without touching either part's slots.
+    app.apply_slot_action(SlotAction::WeldDelete { other: b.clone() });
+    let (welds, still) = editor
+        .with_model(session, |m| {
+            (
+                m.welds().len(),
+                m.slot(&a, &hem).is_some() && m.slot(&b, &hem).is_some(),
+            )
+        })
+        .unwrap();
+    assert_eq!(welds, 0);
+    assert!(still, "both parts keep every slot");
 }
 
-/// check()'s findings reach the panel, and the seam ones are the reason it
-/// exists: an unfilled slot is a weld that silently no longer closes.
+/// check()'s findings reach the panel, and the slot ones are the reason it
+/// exists: an unfilled slot is a weld pair that silently no longer closes.
 #[test]
 fn the_warnings_panel_reads_the_models_own_check() {
     let (editor, session, mut app) = app_on(&welded_seam());
     let node = first_meshed_node(&editor, session);
-    let (seam, slot) = editor
+    let slot = editor
         .with_model(session, |m| {
-            m.seams(&node)
+            m.slots(&node)
                 .and_then(|s| s.first())
-                .map(|s| (s.id().clone(), s.slots()[0].id().clone()))
+                .map(|s| s.id().clone())
         })
         .unwrap()
-        .expect("a seam with a slot");
+        .expect("a part with a slot");
 
     let warnings = |app: &mut App| {
         let rev = editor.doc_snapshot(session).expect("snapshot").rev;
@@ -838,7 +827,7 @@ fn the_warnings_panel_reads_the_models_own_check() {
 
     app.selection = vec![node.clone()];
     app.enter_mesh_edit();
-    app.apply_seam_action(SeamAction::ClearSlot { seam, slot });
+    app.apply_slot_action(SlotAction::ClearSlot(slot));
 
     assert!(
         warnings(&mut app).iter().any(|w| w.contains("unfilled")),

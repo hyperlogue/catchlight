@@ -26,7 +26,7 @@ pub use model::{
     BindingParams, BindingTarget, CheckWarning, InstallError, Installed, Model, ModelBinding,
     ModelBindingValues, ModelComposite, ModelError, ModelMask, ModelMesh, ModelMeshGroup,
     ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, ModelWeld,
-    ModelWeldPair, Pose, Required, Requirement, Requirements, ScalarTarget, Seam, Slot,
+    ModelWeldPair, Pose, Required, Requirement, Requirements, ScalarTarget, Slot, SlotPair,
     DEFAULT_SLOT_WEIGHT,
 };
 pub use node::*;

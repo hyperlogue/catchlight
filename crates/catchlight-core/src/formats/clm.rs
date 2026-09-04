@@ -38,17 +38,17 @@
 //! - **Params are scalar.** A binding names one or two of them and its grid is
 //!   the product of their key positions; a physics node writes two. Nothing
 //!   here carries a second axis.
-//! - **No vertex index outside a seam.** A part carries named seams, each a
-//!   set of slots filled by one of its vertices; a weld names two seams and
-//!   weights their shared slots. A slot may also be *unfilled*
-//!   (`vertex: null`) — what re-authoring a part's mesh leaves behind — and a
-//!   weld over an unfilled slot loads, resolving to one pair fewer. A
-//!   [`Model`](crate::Model) holds the same shape, so this section is a copy
-//!   in both directions.
+//! - **No vertex index outside a slot.** A part carries named slots, each
+//!   filled by one of its vertices; a weld names two parts and pairs their
+//!   slots. A slot may also be *unfilled* (`vertex: null`) — what re-authoring
+//!   a part's mesh leaves behind — and a weld over an unfilled slot loads,
+//!   resolving to one pair fewer. A [`Model`](crate::Model) holds the same
+//!   shape, so this section is a copy in both directions.
 //! - **A malformed file is an error, never a panic.** Every Id that names
-//!   something must find it, seam slots must be in mesh range, a weld's two
-//!   seams must hold the same slots, and a binding must name one or two
-//!   distinct params. The reader reports which Id in which field failed.
+//!   something must find it, a filled slot must be in mesh range, a weld must
+//!   join two different parts once and pair slots they carry, and a binding
+//!   must name one or two distinct params. The reader reports which Id in
+//!   which field failed.
 //! - **A binding has to be one the runtime can fold.** A colour target
 //!   (`Opacity`, `Tint*`, `ScreenTint*`) on a mesh group has nowhere to land —
 //!   a mesh group is never drawn — and a deform cell holds one `[dx, dy]` per
@@ -71,7 +71,7 @@ use thiserror::Error;
 
 use super::container::{self, ContainerError, Section};
 use crate::components::{BlendMode, MaskMode};
-use crate::id::{NodeId, ParamId, SeamId, SlotId, TexId};
+use crate::id::{NodeId, ParamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
@@ -268,10 +268,11 @@ pub struct ClmKeyframe {
 // ---- the file ------------------------------------------------------------
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
-/// Bumped for every breaking wire change. **1** is the only version
-/// `decode_document` accepts; there is no migration path and no reader for
-/// the pre-public v0 arena, which no longer exists in any form.
-pub const FORMAT_VERSION: u16 = 1;
+/// Bumped for every breaking wire change. **2** is the only version
+/// `decode_document` accepts; there is no migration path, no reader for the
+/// pre-public v0 arena, and none for v1, which grouped a part's slots into
+/// named seams and was never released.
+pub const FORMAT_VERSION: u16 = 2;
 
 const SECTION_STRUCTURE: u32 = 0;
 const SECTION_TEXTURES: u32 = 1;
@@ -424,20 +425,13 @@ pub struct ClmPart {
     #[serde(default)]
     pub masks: Vec<ClmMask>,
     pub mask_threshold: f32,
-    /// The named vertex sets welds pair, filled by whoever owns the part.
-    #[serde(default)]
-    pub seams: Vec<ClmSeam>,
-}
-
-/// A named set of slots on a part, each filled by one of the part's vertices,
-/// so that a weld can name a vertex without naming an index.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClmSeam {
-    pub id: SeamId,
+    /// The named vertices welds pair, filled by whoever owns the part.
     #[serde(default)]
     pub slots: Vec<ClmSlot>,
 }
 
+/// One named handle on a part, so that a weld can name a vertex without
+/// naming an index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClmSlot {
     pub id: SlotId,
@@ -523,27 +517,24 @@ pub struct ClmBinding {
     pub values: ClmBindingValues,
 }
 
-/// Two parts' seams, paired slot by slot. Symmetric: each unordered pair of
-/// ends appears at most once and the runtime solve moves both sides.
+/// Two parts, and the slot pairs between them. Symmetric: each unordered pair
+/// of parts appears at most once and the runtime solve moves both sides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClmWeld {
-    pub a: ClmWeldEnd,
-    pub b: ClmWeldEnd,
-    /// One entry per slot the two seams share; both seams must hold exactly
-    /// these slots.
+    pub a: NodeId,
+    pub b: NodeId,
+    /// One entry per pair of slots joined; each names a slot the part on its
+    /// side carries, and no slot twice.
     #[serde(default)]
-    pub weights: Vec<ClmSlotWeight>,
+    pub pairs: Vec<ClmSlotPair>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClmWeldEnd {
-    pub node: NodeId,
-    pub seam: SeamId,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClmSlotWeight {
-    pub slot: SlotId,
+pub struct ClmSlotPair {
+    /// A slot on the weld's `a` part.
+    pub a: SlotId,
+    /// A slot on the weld's `b` part.
+    pub b: SlotId,
     /// A's share of the meeting point in `[0, 1]`: 1.0 pins A and snaps B
     /// to it, 0.5 meets midway.
     pub weight: f32,
@@ -734,19 +725,16 @@ mod tests {
                     mode: MaskMode::DodgeMask,
                 }],
                 mask_threshold: 0.5,
-                seams: vec![ClmSeam {
-                    id: SeamId::new("collar").unwrap(),
-                    slots: vec![
-                        ClmSlot {
-                            id: SlotId::new("s0").unwrap(),
-                            vertex: Some(2),
-                        },
-                        ClmSlot {
-                            id: SlotId::new("s1").unwrap(),
-                            vertex: None,
-                        },
-                    ],
-                }],
+                slots: vec![
+                    ClmSlot {
+                        id: SlotId::new("s0").unwrap(),
+                        vertex: Some(2),
+                    },
+                    ClmSlot {
+                        id: SlotId::new("s1").unwrap(),
+                        vertex: None,
+                    },
+                ],
             }),
         };
         let mouth = ParamId::new("param-mouth").unwrap();
@@ -877,14 +865,15 @@ mod tests {
         assert_eq!(doc, ClmDocument::default());
     }
 
-    /// v0 is the pre-public arena format and nothing reads it any more, so a
-    /// file carrying it has to be refused by version rather than misread as v1
-    /// — the two share a magic.
+    /// v0 is the pre-public arena format and v1 grouped a part's slots into
+    /// named seams; nothing reads either any more, so a file carrying one has
+    /// to be refused by version rather than misread as v2 — they share a
+    /// magic.
     #[test]
     fn an_older_or_newer_version_is_refused_not_silently_misread() {
         let (doc, textures) = sample();
         let bytes = encode(&doc, &textures).unwrap();
-        for version in [0u16, 2, 0xFFFF] {
+        for version in [0u16, 1, 3, 0xFFFF] {
             let mut bytes = bytes.clone();
             bytes[8..10].copy_from_slice(&version.to_le_bytes());
             match decode(&bytes) {

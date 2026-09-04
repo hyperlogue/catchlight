@@ -287,11 +287,11 @@ def test_an_ok_reply_that_names_no_session_carries_no_revision() -> None:
 
 def test_an_err_reply_parses_to_a_code_a_client_can_branch_on() -> None:
     reply = parse_reply(
-        {"reply": "err", "id": 3, "code": "unknown_slot", "message": "seam carries no such slot"}
+        {"reply": "err", "id": 3, "code": "unknown_slot", "message": "part carries no such slot"}
     )
     assert isinstance(reply, ReplyErr)
     assert reply.code is ErrorCode.UNKNOWN_SLOT
-    assert reply.message == "seam carries no such slot"
+    assert reply.message == "part carries no such slot"
 
 
 def test_an_event_arrives_flattened_into_its_reply() -> None:
@@ -352,7 +352,7 @@ def test_an_unknown_tag_is_refused() -> None:
 
 def test_a_command_is_frozen_and_keyword_only() -> None:
     """Frozen because a command is a message, not a builder; keyword-only
-    because `session`, `node`, `seam` and `slot` are all strings and positional
+    because `session`, `node` and `slot` are all strings and positional
     arguments would let two of them swap silently."""
     command = Status(session=1)
     with pytest.raises(dataclasses.FrozenInstanceError):

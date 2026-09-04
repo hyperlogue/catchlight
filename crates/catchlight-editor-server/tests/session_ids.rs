@@ -13,7 +13,7 @@
 //! rebuild the same model, Ids included.
 
 use catchlight_editor_protocol::{
-    Command, NodeId, NodeKindArg, Reply, Request, ResponseBody, SeamAddr, SessionId,
+    Command, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId, SlotAddr,
 };
 use catchlight_editor_server::Editor;
 
@@ -32,7 +32,7 @@ fn new_session(ed: &Editor, id: u64) -> SessionId {
 }
 
 /// The Ids one fixed sequence of adds draws in `session`: a part, a param and
-/// a seam, so every generator the editor owns is covered.
+/// a slot, so every generator the editor owns is covered.
 fn drawn(ed: &Editor, base: u64, session: SessionId) -> Vec<String> {
     let node = match body(
         ed,
@@ -64,21 +64,21 @@ fn drawn(ed: &Editor, base: u64, session: SessionId) -> Vec<String> {
         ResponseBody::Param { param } => param.to_string(),
         other => panic!("{other:?}"),
     };
-    let seam = match body(
+    let slot = match body(
         ed,
         base + 2,
-        Command::SeamAdd {
+        Command::SlotAdd {
             session,
             node: node.clone(),
-            seam: None,
+            slot: None,
         },
     ) {
-        ResponseBody::Seam {
-            seam: SeamAddr { seam, .. },
-        } => seam.to_string(),
+        ResponseBody::Slot {
+            slot: SlotAddr { slot, .. },
+        } => slot.to_string(),
         other => panic!("{other:?}"),
     };
-    vec![node.to_string(), param, seam]
+    vec![node.to_string(), param, slot]
 }
 
 /// Two documents open at once, edited the same way, must not name their new
