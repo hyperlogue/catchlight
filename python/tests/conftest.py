@@ -25,3 +25,22 @@ def server(tmp_path: Path) -> Iterator[LaunchedServer]:
 @pytest.fixture
 def client(server: LaunchedServer) -> Client:
     return server.client()
+
+
+@pytest.fixture
+def served(tmp_path: Path) -> Iterator[LaunchedServer]:
+    """The same editor with its HTTP door open as well.
+
+    Separate from `server` because the door costs a bind and a port, and only
+    the tests about it need one. Port 0 asks the OS for a free one, and the
+    server prints which it got.
+    """
+    with launch(store=tmp_path, http="127.0.0.1:0") as running:
+        yield running
+
+
+@pytest.fixture
+def over_http(served: LaunchedServer) -> Iterator[Client]:
+    """A client onto `served` over the HTTP door rather than the socket."""
+    with served.connect() as client:
+        yield client

@@ -1,9 +1,9 @@
-"""The socket transport's one hard rule: reconnect before a request, never
-after one.
+"""Both doors' one hard rule: reconnect before a request, never after one.
 
-The editor closes a connection idle for 30 s. A client that discovered that
-half way through a `node_add` could not tell whether the node was added, so the
-transport remakes a connection at 20 s and lets a mid-request failure raise.
+The editor closes a connection idle for 30 s, and answers every HTTP request
+with `Connection: close` besides. A client that discovered either half way
+through a `node_add` could not tell whether the node was added, so a transport
+remakes a connection *before* a request and lets a mid-request failure raise.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import pytest
 
 from catchlight import (
     Client,
+    HttpTransport,
     LaunchedServer,
     SessionList,
     TransportError,
@@ -69,6 +70,57 @@ def test_a_request_over_the_editors_cap_is_refused_before_it_is_sent(
 
 def test_no_editor_at_the_path_is_a_transport_error(tmp_path: Path) -> None:
     with UnixSocketTransport(tmp_path / "nothing.sock") as transport:
+        with pytest.raises(TransportError):
+            transport.request(SessionList().to_wire())
+
+
+# -- the http door
+
+
+def test_every_post_dials_because_the_editor_closes_every_response(
+    served: LaunchedServer,
+) -> None:
+    """`Connection: close` on every answer is the door's own rule, so a command
+    never reuses a socket. The transport dials again rather than writing into
+    the one the editor just hung up."""
+    with HttpTransport(served.http_url or "", served.token or "") as transport:
+        client = Client(transport)
+        client.send(SessionList())
+        client.send(SessionList())
+        assert transport.connections == 2
+
+
+def test_a_closed_http_transport_is_remade_on_the_next_request(
+    served: LaunchedServer,
+) -> None:
+    """Sessions are the editor's here too, so closing the transport under a
+    client loses the connection and not the work."""
+    with HttpTransport(served.http_url or "", served.token or "") as transport:
+        client = Client(transport)
+        session = client.new()
+        transport.close()
+        client.add_part(session, name="After the reconnect")
+        assert client.revision(session) is not None
+
+
+def test_a_post_over_the_editors_cap_is_refused_before_it_is_sent(
+    over_http: Client,
+) -> None:
+    """The door answers a body this long with a 413. Refusing it here instead
+    keeps the error naming the request rather than the status."""
+    session = over_http.new()
+    with pytest.raises(TransportError) as raised:
+        over_http.add_part(session, name="x" * MAX_REQUEST_BYTES)
+    assert str(MAX_REQUEST_BYTES) in str(raised.value)
+    assert over_http.send(SessionList())
+
+
+def test_no_editor_at_the_address_is_a_transport_error(served: LaunchedServer) -> None:
+    """The door is gone but the URL is still loopback, so this is the failure a
+    request meets rather than one the constructor could have caught."""
+    url, token = served.http_url or "", served.token or ""
+    served.stop()
+    with HttpTransport(url, token) as transport:
         with pytest.raises(TransportError):
             transport.request(SessionList().to_wire())
 
