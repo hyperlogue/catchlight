@@ -216,6 +216,43 @@ pub fn premultiply_linear_into_srgb_inplace(rgba: &mut [u8]) {
     }
 }
 
+/// Undo [`premultiply_linear_into_srgb_inplace`]: bytes encoding
+/// premultiplied LINEAR color back to straight-alpha sRGB. For each
+/// channel, `srgb_decode(rgb)`, divide by `α`, `srgb_encode` back to byte,
+/// clamped at white. α=0 pixels emit `(0, 0, 0, 0)`; α=255 pixels are
+/// unchanged.
+///
+/// **This is the inverse a framebuffer readback needs, not
+/// [`unpremultiply_srgb_inplace`].** The two undo different
+/// premultiplications and the names are one letter apart, so: a render
+/// target is `Rgba8UnormSrgb`, which means the blender works on linear
+/// values and encodes on store, so what comes back is
+/// `srgb_encode(linear × α)` and the divide has to happen in linear.
+/// `unpremultiply_srgb_inplace` undoes the *other* convention, the
+/// `byte = srgb_encode(linear) × α` that inx textures are stored in, where
+/// the divide happens in byte space. Using that one on a readback saturates
+/// every partly transparent pixel toward white.
+pub fn unpremultiply_linear_from_srgb_inplace(rgba: &mut [u8]) {
+    debug_assert_eq!(rgba.len() % 4, 0, "rgba buffer must be a multiple of 4");
+    let decode = crate::components::srgb_decode_table();
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let a = px[3];
+        if a == 0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            continue;
+        }
+        if a == 255 {
+            continue;
+        }
+        let inv = 255.0 / a as f32;
+        for c in &mut px[..3] {
+            *c = srgb_encode_to_byte((decode[*c as usize] * inv).min(1.0));
+        }
+    }
+}
+
 /// Edge-bleed (a.k.a. alpha bleed / edge padding): for every α=0 pixel,
 /// copy the RGB of the nearest α>0 pixel, leaving α=0 untouched. Without
 /// this, bilinear texture filtering at a Part's alpha boundary mixes
@@ -881,6 +918,53 @@ mod tests {
         {
             assert_eq!(f, t, "channel {} alpha {}", i % 256, i / 256);
         }
+    }
+
+    /// The readback inverse round-trips: premultiply a straight colour into
+    /// the encoding a render target holds, undo it, and get the colour back.
+    ///
+    /// Not at every alpha. Premultiplying scales a channel down before it is
+    /// quantised to 8 bits, so at alpha 1 only about 1/255 of the range
+    /// survives and dividing it back multiplies the quantisation error by
+    /// 255 — a pixel that faint carries no colour to recover. The bound here
+    /// is what the encoding can honestly promise.
+    #[test]
+    fn unpremultiply_linear_recovers_what_premultiply_linear_encoded() {
+        for alpha in [40u8, 64, 128, 200, 254, 255] {
+            let mut px = vec![210, 90, 70, alpha, 0, 255, 128, alpha];
+            let straight = px.clone();
+            premultiply_linear_into_srgb_inplace(&mut px);
+            unpremultiply_linear_from_srgb_inplace(&mut px);
+            for (i, (got, want)) in px.iter().zip(&straight).enumerate() {
+                assert!(
+                    got.abs_diff(*want) <= 2,
+                    "alpha {alpha}, byte {i}: {got} is not {want}"
+                );
+            }
+        }
+    }
+
+    /// The two unpremultiplies are not interchangeable, which is the whole
+    /// reason both exist. A quarter-opacity pixel off a render target comes
+    /// back as its own colour under the linear inverse and saturates under
+    /// the byte-space one.
+    #[test]
+    fn the_two_unpremultiplies_disagree_and_only_one_fits_a_readback() {
+        let mut target = vec![210, 90, 70, 255];
+        // What the blender leaves for a part drawn at opacity 0.25.
+        target[3] = 64;
+        premultiply_linear_into_srgb_inplace(&mut target);
+
+        let mut linear = target.clone();
+        unpremultiply_linear_from_srgb_inplace(&mut linear);
+        assert!(
+            linear[0].abs_diff(210) <= 1 && linear[1].abs_diff(90) <= 1,
+            "the linear inverse recovers the texture colour: {linear:?}"
+        );
+
+        let mut bytes = target.clone();
+        unpremultiply_srgb_inplace(&mut bytes);
+        assert_eq!(bytes[0], 255, "the byte-space inverse saturates instead");
     }
 
     #[test]
