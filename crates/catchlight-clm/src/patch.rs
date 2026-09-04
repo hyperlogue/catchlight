@@ -541,7 +541,7 @@ mod tests {
                 screen_tint: [0.0; 3],
                 masks: Vec::new(),
                 mask_threshold: 0.5,
-                seams: Vec::new(),
+                slots: Vec::new(),
             }),
             ClmNodeKind::Composite(ClmComposite {
                 opacity: 1.0,

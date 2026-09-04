@@ -26,11 +26,10 @@
 //!   [`SeededHex`] and this crate needs no randomness dependency. Generated
 //!   Ids are valid by construction, so the generators return an Id, not a
 //!   `Result`.
-//! - **Seams and slots are scoped.** A [`SeamId`] is unique within its part
-//!   and a [`SlotId`] within its seam; neither is unique across a model.
-//!   Nothing here can check that — the model that owns them does, which is
-//!   why generating one free of collisions is a `Model` method and not a
-//!   constructor here.
+//! - **A slot is scoped to its part.** A [`SlotId`] is unique within the part
+//!   that owns it, never across a model. Nothing here can check that — the
+//!   model that owns the part does, which is why generating one free of
+//!   collisions is a `Model` method and not a constructor here.
 //! - **A [`Name`] is a label, never a key.** It is capped at
 //!   [`MAX_NAME_BYTES`] and otherwise unconstrained: any text, empty,
 //!   duplicated freely. It deliberately does not implement `Hash`, so it
@@ -212,15 +211,9 @@ string_id!(
      `tex-<8 hex>` by [`TexId::generate`]."
 );
 string_id!(
-    SeamId,
-    "The identity of a seam, unique within the part that owns it — not \
-     within the model. Generated as `seam-<8 hex>` by [`SeamId::generate`]."
-);
-string_id!(
     SlotId,
-    "The identity of a slot, unique within the seam that owns it — not \
-     within the part or the model. Generated as `slot-<8 hex>` by \
-     [`SlotId::generate`]."
+    "The identity of a slot, unique within the part that owns it — not \
+     within the model. Generated as `slot-<8 hex>` by [`SlotId::generate`]."
 );
 
 /// The `kind` segment of a generated [`NodeId`]. It records what the node
@@ -337,22 +330,12 @@ impl TexId {
     }
 }
 
-impl SeamId {
-    /// Generates `seam-<8 hex>`.
-    ///
-    /// No prefix, because a seam is scoped to its part and the part is
-    /// whatever the caller asked. Uniqueness there is the model's to check —
-    /// see [`Model::seam_add_generated`](crate::Model::seam_add_generated).
-    pub fn generate(hex: &mut impl HexSource) -> Self {
-        Self(generated(format!("seam-{:08x}", hex.next_bits())))
-    }
-}
-
 impl SlotId {
     /// Generates `slot-<8 hex>`.
     ///
-    /// Welded seams share one slot set, so "free" means free on every seam
-    /// this one is welded to — which only the model can tell. See
+    /// No prefix, because a slot is scoped to its part and the part is
+    /// whatever the caller asked. "Free" means free on that part, which only
+    /// the model can tell — see
     /// [`Model::slot_add_generated`](crate::Model::slot_add_generated).
     pub fn generate(hex: &mut impl HexSource) -> Self {
         Self(generated(format!("slot-{:08x}", hex.next_bits())))
@@ -483,7 +466,6 @@ mod tests {
         assert_eq!(NodeId::new(""), Err(IdError::Empty));
         assert_eq!(ParamId::new(""), Err(IdError::Empty));
         assert_eq!(TexId::new(""), Err(IdError::Empty));
-        assert_eq!(SeamId::new(""), Err(IdError::Empty));
         assert_eq!(SlotId::new(""), Err(IdError::Empty));
     }
 
@@ -678,7 +660,6 @@ mod tests {
 
         let param = ParamId::new("head-turn").unwrap();
         let tex = TexId::new("tex-0000000f").unwrap();
-        let seam = SeamId::new("collar").unwrap();
         let slot = SlotId::new("collar.03").unwrap();
         let name = Name::new("Head — 頭 \u{1f600}").unwrap();
         assert_eq!(
@@ -688,10 +669,6 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<TexId>(&serde_json::to_string(&tex).unwrap()).unwrap(),
             tex
-        );
-        assert_eq!(
-            serde_json::from_str::<SeamId>(&serde_json::to_string(&seam).unwrap()).unwrap(),
-            seam
         );
         assert_eq!(
             serde_json::from_str::<SlotId>(&serde_json::to_string(&slot).unwrap()).unwrap(),
@@ -714,10 +691,6 @@ mod tests {
         assert_eq!(
             cbor_round_trip(&TexId::new("tex-0000000f").unwrap()),
             TexId::new("tex-0000000f").unwrap()
-        );
-        assert_eq!(
-            cbor_round_trip(&SeamId::new("collar").unwrap()),
-            SeamId::new("collar").unwrap()
         );
         assert_eq!(
             cbor_round_trip(&SlotId::new("collar.03").unwrap()),

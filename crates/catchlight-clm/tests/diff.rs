@@ -189,16 +189,32 @@ fn a_binding_is_keyed_by_its_params_node_and_target() {
 }
 
 #[test]
-fn a_weld_is_keyed_by_its_two_ends() {
+fn a_weld_is_keyed_by_the_two_parts_it_joins() {
     let base = decode(&common::fixture("welded_seam"));
     let mut changed = base.clone();
-    changed.doc.welds[0].weights[0].weight = 0.25;
+    changed.doc.welds[0].pairs[0].weight = 0.25;
 
     let lines = diff(&base, &changed);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
-        lines[0].starts_with("~ weld node-1/weld-0-a <-> node-2/weld-0-b weights: 3 slots"),
+        lines[0].starts_with("~ weld node-1 <-> node-2 pairs: 3 pairs"),
         "{lines:?}"
+    );
+
+    // The key is the *unordered* pair, so storing the weld the other way
+    // round is not a change to it.
+    let mut swapped = base.clone();
+    let weld = &mut swapped.doc.welds[0];
+    std::mem::swap(&mut weld.a, &mut weld.b);
+    for pair in &mut weld.pairs {
+        std::mem::swap(&mut pair.a, &mut pair.b);
+    }
+    let lines = diff(&base, &swapped);
+    assert!(
+        lines
+            .iter()
+            .all(|l| !l.starts_with('+') && !l.starts_with('-')),
+        "an end swap is not an added and a removed weld: {lines:?}"
     );
 }
 

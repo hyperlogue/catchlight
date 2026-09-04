@@ -117,7 +117,7 @@ enum Cmd {
         out: PathBuf,
     },
     /// Print what an addon needs from a base model, one requirement per line
-    /// as kind, id, seam, field, owner, separated by tabs.
+    /// as kind, id, slot, field, owner, separated by tabs.
     Requirements {
         /// The addon .clm.
         addon: PathBuf,

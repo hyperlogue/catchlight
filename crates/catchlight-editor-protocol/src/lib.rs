@@ -7,13 +7,15 @@
 //!
 //! Invariants this module carries:
 //!
-//! - **Ids are what the wire names things by.** A node, param, texture, seam
-//!   or slot travels as its [`NodeId`] / [`ParamId`] / [`TexId`] /
-//!   [`SeamId`] / [`SlotId`] — the same string the model file stores, not a
-//!   per-session handle. So a reference survives the session that minted it,
-//!   an addon can be written against a model by reading its tree, and two
-//!   clients editing one session mean the same node by the same word. The
-//!   Id types validate on the way in, so a string outside the charset
+//! - **Ids are what the wire names things by.** A node, param, texture or
+//!   slot travels as its [`NodeId`] / [`ParamId`] / [`TexId`] / [`SlotId`] —
+//!   the same string the model file stores, not a per-session handle. A
+//!   [`SlotId`] is unique within its part rather than within the model, so it
+//!   always travels beside the node that carries it. So a reference survives
+//!   the session that minted it, an addon can be written against a model by
+//!   reading its tree, and two clients editing one session mean the same
+//!   node by the same word. The Id types validate on the way in, so a string
+//!   outside the charset
 //!   (`[A-Za-z0-9_./-]`, no leading `.`, `/` or `-`) never reaches the server: it
 //!   is refused as [`ErrorCode::BadRequest`] against the request's own `id`.
 //!   [`SessionId`] is the exception — a session is not part of any model, so
@@ -22,7 +24,7 @@
 //! - **An add may name the Id it makes**, under the same word the reply names
 //!   it back with: `node` on [`Command::NodeAdd`] and [`Command::PhysicsAdd`],
 //!   `param` on [`Command::ParamAdd`], `texture` on [`Command::TextureAdd`],
-//!   `seam` and `slot` on the two seam adds. Absent, the editor draws a free
+//!   `slot` on [`Command::SlotAdd`]. Absent, the editor draws a free
 //!   one; present, it is refused as [`ErrorCode::DuplicateId`] if the model
 //!   already carries it. Either way the reply says which Id was made. So a
 //!   script that authors a rig writes the Ids it means once, rather than
@@ -112,7 +114,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use catchlight_core::id::{NodeId, ParamId, SeamId, SlotId, TexId};
+pub use catchlight_core::id::{NodeId, ParamId, SlotId, TexId};
 
 /// One open editing session (one model and its undo history). Opaque: a
 /// session is not part of any model, so it has no Id of its own.
@@ -509,7 +511,7 @@ pub enum Command {
     },
     /// Replace a Part/MeshGroup mesh; every deform binding on the node is
     /// re-fitted onto the new topology in the same undoable step. Answers
-    /// with the seam slots the new mesh emptied.
+    /// with the slots the new mesh emptied.
     MeshSet {
         session: SessionId,
         node: NodeId,
@@ -543,30 +545,13 @@ pub enum Command {
         from: NodeId,
         to: NodeId,
     },
-    /// Add a seam to a part.
-    SeamAdd {
-        session: SessionId,
-        node: NodeId,
-        /// Absent generates one (`seam-<8 hex>`, re-drawn until it is free on
-        /// the part). The reply names it either way.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        seam: Option<SeamId>,
-    },
-    /// Remove a seam, and every weld that named it.
-    SeamDelete {
-        session: SessionId,
-        node: NodeId,
-        seam: SeamId,
-    },
-    /// Add a slot to a seam. The slot lands unfilled, and reaches every seam
-    /// welded to this one at [`catchlight_core::DEFAULT_SLOT_WEIGHT`] — a
-    /// weld pairs two seams slot by slot, so their slot sets are one set.
+    /// Add a slot to a part. The slot lands unfilled and pairs nothing: a
+    /// weld is what pairs it with a slot on another part.
     SlotAdd {
         session: SessionId,
         node: NodeId,
-        seam: SeamId,
-        /// Absent generates one (`slot-<8 hex>`), free on every seam welded to
-        /// this one. The reply names it either way.
+        /// Absent generates one (`slot-<8 hex>`, re-drawn until it is free on
+        /// the part). The reply names it either way.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slot: Option<SlotId>,
     },
@@ -574,26 +559,25 @@ pub enum Command {
     SlotFill {
         session: SessionId,
         node: NodeId,
-        seam: SeamId,
         slot: SlotId,
         vertex: u32,
     },
-    /// Unfill a slot. Welds keep it and skip it until it is filled again.
+    /// Unfill a slot. The weld pairs that name it keep it and skip it until it
+    /// is filled again.
     SlotClear {
         session: SessionId,
         node: NodeId,
-        seam: SeamId,
         slot: SlotId,
     },
-    /// Remove a slot — from this seam and from every seam welded to it.
+    /// Remove a slot from a part, and with it the weld pairs that named it.
+    /// No other part's slots move.
     SlotDelete {
         session: SessionId,
         node: NodeId,
-        seam: SeamId,
         slot: SlotId,
     },
-    /// The seams a part carries, with what fills each slot.
-    Seams {
+    /// The slots a part carries, with what fills each.
+    Slots {
         session: SessionId,
         node: NodeId,
     },
@@ -606,39 +590,38 @@ pub enum Command {
     UnfilledSlots {
         session: SessionId,
     },
-    /// Move one slot's share of one weld's meeting point, leaving every other
+    /// Move one pair's share of one weld's meeting point, leaving every other
     /// weight where it is — what a slider sends. [`Command::WeldSet`] can only
     /// rewrite a weld whole, so moving one weight through it means reading the
     /// rest back and sending them again unchanged.
     ///
-    /// `weight` is the share of the end named `a`, whichever way round the
-    /// weld happens to be stored, and it has to be within `0..=1` — a share
-    /// outside that has no meaning to flip.
+    /// `slot` is a slot on `a`. `weight` is the share of the part named `a`,
+    /// whichever way round the weld happens to be stored, and it has to be
+    /// within `0..=1` — a share outside that has no meaning to flip.
     WeldWeight {
         session: SessionId,
-        a: SeamAddr,
-        b: SeamAddr,
+        a: NodeId,
+        b: NodeId,
         slot: SlotId,
         weight: f32,
     },
-    /// Weld two seams together, replacing any weld already pairing them.
-    /// Empty `weights` welds every slot at
-    /// [`catchlight_core::DEFAULT_SLOT_WEIGHT`].
+    /// Weld two parts together, replacing any weld already pairing them. Each
+    /// pair names a slot on `a` and a slot on `b`; empty `pairs` records the
+    /// two parts as welded and joins nothing yet.
     WeldSet {
         session: SessionId,
-        a: SeamAddr,
-        b: SeamAddr,
+        a: NodeId,
+        b: NodeId,
         #[serde(default)]
-        weights: Vec<SlotWeight>,
+        pairs: Vec<SlotPair>,
     },
-    /// Unmake the weld pairing two seams, named in either order. Both seams
-    /// and every slot on them stay; only the pairing goes — which is what
-    /// tells this apart from [`Command::SeamDelete`], the only other way a
-    /// weld comes undone. [`ErrorCode::UnknownWeld`] if nothing pairs them.
+    /// Unmake the weld pairing two parts, named in either order. Both parts
+    /// and every slot on them stay; only the pairing goes.
+    /// [`ErrorCode::UnknownWeld`] if nothing pairs them.
     WeldDelete {
         session: SessionId,
-        a: SeamAddr,
-        b: SeamAddr,
+        a: NodeId,
+        b: NodeId,
     },
     /// Add a SimplePhysics node.
     PhysicsAdd {
@@ -799,13 +782,11 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("mesh_set", CommandKind::Document),
     ("mesh_auto", CommandKind::Document),
     ("mesh_copy", CommandKind::Document),
-    ("seam_add", CommandKind::Document),
-    ("seam_delete", CommandKind::Document),
     ("slot_add", CommandKind::Document),
     ("slot_fill", CommandKind::Document),
     ("slot_clear", CommandKind::Document),
     ("slot_delete", CommandKind::Document),
-    ("seams", CommandKind::ReplicaQuery),
+    ("slots", CommandKind::ReplicaQuery),
     ("welds", CommandKind::ReplicaQuery),
     ("unfilled_slots", CommandKind::ReplicaQuery),
     ("weld_set", CommandKind::Document),
@@ -878,13 +859,11 @@ impl Command {
             Command::MeshSet { .. } => "mesh_set",
             Command::MeshAuto { .. } => "mesh_auto",
             Command::MeshCopy { .. } => "mesh_copy",
-            Command::SeamAdd { .. } => "seam_add",
-            Command::SeamDelete { .. } => "seam_delete",
             Command::SlotAdd { .. } => "slot_add",
             Command::SlotFill { .. } => "slot_fill",
             Command::SlotClear { .. } => "slot_clear",
             Command::SlotDelete { .. } => "slot_delete",
-            Command::Seams { .. } => "seams",
+            Command::Slots { .. } => "slots",
             Command::Welds { .. } => "welds",
             Command::UnfilledSlots { .. } => "unfilled_slots",
             Command::WeldWeight { .. } => "weld_weight",
@@ -979,13 +958,11 @@ impl Command {
             | Command::MeshSet { session, .. }
             | Command::MeshAuto { session, .. }
             | Command::MeshCopy { session, .. }
-            | Command::SeamAdd { session, .. }
-            | Command::SeamDelete { session, .. }
             | Command::SlotAdd { session, .. }
             | Command::SlotFill { session, .. }
             | Command::SlotClear { session, .. }
             | Command::SlotDelete { session, .. }
-            | Command::Seams { session, .. }
+            | Command::Slots { session, .. }
             | Command::Welds { session }
             | Command::UnfilledSlots { session }
             | Command::WeldWeight { session, .. }
@@ -1019,12 +996,12 @@ pub enum Rename {
         from: TexId,
         to: TexId,
     },
-    /// A seam is scoped to its part, so this one names the part too. Every
-    /// weld that ended on the old Id follows it.
-    Seam {
+    /// A slot is scoped to its part, so this one names the part too. Every
+    /// weld pair that named the old Id follows it.
+    Slot {
         node: NodeId,
-        from: SeamId,
-        to: SeamId,
+        from: SlotId,
+        to: SlotId,
     },
 }
 
@@ -1171,36 +1148,22 @@ impl Default for AutoMesh {
     }
 }
 
-/// One end of a weld: the seam, and the part carrying it.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct SeamAddr {
-    pub node: NodeId,
-    pub seam: SeamId,
-}
-
-/// One slot of a model, named in full.
+/// One slot of a model, named in full: a [`SlotId`] is unique within its part,
+/// so it travels beside the node carrying it.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotAddr {
     pub node: NodeId,
-    pub seam: SeamId,
     pub slot: SlotId,
 }
 
-/// One slot of a part's seam — the part is whatever carries the reply.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct SeamSlot {
-    pub seam: SeamId,
-    pub slot: SlotId,
-}
-
-/// A slot's share of the point its two welded vertices are pulled toward.
+/// One pair a weld holds: a slot on its `a` part, a slot on its `b` part, and
+/// `a`'s share of the point the two vertices are pulled toward.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct SlotWeight {
-    pub slot: SlotId,
+pub struct SlotPair {
+    pub a: SlotId,
+    pub b: SlotId,
     pub weight: f32,
 }
 
@@ -1827,7 +1790,7 @@ pub enum Reply {
 }
 
 /// Why a command was refused. A client that has to react — a commit gate
-/// waiting on unfilled slots, a mesh editor offering to refill a seam —
+/// waiting on unfilled slots, a mesh editor offering to refill a slot —
 /// branches on this rather than on the message text.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1852,19 +1815,23 @@ pub enum ErrorCode {
     NothingToRedo,
     /// A save with no path, on a session that has no file of its own.
     NoSavePath,
-    /// The part carries no such seam.
-    UnknownSeam,
-    /// The seam carries no such slot.
+    /// The part carries no such slot.
     UnknownSlot,
     /// An add named an Id the model already carries.
     DuplicateId,
-    /// The part already carries a seam with that Id.
-    DuplicateSeam,
-    /// The seam already holds a slot with that Id.
+    /// The part already carries a slot with that Id.
     DuplicateSlot,
-    /// A weld's two seams must hold the same slots, each weighted once.
-    WeldSlotMismatch,
-    /// No weld pairs the two seams named.
+    /// A weld pairs a slot the part on that side does not carry.
+    WeldUnknownSlot,
+    /// A weld pairs one slot twice.
+    WeldSlotPairedTwice,
+    /// A weld's two ends are the same node, or one of them is not a part.
+    BadWeldEnd,
+    /// Those two parts are already welded; one weld records a part pair.
+    DuplicateWeld,
+    /// A weight is a share of a meeting point, so it must be within `0..=1`.
+    WeldWeightOutOfRange,
+    /// No weld pairs the two parts named.
     UnknownWeld,
     /// The texture carries no pixel above the alpha threshold, so there is no
     /// shape to mesh. A client offers a lower threshold rather than an error.
@@ -1908,12 +1875,8 @@ pub enum ResponseBody {
     Param {
         param: ParamId,
     },
-    /// One seam, named in full: what [`Command::SeamAdd`] answers with, so a
+    /// One slot, named in full: what [`Command::SlotAdd`] answers with, so a
     /// client that let the editor draw the Id learns which one it drew.
-    Seam {
-        seam: SeamAddr,
-    },
-    /// One slot, named in full, for the same reason.
     Slot {
         slot: SlotAddr,
     },
@@ -1960,8 +1923,8 @@ pub enum ResponseBody {
     Presence {
         presence: Option<Presence>,
     },
-    Seams {
-        seams: Vec<SeamInfo>,
+    Slots {
+        slots: Vec<SlotInfo>,
     },
     Welds {
         welds: Vec<WeldInfo>,
@@ -1970,10 +1933,10 @@ pub enum ResponseBody {
     UnfilledSlots {
         slots: Vec<SlotAddr>,
     },
-    /// The slots a mesh edit emptied on `node`, in seam-then-slot order.
+    /// The slots a mesh edit emptied on `node`, in the part's slot order.
     Emptied {
         node: NodeId,
-        slots: Vec<SeamSlot>,
+        slots: Vec<SlotId>,
     },
     /// Storage keys an import needs, already resolved against the manifest's
     /// own key — so a client stages them verbatim.
@@ -2106,15 +2069,8 @@ pub struct BindingInfo {
     pub authored: Vec<Vec<bool>>,
 }
 
-/// A seam and what currently fills it.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct SeamInfo {
-    pub id: SeamId,
-    pub slots: Vec<SlotInfo>,
-}
-
-/// One slot; `vertex` absent means unfilled, and welds skip it.
+/// One slot; `vertex` absent means unfilled, and the weld pairs naming it
+/// skip it.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SlotInfo {
@@ -2123,12 +2079,13 @@ pub struct SlotInfo {
     pub vertex: Option<u32>,
 }
 
+/// One weld: the two parts it joins, and the slot pairs between them.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct WeldInfo {
-    pub a: SeamAddr,
-    pub b: SeamAddr,
-    pub weights: Vec<SlotWeight>,
+    pub a: NodeId,
+    pub b: NodeId,
+    pub pairs: Vec<SlotPair>,
 }
 
 fn one() -> f32 {
@@ -2415,7 +2372,7 @@ mod tests {
         let s = serde_json::to_string(&Reply::Err {
             id: 3,
             code: ErrorCode::UnknownSlot,
-            message: "seam carries no such slot".into(),
+            message: "part carries no such slot".into(),
         })
         .unwrap();
         assert!(s.contains("\"code\":\"unknown_slot\""), "{s}");

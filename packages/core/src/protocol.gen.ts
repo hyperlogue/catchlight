@@ -23,12 +23,7 @@ export type ParamId = string;
 export type TexId = string;
 
 /**
- * The identity of a seam, unique within the part that owns it — not within the model. Generated as `seam-<8 hex>` by [`SeamId::generate`].
- */
-export type SeamId = string;
-
-/**
- * The identity of a slot, unique within the seam that owns it — not within the part or the model. Generated as `slot-<8 hex>` by [`SlotId::generate`].
+ * The identity of a slot, unique within the part that owns it — not within the model. Generated as `slot-<8 hex>` by [`SlotId::generate`].
  */
 export type SlotId = string;
 
@@ -430,29 +425,12 @@ export type Command =
     to: NodeId,
   }
   | {
-    "cmd": "seam_add",
-    session: SessionId,
-    node: NodeId,
-    /**
-     * Absent generates one (`seam-<8 hex>`, re-drawn until it is free on
-     * the part). The reply names it either way.
-     */
-    seam?: SeamId | null,
-  }
-  | {
-    "cmd": "seam_delete",
-    session: SessionId,
-    node: NodeId,
-    seam: SeamId,
-  }
-  | {
     "cmd": "slot_add",
     session: SessionId,
     node: NodeId,
-    seam: SeamId,
     /**
-     * Absent generates one (`slot-<8 hex>`), free on every seam welded to
-     * this one. The reply names it either way.
+     * Absent generates one (`slot-<8 hex>`, re-drawn until it is free on
+     * the part). The reply names it either way.
      */
     slot?: SlotId | null,
   }
@@ -460,7 +438,6 @@ export type Command =
     "cmd": "slot_fill",
     session: SessionId,
     node: NodeId,
-    seam: SeamId,
     slot: SlotId,
     vertex: number,
   }
@@ -468,18 +445,16 @@ export type Command =
     "cmd": "slot_clear",
     session: SessionId,
     node: NodeId,
-    seam: SeamId,
     slot: SlotId,
   }
   | {
     "cmd": "slot_delete",
     session: SessionId,
     node: NodeId,
-    seam: SeamId,
     slot: SlotId,
   }
   | {
-    "cmd": "seams",
+    "cmd": "slots",
     session: SessionId,
     node: NodeId,
   }
@@ -494,23 +469,23 @@ export type Command =
   | {
     "cmd": "weld_weight",
     session: SessionId,
-    a: SeamAddr,
-    b: SeamAddr,
+    a: NodeId,
+    b: NodeId,
     slot: SlotId,
     weight: number,
   }
   | {
     "cmd": "weld_set",
     session: SessionId,
-    a: SeamAddr,
-    b: SeamAddr,
-    weights: Array<SlotWeight>,
+    a: NodeId,
+    b: NodeId,
+    pairs: Array<SlotPair>,
   }
   | {
     "cmd": "weld_delete",
     session: SessionId,
-    a: SeamAddr,
-    b: SeamAddr,
+    a: NodeId,
+    b: NodeId,
   }
   | {
     "cmd": "physics_add",
@@ -848,10 +823,10 @@ export type Rename =
     to: TexId,
   }
   | {
-    "kind": "seam",
+    "kind": "slot",
     node: NodeId,
-    from: SeamId,
-    to: SeamId,
+    from: SlotId,
+    to: SlotId,
   };
 
 /**
@@ -879,35 +854,21 @@ export type ParamPose = {
 };
 
 /**
- * One end of a weld: the seam, and the part carrying it.
- */
-export type SeamAddr = {
-  node: NodeId,
-  seam: SeamId,
-};
-
-/**
- * One slot of a model, named in full.
+ * One slot of a model, named in full: a [`SlotId`] is unique within its part,
+ * so it travels beside the node carrying it.
  */
 export type SlotAddr = {
   node: NodeId,
-  seam: SeamId,
   slot: SlotId,
 };
 
 /**
- * One slot of a part's seam — the part is whatever carries the reply.
+ * One pair a weld holds: a slot on its `a` part, a slot on its `b` part, and
+ * `a`'s share of the point the two vertices are pulled toward.
  */
-export type SeamSlot = {
-  seam: SeamId,
-  slot: SlotId,
-};
-
-/**
- * A slot's share of the point its two welded vertices are pulled toward.
- */
-export type SlotWeight = {
-  slot: SlotId,
+export type SlotPair = {
+  a: SlotId,
+  b: SlotId,
   weight: number,
 };
 
@@ -959,7 +920,7 @@ export type Reply =
 
 /**
  * Why a command was refused. A client that has to react — a commit gate
- * waiting on unfilled slots, a mesh editor offering to refill a seam —
+ * waiting on unfilled slots, a mesh editor offering to refill a slot —
  * branches on this rather than on the message text.
  */
 export type ErrorCode =
@@ -972,12 +933,14 @@ export type ErrorCode =
   | "nothing_to_undo"
   | "nothing_to_redo"
   | "no_save_path"
-  | "unknown_seam"
   | "unknown_slot"
   | "duplicate_id"
-  | "duplicate_seam"
   | "duplicate_slot"
-  | "weld_slot_mismatch"
+  | "weld_unknown_slot"
+  | "weld_slot_paired_twice"
+  | "bad_weld_end"
+  | "duplicate_weld"
+  | "weld_weight_out_of_range"
   | "unknown_weld"
   | "nothing_to_mesh"
   | "fragment"
@@ -1013,10 +976,6 @@ export type ResponseBody =
   | {
     "result": "param",
     param: ParamId,
-  }
-  | {
-    "result": "seam",
-    seam: SeamAddr,
   }
   | {
     "result": "slot",
@@ -1074,8 +1033,8 @@ export type ResponseBody =
     presence: Presence | null,
   }
   | {
-    "result": "seams",
-    seams: Array<SeamInfo>,
+    "result": "slots",
+    slots: Array<SlotInfo>,
   }
   | {
     "result": "welds",
@@ -1088,7 +1047,7 @@ export type ResponseBody =
   | {
     "result": "emptied",
     node: NodeId,
-    slots: Array<SeamSlot>,
+    slots: Array<SlotId>,
   }
   | {
     "result": "manifest_requirements",
@@ -1291,25 +1250,21 @@ export type BindingInfo = {
 };
 
 /**
- * A seam and what currently fills it.
- */
-export type SeamInfo = {
-  id: SeamId,
-  slots: Array<SlotInfo>,
-};
-
-/**
- * One slot; `vertex` absent means unfilled, and welds skip it.
+ * One slot; `vertex` absent means unfilled, and the weld pairs naming it
+ * skip it.
  */
 export type SlotInfo = {
   id: SlotId,
   vertex: number | null,
 };
 
+/**
+ * One weld: the two parts it joins, and the slot pairs between them.
+ */
 export type WeldInfo = {
-  a: SeamAddr,
-  b: SeamAddr,
-  weights: Array<SlotWeight>,
+  a: NodeId,
+  b: NodeId,
+  pairs: Array<SlotPair>,
 };
 
 export type PreviewInfo = {
@@ -1367,8 +1322,6 @@ export type DocumentCommandTag =
   | "mesh_set"
   | "mesh_auto"
   | "mesh_copy"
-  | "seam_add"
-  | "seam_delete"
   | "slot_add"
   | "slot_fill"
   | "slot_clear"
@@ -1415,7 +1368,7 @@ export type ReplicaQueryCommandTag =
   | "texture_list"
   | "param_list"
   | "binding_list"
-  | "seams"
+  | "slots"
   | "welds"
   | "unfilled_slots";
 export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag }>;

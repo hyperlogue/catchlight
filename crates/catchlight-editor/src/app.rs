@@ -29,10 +29,10 @@ use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_core::{BindingKey, BindingTarget as CoreBindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
     BindingKeyEntry, BindingParams, BindingTarget, Command, NodeId, NodeKind, NodePatch, ParamId,
-    ParamInfo, PhysicsKind, PhysicsTargets, Rename, Reply, Request, ResponseBody, SeamAddr, SeamId,
-    SessionId, SlotAddr, SlotId, SlotWeight, TexId, TreeNode, WeldInfo,
+    ParamInfo, PhysicsKind, PhysicsTargets, Rename, Reply, Request, ResponseBody, SessionId,
+    SlotAddr, TexId, TreeNode, WeldInfo,
 };
-use catchlight_editor_server::{seam_info, Editor};
+use catchlight_editor_server::{slot_info, weld_info, Editor};
 use eframe::egui;
 
 use crate::camera::EditorCamera;
@@ -42,7 +42,7 @@ use crate::inspector::{
     MaskRow,
 };
 use crate::io::{IoEvent, IoQueue};
-use crate::mesh_edit::{MeshEditAction, MeshEditState, SeamAction, SeamView};
+use crate::mesh_edit::{MeshEditAction, MeshEditState, SlotAction, SlotView};
 use crate::params_panel::{
     Armed, ArmedInfo, BindingAddr, BindingOp, BindingRow, ParamAction, ParamsPanel,
 };
@@ -891,9 +891,9 @@ impl App {
                 }
                 self.armed_cache = None;
             }
-            // Nothing here names a texture or a seam by Id: the mesh editor
-            // reads a part's seams back every frame.
-            Rename::Texture { .. } | Rename::Seam { .. } => {}
+            // Nothing here names a texture or a slot by Id: the mesh editor
+            // reads a part's slots back every frame.
+            Rename::Texture { .. } | Rename::Slot { .. } => {}
         }
     }
 
@@ -1113,19 +1113,19 @@ impl App {
 
     /// Apply the working mesh to the document.
     ///
-    /// The reply says which seam slots the new mesh emptied. Those are the
+    /// The reply says which slots the new mesh emptied. Those are the
     /// author's to refill — a slot names a vertex of a mesh that no longer
     /// exists, and guessing a new one is exactly what naming vertices by slot
-    /// exists to avoid — so the mode stays open on the seam tool instead of
+    /// exists to avoid — so the mode stays open on the slot tool instead of
     /// closing over the problem, and [`Self::commit_block`] keeps the model
-    /// from being saved until they are refilled or their seam is deleted.
+    /// from being saved until they are refilled or deleted.
     fn apply_mesh_edit(&mut self) {
         let Some(session) = self.session else { return };
         let Some(mesh) = self.mesh_edit.take() else {
             return;
         };
         // Nothing edited since the working mesh last was the document's: there
-        // is nothing to apply, and applying anyway would empty every seam slot
+        // is nothing to apply, and applying anyway would empty every slot
         // on the part a second time — including the ones just refilled.
         if mesh.matches_document() {
             return;
@@ -1161,17 +1161,13 @@ impl App {
                 for slot in &slots {
                     let addr = SlotAddr {
                         node: node.clone(),
-                        seam: slot.seam.clone(),
-                        slot: slot.slot.clone(),
+                        slot: slot.clone(),
                     };
                     if !self.emptied.contains(&addr) {
                         self.emptied.push(addr);
                     }
                 }
                 slots
-                    .into_iter()
-                    .map(|s| (s.seam, s.slot))
-                    .collect::<Vec<_>>()
             }
             Reply::Err { .. } => {
                 self.mesh_edit = Some(mesh);
@@ -1193,55 +1189,48 @@ impl App {
             catchlight_editor_core::WorkingMesh::from_mesh(&doc_mesh),
             emptied,
         );
-        self.status = "the new mesh emptied this part's seam slots — refill them".into();
+        self.status = "the new mesh emptied this part's slots — refill them".into();
         self.mesh_edit = Some(mesh);
     }
 
-    /// What the seam panel reads: this part's seams, the welds naming them,
-    /// and every seam elsewhere a weld could reach.
-    fn seam_view(&self) -> SeamView {
+    /// What the slot panel reads: this part's slots, the welds it is an end
+    /// of, and every other part a weld could reach with the slots it carries.
+    fn slot_view(&self) -> SlotView {
         let (Some(session), Some(node)) = (self.session, self.mesh_edit.as_ref().map(|m| &m.node))
         else {
-            return SeamView::default();
+            return SlotView::default();
         };
         let node = node.clone();
         self.editor
             .with_model(session, |m| {
-                let seams = m
-                    .seams(&node)
-                    .map(|seams| seams.iter().map(seam_info).collect())
+                let slots = m
+                    .slots(&node)
+                    .map(|slots| slots.iter().map(slot_info).collect())
                     .unwrap_or_default();
-                let welds = m
+                let welds: Vec<WeldInfo> = m
                     .welds()
                     .iter()
-                    .map(|w| WeldInfo {
-                        a: seam_addr(w.a()),
-                        b: seam_addr(w.b()),
-                        weights: w
-                            .weights()
-                            .iter()
-                            .map(|(slot, weight)| SlotWeight {
-                                slot: slot.clone(),
-                                weight: *weight,
-                            })
-                            .collect(),
-                    })
+                    .filter(|w| w.a() == &node || w.b() == &node)
+                    .map(weld_info)
                     .collect();
                 let mut others = Vec::new();
                 for other in m.nodes_in_order() {
                     if other == node {
                         continue;
                     }
+                    let Some(far) = m.slots(&other) else { continue };
                     let name = m
                         .node(&other)
                         .map(|n| n.name.to_string())
                         .unwrap_or_default();
-                    for seam in m.seams(&other).unwrap_or(&[]) {
-                        others.push((other.clone(), name.clone(), seam.id().clone()));
-                    }
+                    others.push((
+                        other.clone(),
+                        name,
+                        far.iter().map(slot_info).collect::<Vec<_>>(),
+                    ));
                 }
-                SeamView {
-                    seams,
+                SlotView {
+                    slots,
                     welds,
                     others,
                 }
@@ -1254,138 +1243,92 @@ impl App {
             MeshEditAction::Apply => self.apply_mesh_edit(),
             MeshEditAction::Cancel => self.mesh_edit = None,
             MeshEditAction::CopyFrom(src) => self.mesh_copy_into_working(src),
-            MeshEditAction::Seam(action) => self.apply_seam_action(action),
+            MeshEditAction::Slot(action) => self.apply_slot_action(action),
         }
     }
 
-    /// A seam or weld edit, on the node the mesh editor is open on.
-    fn apply_seam_action(&mut self, action: SeamAction) {
+    /// A slot or weld edit, on the node the mesh editor is open on.
+    pub(crate) fn apply_slot_action(&mut self, action: SlotAction) {
         let Some(session) = self.session else { return };
         let Some(node) = self.mesh_edit.as_ref().map(|m| m.node.clone()) else {
             return;
         };
         match action {
-            SeamAction::AddSeam(seam) => {
-                self.send(Command::SeamAdd {
-                    session,
-                    node,
-                    seam: Some(seam),
-                });
-            }
-            SeamAction::DeleteSeam(seam) => {
-                self.send(Command::SeamDelete {
-                    session,
-                    node,
-                    seam,
-                });
-            }
-            SeamAction::AddSlot { seam, slot } => {
+            SlotAction::AddSlot(slot) => {
                 self.send(Command::SlotAdd {
                     session,
                     node,
-                    seam,
-                    slot: Some(slot),
+                    slot,
                 });
             }
-            SeamAction::DeleteSlot { seam, slot } => {
+            SlotAction::DeleteSlot(slot) => {
                 self.send(Command::SlotDelete {
                     session,
                     node,
-                    seam,
                     slot,
                 });
             }
-            SeamAction::ClearSlot { seam, slot } => {
+            SlotAction::ClearSlot(slot) => {
                 self.send(Command::SlotClear {
                     session,
                     node,
-                    seam,
                     slot,
                 });
             }
-            SeamAction::FillSlot { seam, slot, vertex } => {
+            SlotAction::RenameSlot { slot, to } => {
+                self.send(Command::RenameId {
+                    session,
+                    rename: Rename::Slot {
+                        node,
+                        from: slot,
+                        to,
+                    },
+                });
+            }
+            SlotAction::FillSlot { slot, vertex } => {
                 self.send(Command::SlotFill {
                     session,
                     node,
-                    seam,
                     slot,
                     vertex,
                 });
             }
-            SeamAction::Weld { seam, other } => {
-                // No weights: every slot welds at DEFAULT_SLOT_WEIGHT, and
-                // slot_add has already made the two slot sets one.
+            SlotAction::WeldPairs { other, pairs } => {
                 self.send(Command::WeldSet {
                     session,
-                    a: SeamAddr { node, seam },
+                    a: node,
                     b: other,
-                    weights: Vec::new(),
+                    pairs,
                 });
             }
-            SeamAction::SetWeight {
-                seam,
-                other,
-                slot,
-                weight,
-            } => self.set_slot_weight(session, node, seam, other, slot, weight),
-            SeamAction::Undo => {
+            SlotAction::SetWeight { a, b, slot, weight } => {
+                self.send(Command::WeldWeight {
+                    session,
+                    a,
+                    b,
+                    slot,
+                    weight,
+                });
+            }
+            SlotAction::WeldDelete { other } => {
+                self.send(Command::WeldDelete {
+                    session,
+                    a: node,
+                    b: other,
+                });
+            }
+            SlotAction::Undo => {
                 self.send(Command::Undo { session });
             }
         }
     }
 
-    /// `WeldSet` replaces the whole weld, so one slider carries every other
-    /// slot's weight along unchanged.
-    fn set_slot_weight(
-        &mut self,
-        session: SessionId,
-        node: NodeId,
-        seam: SeamId,
-        other: SeamAddr,
-        slot: SlotId,
-        weight: f32,
-    ) {
-        let a = SeamAddr {
-            node: node.clone(),
-            seam: seam.clone(),
-        };
-        let editor = self.editor.clone();
-        let (pa, pb) = (a.clone(), other.clone());
-        let weights = editor
-            .with_model(session, |m| {
-                m.welds()
-                    .iter()
-                    .find(|w| {
-                        let ends = [seam_addr(w.a()), seam_addr(w.b())];
-                        ends.contains(&pa) && ends.contains(&pb)
-                    })
-                    .map(|w| {
-                        w.weights()
-                            .iter()
-                            .map(|(s, v)| SlotWeight {
-                                slot: s.clone(),
-                                weight: if *s == slot { weight } else { *v },
-                            })
-                            .collect::<Vec<_>>()
-                    })
-            })
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        self.send(Command::WeldSet {
-            session,
-            a,
-            b: other,
-            weights,
-        });
-    }
-
     /// The slots this session's mesh edits emptied that nobody has refilled.
     ///
     /// A weld skips an unfilled slot, so a model saved in this state holds a
-    /// weld that quietly no longer closes its seam. Refilling the slot or
-    /// deleting the seam clears the entry; nothing else does, and the save
-    /// paths refuse while the list is non-empty.
+    /// weld that quietly no longer closes. Refilling the slot or deleting it
+    /// clears the entry; nothing else does, and the save paths refuse while
+    /// the list is non-empty.
     fn commit_block(&self) -> Vec<SlotAddr> {
         let Some(session) = self.session else {
             return Vec::new();
@@ -1399,8 +1342,7 @@ impl App {
                 pending
                     .into_iter()
                     .filter(|addr| {
-                        m.seam(&addr.node, &addr.seam)
-                            .and_then(|s| s.slot(&addr.slot))
+                        m.slot(&addr.node, &addr.slot)
                             .is_some_and(|slot| slot.vertex().is_none())
                     })
                     .collect()
@@ -1418,11 +1360,11 @@ impl App {
         }
         let first = blocked
             .first()
-            .map(|a| format!("{} · {} · {}", a.node, a.seam, a.slot))
+            .map(|a| format!("{} · {}", a.node, a.slot))
             .unwrap_or_default();
         self.status = format!(
-            "cannot save: {} seam slot(s) emptied by a mesh edit are still \
-             unfilled ({first}…) — refill them, or delete the seam",
+            "cannot save: {} slot(s) emptied by a mesh edit are still \
+             unfilled ({first}…) — refill them, or delete them",
             blocked.len()
         );
         true
@@ -1758,7 +1700,7 @@ impl eframe::App for App {
                 .and_then(|s| find_subtree(&s.root, &m.node))
                 .map(|n| n.name.clone())
         });
-        let seam_view = self.seam_view();
+        let slot_view = self.slot_view();
         let copy_sources: Vec<(NodeId, String)> = match (&self.mesh_edit, &snapshot) {
             (Some(mesh), Some(s)) => {
                 let mut out = Vec::new();
@@ -1784,7 +1726,7 @@ impl eframe::App for App {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             if let Some(mesh) = &mut self.mesh_edit {
-                                mesh.panel_ui(ui, &copy_sources, &seam_view);
+                                mesh.panel_ui(ui, &copy_sources, &slot_view);
                             }
                         });
                     return;
@@ -1874,7 +1816,7 @@ impl eframe::App for App {
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            self.viewport_ui(ui, frame, rev, &snapshot, &seam_view);
+            self.viewport_ui(ui, frame, rev, &snapshot, &slot_view);
         });
         self.id_rename_modal(&ui.ctx().clone());
         self.texture_drop_modal(&ui.ctx().clone());
@@ -2031,7 +1973,7 @@ impl App {
         frame: &eframe::Frame,
         rev: u64,
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
-        seam_view: &SeamView,
+        slot_view: &SlotView,
     ) {
         let avail = ui.available_size();
         let (rect, resp) = ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
@@ -2287,7 +2229,7 @@ impl App {
             return;
         }
         if let Some(mesh) = &self.mesh_edit {
-            mesh.draw(ui, rect, &self.camera, seam_view);
+            mesh.draw(ui, rect, &self.camera, slot_view);
         } else {
             self.draw_selection_bounds(ui, rect, session);
             if deform_active {
@@ -2344,9 +2286,10 @@ impl App {
         }
     }
 
-    /// `Model::check()`'s findings. Most are cosmetic; the three about seams
-    /// are not — an unfilled slot is a weld that no longer closes, and the two
-    /// about a weld's seams mean the model will not save at all.
+    /// `Model::check()`'s findings. Most are cosmetic; the ones about slots
+    /// are not — an unfilled slot is a weld pair that no longer closes, and a
+    /// weld naming a node that is no longer a part, or a slot its part lacks,
+    /// means the model will not save at all.
     fn warnings_panel(&mut self, ui: &mut egui::Ui, rev: u64) {
         let Some(session) = self.session else { return };
         if self.warnings.as_ref().map(|(at, _)| *at) != Some(rev) {
@@ -3453,13 +3396,6 @@ fn nearest_index(points: &[f32], v: f32) -> u32 {
         }
     }
     best as u32
-}
-
-fn seam_addr(end: &(NodeId, SeamId)) -> SeamAddr {
-    SeamAddr {
-        node: end.0.clone(),
-        seam: end.1.clone(),
-    }
 }
 
 /// `id`, with `from` replaced by `to`.

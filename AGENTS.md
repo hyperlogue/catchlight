@@ -42,7 +42,7 @@ sure all potential changes can be verified in a tight feedback loop.
 
 | Crate | What it is |
 | --- | --- |
-| `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, seams/welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
+| `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, slots and welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
 | `catchlight-import-inochi2d` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
 | `catchlight-clm` | File-level operations on a `.clm`: patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files. Decodes no images. |
 | `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model, one per model serving every puppet of it; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws a frame of them. |
@@ -163,8 +163,8 @@ that enforces them, not here. Add new ones there.
   the store root, and an upload is not a file on disk
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording
   never authors
-- `crates/catchlight-editor/src/mesh_edit.rs` — when the seam tool is reachable,
-  seam edits are document edits
+- `crates/catchlight-editor/src/mesh_edit.rs` — when the slot tool is
+  reachable, slot edits are document edits
 - `crates/catchlight-editor/src/params_panel.rs` — a param is a scalar, a row
   addresses its own binding
 - `crates/catchlight-editor/src/viewport.rs` — no readback, one renderer holding

@@ -231,7 +231,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
             nodes,
             params,
             bindings,
-            // An `.inx` has no seams, so it has no welds.
+            // An `.inx` names no vertex, so it has no slots and no welds.
             welds: Vec::new(),
             animations: convert_animations(obj.get("animations"), &refs),
         },
@@ -540,8 +540,8 @@ fn convert_part(
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
         masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
-        // An `.inx` names no vertex, so it fills no seam.
-        seams: Vec::new(),
+        // An `.inx` names no vertex, so it fills no slot.
+        slots: Vec::new(),
     })
 }
 

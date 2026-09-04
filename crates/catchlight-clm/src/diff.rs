@@ -4,7 +4,8 @@
 //! texture is the same thing in both files exactly when its Id is the same
 //! string, so the comparison is a set difference over Ids rather than a guess
 //! about which subtree moved where. Bindings are keyed by their params, node
-//! and target, welds by their two ends and animations by name — the same keys
+//! and target, welds by the unordered pair of parts they join and animations
+//! by name — the same keys
 //! the model itself uses.
 //!
 //! Two rules keep the output honest:
@@ -257,12 +258,10 @@ fn node_fields(n: &ClmNode) -> Fields {
             );
             mesh(&mut f, &p.mesh);
             f.insert("masks".into(), masks(&p.masks));
-            for seam in &p.seams {
-                f.insert(
-                    format!("seam[{:?}]", seam.id.as_str()),
-                    format!("{} slots, {}", seam.slots.len(), digest(&seam.slots)),
-                );
-            }
+            f.insert(
+                "slots".into(),
+                format!("{} slots, {}", p.slots.len(), digest(&p.slots)),
+            );
         }
         ClmNodeKind::Composite(c) => {
             f.insert("kind".into(), "Composite".into());
@@ -402,15 +401,24 @@ fn binding_fields(b: &ClmBinding) -> Fields {
     f
 }
 
+/// A weld has no Id: the unordered pair of parts it joins is its identity, so
+/// the key sorts the two ends and swapping them is not a change.
 fn weld_key(w: &ClmWeld) -> String {
-    format!("{}/{} <-> {}/{}", w.a.node, w.a.seam, w.b.node, w.b.seam)
+    let (a, b) = if w.a <= w.b {
+        (&w.a, &w.b)
+    } else {
+        (&w.b, &w.a)
+    };
+    format!("{a} <-> {b}")
 }
 
 fn weld_fields(w: &ClmWeld) -> Fields {
     let mut f = Fields::new();
+    f.insert("a".into(), w.a.to_string());
+    f.insert("b".into(), w.b.to_string());
     f.insert(
-        "weights".into(),
-        format!("{} slots, {}", w.weights.len(), digest(&w.weights)),
+        "pairs".into(),
+        format!("{} pairs, {}", w.pairs.len(), digest(&w.pairs)),
     );
     f
 }

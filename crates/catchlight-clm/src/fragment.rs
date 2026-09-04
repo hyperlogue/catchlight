@@ -158,7 +158,7 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
 /// Model's, and it walks exactly the same seven fields: `nodes[].parent`,
 /// `nodes[].kind.*.masks[].source`,
 /// `nodes[].kind.SimplePhysics.target_params`, `bindings[].node`,
-/// `bindings[].params`, `welds[].{a,b}.node` and `animations[].lanes[].param`.
+/// `bindings[].params`, `welds[].{a,b}` and `animations[].lanes[].param`.
 /// `nodes[].kind.Part.albedo` is not among them: an addon carries the textures
 /// its own parts draw, so a texture is not something a base can supply.
 /// Sorted and deduplicated, so the same Id appears once per field that names
@@ -232,13 +232,23 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
     }
 
     for weld in &doc.welds {
-        for (end, far) in [(&weld.a, &weld.b), (&weld.b, &weld.a)] {
-            if !has_node(&end.node) {
+        for (end, far, on_a) in [(&weld.a, &weld.b, true), (&weld.b, &weld.a, false)] {
+            if has_node(end) {
+                continue;
+            }
+            // One requirement per base slot the weld pairs: the part and the
+            // slot on it are needed together. A weld with no pairs still
+            // names the part.
+            for pair in &weld.pairs {
+                let slot = if on_a { &pair.a } else { &pair.b };
                 need(
-                    Required::Seam(end.node.clone(), end.seam.clone()),
+                    Required::Slot(end.clone(), slot.clone()),
                     "weld end",
-                    far.node.to_string(),
+                    far.to_string(),
                 );
+            }
+            if weld.pairs.is_empty() {
+                need(Required::Part(end.clone()), "weld end", far.to_string());
             }
         }
     }
@@ -262,18 +272,18 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
 
 // ---- rendering ------------------------------------------------------------
 
-/// One requirement as five TAB-separated columns: `kind`, `id`, `seam`,
-/// `field`, `owner`. `seam` is empty for every kind but `seam`, so the column
+/// One requirement as five TAB-separated columns: `kind`, `id`, `slot`,
+/// `field`, `owner`. `slot` is empty for every kind but `slot`, so the column
 /// count never varies and `cut -f2` is always the Id.
 pub fn render_line(requirement: &Requirement) -> String {
-    let (kind, id, seam) = match &requirement.id {
+    let (kind, id, slot) = match &requirement.id {
         Required::Node(id) => ("node", id.to_string(), String::new()),
         Required::Part(id) => ("part", id.to_string(), String::new()),
         Required::Param(id) => ("param", id.to_string(), String::new()),
-        Required::Seam(node, seam) => ("seam", node.to_string(), seam.to_string()),
+        Required::Slot(node, slot) => ("slot", node.to_string(), slot.to_string()),
     };
     format!(
-        "{kind}\t{id}\t{seam}\t{}\t{}",
+        "{kind}\t{id}\t{slot}\t{}\t{}",
         requirement.field, requirement.owner
     )
 }
@@ -284,16 +294,16 @@ pub fn render_json(requirements: &[Requirement]) -> String {
     let entries: Vec<serde_json::Value> = requirements
         .iter()
         .map(|r| {
-            let (kind, id, seam) = match &r.id {
+            let (kind, id, slot) = match &r.id {
                 Required::Node(id) => ("node", id.to_string(), None),
                 Required::Part(id) => ("part", id.to_string(), None),
                 Required::Param(id) => ("param", id.to_string(), None),
-                Required::Seam(node, seam) => ("seam", node.to_string(), Some(seam.to_string())),
+                Required::Slot(node, slot) => ("slot", node.to_string(), Some(slot.to_string())),
             };
             serde_json::json!({
                 "kind": kind,
                 "id": id,
-                "seam": seam,
+                "slot": slot,
                 "field": r.field,
                 "owner": r.owner,
             })

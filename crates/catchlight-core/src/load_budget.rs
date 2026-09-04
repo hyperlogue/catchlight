@@ -11,7 +11,7 @@ pub enum LoadResource {
     DeformOffsets,
     MeshGroupBitmapCells,
     ManifestGridCells,
-    SeamSlots,
+    Slots,
 }
 
 pub const MAX_TEXTURE_DIMENSION: u32 = 8_192;
@@ -30,7 +30,7 @@ impl LoadResource {
             Self::DeformOffsets => "deform offsets",
             Self::MeshGroupBitmapCells => "mesh-group bitmap cells",
             Self::ManifestGridCells => "manifest grid cells",
-            Self::SeamSlots => "seam slots",
+            Self::Slots => "slots",
         }
     }
 }
@@ -48,7 +48,7 @@ pub struct LoadLimits {
     pub deform_offsets: u64,
     pub mesh_group_bitmap_cells: u64,
     pub manifest_grid_cells: u64,
-    pub seam_slots: u64,
+    pub slots: u64,
 }
 
 impl Default for LoadLimits {
@@ -65,7 +65,7 @@ impl Default for LoadLimits {
             deform_offsets: 64_000_000,
             mesh_group_bitmap_cells: 32_000_000,
             manifest_grid_cells: 1_000_000,
-            seam_slots: 4_000_000,
+            slots: 4_000_000,
         }
     }
 }
@@ -106,7 +106,7 @@ impl LoadBudget {
                 deform_offsets: 0,
                 mesh_group_bitmap_cells: 0,
                 manifest_grid_cells: 0,
-                seam_slots: 0,
+                slots: 0,
             },
         }
     }
@@ -135,7 +135,7 @@ impl LoadBudget {
                 &mut self.used.manifest_grid_cells,
                 self.limits.manifest_grid_cells,
             ),
-            LoadResource::SeamSlots => (&mut self.used.seam_slots, self.limits.seam_slots),
+            LoadResource::Slots => (&mut self.used.slots, self.limits.slots),
         };
         let got = used.checked_add(amount).ok_or_else(|| LoadLimitError {
             resource: resource.name(),
@@ -204,7 +204,7 @@ impl LoadBudget {
             LoadResource::DeformOffsets => self.limits.deform_offsets,
             LoadResource::MeshGroupBitmapCells => self.limits.mesh_group_bitmap_cells,
             LoadResource::ManifestGridCells => self.limits.manifest_grid_cells,
-            LoadResource::SeamSlots => self.limits.seam_slots,
+            LoadResource::Slots => self.limits.slots,
         }
     }
 }
@@ -254,9 +254,7 @@ pub fn charge_clm_document(
     for node in &doc.nodes {
         let mesh = match &node.kind {
             ClmNodeKind::Part(part) => {
-                for seam in &part.seams {
-                    budget.charge(LoadResource::SeamSlots, seam.slots.len() as u64)?;
-                }
+                budget.charge(LoadResource::Slots, part.slots.len() as u64)?;
                 Some(&part.mesh)
             }
             ClmNodeKind::MeshGroup(group) => Some(&group.mesh),

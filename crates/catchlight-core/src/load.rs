@@ -7,7 +7,7 @@
 //! knows that format exists.
 //!
 //! The file is only ever read into a Model — that is where the format's Ids,
-//! scalar params and seams are checked — and whatever animates or draws it is
+//! scalar params and slots are checked — and whatever animates or draws it is
 //! derived from there: [`crate::Puppet::new`] bakes the runtime's dense arena,
 //! and a render cache is prepared alongside it. So there is one reader to
 //! keep honest.

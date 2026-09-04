@@ -5,7 +5,7 @@
 //! The "current session" is remembered in a small local file so most commands
 //! need no `--session`. Unix-only by design.
 //!
-//! Nodes, params, textures, seams and slots are named by their Id — the same
+//! Nodes, params, textures and slots are named by their Id — the same
 //! string the `.clm` stores — so a command written against one session is
 //! replayable against another that opened the same file.
 
@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 
 /// The Id rules, repeated in `--help` because every command takes one.
 const ID_HELP: &str = "\
-Nodes, params, textures, seams and slots are named by their Id: one or more of
+Nodes, params, textures and slots are named by their Id: one or more of
 the characters [A-Za-z0-9_./-], starting with none of '.', '/' or '-'. An Id is
 what the .clm file stores, so it means the same thing in every session that
 opened that file, and `node tree` / `param list` / `texture list` print the ones
@@ -97,12 +97,12 @@ enum Cmd {
         #[command(subcommand)]
         action: MeshCmd,
     },
-    /// Seams and their slots: the named vertices a weld pairs.
-    Seam {
+    /// Slots: the named vertices a weld pairs.
+    Slot {
         #[command(subcommand)]
-        action: SeamCmd,
+        action: SlotCmd,
     },
-    /// Welds: pair two parts' seams slot by slot.
+    /// Welds: pair two parts, slot by slot.
     Weld {
         #[command(subcommand)]
         action: WeldCmd,
@@ -162,13 +162,6 @@ enum RenameCmd {
     Param { from: ParamId, to: ParamId },
     /// Rename a texture's Id.
     Texture { from: TexId, to: TexId },
-    /// Rename a seam's Id on one part. Every weld that ended on it follows.
-    Seam {
-        #[arg(long)]
-        node: NodeId,
-        from: SeamId,
-        to: SeamId,
-    },
 }
 
 #[derive(Subcommand)]
@@ -271,7 +264,7 @@ enum MeshCmd {
     /// Replace a node's mesh from a JSON file `{"verts": [[x, y], …],
     /// "uvs": [[u, v], …], "indices": [[a, b, c], …], "origin": [x, y]}`.
     /// Deform bindings on the node are re-fitted in the same undo step, and
-    /// every seam slot on the part is emptied — the reply lists them.
+    /// every slot on the part is emptied — the reply lists them.
     Set {
         node: NodeId,
         #[arg(long)]
@@ -313,56 +306,54 @@ enum MeshCmd {
 }
 
 #[derive(Subcommand)]
-enum SeamCmd {
-    /// Add a seam to a part. Without `--seam` the editor draws one
-    /// (`seam-<8 hex>`) and the reply says which.
+enum SlotCmd {
+    /// Add a slot to a part. It lands unfilled and pairs nothing until a weld
+    /// names it. Without `--slot` the editor draws one (`slot-<8 hex>`) and
+    /// the reply says which.
     Add {
-        node: NodeId,
         #[arg(long)]
-        seam: Option<SeamId>,
-    },
-    /// Remove a seam, and every weld that named it.
-    Delete {
         node: NodeId,
-        #[arg(long)]
-        seam: SeamId,
-    },
-    /// Print a part's seams and what fills each slot.
-    List { node: NodeId },
-    /// Add a slot. It lands unfilled, and reaches every welded seam. Without
-    /// `--slot` the editor draws one (`slot-<8 hex>`).
-    SlotAdd {
-        node: NodeId,
-        #[arg(long)]
-        seam: SeamId,
         #[arg(long)]
         slot: Option<SlotId>,
     },
     /// Point a slot at one of the part's vertices.
-    SlotFill {
-        node: NodeId,
+    Fill {
         #[arg(long)]
-        seam: SeamId,
+        node: NodeId,
         #[arg(long)]
         slot: SlotId,
         #[arg(long)]
         vertex: u32,
     },
-    /// Unfill a slot; welds skip it until it is filled again.
-    SlotClear {
-        node: NodeId,
+    /// Unfill a slot; the weld pairs naming it skip it until it is filled
+    /// again.
+    Clear {
         #[arg(long)]
-        seam: SeamId,
+        node: NodeId,
         #[arg(long)]
         slot: SlotId,
     },
-    /// Remove a slot — here and from every welded seam.
-    SlotDelete {
+    /// Remove a slot, and with it the weld pairs that named it. No other
+    /// part's slots move.
+    Delete {
+        #[arg(long)]
         node: NodeId,
         #[arg(long)]
-        seam: SeamId,
+        slot: SlotId,
+    },
+    /// Rename a slot's Id on one part. Every weld pair that named it follows.
+    Rename {
+        #[arg(long)]
+        node: NodeId,
         #[arg(long)]
         slot: SlotId,
+        #[arg(long)]
+        to: SlotId,
+    },
+    /// Print a part's slots and what fills each.
+    List {
+        #[arg(long)]
+        node: NodeId,
     },
     /// List every slot in the model that no vertex fills.
     Unfilled,
@@ -370,50 +361,38 @@ enum SeamCmd {
 
 #[derive(Subcommand)]
 enum WeldCmd {
-    /// Pair two seams, replacing any weld already joining them. Without
-    /// `--weight` every slot meets midway.
+    /// Weld two parts, replacing any weld already joining them. Each `--pair`
+    /// is `<slot on --a>:<slot on --b>:<weight>`, repeatable; the weight is
+    /// the share `--a`'s vertex is pinned by, within 0..=1. No `--pair` at all
+    /// records the two parts as welded and joins nothing yet.
     Set {
-        #[arg(long = "a-node")]
-        a_node: NodeId,
-        #[arg(long = "a-seam")]
-        a_seam: SeamId,
-        #[arg(long = "b-node")]
-        b_node: NodeId,
-        #[arg(long = "b-seam")]
-        b_seam: SeamId,
-        /// `--weight <slot>=0.5` (repeatable); the share the *first* seam's
-        /// vertex is pulled by.
-        #[arg(long = "weight")]
-        weights: Vec<String>,
+        #[arg(long)]
+        a: NodeId,
+        #[arg(long)]
+        b: NodeId,
+        #[arg(long = "pair")]
+        pairs: Vec<String>,
     },
-    /// Move one slot's share of one weld's meeting point, leaving the rest
-    /// alone. `--weight` is the share the *first* seam is pinned by, within
-    /// 0..=1, whichever way round the weld is stored.
+    /// Move one pair's share of one weld's meeting point, leaving the rest
+    /// alone. `--slot` is a slot on `--a`, and `--weight` is the share `--a`
+    /// is pinned by, within 0..=1, whichever way round the weld is stored.
     Weight {
-        #[arg(long = "a-node")]
-        a_node: NodeId,
-        #[arg(long = "a-seam")]
-        a_seam: SeamId,
-        #[arg(long = "b-node")]
-        b_node: NodeId,
-        #[arg(long = "b-seam")]
-        b_seam: SeamId,
+        #[arg(long)]
+        a: NodeId,
+        #[arg(long)]
+        b: NodeId,
         #[arg(long)]
         slot: SlotId,
         #[arg(long)]
         weight: f32,
     },
-    /// Unmake the weld joining two seams, named in either order. Both seams
+    /// Unmake the weld joining two parts, named in either order. Both parts
     /// and their slots stay; only the pairing goes.
     Delete {
-        #[arg(long = "a-node")]
-        a_node: NodeId,
-        #[arg(long = "a-seam")]
-        a_seam: SeamId,
-        #[arg(long = "b-node")]
-        b_node: NodeId,
-        #[arg(long = "b-seam")]
-        b_seam: SeamId,
+        #[arg(long)]
+        a: NodeId,
+        #[arg(long)]
+        b: NodeId,
     },
     /// List the model's welds.
     List,
@@ -860,11 +839,6 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     from: from.clone(),
                     to: to.clone(),
                 },
-                RenameCmd::Seam { node, from, to } => Rename::Seam {
-                    node: node.clone(),
-                    from: from.clone(),
-                    to: to.clone(),
-                },
             },
         },
         Cmd::Param { action } => {
@@ -1175,115 +1149,65 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 },
             }
         }
-        Cmd::Seam { action } => {
+        Cmd::Slot { action } => {
             let session = resolve_session(cli)?;
             match action {
-                SeamCmd::Add { node, seam } => Command::SeamAdd {
+                SlotCmd::Add { node, slot } => Command::SlotAdd {
                     session,
                     node: node.clone(),
-                    seam: seam.clone(),
-                },
-                SeamCmd::Delete { node, seam } => Command::SeamDelete {
-                    session,
-                    node: node.clone(),
-                    seam: seam.clone(),
-                },
-                SeamCmd::List { node } => Command::Seams {
-                    session,
-                    node: node.clone(),
-                },
-                SeamCmd::SlotAdd { node, seam, slot } => Command::SlotAdd {
-                    session,
-                    node: node.clone(),
-                    seam: seam.clone(),
                     slot: slot.clone(),
                 },
-                SeamCmd::SlotFill {
-                    node,
-                    seam,
-                    slot,
-                    vertex,
-                } => Command::SlotFill {
+                SlotCmd::Fill { node, slot, vertex } => Command::SlotFill {
                     session,
                     node: node.clone(),
-                    seam: seam.clone(),
                     slot: slot.clone(),
                     vertex: *vertex,
                 },
-                SeamCmd::SlotClear { node, seam, slot } => Command::SlotClear {
+                SlotCmd::Clear { node, slot } => Command::SlotClear {
                     session,
                     node: node.clone(),
-                    seam: seam.clone(),
                     slot: slot.clone(),
                 },
-                SeamCmd::SlotDelete { node, seam, slot } => Command::SlotDelete {
+                SlotCmd::Delete { node, slot } => Command::SlotDelete {
                     session,
                     node: node.clone(),
-                    seam: seam.clone(),
                     slot: slot.clone(),
                 },
-                SeamCmd::Unfilled => Command::UnfilledSlots { session },
+                SlotCmd::Rename { node, slot, to } => Command::RenameId {
+                    session,
+                    rename: Rename::Slot {
+                        node: node.clone(),
+                        from: slot.clone(),
+                        to: to.clone(),
+                    },
+                },
+                SlotCmd::List { node } => Command::Slots {
+                    session,
+                    node: node.clone(),
+                },
+                SlotCmd::Unfilled => Command::UnfilledSlots { session },
             }
         }
         Cmd::Weld { action } => {
             let session = resolve_session(cli)?;
             match action {
-                WeldCmd::Set {
-                    a_node,
-                    a_seam,
-                    b_node,
-                    b_seam,
-                    weights,
-                } => Command::WeldSet {
+                WeldCmd::Set { a, b, pairs } => Command::WeldSet {
                     session,
-                    a: SeamAddr {
-                        node: a_node.clone(),
-                        seam: a_seam.clone(),
-                    },
-                    b: SeamAddr {
-                        node: b_node.clone(),
-                        seam: b_seam.clone(),
-                    },
-                    weights: weights
-                        .iter()
-                        .map(|w| parse_weight(w))
-                        .collect::<Result<_>>()?,
+                    a: a.clone(),
+                    b: b.clone(),
+                    pairs: pairs.iter().map(|p| parse_pair(p)).collect::<Result<_>>()?,
                 },
-                WeldCmd::Weight {
-                    a_node,
-                    a_seam,
-                    b_node,
-                    b_seam,
-                    slot,
-                    weight,
-                } => Command::WeldWeight {
+                WeldCmd::Weight { a, b, slot, weight } => Command::WeldWeight {
                     session,
-                    a: SeamAddr {
-                        node: a_node.clone(),
-                        seam: a_seam.clone(),
-                    },
-                    b: SeamAddr {
-                        node: b_node.clone(),
-                        seam: b_seam.clone(),
-                    },
+                    a: a.clone(),
+                    b: b.clone(),
                     slot: slot.clone(),
                     weight: *weight,
                 },
-                WeldCmd::Delete {
-                    a_node,
-                    a_seam,
-                    b_node,
-                    b_seam,
-                } => Command::WeldDelete {
+                WeldCmd::Delete { a, b } => Command::WeldDelete {
                     session,
-                    a: SeamAddr {
-                        node: a_node.clone(),
-                        seam: a_seam.clone(),
-                    },
-                    b: SeamAddr {
-                        node: b_node.clone(),
-                        seam: b_seam.clone(),
-                    },
+                    a: a.clone(),
+                    b: b.clone(),
                 },
                 WeldCmd::List => Command::Welds { session },
             }
@@ -1573,13 +1497,15 @@ fn parse_param(s: &str) -> Result<ParamPose> {
     })
 }
 
-/// `<slot id>=<weight>`.
-fn parse_weight(s: &str) -> Result<SlotWeight> {
-    let (id, weight) = s
-        .split_once('=')
-        .ok_or_else(|| anyhow!("weight must look like <slot id>=<weight>, got {s:?}"))?;
-    Ok(SlotWeight {
-        slot: SlotId::new(id.trim())?,
+/// `<slot on a>:<slot on b>:<weight>`.
+fn parse_pair(s: &str) -> Result<SlotPair> {
+    let bad = || anyhow!("a pair must look like <a slot>:<b slot>:<weight>, got {s:?}");
+    let [a, b, weight] = s.split(':').collect::<Vec<_>>()[..] else {
+        return Err(bad());
+    };
+    Ok(SlotPair {
+        a: SlotId::new(a.trim())?,
+        b: SlotId::new(b.trim())?,
         weight: weight
             .trim()
             .parse::<f32>()
@@ -1683,10 +1609,7 @@ fn print_body(body: &ResponseBody) {
             print_dropped(dropped);
         }
         ResponseBody::Param { param } => println!("param {param}"),
-        ResponseBody::Seam { seam } => println!("seam {} on {}", seam.seam, seam.node),
-        ResponseBody::Slot { slot } => {
-            println!("slot {} in {} on {}", slot.slot, slot.seam, slot.node)
-        }
+        ResponseBody::Slot { slot } => println!("slot {} on {}", slot.slot, slot.node),
         ResponseBody::Params { params } => {
             if params.is_empty() {
                 println!("(no params)");
@@ -1794,20 +1717,15 @@ fn print_body(body: &ResponseBody) {
                 );
             }
         },
-        ResponseBody::Seams { seams } => {
-            if seams.is_empty() {
-                println!("(no seams)");
+        ResponseBody::Slots { slots } => {
+            if slots.is_empty() {
+                println!("(no slots)");
             }
-            for seam in seams {
-                let slots: Vec<String> = seam
-                    .slots
-                    .iter()
-                    .map(|s| match s.vertex {
-                        Some(v) => format!("{}=v{v}", s.id),
-                        None => format!("{}=-", s.id),
-                    })
-                    .collect();
-                println!("seam {}  [{}]", seam.id, slots.join(" "));
+            for s in slots {
+                match s.vertex {
+                    Some(v) => println!("slot {}  v{v}", s.id),
+                    None => println!("slot {}  -", s.id),
+                }
             }
         }
         ResponseBody::Welds { welds } => {
@@ -1815,19 +1733,12 @@ fn print_body(body: &ResponseBody) {
                 println!("(no welds)");
             }
             for w in welds {
-                let weights: Vec<String> = w
-                    .weights
+                let pairs: Vec<String> = w
+                    .pairs
                     .iter()
-                    .map(|s| format!("{}={}", s.slot, s.weight))
+                    .map(|p| format!("{}:{}={}", p.a, p.b, p.weight))
                     .collect();
-                println!(
-                    "weld {}:{} <-> {}:{}  [{}]",
-                    w.a.node,
-                    w.a.seam,
-                    w.b.node,
-                    w.b.seam,
-                    weights.join(" ")
-                );
+                println!("weld {} <-> {}  [{}]", w.a, w.b, pairs.join(" "));
             }
         }
         ResponseBody::UnfilledSlots { slots } => {
@@ -1835,16 +1746,16 @@ fn print_body(body: &ResponseBody) {
                 println!("every slot is filled");
             }
             for s in slots {
-                println!("unfilled {}:{}:{}", s.node, s.seam, s.slot);
+                println!("unfilled {}:{}", s.node, s.slot);
             }
         }
         ResponseBody::Emptied { node, slots } => {
             if slots.is_empty() {
-                println!("ok (no seam slots to refill)");
+                println!("ok (no slots to refill)");
             } else {
                 println!("ok; refill these slots on {node}:");
                 for s in slots {
-                    println!("  {}:{}", s.seam, s.slot);
+                    println!("  {s}");
                 }
             }
         }
