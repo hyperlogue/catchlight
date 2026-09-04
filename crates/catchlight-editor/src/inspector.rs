@@ -53,7 +53,6 @@ pub(crate) enum InspectorKind {
         propagate_meshgroup: bool,
     },
     MeshGroup {
-        dynamic: bool,
         translate_children: bool,
         vert_count: usize,
     },
@@ -244,7 +243,6 @@ pub(crate) fn inspector_ui(
             drawable_props_ui(ui, props, ctx, &mut out);
         }
         InspectorKind::MeshGroup {
-            dynamic,
             translate_children,
             vert_count,
         } => {
@@ -255,16 +253,6 @@ pub(crate) fn inspector_ui(
                     out.push(InspectorAction::ModelMesh);
                 }
             });
-            let mut dy = *dynamic;
-            if ui
-                .checkbox(&mut dy, "dynamic (re-deform every frame)")
-                .changed()
-            {
-                out.push(InspectorAction::Commit(NodePatch {
-                    mg_dynamic: Some(dy),
-                    ..Default::default()
-                }));
-            }
             let mut tc = *translate_children;
             if ui.checkbox(&mut tc, "translate children").changed() {
                 out.push(InspectorAction::Commit(NodePatch {

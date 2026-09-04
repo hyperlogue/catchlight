@@ -2188,11 +2188,6 @@ fn apply_patch(n: &mut ModelNode, patch: &NodePatch) -> Result<(), EditorError> 
             c.propagate_meshgroup = v;
         }
     }
-    if let Some(v) = patch.mg_dynamic {
-        if let ModelNodeKind::MeshGroup(mg) = &mut n.kind {
-            mg.dynamic = v;
-        }
-    }
     if let Some(v) = patch.mg_translate_children {
         if let ModelNodeKind::MeshGroup(mg) = &mut n.kind {
             mg.translate_children = v;

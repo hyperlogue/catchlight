@@ -277,7 +277,6 @@ fn node_fields(n: &ClmNode) -> Fields {
         }
         ClmNodeKind::MeshGroup(g) => {
             f.insert("kind".into(), "MeshGroup".into());
-            f.insert("dynamic".into(), g.dynamic.to_string());
             f.insert(
                 "translate_children".into(),
                 g.translate_children.to_string(),

@@ -100,8 +100,6 @@ pub(super) struct SchemaNode {
     pub(super) mask_threshold: Option<f32>,
 
     #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) dynamic_deformation: Option<bool>,
-    #[serde(default, deserialize_with = "de_lenient")]
     pub(super) translate_children: Option<bool>,
 
     #[serde(default, deserialize_with = "de_lenient")]

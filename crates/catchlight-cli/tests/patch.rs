@@ -119,8 +119,8 @@ fn an_unknown_field_lists_the_ones_the_node_has() {
     let dir = tmp("patch-unknown-field");
     let file = copy_fixture("mip_checker", &dir);
 
-    // `dynamic` is a mesh group's field, and node-1 is a part.
-    let error = patch::run(&file, "node-1", "dynamic", "true", None, None).unwrap_err();
+    // `translate_children` is a mesh group's field, and node-1 is a part.
+    let error = patch::run(&file, "node-1", "translate_children", "true", None, None).unwrap_err();
     let Error::NoSuchField {
         owner,
         field,
@@ -129,11 +129,11 @@ fn an_unknown_field_lists_the_ones_the_node_has() {
     else {
         panic!("expected NoSuchField, got {error}");
     };
-    assert_eq!(field, "dynamic");
+    assert_eq!(field, "translate_children");
     assert!(owner.contains("part"), "{owner}");
     assert!(known.contains(&"opacity"), "{known:?}");
     assert!(known.contains(&"z_order"), "{known:?}");
-    assert!(!known.contains(&"dynamic"), "{known:?}");
+    assert!(!known.contains(&"translate_children"), "{known:?}");
     assert!(error.to_string().contains("blend_mode"), "{error}");
     assert_eq!(read(&file), read(&common::fixture("mip_checker")));
 }
@@ -502,11 +502,7 @@ fn value_for(field: &str) -> &'static str {
         "pendulum" => "SpringPendulum",
         "map_mode" => "XY",
         "albedo" => "none",
-        "dynamic"
-        | "lock_to_root"
-        | "local_only"
-        | "propagate_meshgroup"
-        | "translate_children" => "true",
+        "lock_to_root" | "local_only" | "propagate_meshgroup" | "translate_children" => "true",
         _ => "0.25",
     }
 }
@@ -523,7 +519,6 @@ fn kitchen_sink() -> ClmFile {
     };
     clm.doc.nodes[2].kind = ClmNodeKind::MeshGroup(catchlight_core::formats::clm::ClmMeshGroup {
         mesh: part.mesh,
-        dynamic: false,
         translate_children: false,
     });
 

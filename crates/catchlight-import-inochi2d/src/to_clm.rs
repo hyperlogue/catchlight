@@ -567,7 +567,6 @@ fn convert_mesh_group(s: &SchemaNode, node: NodeRef<'_>) -> Result<ClmMeshGroup,
         // A mesh group is never drawn, so it samples nothing through its UVs
         // and inochi2d authors none for it.
         mesh: convert_mesh(s.mesh.as_ref(), node, false)?,
-        dynamic: s.dynamic_deformation.unwrap_or(false),
         translate_children: s.translate_children.unwrap_or(false),
     })
 }

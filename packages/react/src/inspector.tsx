@@ -126,7 +126,7 @@ function Fields({
   // Pulled out as constants so a `!= null` here narrows inside the handlers
   // too: TypeScript keeps that for a `const`, and drops it for `info.tint`.
   const { translate, rotate, scale, opacity, mask_threshold, blend_mode, tint, screen_tint } = info;
-  const { propagate_meshgroup, mg_dynamic, mg_translate_children } = info;
+  const { propagate_meshgroup, mg_translate_children } = info;
 
   return (
     <>
@@ -279,16 +279,6 @@ function Fields({
             label="Propagate mesh group"
             value={propagate_meshgroup}
             commit={(next) => submit({ propagate_meshgroup: next })}
-          />
-        </Row>
-      )}
-      {mg_dynamic != null && (
-        <Row label="Dynamic" field="mg_dynamic">
-          <CheckInput
-            field="mg_dynamic"
-            label="Dynamic"
-            value={mg_dynamic}
-            commit={(next) => submit({ mg_dynamic: next })}
           />
         </Row>
       )}

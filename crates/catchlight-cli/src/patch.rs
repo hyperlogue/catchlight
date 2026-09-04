@@ -295,7 +295,7 @@ const COMPOSITE_FIELDS: &[&str] = &[
     "tint.g",
     "tint.r",
 ];
-const MESH_GROUP_FIELDS: &[&str] = &["dynamic", "translate_children"];
+const MESH_GROUP_FIELDS: &[&str] = &["translate_children"];
 const PHYSICS_FIELDS: &[&str] = &[
     "angle_damping",
     "frequency",
@@ -396,7 +396,6 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             _ => return None,
         },
         ClmNodeKind::MeshGroup(g) => match field {
-            "dynamic" => Slot::Bool(&mut g.dynamic),
             "translate_children" => Slot::Bool(&mut g.translate_children),
             _ => return None,
         },
@@ -554,7 +553,6 @@ mod tests {
             }),
             ClmNodeKind::MeshGroup(ClmMeshGroup {
                 mesh: Default::default(),
-                dynamic: false,
                 translate_children: false,
             }),
             ClmNodeKind::SimplePhysics(ClmSimplePhysics {

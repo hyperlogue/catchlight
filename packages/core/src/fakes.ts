@@ -602,9 +602,7 @@ function nodeInfo(
         ? { vertex_count: 0, triangle_count: 0 }
         : {}),
       ...(tree.kind === "composite" ? { propagate_meshgroup: false } : {}),
-      ...(tree.kind === "mesh_group"
-        ? { mg_dynamic: false, mg_translate_children: true }
-        : {}),
+      ...(tree.kind === "mesh_group" ? { mg_translate_children: true } : {}),
     };
   }
   for (const child of tree.children) {

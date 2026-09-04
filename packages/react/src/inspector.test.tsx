@@ -155,9 +155,8 @@ describe("the inspector", () => {
     await part.view.unmount();
   });
 
-  test("a mesh group renders its own two, and nothing else's", async () => {
+  test("a mesh group renders its own, and nothing else's", async () => {
     const { view } = await inspecting("mesh_group");
-    expect(view.container.querySelector('[data-catchlight-field="mg_dynamic"]')).not.toBeNull();
     expect(
       view.container.querySelector('[data-catchlight-field="mg_translate_children"]'),
     ).not.toBeNull();

@@ -2,8 +2,8 @@
 //! What a tick evaluates, pinned against a committed baseline.
 //!
 //! Each fixture here is a synthetic model exercising one part of the pipeline the
-//! committed `.clm` fixtures do not reach: mesh groups in every
-//! `dynamic` x `translate_children` combination, two-param bindings in all
+//! committed `.clm` fixtures do not reach: mesh groups in both
+//! `translate_children` states, two-param bindings in all
 //! four interpolation modes, two params deforming one node, welds, chained
 //! physics drivers, a `translate_children` group over a `local_only` driver,
 //! and a playing animation. For a grid of poses (plus, where a fixture has
@@ -20,7 +20,9 @@
 //! **Where the numbers came from.** They are the output of the runtime this
 //! suite used to compare against the one it replaced, frame for frame, at the
 //! same `1e-5`. That comparison retired with the old runtime; these are the
-//! values it had proven equal, captured.
+//! values it had proven equal, captured. The mesh-group labels were
+//! regenerated when static mesh groups were removed and every group became
+//! the deform-at-the-current-position kind.
 //!
 //! Regenerate after an intentional behaviour change:
 //!   UPDATE_FRAME_BASELINE=1 cargo test -p catchlight-core --test evaluated_frame
@@ -278,14 +280,12 @@ fn current() -> Baseline {
         two_params_deforming_one_node(),
         &mut out,
     );
-    for dynamic in [false, true] {
-        for tc in [false, true] {
-            capture(
-                &format!("mesh group dynamic={dynamic} tc={tc}"),
-                mesh_group_fixture(dynamic, tc),
-                &mut out,
-            );
-        }
+    for tc in [false, true] {
+        capture(
+            &format!("mesh group tc={tc}"),
+            mesh_group_fixture(tc),
+            &mut out,
+        );
     }
     capture("welds", weld_fixture(), &mut out);
     capture("chained physics", chained_physics_fixture(), &mut out);
@@ -767,7 +767,7 @@ fn two_params_deforming_one_node() -> FixtureFile {
 
 /// A mesh group over two parts, keyed by a param: the descent, the attachment
 /// bake and the `translate_children` filter all have to land the same.
-fn mesh_group_fixture(dynamic: bool, translate_children: bool) -> FixtureFile {
+fn mesh_group_fixture(translate_children: bool) -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         node(
@@ -775,7 +775,6 @@ fn mesh_group_fixture(dynamic: bool, translate_children: bool) -> FixtureFile {
             "MG",
             ClmNodeKind::MeshGroup(ClmMeshGroup {
                 mesh: quad(20.0, 20.0),
-                dynamic,
                 translate_children,
             }),
         ),
@@ -972,7 +971,6 @@ fn tc_over_local_driver_fixture() -> FixtureFile {
             "MG",
             ClmNodeKind::MeshGroup(ClmMeshGroup {
                 mesh: quad(30.0, 30.0),
-                dynamic: false,
                 translate_children: true,
             }),
         ),

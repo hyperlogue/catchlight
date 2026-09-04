@@ -183,9 +183,9 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
         ),
         _ => (None, None, None, None, None),
     };
-    let (mg_dynamic, mg_translate_children) = match &node.kind {
-        ModelNodeKind::MeshGroup(mg) => (Some(mg.dynamic), Some(mg.translate_children)),
-        _ => (None, None),
+    let mg_translate_children = match &node.kind {
+        ModelNodeKind::MeshGroup(mg) => Some(mg.translate_children),
+        _ => None,
     };
     // Only the two kinds that hold a mesh report its size, so an empty mesh
     // reads as 0 and a kind that could never have one reads as absent.
@@ -222,7 +222,6 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             ModelNodeKind::Composite(c) => Some(c.propagate_meshgroup),
             _ => None,
         },
-        mg_dynamic,
         mg_translate_children,
     }
 }

@@ -900,7 +900,6 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
         }),
         ModelNodeKind::MeshGroup(mg) => ClmNodeKind::MeshGroup(ClmMeshGroup {
             mesh: mg.mesh().clone(),
-            dynamic: mg.dynamic,
             translate_children: mg.translate_children,
         }),
         ModelNodeKind::SimplePhysics(ph) => ClmNodeKind::SimplePhysics(ClmSimplePhysics {
@@ -978,7 +977,6 @@ fn model_kind(
         ClmNodeKind::MeshGroup(mg) => {
             check_mesh(id, &mg.mesh)?;
             let mut group = ModelMeshGroup::new(mg.mesh.clone());
-            group.dynamic = mg.dynamic;
             group.translate_children = mg.translate_children;
             ModelNodeKind::MeshGroup(group)
         }

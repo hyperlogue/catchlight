@@ -459,7 +459,6 @@ pub struct ClmComposite {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClmMeshGroup {
     pub mesh: ClmMesh,
-    pub dynamic: bool,
     pub translate_children: bool,
 }
 

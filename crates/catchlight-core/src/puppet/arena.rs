@@ -89,7 +89,7 @@ pub(crate) struct Arena {
     // write-borrow of the child node. Sized by the largest child
     // vert_count seen so far; reused across MGs and across frames.
     pub(crate) mg_propagate_scratch: Vec<glam::Vec2>,
-    // Parallel scratch used by the dynamic-MG branch to read the child's
+    // Parallel scratch used by mesh-group propagation to read the child's
     // combined-minus-Node(mg_id) deform without allocating a per-frame
     // Vec. Sized by the largest child vert_count seen so far.
     pub(crate) mg_cur_deform_scratch: Vec<glam::Vec2>,
