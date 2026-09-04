@@ -12,9 +12,9 @@ mod common;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use catchlight_clm::diff::diff;
-use catchlight_clm::patch::{self, node_fields, Kind, PARAM_FIELDS};
-use catchlight_clm::Error;
+use catchlight_cli::diff::diff;
+use catchlight_cli::patch::{self, node_fields, Kind, PARAM_FIELDS};
+use catchlight_cli::Error;
 use catchlight_core::formats::clm::{
     ClmComposite, ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmSimplePhysics, ClmTransform,
 };

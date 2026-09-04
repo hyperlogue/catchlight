@@ -8,7 +8,7 @@
 
 mod common;
 
-use catchlight_clm::diff::{diff, UNRENDERED};
+use catchlight_cli::diff::{diff, UNRENDERED};
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{
     ClmAnimation, ClmFile, ClmKeyframe, ClmLane, ClmNode, ClmNodeKind, ClmTransform,

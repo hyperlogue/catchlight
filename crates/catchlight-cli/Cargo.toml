@@ -1,10 +1,10 @@
 [package]
-name = "catchlight-clm"
+name = "catchlight-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "File-level operations on catchlight .clm model files: patch, replace-texture, extract, merge, requirements, diff"
+description = "The catchlight command line over a .clm model file: patch, replace-texture, extract, merge, requirements, diff"
 
 [dependencies]
 catchlight-core = { workspace = true }

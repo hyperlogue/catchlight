@@ -44,7 +44,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | --- | --- |
 | `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, slots and welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
 | `catchlight-import-inochi2d` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
-| `catchlight-clm` | File-level operations on a `.clm`: patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files. Decodes no images. |
+| `catchlight-cli` | The command line over a `.clm`: today the file ops (patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files; no image is decoded), with inspection subcommands to follow. Never depends on the editor server, its protocol, or a client of either. |
 | `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model, one per model serving every puppet of it; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws a frame of them. |
 | `catchlight-bevy` | Bevy integration: components, systems, and a render-graph node. |
 | `catchlight-editor-core` | Authoring tools over a `Model`: `WorkingMesh` (triangulation, automesh) and `Manifest`. Pure, wasm-safe. |
@@ -136,8 +136,8 @@ that enforces them, not here. Add new ones there.
   Id, byte-stable, and what it refuses
 - `crates/catchlight-import-inochi2d/src/lib.rs` — the single reflection, Ids
   minted from position, the reader is total
-- `crates/catchlight-clm/src/lib.rs` — why the file ops are their own binary,
-  and what "no image is decoded" rests on
+- `crates/catchlight-cli/src/lib.rs` — the one dependency rule and what it
+  buys, and what "no image is decoded" rests on
 - `crates/catchlight-wgpu/src/render_cache.rs` — what `prepare` and `refresh`
   own, the generation gate, the Idx arena, one cache and one renderer for N
   puppets
@@ -228,8 +228,8 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 - `bun run --filter catchlight-site dev` — the web editor at
   `http://localhost:5173/`: in-tab by default, `?server=http://127.0.0.1:9377`
   to use the local editor above.
-- `cargo run -p catchlight-clm -- <patch|replace-texture|extract|merge|requirements|diff>`
-  — file-level operations on a `.clm`; `--help` documents the Id charset and the
+- `cargo run -p catchlight-cli -- <patch|replace-texture|extract|merge|requirements|diff>`
+  — the command line over a `.clm`; `--help` documents the Id charset and the
   exit statuses.
 - `cargo xtask build-wasm [--debug]` — build `packages/wasm/`.
 - `cargo xtask generate [typescript|python]` — regenerate
@@ -248,5 +248,5 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
   and a drag is one commit whose scratch is held until its revision lands.
 - The editor-server Unix socket is permanent **Linux-only dev/agent tooling**, not
   a product surface — hence Linux-only CI.
-- The removed inspection examples (`mip-compare`, `param-sweep`, `rig-dump`) are
-  meant to come back as one CLI, not as more examples.
+- The removed inspection examples (`mip-compare`, `param-sweep`, `rig-dump`)
+  come back as subcommands of `catchlight-cli`, not as more examples.

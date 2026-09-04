@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "crates/catchlight-core",
     "crates/catchlight-import-inochi2d",
-    "crates/catchlight-clm",
+    "crates/catchlight-cli",
     "crates/catchlight-editor-core",
     "crates/catchlight-editor-protocol",
     "crates/catchlight-editor-server",

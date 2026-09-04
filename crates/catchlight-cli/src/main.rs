@@ -1,13 +1,13 @@
-//! `catchlight-clm` — the command line over [`catchlight_clm`].
+//! `catchlight-cli` — the command line over [`catchlight_cli`].
 //!
 //! Argument parsing, printing and exit statuses only; every operation lives in
 //! the library beside this file, which is what the integration tests drive.
-//! See the crate's module doc for why these commands are their own binary
-//! rather than subcommands of `catchlight-editor-cli`.
+//! See the crate's module doc for the line this crate holds: nothing here
+//! reaches the editor server, its protocol, or a client of either.
 
 use std::path::PathBuf;
 
-use catchlight_clm::{diff, fragment, patch, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
+use catchlight_cli::{diff, fragment, patch, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
 use catchlight_core::formats::clm::TextureAlpha;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -44,7 +44,7 @@ Exit status:
 
 #[derive(Parser)]
 #[command(
-    name = "catchlight-clm",
+    name = "catchlight-cli",
     about = "File-level operations on a .clm model file",
     long_about = "File-level operations on a .clm model file.\n\nEvery command edits the file's \
                   structure section directly. Texture bytes are carried through as they are and \
@@ -133,7 +133,7 @@ fn main() {
     let code = match run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("catchlight-clm: {error}");
+            eprintln!("catchlight-cli: {error}");
             EXIT_ERROR
         }
     };
