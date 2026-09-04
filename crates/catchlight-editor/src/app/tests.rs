@@ -526,7 +526,7 @@ fn the_physics_inspector_aims_a_driver_at_both_of_its_params() {
         parent: root,
         name: Some("Pendulum".into()),
         kind: "rigid".into(),
-        target_params: Vec::new(),
+        target_params: PhysicsTargets::default(),
         length: None,
         gravity: None,
         frequency: None,
@@ -554,23 +554,42 @@ fn the_physics_inspector_aims_a_driver_at_both_of_its_params() {
     };
 
     app.apply_inspector_action(InspectorAction::PhysicsCommit(PhysicsPatch {
-        target_params: Some(vec![angle.clone()]),
+        target_params: Some(PhysicsTargets {
+            angle: Some(angle.clone()),
+            length: None,
+        }),
         ..Default::default()
     }));
     assert_eq!(targets(&editor), [Some(angle.clone()), None]);
 
     app.apply_inspector_action(InspectorAction::PhysicsCommit(PhysicsPatch {
-        target_params: Some(vec![angle.clone(), length.clone()]),
+        target_params: Some(PhysicsTargets {
+            angle: Some(angle.clone()),
+            length: Some(length.clone()),
+        }),
         ..Default::default()
     }));
     assert_eq!(
         targets(&editor),
-        [Some(angle), Some(length)],
+        [Some(angle), Some(length.clone())],
         "the second target must not cost the first",
     );
 
     app.apply_inspector_action(InspectorAction::PhysicsCommit(PhysicsPatch {
-        clear_target_params: true,
+        target_params: Some(PhysicsTargets {
+            angle: None,
+            length: Some(length.clone()),
+        }),
+        ..Default::default()
+    }));
+    assert_eq!(
+        targets(&editor),
+        [None, Some(length)],
+        "a hole in the first output is expressible on its own",
+    );
+
+    app.apply_inspector_action(InspectorAction::PhysicsCommit(PhysicsPatch {
+        target_params: Some(PhysicsTargets::default()),
         ..Default::default()
     }));
     assert_eq!(targets(&editor), [None, None]);

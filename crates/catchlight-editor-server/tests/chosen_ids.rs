@@ -14,8 +14,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, NodeId, NodeKindArg, ParamId, Reply, Request, ResponseBody, SessionId,
-    TexId,
+    Command, ErrorCode, NodeId, NodeKindArg, ParamId, PhysicsTargets, Reply, Request, ResponseBody,
+    SessionId, TexId,
 };
 use catchlight_editor_server::{Editor, Storage};
 
@@ -146,7 +146,10 @@ fn an_add_creates_under_the_id_it_was_given() {
                 parent: hair.clone(),
                 name: None,
                 kind: "rigid".into(),
-                target_params: vec![Some(pull.clone())],
+                target_params: PhysicsTargets {
+                    angle: Some(pull.clone()),
+                    length: None,
+                },
                 length: None,
                 gravity: None,
                 frequency: None,

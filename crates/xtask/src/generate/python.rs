@@ -1255,13 +1255,15 @@ mod tests {
 /// absent `Option` that has no `skip_serializing_if`, and `to_wire()` leaves
 /// the key off. Every optional field on this wire has a serde default, so the
 /// editor reads the two the same way; [`without_nulls`] takes the difference
-/// out. A null *inside* a list is a value and stays — `target_params` uses one
-/// to mean an output nothing is bound to.
+/// out. A null *inside* a list stays, because there it is a value rather than
+/// an absent field — [`BindingInfo::keys`](catchlight_editor_protocol::BindingInfo::keys)
+/// is where the wire still carries one, on the reply side these cases do not
+/// reach.
 #[cfg(test)]
 mod wire_shapes {
     use catchlight_editor_protocol::{
-        AutoMesh, Camera, Command, NodeKindArg, NodePatch, ParamId, ParamPose, Presence, Rename,
-        SessionId,
+        AutoMesh, Camera, Command, NodeKindArg, NodePatch, ParamId, ParamPose, PhysicsTargets,
+        Presence, Rename, SessionId,
     };
     use serde_json::{json, Value};
 
@@ -1407,30 +1409,44 @@ mod wire_shapes {
         );
     }
 
+    /// A struct inside a command is one nested object, and a field it leaves
+    /// unset is simply not in it — so the empty object is the whole of "this
+    /// driver writes nothing".
     #[test]
-    fn a_null_inside_a_list_survives() {
+    fn a_nested_struct_travels_as_an_object() {
+        let set = |target_params| Command::PhysicsSet {
+            session: SessionId(1),
+            node: id("hair"),
+            kind: None,
+            map_mode: None,
+            local_only: None,
+            target_params,
+            gravity: None,
+            length: None,
+            frequency: None,
+            angle_damping: None,
+            length_damping: None,
+            output_scale: None,
+        };
         assert_wire(
-            Command::PhysicsSet {
-                session: SessionId(1),
-                node: id("hair"),
-                kind: None,
-                map_mode: None,
-                local_only: None,
-                target_params: Some(vec![None, Some(id::<ParamId>("len"))]),
-                clear_target_params: false,
-                gravity: None,
-                length: None,
-                frequency: None,
-                angle_damping: None,
-                length_damping: None,
-                output_scale: None,
-            },
+            set(Some(PhysicsTargets {
+                angle: None,
+                length: Some(id::<ParamId>("len")),
+            })),
             json!({
                 "cmd": "physics_set",
                 "session": 1,
                 "node": "hair",
-                "target_params": [null, "len"],
-                "clear_target_params": false,
+                "target_params": {"length": "len"},
+            }),
+        );
+        assert_wire(
+            set(Some(PhysicsTargets::default())),
+            json!({
+                "cmd": "physics_set",
+                "session": 1,
+                "node": "hair",
+                "target_params": {},
             }),
         );
     }

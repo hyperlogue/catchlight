@@ -7,7 +7,7 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
-use catchlight_editor_protocol::{NodeId, NodePatch, ParamId, TexId};
+use catchlight_editor_protocol::{NodeId, NodePatch, ParamId, PhysicsTargets, TexId};
 use eframe::egui;
 
 pub(crate) struct InspectorData {
@@ -105,11 +105,9 @@ pub(crate) struct PhysicsPatch {
     pub kind: Option<String>,
     pub map_mode: Option<String>,
     pub local_only: Option<bool>,
-    /// Both of the driver's targets, in order. The wire takes a list, so a
-    /// hole in the middle is not expressible — hence `target_slot_1_enabled`
-    /// in the UI below.
-    pub target_params: Option<Vec<ParamId>>,
-    pub clear_target_params: bool,
+    /// Both of the driver's outputs at once: the wire takes the pair, so a
+    /// patch that rebinds one carries the other unchanged.
+    pub target_params: Option<PhysicsTargets>,
     pub gravity: Option<f32>,
     pub length: Option<f32>,
     pub frequency: Option<f32>,
@@ -479,49 +477,32 @@ fn physics_ui(
     let set_slot = |slot: usize, param: Option<ParamId>| {
         let mut pair = target_params.clone();
         pair[slot] = param;
-        // The wire carries a list, so trailing empties just shorten it — and
-        // a hole before a filled slot cannot be sent at all, which is why the
-        // second combo waits for the first.
-        let list: Vec<ParamId> = pair.iter().flatten().cloned().collect();
-        if list.is_empty() {
-            PhysicsPatch {
-                clear_target_params: true,
-                ..Default::default()
-            }
-        } else {
-            PhysicsPatch {
-                target_params: Some(list),
-                ..Default::default()
-            }
+        PhysicsPatch {
+            target_params: Some(PhysicsTargets {
+                angle: pair[0].clone(),
+                length: pair[1].clone(),
+            }),
+            ..Default::default()
         }
     };
     for (slot, label) in slot_labels.iter().enumerate() {
-        // Slot 1 needs slot 0 filled: `target_params` travels as a list.
-        let enabled = slot == 0 || target_params[0].is_some();
-        ui.add_enabled_ui(enabled, |ui| {
-            let combo = egui::ComboBox::from_label(*label)
-                .selected_text(name_of(&target_params[slot]))
-                .show_ui(ui, |ui| {
-                    if ui.button("(none)").clicked() {
-                        out.push(InspectorAction::PhysicsCommit(set_slot(slot, None)));
+        egui::ComboBox::from_label(*label)
+            .selected_text(name_of(&target_params[slot]))
+            .show_ui(ui, |ui| {
+                if ui.button("(none)").clicked() {
+                    out.push(InspectorAction::PhysicsCommit(set_slot(slot, None)));
+                    ui.close();
+                }
+                for (p, name) in ctx.params {
+                    if ui.button(name).on_hover_text(p.as_str()).clicked() {
+                        out.push(InspectorAction::PhysicsCommit(set_slot(
+                            slot,
+                            Some(p.clone()),
+                        )));
                         ui.close();
                     }
-                    for (p, name) in ctx.params {
-                        if ui.button(name).on_hover_text(p.as_str()).clicked() {
-                            out.push(InspectorAction::PhysicsCommit(set_slot(
-                                slot,
-                                Some(p.clone()),
-                            )));
-                            ui.close();
-                        }
-                    }
-                });
-            if !enabled {
-                combo
-                    .response
-                    .on_hover_text("the driver writes its first output first");
-            }
-        });
+                }
+            });
     }
 
     let mut phys_drag = |ui: &mut egui::Ui, label: &str, v: f32, write: fn(f32) -> PhysicsPatch| {

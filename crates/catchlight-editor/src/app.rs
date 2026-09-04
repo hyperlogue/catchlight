@@ -28,9 +28,9 @@ use std::sync::Arc;
 use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_core::{BindingKey, BindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
-    BindingKeyEntry, BindingParams, Command, NodeId, NodePatch, ParamId, ParamInfo, Rename, Reply,
-    Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotAddr, SlotId, SlotWeight, TexId,
-    TreeNode, WeldInfo,
+    BindingKeyEntry, BindingParams, Command, NodeId, NodePatch, ParamId, ParamInfo, PhysicsTargets,
+    Rename, Reply, Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotAddr, SlotId,
+    SlotWeight, TexId, TreeNode, WeldInfo,
 };
 use catchlight_editor_server::{seam_info, Editor};
 use eframe::egui;
@@ -3141,7 +3141,7 @@ impl App {
                     parent,
                     name: None,
                     kind: "rigid".into(),
-                    target_params: Vec::new(),
+                    target_params: PhysicsTargets::default(),
                     length: None,
                     gravity: None,
                     frequency: None,
@@ -3228,12 +3228,7 @@ impl App {
                     kind: p.kind,
                     map_mode: p.map_mode,
                     local_only: p.local_only,
-                    // The frozen panel only ever sets both, so every output
-                    // it names is bound; the protocol allows a hole.
-                    target_params: p
-                        .target_params
-                        .map(|params| params.into_iter().map(Some).collect()),
-                    clear_target_params: p.clear_target_params,
+                    target_params: p.target_params,
                     gravity: p.gravity,
                     length: p.length,
                     frequency: p.frequency,

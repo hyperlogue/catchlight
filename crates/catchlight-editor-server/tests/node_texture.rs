@@ -188,8 +188,8 @@ fn clearing_a_texture_is_one_undoable_edit() {
     assert_eq!(f.drawn(&part), Some(texture));
 }
 
-/// `clear_texture` wins over `texture`, the way `clear_target_params` wins
-/// over `target_params`: a patch carrying both says "none".
+/// `clear_texture` wins over `texture`: one says "draw none" and the other
+/// "draw this one", so a patch carrying both says "none".
 #[test]
 fn clearing_beats_pointing_when_a_patch_carries_both() {
     let mut f = Fixture::new(&["hair.png", "skin.png"]);

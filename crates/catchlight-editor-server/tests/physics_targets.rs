@@ -1,15 +1,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! A driver's outputs are positional, and either one may be bound to nothing.
+//! A driver's two outputs are named, and either one may be bound to nothing.
 //!
 //! A SimplePhysics node writes two numbers — an angle and a length — and the
-//! model has always held them as two slots either of which can be empty. The
-//! wire could not say so: `target_params` was a list of Ids, so the second
-//! output could only be bound by binding the first, and a rig that wanted just
-//! the length had to invent a throwaway param for the angle.
+//! model has always held them as two slots either of which can be empty.
+//! [`PhysicsTargets`] is the wire's word for exactly that pair: one field per
+//! output, absent where nothing is bound. So binding the second output does
+//! not mean binding the first, there is no third field to name, and there is
+//! no shorter or longer spelling of the pair for the server to refuse at run
+//! time.
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, NodeId, ParamId, Reply, Request, ResponseBody, SessionId,
+    Command, ErrorCode, NodeId, ParamId, PhysicsTargets, Reply, Request, ResponseBody, SessionId,
 };
 use catchlight_editor_server::Editor;
 
@@ -70,7 +72,7 @@ fn targets(ed: &Editor, session: SessionId, node: &NodeId) -> [Option<String>; 2
     .unwrap()
 }
 
-fn add(ed: &Editor, id: u64, session: SessionId, params: Vec<Option<ParamId>>) -> NodeId {
+fn add(ed: &Editor, id: u64, session: SessionId, target_params: PhysicsTargets) -> NodeId {
     match body(
         ed,
         id,
@@ -79,7 +81,7 @@ fn add(ed: &Editor, id: u64, session: SessionId, params: Vec<Option<ParamId>>) -
             parent: NodeId::new("root").unwrap(),
             name: None,
             kind: "rigid".into(),
-            target_params: params,
+            target_params,
             length: None,
             gravity: None,
             frequency: None,
@@ -93,11 +95,37 @@ fn add(ed: &Editor, id: u64, session: SessionId, params: Vec<Option<ParamId>>) -
     }
 }
 
-/// The case the old shape could not express: length driven, angle not.
+fn set(session: SessionId, node: &NodeId, target_params: Option<PhysicsTargets>) -> Command {
+    Command::PhysicsSet {
+        session,
+        node: node.clone(),
+        kind: None,
+        map_mode: None,
+        local_only: None,
+        target_params,
+        gravity: None,
+        length: None,
+        frequency: None,
+        angle_damping: None,
+        length_damping: None,
+        output_scale: None,
+    }
+}
+
+/// The case a positional list could not express without a hole: length driven,
+/// angle not.
 #[test]
 fn a_driver_can_bind_its_second_output_and_not_its_first() {
     let (ed, session, angle, length) = fixture();
-    let node = add(&ed, 4, session, vec![None, Some(length.clone())]);
+    let node = add(
+        &ed,
+        4,
+        session,
+        PhysicsTargets {
+            angle: None,
+            length: Some(length.clone()),
+        },
+    );
 
     assert_eq!(
         targets(&ed, session, &node),
@@ -109,21 +137,14 @@ fn a_driver_can_bind_its_second_output_and_not_its_first() {
     body(
         &ed,
         5,
-        Command::PhysicsSet {
+        set(
             session,
-            node: node.clone(),
-            kind: None,
-            map_mode: None,
-            local_only: None,
-            target_params: Some(vec![Some(angle.clone()), None]),
-            clear_target_params: false,
-            gravity: None,
-            length: None,
-            frequency: None,
-            angle_damping: None,
-            length_damping: None,
-            output_scale: None,
-        },
+            &node,
+            Some(PhysicsTargets {
+                angle: Some(angle.clone()),
+                length: None,
+            }),
+        ),
     );
     assert_eq!(
         targets(&ed, session, &node),
@@ -131,12 +152,20 @@ fn a_driver_can_bind_its_second_output_and_not_its_first() {
     );
 }
 
-/// Position is what names the output, so a list is read left to right and
-/// whatever it does not reach stays unbound.
+/// Present means "both outputs are exactly this", so a set names the whole
+/// pair every time and the empty pair detaches both.
 #[test]
-fn a_short_list_leaves_the_outputs_past_its_end_unbound() {
+fn a_set_names_the_whole_pair_and_the_empty_pair_detaches_both() {
     let (ed, session, angle, length) = fixture();
-    let node = add(&ed, 4, session, vec![Some(angle.clone())]);
+    let node = add(
+        &ed,
+        4,
+        session,
+        PhysicsTargets {
+            angle: Some(angle.clone()),
+            length: None,
+        },
+    );
     assert_eq!(
         targets(&ed, session, &node),
         [Some("swing.angle".into()), None]
@@ -145,86 +174,63 @@ fn a_short_list_leaves_the_outputs_past_its_end_unbound() {
     body(
         &ed,
         5,
-        Command::PhysicsSet {
+        set(
             session,
-            node: node.clone(),
-            kind: None,
-            map_mode: None,
-            local_only: None,
-            target_params: Some(vec![Some(angle), Some(length)]),
-            clear_target_params: false,
-            gravity: None,
-            length: None,
-            frequency: None,
-            angle_damping: None,
-            length_damping: None,
-            output_scale: None,
-        },
+            &node,
+            Some(PhysicsTargets {
+                angle: Some(angle),
+                length: Some(length),
+            }),
+        ),
     );
     assert_eq!(
         targets(&ed, session, &node),
         [Some("swing.angle".into()), Some("swing.length".into())],
     );
 
-    // An empty list is a driver bound to nothing, the same state
-    // `clear_target_params` reaches.
-    body(
-        &ed,
-        6,
-        Command::PhysicsSet {
-            session,
-            node: node.clone(),
-            kind: None,
-            map_mode: None,
-            local_only: None,
-            target_params: Some(Vec::new()),
-            clear_target_params: false,
-            gravity: None,
-            length: None,
-            frequency: None,
-            angle_damping: None,
-            length_damping: None,
-            output_scale: None,
-        },
+    // Absent leaves the driver alone; the empty pair is the one spelling of
+    // "neither output drives anything".
+    body(&ed, 6, set(session, &node, None));
+    assert_eq!(
+        targets(&ed, session, &node),
+        [Some("swing.angle".into()), Some("swing.length".into())],
     );
+
+    body(&ed, 7, set(session, &node, Some(PhysicsTargets::default())));
     assert_eq!(targets(&ed, session, &node), [None, None]);
 }
 
-/// A hole is not an escape from validation: an Id that names no param is
-/// still refused, and a third output still does not exist.
+/// A field left absent is not an escape from validation: an Id that names no
+/// param is still refused, and a refused set leaves the driver alone.
 #[test]
-fn a_hole_does_not_excuse_an_unknown_param_or_a_third_output() {
+fn an_unbound_output_does_not_excuse_an_unknown_param() {
     let (ed, session, angle, length) = fixture();
-    let node = add(&ed, 4, session, vec![Some(angle.clone()), Some(length)]);
+    let node = add(
+        &ed,
+        4,
+        session,
+        PhysicsTargets {
+            angle: Some(angle),
+            length: Some(length),
+        },
+    );
     let before = targets(&ed, session, &node);
 
-    let set = |params: Vec<Option<ParamId>>| Command::PhysicsSet {
-        session,
-        node: node.clone(),
-        kind: None,
-        map_mode: None,
-        local_only: None,
-        target_params: Some(params),
-        clear_target_params: false,
-        gravity: None,
-        length: None,
-        frequency: None,
-        angle_damping: None,
-        length_damping: None,
-        output_scale: None,
-    };
-
     assert!(matches!(
-        reply(&ed, 5, set(vec![None, Some(ParamId::new("nope").unwrap())])),
+        reply(
+            &ed,
+            5,
+            set(
+                session,
+                &node,
+                Some(PhysicsTargets {
+                    angle: None,
+                    length: Some(ParamId::new("nope").unwrap()),
+                }),
+            ),
+        ),
         Reply::Err {
             code: ErrorCode::NoParam,
-            ..
-        }
-    ));
-    assert!(matches!(
-        reply(&ed, 6, set(vec![None, None, Some(angle)])),
-        Reply::Err {
-            code: ErrorCode::BadTarget,
             ..
         }
     ));
@@ -235,31 +241,52 @@ fn a_hole_does_not_excuse_an_unknown_param_or_a_third_output() {
     );
 }
 
-/// `clear_target_params` still wins over a list, holes and all.
+/// What the JSON looks like: one object keyed by output name, and a third
+/// output refused before the request is even a command.
 #[test]
-fn clearing_still_beats_whatever_the_list_says() {
-    let (ed, session, angle, length) = fixture();
-    let node = add(&ed, 4, session, vec![Some(angle), Some(length.clone())]);
+fn the_pair_travels_as_an_object_keyed_by_output() {
+    let (ed, session, _angle, length) = fixture();
+    let node = add(&ed, 4, session, PhysicsTargets::default());
 
-    body(
-        &ed,
-        5,
-        Command::PhysicsSet {
+    let line = serde_json::to_string(&Request {
+        id: 5,
+        command: set(
             session,
-            node: node.clone(),
-            kind: None,
-            map_mode: None,
-            local_only: None,
-            target_params: Some(vec![None, Some(length)]),
-            clear_target_params: true,
-            gravity: None,
-            length: None,
-            frequency: None,
-            angle_damping: None,
-            length_damping: None,
-            output_scale: None,
-        },
+            &node,
+            Some(PhysicsTargets {
+                angle: None,
+                length: Some(length),
+            }),
+        ),
+    })
+    .unwrap();
+    assert!(
+        line.contains(r#""target_params":{"length":"swing.length"}"#),
+        "{line}",
     );
 
-    assert_eq!(targets(&ed, session, &node), [None, None]);
+    // Round trips, and applies.
+    let back: Request = serde_json::from_str(&line).unwrap();
+    body(&ed, back.id, back.command);
+    assert_eq!(
+        targets(&ed, session, &node),
+        [None, Some("swing.length".into())],
+    );
+
+    // A third output is refused where it is now impossible rather than
+    // improbable: serde will not read a struct of two fields out of a longer
+    // sequence, so the request never reaches the editor to be checked.
+    let three = line.replace(
+        r#""target_params":{"length":"swing.length"}"#,
+        r#""target_params":["a","swing.length","c"]"#,
+    );
+    assert!(serde_json::from_str::<Request>(&three).is_err(), "{three}");
+    assert!(
+        serde_json::from_str::<Request>(&line.replace(
+            r#""target_params":{"length":"swing.length"}"#,
+            r#""target_params":{"angle":"a","length":"b","third":"c"}"#,
+        ))
+        .is_ok(),
+        "an unknown member is ignored, as everywhere else on this wire",
+    );
 }

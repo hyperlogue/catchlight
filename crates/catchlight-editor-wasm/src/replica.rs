@@ -1413,7 +1413,7 @@ mod tests {
         let driver = call(
             &editor,
             json!({"id": 31, "cmd": "physics_add", "session": session.0, "parent": ROOT,
-                   "kind": "pendulum", "target_params": [param.clone()],
+                   "kind": "pendulum", "target_params": {"angle": param.clone()},
                    "length": 1.0, "gravity": 1.0}),
         );
         assert_eq!(driver["reply"], "ok", "reply was {driver}");

@@ -30,6 +30,7 @@ from catchlight import (
     NodeSet,
     ParamPose,
     PhysicsSet,
+    PhysicsTargets,
     PresenceSet,
     RenameId,
     RenameParam,
@@ -188,16 +189,39 @@ def test_a_nested_tagged_enum_carries_its_own_tag() -> None:
     }
 
 
-def test_a_null_inside_a_list_survives() -> None:
-    """`target_params` is `[angle, length]`, and a null entry is an output
-    nothing is bound to — so dropping nulls stops at the field itself."""
-    assert PhysicsSet(session=1, node="hair", target_params=[None, "len"]).to_wire() == {
+def test_a_nested_optional_struct_travels_as_an_object() -> None:
+    """`target_params` is one object per output, and an output bound to
+    nothing is simply not in it — so the empty object says "neither"."""
+    assert PhysicsSet(
+        session=1, node="hair", target_params=PhysicsTargets(length="len")
+    ).to_wire() == {
         "cmd": "physics_set",
         "session": 1,
         "node": "hair",
-        "target_params": [None, "len"],
-        "clear_target_params": False,
+        "target_params": {"length": "len"},
     }
+    assert PhysicsSet(session=1, node="hair", target_params=PhysicsTargets()).to_wire() == {
+        "cmd": "physics_set",
+        "session": 1,
+        "node": "hair",
+        "target_params": {},
+    }
+    # Absent is a third thing again: leave both outputs alone.
+    assert PhysicsSet(session=1, node="hair").to_wire() == {
+        "cmd": "physics_set",
+        "session": 1,
+        "node": "hair",
+    }
+
+
+def test_a_nested_struct_parses_back() -> None:
+    """The decoder `parse_reply` uses for every nested struct, on this one."""
+    decode = protocol_gen._decode
+    assert decode(PhysicsTargets | None, {"length": "len"}) == PhysicsTargets(
+        angle=None, length="len"
+    )
+    assert decode(PhysicsTargets | None, {}) == PhysicsTargets()
+    assert decode(PhysicsTargets | None, None) is None
 
 
 def test_an_ok_reply_parses() -> None:

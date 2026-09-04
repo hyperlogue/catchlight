@@ -617,10 +617,14 @@ enum PhysicsCmd {
         kind: String,
         #[arg(long)]
         name: Option<String>,
-        /// A param the driver writes, in output order (angle, length).
-        /// Repeatable, at most two; `-` leaves that output bound to nothing.
-        #[arg(long = "target-param", allow_hyphen_values = true)]
-        target_params: Vec<String>,
+        /// The param the driver's first output writes. Absent binds it to
+        /// nothing.
+        #[arg(long = "target-angle")]
+        target_angle: Option<ParamId>,
+        /// The param the driver's second output writes. Absent binds it to
+        /// nothing.
+        #[arg(long = "target-length")]
+        target_length: Option<ParamId>,
         #[arg(long, allow_hyphen_values = true)]
         length: Option<f32>,
         #[arg(long, allow_hyphen_values = true)]
@@ -645,12 +649,18 @@ enum PhysicsCmd {
         map_mode: Option<String>,
         #[arg(long = "local-only")]
         local_only: Option<bool>,
-        /// Replace the driven params, in output order (angle, length).
-        /// Repeatable, at most two; `-` leaves that output bound to nothing.
-        #[arg(long = "target-param", allow_hyphen_values = true)]
-        target_params: Vec<String>,
-        #[arg(long = "clear-target-params")]
-        clear_target_params: bool,
+        /// Rebind both of the driver's outputs, to whatever the two flags
+        /// below name and to nothing where they name nothing — so this alone
+        /// detaches both. Either flag implies it; with none of the three the
+        /// driver's outputs are left as they are.
+        #[arg(long = "targets")]
+        targets: bool,
+        /// The param the driver's first output writes. Implies `--targets`.
+        #[arg(long = "target-angle")]
+        target_angle: Option<ParamId>,
+        /// The param the driver's second output writes. Implies `--targets`.
+        #[arg(long = "target-length")]
+        target_length: Option<ParamId>,
         #[arg(long, allow_hyphen_values = true)]
         gravity: Option<f32>,
         #[arg(long, allow_hyphen_values = true)]
@@ -1034,7 +1044,8 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     parent,
                     kind,
                     name,
-                    target_params,
+                    target_angle,
+                    target_length,
                     length,
                     gravity,
                     frequency,
@@ -1046,7 +1057,10 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     parent: parent.clone(),
                     name: name.clone(),
                     kind: kind.clone(),
-                    target_params: parse_target_params(target_params)?,
+                    target_params: PhysicsTargets {
+                        angle: target_angle.clone(),
+                        length: target_length.clone(),
+                    },
                     length: *length,
                     gravity: *gravity,
                     frequency: *frequency,
@@ -1059,8 +1073,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     kind,
                     map_mode,
                     local_only,
-                    target_params,
-                    clear_target_params,
+                    targets,
+                    target_angle,
+                    target_length,
                     gravity,
                     length,
                     frequency,
@@ -1073,10 +1088,13 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     kind: kind.clone(),
                     map_mode: map_mode.clone(),
                     local_only: *local_only,
-                    target_params: (!target_params.is_empty())
-                        .then(|| parse_target_params(target_params))
-                        .transpose()?,
-                    clear_target_params: *clear_target_params,
+                    // Naming an output is itself a request to rebind, so the
+                    // bare flag is only needed to detach both.
+                    target_params: (*targets || target_angle.is_some() || target_length.is_some())
+                        .then(|| PhysicsTargets {
+                            angle: target_angle.clone(),
+                            length: target_length.clone(),
+                        }),
                     gravity: *gravity,
                     length: *length,
                     frequency: *frequency,
@@ -1542,20 +1560,6 @@ fn parse_param(s: &str) -> Result<ParamPose> {
             .parse::<f32>()
             .map_err(|e| anyhow!("bad param value {value:?}: {e}"))?,
     })
-}
-
-/// A driver's outputs in order, where `-` is an output bound to nothing.
-///
-/// Positional rather than a set: a driver whose length drives a param and
-/// whose angle drives none has to be sayable, and `-` is safe as the hole
-/// because no Id may start with one.
-fn parse_target_params(args: &[String]) -> Result<Vec<Option<ParamId>>> {
-    args.iter()
-        .map(|arg| match arg.as_str() {
-            "-" => Ok(None),
-            id => Ok(Some(ParamId::new(id)?)),
-        })
-        .collect()
 }
 
 /// `<slot id>=<weight>`.
