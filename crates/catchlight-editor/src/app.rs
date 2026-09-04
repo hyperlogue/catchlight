@@ -26,11 +26,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use catchlight_core::formats::clm::TextureEncoding;
-use catchlight_core::{BindingKey, BindingTarget, Model, ModelNodeKind};
+use catchlight_core::{BindingKey, BindingTarget as CoreBindingTarget, Model, ModelNodeKind};
 use catchlight_editor_protocol::{
-    BindingKeyEntry, BindingParams, Command, NodeId, NodePatch, ParamId, ParamInfo, PhysicsTargets,
-    Rename, Reply, Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotAddr, SlotId,
-    SlotWeight, TexId, TreeNode, WeldInfo,
+    BindingKeyEntry, BindingParams, BindingTarget, Command, NodeId, NodeKind, NodePatch, ParamId,
+    ParamInfo, PhysicsKind, PhysicsTargets, Rename, Reply, Request, ResponseBody, SeamAddr, SeamId,
+    SessionId, SlotAddr, SlotId, SlotWeight, TexId, TreeNode, WeldInfo,
 };
 use catchlight_editor_server::{seam_info, Editor};
 use eframe::egui;
@@ -100,7 +100,7 @@ pub struct App {
     /// Snap pose drags to keypoints (the controller's default).
     snap: bool,
     /// Keypoint clipboard: the binding and cell the value was taken at.
-    copied_cell: Option<(BindingParams, NodeId, String, [u32; 2])>,
+    copied_cell: Option<(BindingParams, NodeId, BindingTarget, [u32; 2])>,
     /// Per-vertex deform tool active (armed + Part selected).
     deform_mode: bool,
     deform_drag: Option<DeformDrag>,
@@ -600,8 +600,8 @@ impl App {
                             .node(b.node())
                             .map(|n| n.name.to_string())
                             .unwrap_or_else(|| "?".into()),
-                        target: b.target().name().to_string(),
-                        interpolate: interp_name(b.interpolate_mode()).to_string(),
+                        target: b.target().into(),
+                        interpolate: b.interpolate_mode().into(),
                         authored_at_cell: authored_at,
                         params,
                         cell: row_cell,
@@ -679,8 +679,11 @@ impl App {
         let key_at = |t: T| {
             editor
                 .with_model(session, |m| {
-                    m.scalar_value_at(&binding_key(params, node, BindingTarget::Scalar(t)), cell)
-                        .ok()
+                    m.scalar_value_at(
+                        &binding_key(params, node, CoreBindingTarget::Scalar(t)),
+                        cell,
+                    )
+                    .ok()
                 })
                 .ok()
                 .flatten()
@@ -690,7 +693,7 @@ impl App {
         {
             let mut additive = |t: T, committed: f32, posed: f32| {
                 out.push(BindingKeyEntry {
-                    target: t.name().into(),
+                    target: t.into(),
                     value: key_at(t) + (committed - posed),
                 });
             };
@@ -715,7 +718,7 @@ impl App {
                 committed / posed
             };
             out.push(BindingKeyEntry {
-                target: t.name().into(),
+                target: t.into(),
                 value: key_at(t) * ratio,
             });
         };
@@ -1609,7 +1612,7 @@ impl App {
         session: SessionId,
         params: BindingParams,
         node: NodeId,
-        target: String,
+        target: BindingTarget,
         cell: [u32; 2],
         _snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
     ) {
@@ -1632,9 +1635,9 @@ impl App {
             return;
         }
         let editor = self.editor.clone();
-        if target == "deform" {
+        let Some(scalar) = target.scalar() else {
             let (src_id, dst_id) = (src_node.clone(), node.clone());
-            let src_key = binding_key(&params, &src_id, BindingTarget::Deform);
+            let src_key = binding_key(&params, &src_id, CoreBindingTarget::Deform);
             let refit = editor
                 .with_model(session, |m| {
                     let src_mesh = m.node_mesh(&src_id)?.clone();
@@ -1661,15 +1664,11 @@ impl App {
                 None => self.status = "paste: source or target has no mesh".into(),
             }
             return;
-        }
-        let target_name = target.clone();
+        };
         let src_key = params.clone();
         let value = editor
             .with_model(session, |m| {
-                let t = BindingTarget::parse(&target_name)?;
-                if !matches!(t, BindingTarget::Scalar(_)) {
-                    return None;
-                }
+                let t = CoreBindingTarget::from(target);
                 m.scalar_value_at(&binding_key(&src_key, &src_node, t), src_cell)
                     .ok()
             })
@@ -1681,7 +1680,7 @@ impl App {
                     session,
                     params,
                     node,
-                    target,
+                    target: scalar,
                     cell,
                     value,
                 });
@@ -1761,7 +1760,7 @@ impl eframe::App for App {
             (Some(mesh), Some(s)) => {
                 let mut out = Vec::new();
                 // A mesh is copied from another *part*: a composite has none.
-                collect_by_kind(&s.root, |k| k == "part", &mut out);
+                collect_by_kind(&s.root, |k| k == NodeKind::Part, &mut out);
                 out.retain(|(r, _)| *r != mesh.node);
                 out
             }
@@ -2702,7 +2701,7 @@ impl App {
             return;
         };
         let editor = self.editor.clone();
-        let key = binding_key(&params, &node, BindingTarget::Deform);
+        let key = binding_key(&params, &node, CoreBindingTarget::Deform);
         let base = editor
             .with_model(session, |m| m.deform_value_at(&key, cell).ok())
             .ok()
@@ -3140,7 +3139,7 @@ impl App {
                     session,
                     parent,
                     name: None,
-                    kind: "rigid".into(),
+                    kind: PhysicsKind::Rigid,
                     target_params: PhysicsTargets::default(),
                     length: None,
                     gravity: None,
@@ -3242,7 +3241,7 @@ impl App {
                     session,
                     node: primary,
                     source,
-                    mode: catchlight_core::mask_mode_name(mode).into(),
+                    mode: mode.into(),
                 });
             }
             InspectorAction::MaskSetMode { index, mode } => {
@@ -3250,7 +3249,7 @@ impl App {
                     session,
                     node: primary,
                     index,
-                    mode: catchlight_core::mask_mode_name(mode).into(),
+                    mode: mode.into(),
                 });
             }
             InspectorAction::MaskReorder { index, to } => {
@@ -3276,7 +3275,7 @@ impl App {
 
 /// The binding one or two params drive `target` on `node` through — the wire
 /// spelling of a key, turned back into the model's.
-fn binding_key(params: &BindingParams, node: &NodeId, target: BindingTarget) -> BindingKey {
+fn binding_key(params: &BindingParams, node: &NodeId, target: CoreBindingTarget) -> BindingKey {
     match &params.param_y {
         Some(y) => BindingKey::pair(params.param.clone(), y.clone(), node.clone(), target),
         None => BindingKey::new(params.param.clone(), node.clone(), target),
@@ -3368,8 +3367,8 @@ fn mask_rows(model: &Model, masks: &[catchlight_core::ModelMask]) -> Vec<MaskRow
 }
 
 /// Every node in the tree whose kind `want` accepts, in tree order.
-fn collect_by_kind(node: &TreeNode, want: fn(&str) -> bool, out: &mut Vec<(NodeId, String)>) {
-    if want(&node.kind) {
+fn collect_by_kind(node: &TreeNode, want: fn(NodeKind) -> bool, out: &mut Vec<(NodeId, String)>) {
+    if want(node.kind) {
         out.push((node.id.clone(), node.name.clone()));
     }
     for c in &node.children {
@@ -3380,8 +3379,8 @@ fn collect_by_kind(node: &TreeNode, want: fn(&str) -> bool, out: &mut Vec<(NodeI
 /// The nodes a mask may name as its source: the two kinds the renderer draws.
 /// `Model::mask_add` refuses the rest, so offering one would only author a
 /// refused edit.
-fn is_mask_source_kind(kind: &str) -> bool {
-    kind == "part" || kind == "composite"
+fn is_mask_source_kind(kind: NodeKind) -> bool {
+    matches!(kind, NodeKind::Part | NodeKind::Composite)
 }
 
 fn find_subtree<'a>(root: &'a TreeNode, target: &NodeId) -> Option<&'a TreeNode> {
@@ -3452,16 +3451,6 @@ fn nearest_index(points: &[f32], v: f32) -> u32 {
         }
     }
     best as u32
-}
-
-fn interp_name(m: catchlight_core::interpolate::InterpolateMode) -> &'static str {
-    use catchlight_core::interpolate::InterpolateMode as I;
-    match m {
-        I::Nearest => "nearest",
-        I::Stepped => "stepped",
-        I::Linear => "linear",
-        I::Cubic => "cubic",
-    }
 }
 
 fn seam_addr(end: &(NodeId, SeamId)) -> SeamAddr {

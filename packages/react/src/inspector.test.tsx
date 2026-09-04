@@ -69,15 +69,15 @@ describe("the inspector", () => {
     const blend = view.container.querySelector(
       'select[data-catchlight-field="blend_mode"]',
     ) as HTMLSelectElement;
-    expect(blend.value).toBe("Normal");
+    expect(blend.value).toBe("normal");
 
-    blend.value = "Multiply";
+    blend.value = "multiply";
     await fire(blend, new Event("change", { bubbles: true }));
     await settle();
 
     const sent = nodeSets(wasm);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ cmd: "node_set", node, blend_mode: "Multiply" });
+    expect(sent[0]).toMatchObject({ cmd: "node_set", node, blend_mode: "multiply" });
     expect(keys(sent[0])).toEqual(["blend_mode", "cmd", "id", "node", "session"]);
     await view.unmount();
   });

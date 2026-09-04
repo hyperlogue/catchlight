@@ -22,7 +22,15 @@
  * XY pad's business, and this part draws the one it finds.
  */
 
-import type { BindingInfo, NodeId, ParamId, ParamInfo, Session } from "@catchlight/core";
+import type {
+  BindingInfo,
+  Interpolate,
+  NodeId,
+  ParamId,
+  ParamInfo,
+  ScalarTarget,
+  Session,
+} from "@catchlight/core";
 import { useState } from "react";
 import type { ComponentProps, KeyboardEvent } from "react";
 
@@ -68,7 +76,7 @@ export function BindingGridRoot({
   const all = useBindings(session, node);
   const bindings = bindingsOfParam(all, param);
   const [selected, setSelected] = useState<CellRef | undefined>(undefined);
-  const [target, setTarget] = useState<string>(BINDING_TARGETS[0] ?? "tx");
+  const [target, setTarget] = useState<ScalarTarget>(BINDING_TARGETS[0] ?? "tx");
   const [copying, setCopying] = useState<CellRef | undefined>(undefined);
 
   if (node === undefined || param === undefined) {
@@ -104,6 +112,9 @@ export function BindingGridRoot({
   };
 
   const commit = (binding: BindingInfo, x: number, y: number, text: string): void => {
+    // A deform cell holds a vertex list, so there is no number to type into
+    // it and `binding_key` would refuse the target anyway.
+    if (binding.target === "deform") return;
     const value = Number(text);
     const was = binding.keys[y]?.[x];
     if (text.trim() === "" || !Number.isFinite(value) || value === was) return;
@@ -122,7 +133,7 @@ export function BindingGridRoot({
           data-catchlight-binding-target=""
           aria-label="Binding target"
           value={target}
-          onChange={(event) => setTarget(event.currentTarget.value)}
+          onChange={(event) => setTarget(event.currentTarget.value as ScalarTarget)}
         >
           {BINDING_TARGETS.map((name) => (
             <option key={name} value={name}>
@@ -162,7 +173,7 @@ export function BindingGridRoot({
                       node,
                       binding.target,
                       paramsOf(binding),
-                      event.currentTarget.value,
+                      event.currentTarget.value as Interpolate,
                     ),
                   )
                 }

@@ -11,7 +11,8 @@
 //! time.
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, NodeId, ParamId, PhysicsTargets, Reply, Request, ResponseBody, SessionId,
+    Command, ErrorCode, NodeId, ParamId, PhysicsKind, PhysicsTargets, Reply, Request, ResponseBody,
+    SessionId,
 };
 use catchlight_editor_server::Editor;
 
@@ -80,7 +81,7 @@ fn add(ed: &Editor, id: u64, session: SessionId, target_params: PhysicsTargets) 
             session,
             parent: NodeId::new("root").unwrap(),
             name: None,
-            kind: "rigid".into(),
+            kind: PhysicsKind::Rigid,
             target_params,
             length: None,
             gravity: None,

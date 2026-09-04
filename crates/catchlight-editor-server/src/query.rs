@@ -21,8 +21,8 @@
 //!   takes the `rev` it stamps on the envelope rather than inventing one.
 
 use catchlight_core::{
-    deform_cells, scalar_cells, InterpolateMode, Model, ModelBinding, ModelError, ModelNode,
-    ModelNodeKind, ModelWeld,
+    deform_cells, scalar_cells, Model, ModelBinding, ModelError, ModelNode, ModelNodeKind,
+    ModelWeld,
 };
 use catchlight_editor_protocol::*;
 
@@ -137,12 +137,12 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
     let (name, kind, z_order, enabled, children) = match model.node(id) {
         Some(n) => (
             n.name.to_string(),
-            n.kind.name().to_string(),
+            NodeKind::of(&n.kind),
             n.z_order,
             n.enabled,
             n.children(),
         ),
-        None => (String::new(), "group".to_string(), 0.0, true, &[][..]),
+        None => (String::new(), NodeKind::Group, 0.0, true, &[][..]),
     };
     TreeNode {
         id: id.clone(),
@@ -169,14 +169,14 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
     let (opacity, blend_mode, tint, screen_tint, mask_threshold) = match &node.kind {
         ModelNodeKind::Part(p) => (
             Some(p.opacity),
-            Some(p.blend_mode.as_str().to_string()),
+            Some(p.blend_mode.into()),
             Some(p.tint),
             Some(p.screen_tint),
             Some(p.mask_threshold),
         ),
         ModelNodeKind::Composite(c) => (
             Some(c.opacity),
-            Some(c.blend_mode.as_str().to_string()),
+            Some(c.blend_mode.into()),
             Some(c.tint),
             Some(c.screen_tint),
             Some(c.mask_threshold),
@@ -198,7 +198,7 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
     };
     NodeInfo {
         id: id.clone(),
-        kind: node.kind.name().to_string(),
+        kind: NodeKind::of(&node.kind),
         parent: node.parent().cloned(),
         name: node.name.to_string(),
         translate: node.transform.translation,
@@ -263,27 +263,15 @@ fn binding_info(model: &Model, binding: &ModelBinding) -> Result<BindingInfo, Ed
         }
     }
     Ok(BindingInfo {
-        target: key.target.name().to_string(),
+        target: key.target.into(),
         param: key.params.x().clone(),
         param_y: key.params.y().cloned(),
-        interpolate: interpolate_name(binding.interpolate_mode()).to_string(),
+        interpolate: binding.interpolate_mode().into(),
         width,
         height,
         keys,
         authored,
     })
-}
-
-/// The wire name of an interpolation mode: the inverse of the server's own
-/// `parse_interpolate_mode`, so a mode read here is a mode
-/// [`Command::BindingInterpolate`] takes back.
-fn interpolate_name(mode: InterpolateMode) -> &'static str {
-    match mode {
-        InterpolateMode::Nearest => "nearest",
-        InterpolateMode::Stepped => "stepped",
-        InterpolateMode::Linear => "linear",
-        InterpolateMode::Cubic => "cubic",
-    }
 }
 
 pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {

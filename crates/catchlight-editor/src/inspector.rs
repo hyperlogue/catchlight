@@ -7,7 +7,9 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
-use catchlight_editor_protocol::{NodeId, NodePatch, ParamId, PhysicsTargets, TexId};
+use catchlight_editor_protocol::{
+    NodeId, NodePatch, ParamId, PhysicsKind, PhysicsMapMode, PhysicsTargets, TexId,
+};
 use eframe::egui;
 
 pub(crate) struct InspectorData {
@@ -102,8 +104,8 @@ pub(crate) enum InspectorAction {
 
 #[derive(Default)]
 pub(crate) struct PhysicsPatch {
-    pub kind: Option<String>,
-    pub map_mode: Option<String>,
+    pub kind: Option<PhysicsKind>,
+    pub map_mode: Option<PhysicsMapMode>,
     pub local_only: Option<bool>,
     /// Both of the driver's outputs at once: the wire takes the pair, so a
     /// patch that rebinds one carries the other unchanged.
@@ -416,7 +418,7 @@ fn physics_ui(
                     && m != kind
                 {
                     out.push(InspectorAction::PhysicsCommit(PhysicsPatch {
-                        kind: Some(kind_name(m).to_string()),
+                        kind: Some(m.into()),
                         ..Default::default()
                     }));
                 }
@@ -445,7 +447,7 @@ fn physics_ui(
                     && mm != map_mode
                 {
                     out.push(InspectorAction::PhysicsCommit(PhysicsPatch {
-                        map_mode: Some(map_name(mm).to_string()),
+                        map_mode: Some(mm.into()),
                         ..Default::default()
                     }));
                 }
@@ -606,7 +608,7 @@ fn blend_combo(ui: &mut egui::Ui, current: BlendMode, out: &mut Vec<InspectorAct
                     && mode != current
                 {
                     out.push(InspectorAction::Commit(NodePatch {
-                        blend_mode: Some(mode.as_str().to_string()),
+                        blend_mode: Some(mode.into()),
                         ..Default::default()
                     }));
                 }

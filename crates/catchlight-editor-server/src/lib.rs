@@ -89,15 +89,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use catchlight_core::components::{BlendMode, MaskMode};
+use catchlight_core::components::BlendMode as CoreBlendMode;
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
+
 use catchlight_core::Vec2;
 use catchlight_core::{
-    BindingKey, BindingTarget, Model, ModelComposite, ModelError, ModelMeshGroup, ModelNode,
-    ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture, ModelWeld, Puppet,
-    ScalarTarget, DEFAULT_SLOT_WEIGHT,
+    BindingKey, BindingTarget as CoreBindingTarget, Model, ModelComposite, ModelError,
+    ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
+    ModelWeld, Puppet, DEFAULT_SLOT_WEIGHT,
 };
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
@@ -169,12 +169,6 @@ pub enum EditorError {
 }
 
 impl EditorError {
-    /// An enum name the server does not know: a binding target, a blend
-    /// mode, an interpolation mode.
-    fn unknown(kind: &str, name: &str) -> Self {
-        Self::BadTarget(format!("unknown {kind} {name:?}"))
-    }
-
     /// The wire code a client branches on. The message stays for a person;
     /// this is what a commit gate or a mesh editor reacts to.
     pub fn code(&self) -> ErrorCode {
@@ -1216,8 +1210,7 @@ impl Editor {
                 source,
                 mode,
             } => self.edit_session(session, |s| {
-                let mode = parse_mask_mode(&mode)?;
-                s.model.mask_add(&node, &source, mode)?;
+                s.model.mask_add(&node, &source, mode.into())?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1227,8 +1220,7 @@ impl Editor {
                 index,
                 mode,
             } => self.edit_session(session, |s| {
-                let mode = parse_mask_mode(&mode)?;
-                s.model.mask_set_mode(&node, index as usize, mode)?;
+                s.model.mask_set_mode(&node, index as usize, mode.into())?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1265,17 +1257,6 @@ impl Editor {
                 length_damping,
                 output_scale,
             } => self.edit_session(session, |s| {
-                let parsed_kind = kind
-                    .as_deref()
-                    .map(|m| {
-                        parse_pendulum_kind(m)
-                            .ok_or_else(|| EditorError::unknown("pendulum kind", m))
-                    })
-                    .transpose()?;
-                let parsed_map = map_mode
-                    .as_deref()
-                    .map(|m| parse_map_mode(m).ok_or_else(|| EditorError::unknown("map mode", m)))
-                    .transpose()?;
                 if let Some(t) = target_params {
                     let targets = physics_targets(&s.model, t)?;
                     s.model.set_physics_targets(&node, targets)?;
@@ -1284,11 +1265,11 @@ impl Editor {
                     let ModelNodeKind::SimplePhysics(ph) = &mut n.kind else {
                         return Err(EditorError::BadTarget("not a physics node".into()));
                     };
-                    if let Some(m) = parsed_kind {
-                        ph.kind = m;
+                    if let Some(m) = kind {
+                        ph.kind = m.into();
                     }
-                    if let Some(m) = parsed_map {
-                        ph.map_mode = m;
+                    if let Some(m) = map_mode {
+                        ph.map_mode = m.into();
                     }
                     if let Some(v) = local_only {
                         ph.local_only = v;
@@ -1463,10 +1444,7 @@ impl Editor {
                 node,
                 target,
             } => self.edit_session(session, |s| {
-                let t = ScalarTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
-                s.model
-                    .add_binding(&binding_key(params, node, BindingTarget::Scalar(t))?)?;
+                s.model.add_binding(&binding_key(params, node, target)?)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1478,9 +1456,7 @@ impl Editor {
                 cell,
                 value,
             } => self.edit_session(session, |s| {
-                let t = ScalarTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
-                let key = binding_key(params, node, BindingTarget::Scalar(t))?;
+                let key = binding_key(params, node, target)?;
                 s.model.set_binding_key(&key, cell, value)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -1492,17 +1468,9 @@ impl Editor {
                 cell,
                 entries,
             } => self.edit_session(session, |s| {
-                let parsed: Vec<(ScalarTarget, f32)> = entries
-                    .iter()
-                    .map(|e| {
-                        ScalarTarget::parse(&e.target)
-                            .map(|t| (t, e.value))
-                            .ok_or_else(|| EditorError::unknown("binding target", &e.target))
-                    })
-                    .collect::<Result<_, _>>()?;
-                for (t, value) in parsed {
-                    let key = binding_key(params.clone(), node.clone(), BindingTarget::Scalar(t))?;
-                    s.model.set_binding_key(&key, cell, value)?;
+                for e in entries {
+                    let key = binding_key(params.clone(), node.clone(), e.target)?;
+                    s.model.set_binding_key(&key, cell, e.value)?;
                 }
                 s.touch();
                 Ok(ResponseBody::Empty)
@@ -1514,10 +1482,8 @@ impl Editor {
                 target,
                 cell,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model
-                    .unset_binding_key(&binding_key(params, node, t)?, cell)?;
+                    .unset_binding_key(&binding_key(params, node, target)?, cell)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1528,10 +1494,8 @@ impl Editor {
                 target,
                 cell,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model
-                    .reset_binding_key(&binding_key(params, node, t)?, cell)?;
+                    .reset_binding_key(&binding_key(params, node, target)?, cell)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1541,9 +1505,8 @@ impl Editor {
                 node,
                 target,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
-                s.model.delete_binding(&binding_key(params, node, t)?)?;
+                s.model
+                    .delete_binding(&binding_key(params, node, target)?)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1554,11 +1517,8 @@ impl Editor {
                 target,
                 mode,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
-                let m = parse_interpolate_mode(&mode)?;
                 s.model
-                    .set_binding_interpolate(&binding_key(params, node, t)?, m)?;
+                    .set_binding_interpolate(&binding_key(params, node, target)?, mode.into())?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1568,9 +1528,8 @@ impl Editor {
                 node,
                 target,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
-                s.model.invert_binding(&binding_key(params, node, t)?)?;
+                s.model
+                    .invert_binding(&binding_key(params, node, target)?)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1582,10 +1541,8 @@ impl Editor {
                 from,
                 to,
             } => self.edit_session(session, |s| {
-                let t = BindingTarget::parse(&target)
-                    .ok_or_else(|| EditorError::unknown("binding target", &target))?;
                 s.model
-                    .copy_binding_key(&binding_key(params, node, t)?, from, to)?;
+                    .copy_binding_key(&binding_key(params, node, target)?, from, to)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1811,10 +1768,8 @@ impl Editor {
                 length_damping,
                 node: id,
             } => self.edit_session(session, |s| {
-                let phys_kind = parse_pendulum_kind(&kind)
-                    .ok_or_else(|| EditorError::unknown("pendulum kind", &kind))?;
                 let targets = physics_targets(&s.model, target_params)?;
-                let mut phys = ModelPhysics::new(phys_kind);
+                let mut phys = ModelPhysics::new(kind.into());
                 if let Some(v) = gravity {
                     phys.gravity = v;
                 }
@@ -2001,8 +1956,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn binding_key(
     params: BindingParams,
     node: NodeId,
-    target: BindingTarget,
+    target: impl Into<BindingTarget>,
 ) -> Result<BindingKey, EditorError> {
+    let target = CoreBindingTarget::from(target.into());
     Ok(match params.param_y {
         Some(y) => BindingKey::pair(params.param, y, node, target),
         None => BindingKey::new(params.param, node, target),
@@ -2223,12 +2179,7 @@ fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
 }
 
 fn apply_patch(n: &mut ModelNode, patch: &NodePatch) -> Result<(), EditorError> {
-    // Parse before mutating so a bad enum string leaves the node untouched.
-    let blend = patch
-        .blend_mode
-        .as_deref()
-        .map(|s| BlendMode::from_name(s).ok_or_else(|| EditorError::unknown("blend mode", s)))
-        .transpose()?;
+    let blend = patch.blend_mode.map(CoreBlendMode::from);
     if let Some(name) = &patch.name {
         n.name = Name::truncated(name);
     }
@@ -2304,48 +2255,6 @@ fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
         ModelNodeKind::Part(p) => p.opacity = op,
         ModelNodeKind::Composite(c) => c.opacity = op,
         _ => {}
-    }
-}
-
-/// Accepts both the protocol's lowercase names (rigid | spring) and the
-/// serde/CamelCase forms, so PhysicsAdd and PhysicsSet agree.
-fn parse_pendulum_kind(s: &str) -> Option<PendulumKind> {
-    match s.to_ascii_lowercase().as_str() {
-        "rigid" | "rigidpendulum" | "pendulum" => Some(PendulumKind::RigidPendulum),
-        "spring" | "springpendulum" => Some(PendulumKind::SpringPendulum),
-        _ => None,
-    }
-}
-
-/// xy | yx | angle_length | length_angle (case-insensitive, CamelCase too).
-fn parse_map_mode(s: &str) -> Option<PhysicsParamMapMode> {
-    match s.to_ascii_lowercase().replace('_', "").as_str() {
-        "xy" => Some(PhysicsParamMapMode::XY),
-        "yx" => Some(PhysicsParamMapMode::YX),
-        "anglelength" => Some(PhysicsParamMapMode::AngleLength),
-        "lengthangle" => Some(PhysicsParamMapMode::LengthAngle),
-        _ => None,
-    }
-}
-
-fn parse_interpolate_mode(
-    s: &str,
-) -> Result<catchlight_core::interpolate::InterpolateMode, EditorError> {
-    use catchlight_core::interpolate::InterpolateMode as I;
-    match s.to_ascii_lowercase().as_str() {
-        "nearest" => Ok(I::Nearest),
-        "stepped" => Ok(I::Stepped),
-        "linear" => Ok(I::Linear),
-        "cubic" => Ok(I::Cubic),
-        other => Err(EditorError::unknown("interpolation mode", other)),
-    }
-}
-
-fn parse_mask_mode(s: &str) -> Result<MaskMode, EditorError> {
-    match s.to_ascii_lowercase().as_str() {
-        "mask" => Ok(MaskMode::Mask),
-        "dodge" | "dodge_mask" | "dodgemask" => Ok(MaskMode::DodgeMask),
-        other => Err(EditorError::unknown("mask mode", other)),
     }
 }
 

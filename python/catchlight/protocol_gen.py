@@ -415,8 +415,7 @@ class NodeSet:
     # it — see [`ResponseBody::Node::dropped`].
     clear_texture: bool = False
     lock_to_root: bool | None = None
-    # Blend-mode name (Normal | Multiply | ColorDodge | …).
-    blend_mode: str | None = None
+    blend_mode: BlendMode | None = None
     tint: tuple[float, float, float] | None = None
     screen_tint: tuple[float, float, float] | None = None
     mask_threshold: float | None = None
@@ -530,7 +529,7 @@ class RenameId:
 
 @dataclass(frozen=True, kw_only=True)
 class MaskAdd:
-    """Append a mask source to a Part/Composite. `mode` is mask|dodge."""
+    """Append a mask source to a Part/Composite."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mask_add"
@@ -540,7 +539,7 @@ class MaskAdd:
     session: SessionId
     node: NodeId
     source: NodeId
-    mode: str
+    mode: MaskMode
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -559,7 +558,7 @@ class MaskSet:
     session: SessionId
     node: NodeId
     index: int
-    mode: str
+    mode: MaskMode
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -612,10 +611,8 @@ class PhysicsSet:
 
     session: SessionId
     node: NodeId
-    # rigid | spring
-    kind: str | None = None
-    # xy | yx | angle_length | length_angle
-    map_mode: str | None = None
+    kind: PhysicsKind | None = None
+    map_mode: PhysicsMapMode | None = None
     local_only: bool | None = None
     # The params the driver writes ([`PhysicsTargets`]). Absent leaves
     # both outputs as they are; present, both become exactly what it
@@ -873,8 +870,7 @@ class BindingAdd:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    # tx|ty|sx|sy|rx|ry|rz|z_order|opacity|tint{r,g,b}|screentint{r,g,b}|outputscale{x,y}
-    target: str
+    target: ScalarTarget
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -894,7 +890,7 @@ class BindingKey:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: str
+    target: ScalarTarget
     # `[x, y]` index into the binding's key grid; `y` is 0 for a
     # one-param binding.
     cell: tuple[int, int]
@@ -930,9 +926,7 @@ class BindingKeys:
 
 @dataclass(frozen=True, kw_only=True)
 class BindingUnset:
-    """Un-author a keypoint (back to derived). `target` additionally accepts
-    `deform`.
-    """
+    """Un-author a keypoint (back to derived)."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_unset"
@@ -943,7 +937,7 @@ class BindingUnset:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: str
+    target: BindingTarget
     cell: tuple[int, int]
 
     def to_wire(self) -> dict[str, Any]:
@@ -964,7 +958,7 @@ class BindingReset:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: str
+    target: BindingTarget
     cell: tuple[int, int]
 
     def to_wire(self) -> dict[str, Any]:
@@ -983,7 +977,7 @@ class BindingDelete:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: str
+    target: BindingTarget
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -992,8 +986,6 @@ class BindingDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class BindingInterpolate:
-    """nearest | stepped | linear | cubic"""
-
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_interpolate"
     CMD: ClassVar[str] = TAG
@@ -1003,8 +995,8 @@ class BindingInterpolate:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: str
-    mode: str
+    target: BindingTarget
+    mode: Interpolate
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1024,7 +1016,7 @@ class BindingInvert:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: str
+    target: BindingTarget
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1047,7 +1039,7 @@ class BindingCopyKey:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: str
+    target: BindingTarget
     from_: tuple[int, int]
     to: tuple[int, int]
 
@@ -1443,7 +1435,7 @@ class WeldDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class PhysicsAdd:
-    """Add a SimplePhysics node. `kind` is rigid|spring."""
+    """Add a SimplePhysics node."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "physics_add"
@@ -1453,7 +1445,7 @@ class PhysicsAdd:
     session: SessionId
     parent: NodeId
     name: str | None = None
-    kind: str
+    kind: PhysicsKind
     # The params the driver writes ([`PhysicsTargets`]). Absent binds
     # neither output.
     target_params: PhysicsTargets | None = None
@@ -1928,6 +1920,122 @@ class NodeKindArg(StrEnum):
     MESH_GROUP = "mesh_group"
 
 
+class NodeKind(StrEnum):
+    """What a node is, as a reply reports it. [`NodeKindArg`] is the add side and
+    carries no `Physics`: [`Command::PhysicsAdd`] is what makes one.
+    """
+
+    GROUP = "group"
+    PART = "part"
+    COMPOSITE = "composite"
+    MESH_GROUP = "mesh_group"
+    PHYSICS = "physics"
+
+
+class MaskMode(StrEnum):
+    """What a mask source does to the drawable it is attached to."""
+
+    MASK = "mask"
+    DODGE = "dodge"
+
+
+class PhysicsKind(StrEnum):
+    """The pendulum a physics driver swings."""
+
+    RIGID = "rigid"
+    SPRING = "spring"
+
+
+class PhysicsMapMode(StrEnum):
+    """What a physics driver's two outputs mean; see [`PhysicsTargets`]."""
+
+    XY = "xy"
+    YX = "yx"
+    ANGLE_LENGTH = "angle_length"
+    LENGTH_ANGLE = "length_angle"
+
+
+class Interpolate(StrEnum):
+    """How a binding reads between the cells its author keyed."""
+
+    NEAREST = "nearest"
+    STEPPED = "stepped"
+    LINEAR = "linear"
+    CUBIC = "cubic"
+
+
+class BlendMode(StrEnum):
+    """How a drawable composites onto what is already under it."""
+
+    NORMAL = "normal"
+    MULTIPLY = "multiply"
+    COLOR_DODGE = "color_dodge"
+    LINEAR_DODGE = "linear_dodge"
+    SCREEN = "screen"
+    CLIP_TO_LOWER = "clip_to_lower"
+    SLICE_FROM_LOWER = "slice_from_lower"
+    OVERLAY = "overlay"
+    COLOR_BURN = "color_burn"
+    LINEAR_BURN = "linear_burn"
+    DARKEN = "darken"
+    LIGHTEN = "lighten"
+    ADD = "add"
+    INVERSE = "inverse"
+    SUBTRACT = "subtract"
+
+
+class ScalarTarget(StrEnum):
+    """A property a binding drives with one number per cell.
+
+    The spellings are the model file's own, which is why the colour and
+    output-scale channels run their words together rather than reading as
+    snake_case.
+    """
+
+    TX = "tx"
+    TY = "ty"
+    SX = "sx"
+    SY = "sy"
+    RX = "rx"
+    RY = "ry"
+    RZ = "rz"
+    Z_ORDER = "z_order"
+    OPACITY = "opacity"
+    TINTR = "tintr"
+    TINTG = "tintg"
+    TINTB = "tintb"
+    SCREENTINTR = "screentintr"
+    SCREENTINTG = "screentintg"
+    SCREENTINTB = "screentintb"
+    OUTPUTSCALEX = "outputscalex"
+    OUTPUTSCALEY = "outputscaley"
+
+
+class BindingTarget(StrEnum):
+    """Any property a binding drives: one of [`ScalarTarget`]'s scalars, or the
+    per-vertex deform, which the deform commands author instead.
+    """
+
+    TX = "tx"
+    TY = "ty"
+    SX = "sx"
+    SY = "sy"
+    RX = "rx"
+    RY = "ry"
+    RZ = "rz"
+    Z_ORDER = "z_order"
+    OPACITY = "opacity"
+    TINTR = "tintr"
+    TINTG = "tintg"
+    TINTB = "tintb"
+    SCREENTINTR = "screentintr"
+    SCREENTINTG = "screentintg"
+    SCREENTINTB = "screentintb"
+    OUTPUTSCALEX = "outputscalex"
+    OUTPUTSCALEY = "outputscaley"
+    DEFORM = "deform"
+
+
 @dataclass(frozen=True, kw_only=True)
 class NodePatch:
     """Fields to change on a node; every field is optional (absent = unchanged).
@@ -1952,8 +2060,7 @@ class NodePatch:
     # it — see [`ResponseBody::Node::dropped`].
     clear_texture: bool = False
     lock_to_root: bool | None = None
-    # Blend-mode name (Normal | Multiply | ColorDodge | …).
-    blend_mode: str | None = None
+    blend_mode: BlendMode | None = None
     tint: tuple[float, float, float] | None = None
     screen_tint: tuple[float, float, float] | None = None
     mask_threshold: float | None = None
@@ -2189,7 +2296,7 @@ class BindingParams:
 
 @dataclass(frozen=True, kw_only=True)
 class BindingKeyEntry:
-    target: str
+    target: ScalarTarget
     value: float
 
 
@@ -2345,8 +2452,9 @@ class ErrorCode(StrEnum):
     # The request did not parse: bad JSON, an unknown command, or a string
     # that is not a valid Id.
     BAD_REQUEST = "bad_request"
-    # A binding target, blend mode or other enum name the server does not
-    # know, or one that does not fit the node it names.
+    # A target that does not fit the thing it names: a physics field on a
+    # node that is not a driver, a `deform` where only a scalar can go. A
+    # *misspelled* one never gets this far — it is [`Self::BadRequest`].
     BAD_TARGET = "bad_target"
     NOTHING_TO_UNDO = "nothing_to_undo"
     NOTHING_TO_REDO = "nothing_to_redo"
@@ -2832,7 +2940,7 @@ class TreeNode:
     id: NodeId
     # What a person reads. Free to repeat.
     name: str
-    kind: str
+    kind: NodeKind
     z_order: float
     enabled: bool = True
     children: list[TreeNode]
@@ -2857,9 +2965,8 @@ class NodeInfo:
 
     # What the node is addressed by, here and in the file.
     id: NodeId
-    # group | part | composite | mesh_group | physics — the same word
-    # [`TreeNode::kind`] carries.
-    kind: str
+    # The same kind [`TreeNode::kind`] carries.
+    kind: NodeKind
     # Absent on the root, which is the one node with no parent.
     parent: NodeId | None = None
     # What a person reads. Free to repeat; nothing is addressed by it.
@@ -2871,8 +2978,7 @@ class NodeInfo:
     enabled: bool
     lock_to_root: bool
     opacity: float | None = None
-    # Blend-mode name (Normal | Multiply | ColorDodge | …).
-    blend_mode: str | None = None
+    blend_mode: BlendMode | None = None
     tint: tuple[float, float, float] | None = None
     screen_tint: tuple[float, float, float] | None = None
     mask_threshold: float | None = None
@@ -2935,17 +3041,16 @@ class BindingInfo:
     `keys[y][x] != null`.
     """
 
-    # The property driven, spelled the way [`Command::BindingAdd`] and every
-    # other binding command take it — plus `deform`, which only the deform
-    # commands author.
-    target: str
+    # The property driven — plus `deform`, which only the deform commands
+    # author.
+    target: BindingTarget
     # The param along the grid's x axis.
     param: ParamId
     # The param along the grid's y axis. Absent when the grid is one row.
     param_y: ParamId | None = None
-    # nearest | stepped | linear | cubic — the name
-    # [`Command::BindingInterpolate`] takes back.
-    interpolate: str
+    # How it reads between cells, as [`Command::BindingInterpolate`] takes
+    # it back.
+    interpolate: Interpolate
     # How many key positions `param` has, so how wide the grid is.
     width: int
     # How many key positions `param_y` has, or 1.
@@ -3075,6 +3180,14 @@ __all__ = [
     "ServerQueryCommand",
     "QueryCommand",
     "NodeKindArg",
+    "NodeKind",
+    "MaskMode",
+    "PhysicsKind",
+    "PhysicsMapMode",
+    "Interpolate",
+    "BlendMode",
+    "ScalarTarget",
+    "BindingTarget",
     "NodePatch",
     "PhysicsTargets",
     "AutoMeshContour",

@@ -119,10 +119,7 @@ export type Command =
      */
     clear_texture?: boolean,
     lock_to_root?: boolean | null,
-    /**
-     * Blend-mode name (Normal | Multiply | ColorDodge | …).
-     */
-    blend_mode?: string | null,
+    blend_mode?: BlendMode | null,
     tint?: [number, number, number] | null,
     screen_tint?: [number, number, number] | null,
     mask_threshold?: number | null,
@@ -167,14 +164,14 @@ export type Command =
     session: SessionId,
     node: NodeId,
     source: NodeId,
-    mode: string,
+    mode: MaskMode,
   }
   | {
     "cmd": "mask_set",
     session: SessionId,
     node: NodeId,
     index: number,
-    mode: string,
+    mode: MaskMode,
   }
   | {
     "cmd": "mask_reorder",
@@ -193,14 +190,8 @@ export type Command =
     "cmd": "physics_set",
     session: SessionId,
     node: NodeId,
-    /**
-     * rigid | spring
-     */
-    kind: string | null,
-    /**
-     * xy | yx | angle_length | length_angle
-     */
-    map_mode: string | null,
+    kind: PhysicsKind | null,
+    map_mode: PhysicsMapMode | null,
     local_only: boolean | null,
     /**
      * The params the driver writes ([`PhysicsTargets`]). Absent leaves
@@ -302,10 +293,7 @@ export type Command =
     "cmd": "binding_add",
     session: SessionId,
     node: NodeId,
-    /**
-     * tx|ty|sx|sy|rx|ry|rz|z_order|opacity|tint{r,g,b}|screentint{r,g,b}|outputscale{x,y}
-     */
-    target: string,
+    target: ScalarTarget,
     param: ParamId,
     param_y?: ParamId | null,
   }
@@ -313,7 +301,7 @@ export type Command =
     "cmd": "binding_key",
     session: SessionId,
     node: NodeId,
-    target: string,
+    target: ScalarTarget,
     /**
      * `[x, y]` index into the binding's key grid; `y` is 0 for a
      * one-param binding.
@@ -336,7 +324,7 @@ export type Command =
     "cmd": "binding_unset",
     session: SessionId,
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     cell: [number, number],
     param: ParamId,
     param_y?: ParamId | null,
@@ -345,7 +333,7 @@ export type Command =
     "cmd": "binding_reset",
     session: SessionId,
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     cell: [number, number],
     param: ParamId,
     param_y?: ParamId | null,
@@ -354,7 +342,7 @@ export type Command =
     "cmd": "binding_delete",
     session: SessionId,
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     param: ParamId,
     param_y?: ParamId | null,
   }
@@ -362,8 +350,8 @@ export type Command =
     "cmd": "binding_interpolate",
     session: SessionId,
     node: NodeId,
-    target: string,
-    mode: string,
+    target: BindingTarget,
+    mode: Interpolate,
     param: ParamId,
     param_y?: ParamId | null,
   }
@@ -371,7 +359,7 @@ export type Command =
     "cmd": "binding_invert",
     session: SessionId,
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     param: ParamId,
     param_y?: ParamId | null,
   }
@@ -379,7 +367,7 @@ export type Command =
     "cmd": "binding_copy_key",
     session: SessionId,
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     from: [number, number],
     to: [number, number],
     param: ParamId,
@@ -522,7 +510,7 @@ export type Command =
     session: SessionId,
     parent: NodeId,
     name: string | null,
-    kind: string,
+    kind: PhysicsKind,
     /**
      * The params the driver writes ([`PhysicsTargets`]). Absent binds
      * neither output.
@@ -579,6 +567,119 @@ export type NodeKindArg =
   | "mesh_group";
 
 /**
+ * What a node is, as a reply reports it. [`NodeKindArg`] is the add side and
+ * carries no `Physics`: [`Command::PhysicsAdd`] is what makes one.
+ */
+export type NodeKind =
+  | "group"
+  | "part"
+  | "composite"
+  | "mesh_group"
+  | "physics";
+
+/**
+ * What a mask source does to the drawable it is attached to.
+ */
+export type MaskMode =
+  | "mask"
+  | "dodge";
+
+/**
+ * The pendulum a physics driver swings.
+ */
+export type PhysicsKind =
+  | "rigid"
+  | "spring";
+
+/**
+ * What a physics driver's two outputs mean; see [`PhysicsTargets`].
+ */
+export type PhysicsMapMode =
+  | "xy"
+  | "yx"
+  | "angle_length"
+  | "length_angle";
+
+/**
+ * How a binding reads between the cells its author keyed.
+ */
+export type Interpolate =
+  | "nearest"
+  | "stepped"
+  | "linear"
+  | "cubic";
+
+/**
+ * How a drawable composites onto what is already under it.
+ */
+export type BlendMode =
+  | "normal"
+  | "multiply"
+  | "color_dodge"
+  | "linear_dodge"
+  | "screen"
+  | "clip_to_lower"
+  | "slice_from_lower"
+  | "overlay"
+  | "color_burn"
+  | "linear_burn"
+  | "darken"
+  | "lighten"
+  | "add"
+  | "inverse"
+  | "subtract";
+
+/**
+ * A property a binding drives with one number per cell.
+ *
+ * The spellings are the model file's own, which is why the colour and
+ * output-scale channels run their words together rather than reading as
+ * snake_case.
+ */
+export type ScalarTarget =
+  | "tx"
+  | "ty"
+  | "sx"
+  | "sy"
+  | "rx"
+  | "ry"
+  | "rz"
+  | "z_order"
+  | "opacity"
+  | "tintr"
+  | "tintg"
+  | "tintb"
+  | "screentintr"
+  | "screentintg"
+  | "screentintb"
+  | "outputscalex"
+  | "outputscaley";
+
+/**
+ * Any property a binding drives: one of [`ScalarTarget`]'s scalars, or the
+ * per-vertex deform, which the deform commands author instead.
+ */
+export type BindingTarget =
+  | "tx"
+  | "ty"
+  | "sx"
+  | "sy"
+  | "rx"
+  | "ry"
+  | "rz"
+  | "z_order"
+  | "opacity"
+  | "tintr"
+  | "tintg"
+  | "tintb"
+  | "screentintr"
+  | "screentintg"
+  | "screentintb"
+  | "outputscalex"
+  | "outputscaley"
+  | "deform";
+
+/**
  * Fields to change on a node; every field is optional (absent = unchanged).
  * Kind-specific fields are ignored on nodes of another kind: the colour fields
  * (`opacity`, `blend_mode`, `tint`, `screen_tint`) reach parts and composites
@@ -605,10 +706,7 @@ export type NodePatch = {
    */
   clear_texture?: boolean,
   lock_to_root?: boolean | null,
-  /**
-   * Blend-mode name (Normal | Multiply | ColorDodge | …).
-   */
-  blend_mode?: string | null,
+  blend_mode?: BlendMode | null,
   tint?: [number, number, number] | null,
   screen_tint?: [number, number, number] | null,
   mask_threshold?: number | null,
@@ -762,7 +860,7 @@ export type BindingParams = {
 };
 
 export type BindingKeyEntry = {
-  target: string,
+  target: ScalarTarget,
   value: number,
 };
 
@@ -1029,7 +1127,7 @@ export type TreeNode = {
    * What a person reads. Free to repeat.
    */
   name: string,
-  kind: string,
+  kind: NodeKind,
   z_order: number,
   enabled: boolean,
   children: Array<TreeNode>,
@@ -1056,10 +1154,9 @@ export type NodeInfo = {
    */
   id: NodeId,
   /**
-   * group | part | composite | mesh_group | physics — the same word
-   * [`TreeNode::kind`] carries.
+   * The same kind [`TreeNode::kind`] carries.
    */
-  kind: string,
+  kind: NodeKind,
   /**
    * Absent on the root, which is the one node with no parent.
    */
@@ -1075,10 +1172,7 @@ export type NodeInfo = {
   enabled: boolean,
   lock_to_root: boolean,
   opacity?: number | null,
-  /**
-   * Blend-mode name (Normal | Multiply | ColorDodge | …).
-   */
-  blend_mode?: string | null,
+  blend_mode?: BlendMode | null,
   tint?: [number, number, number] | null,
   screen_tint?: [number, number, number] | null,
   mask_threshold?: number | null,
@@ -1153,11 +1247,10 @@ export type ParamInfo = {
  */
 export type BindingInfo = {
   /**
-   * The property driven, spelled the way [`Command::BindingAdd`] and every
-   * other binding command take it — plus `deform`, which only the deform
-   * commands author.
+   * The property driven — plus `deform`, which only the deform commands
+   * author.
    */
-  target: string,
+  target: BindingTarget,
   /**
    * The param along the grid's x axis.
    */
@@ -1167,10 +1260,10 @@ export type BindingInfo = {
    */
   param_y?: ParamId | null,
   /**
-   * nearest | stepped | linear | cubic — the name
-   * [`Command::BindingInterpolate`] takes back.
+   * How it reads between cells, as [`Command::BindingInterpolate`] takes
+   * it back.
    */
-  interpolate: string,
+  interpolate: Interpolate,
   /**
    * How many key positions `param` has, so how wide the grid is.
    */

@@ -5,7 +5,8 @@
 //! check the node actually moves (and returns to rest at the other keypoint).
 
 use catchlight_editor_protocol::{
-    BindingKeyEntry, BindingParams, Command, NodeKindArg, Reply, Request, ResponseBody,
+    BindingKeyEntry, BindingParams, BindingTarget, Command, NodeKindArg, Reply, Request,
+    ResponseBody, ScalarTarget,
 };
 use catchlight_editor_server::Editor;
 
@@ -74,7 +75,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             node: node.clone(),
             cell: [1, 0],
             entries: vec![BindingKeyEntry {
-                target: "tx".into(),
+                target: ScalarTarget::Tx,
                 value: 25.0,
             }],
         },
@@ -116,7 +117,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             session,
             params: BindingParams::one(param.clone()),
             node: node.clone(),
-            target: "tx".into(),
+            target: BindingTarget::Tx,
             cell: [1, 0],
         },
     );

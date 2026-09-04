@@ -12,13 +12,22 @@
  * document command by accident.
  *
  * **A binding is addressed the way the wire addresses it**: the node, the
- * target's name, and the one or two params whose key positions its grid spans.
+ * target, and the one or two params whose key positions its grid spans.
  * There is no handle and no local index, so an action built from what a panel
  * read a moment ago still names the same binding after somebody else edited
  * the document.
  */
 
-import type { BindingParams, NodeId, ParamId, ResponseBody, Session } from "@catchlight/core";
+import type {
+  BindingParams,
+  BindingTarget,
+  Interpolate,
+  NodeId,
+  ParamId,
+  ResponseBody,
+  ScalarTarget,
+  Session,
+} from "@catchlight/core";
 import { useMemo } from "react";
 
 /** A cell of a binding's grid, `[x, y]` — `y` is 0 for a one-param binding. */
@@ -61,13 +70,13 @@ export interface ParamActions {
   flip(param: ParamId): Promise<ResponseBody>;
 
   /** Creates an everywhere-unset binding on one of the node's properties. */
-  addBinding(node: NodeId, target: string, params: BindingParams): Promise<ResponseBody>;
+  addBinding(node: NodeId, target: ScalarTarget, params: BindingParams): Promise<ResponseBody>;
   /** Deletes the whole binding. */
-  deleteBinding(node: NodeId, target: string, params: BindingParams): Promise<ResponseBody>;
+  deleteBinding(node: NodeId, target: BindingTarget, params: BindingParams): Promise<ResponseBody>;
   /** Authors one cell. Creates the binding if this is its first key. */
   setKey(
     node: NodeId,
-    target: string,
+    target: ScalarTarget,
     params: BindingParams,
     cell: BindingCell,
     value: number,
@@ -75,30 +84,30 @@ export interface ParamActions {
   /** Authors the target's identity at a cell (1 for scale and opacity, 0 else). */
   resetKey(
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     params: BindingParams,
     cell: BindingCell,
   ): Promise<ResponseBody>;
   /** Un-authors a cell, so the model derives it again. */
   unsetKey(
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     params: BindingParams,
     cell: BindingCell,
   ): Promise<ResponseBody>;
-  /** How the binding reads between its cells: nearest | stepped | linear | cubic. */
+  /** How the binding reads between its cells. */
   interpolate(
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     params: BindingParams,
-    mode: string,
+    mode: Interpolate,
   ): Promise<ResponseBody>;
   /** Negates every authored value. */
-  invert(node: NodeId, target: string, params: BindingParams): Promise<ResponseBody>;
+  invert(node: NodeId, target: BindingTarget, params: BindingParams): Promise<ResponseBody>;
   /** Authors the value the binding evaluates at `from` into the cell `to`. */
   copyKey(
     node: NodeId,
-    target: string,
+    target: BindingTarget,
     params: BindingParams,
     from: BindingCell,
     to: BindingCell,

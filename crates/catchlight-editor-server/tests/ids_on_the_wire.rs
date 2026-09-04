@@ -7,8 +7,8 @@
 //! following command must use.
 
 use catchlight_editor_protocol::{
-    BindingParams, Command, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId, Rename, Reply,
-    Request, ResponseBody, SeamAddr, SeamId, SlotAddr, SlotId,
+    BindingParams, BindingTarget, Command, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId,
+    Rename, Reply, Request, ResponseBody, ScalarTarget, SeamAddr, SeamId, SlotAddr, SlotId,
 };
 use catchlight_editor_server::Editor;
 
@@ -185,7 +185,7 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
             session,
             params: BindingParams::one(generated.clone()),
             node: node.clone(),
-            target: "tx".into(),
+            target: ScalarTarget::Tx,
             cell: [1, 0],
             value: 25.0,
         },
@@ -228,7 +228,7 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
                 session,
                 params: BindingParams::one(pull.clone()),
                 node,
-                target: "tx".into(),
+                target: BindingTarget::Tx,
                 cell: [1, 0],
             },
         ),

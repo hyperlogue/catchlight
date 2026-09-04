@@ -25,7 +25,7 @@
  * before it commits would be a second uncommitted value to reconcile.
  */
 
-import type { NodeInfo, NodePatch, Session, TexInfo } from "@catchlight/core";
+import type { BlendMode, NodeInfo, NodePatch, Session, TexInfo } from "@catchlight/core";
 import { useCallback, useState } from "react";
 import type { ComponentProps, ReactNode } from "react";
 
@@ -37,25 +37,29 @@ import { useSelection } from "./selection.js";
  * Every blend mode the model has, in the order `BlendMode` declares them
  * (`crates/catchlight-core/src/components.rs`). The names are the wire
  * spelling: `node_set` refuses one it cannot parse rather than falling back to
- * Normal, so a select built from anything else is a command that fails.
+ * normal, so a select built from anything else is a command that fails. The
+ * check below is what says a mode added in Rust is missing from here.
  */
-export const BLEND_MODES = [
-  "Normal",
-  "Multiply",
-  "ColorDodge",
-  "LinearDodge",
-  "Screen",
-  "ClipToLower",
-  "SliceFromLower",
-  "Overlay",
-  "ColorBurn",
-  "LinearBurn",
-  "Darken",
-  "Lighten",
-  "Add",
-  "Inverse",
-  "Subtract",
-] as const;
+export const BLEND_MODES: readonly BlendMode[] = [
+  "normal",
+  "multiply",
+  "color_dodge",
+  "linear_dodge",
+  "screen",
+  "clip_to_lower",
+  "slice_from_lower",
+  "overlay",
+  "color_burn",
+  "linear_burn",
+  "darken",
+  "lighten",
+  "add",
+  "inverse",
+  "subtract",
+];
+
+type _EveryBlendModeListed =
+  Exclude<BlendMode, (typeof BLEND_MODES)[number]> extends never ? true : never;
 
 // `onError` is also a DOM event on every element; this one wins.
 export interface InspectorRootProps extends Omit<ComponentProps<"div">, "onError"> {
@@ -456,12 +460,12 @@ function CheckInput({
 }
 
 /** One option in a select: what is sent, and what is read. */
-interface Option {
-  value: string;
+interface Option<T extends string = string> {
+  value: T;
   label: string;
 }
 
-function SelectInput({
+function SelectInput<T extends string>({
   field,
   label,
   value,
@@ -470,9 +474,9 @@ function SelectInput({
 }: {
   field: keyof NodePatch;
   label: string;
-  value: string;
-  options: Option[];
-  commit: (next: string) => Promise<void>;
+  value: T;
+  options: Option<T>[];
+  commit: (next: T) => Promise<void>;
 }): ReactNode {
   return (
     <select
@@ -480,7 +484,8 @@ function SelectInput({
       aria-label={label}
       value={value}
       onChange={(event) => {
-        const next = event.currentTarget.value;
+        // Every option came from `options`, so the value is one of them.
+        const next = event.currentTarget.value as T;
         if (next === value) return;
         void commit(next);
       }}
@@ -562,8 +567,8 @@ const RGB = ["r", "g", "b"] as const;
  */
 const NO_TEXTURE = "";
 
-function blendOptions(current: string): Option[] {
-  const names: string[] = [...BLEND_MODES];
+function blendOptions(current: BlendMode): Option<BlendMode>[] {
+  const names: BlendMode[] = [...BLEND_MODES];
   // A file can carry a mode this build does not list. Showing it is how the
   // select stays a readout as well as a control.
   if (!names.includes(current)) names.unshift(current);
