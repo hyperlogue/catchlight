@@ -334,7 +334,6 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
             let deform_stack = DeformStack::new(mesh.vertices.len());
             NodeKind::MeshGroup(Box::new(MeshGroupData {
                 mesh,
-                dynamic: mg.dynamic,
                 translate_children: mg.translate_children,
                 deform_stack,
                 attachments: Default::default(),

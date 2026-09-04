@@ -253,7 +253,7 @@ impl DeformStack {
     }
 
     /// Sum the active sources into `out` without touching `combined`,
-    /// the dirty flag, the mask, or the generation. The dynamic-MG
+    /// the dirty flag, the mask, or the generation. Mesh-group
     /// propagation reads "the child's deform minus this MG's source"
     /// every frame; summing read-only avoids a full combine (and its
     /// generation bump) plus a copy per child per frame.

@@ -120,7 +120,6 @@ export type Command =
      * Composite: forward mesh-group deformation to children.
      */
     propagate_meshgroup?: boolean | null,
-    mg_dynamic?: boolean | null,
     mg_translate_children?: boolean | null,
   }
   | {
@@ -694,7 +693,6 @@ export type NodePatch = {
    * Composite: forward mesh-group deformation to children.
    */
   propagate_meshgroup?: boolean | null,
-  mg_dynamic?: boolean | null,
   mg_translate_children?: boolean | null,
 };
 
@@ -1163,7 +1161,6 @@ export type NodeInfo = {
    * Composite: forward mesh-group deformation to children.
    */
   propagate_meshgroup?: boolean | null,
-  mg_dynamic?: boolean | null,
   mg_translate_children?: boolean | null,
 };
 

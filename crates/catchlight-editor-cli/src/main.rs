@@ -228,8 +228,6 @@ enum NodeCmd {
         mask_threshold: Option<f32>,
         #[arg(long = "propagate-meshgroup")]
         propagate_meshgroup: Option<bool>,
-        #[arg(long = "mg-dynamic")]
-        mg_dynamic: Option<bool>,
         #[arg(long = "mg-translate-children")]
         mg_translate_children: Option<bool>,
     },
@@ -1364,7 +1362,6 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
             screen_tint,
             mask_threshold,
             propagate_meshgroup,
-            mg_dynamic,
             mg_translate_children,
         } => Command::NodeSet {
             session,
@@ -1388,7 +1385,6 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
                 screen_tint: screen_tint.as_deref().map(parse_vec3).transpose()?,
                 mask_threshold: *mask_threshold,
                 propagate_meshgroup: *propagate_meshgroup,
-                mg_dynamic: *mg_dynamic,
                 mg_translate_children: *mg_translate_children,
             },
         },
@@ -1830,9 +1826,6 @@ fn print_node_info(node: &NodeInfo) {
     }
     if let Some(v) = node.propagate_meshgroup {
         println!("  propagate-meshgroup {v}");
-    }
-    if let Some(v) = node.mg_dynamic {
-        println!("  mg-dynamic {v}");
     }
     if let Some(v) = node.mg_translate_children {
         println!("  mg-translate-children {v}");

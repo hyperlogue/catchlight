@@ -454,7 +454,6 @@ fn node_info_reads_back_what_a_node_set_wrote() {
     // composite field to report.
     assert_eq!(node.texture, Some(texture));
     assert_eq!(node.propagate_meshgroup, None);
-    assert_eq!(node.mg_dynamic, None);
     assert_eq!(node.mg_translate_children, None);
 
     // A group is drawn by nothing, so the colour half is absent rather than
@@ -509,7 +508,6 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
         session,
         node: mesh_group.clone(),
         patch: NodePatch {
-            mg_dynamic: Some(true),
             mg_translate_children: Some(true),
             ..NodePatch::default()
         },
@@ -525,7 +523,7 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
             assert_eq!(node.opacity, Some(1.0), "a composite is drawn");
             assert_eq!(node.texture, None, "and never carries one");
             assert_eq!(node.vertex_count, None, "and holds no mesh");
-            assert_eq!(node.mg_dynamic, None);
+            assert_eq!(node.mg_translate_children, None);
         }
         other => panic!("expected NodeInfo, got {other:?}"),
     }
@@ -535,7 +533,6 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
     })) {
         ResponseBody::NodeInfo { node } => {
             assert_eq!(node.kind, NodeKind::MeshGroup);
-            assert_eq!(node.mg_dynamic, Some(true));
             assert_eq!(node.mg_translate_children, Some(true));
             // A mesh group is never drawn, so it has no colour to show — but
             // it does hold a mesh, so it reports an empty one rather than

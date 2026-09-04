@@ -451,7 +451,6 @@ class NodeSet:
     mask_threshold: float | None = None
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
-    mg_dynamic: bool | None = None
     mg_translate_children: bool | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -2049,7 +2048,6 @@ class NodePatch:
     mask_threshold: float | None = None
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
-    mg_dynamic: bool | None = None
     mg_translate_children: bool | None = None
 
 
@@ -2956,7 +2954,6 @@ class NodeInfo:
     triangle_count: int | None = None
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
-    mg_dynamic: bool | None = None
     mg_translate_children: bool | None = None
 
 

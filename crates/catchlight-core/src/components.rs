@@ -254,14 +254,13 @@ impl Default for CompositeData {
 #[derive(Debug, Clone)]
 pub struct MeshGroupData {
     pub mesh: Mesh,
-    pub dynamic: bool,
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
     pub(crate) attachments: crate::meshgroup::MeshGroupAttachments,
     /// O(1) point-in-triangle bitmap baked from `mesh` at load time
     /// (alongside `attachments`). `None` when the mesh is empty or
-    /// degenerate; the dynamic-MG propagation path then falls back to
-    /// the linear hinted scan.
+    /// degenerate; the propagation path then falls back to the linear
+    /// hinted scan.
     pub(crate) bitmap: Option<crate::meshgroup::MgTriangleBitmap>,
 }
 
@@ -269,7 +268,6 @@ impl Default for MeshGroupData {
     fn default() -> Self {
         Self {
             mesh: Mesh::default(),
-            dynamic: false,
             translate_children: true,
             deform_stack: crate::deform::DeformStack::default(),
             attachments: crate::meshgroup::MeshGroupAttachments::default(),

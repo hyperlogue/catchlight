@@ -1739,8 +1739,6 @@ pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub propagate_meshgroup: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mg_dynamic: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mg_translate_children: Option<bool>,
 }
 
@@ -2171,8 +2169,6 @@ pub struct NodeInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub propagate_meshgroup: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mg_dynamic: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mg_translate_children: Option<bool>,
 }
 
@@ -2476,7 +2472,6 @@ mod tests {
             vertex_count: Some(4),
             triangle_count: Some(2),
             propagate_meshgroup: None,
-            mg_dynamic: None,
             mg_translate_children: None,
         };
         let line = serde_json::to_string(&info).unwrap();
@@ -2509,8 +2504,8 @@ mod tests {
         assert!(line.contains("\"triangle_count\":2"), "{line}");
         // A field this node's kind does not carry stays off the wire, so
         // sending the reply back sets nothing it should not.
-        assert!(!line.contains("mg_dynamic"), "{line}");
-        assert_eq!(patch.mg_dynamic, None);
+        assert!(!line.contains("mg_translate_children"), "{line}");
+        assert_eq!(patch.mg_translate_children, None);
         assert_eq!(patch.propagate_meshgroup, None);
     }
 
@@ -2539,7 +2534,6 @@ mod tests {
                 vertex_count: Some(0),
                 triangle_count: Some(0),
                 propagate_meshgroup: None,
-                mg_dynamic: None,
                 mg_translate_children: None,
             }),
         };

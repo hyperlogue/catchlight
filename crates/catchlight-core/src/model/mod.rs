@@ -480,16 +480,14 @@ impl Deref for ModelMesh {
 /// colour to edit: no opacity, blend mode, tint or screen tint.
 #[derive(Debug, Clone)]
 pub struct ModelMeshGroup {
-    pub dynamic: bool,
     pub translate_children: bool,
     mesh: ModelMesh,
 }
 
 impl ModelMeshGroup {
-    /// A mesh group over `mesh`: static, leaving meshless descendants in place.
+    /// A mesh group over `mesh`, leaving meshless descendants in place.
     pub fn new(mesh: impl Into<ModelMesh>) -> Self {
         Self {
-            dynamic: false,
             translate_children: false,
             mesh: mesh.into(),
         }

@@ -3268,7 +3268,6 @@ fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
             propagate_meshgroup: c.propagate_meshgroup,
         },
         ModelNodeKind::MeshGroup(mg) => InspectorKind::MeshGroup {
-            dynamic: mg.dynamic,
             translate_children: mg.translate_children,
             vert_count: mg.mesh().verts.len() / 2,
         },
