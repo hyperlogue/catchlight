@@ -80,7 +80,7 @@ jobs:
       # fixture tests are skipped because they belong to the model fixtures
       # rather than to the generator, and `cargo test --workspace` owns them.
       - name: protocol types are current
-        run: nix develop -c cargo test -p xtask -- --skip fixtures::
+        run: nix develop -c cargo test -p xtask -- --skip 'fixtures::'
       # The site imports `@catchlight/wasm`, so the generated package has to
       # exist before anything typechecks or builds against it.
       - run: nix develop -c cargo xtask build-wasm --debug
