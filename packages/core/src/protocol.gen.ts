@@ -112,12 +112,10 @@ export type Command =
     texture?: TexId | null,
     /**
      * Draw no texture at all. [`Self::texture`] says "point at this one" and
-     * absent says "unchanged", so this is the only spelling for "none"; it
-     * wins over `texture` the way
-     * [`Command::PhysicsSet::clear_target_params`] wins over its
-     * `target_params`. Ignored on a node that is not a part. Clearing the
-     * last part drawing a texture takes the texture with it — see
-     * [`ResponseBody::Node::dropped`].
+     * absent says "unchanged", so this is the only spelling for "none", and a
+     * patch carrying both means this one. Ignored on a node that is not a
+     * part. Clearing the last part drawing a texture takes the texture with
+     * it — see [`ResponseBody::Node::dropped`].
      */
     clear_texture?: boolean,
     lock_to_root?: boolean | null,
@@ -205,18 +203,12 @@ export type Command =
     map_mode: string | null,
     local_only: boolean | null,
     /**
-     * The one or two params the driver writes (angle, length), in that
-     * order. A `null` entry is an output nothing is bound to, so
-     * `[null, "len"]` is a driver whose length drives a param and whose
-     * angle drives none — a shorter list leaves the outputs past its end
-     * unbound the same way, and a third entry is refused. Absent =
-     * unchanged; see `clear_target_params` to detach both.
+     * The params the driver writes ([`PhysicsTargets`]). Absent leaves
+     * both outputs as they are; present, both become exactly what it
+     * says, so `{}` detaches both and `{"length": "len"}` binds the
+     * second output and unbinds the first.
      */
-    target_params: Array<ParamId | null> | null,
-    /**
-     * Detach the driven params (wins over `target_params`).
-     */
-    clear_target_params: boolean,
+    target_params: PhysicsTargets | null,
     gravity: number | null,
     length: number | null,
     frequency: number | null,
@@ -532,11 +524,10 @@ export type Command =
     name: string | null,
     kind: string,
     /**
-     * The one or two params the driver writes (angle, length), spelled
-     * the way [`Command::PhysicsSet`] takes them: a `null` entry is an
-     * output nothing is bound to.
+     * The params the driver writes ([`PhysicsTargets`]). Absent binds
+     * neither output.
      */
-    target_params: Array<ParamId | null>,
+    target_params: PhysicsTargets,
     length: number | null,
     gravity: number | null,
     frequency: number | null,
@@ -607,12 +598,10 @@ export type NodePatch = {
   texture?: TexId | null,
   /**
    * Draw no texture at all. [`Self::texture`] says "point at this one" and
-   * absent says "unchanged", so this is the only spelling for "none"; it
-   * wins over `texture` the way
-   * [`Command::PhysicsSet::clear_target_params`] wins over its
-   * `target_params`. Ignored on a node that is not a part. Clearing the
-   * last part drawing a texture takes the texture with it — see
-   * [`ResponseBody::Node::dropped`].
+   * absent says "unchanged", so this is the only spelling for "none", and a
+   * patch carrying both means this one. Ignored on a node that is not a
+   * part. Clearing the last part drawing a texture takes the texture with
+   * it — see [`ResponseBody::Node::dropped`].
    */
   clear_texture?: boolean,
   lock_to_root?: boolean | null,
@@ -629,6 +618,31 @@ export type NodePatch = {
   propagate_meshgroup?: boolean | null,
   mg_dynamic?: boolean | null,
   mg_translate_children?: boolean | null,
+};
+
+/**
+ * The params a physics driver writes, one field per output.
+ *
+ * A driver has exactly two outputs and never a third, so this is a struct
+ * rather than a list: there is no way to name an output that does not exist,
+ * and no positional hole to spell with a `null`. An absent field is an output
+ * bound to nothing, so `{"length": "len"}` is a driver whose second output
+ * drives a param and whose first drives none, and `{}` is a driver that
+ * writes nothing.
+ *
+ * The names are the outputs under the `angle_length` map mode. Another map
+ * mode changes what each output *means* — `length_angle` swaps them, `xy` and
+ * `yx` make them a position — never how many there are.
+ */
+export type PhysicsTargets = {
+  /**
+   * The param the driver's first output writes.
+   */
+  angle?: ParamId | null,
+  /**
+   * The param the driver's second output writes.
+   */
+  length?: ParamId | null,
 };
 
 /**

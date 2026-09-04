@@ -1135,7 +1135,7 @@ impl Editor {
                 let mut dropped = Vec::new();
                 // `clear_texture` wins over `texture`: one says "draw none",
                 // the other "draw this", and a patch carrying both means the
-                // former, the way `clear_target_params` beats `target_params`.
+                // former.
                 let albedo = match (patch.clear_texture, &patch.texture) {
                     (true, _) => Some(None),
                     (false, Some(tex)) => {
@@ -1258,7 +1258,6 @@ impl Editor {
                 map_mode,
                 local_only,
                 target_params,
-                clear_target_params,
                 gravity,
                 length,
                 frequency,
@@ -1277,13 +1276,9 @@ impl Editor {
                     .as_deref()
                     .map(|m| parse_map_mode(m).ok_or_else(|| EditorError::unknown("map mode", m)))
                     .transpose()?;
-                let targets = match (clear_target_params, target_params) {
-                    (true, _) => Some([None, None]),
-                    (false, Some(ids)) => Some(physics_targets(&s.model, ids)?),
-                    (false, None) => None,
-                };
-                if let Some(t) = targets {
-                    s.model.set_physics_targets(&node, t)?;
+                if let Some(t) = target_params {
+                    let targets = physics_targets(&s.model, t)?;
+                    s.model.set_physics_targets(&node, targets)?;
                 }
                 s.model.update_node(&node, |n| {
                     let ModelNodeKind::SimplePhysics(ph) = &mut n.kind else {
@@ -2014,34 +2009,22 @@ fn binding_key(
     })
 }
 
-/// A driver writes one or two params (angle, length). Every one it names has
-/// to exist: `set_physics_targets` would refuse a dangling one anyway, but
-/// this says which param was missing.
-/// The two outputs a driver writes, positionally.
+/// [`PhysicsTargets`] as the model stores them: the driver's two outputs, in
+/// order.
 ///
-/// A `None` entry is an output nothing is bound to, which is why the list is
-/// positional rather than a set: a driver whose length drives a param and
-/// whose angle drives none is `[None, Some(len)]`, and there is no other way
-/// to say it. A list shorter than two leaves the rest unbound.
+/// The wire type already rules out a third output and a positional hole, so
+/// all that is left to check is that each param named exists.
+/// `set_physics_targets` would refuse a dangling one anyway, but this says
+/// which param was missing.
 fn physics_targets(
     model: &Model,
-    params: Vec<Option<ParamId>>,
+    targets: PhysicsTargets,
 ) -> Result<[Option<ParamId>; 2], EditorError> {
-    if params.len() > 2 {
-        return Err(EditorError::BadTarget(
-            "a driver writes at most two params".into(),
-        ));
-    }
-    let mut targets = [None, None];
-    for (slot, id) in targets.iter_mut().zip(params) {
-        if let Some(id) = id {
-            if model.param(&id).is_none() {
-                return Err(EditorError::NoParam(id));
-            }
-            *slot = Some(id);
-        }
-    }
-    Ok(targets)
+    let check = |id: Option<ParamId>| match id {
+        Some(id) if model.param(&id).is_none() => Err(EditorError::NoParam(id)),
+        bound => Ok(bound),
+    };
+    Ok([check(targets.angle)?, check(targets.length)?])
 }
 
 fn build_mesh(

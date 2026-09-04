@@ -119,6 +119,7 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::Command,
         proto::NodeKindArg,
         proto::NodePatch,
+        proto::PhysicsTargets,
         proto::AutoMesh,
         proto::Rename,
         proto::BindingParams,
