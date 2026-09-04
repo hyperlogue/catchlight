@@ -43,12 +43,15 @@
 //! whole `Command` union a second time. The envelope is the command's own
 //! fields next to a correlation `id`, and building it is the transport's job.
 //!
-//! Building the protocol crate with `ts` on prints one `ts-rs` warning:
-//! `SessionId`'s `#[serde(transparent)]` is an attribute it does not parse. It
-//! does not need to — a newtype already serializes as its inner value, which is
-//! what the generated `type SessionId = number` says. The attribute stays
-//! because it is what the Rust type means; the warning is informational and
-//! fails nothing.
+//! Building the protocol crate with `ts` on prints two `ts-rs` warnings, for
+//! two serde attributes it does not parse. `SessionId`'s
+//! `#[serde(transparent)]` it does not need to — a newtype already serializes
+//! as its inner value, which is what the generated `type SessionId = number`
+//! says. `NodePatch::texture`'s `deserialize_with` it does not need either:
+//! the field carries its own `#[ts(as = …)]`, because a double option is
+//! `T | null` on the wire and not `T | null | null`. Both attributes stay
+//! because they are what the Rust types mean; the warnings are informational
+//! and fail nothing.
 
 pub mod python;
 pub mod typescript;

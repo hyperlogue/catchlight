@@ -12,6 +12,12 @@ is an int the editor allocates. Every command carries `CMD`, the tag it travels
 under, and `KIND`, what applying it does to the document; a client routes by the
 second. Nothing here is a transport: this module opens no socket and holds no
 state.
+
+Most optional fields are two-state: a value, or `None` for "leave the key off".
+A few are three-state, annotated `T | Clear | None` — those spell "set this to
+nothing" with the `CLEAR` singleton, which `to_wire()` writes as JSON null.
+`NodePatch.texture` is one: `None` leaves the part drawing what it drew, `CLEAR`
+makes it draw none, and a `TexId` points it at that texture.
 """
 
 from __future__ import annotations
@@ -65,8 +71,28 @@ class CommandKind(StrEnum):
     SERVER_QUERY = "server_query"
 
 
+class Clear:
+    """The one value that means "set this field to nothing".
+
+    `None` on a field means the key is left off entirely, so a field that has
+    to be able to say "nothing" as well as "unchanged" needs a third word for
+    it. Fields annotated `T | Clear | None` take `CLEAR`, and `to_wire()`
+    writes it as JSON null.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "CLEAR"
+
+
+CLEAR = Clear()
+
+
 def _wire(value: Any) -> Any:
     """One value, as JSON carries it."""
+    if isinstance(value, Clear):
+        return None
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return _wire_fields(value)
     if isinstance(value, StrEnum):
@@ -79,9 +105,10 @@ def _wire(value: Any) -> Any:
 def _wire_fields(obj: Any) -> dict[str, Any]:
     """One dataclass, as JSON carries it: its tag, then every field it set.
 
-    A field left `None` is left off entirely rather than sent as null. Every
-    optional field on this wire has a serde default, so absent and null mean the
-    same thing to the editor, and absent is the shorter of the two.
+    A field left `None` is left off entirely rather than sent as null. Almost
+    every optional field on this wire has a serde default, so absent and null
+    mean the same thing to the editor, and absent is the shorter of the two.
+    A three-state field is the exception, and says its null with `CLEAR`.
     """
     cls = type(obj)
     out: dict[str, Any] = {}
@@ -111,8 +138,13 @@ def _decode(annotation: Any, value: Any) -> Any:
     origin = get_origin(annotation)
     if origin is UnionType or origin is Union:
         if value is None:
-            return None
-        arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+            # Only a three-state field has a null to tell from an absent key.
+            return CLEAR if Clear in get_args(annotation) else None
+        arms = [
+            arm
+            for arm in get_args(annotation)
+            if arm is not type(None) and arm is not Clear
+        ]
         if len(arms) == 1:
             return _decode(arms[0], value)
         for arm in arms:
@@ -141,10 +173,12 @@ def _decode(annotation: Any, value: Any) -> Any:
 def _decode_class(cls: Any, data: Mapping[str, Any]) -> Any:
     """One JSON object as an instance of `cls`.
 
-    A key that is absent or null falls back to the field's default; a field with
-    no default is an error naming the key, because a reply that lost one is not
-    a reply this client can act on. A field named in `FLATTEN` is read from
-    `data` itself, which is where an internally tagged newtype variant puts it.
+    A key that is absent or null falls back to the field's default — except on
+    a three-state field, where a null present in `data` is `CLEAR` rather than
+    the default. A field with no default is an error naming the key, because a
+    reply that lost one is not a reply this client can act on. A field named in
+    `FLATTEN` is read from `data` itself, which is where an internally tagged
+    newtype variant puts it.
     """
     hints = _hints(cls)
     names: Mapping[str, str] = getattr(cls, "WIRE", {})
@@ -154,16 +188,17 @@ def _decode_class(cls: Any, data: Mapping[str, Any]) -> Any:
         if spec.name in flat:
             kwargs[spec.name] = _decode(hints[spec.name], data)
             continue
-        present = data.get(names.get(spec.name, spec.name))
+        key = names.get(spec.name, spec.name)
+        present = data.get(key)
         if present is not None:
             kwargs[spec.name] = _decode(hints[spec.name], present)
+        elif key in data and Clear in get_args(hints[spec.name]):
+            kwargs[spec.name] = CLEAR
         elif (
             spec.default is dataclasses.MISSING
             and spec.default_factory is dataclasses.MISSING
         ):
-            raise ValueError(
-                f"{cls.__name__} needs {names.get(spec.name, spec.name)!r}"
-            )
+            raise ValueError(f"{cls.__name__} needs {key!r}")
     return cls(**kwargs)
 
 
@@ -407,13 +442,11 @@ class NodeSet:
     z_order: float | None = None
     opacity: float | None = None
     enabled: bool | None = None
-    texture: TexId | None = None
-    # Draw no texture at all. [`Self::texture`] says "point at this one" and
-    # absent says "unchanged", so this is the only spelling for "none", and a
-    # patch carrying both means this one. Ignored on a node that is not a
-    # part. Clearing the last part drawing a texture takes the texture with
-    # it — see [`ResponseBody::Node::dropped`].
-    clear_texture: bool = False
+    # The texture the part draws, in three states: absent leaves it as it
+    # is, `null` draws none, an Id draws that one. Ignored on a node that is
+    # not a part. Dropping the last part drawing a texture takes the texture
+    # with it — see [`ResponseBody::Node::dropped`].
+    texture: TexId | Clear | None = None
     lock_to_root: bool | None = None
     blend_mode: BlendMode | None = None
     tint: tuple[float, float, float] | None = None
@@ -1095,8 +1128,8 @@ class DeformSet:
 
 @dataclass(frozen=True, kw_only=True)
 class DeformVertices:
-    """Author per-vertex deform offsets (`[dx, dy, …]`, matching the mesh).
-    This is what commits a live drag.
+    """Author per-vertex deform offsets, one `[dx, dy]` per mesh vertex and in
+    the mesh's own order. This is what commits a live drag.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1109,7 +1142,7 @@ class DeformVertices:
     param_y: ParamId | None = None
     node: NodeId
     cell: tuple[int, int]
-    offsets: list[float]
+    offsets: list[tuple[float, float]]
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1130,9 +1163,12 @@ class MeshSet:
 
     session: SessionId
     node: NodeId
-    verts: list[float]
-    uvs: list[float]
-    indices: list[int]
+    # One `[x, y]` per vertex.
+    verts: list[tuple[float, float]]
+    # One `[u, v]` per vertex, as many as `verts`.
+    uvs: list[tuple[float, float]]
+    # One `[a, b, c]` per triangle, each a `verts` index.
+    indices: list[tuple[int, int, int]]
     origin: tuple[float, float]
 
     def to_wire(self) -> dict[str, Any]:
@@ -1535,9 +1571,9 @@ class ScratchDeform:
     length produces no revision and no undo entry; committing it is
     [`Command::DeformVertices`], which produces exactly one.
 
-    `offsets` is `[dx, dy, …]` matching the node's mesh; an empty list
-    clears the scratch deform. It is dropped the next time the model
-    changes, because the puppet rebakes.
+    `offsets` is one `[dx, dy]` per mesh vertex, in the mesh's own order;
+    an empty list clears the scratch deform. It is dropped the next time
+    the model changes, because the puppet rebakes.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1547,7 +1583,7 @@ class ScratchDeform:
 
     session: SessionId
     node: NodeId
-    offsets: list[float]
+    offsets: list[tuple[float, float]]
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -2052,13 +2088,11 @@ class NodePatch:
     z_order: float | None = None
     opacity: float | None = None
     enabled: bool | None = None
-    texture: TexId | None = None
-    # Draw no texture at all. [`Self::texture`] says "point at this one" and
-    # absent says "unchanged", so this is the only spelling for "none", and a
-    # patch carrying both means this one. Ignored on a node that is not a
-    # part. Clearing the last part drawing a texture takes the texture with
-    # it — see [`ResponseBody::Node::dropped`].
-    clear_texture: bool = False
+    # The texture the part draws, in three states: absent leaves it as it
+    # is, `null` draws none, an Id draws that one. Ignored on a node that is
+    # not a part. Dropping the last part drawing a texture takes the texture
+    # with it — see [`ResponseBody::Node::dropped`].
+    texture: TexId | Clear | None = None
     lock_to_root: bool | None = None
     blend_mode: BlendMode | None = None
     tint: tuple[float, float, float] | None = None
@@ -2960,7 +2994,9 @@ class NodeInfo:
     the way in: the colour fields reach parts and composites only, `texture`
     only a part, `mg_*` only a mesh group, and the two mesh counts only the
     kinds that hold a mesh. `texture` is also absent on a part that draws
-    none, which `kind` tells apart from a node that could not have one.
+    none, which `kind` tells apart from a node that could not have one — a
+    reply has nothing to undo, so it never carries the `null` a patch spells
+    "draw none" with.
     """
 
     # What the node is addressed by, here and in the file.
@@ -3092,6 +3128,8 @@ class PreviewInfo:
     height: int
 
 __all__ = [
+    "Clear",
+    "CLEAR",
     "CommandKind",
     "SessionId",
     "NodeId",

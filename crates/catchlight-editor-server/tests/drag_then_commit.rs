@@ -34,7 +34,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
 
     // Any meshed node and any param will do: the test is about which path the
     // commands take, not about what they draw.
-    let (node, param, vertex_floats) = ed
+    let (node, param, vertices) = ed
         .with_model(session, |model| {
             let node: NodeId = model
                 .node_ids()
@@ -42,8 +42,8 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
                 .cloned()
                 .expect("welded_seam has a meshed node");
             let param: ParamId = model.param_ids().first().cloned().expect("a param");
-            let len = model.deform_len(&node);
-            (node, param, len)
+            let vertices = model.deform_len(&node) / 2;
+            (node, param, vertices)
         })
         .unwrap();
 
@@ -56,8 +56,8 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
 
     for i in 0..100u32 {
         let nudge = i as f32 * 0.01;
-        let offsets: Vec<f32> = (0..vertex_floats)
-            .map(|v| nudge + v as f32 * 0.001)
+        let offsets: Vec<[f32; 2]> = (0..vertices)
+            .map(|v| [nudge + v as f32 * 0.001, nudge - v as f32 * 0.001])
             .collect();
         assert!(matches!(
             ed.handle(Request {
@@ -85,8 +85,8 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     assert!(!status(3).dirty, "a drag must not dirty the document");
 
     // The commit — the same offsets, authored into a deform keypoint.
-    let offsets: Vec<f32> = (0..vertex_floats)
-        .map(|v| 0.99 + v as f32 * 0.001)
+    let offsets: Vec<[f32; 2]> = (0..vertices)
+        .map(|v| [0.99 + v as f32 * 0.001, 0.99 - v as f32 * 0.001])
         .collect();
     assert!(matches!(
         body(
@@ -129,9 +129,10 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     ));
 }
 
-/// A scratch deform has to match the node's mesh, and it has to name a node
-/// the model actually carries — the puppet would otherwise be handed offsets
-/// for the wrong vertex count.
+/// A scratch deform has to name a node the model carries, and to carry one
+/// offset per vertex of that node's mesh. Serde already refuses an offset with
+/// a coordinate missing; how many of them there are is what is left to check,
+/// and the puppet would otherwise be handed the wrong count.
 #[test]
 fn a_scratch_deform_is_checked_against_the_node_it_names() {
     use catchlight_editor_protocol::ErrorCode;
@@ -154,7 +155,7 @@ fn a_scratch_deform_is_checked_against_the_node_it_names() {
             command: Command::ScratchDeform {
                 session,
                 node: NodeId::new("no-such-node").unwrap(),
-                offsets: vec![0.0, 0.0],
+                offsets: vec![[0.0, 0.0]],
             },
         }),
         Reply::Err {
@@ -168,7 +169,7 @@ fn a_scratch_deform_is_checked_against_the_node_it_names() {
             command: Command::ScratchDeform {
                 session,
                 node: node.clone(),
-                offsets: vec![0.0, 0.0, 0.0],
+                offsets: vec![[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
             },
         }),
         Reply::Err {

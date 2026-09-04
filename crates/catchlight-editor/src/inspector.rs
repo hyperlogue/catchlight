@@ -570,7 +570,7 @@ fn texture_combo(
             for (t, name) in textures {
                 if ui.button(name).clicked() {
                     out.push(InspectorAction::Commit(NodePatch {
-                        texture: Some(t.clone()),
+                        texture: Some(Some(t.clone())),
                         ..Default::default()
                     }));
                     ui.close();

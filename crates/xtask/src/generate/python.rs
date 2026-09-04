@@ -20,6 +20,12 @@
 //!   arity is a fact a caller can use. The generated `_wire` flattens tuples
 //!   back to JSON lists on the way out.
 //!
+//! - **A three-state field says which of the three it means.** A Rust
+//!   `Option<Option<T>>` reaches Python as `T | Clear | None`: `None` is the
+//!   absent field every other optional already spells that way, and the
+//!   [`CLEAR`] singleton is the explicit JSON `null`. Without it `to_wire()`
+//!   would have no way to write a null at all, since it drops `None` fields.
+//!
 //! - **What flattens on the wire is flat in Python.** `#[serde(flatten)]` on a
 //!   struct field splices that struct's fields into the class carrying it, so
 //!   `NodeSet` takes the patch's fields directly and `to_wire()` is one level
@@ -278,7 +284,14 @@ fn py_type(ty: &Type, known: &BTreeSet<String>) -> Result<String> {
                     let [inner] = args.as_slice() else {
                         bail!("an Option with no type argument in the protocol")
                     };
-                    Ok(format!("{} | None", py_type(inner, known)?))
+                    let inner = py_type(inner, known)?;
+                    // `Option<Option<T>>` is the merge-patch idiom: absent,
+                    // null, or a value. `None` already spells absent here, so
+                    // null needs a word of its own.
+                    Ok(match inner.strip_suffix(" | None") {
+                        Some(base) => format!("{base} | Clear | None"),
+                        None => format!("{inner} | None"),
+                    })
                 }
                 "Vec" => {
                     let [inner] = args.as_slice() else {
@@ -682,7 +695,7 @@ fn render(decls: &[Decl]) -> Result<String> {
     out.push_str(&render_kind_enum());
     out.push_str(RUNTIME);
 
-    let mut exports: Vec<String> = vec!["CommandKind".into()];
+    let mut exports: Vec<String> = vec!["Clear".into(), "CLEAR".into(), "CommandKind".into()];
     for wire in &wires {
         out.push_str(&render_wire(wire, &tags, &mut exports)?);
     }
@@ -1029,6 +1042,12 @@ is an int the editor allocates. Every command carries `CMD`, the tag it travels
 under, and `KIND`, what applying it does to the document; a client routes by the
 second. Nothing here is a transport: this module opens no socket and holds no
 state.
+
+Most optional fields are two-state: a value, or `None` for "leave the key off".
+A few are three-state, annotated `T | Clear | None` — those spell "set this to
+nothing" with the `CLEAR` singleton, which `to_wire()` writes as JSON null.
+`NodePatch.texture` is one: `None` leaves the part drawing what it drew, `CLEAR`
+makes it draw none, and a `TexId` points it at that texture.
 """
 
 from __future__ import annotations
@@ -1045,8 +1064,28 @@ from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
 
 const RUNTIME: &str = r#"
 
+class Clear:
+    """The one value that means "set this field to nothing".
+
+    `None` on a field means the key is left off entirely, so a field that has
+    to be able to say "nothing" as well as "unchanged" needs a third word for
+    it. Fields annotated `T | Clear | None` take `CLEAR`, and `to_wire()`
+    writes it as JSON null.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "CLEAR"
+
+
+CLEAR = Clear()
+
+
 def _wire(value: Any) -> Any:
     """One value, as JSON carries it."""
+    if isinstance(value, Clear):
+        return None
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return _wire_fields(value)
     if isinstance(value, StrEnum):
@@ -1059,9 +1098,10 @@ def _wire(value: Any) -> Any:
 def _wire_fields(obj: Any) -> dict[str, Any]:
     """One dataclass, as JSON carries it: its tag, then every field it set.
 
-    A field left `None` is left off entirely rather than sent as null. Every
-    optional field on this wire has a serde default, so absent and null mean the
-    same thing to the editor, and absent is the shorter of the two.
+    A field left `None` is left off entirely rather than sent as null. Almost
+    every optional field on this wire has a serde default, so absent and null
+    mean the same thing to the editor, and absent is the shorter of the two.
+    A three-state field is the exception, and says its null with `CLEAR`.
     """
     cls = type(obj)
     out: dict[str, Any] = {}
@@ -1091,8 +1131,13 @@ def _decode(annotation: Any, value: Any) -> Any:
     origin = get_origin(annotation)
     if origin is UnionType or origin is Union:
         if value is None:
-            return None
-        arms = [arm for arm in get_args(annotation) if arm is not type(None)]
+            # Only a three-state field has a null to tell from an absent key.
+            return CLEAR if Clear in get_args(annotation) else None
+        arms = [
+            arm
+            for arm in get_args(annotation)
+            if arm is not type(None) and arm is not Clear
+        ]
         if len(arms) == 1:
             return _decode(arms[0], value)
         for arm in arms:
@@ -1121,10 +1166,12 @@ def _decode(annotation: Any, value: Any) -> Any:
 def _decode_class(cls: Any, data: Mapping[str, Any]) -> Any:
     """One JSON object as an instance of `cls`.
 
-    A key that is absent or null falls back to the field's default; a field with
-    no default is an error naming the key, because a reply that lost one is not
-    a reply this client can act on. A field named in `FLATTEN` is read from
-    `data` itself, which is where an internally tagged newtype variant puts it.
+    A key that is absent or null falls back to the field's default — except on
+    a three-state field, where a null present in `data` is `CLEAR` rather than
+    the default. A field with no default is an error naming the key, because a
+    reply that lost one is not a reply this client can act on. A field named in
+    `FLATTEN` is read from `data` itself, which is where an internally tagged
+    newtype variant puts it.
     """
     hints = _hints(cls)
     names: Mapping[str, str] = getattr(cls, "WIRE", {})
@@ -1134,16 +1181,17 @@ def _decode_class(cls: Any, data: Mapping[str, Any]) -> Any:
         if spec.name in flat:
             kwargs[spec.name] = _decode(hints[spec.name], data)
             continue
-        present = data.get(names.get(spec.name, spec.name))
+        key = names.get(spec.name, spec.name)
+        present = data.get(key)
         if present is not None:
             kwargs[spec.name] = _decode(hints[spec.name], present)
+        elif key in data and Clear in get_args(hints[spec.name]):
+            kwargs[spec.name] = CLEAR
         elif (
             spec.default is dataclasses.MISSING
             and spec.default_factory is dataclasses.MISSING
         ):
-            raise ValueError(
-                f"{cls.__name__} needs {names.get(spec.name, spec.name)!r}"
-            )
+            raise ValueError(f"{cls.__name__} needs {key!r}")
     return cls(**kwargs)
 
 "#;
@@ -1253,17 +1301,19 @@ mod tests {
 ///
 /// The one licensed difference is null: `serde` writes `"name": null` for an
 /// absent `Option` that has no `skip_serializing_if`, and `to_wire()` leaves
-/// the key off. Every optional field on this wire has a serde default, so the
-/// editor reads the two the same way; [`without_nulls`] takes the difference
-/// out. A null *inside* a list stays, because there it is a value rather than
-/// an absent field — [`BindingInfo::keys`](catchlight_editor_protocol::BindingInfo::keys)
+/// the key off. Almost every optional field on this wire has a serde default,
+/// so the editor reads the two the same way; [`without_nulls`] takes the
+/// difference out. A null *inside* a list stays, because there it is a value
+/// rather than an absent field — [`BindingInfo::keys`](catchlight_editor_protocol::BindingInfo::keys)
 /// is where the wire still carries one, on the reply side these cases do not
-/// reach.
+/// reach. A merge-patch field is the other place a null is a value, so
+/// [`a_merge_patch_field_writes_absent_null_and_a_value`] reads the raw JSON
+/// rather than going through [`assert_wire`].
 #[cfg(test)]
 mod wire_shapes {
     use catchlight_editor_protocol::{
         AutoMesh, Camera, Command, NodeKindArg, NodePatch, ParamId, ParamPose, PhysicsTargets,
-        Presence, Rename, SessionId,
+        Presence, Rename, SessionId, TexId,
     };
     use serde_json::{json, Value};
 
@@ -1333,9 +1383,9 @@ mod wire_shapes {
             Command::ScratchDeform {
                 session: SessionId(3),
                 node: id("root/part-1"),
-                offsets: vec![0.5, -0.5],
+                offsets: vec![[0.5, -0.5]],
             },
-            json!({"cmd": "scratch_deform", "session": 3, "node": "root/part-1", "offsets": [0.5, -0.5]}),
+            json!({"cmd": "scratch_deform", "session": 3, "node": "root/part-1", "offsets": [[0.5, -0.5]]}),
         );
         assert_wire(
             Command::BindingList {
@@ -1360,11 +1410,39 @@ mod wire_shapes {
                 node: id("hair"),
                 patch: NodePatch {
                     opacity: Some(0.5),
-                    clear_texture: true,
+                    texture: Some(Some(id::<TexId>("tex-1"))),
                     ..NodePatch::default()
                 },
             },
-            json!({"cmd": "node_set", "session": 1, "node": "hair", "opacity": 0.5, "clear_texture": true}),
+            json!({"cmd": "node_set", "session": 1, "node": "hair", "opacity": 0.5, "texture": "tex-1"}),
+        );
+    }
+
+    /// The three states of a merge-patch field, which is the one place a null
+    /// on this wire is a value rather than an absent key. `without_nulls`
+    /// would eat it, so this reads the raw JSON.
+    #[test]
+    fn a_merge_patch_field_writes_absent_null_and_a_value() {
+        let set = |texture| Command::NodeSet {
+            session: SessionId(1),
+            node: id("hair"),
+            patch: NodePatch {
+                texture,
+                ..NodePatch::default()
+            },
+        };
+        let written = |command| serde_json::to_value(&command).expect("a command serializes");
+        let key = |command| match written(command) {
+            Value::Object(map) => map.get("texture").cloned(),
+            other => panic!("a command is an object, not {other}"),
+        };
+
+        assert_eq!(key(set(None)), None, "absent leaves the key off");
+        assert_eq!(key(set(Some(None))), Some(Value::Null), "null draws none");
+        assert_eq!(
+            key(set(Some(Some(id::<TexId>("tex-1"))))),
+            Some(Value::String("tex-1".into())),
+            "an Id draws that one",
         );
     }
 
@@ -1406,6 +1484,32 @@ mod wire_shapes {
                 },
             },
             json!({"cmd": "mesh_auto", "session": 1, "node": "hair", "mode": {"mode": "grid", "cols": 4, "rows": 3}}),
+        );
+    }
+
+    /// A mesh travels as points, not as a run of numbers: a vertex is a pair
+    /// and a triangle is a triple, so a list that lost half a coordinate does
+    /// not parse.
+    #[test]
+    fn a_mesh_travels_as_lists_of_points() {
+        assert_wire(
+            Command::MeshSet {
+                session: SessionId(1),
+                node: id("hair"),
+                verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                indices: vec![[0, 1, 2]],
+                origin: [0.0, 0.0],
+            },
+            json!({
+                "cmd": "mesh_set",
+                "session": 1,
+                "node": "hair",
+                "verts": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                "uvs": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                "indices": [[0, 1, 2]],
+                "origin": [0.0, 0.0],
+            }),
         );
     }
 

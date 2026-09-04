@@ -974,7 +974,10 @@ impl App {
                 DroppingEdit::Send(command) => match command.as_ref() {
                     Command::NodeDelete { node, .. } => m.textures_dropped_by_deleting(node),
                     Command::NodeSet { node, patch, .. } => m
-                        .texture_dropped_by_repointing(node, patch.texture.as_ref())
+                        .texture_dropped_by_repointing(
+                            node,
+                            patch.texture.as_ref().and_then(Option::as_ref),
+                        )
                         .into_iter()
                         .collect(),
                     // An upload displaces whatever the part drew before.
@@ -1135,7 +1138,7 @@ impl App {
                 return;
             }
         };
-        let indices = match &new_mesh.indices {
+        let flat: Vec<u32> = match &new_mesh.indices {
             catchlight_core::formats::clm::ClmIndices::U16(v) => {
                 v.iter().map(|&i| i as u32).collect()
             }
@@ -1145,9 +1148,9 @@ impl App {
         let reply = self.send(Command::MeshSet {
             session,
             node: node.clone(),
-            verts: new_mesh.verts,
-            uvs: new_mesh.uvs,
-            indices,
+            verts: pairs(&new_mesh.verts),
+            uvs: pairs(&new_mesh.uvs),
+            indices: triples(&flat),
             origin: new_mesh.origin,
         });
         let emptied = match reply {
@@ -1658,7 +1661,7 @@ impl App {
                         params,
                         node,
                         cell,
-                        offsets,
+                        offsets: pairs(&offsets),
                     });
                 }
                 None => self.status = "paste: source or target has no mesh".into(),
@@ -2646,11 +2649,10 @@ impl App {
         }
         // The command wants the whole mesh, and a stale vertex index (a mesh
         // edit under a live selection) must not stretch it past that.
-        let mut offsets = vec![0.0f32; len];
+        let mut offsets = vec![[0.0f32; 2]; len / 2];
         for (&vertex, delta) in deltas {
-            if let Some(slot) = offsets.get_mut(vertex * 2..vertex * 2 + 2) {
-                slot[0] = delta.x;
-                slot[1] = delta.y;
+            if let Some(slot) = offsets.get_mut(vertex) {
+                *slot = [delta.x, delta.y];
             }
         }
         self.send(Command::ScratchDeform {
@@ -2719,7 +2721,7 @@ impl App {
             params,
             node,
             cell,
-            offsets,
+            offsets: pairs(&offsets),
         });
     }
 
@@ -2925,7 +2927,7 @@ impl App {
                                         session,
                                         node,
                                         patch: NodePatch {
-                                            texture: Some(tid.clone()),
+                                            texture: Some(Some(tid.clone())),
                                             ..Default::default()
                                         },
                                     },
@@ -3467,6 +3469,18 @@ fn swap_param(id: ParamId, from: &ParamId, to: &ParamId) -> ParamId {
     } else {
         id
     }
+}
+
+/// A flat run of coordinates as the `[x, y]` pairs the wire carries. The
+/// model stores a mesh and a deform flat, so this is the shape change on the
+/// way out; a trailing odd float cannot happen and is dropped.
+fn pairs(flat: &[f32]) -> Vec<[f32; 2]> {
+    flat.as_chunks::<2>().0.to_vec()
+}
+
+/// The same, three at a time, for triangle indices.
+fn triples(flat: &[u32]) -> Vec<[u32; 3]> {
+    flat.as_chunks::<3>().0.to_vec()
 }
 
 fn patch_is_empty(p: &NodePatch) -> bool {

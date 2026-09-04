@@ -32,6 +32,12 @@ with catchlight.launch() as server:
 `crates/catchlight-editor-protocol` and committed; `cargo test -p xtask` fails
 if it has drifted. Do not edit it — change the Rust types and regenerate.
 
+A field left `None` is left off the JSON entirely, which on this wire says
+"unchanged". A few fields have to be able to say "nothing" as well, and those
+are annotated `T | Clear | None`: pass the `CLEAR` singleton and `to_wire()`
+writes a JSON null. `NodeSet(session=s, node=n, texture=CLEAR)` is how a part
+is told to draw no texture at all.
+
 ## Two doors
 
 `launch()` starts a server on a socket inside a fresh `0700` temp directory.

@@ -1127,18 +1127,18 @@ impl Editor {
                 patch,
             } => self.edit_session(session, |s| {
                 let mut dropped = Vec::new();
-                // `clear_texture` wins over `texture`: one says "draw none",
-                // the other "draw this", and a patch carrying both means the
-                // former.
-                let albedo = match (patch.clear_texture, &patch.texture) {
-                    (true, _) => Some(None),
-                    (false, Some(tex)) => {
+                // Absent leaves the part drawing what it drew; `null` is the
+                // whole of "draw none", so the patch says which of the three
+                // it means and nothing here has to break a tie.
+                let albedo = match &patch.texture {
+                    Some(Some(tex)) => {
                         if s.model.texture(tex).is_none() {
                             return Err(EditorError::NoTexture(tex.clone()));
                         }
                         Some(Some(tex.clone()))
                     }
-                    (false, None) => None,
+                    Some(None) => Some(None),
+                    None => None,
                 };
                 if let Some(albedo) = albedo {
                     if matches!(
@@ -1574,7 +1574,7 @@ impl Editor {
                 offsets,
             } => self.edit_session(session, |s| {
                 let key = binding_key(params, node, BindingTarget::Deform)?;
-                s.model.set_deform_vertices(&key, cell, offsets)?;
+                s.model.set_deform_vertices(&key, cell, offsets.concat())?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
@@ -1826,18 +1826,12 @@ impl Editor {
                 if offsets.is_empty() {
                     puppet.clear_scratch_deform(idx);
                 } else {
-                    if !offsets.len().is_multiple_of(2) || offsets.len() != model.deform_len(&node)
-                    {
+                    if offsets.len() * 2 != model.deform_len(&node) {
                         return Err(EditorError::BadTarget(
-                            "deform offsets must be two per mesh vertex".into(),
+                            "one deform offset per mesh vertex".into(),
                         ));
                     }
-                    let deform: Vec<Vec2> = offsets
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|&[x, y]| Vec2::new(x, y))
-                        .collect();
+                    let deform: Vec<Vec2> = offsets.iter().map(|&[x, y]| Vec2::new(x, y)).collect();
                     puppet.set_scratch_deform(idx, &deform);
                 }
                 puppet.combine_deforms();
@@ -1983,28 +1977,35 @@ fn physics_targets(
     Ok([check(targets.angle)?, check(targets.length)?])
 }
 
+/// The wire's mesh as the model stores one.
+///
+/// The wire types carry the arity — a vertex is a pair and a triangle is a
+/// triple — so the only thing left to check is that the two lists are the same
+/// length and that every corner names a vertex that exists. `ClmMesh` is flat,
+/// so this is also where the pairs are run together.
 fn build_mesh(
-    verts: Vec<f32>,
-    uvs: Vec<f32>,
-    indices: Vec<u32>,
+    verts: Vec<[f32; 2]>,
+    uvs: Vec<[f32; 2]>,
+    indices: Vec<[u32; 3]>,
     origin: [f32; 2],
 ) -> Result<ClmMesh, EditorError> {
-    let vcount = verts.len() / 2;
-    if !verts.len().is_multiple_of(2)
-        || uvs.len() != verts.len()
-        || !indices.len().is_multiple_of(3)
-        || indices.iter().any(|&i| i as usize >= vcount)
+    let vcount = verts.len();
+    if uvs.len() != vcount
+        || indices
+            .iter()
+            .any(|tri| tri.iter().any(|&i| i as usize >= vcount))
     {
         return Err(EditorError::BadTarget("malformed mesh".into()));
     }
-    let indices = if indices.iter().max().copied().unwrap_or(0) <= u16::MAX as u32 {
-        ClmIndices::U16(indices.iter().map(|&i| i as u16).collect())
+    let flat: Vec<u32> = indices.concat();
+    let indices = if flat.iter().max().copied().unwrap_or(0) <= u16::MAX as u32 {
+        ClmIndices::U16(flat.iter().map(|&i| i as u16).collect())
     } else {
-        ClmIndices::U32(indices)
+        ClmIndices::U32(flat)
     };
     Ok(ClmMesh {
-        verts,
-        uvs,
+        verts: verts.concat(),
+        uvs: uvs.concat(),
         indices,
         origin,
     })
@@ -3006,7 +3007,7 @@ mod tests {
                 session: s,
                 node: other,
                 patch: NodePatch {
-                    texture: Some(second.clone()),
+                    texture: Some(Some(second.clone())),
                     ..Default::default()
                 },
             },
