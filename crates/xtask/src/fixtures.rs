@@ -27,10 +27,11 @@ use std::path::{Path, PathBuf};
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{
     ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument, ClmFile,
-    ClmIndices, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSlot, ClmSlotPair, ClmTexture,
-    ClmTransform, ClmWeld, TextureAlpha, TextureEncoding,
+    ClmIndices, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot,
+    ClmSlotPair, ClmTexture, ClmTransform, ClmWeld, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::{Model, NodeId, ParamId, SlotId, TexId};
 
 /// Builds a fixture's structure document and its texture table.
@@ -40,6 +41,7 @@ type Build = fn() -> (ClmDocument, Vec<ClmTexture>);
 const FIXTURES: &[(&str, Build)] = &[
     ("composite_blit_uniforms", composite_blit_uniforms),
     ("mip_checker", mip_checker),
+    ("two_param_grid", two_param_grid),
     ("welded_seam", welded_seam),
 ];
 
@@ -123,6 +125,204 @@ fn textures(pngs: Vec<Vec<u8>>) -> Vec<ClmTexture> {
             data,
         })
         .collect()
+}
+
+// --- two_param_grid --------------------------------------------------------
+
+/// The two params the joint binding spans, by their position in `PARAMS`.
+const GRID_X: usize = 0;
+const GRID_Y: usize = 1;
+/// The param every one-param binding hangs off.
+const SWEEP: usize = 2;
+
+/// Every param this fixture carries: name, range, default, key positions.
+/// `x` is three keys wide and `y` two, so a grid pose's order is readable
+/// from its length alone; every default sits at key position 0, which puts
+/// the all-defaults pose on the grid's `(0, 0)` cell.
+const PARAMS: [(&str, f32, f32, f32, &[f32]); 3] = [
+    ("grid_x", 0.0, 1.0, 0.0, &[0.0, 0.5, 1.0]),
+    // A range that is not 0..1, so a key position and the value it maps to
+    // cannot be confused for one another.
+    ("grid_y", -2.0, 2.0, -2.0, &[0.0, 1.0]),
+    ("sweep", 0.0, 10.0, 0.0, &[0.0, 1.0]),
+];
+
+/// How far the joint binding pushes the driven quad per grid step, in model
+/// units: `x` along one axis, `y` along the other, so a cell's deform names
+/// the cell it came from.
+const GRID_STEP: [f32; 2] = [10.0, 20.0];
+/// What the sweep param does at its far key: shift the swept part, push it
+/// forward in z, and fade the driven one.
+const SWEEP_SHIFT_X: f32 = 25.0;
+const SWEEP_Z: f32 = 3.0;
+const SWEEP_OPACITY: f32 = 0.25;
+
+/// Half-width of both quads, and how far apart they sit.
+const GRID_QUAD_HALF: f32 = 60.0;
+const GRID_QUAD_GAP: f32 = 160.0;
+
+/// A rig whose four binding shapes cover every field a pose dump reports.
+///
+/// One **two-param** deform binding over `grid_x` x `grid_y` moves the
+/// `driven` quad, which is the only fixture here with a joint grid: a
+/// per-param sweep of either param samples one row or column of it, and the
+/// rest of the grid is reachable only as a pair. Three **one-param** bindings
+/// hang off `sweep`: it translates `swept` (moving its world vertices and,
+/// with them, the physics node parented under it), pushes `swept` forward in
+/// z, and fades `driven`.
+///
+/// So `sweep` alone moves vertices, opacity, z and a physics anchor — the
+/// four things `catchlight-cli poses` records — and the joint grid is what
+/// tells a per-param sweep apart from a pair.
+fn two_param_grid() -> (ClmDocument, Vec<ClmTexture>) {
+    let mut nodes = Vec::new();
+    let root = push(&mut nodes, None, group_node("root"));
+    let driven = push(
+        &mut nodes,
+        Some(root),
+        ClmNode {
+            name: "driven".into(),
+            transform: ClmTransform {
+                translation: [-GRID_QUAD_GAP / 2.0, 0.0, 0.0],
+                ..identity_transform()
+            },
+            ..part_node(quad_part(0, GRID_QUAD_HALF))
+        },
+    );
+    let swept = push(
+        &mut nodes,
+        Some(root),
+        ClmNode {
+            name: "swept".into(),
+            transform: ClmTransform {
+                translation: [GRID_QUAD_GAP / 2.0, 0.0, 0.0],
+                ..identity_transform()
+            },
+            ..part_node(quad_part(1, GRID_QUAD_HALF))
+        },
+    );
+    // Parented under the swept part so the sweep param moves its world
+    // transform, which is the whole of what an anchor is.
+    push(
+        &mut nodes,
+        Some(swept),
+        ClmNode {
+            name: "pendulum".into(),
+            transform: ClmTransform {
+                translation: [0.0, -GRID_QUAD_HALF, 0.0],
+                ..identity_transform()
+            },
+            kind: ClmNodeKind::SimplePhysics(pendulum()),
+            ..blank_node()
+        },
+    );
+
+    let params = PARAMS
+        .iter()
+        .enumerate()
+        .map(|(i, (name, min, max, default, keys))| ClmParam {
+            id: pid(i),
+            name: (*name).into(),
+            min: *min,
+            max: *max,
+            default: *default,
+            key_positions: keys.to_vec(),
+        })
+        .collect();
+
+    // Every cell of the joint grid is authored: the fill only derives cells
+    // between authored ones, and a dump reads the grid at its key positions.
+    let (w, h) = (PARAMS[GRID_X].4.len(), PARAMS[GRID_Y].4.len());
+    let joint = ClmBinding {
+        params: vec![pid(GRID_X), pid(GRID_Y)],
+        node: nid(driven),
+        interpolate_mode: InterpolateMode::Linear,
+        values: ClmBindingValues::Deform(ClmCells {
+            cells: (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .map(|(x, y)| ClmCell {
+                    x: x as u32,
+                    y: y as u32,
+                    value: [GRID_STEP[0] * x as f32, GRID_STEP[1] * y as f32]
+                        .repeat(GRID_QUAD_VERTS),
+                })
+                .collect(),
+        }),
+    };
+
+    let doc = ClmDocument {
+        nodes,
+        params,
+        bindings: vec![
+            joint,
+            sweep_binding(
+                nid(swept),
+                ClmBindingValues::TransformTX,
+                0.0,
+                SWEEP_SHIFT_X,
+            ),
+            sweep_binding(nid(swept), ClmBindingValues::ZOrder, 0.0, SWEEP_Z),
+            // Opacity folds multiplicatively, so its identity is 1, not 0.
+            sweep_binding(nid(driven), ClmBindingValues::Opacity, 1.0, SWEEP_OPACITY),
+        ],
+        ..ClmDocument::default()
+    };
+    (
+        doc,
+        textures(vec![
+            solid_texture([210, 90, 70]),
+            solid_texture([70, 150, 210]),
+        ]),
+    )
+}
+
+/// Vertices in [`quad_part`]'s mesh, which is what a deform cell is sized by.
+const GRID_QUAD_VERTS: usize = 4;
+
+/// A one-param binding on `sweep`: `rest` at its near key and `far` at its
+/// far one, wrapped in whatever scalar target `wrap` names.
+fn sweep_binding(
+    node: NodeId,
+    wrap: fn(ClmCells<f32>) -> ClmBindingValues,
+    rest: f32,
+    far: f32,
+) -> ClmBinding {
+    ClmBinding {
+        params: vec![pid(SWEEP)],
+        node,
+        interpolate_mode: InterpolateMode::Linear,
+        values: wrap(ClmCells {
+            cells: vec![
+                ClmCell {
+                    x: 0,
+                    y: 0,
+                    value: rest,
+                },
+                ClmCell {
+                    x: 1,
+                    y: 0,
+                    value: far,
+                },
+            ],
+        }),
+    }
+}
+
+/// A pendulum with no target params: `poses` never ticks physics, so what
+/// this node is for is its world transform, which is the anchor.
+fn pendulum() -> ClmSimplePhysics {
+    ClmSimplePhysics {
+        kind: PendulumKind::RigidPendulum,
+        map_mode: PhysicsParamMapMode::AngleLength,
+        local_only: false,
+        target_params: [None, None],
+        gravity: 9.8,
+        length: 100.0,
+        frequency: 1.0,
+        angle_damping: 0.5,
+        length_damping: 0.5,
+        output_scale: [1.0, 1.0],
+    }
 }
 
 // --- mip_checker -----------------------------------------------------------

@@ -625,6 +625,10 @@ impl DrawSource for CacheSource<'_> {
         self.puppet.transforms().get(idx)
     }
 
+    fn accumulated_z(&self, idx: NodeIdx) -> f32 {
+        self.puppet.accumulated_z(idx)
+    }
+
     fn structure_revision(&self) -> u64 {
         self.puppet.baked_generation()
     }

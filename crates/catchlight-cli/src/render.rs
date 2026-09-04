@@ -17,7 +17,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use catchlight_core::{load_model, Model, ModelFormat, Puppet};
+use catchlight_core::Puppet;
 use catchlight_wgpu::{
     collect, DrawableInfo, Framing, PrepareOptions, RenderCache, RenderContext, RenderList,
 };
@@ -55,22 +55,6 @@ impl std::fmt::Display for Rendered {
     }
 }
 
-/// Read a `.clm` off disk. The format dispatch lives in the core; this is
-/// only the filesystem half, which the core deliberately does not have.
-///
-/// `.clm` is the only model file catchlight loads. Convert an inochi2d model
-/// once with `cargo xtask import <model.inx>` and open the `.clm` it writes.
-fn load(path: &Path) -> Result<Model, Error> {
-    let bytes = std::fs::read(path).map_err(|source| Error::io(path, source))?;
-    let format = ModelFormat::from_path(path).ok_or_else(|| Error::NotAClm {
-        path: path.to_path_buf(),
-    })?;
-    load_model(&bytes, format).map_err(|source| Error::NotAModel {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
 /// Render `path` at rest into `out`, and hand back the render list it drew.
 pub fn run(
     path: &Path,
@@ -81,7 +65,7 @@ pub fn run(
 ) -> Result<Rendered, Error> {
     let width = width.max(1);
     let height = height.max(1);
-    let model = load(path)?;
+    let model = crate::file::load_model(path)?;
 
     let mut ctx = pollster::block_on(RenderContext::new(width, height))
         .map_err(|e| Error::gpu("gpu init", e))?;

@@ -14,9 +14,31 @@
 use std::path::{Path, PathBuf};
 
 use catchlight_core::formats::clm::{self, ClmDocument, ClmFile};
-use catchlight_core::Model;
+use catchlight_core::{Model, ModelFormat};
 
 use crate::Error;
+
+/// Read a `.clm` off disk as a [`Model`], ready to build a puppet from.
+///
+/// The format dispatch lives in the core; this is only the filesystem half,
+/// which the core deliberately does not have. `.clm` is the only model file
+/// catchlight loads, so anything else is refused by its extension before a
+/// byte is parsed — convert an inochi2d model once with
+/// `cargo xtask import <model.inx>` and open the `.clm` it writes.
+///
+/// This is the load path for the commands that evaluate a model (`render`,
+/// `poses`). The file operations go through [`read`] instead, which never
+/// builds a `Model` at all.
+pub fn load_model(path: &Path) -> Result<Model, Error> {
+    let bytes = std::fs::read(path).map_err(|source| Error::io(path, source))?;
+    let format = ModelFormat::from_path(path).ok_or_else(|| Error::NotAClm {
+        path: path.to_path_buf(),
+    })?;
+    catchlight_core::load_model(&bytes, format).map_err(|source| Error::NotAModel {
+        path: path.to_path_buf(),
+        source,
+    })
+}
 
 /// Which of the two disjoint wire shapes a document is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

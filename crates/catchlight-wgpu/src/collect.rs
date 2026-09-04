@@ -3,10 +3,13 @@
 //!
 //! Invariants this module enforces:
 //!
-//! - **Z order: higher `z_order` draws in front.** The walk accumulates
-//!   `parent_z + node.z_order` down the tree and sorts ascending, so the last
-//!   draw is the frontmost. `.inx` is authored the other way round, lower in
-//!   front; the flip happens at import, never here.
+//! - **Z order: higher `z_order` draws in front.** A node's z is its own
+//!   plus every ancestor's, which is `Puppet::accumulated_z` and reaches this
+//!   walk through [`DrawSource::accumulated_z`] — the rule is in core so the
+//!   CLI's `poses` dump reports the same order the renderer draws. The sort
+//!   is ascending, so the last draw is the frontmost. `.inx` is authored the
+//!   other way round, lower in front; the flip happens at import, never
+//!   here.
 //! - **A disabled node hides its whole subtree**, so `enabled` is ANDed down
 //!   the tree rather than read per node.
 //! - **A pass-through composite is dropped, an isolating one is not.** See
@@ -48,6 +51,10 @@ pub(crate) trait DrawSource {
     fn node_count(&self) -> usize;
     /// The node's global transform from the last evaluated frame.
     fn transform(&self, idx: NodeIdx) -> glam::Mat4;
+    /// The node's `z_order` summed with every ancestor's — the number this
+    /// module sorts by. The rule lives on `Puppet`, so the CLI's `poses` dump
+    /// and this walk cannot disagree about what is in front of what.
+    fn accumulated_z(&self, idx: NodeIdx) -> f32;
     /// Bumped whenever the tree's shape changes. The collector caches the
     /// structural half of its pass-through verdict against it.
     fn structure_revision(&self) -> u64;
@@ -355,7 +362,6 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
 /// off.
 #[derive(Debug, Default)]
 pub(crate) struct Collector {
-    cumul_z: Vec<f32>,
     // enabled ANDed down the tree — a disabled node hides its whole subtree,
     // because a disabled ancestor hides its entire subtree.
     enabled_cum: Vec<bool>,
@@ -385,8 +391,6 @@ impl Collector {
         render_list.clear();
 
         let n = source.node_count();
-        self.cumul_z.resize(n, 0.0);
-        self.cumul_z.fill(0.0);
         self.enabled_cum.resize(n, true);
         self.enabled_cum.fill(true);
         self.composite_ancestor.resize(n, None);
@@ -412,13 +416,7 @@ impl Collector {
 
             let parent = source.tree().get_parent(node_id);
 
-            let parent_z = parent
-                .and_then(|p| self.cumul_z.get(p.0 as usize).copied())
-                .unwrap_or(0.0);
-            let global_z = parent_z + node.z_order;
-            if slot < self.cumul_z.len() {
-                self.cumul_z[slot] = global_z;
-            }
+            let global_z = source.accumulated_z(node_id);
             let enabled = node.enabled
                 && parent
                     .and_then(|p| self.enabled_cum.get(p.0 as usize).copied())

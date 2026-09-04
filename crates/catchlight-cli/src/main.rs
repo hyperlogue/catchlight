@@ -7,7 +7,9 @@
 
 use std::path::PathBuf;
 
-use catchlight_cli::{diff, fragment, patch, render, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
+use catchlight_cli::{
+    diff, fragment, patch, poses, render, texture, Error, EXIT_DIFFERS, EXIT_ERROR,
+};
 use catchlight_core::formats::clm::TextureAlpha;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -129,6 +131,15 @@ enum Cmd {
     },
     /// Compare two model files by id.
     Diff { a: PathBuf, b: PathBuf },
+    /// Dump every key pose of the rig to a CBOR file: the rest pose in full
+    /// and every other as a sparse diff against it.
+    Poses {
+        /// The .clm to read.
+        file: PathBuf,
+        /// Where to write the CBOR.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
     /// Render the model at rest to a PNG and print the render list it drew.
     Render {
         /// The .clm to render.
@@ -214,6 +225,10 @@ fn run() -> Result<i32, Error> {
                     println!("{}", fragment::render_line(requirement));
                 }
             }
+        }
+        Cmd::Poses { file, out } => {
+            let written = poses::run(&file, &out)?;
+            println!("{written}");
         }
         Cmd::Render {
             file,
