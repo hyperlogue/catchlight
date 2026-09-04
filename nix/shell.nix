@@ -1,6 +1,10 @@
+# `nativeBuildInputs` and `runtimeLibs` come from `flake.nix`, which shares
+# them with the packages it builds.
 {
   pkgs,
   rustToolchain,
+  nativeBuildInputs,
+  runtimeLibs,
 }: let
   inherit (pkgs) stdenv lib;
 
@@ -11,27 +15,11 @@
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.clangStdenv;
       }
     else pkgs.mkShell;
-
-  # wgpu, winit and bevy reach all of these through `dlopen` at run time, so
-  # linking is not enough — they have to be on the loader path of the process
-  # `cargo run` / `cargo test` spawns.
-  runtimeLibs = lib.optionals stdenv.hostPlatform.isLinux (with pkgs; [
-    vulkan-loader
-    libxkbcommon
-    wayland
-    libx11
-    libxcursor
-    libxi
-    libxrandr
-  ]);
 in
   mkShell {
     name = "catchlight-dev";
 
-    nativeBuildInputs = [
-      rustToolchain
-      pkgs.pkg-config
-    ];
+    nativeBuildInputs = [rustToolchain] ++ nativeBuildInputs;
 
     packages =
       (with pkgs; [

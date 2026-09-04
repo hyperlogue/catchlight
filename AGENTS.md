@@ -89,6 +89,7 @@ cargo xtask build-wasm --debug && bun install --frozen-lockfile && bun run typec
 cargo build -p catchlight-editor-server -p catchlight-editor-cli && bun run --filter catchlight-site e2e
 cd python && uv run pytest
 cargo test --workspace
+nix build .#catchlight-editor-server .#catchlight-cli .#catchlight-editor-cli
 ```
 
 The wasm job builds no bundle — it exists to keep everything under the browser
