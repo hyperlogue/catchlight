@@ -126,6 +126,7 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::PhysicsMapMode,
         proto::Interpolate,
         proto::BlendMode,
+        proto::TextureEncoding,
         proto::ScalarTarget,
         proto::BindingTarget,
         proto::NodePatch,
@@ -245,6 +246,70 @@ pub fn check_classified(tags: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
+/// Holds [`COMMAND_BYTES`](catchlight_editor_protocol::COMMAND_BYTES) against
+/// the tags one emitter found.
+///
+/// Only one direction is checkable: a command that carries no bytes is absent
+/// from the table on purpose, so a tag the table does not mention says
+/// nothing. A tag the table mentions and the enum does not is a stale entry,
+/// and it would reach every client as an attachment name for a command that
+/// does not exist.
+pub fn check_byte_bearing(tags: &[String]) -> Result<()> {
+    let found: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
+    let stale: Vec<&str> = proto::COMMAND_BYTES
+        .iter()
+        .map(|(tag, _)| *tag)
+        .filter(|tag| !found.contains(tag))
+        .collect();
+    if !stale.is_empty() {
+        bail!(
+            "COMMAND_BYTES in crates/catchlight-editor-protocol/src/lib.rs declares bytes for \
+             {}, which the Command enum does not carry.\nRemove them.",
+            stale.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// One row of [`COMMAND_BYTES`](catchlight_editor_protocol::COMMAND_BYTES),
+/// with the attachment kinds already spelled the way every language spells
+/// them.
+pub struct ByteRow {
+    pub tag: &'static str,
+    /// `(kind, name)` per attachment, `kind` being `"fixed"` or `"family"`.
+    pub attachments: Vec<(&'static str, &'static str)>,
+    pub payload: bool,
+}
+
+/// The byte table in its own order — the shape both emitters render.
+pub fn byte_rows() -> Vec<ByteRow> {
+    proto::COMMAND_BYTES
+        .iter()
+        .map(|(tag, bytes)| ByteRow {
+            tag,
+            attachments: bytes
+                .attachments
+                .iter()
+                .map(|a| match a {
+                    proto::Attachment::Fixed(name) => ("fixed", *name),
+                    proto::Attachment::Family(name) => ("family", *name),
+                })
+                .collect(),
+            payload: bytes.payload,
+        })
+        .collect()
+}
+
+/// What both emitters say above the byte table. The one place the text lives.
+pub const BYTES_DOC: &[&str] = &[
+    "What bytes each command carries, keyed by its `cmd` tag.",
+    "",
+    "A command absent from this table carries none. `attachments` names what",
+    "travels in beside the command: a `fixed` name is one the command needs,",
+    "and a `family` admits any number of `<name>:<suffix>` attachments.",
+    "`payload` says the reply carries bytes back.",
+];
 
 /// The tags of one kind, in the order the `Command` union declares them.
 pub fn tags_of(kind: proto::CommandKind, tags: &[String]) -> Vec<&str> {
@@ -400,5 +465,6 @@ mod tests {
         );
         check_classified(&tags).expect("every command is classified");
         check_aliased(&tags).expect("every command lands in an alias");
+        check_byte_bearing(&tags).expect("every byte-bearing tag is a command");
     }
 }

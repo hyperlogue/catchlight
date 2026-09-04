@@ -201,8 +201,10 @@ export class InTabBackend implements Backend {
 function readsKey(command: Command): string | undefined {
   switch (command.cmd) {
     case "session_open":
-    case "texture_add":
       return command.path;
+    // `texture_add` names a key or attaches its bytes; only the first stages.
+    case "texture_add":
+      return command.path ?? undefined;
     case "session_import":
     case "manifest_requirements":
       return command.manifest_path;

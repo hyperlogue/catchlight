@@ -52,6 +52,16 @@
 //!   [`Command::Preview`] is the one command that is still native — it
 //!   needs the headless renderer, not just bytes.
 //!
+//! - **Bytes never enter except inside the command that uses them.** There is
+//!   no upload-then-reference: a staged file nothing ever names cannot exist
+//!   because nothing is ever staged. [`Editor::handle_with`] is the one call
+//!   the whole editor sits behind — a [`Request`], the [`Attachments`] that
+//!   came with it, a [`Reply`] and the [`Payload`] that goes back — and every
+//!   transport is glue for those two halves and nothing else.
+//!   [`COMMAND_BYTES`] says which names each command takes, so an attachment
+//!   a command did not declare, or a fixed one that did not arrive, is
+//!   refused before the command runs.
+//!
 //! - **A model-only read has one implementation.** See [`query`]: the reads
 //!   [`CommandKind::ReplicaQuery`] names are pure functions of the [`Model`],
 //!   so a browser tab holding a replica answers them itself. `dispatch` routes
@@ -85,27 +95,33 @@ pub use storage::{join_key, key_stem, parent_key, NoStorage, StagingStorage, Sto
 
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use catchlight_core::components::BlendMode as CoreBlendMode;
-use catchlight_core::formats::clm::{ClmIndices, ClmMesh, TextureAlpha, TextureEncoding};
+use catchlight_core::formats::clm::{
+    self as clm, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding as CoreTextureEncoding,
+};
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
 
 use catchlight_core::Vec2;
 use catchlight_core::{
-    BindingKey, BindingTarget as CoreBindingTarget, Model, ModelComposite, ModelError,
-    ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
-    ModelWeld, Puppet,
+    BindingKey, BindingTarget as CoreBindingTarget, InstallError, Model, ModelComposite,
+    ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics,
+    ModelTexture, ModelWeld, Puppet, Required,
 };
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_core::Pose;
+// The wire's camera and the renderer's framing are the same shape and not the
+// same type; the conversion happens here, at the edge.
 use catchlight_editor_core::{
     contour_automesh, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, Manifest, ManifestError,
     MeshError, ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use catchlight_wgpu::Framing;
 
 /// Per-session undo history depth.
 const UNDO_DEPTH: usize = 64;
@@ -115,7 +131,8 @@ use catchlight_editor_protocol::*;
 #[cfg(not(target_arch = "wasm32"))]
 use preview::PreviewRenderer;
 
-/// Orthographic half-height for previews until the protocol carries a camera.
+/// What a [`Command::Preview`] frames when it names no camera: this many world
+/// units tall, centred on the origin.
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_CAMERA_HEIGHT: f32 = 2000.0;
 
@@ -166,6 +183,14 @@ pub enum EditorError {
     Preview(String),
     #[error("command is native-only (path IO / headless preview)")]
     NativeOnly,
+    /// An import that replaces the whole model, asked of a session that
+    /// already holds one.
+    #[error("{0}")]
+    NotEmpty(String),
+    /// Installing a fragment under a parent was refused — a colliding Id, a
+    /// requirement the base does not have.
+    #[error("install: {0}")]
+    Install(#[from] InstallError),
 }
 
 impl EditorError {
@@ -196,6 +221,24 @@ impl EditorError {
             Self::Image(_) => ErrorCode::Image,
             Self::Preview(_) => ErrorCode::Preview,
             Self::NativeOnly => ErrorCode::NativeOnly,
+            Self::NotEmpty(_) => ErrorCode::NotEmpty,
+            // Install's refusals are the model's refusals under other names,
+            // so they answer with the codes the equivalent edit answers with
+            // — a client that branches on `duplicate_id` for an add branches
+            // on it for an import that collides.
+            Self::Install(e) => match e {
+                InstallError::Collision { .. } => ErrorCode::DuplicateId,
+                InstallError::Missing { id, .. } => match id {
+                    Required::Node(_) | Required::Part(_) => ErrorCode::NoNode,
+                    Required::Param(_) => ErrorCode::NoParam,
+                    Required::Slot(..) => ErrorCode::UnknownSlot,
+                },
+                InstallError::WeldUnknownSlot { .. } => ErrorCode::WeldUnknownSlot,
+                InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,
+                InstallError::NotAnAddon { .. }
+                | InstallError::CarriesParam { .. }
+                | InstallError::BindsOffAddon { .. } => ErrorCode::Edit,
+            },
             // The model refuses an edit for many reasons; the ones a client
             // acts on differently get their own code, the rest are `Edit`.
             Self::Edit(e) => match e {
@@ -536,6 +579,77 @@ pub type Observer = Box<dyn Fn(&Event) + Send + Sync>;
 /// under the lock before any of them is called.
 type SharedObserver = Arc<dyn Fn(&Event) + Send + Sync>;
 
+/// The bytes that came in beside one command, by attachment name.
+///
+/// Built by whatever transport carried them and handed to
+/// [`Editor::handle_with`], which checks the names against [`COMMAND_BYTES`]
+/// before any command runs. A dispatch arm then takes what its command
+/// declared; nothing else can reach them, and nothing is left over anywhere
+/// for a later command to find.
+#[derive(Debug, Default)]
+pub struct Attachments(std::collections::BTreeMap<String, Vec<u8>>);
+
+impl Attachments {
+    /// Nothing attached — every command that declares no bytes, and every
+    /// transport that cannot carry any.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// One attachment under `name`. Replaces a name given twice.
+    pub fn insert(&mut self, name: impl Into<String>, bytes: Vec<u8>) {
+        self.0.insert(name.into(), bytes);
+    }
+
+    /// Every name attached, sorted.
+    pub fn names(&self) -> Vec<&str> {
+        self.0.keys().map(String::as_str).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Take the bytes attached under exactly `name`.
+    pub fn take(&mut self, name: &str) -> Option<Vec<u8>> {
+        self.0.remove(name)
+    }
+
+    /// Take every `<family>:<suffix>` attachment, as `(suffix, bytes)` pairs
+    /// in name order. Draining rather than borrowing: the suffixes are the
+    /// command's to match against its own fields, and what it does not
+    /// recognise it has already been handed.
+    pub fn take_family(&mut self, family: &str) -> Vec<(String, Vec<u8>)> {
+        let prefix = format!("{family}:");
+        let names: Vec<String> = self
+            .0
+            .keys()
+            .filter(|name| name.len() > prefix.len() && name.starts_with(&prefix))
+            .cloned()
+            .collect();
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let bytes = self.0.remove(&name)?;
+                Some((name[prefix.len()..].to_string(), bytes))
+            })
+            .collect()
+    }
+}
+
+impl FromIterator<(String, Vec<u8>)> for Attachments {
+    fn from_iter<I: IntoIterator<Item = (String, Vec<u8>)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+/// The bytes a reply carries back, beside the JSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Payload {
+    pub content_type: &'static str,
+    pub bytes: Vec<u8>,
+}
+
 pub struct Editor {
     sessions: Mutex<HashMap<SessionId, Arc<Mutex<Session>>>>,
     next_id: AtomicU64,
@@ -545,8 +659,6 @@ pub struct Editor {
     next_observer: AtomicU64,
     /// Resolves the keys the protocol calls `path`. See [`storage`].
     storage: Arc<dyn Storage>,
-    #[cfg(not(target_arch = "wasm32"))]
-    preview_seq: AtomicU64,
     #[cfg(not(target_arch = "wasm32"))]
     preview: Mutex<Option<PreviewRenderer>>,
 }
@@ -572,15 +684,27 @@ impl Editor {
             next_observer: AtomicU64::new(1),
             storage,
             #[cfg(not(target_arch = "wasm32"))]
-            preview_seq: AtomicU64::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
             preview: Mutex::new(None),
         }
     }
 
-    /// Apply one request and produce its reply. Synchronous and the single
-    /// funnel for every client (in-process or socket).
+    /// Apply one request that carries no bytes and wants none back.
+    ///
+    /// [`Self::handle_with`] with nothing attached, discarding a payload. For
+    /// tests, for the in-process GUI, and for a transport that refuses a
+    /// byte-bearing command before it ever gets here — a byte-bearing command
+    /// sent this way is refused, because its attachment is missing.
     pub fn handle(&self, req: Request) -> Reply {
+        self.handle_with(req, Attachments::none()).0
+    }
+
+    /// Apply one request and produce its reply, with the bytes that came in
+    /// beside it and the bytes that go back.
+    ///
+    /// The one call the editor sits behind. Every transport is glue for its
+    /// two halves: how `attachments` were framed on the way in, and how the
+    /// [`Payload`] is framed on the way out.
+    pub fn handle_with(&self, req: Request, attachments: Attachments) -> (Reply, Option<Payload>) {
         // `Document` is the one kind that may move a session's revision.
         // That classification is what a client picks its send method by — a
         // presence or scratch command that quietly bumped `rev` would
@@ -596,7 +720,11 @@ impl Editor {
         // names its session only in the reply, so the body has the last word.
         let addressed = req.command.session();
 
-        let reply = match self.dispatch(req.command) {
+        let mut attachments = attachments;
+        let mut payload = None;
+        let dispatched = check_attachments(&req.command, &attachments)
+            .and_then(|()| self.dispatch(req.command, &mut attachments, &mut payload));
+        let reply = match dispatched {
             Ok(body) => {
                 let session = match &body {
                     ResponseBody::Session { session } => Some(*session),
@@ -624,7 +752,11 @@ impl Editor {
                  in CommandKind::Document or it should not be editing",
             );
         }
-        reply
+        debug_assert!(
+            payload.is_none() || matches!(&reply, Reply::Ok { .. }),
+            "a refused command answered with a payload",
+        );
+        (reply, payload)
     }
 
     /// One session's revision, or `None` if it is not open — which is what a
@@ -785,7 +917,7 @@ impl Editor {
         &self,
         id: SessionId,
         part: &NodeId,
-        encoding: TextureEncoding,
+        encoding: CoreTextureEncoding,
         bytes: Vec<u8>,
     ) -> Result<(TexId, Vec<TexId>), EditorError> {
         image_dims(&bytes)?;
@@ -946,7 +1078,16 @@ impl Editor {
         Ok((manifest, keys))
     }
 
-    fn dispatch(&self, cmd: Command) -> Result<ResponseBody, EditorError> {
+    /// The one match over every command. `attachments` holds the bytes that
+    /// came in with it, already checked against what it declared; an arm that
+    /// answers with bytes writes them into `payload`.
+    fn dispatch(
+        &self,
+        cmd: Command,
+        attachments: &mut Attachments,
+        // Preview is the only arm that answers with bytes, and it is native.
+        #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] payload: &mut Option<Payload>,
+    ) -> Result<ResponseBody, EditorError> {
         match cmd {
             Command::SessionNew { name } => {
                 let id = self.alloc_id();
@@ -967,18 +1108,8 @@ impl Editor {
             }
             Command::SessionImport { manifest_path } => {
                 let (manifest, keys) = self.read_manifest(&manifest_path)?;
-                let mut data = HashMap::new();
-                for (t, key) in manifest.textures.iter().zip(&keys) {
-                    let bytes = self.storage.read(key)?;
-                    data.insert(
-                        t.id.clone(),
-                        TextureData {
-                            encoding: encoding_from_path(&t.path),
-                            bytes: bytes.into(),
-                        },
-                    );
-                }
-                let model = Model::from_manifest(&manifest, &data)?;
+                let model =
+                    model_from_manifest(&manifest, |at, _| Ok(self.storage.read(&keys[at])?))?;
                 // Everything the import read is in the model; release what was
                 // staged for it. An import already has no `file`.
                 self.storage.release(&manifest_path);
@@ -1059,8 +1190,8 @@ impl Editor {
                         .filter_map(|(i, tid)| {
                             let texture = s.model.texture(tid)?;
                             let ext = match texture.encoding {
-                                TextureEncoding::Tga => "tga",
-                                TextureEncoding::Png => "png",
+                                CoreTextureEncoding::Tga => "tga",
+                                CoreTextureEncoding::Png => "png",
                             };
                             Some((format!("tex{i}.{ext}"), texture.data.clone()))
                         })
@@ -1320,12 +1451,38 @@ impl Editor {
                 session,
                 node,
                 path,
+                encoding,
                 texture: id,
             } => {
-                // Read outside `edit_session`: the store is not the session's
-                // to borrow, and a failed read must not open an edit.
-                let bytes = self.storage.read(&path)?;
-                let encoding = encoding_from_path(&path);
+                let attached = attachments.take("texture");
+                // The bytes come from one place or the other, never both and
+                // never neither: two sources would be two answers to "what is
+                // this texture", and the command would have to pick.
+                let (bytes, encoding, key) = match (attached, path) {
+                    (Some(_), Some(_)) => {
+                        return Err(EditorError::BadRequest(
+                            "texture_add takes either a `path` or the `texture` attachment, \
+                             not both"
+                                .into(),
+                        ))
+                    }
+                    // With the attachment the encoding is the field, never a
+                    // sniff.
+                    (Some(bytes), None) => (bytes, encoding.into(), None),
+                    // Read outside `edit_session`: the store is not the
+                    // session's to borrow, and a failed read must not open an
+                    // edit.
+                    (None, Some(path)) => {
+                        let bytes = self.storage.read(&path)?;
+                        let encoding = encoding_from_path(&path);
+                        (bytes, encoding, Some(path))
+                    }
+                    (None, None) => {
+                        return Err(EditorError::BadRequest(
+                            "texture_add needs a `path` or the `texture` attachment".into(),
+                        ))
+                    }
+                };
                 let added = self.edit_session(session, move |s| {
                     let bytes = bytes;
                     image_dims(&bytes)?; // validate it decodes
@@ -1343,7 +1500,9 @@ impl Editor {
                 })?;
                 // Only now: a command that failed keeps its bytes staged so
                 // the caller may retry without uploading them again.
-                self.storage.release(&path);
+                if let Some(key) = key {
+                    self.storage.release(&key);
+                }
                 Ok(added)
             }
             Command::ParamAdd {
@@ -1804,32 +1963,143 @@ impl Editor {
                 session,
                 pose,
                 size,
-                out,
-            } => self.run_preview(session, pose, size, out),
+                camera,
+            } => self.run_preview(session, pose, size, camera, payload),
             // Preview is the one command that stays native: it needs the
             // headless renderer, not just bytes. Everything else that used to
             // be native-only now resolves its key through `storage`.
             #[cfg(target_arch = "wasm32")]
             Command::Preview { .. } => Err(EditorError::NativeOnly),
+            Command::ImportFile { session, parent } => {
+                let bytes = attachments.take("model").unwrap_or_default();
+                self.import_file(session, parent, bytes)
+            }
+            Command::ImportManifest { session } => {
+                let manifest = attachments.take("manifest").unwrap_or_default();
+                let textures = attachments.take_family("texture");
+                self.import_manifest(session, manifest, textures)
+            }
         }
     }
 
+    /// [`Command::ImportFile`]: a `.clm` from bytes into an open session.
+    ///
+    /// Two shapes, one operation. Without a `parent` the document has to be a
+    /// complete model and the session's has to be pristine, and the session's
+    /// model is *replaced* — keeping its identity, so the puppet and the
+    /// render cache built on it rebake rather than refuse. With a `parent`
+    /// every root of the document is re-parented onto that node and the whole
+    /// thing goes through [`Model::install`], which is atomic: Ids verbatim,
+    /// a collision or a missing requirement refused with nothing moved.
+    ///
+    /// The session's `file` stays whatever it was. Imported bytes are not a
+    /// file on disk, so a bare `save` on a session that only ever imported
+    /// still refuses with [`EditorError::NoSavePath`].
+    fn import_file(
+        &self,
+        session: SessionId,
+        parent: Option<NodeId>,
+        bytes: Vec<u8>,
+    ) -> Result<ResponseBody, EditorError> {
+        match parent {
+            None => {
+                let incoming = Model::from_clm_bytes(&bytes)?;
+                self.replace_pristine(session, incoming, None)
+            }
+            Some(parent) => {
+                // A parent the session does not carry needs no check here:
+                // install reports it as the requirement it is.
+                let addon = fragment_under(&bytes, &parent)?;
+                self.edit_session(session, |s| {
+                    s.model.install(&addon)?;
+                    s.touch();
+                    Ok(ResponseBody::Session { session })
+                })
+            }
+        }
+    }
+
+    /// [`Command::ImportManifest`]: a manifest and its images, into an open
+    /// session.
+    ///
+    /// The same model [`Command::SessionImport`] builds from a store, from
+    /// the bytes that came with the command instead. Each `texture:<ref>`
+    /// attachment is matched against the reference the manifest spells, and
+    /// one the manifest names with nothing attached is refused naming it.
+    fn import_manifest(
+        &self,
+        session: SessionId,
+        manifest: Vec<u8>,
+        textures: Vec<(String, Vec<u8>)>,
+    ) -> Result<ResponseBody, EditorError> {
+        let json = String::from_utf8(manifest).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("manifest is not UTF-8: {e}"),
+            )
+        })?;
+        let manifest = Manifest::from_json(&json)?;
+        let mut attached: HashMap<String, Vec<u8>> = textures.into_iter().collect();
+        let model = model_from_manifest(&manifest, |_, reference| {
+            attached
+                .remove(reference)
+                .ok_or_else(|| ManifestError::MissingTextureData(reference.to_string()).into())
+        })?;
+        let title = (!manifest.name.is_empty()).then(|| manifest.name.clone());
+        self.replace_pristine(session, model, title)
+    }
+
+    /// Replace a pristine session's model with `incoming`, keeping the
+    /// session's identity and its place in every observer's bookkeeping.
+    ///
+    /// Pristine is what [`Command::SessionNew`] makes: a bare root and nothing
+    /// else. A session that holds anything is [`ErrorCode::NotEmpty`] — a
+    /// client imports into a fresh session rather than having the editor
+    /// decide what to throw away. (A complete model always has exactly one
+    /// root and `delete_node` refuses it, so "empty it first" is not
+    /// available; this is its equivalent.)
+    fn replace_pristine(
+        &self,
+        session: SessionId,
+        incoming: Model,
+        title: Option<String>,
+    ) -> Result<ResponseBody, EditorError> {
+        self.edit_session(session, |s| {
+            if !is_pristine(&s.model) {
+                return Err(EditorError::NotEmpty(
+                    "this session already holds a model; import into a new one".into(),
+                ));
+            }
+            s.model.replace_from(&incoming);
+            if let Some(title) = title {
+                s.title = title;
+            }
+            s.touch();
+            Ok(ResponseBody::Session { session })
+        })
+    }
+
+    /// Render one frame and hand back the PNG as the reply's payload.
+    ///
+    /// Nothing is written to a filesystem: the bytes go where the reply goes,
+    /// so a caller with no shared disk — a browser tab, a script on the other
+    /// side of HTTP — gets the same answer as one sitting next to the server.
     #[cfg(not(target_arch = "wasm32"))]
     fn run_preview(
         &self,
         session: SessionId,
         params: Vec<ParamPose>,
         size: Option<[u32; 2]>,
-        out: Option<String>,
+        camera: Option<Camera>,
+        payload: &mut Option<Payload>,
     ) -> Result<ResponseBody, EditorError> {
         let [width, height] = size.unwrap_or([512, 512]);
-        let seq = self.preview_seq.fetch_add(1, Ordering::Relaxed);
-        let out_path = match out {
-            Some(p) => PathBuf::from(p),
-            None => std::env::temp_dir()
-                .join("catchlight-editor")
-                .join(format!("preview-{}-{seq}.png", session.0)),
-        };
+        // Explicit or the default, never the presence: a script's output must
+        // not depend on what some tab last looked at.
+        let framing = camera.map_or(Framing::centered(DEFAULT_CAMERA_HEIGHT), |c| Framing {
+            center: glam::Vec2::new(c.center[0], c.center[1]),
+            height: c.height,
+        });
         let handle = self.session(session)?;
         // The model is cloned rather than borrowed so the session lock is not
         // held across the GPU render; a clone is a shallow copy sharing every
@@ -1857,17 +2127,8 @@ impl Editor {
             let pr = prev
                 .as_mut()
                 .ok_or_else(|| EditorError::Preview("renderer unavailable".into()))?;
-            pr.render_png(
-                session,
-                &model,
-                &mut puppet,
-                &pose,
-                width,
-                height,
-                DEFAULT_CAMERA_HEIGHT,
-                &out_path,
-            )
-            .map_err(|e| EditorError::Preview(e.to_string()))
+            pr.render_png(session, &model, &mut puppet, &pose, width, height, framing)
+                .map_err(|e| EditorError::Preview(e.to_string()))
         })();
 
         {
@@ -1876,13 +2137,12 @@ impl Editor {
                 s.puppet = Some(puppet);
             }
         }
-        render_result?;
+        *payload = Some(Payload {
+            content_type: "image/png",
+            bytes: render_result?,
+        });
         Ok(ResponseBody::Preview {
-            preview: PreviewInfo {
-                path: out_path.display().to_string(),
-                width,
-                height,
-            },
+            preview: PreviewInfo { width, height },
         })
     }
 }
@@ -2207,11 +2467,121 @@ fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
 /// The encoding a storage key's extension implies. A key is opaque to
 /// everything else; this is the one place its tail is read, and only to
 /// pick a decoder.
-fn encoding_from_path(path: &str) -> TextureEncoding {
+/// Read `.clm` bytes as a fragment whose every root hangs from `parent`.
+///
+/// The two shapes are disjoint on the wire — a complete model has exactly one
+/// parentless node and a fragment has none — so this decodes once and re-parents
+/// at the document, before either reader sees it: a node whose named parent the
+/// document does not itself carry is one of its roots, and a complete model's
+/// root, which names no parent at all, is the same thing. Both then read as a
+/// fragment, and [`Model::install`] applies the same checks to either.
+///
+/// The `parent` on the wire wins over whatever a fragment's roots name: a
+/// client says where a subtree goes, and an addon authored against another
+/// base does not get to say it instead.
+fn fragment_under(bytes: &[u8], parent: &NodeId) -> Result<Model, EditorError> {
+    let mut file = clm::decode(bytes).map_err(ModelError::from)?;
+    let carried: std::collections::HashSet<&NodeId> =
+        file.doc.nodes.iter().map(|n| &n.id).collect();
+    let roots: Vec<usize> = file
+        .doc
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.parent.as_ref().is_none_or(|p| !carried.contains(p)))
+        .map(|(at, _)| at)
+        .collect();
+    for at in roots {
+        file.doc.nodes[at].parent = Some(parent.clone());
+    }
+    Ok(Model::from_clm_file_fragment(&file)?)
+}
+
+/// Is this the model [`Command::SessionNew`] makes — a bare root and nothing
+/// else?
+fn is_pristine(model: &Model) -> bool {
+    model.root().is_some()
+        && model.node_count() == 1
+        && model.param_ids().is_empty()
+        && model.texture_ids().is_empty()
+        && model.bindings().next().is_none()
+        && model.welds().is_empty()
+        && model.animations().is_empty()
+}
+
+/// Build a model from a manifest, taking each texture's bytes from `supply`.
+///
+/// The one place a manifest becomes a model. `supply` is handed a texture's
+/// position in the manifest and the reference exactly as the manifest spells
+/// it: [`Command::SessionImport`] resolves that against the manifest's own
+/// storage key, [`Command::ImportManifest`] looks it up among the attachments
+/// that came with the command, and neither decides anything else.
+fn model_from_manifest(
+    manifest: &Manifest,
+    mut supply: impl FnMut(usize, &str) -> Result<Vec<u8>, EditorError>,
+) -> Result<Model, EditorError> {
+    let mut data = HashMap::new();
+    for (at, t) in manifest.textures.iter().enumerate() {
+        let bytes = supply(at, &t.path)?;
+        data.insert(
+            t.id.clone(),
+            TextureData {
+                // The encoding still comes off the reference's tail: a
+                // manifest names files, and this is the one key whose shape
+                // is read. See [`encoding_from_path`].
+                encoding: encoding_from_path(&t.path),
+                bytes: bytes.into(),
+            },
+        );
+    }
+    Ok(Model::from_manifest(manifest, &data)?)
+}
+
+/// Hold one command's attachments to what it declared in [`COMMAND_BYTES`].
+///
+/// Two refusals, both before the command runs: a name the command does not
+/// declare at all, and a [`Attachment::Fixed`] name that did not arrive. The
+/// second has one exception while the transition lasts — a command whose own
+/// fields name its bytes another way, which today is only
+/// [`Command::TextureAdd`] carrying a `path`. That field goes, and with it
+/// this exception.
+fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), EditorError> {
+    let declared: &[Attachment] = cmd.bytes().map_or(&[], |b| b.attachments);
+    for name in attachments.names() {
+        if !declared.iter().any(|a| a.admits(name)) {
+            return Err(EditorError::BadRequest(format!(
+                "{} takes no attachment named {name:?}",
+                cmd.tag()
+            )));
+        }
+    }
+    if names_its_bytes_another_way(cmd) {
+        return Ok(());
+    }
+    for a in declared {
+        if let Attachment::Fixed(name) = a {
+            if !attachments.names().contains(name) {
+                return Err(EditorError::BadRequest(format!(
+                    "{} needs the attachment {name:?}",
+                    cmd.tag()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The transitional forms: a command that still accepts a storage key in place
+/// of its attachment. Goes away with the `path` field it reads.
+fn names_its_bytes_another_way(cmd: &Command) -> bool {
+    matches!(cmd, Command::TextureAdd { path: Some(_), .. })
+}
+
+fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
-        TextureEncoding::Tga
+        CoreTextureEncoding::Tga
     } else {
-        TextureEncoding::Png
+        CoreTextureEncoding::Png
     }
 }
 
@@ -2234,6 +2604,9 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     #[cfg(unix)]
     use std::os::unix::net::{UnixListener, UnixStream};
+
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     #[cfg(unix)]
     static SOCKET_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -2650,7 +3023,7 @@ mod tests {
             .add_texture(
                 &part,
                 ModelTexture {
-                    encoding: TextureEncoding::Png,
+                    encoding: CoreTextureEncoding::Png,
                     alpha: TextureAlpha::Straight,
                     data: vec![0u8; 4 * 1024 * 1024].into(),
                 },
@@ -2716,7 +3089,7 @@ mod tests {
             .add_texture(
                 &part,
                 ModelTexture {
-                    encoding: TextureEncoding::Png,
+                    encoding: CoreTextureEncoding::Png,
                     alpha: TextureAlpha::Straight,
                     data: vec![0u8; 4 * 1024 * 1024].into(),
                 },
@@ -2901,7 +3274,7 @@ mod tests {
         let rev = ed.doc_snapshot(s).expect("a snapshot").rev;
 
         let (tex, dropped) = ed
-            .add_texture_bytes(s, &part, TextureEncoding::Png, one_pixel_png([9; 4]))
+            .add_texture_bytes(s, &part, CoreTextureEncoding::Png, one_pixel_png([9; 4]))
             .expect("upload");
 
         assert!(dropped.is_empty(), "nothing was displaced");
@@ -2930,13 +3303,13 @@ mod tests {
         let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
         let part = new_part(&ed, s, 2);
         let (first, _) = ed
-            .add_texture_bytes(s, &part, TextureEncoding::Png, one_pixel_png([1; 4]))
+            .add_texture_bytes(s, &part, CoreTextureEncoding::Png, one_pixel_png([1; 4]))
             .expect("upload");
 
         // A second upload to the same part displaces the first, which nothing
         // else draws.
         let (second, dropped) = ed
-            .add_texture_bytes(s, &part, TextureEncoding::Png, one_pixel_png([2; 4]))
+            .add_texture_bytes(s, &part, CoreTextureEncoding::Png, one_pixel_png([2; 4]))
             .expect("upload");
         assert_eq!(dropped, vec![first]);
         assert_eq!(texture_ids(&ed, s, 4), vec![second.clone()]);
@@ -2944,7 +3317,7 @@ mod tests {
         // Unmapping the part through the wire says the same thing.
         let other = new_part(&ed, s, 5);
         let (third, _) = ed
-            .add_texture_bytes(s, &other, TextureEncoding::Png, one_pixel_png([3; 4]))
+            .add_texture_bytes(s, &other, CoreTextureEncoding::Png, one_pixel_png([3; 4]))
             .expect("upload");
         match body(ed.handle(req(
             7,
@@ -3160,25 +3533,27 @@ mod tests {
                 manifest_path: dir.join("m.json").display().to_string(),
             },
         ))));
-        let out = dir.join("preview.png");
-        match ed.handle(req(
-            2,
-            Command::Preview {
-                session: s,
-                pose: vec![],
-                size: Some([128, 128]),
-                out: Some(out.display().to_string()),
-            },
-        )) {
+        let (reply, payload) = ed.handle_with(
+            req(
+                2,
+                Command::Preview {
+                    session: s,
+                    pose: vec![],
+                    size: Some([128, 128]),
+                    camera: None,
+                },
+            ),
+            Attachments::none(),
+        );
+        match reply {
             Reply::Ok {
                 body: ResponseBody::Preview { preview },
                 ..
             } => {
                 assert_eq!(preview.width, 128);
-                assert!(
-                    std::fs::metadata(&preview.path).unwrap().len() > 0,
-                    "preview png is empty"
-                );
+                let payload = payload.expect("preview answers with the png");
+                assert_eq!(payload.content_type, "image/png");
+                assert!(!payload.bytes.is_empty(), "preview png is empty");
             }
             other => panic!("preview failed: {other:?}"),
         }
@@ -3196,33 +3571,33 @@ mod tests {
             "/../../tests/models/welded_seam.clm"
         ))
         .unwrap();
-        let dir = std::env::temp_dir().join(format!("catchlight-posed-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
         let ed = Editor::new();
         let s = ed.open_bytes("welded_seam", &bytes).unwrap();
-        let shot = |id: u64, name: &str, pose: Vec<ParamPose>| -> Vec<u8> {
-            let out = dir.join(format!("{name}.png"));
-            match ed.handle(req(
-                id,
-                Command::Preview {
-                    session: s,
-                    pose,
-                    // welded_seam spans 300x240 world units, well inside the
-                    // default 2000-unit camera.
-                    size: Some([256, 256]),
-                    out: Some(out.display().to_string()),
-                },
-            )) {
+        let shot = |id: u64, pose: Vec<ParamPose>| -> Vec<u8> {
+            let (reply, payload) = ed.handle_with(
+                req(
+                    id,
+                    Command::Preview {
+                        session: s,
+                        pose,
+                        // welded_seam spans 300x240 world units, well inside
+                        // the default 2000-unit camera.
+                        size: Some([256, 256]),
+                        camera: None,
+                    },
+                ),
+                Attachments::none(),
+            );
+            match reply {
                 Reply::Ok {
                     body: ResponseBody::Preview { .. },
                     ..
-                } => std::fs::read(&out).unwrap(),
+                } => payload.expect("preview answers with the png").bytes,
                 other => panic!("preview failed: {other:?}"),
             }
         };
 
-        let rest = shot(1, "rest", Vec::new());
+        let rest = shot(1, Vec::new());
         let pull = ed
             .with_model(s, |model| {
                 model
@@ -3235,16 +3610,14 @@ mod tests {
             .expect("welded_seam has a `pull` param");
         let posed = shot(
             2,
-            "posed",
             vec![ParamPose {
                 param: pull,
                 value: 1.0,
             }],
         );
-        let back = shot(3, "back", Vec::new());
+        let back = shot(3, Vec::new());
 
         assert_ne!(rest, posed, "posing pull must change the preview");
         assert_eq!(rest, back, "leaving pull out must render it at its default");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

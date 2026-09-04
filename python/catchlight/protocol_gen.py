@@ -71,6 +71,32 @@ class CommandKind(StrEnum):
     SERVER_QUERY = "server_query"
 
 
+class AttachmentKind(StrEnum):
+    """Whether an attachment name is exact or a family of them."""
+
+    # Exactly this name, and the command needs it.
+    FIXED = "fixed"
+    # Any number of `<name>:<suffix>` attachments; the suffixes are the
+    # command's own to say.
+    FAMILY = "family"
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """One name a command's bytes travel under."""
+
+    kind: AttachmentKind
+    name: str
+
+
+@dataclass(frozen=True)
+class CommandBytes:
+    """What one command carries in, and whether its reply carries bytes out."""
+
+    attachments: tuple[Attachment, ...]
+    payload: bool
+
+
 class Clear:
     """The one value that means "set this field to nothing".
 
@@ -695,10 +721,13 @@ class NodeDelete:
 
 @dataclass(frozen=True, kw_only=True)
 class TextureAdd:
-    """Read an image from `path` and give it to `node`, which has to be a
-    part: a texture is added and assigned in one edit. If that part was
-    the last thing drawing whatever it drew before, that texture goes with
-    this edit — see [`ResponseBody::Texture`].
+    """Give an image to `node`, which has to be a part: a texture is added
+    and assigned in one edit. If that part was the last thing drawing
+    whatever it drew before, that texture goes with this edit — see
+    [`ResponseBody::Texture`].
+
+    The bytes arrive as attachment `texture`, and `encoding` says how to
+    read them.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -708,7 +737,14 @@ class TextureAdd:
 
     session: SessionId
     node: NodeId
-    path: str
+    # A storage key to read the image from instead of the attachment —
+    # the transitional form, and the one place an encoding is still
+    # sniffed off a key's tail. Exactly one of this and the attachment,
+    # else [`ErrorCode::BadRequest`]. Goes away once every client sends
+    # the attachment.
+    path: str | None = None
+    # How to read the attached bytes. The field, never a sniff.
+    encoding: TextureEncoding | None = None
     # The Id to create it under. Absent generates one; an Id the model
     # already carries is [`ErrorCode::DuplicateId`].
     texture: TexId | None = None
@@ -1548,6 +1584,14 @@ class ScratchDeform:
 
 @dataclass(frozen=True, kw_only=True)
 class Preview:
+    """Render one frame of a session and answer with the PNG as the reply's
+    payload.
+
+    The camera is explicit: absent it is the default height at the origin,
+    and what a tab last looked at is never consulted, so a script's output
+    does not depend on anyone else's view.
+    """
+
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "preview"
     CMD: ClassVar[str] = TAG
@@ -1556,7 +1600,57 @@ class Preview:
     session: SessionId
     pose: list[ParamPose] = field(default_factory=list)
     size: tuple[int, int] | None = None
-    out: str | None = None
+    camera: Camera | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ImportFile:
+    """Import a `.clm` — complete or fragment, textures inside — from
+    attachment `model` into an open session.
+
+    `parent` absent replaces the session's whole model, and needs a
+    pristine one (what [`Command::SessionNew`] makes) and a complete
+    document: anything else is [`ErrorCode::NotEmpty`]. `parent` present
+    installs the document's roots under that node, overriding whatever
+    parent the document's own roots name; Ids travel verbatim, and a
+    collision or a missing requirement is refused whole.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "import_file"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+
+    session: SessionId
+    parent: NodeId | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ImportManifest:
+    """Build a model from a manifest and its images and replace the session's
+    model with it.
+
+    The manifest arrives as attachment `manifest`; each texture it names
+    arrives as `texture:<ref>`, where `<ref>` is the path string the
+    manifest spells, verbatim. A reference with no attachment is
+    [`ErrorCode::Manifest`] naming it. The session has to be pristine, on
+    the same rule as [`Command::ImportFile`].
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "import_manifest"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+
+    session: SessionId
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1632,6 +1726,8 @@ Command = (
     | PresenceGet
     | ScratchDeform
     | Preview
+    | ImportFile
+    | ImportManifest
 )
 
 COMMAND_VARIANTS: dict[str, type[Command]] = {
@@ -1703,6 +1799,8 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "presence_get": PresenceGet,
     "scratch_deform": ScratchDeform,
     "preview": Preview,
+    "import_file": ImportFile,
+    "import_manifest": ImportManifest,
 }
 
 
@@ -1787,6 +1885,41 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "presence_get": CommandKind.SERVER_QUERY,
     "scratch_deform": CommandKind.SCRATCH,
     "preview": CommandKind.SERVER_QUERY,
+    "import_file": CommandKind.DOCUMENT,
+    "import_manifest": CommandKind.DOCUMENT,
+}
+
+
+# What bytes each command carries, keyed by its `cmd` tag.
+#
+# A command absent from this table carries none. `attachments` names what
+# travels in beside the command: a `fixed` name is one the command needs,
+# and a `family` admits any number of `<name>:<suffix>` attachments.
+# `payload` says the reply carries bytes back.
+COMMAND_BYTES: dict[str, CommandBytes] = {
+    "texture_add": CommandBytes(
+        (
+            Attachment(AttachmentKind.FIXED, "texture"),
+        ),
+        False,
+    ),
+    "import_file": CommandBytes(
+        (
+            Attachment(AttachmentKind.FIXED, "model"),
+        ),
+        False,
+    ),
+    "import_manifest": CommandBytes(
+        (
+            Attachment(AttachmentKind.FIXED, "manifest"),
+            Attachment(AttachmentKind.FAMILY, "texture"),
+        ),
+        False,
+    ),
+    "preview": CommandBytes(
+        (),
+        True,
+    ),
 }
 
 # A command that changes the document, or which documents exist.
@@ -1846,6 +1979,8 @@ DocumentCommand = (
     | PhysicsAdd
     | Undo
     | Redo
+    | ImportFile
+    | ImportManifest
 )
 
 # A command that publishes shared view state: pose, camera, selection.
@@ -1966,6 +2101,15 @@ class BlendMode(StrEnum):
     ADD = "add"
     INVERSE = "inverse"
     SUBTRACT = "subtract"
+
+
+class TextureEncoding(StrEnum):
+    """How to read a texture's bytes. The field a command carries beside its
+    image, so nothing has to guess from a file name.
+    """
+
+    PNG = "png"
+    TGA = "tga"
 
 
 class ScalarTarget(StrEnum):
@@ -2465,6 +2609,12 @@ class ErrorCode(StrEnum):
     # The command needs a filesystem or a GPU and this build has neither
     # (wasm).
     NATIVE_ONLY = "native_only"
+    # A command carrying bytes was sent over a transport that cannot carry
+    # them; send it over one that can.
+    BULK_OVER_HTTP = "bulk_over_http"
+    # An import that would replace the whole model was asked of a session
+    # that already holds one; import into a fresh session instead.
+    NOT_EMPTY = "not_empty"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3041,7 +3191,10 @@ class WeldInfo:
 
 @dataclass(frozen=True, kw_only=True)
 class PreviewInfo:
-    path: str
+    """What a [`Command::Preview`] rendered. The pixels are the reply's payload;
+    this says how to read them.
+    """
+
     width: int
     height: int
 
@@ -3049,6 +3202,9 @@ __all__ = [
     "Clear",
     "CLEAR",
     "CommandKind",
+    "AttachmentKind",
+    "Attachment",
+    "CommandBytes",
     "SessionId",
     "NodeId",
     "ParamId",
@@ -3122,10 +3278,13 @@ __all__ = [
     "PresenceGet",
     "ScratchDeform",
     "Preview",
+    "ImportFile",
+    "ImportManifest",
     "Command",
     "COMMAND_VARIANTS",
     "parse_command",
     "COMMAND_KINDS",
+    "COMMAND_BYTES",
     "DocumentCommand",
     "PresenceCommand",
     "ScratchCommand",
@@ -3139,6 +3298,7 @@ __all__ = [
     "PhysicsMapMode",
     "Interpolate",
     "BlendMode",
+    "TextureEncoding",
     "ScalarTarget",
     "BindingTarget",
     "NodePatch",

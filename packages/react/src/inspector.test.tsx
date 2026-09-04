@@ -87,7 +87,9 @@ describe("the inspector", () => {
     // Something to clear: a part drawing nothing is already at "none", and a
     // select that did not move authors nothing either way.
     wasm.staged.set("hair.png", new TextEncoder().encode("not really a png"));
-    await run(() => session.send({ cmd: "texture_add", node, path: "hair.png" }));
+    await run(() =>
+      session.send({ cmd: "texture_add", node, path: "hair.png", encoding: "png" }),
+    );
     await settle();
 
     const texture = view.container.querySelector(

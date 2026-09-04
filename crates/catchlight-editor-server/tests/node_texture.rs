@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeKindArg, NodePatch, Reply, Request, ResponseBody, TexId,
+    TextureEncoding,
 };
 use catchlight_editor_server::{Editor, Storage};
 
@@ -105,7 +106,8 @@ impl Fixture {
         let texture = match self.body(Command::TextureAdd {
             session,
             node: node.clone(),
-            path: key.to_string(),
+            path: Some(key.to_string()),
+            encoding: TextureEncoding::default(),
             texture: None,
         }) {
             ResponseBody::Texture { texture, .. } => texture,

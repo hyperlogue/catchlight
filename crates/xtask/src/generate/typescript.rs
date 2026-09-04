@@ -21,7 +21,10 @@
 
 use anyhow::{Context, Result};
 
-use super::{check_aliased, check_classified, command_tags, tags_of, Decl, KINDS, QUERY_UNION_DOC};
+use super::{
+    byte_rows, check_aliased, check_byte_bearing, check_classified, command_tags, tags_of, Decl,
+    BYTES_DOC, KINDS, QUERY_UNION_DOC,
+};
 
 /// Where the generated module lands, relative to the workspace root.
 const OUT: &str = "packages/core/src/protocol.gen.ts";
@@ -50,7 +53,45 @@ fn render(decls: &[Decl]) -> Result<String> {
         out.push_str(pretty(&decl.body).trim_end().trim_end_matches(';'));
         out.push_str(";\n");
     }
-    out.push_str(&kind_aliases(&command_tags(decls)?)?);
+    let tags = command_tags(decls)?;
+    out.push_str(&kind_aliases(&tags)?);
+    out.push_str(&command_bytes(&tags)?);
+    Ok(out)
+}
+
+/// The byte table, as a value rather than a type.
+///
+/// The kind split is types because a client picks a send method at compile
+/// time. This one has to be readable at run time: the tab looks up the command
+/// it is about to send to know what to attach, and a type cannot answer that.
+fn command_bytes(tags: &[String]) -> Result<String> {
+    check_byte_bearing(tags)?;
+
+    let mut out = String::from("\n");
+    push_comment(&mut out, &block_comment(BYTES_DOC), 0);
+    out.push_str(
+        "\nexport const COMMAND_BYTES: Record<\n\
+         \x20 string,\n\
+         \x20 {\n\
+         \x20   attachments: ReadonlyArray<{ kind: \"fixed\" | \"family\"; name: string }>;\n\
+         \x20   payload: boolean;\n\
+         \x20 }\n\
+         > = {\n",
+    );
+    for row in byte_rows() {
+        out.push_str(&format!("  {}: {{\n    attachments: [", row.tag));
+        for (i, (kind, name)) in row.attachments.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("\n      {{ kind: \"{kind}\", name: \"{name}\" }}"));
+        }
+        if !row.attachments.is_empty() {
+            out.push_str(",\n    ");
+        }
+        out.push_str(&format!("],\n    payload: {},\n  }},\n", row.payload));
+    }
+    out.push_str("};\n");
     Ok(out)
 }
 
@@ -359,5 +400,15 @@ mod tests {
             );
         }
         assert!(module.contains("export type QueryCommand = "));
+    }
+
+    /// The tab reads this one at run time to know what to attach, so it has to
+    /// be a value in the module rather than a type over it.
+    #[test]
+    fn the_byte_table_reaches_typescript_as_a_value() {
+        let module = render(&declarations(&config())).expect("the module renders");
+        assert!(module.contains("export const COMMAND_BYTES: Record<"));
+        assert!(module.contains(r#"{ kind: "fixed", name: "texture" }"#));
+        assert!(module.contains("payload: true"));
     }
 }

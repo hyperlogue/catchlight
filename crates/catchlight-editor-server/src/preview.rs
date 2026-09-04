@@ -14,8 +14,6 @@
 //! what the old per-render whole-puppet upload did unconditionally.
 //! Previewing one session repeatedly keeps its decode memo.
 
-use std::path::Path;
-
 use anyhow::{anyhow, Result};
 use catchlight_core::{Model, Pose, Puppet};
 use catchlight_editor_protocol::SessionId;
@@ -48,6 +46,10 @@ impl PreviewRenderer {
         Ok(Self { ctx, cache: None })
     }
 
+    /// One frame as PNG bytes.
+    ///
+    /// The frame is cleared to opaque white, so alpha is 1 everywhere and the
+    /// premultiplied readback needs nothing undone before it is encoded.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_png(
         &mut self,
@@ -57,17 +59,21 @@ impl PreviewRenderer {
         pose: &Pose,
         width: u32,
         height: u32,
-        camera_height: f32,
-        out: &Path,
-    ) -> Result<()> {
+        camera: Framing,
+    ) -> Result<Vec<u8>> {
         let (pixels, w, h) =
-            self.render_rgba(session, model, puppet, pose, width, height, camera_height)?;
-        if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        image::save_buffer(out, &pixels, w, h, image::ColorType::Rgba8)
-            .map_err(|e| anyhow!("png encode: {e}"))?;
-        Ok(())
+            self.render_rgba(session, model, puppet, pose, width, height, camera)?;
+        let mut png = Vec::new();
+        image::write_buffer_with_format(
+            &mut std::io::Cursor::new(&mut png),
+            &pixels,
+            w,
+            h,
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| anyhow!("png encode: {e}"))?;
+        Ok(png)
     }
 
     /// Render to tightly-packed RGBA8 bytes (the in-process viewport path).
@@ -80,7 +86,7 @@ impl PreviewRenderer {
         pose: &Pose,
         width: u32,
         height: u32,
-        camera_height: f32,
+        camera: Framing,
     ) -> Result<(Vec<u8>, u32, u32)> {
         let width = width.max(1);
         let height = height.max(1);
@@ -114,7 +120,7 @@ impl PreviewRenderer {
             .ctx
             .render_rgba(
                 &render_list,
-                Framing::centered(camera_height),
+                camera,
                 width,
                 height,
                 Some(wgpu::Color {

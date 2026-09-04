@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId, SessionInfo,
+    TextureEncoding,
 };
 use catchlight_editor_server::{bind_http, Editor, HttpOptions, StagingStorage, Storage};
 use tungstenite::client::IntoClientRequest;
@@ -884,7 +885,8 @@ fn a_texture_add_releases_the_image_it_read() {
             command: Command::TextureAdd {
                 session,
                 node: part.clone(),
-                path: "face.png".into(),
+                path: Some("face.png".into()),
+                encoding: TextureEncoding::default(),
                 texture: None,
             },
         },
@@ -904,7 +906,8 @@ fn a_texture_add_releases_the_image_it_read() {
             command: Command::TextureAdd {
                 session,
                 node: part,
-                path: "torn.png".into(),
+                path: Some("torn.png".into()),
+                encoding: TextureEncoding::default(),
                 texture: None,
             },
         },
@@ -958,7 +961,8 @@ fn a_texture_comes_back_as_the_payload_the_model_holds() {
             command: Command::TextureAdd {
                 session,
                 node: part,
-                path: "face.png".into(),
+                path: Some("face.png".into()),
+                encoding: TextureEncoding::default(),
                 texture: None,
             },
         },
