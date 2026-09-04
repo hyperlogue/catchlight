@@ -582,6 +582,44 @@ impl Puppet {
         &self.transforms
     }
 
+    /// The node's z as everything that orders drawables sorts by: its own
+    /// `z_order` plus every ancestor's, up to and including the root.
+    ///
+    /// `z_order` is authored relative to the parent, so a single node's field
+    /// says nothing about where it lands against a node in another subtree —
+    /// only the sum does. Higher draws in front. Every ancestor counts, a
+    /// disabled or fully transparent one included: hiding a node must not
+    /// reorder its descendants against anything else.
+    ///
+    /// O(depth). The climb is up the parent chain, a handful of links even in
+    /// a deep rig.
+    pub fn accumulated_z(&self, idx: NodeIdx) -> f32 {
+        let mut z = 0.0;
+        let mut at = Some(idx);
+        while let Some(id) = at {
+            let Some(node) = self.get(id) else { break };
+            z += node.z_order;
+            at = self.tree().get_parent(id);
+        }
+        z
+    }
+
+    /// The node's opacity: a Part's or a Composite's, `None` for a kind that
+    /// carries none.
+    ///
+    /// **Opacity is not inherited, unlike [`Self::accumulated_z`].** A
+    /// composite that is not fully opaque renders into its own target and
+    /// that target is blitted at the composite's opacity, so an ancestor's
+    /// opacity is applied once, at the blit, and multiplying it into a
+    /// descendant here would apply it twice.
+    pub fn opacity(&self, idx: NodeIdx) -> Option<f32> {
+        match &self.get(idx)?.kind {
+            NodeKind::Part(part) => Some(part.opacity),
+            NodeKind::Composite(composite) => Some(composite.opacity),
+            _ => None,
+        }
+    }
+
     /// Recompute the evaluated transforms without folding anything — for a
     /// caller that moved a node between ticks and needs where it landed.
     pub fn compute_transforms(&mut self) {

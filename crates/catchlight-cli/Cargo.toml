@@ -23,5 +23,10 @@ wgpu = { workspace = true }
 image = { workspace = true }
 pollster = { workspace = true }
 
+# `poses` writes its own CBOR schema. Same versions catchlight-core reads
+# `.clm` with, so the workspace resolves one of each.
+ciborium = "0.2.2"
+serde_bytes = "0.11.19"
+
 [lints]
 workspace = true

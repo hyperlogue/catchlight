@@ -10,12 +10,14 @@
 //! subtree can be cut out, a property set, or two files compared without a
 //! renderer, a puppet, or an image decoder anywhere in the process.
 //!
-//! [`render`] is the other half and the first of the inspection subcommands:
-//! it builds the puppet, draws it on a headless device through
-//! [`catchlight_wgpu::RenderContext`] and prints the render list it drew. It
-//! does decode, which is why the no-decode rule below is a property of the
-//! file operations rather than of the crate. `poses` and `isolate` come next
-//! and go the same way.
+//! The inspection subcommands are the other half, and they evaluate the model
+//! rather than editing the file. [`render`] builds the puppet, draws it on a
+//! headless device through [`catchlight_wgpu::RenderContext`] and prints the
+//! render list it drew. [`poses`] walks every key pose on the CPU and writes
+//! what each one moves as CBOR, which is what a rig evaluator scores against.
+//! Both decode textures, which is why the no-decode rule below is a property
+//! of the file operations rather than of the crate. `isolate` comes next and
+//! goes the same way.
 //!
 //! # The one dependency rule
 //!
@@ -71,6 +73,7 @@ pub mod diff;
 pub mod file;
 pub mod fragment;
 pub mod patch;
+pub mod poses;
 pub mod render;
 pub mod texture;
 
@@ -201,6 +204,12 @@ pub enum Error {
         path: PathBuf,
         #[source]
         source: image::ImageError,
+    },
+    #[error("{} could not be encoded as cbor: {source}", .path.display())]
+    Cbor {
+        path: PathBuf,
+        #[source]
+        source: ciborium::ser::Error<std::io::Error>,
     },
 }
 
