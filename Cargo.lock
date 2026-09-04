@@ -1538,10 +1538,15 @@ name = "catchlight-cli"
 version = "0.1.0"
 dependencies = [
  "catchlight-core",
+ "catchlight-wgpu",
  "clap",
+ "glam",
+ "image",
+ "pollster 0.3.0",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "wgpu",
 ]
 
 [[package]]

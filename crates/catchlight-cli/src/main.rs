@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use catchlight_cli::{diff, fragment, patch, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
+use catchlight_cli::{diff, fragment, patch, render, texture, Error, EXIT_DIFFERS, EXIT_ERROR};
 use catchlight_core::formats::clm::TextureAlpha;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -45,10 +45,12 @@ Exit status:
 #[derive(Parser)]
 #[command(
     name = "catchlight-cli",
-    about = "File-level operations on a .clm model file",
-    long_about = "File-level operations on a .clm model file.\n\nEvery command edits the file's \
-                  structure section directly. Texture bytes are carried through as they are and \
-                  no image is ever decoded, so these are cheap on a model of any size.",
+    about = "The command line over a .clm model file",
+    long_about = "The command line over a .clm model file.\n\nThe file operations edit the \
+                  file's structure section directly. Texture bytes are carried through as they \
+                  are and no image is ever decoded, so these are cheap on a model of any size. \
+                  `render` is the exception and the one command that needs a GPU: it draws the \
+                  model and prints the render list it drew.",
     after_help = AFTER_HELP,
     after_long_help = AFTER_HELP
 )]
@@ -127,6 +129,22 @@ enum Cmd {
     },
     /// Compare two model files by id.
     Diff { a: PathBuf, b: PathBuf },
+    /// Render the model at rest to a PNG and print the render list it drew.
+    Render {
+        /// The .clm to render.
+        file: PathBuf,
+        /// Where to write the PNG.
+        out: PathBuf,
+        /// Width in pixels.
+        #[arg(default_value_t = render::DEFAULT_WIDTH)]
+        width: u32,
+        /// Height in pixels.
+        #[arg(default_value_t = render::DEFAULT_HEIGHT)]
+        height: u32,
+        /// How many world units tall the camera frames, centred on the origin.
+        #[arg(default_value_t = render::DEFAULT_CAMERA_HEIGHT)]
+        camera_height: f32,
+    },
 }
 
 fn main() {
@@ -196,6 +214,16 @@ fn run() -> Result<i32, Error> {
                     println!("{}", fragment::render_line(requirement));
                 }
             }
+        }
+        Cmd::Render {
+            file,
+            out,
+            width,
+            height,
+            camera_height,
+        } => {
+            let rendered = render::run(&file, &out, width, height, camera_height)?;
+            println!("{rendered}");
         }
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;
