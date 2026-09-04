@@ -13,5 +13,15 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+# `render` (and the rest of the inspection subcommands) draw on a headless
+# device through `catchlight_wgpu::RenderContext`. The renderer is below the
+# line this crate keeps -- the editor server, its protocol and its clients are
+# not; see src/lib.rs.
+catchlight-wgpu = { workspace = true }
+glam = { workspace = true }
+wgpu = { workspace = true }
+image = { workspace = true }
+pollster = { workspace = true }
+
 [lints]
 workspace = true

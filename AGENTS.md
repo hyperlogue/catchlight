@@ -44,7 +44,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | --- | --- |
 | `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, slots and welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
 | `catchlight-import-inochi2d` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
-| `catchlight-cli` | The command line over a `.clm`: today the file ops (patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files; no image is decoded), with inspection subcommands to follow. Never depends on the editor server, its protocol, or a client of either. |
+| `catchlight-cli` | The command line over a `.clm`: the file ops (patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files; no image is decoded) plus `render`, which draws the model headless and prints its render list; `poses` and `isolate` to follow. Never depends on the editor server, its protocol, or a client of either. |
 | `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model, one per model serving every puppet of it; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws a frame of them. |
 | `catchlight-bevy` | Bevy integration: components, systems, and a render-graph node. |
 | `catchlight-editor-core` | Authoring tools over a `Model`: `WorkingMesh` (triangulation, automesh) and `Manifest`. Pure, wasm-safe. |
@@ -149,6 +149,8 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-wgpu/src/lib.rs` — on `create_headless_context`, the
   backend and adapter choice; on `create_orthographic_camera_at`, that the
   camera holds no axis flip
+- `crates/catchlight-wgpu/src/headless.rs` — the one headless render path, who
+  goes through it, and that the readback is premultiplied
 - `crates/catchlight-editor-protocol/src/lib.rs` — Ids on the wire, the five
   command kinds a client routes by, written down once and checked from both
   ends, a reply that names its revision, an add may name the Id it makes and
@@ -217,8 +219,6 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 
 - `cargo run -p catchlight-wgpu --example load-model -- <model.clm> [--control]` —
   winit viewer with optional per-param sliders.
-- `cargo run -p catchlight-wgpu --example render-to-png -- <model.clm> [out.png] [w] [h] [cam_h]`
-  — print the render list and write a PNG.
 - `cargo run -p catchlight-editor [-- <model.clm>]` — the editor GUI.
 - `cargo run -p catchlight-editor-cli` — thin client for an editor session.
 - `cargo run -p catchlight-editor-server -- [--socket <path>] [--store <dir>] --http 127.0.0.1:9377 --allow-origin http://localhost:5173 [<model.clm>]`
@@ -228,9 +228,10 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 - `bun run --filter catchlight-site dev` — the web editor at
   `http://localhost:5173/`: in-tab by default, `?server=http://127.0.0.1:9377`
   to use the local editor above.
-- `cargo run -p catchlight-cli -- <patch|replace-texture|extract|merge|requirements|diff>`
+- `cargo run -p catchlight-cli -- <patch|replace-texture|extract|merge|requirements|diff|render>`
   — the command line over a `.clm`; `--help` documents the Id charset and the
-  exit statuses.
+  exit statuses. `render <model.clm> <out.png> [w] [h] [cam_h]` prints the
+  render list and writes a PNG.
 - `cargo xtask build-wasm [--debug]` — build `packages/wasm/`.
 - `cargo xtask generate [typescript|python]` — regenerate
   `packages/core/src/protocol.gen.ts` and `python/catchlight/protocol_gen.py`;

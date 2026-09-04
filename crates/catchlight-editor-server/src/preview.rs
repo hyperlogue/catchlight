@@ -2,6 +2,10 @@
 //! reusing catchlight's production `render_list_ext` path. Nothing is built
 //! here except the render cache the GPU needs.
 //!
+//! The wgpu plumbing — target, stencil, the two pools, camera, submit,
+//! readback — is [`catchlight_wgpu::RenderContext`], the one headless render
+//! path, which `catchlight-cli` renders through as well.
+//!
 //! **One renderer, one session's cache.** The server keeps a single warm
 //! renderer for every session, and a render cache's slots name GPU state
 //! inside the renderer that prepared it — so two sessions cannot hold live
@@ -16,13 +20,12 @@ use anyhow::{anyhow, Result};
 use catchlight_core::{Model, Pose, Puppet};
 use catchlight_editor_protocol::SessionId;
 use catchlight_wgpu::{
-    collect, create_headless_context, create_orthographic_camera, read_texture_to_rgba,
-    CompositePool, FramebufferSnapshotPool, PrepareOptions, RenderCache, StencilTarget,
+    collect, create_headless_context, Framing, PrepareOptions, RenderCache, RenderContext,
     WgpuRenderer,
 };
 
 pub(super) struct PreviewRenderer {
-    renderer: WgpuRenderer,
+    ctx: RenderContext,
     /// The session whose model this cache was prepared from, and the cache.
     cache: Option<(SessionId, RenderCache)>,
 }
@@ -38,10 +41,11 @@ impl PreviewRenderer {
             queue,
             wgpu::TextureFormat::Rgba8UnormSrgb,
         ));
-        Ok(Self {
-            renderer,
-            cache: None,
-        })
+        // The first preview resizes this to whatever it asks for; the size
+        // here only has to be legal.
+        let ctx = RenderContext::with_renderer(renderer, 1, 1)
+            .map_err(|e| anyhow!("render context: {e}"))?;
+        Ok(Self { ctx, cache: None })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -85,7 +89,7 @@ impl PreviewRenderer {
             // The editor edits, so the decode memo earns its copy: a rebuild
             // after a keystroke re-uploads without re-decoding.
             let cache = RenderCache::prepare(
-                &mut self.renderer,
+                &mut self.ctx.renderer,
                 model,
                 PrepareOptions {
                     texture_halvings: 0,
@@ -102,57 +106,15 @@ impl PreviewRenderer {
         puppet.apply_pose(pose);
         puppet.tick(model, 0.0);
         cache
-            .refresh(&mut self.renderer, model, puppet)
+            .refresh(&mut self.ctx.renderer, model, puppet)
             .map_err(|e| anyhow!("refresh: {e}"))?;
         let render_list = collect(cache, puppet);
-        let aspect = width as f32 / height as f32;
-        self.renderer.begin_camera_submit();
-        self.renderer
-            .update_camera(create_orthographic_camera(camera_height, aspect));
 
-        let format = self.renderer.shared.surface_format;
-        let target = self
-            .renderer
-            .device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("preview-target"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let stencil = StencilTarget::new_for_pipelines(
-            &self.renderer.shared,
-            &self.renderer.device,
-            width,
-            height,
-        );
-        let mut composites = CompositePool::new(width, height);
-        let mut snapshots = FramebufferSnapshotPool::new(width, height);
-
-        let mut encoder =
-            self.renderer
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("preview-encoder"),
-                });
-        self.renderer
-            .render_list_ext(
+        let pixels = self
+            .ctx
+            .render_rgba(
                 &render_list,
-                &mut encoder,
-                &view,
-                &stencil,
-                &mut composites,
-                Some(&target),
-                Some(&mut snapshots),
+                Framing::centered(camera_height),
                 width,
                 height,
                 Some(wgpu::Color {
@@ -163,18 +125,6 @@ impl PreviewRenderer {
                 }),
             )
             .map_err(|e| anyhow!("render: {e}"))?;
-        self.renderer
-            .queue
-            .submit(std::iter::once(encoder.finish()));
-
-        let pixels = pollster::block_on(read_texture_to_rgba(
-            &self.renderer.device,
-            &self.renderer.queue,
-            &target,
-            width,
-            height,
-        ))
-        .map_err(|e| anyhow!("readback: {e}"))?;
         Ok((pixels, width, height))
     }
 }

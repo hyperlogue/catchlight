@@ -4,7 +4,7 @@ pub mod render_cache;
 pub mod renderer;
 
 pub use collect::*;
-pub use headless::{apply_uniform_scratch_deform, RenderContext};
+pub use headless::{apply_uniform_scratch_deform, Framing, RenderContext};
 pub use render_cache::{collect, CacheStats, PrepareOptions, RenderCache};
 pub use renderer::*;
 

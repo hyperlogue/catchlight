@@ -1,17 +1,21 @@
 //! `catchlight-cli` — the command line over a `.clm` model file.
 //!
-//! Today that is the file operations: patch a field, swap a texture, extract
-//! or merge an addon, list its requirements, diff two files. Every one of them
-//! works on the file's **structure section**: decode the container, edit the
-//! CBOR document, write it back. Texture bytes are moved around as opaque
-//! blobs and are never decoded, so patching one field of a model carrying a
-//! hundred megabytes of PNG costs a read and a write and nothing else. That is
-//! the whole point of Ids being author-facing strings stored in the file: a
+//! The file operations are patch a field, swap a texture, extract or merge an
+//! addon, list its requirements, diff two files. Every one of them works on
+//! the file's **structure section**: decode the container, edit the CBOR
+//! document, write it back. Texture bytes are moved around as opaque blobs and
+//! are never decoded, so patching one field of a model carrying a hundred
+//! megabytes of PNG costs a read and a write and nothing else. That is the
+//! whole point of Ids being author-facing strings stored in the file: a
 //! subtree can be cut out, a property set, or two files compared without a
-//! renderer, a puppet, or an image decoder anywhere in the process. The
-//! inspection subcommands land next — `poses`, `isolate`, `render` — and they
-//! do render, so the no-decode rule below is a property of the file ops, not
-//! of the crate.
+//! renderer, a puppet, or an image decoder anywhere in the process.
+//!
+//! [`render`] is the other half and the first of the inspection subcommands:
+//! it builds the puppet, draws it on a headless device through
+//! [`catchlight_wgpu::RenderContext`] and prints the render list it drew. It
+//! does decode, which is why the no-decode rule below is a property of the
+//! file operations rather than of the crate. `poses` and `isolate` come next
+//! and go the same way.
 //!
 //! # The one dependency rule
 //!
@@ -67,6 +71,7 @@ pub mod diff;
 pub mod file;
 pub mod fragment;
 pub mod patch;
+pub mod render;
 pub mod texture;
 
 use std::path::PathBuf;
@@ -178,6 +183,25 @@ pub enum Error {
     ExtractingARoot { node: String },
     #[error("{0}")]
     Install(#[from] InstallError),
+    /// The path does not end in `.clm`, so there is no format to read it as.
+    #[error(
+        "{} is not a .clm; convert it first with `cargo xtask import`",
+        .path.display()
+    )]
+    NotAClm { path: PathBuf },
+    /// The GPU could not be reached, or a frame could not be built, drawn or
+    /// read back. The one failure here that is not about the file.
+    #[error("{stage}: {message}")]
+    Gpu {
+        stage: &'static str,
+        message: String,
+    },
+    #[error("{} could not be written as a png: {source}", .path.display())]
+    Png {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
 }
 
 impl Error {
@@ -185,6 +209,16 @@ impl Error {
         Self::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    /// A GPU or render failure at `stage`. The wgpu layer's errors are
+    /// `Box<dyn Error>`, which is neither `Send` nor a `source` thiserror can
+    /// carry, so the text is taken here.
+    fn gpu(stage: &'static str, source: impl std::fmt::Display) -> Self {
+        Self::Gpu {
+            stage,
+            message: source.to_string(),
         }
     }
 }
