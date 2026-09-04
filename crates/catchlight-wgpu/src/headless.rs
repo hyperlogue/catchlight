@@ -2,8 +2,8 @@
 //! needs, a camera and a readback, held together and reused across frames.
 //!
 //! Everything that renders without a window goes through [`RenderContext`]:
-//! `catchlight-cli`'s `render` (and `isolate` when it lands) and the editor
-//! server's preview. That is the point of it being one type. A second
+//! `catchlight-cli`'s `render` and `isolate`, and the editor server's
+//! preview. That is the point of it being one type. A second
 //! hand-rolled copy of "make a target, size the stencil and the two pools,
 //! set the camera, submit, read back" is exactly how two callers drift apart
 //! on pool sizing, on the clear colour, or on what the bytes coming back
@@ -13,11 +13,14 @@
 //! [`RenderContext::resize`] is a no-op when the size already matches, so a
 //! caller previewing the same size over and over rebuilds nothing.
 //!
-//! **The readback is premultiplied.** The renderer composites into a
-//! premultiplied-alpha target and `render_rgba` hands back what the target
-//! holds, untouched. A caller writing a straight-alpha PNG of a frame with
-//! any transparency in it has to unpremultiply first; one clearing to an
-//! opaque colour has nothing to undo, because alpha is 1 everywhere.
+//! **The readback is premultiplied, linear under sRGB encoding.** The
+//! renderer composites into a premultiplied-alpha `Rgba8UnormSrgb` target,
+//! which blends in linear and encodes on store, and `render_rgba` hands back
+//! what the target holds, untouched. A caller writing a straight-alpha PNG of
+//! a frame with any transparency in it has to unpremultiply first, and in
+//! linear: `catchlight_core::texture::unpremultiply_linear_from_srgb_inplace`,
+//! not the byte-space inverse beside it. One clearing to an opaque colour has
+//! nothing to undo, because alpha is 1 everywhere.
 
 use catchlight_core::{NodeKind, Puppet, Vec2};
 

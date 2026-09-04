@@ -13,11 +13,12 @@
 //! The inspection subcommands are the other half, and they evaluate the model
 //! rather than editing the file. [`render`] builds the puppet, draws it on a
 //! headless device through [`catchlight_wgpu::RenderContext`] and prints the
-//! render list it drew. [`poses`] walks every key pose on the CPU and writes
-//! what each one moves as CBOR, which is what a rig evaluator scores against.
-//! Both decode textures, which is why the no-decode rule below is a property
-//! of the file operations rather than of the crate. `isolate` comes next and
-//! goes the same way.
+//! render list it drew. [`isolate`] draws a named handful of parts alone over
+//! transparency, framed to a world rect, as straight-alpha art. [`poses`]
+//! walks every key pose on the CPU and writes what each one moves as CBOR,
+//! which is what a rig evaluator scores against. All three decode textures,
+//! which is why the no-decode rule below is a property of the file operations
+//! rather than of the crate.
 //!
 //! # The one dependency rule
 //!
@@ -72,6 +73,7 @@
 pub mod diff;
 pub mod file;
 pub mod fragment;
+pub mod isolate;
 pub mod patch;
 pub mod poses;
 pub mod render;
@@ -211,6 +213,11 @@ pub enum Error {
         #[source]
         source: ciborium::ser::Error<std::io::Error>,
     },
+    /// An edit `isolate` makes to its in-memory copy of the model was
+    /// refused. Every one of them names a node this crate has already
+    /// checked, so reaching this is a bug here rather than bad input.
+    #[error("editing the model in memory failed: {0}")]
+    Model(#[from] ModelError),
 }
 
 impl Error {
