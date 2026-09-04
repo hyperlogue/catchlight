@@ -13,7 +13,7 @@ use catchlight_core::formats::clm::{self, ClmFile};
 
 /// `tests/models/` at the workspace root.
 pub fn models_dir() -> PathBuf {
-    // crates/catchlight-clm/ -> crates/ -> workspace root.
+    // crates/catchlight-cli/ -> crates/ -> workspace root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -68,10 +68,10 @@ pub fn write_clm(dir: &Path, name: &str, file: &ClmFile) -> PathBuf {
     path
 }
 
-/// The built `catchlight-clm` binary, for the tests that are about argument
+/// The built `catchlight-cli` binary, for the tests that are about argument
 /// parsing and exit statuses rather than about the operations.
 pub fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_catchlight-clm")
+    env!("CARGO_BIN_EXE_catchlight-cli")
 }
 
 /// Run the binary and return `(exit code, stdout, stderr)`.
@@ -79,7 +79,7 @@ pub fn run(args: &[&str]) -> (i32, String, String) {
     let output = std::process::Command::new(bin())
         .args(args)
         .output()
-        .expect("run catchlight-clm");
+        .expect("run catchlight-cli");
     (
         output.status.code().expect("exit code"),
         String::from_utf8_lossy(&output.stdout).into_owned(),

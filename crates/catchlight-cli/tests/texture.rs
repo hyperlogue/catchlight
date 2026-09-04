@@ -8,9 +8,9 @@
 
 mod common;
 
-use catchlight_clm::diff::diff;
-use catchlight_clm::texture;
-use catchlight_clm::Error;
+use catchlight_cli::diff::diff;
+use catchlight_cli::texture;
+use catchlight_cli::Error;
 use catchlight_core::formats::clm::{TextureAlpha, TextureEncoding};
 use catchlight_core::Model;
 

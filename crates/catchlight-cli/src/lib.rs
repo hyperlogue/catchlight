@@ -1,45 +1,37 @@
-//! `catchlight-clm` — file-level operations on a `.clm` model file.
+//! `catchlight-cli` — the command line over a `.clm` model file.
 //!
-//! Every operation here works on the file's **structure section**: decode the
-//! container, edit the CBOR document, write it back. Texture bytes are moved
-//! around as opaque blobs and are never decoded, so patching one field of a
-//! model carrying a hundred megabytes of PNG costs a read and a write and
-//! nothing else. That is the whole point of Ids being author-facing strings
-//! stored in the file: a subtree can be cut out, a property set, or two files
-//! compared without a renderer, a puppet, or an image decoder anywhere in the
-//! process.
+//! Today that is the file operations: patch a field, swap a texture, extract
+//! or merge an addon, list its requirements, diff two files. Every one of them
+//! works on the file's **structure section**: decode the container, edit the
+//! CBOR document, write it back. Texture bytes are moved around as opaque
+//! blobs and are never decoded, so patching one field of a model carrying a
+//! hundred megabytes of PNG costs a read and a write and nothing else. That is
+//! the whole point of Ids being author-facing strings stored in the file: a
+//! subtree can be cut out, a property set, or two files compared without a
+//! renderer, a puppet, or an image decoder anywhere in the process. The
+//! inspection subcommands land next — `poses`, `isolate`, `render` — and they
+//! do render, so the no-decode rule below is a property of the file ops, not
+//! of the crate.
 //!
-//! # Why this is its own binary and not the editor CLI
+//! # The one dependency rule
 //!
-//! `catchlight-editor-cli` was the other candidate — it already has the
-//! argument parsing and it is where agent tooling lives. It is the wrong home
-//! for three reasons, and the third is the one that decides it:
-//!
-//! 1. It is a **client of a running server**. Its every command opens the
-//!    editor's Unix socket and talks to a live session; nothing in it
-//!    touches a file. These commands are the opposite — they never need a
-//!    server, and a session's copy of a model is exactly the thing they must
-//!    not silently disagree with.
-//! 2. It is **Unix-only by construction** (`std::os::unix::net::UnixStream`,
-//!    unconditionally). The runtime is tier-1 on Windows and `.clm` is the
-//!    format everywhere, so file-level operations cannot live behind a
-//!    `cfg(unix)` wall. This crate compiles anywhere `catchlight-core` does.
-//! 3. `AGENTS.md`'s own decision draws the line: *"the editor-server Unix
-//!    socket is permanent Linux-only dev/agent tooling, not a product
-//!    surface"*. Putting a cross-platform, product-adjacent utility inside the
-//!    client of that socket blurs the exact boundary that decision exists to
-//!    keep sharp. It is also the seat AGENTS.md reserves for the one CLI the
-//!    removed inspection examples
-//!    are meant to come back as: they, too, are read-only questions about a
-//!    `.clm` on disk.
-//!
-//! `xtask` was the third option and is ruled out by what it is: repo build
-//! automation, `publish = false`, invoked as `cargo xtask`. These commands run
-//! against a user's model, not against this checkout.
+//! **This crate never depends on `catchlight-editor-protocol`,
+//! `catchlight-editor-server`, or any client of that server —
+//! `catchlight-editor`, `catchlight-editor-cli`, `catchlight-editor-wasm`.**
+//! Below that line sit the document, the reader that trusts nothing, `check`,
+//! the puppet and the renderer: tier-1 on Windows and wasm-safe. Above it is
+//! session machinery — revisions, undo, observers, per-session Id minting,
+//! transports, tokens — none of which changes what a valid model is. The rule
+//! buys a CLI that ships wherever the runtime ships, forces reuse downward, so
+//! anything this crate and the server both need lands in `catchlight-core` or
+//! `catchlight-wgpu` rather than being shared sideways, and keeps the tool
+//! answering about the file rather than about a session's copy of it. A test
+//! in `xtask` walks `cargo metadata`'s resolve graph and fails if any of the
+//! five ever appears in this crate's closure.
 //!
 //! # Invariants
 //!
-//! - **No image is ever decoded.** [`crate::file::read`] hands back
+//! - **No file operation decodes an image.** [`crate::file::read`] hands back
 //!   [`ClmTexture`](catchlight_core::formats::clm::ClmTexture) values holding
 //!   the file's verbatim source bytes; `patch`, `extract`, `merge`,
 //!   `requirements` and `diff` only ever move or compare those bytes, and

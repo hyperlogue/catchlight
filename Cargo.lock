@@ -1534,7 +1534,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "catchlight-clm"
+name = "catchlight-cli"
 version = "0.1.0"
 dependencies = [
  "catchlight-core",

@@ -83,7 +83,7 @@
 //!
 //! - **A session holds a complete model, never an addon fragment.** There is
 //!   deliberately no install/extract command pair and no multi-root tree
-//!   reply: `catchlight-clm` already installs, extracts and scans a fragment
+//!   reply: `catchlight-cli` already installs, extracts and scans a fragment
 //!   at the file level without a session, which is the whole workflow, and a
 //!   session that could open one would need every tree reply, the inspector
 //!   and the commit gate to grow a second shape for a case nothing asks for.

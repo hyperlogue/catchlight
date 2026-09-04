@@ -12,8 +12,8 @@
 
 mod common;
 
-use catchlight_clm::diff::diff;
-use catchlight_clm::{fragment, Error};
+use catchlight_cli::diff::diff;
+use catchlight_cli::{fragment, Error};
 use catchlight_core::id::{NodeId, SlotId, TexId};
 use catchlight_core::{InstallError, Model, Required, Requirement};
 
