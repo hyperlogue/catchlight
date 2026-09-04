@@ -199,9 +199,9 @@ impl Fixture {
         self.step(Command::MeshSet {
             session: self.session,
             node: node.clone(),
-            verts: vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0],
-            uvs: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
-            indices: vec![0, 1, 2, 0, 2, 3],
+            verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
             origin: [0.0, 0.0],
         });
         node
@@ -589,9 +589,9 @@ fn node_info_counts_the_mesh_a_part_holds() {
     f.step(Command::MeshSet {
         session,
         node: bare.clone(),
-        verts: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-        uvs: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-        indices: vec![0, 1, 2],
+        verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        indices: vec![[0, 1, 2]],
         origin: [0.0, 0.0],
     });
     assert_eq!(counts(&bare), (Some(3), Some(1)));
@@ -783,7 +783,7 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
         params: catchlight_editor_protocol::BindingParams::one(pull.clone()),
         node: f.body_part.clone(),
         cell: [1, 0],
-        offsets: vec![1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        offsets: vec![[1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
     });
 
     let bindings = f.bindings(&f.body_part);

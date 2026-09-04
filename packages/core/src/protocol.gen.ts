@@ -109,15 +109,13 @@ export type Command =
     z_order?: number | null,
     opacity?: number | null,
     enabled?: boolean | null,
-    texture?: TexId | null,
     /**
-     * Draw no texture at all. [`Self::texture`] says "point at this one" and
-     * absent says "unchanged", so this is the only spelling for "none", and a
-     * patch carrying both means this one. Ignored on a node that is not a
-     * part. Clearing the last part drawing a texture takes the texture with
-     * it — see [`ResponseBody::Node::dropped`].
+     * The texture the part draws, in three states: absent leaves it as it
+     * is, `null` draws none, an Id draws that one. Ignored on a node that is
+     * not a part. Dropping the last part drawing a texture takes the texture
+     * with it — see [`ResponseBody::Node::dropped`].
      */
-    clear_texture?: boolean,
+    texture?: TexId | null,
     lock_to_root?: boolean | null,
     blend_mode?: BlendMode | null,
     tint?: [number, number, number] | null,
@@ -394,7 +392,7 @@ export type Command =
     session: SessionId,
     node: NodeId,
     cell: [number, number],
-    offsets: Array<number>,
+    offsets: Array<[number, number]>,
     param: ParamId,
     param_y?: ParamId | null,
   }
@@ -402,9 +400,18 @@ export type Command =
     "cmd": "mesh_set",
     session: SessionId,
     node: NodeId,
-    verts: Array<number>,
-    uvs: Array<number>,
-    indices: Array<number>,
+    /**
+     * One `[x, y]` per vertex.
+     */
+    verts: Array<[number, number]>,
+    /**
+     * One `[u, v]` per vertex, as many as `verts`.
+     */
+    uvs: Array<[number, number]>,
+    /**
+     * One `[a, b, c]` per triangle, each a `verts` index.
+     */
+    indices: Array<[number, number, number]>,
     origin: [number, number],
   }
   | {
@@ -550,7 +557,7 @@ export type Command =
     "cmd": "scratch_deform",
     session: SessionId,
     node: NodeId,
-    offsets: Array<number>,
+    offsets: Array<[number, number]>,
   }
   | {
     "cmd": "preview",
@@ -696,15 +703,13 @@ export type NodePatch = {
   z_order?: number | null,
   opacity?: number | null,
   enabled?: boolean | null,
-  texture?: TexId | null,
   /**
-   * Draw no texture at all. [`Self::texture`] says "point at this one" and
-   * absent says "unchanged", so this is the only spelling for "none", and a
-   * patch carrying both means this one. Ignored on a node that is not a
-   * part. Clearing the last part drawing a texture takes the texture with
-   * it — see [`ResponseBody::Node::dropped`].
+   * The texture the part draws, in three states: absent leaves it as it
+   * is, `null` draws none, an Id draws that one. Ignored on a node that is
+   * not a part. Dropping the last part drawing a texture takes the texture
+   * with it — see [`ResponseBody::Node::dropped`].
    */
-  clear_texture?: boolean,
+  texture?: TexId | null,
   lock_to_root?: boolean | null,
   blend_mode?: BlendMode | null,
   tint?: [number, number, number] | null,
@@ -1146,7 +1151,9 @@ export type TreeNode = {
  * the way in: the colour fields reach parts and composites only, `texture`
  * only a part, `mg_*` only a mesh group, and the two mesh counts only the
  * kinds that hold a mesh. `texture` is also absent on a part that draws
- * none, which `kind` tells apart from a node that could not have one.
+ * none, which `kind` tells apart from a node that could not have one — a
+ * reply has nothing to undo, so it never carries the `null` a patch spells
+ * "draw none" with.
  */
 export type NodeInfo = {
   /**

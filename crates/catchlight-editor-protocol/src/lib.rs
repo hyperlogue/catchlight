@@ -55,6 +55,20 @@
 //!   [`ErrorCode::BadRequest`] before any command runs, not a validation the
 //!   server does afterwards.
 //!
+//! - **A field with three states is a merge patch.** Absent leaves the value
+//!   alone, `null` sets it to nothing, and a value sets it to that. Today
+//!   [`NodePatch::texture`] is the only one: a part keeps its texture, draws
+//!   none, or draws the Id named. One field carries the whole change, so
+//!   there is no second field to disagree with it and no rule about which of
+//!   the two wins.
+//!
+//! - **A list of points is a list of points.** Mesh vertices, UVs and deform
+//!   offsets travel as `[[x, y], …]` and triangles as `[[a, b, c], …]`, never
+//!   as one flat run of numbers. A dangling coordinate or a triangle missing
+//!   a corner is then [`ErrorCode::BadRequest`] from serde, before any
+//!   command runs, rather than a length check the server has to remember to
+//!   write.
+//!
 //! - **Nothing is addressed by name.** [`Name`](catchlight_core::id::Name) is
 //!   a label a person reads; two nodes may share one. Commands that carry a
 //!   `name` are setting or reporting that label.
@@ -483,15 +497,15 @@ pub enum Command {
         #[serde(default)]
         scale: Option<[f32; 2]>,
     },
-    /// Author per-vertex deform offsets (`[dx, dy, …]`, matching the mesh).
-    /// This is what commits a live drag.
+    /// Author per-vertex deform offsets, one `[dx, dy]` per mesh vertex and in
+    /// the mesh's own order. This is what commits a live drag.
     DeformVertices {
         session: SessionId,
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
         cell: [u32; 2],
-        offsets: Vec<f32>,
+        offsets: Vec<[f32; 2]>,
     },
     /// Replace a Part/MeshGroup mesh; every deform binding on the node is
     /// re-fitted onto the new topology in the same undoable step. Answers
@@ -499,9 +513,12 @@ pub enum Command {
     MeshSet {
         session: SessionId,
         node: NodeId,
-        verts: Vec<f32>,
-        uvs: Vec<f32>,
-        indices: Vec<u32>,
+        /// One `[x, y]` per vertex.
+        verts: Vec<[f32; 2]>,
+        /// One `[u, v]` per vertex, as many as `verts`.
+        uvs: Vec<[f32; 2]>,
+        /// One `[a, b, c]` per triangle, each a `verts` index.
+        indices: Vec<[u32; 3]>,
         origin: [f32; 2],
     },
     /// Derive a part's mesh from its own texture's alpha and apply it, with
@@ -671,13 +688,13 @@ pub enum Command {
     /// length produces no revision and no undo entry; committing it is
     /// [`Command::DeformVertices`], which produces exactly one.
     ///
-    /// `offsets` is `[dx, dy, …]` matching the node's mesh; an empty list
-    /// clears the scratch deform. It is dropped the next time the model
-    /// changes, because the puppet rebakes.
+    /// `offsets` is one `[dx, dy]` per mesh vertex, in the mesh's own order;
+    /// an empty list clears the scratch deform. It is dropped the next time
+    /// the model changes, because the puppet rebakes.
     ScratchDeform {
         session: SessionId,
         node: NodeId,
-        offsets: Vec<f32>,
+        offsets: Vec<[f32; 2]>,
     },
     Preview {
         session: SessionId,
@@ -1699,6 +1716,16 @@ display_as_wire!(
     BindingTarget,
 );
 
+/// A present JSON value — `null` included — as `Some`, for a field whose
+/// absence and whose `null` mean different things (the merge-patch idiom).
+fn present_as_some<'de, D, T>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(de).map(Some)
+}
+
 /// Fields to change on a node; every field is optional (absent = unchanged).
 /// Kind-specific fields are ignored on nodes of another kind: the colour fields
 /// (`opacity`, `blend_mode`, `tint`, `screen_tint`) reach parts and composites
@@ -1721,15 +1748,20 @@ pub struct NodePatch {
     pub opacity: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub texture: Option<TexId>,
-    /// Draw no texture at all. [`Self::texture`] says "point at this one" and
-    /// absent says "unchanged", so this is the only spelling for "none", and a
-    /// patch carrying both means this one. Ignored on a node that is not a
-    /// part. Clearing the last part drawing a texture takes the texture with
-    /// it — see [`ResponseBody::Node::dropped`].
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub clear_texture: bool,
+    /// The texture the part draws, in three states: absent leaves it as it
+    /// is, `null` draws none, an Id draws that one. Ignored on a node that is
+    /// not a part. Dropping the last part drawing a texture takes the texture
+    /// with it — see [`ResponseBody::Node::dropped`].
+    #[serde(
+        default,
+        deserialize_with = "present_as_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    // ts-rs would spell the double option `TexId | null | null`; the shape a
+    // client reads is the same one a plain `Option` has, `?` for absent and
+    // `null` for "draw none".
+    #[cfg_attr(feature = "ts", ts(as = "Option<TexId>"))]
+    pub texture: Option<Option<TexId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_to_root: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2133,7 +2165,9 @@ fn yes() -> bool {
 /// the way in: the colour fields reach parts and composites only, `texture`
 /// only a part, `mg_*` only a mesh group, and the two mesh counts only the
 /// kinds that hold a mesh. `texture` is also absent on a part that draws
-/// none, which `kind` tells apart from a node that could not have one.
+/// none, which `kind` tells apart from a node that could not have one — a
+/// reply has nothing to undo, so it never carries the `null` a patch spells
+/// "draw none" with.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NodeInfo {
@@ -2503,7 +2537,15 @@ mod tests {
         assert_eq!(patch.tint, Some([0.1, 0.2, 0.3]));
         assert_eq!(patch.screen_tint, Some([0.4, 0.5, 0.6]));
         assert_eq!(patch.mask_threshold, Some(0.75));
-        assert_eq!(patch.texture.as_ref().map(TexId::as_str), Some("tex-1"));
+        // A reply naming a texture parses as the patch state that points at
+        // it — a `Some(Some(..))`, not the `Some(None)` that would clear it.
+        assert_eq!(
+            patch
+                .texture
+                .as_ref()
+                .map(|t| t.as_ref().map(TexId::as_str)),
+            Some(Some("tex-1")),
+        );
         // The mesh counts are a read, not a setting: they ride the reply and
         // a patch parsed from it simply has nowhere to put them.
         assert!(line.contains("\"vertex_count\":4"), "{line}");

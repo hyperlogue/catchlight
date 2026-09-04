@@ -2,10 +2,10 @@
 
 //! Which texture a part draws, including none of them.
 //!
-//! `texture` on a patch means "point at this one" and an absent field means
-//! "unchanged", so the two of them leave no way to say "draw nothing".
-//! `clear_texture` is that way, and these pin what it does to the model and to
-//! the texture it was the last part holding.
+//! `texture` on a patch is a JSON merge patch and so has three states: absent
+//! leaves the part drawing what it drew, `null` makes it draw none, and an Id
+//! points it at that one. These pin all three — what each does to the model
+//! and to the texture the part was the last one holding.
 
 use std::collections::HashMap;
 use std::io;
@@ -155,7 +155,7 @@ fn clearing_a_parts_texture_drops_the_texture_nothing_else_draws() {
     let dropped = match f.set(
         &part,
         NodePatch {
-            clear_texture: true,
+            texture: Some(None),
             ..NodePatch::default()
         },
     ) {
@@ -177,7 +177,7 @@ fn clearing_a_texture_is_one_undoable_edit() {
     f.set(
         &part,
         NodePatch {
-            clear_texture: true,
+            texture: Some(None),
             ..NodePatch::default()
         },
     );
@@ -188,47 +188,25 @@ fn clearing_a_texture_is_one_undoable_edit() {
     assert_eq!(f.drawn(&part), Some(texture));
 }
 
-/// `clear_texture` wins over `texture`: one says "draw none" and the other
-/// "draw this one", so a patch carrying both says "none".
+/// The three states are three JSON shapes, told apart by serde before the
+/// command runs. One field says the whole change, so there is no pair of
+/// fields to carry together and no rule about which of them wins.
 #[test]
-fn clearing_beats_pointing_when_a_patch_carries_both() {
+fn absent_null_and_an_id_are_three_different_edits() {
     let mut f = Fixture::new(&["hair.png", "skin.png"]);
-    let (hair, _) = f.part("hair.png");
-    let (skin, skin_tex) = f.part("skin.png");
+    let (hair, hair_tex) = f.part("hair.png");
+    let (_, skin_tex) = f.part("skin.png");
 
-    f.set(
-        &hair,
-        NodePatch {
-            texture: Some(skin_tex.clone()),
-            clear_texture: true,
-            ..NodePatch::default()
-        },
-    );
+    let patch = |json: &str| -> NodePatch { serde_json::from_str(json).unwrap() };
 
-    assert_eq!(f.drawn(&hair), None);
-    assert_eq!(
-        f.drawn(&skin),
-        Some(skin_tex),
-        "the other part is untouched"
-    );
-}
+    f.set(&hair, patch(r#"{"name": "Fringe"}"#));
+    assert_eq!(f.drawn(&hair), Some(hair_tex), "absent changes nothing");
 
-/// A patch that carries neither is not an edit to the albedo at all: a name
-/// change on a part leaves what it draws alone.
-#[test]
-fn a_patch_that_names_no_texture_leaves_the_one_the_part_draws() {
-    let mut f = Fixture::new(&["hair.png"]);
-    let (part, texture) = f.part("hair.png");
+    f.set(&hair, patch(&format!(r#"{{"texture": "{skin_tex}"}}"#)));
+    assert_eq!(f.drawn(&hair), Some(skin_tex), "an Id points at that one");
 
-    f.set(
-        &part,
-        NodePatch {
-            name: Some("Fringe".into()),
-            ..NodePatch::default()
-        },
-    );
-
-    assert_eq!(f.drawn(&part), Some(texture));
+    f.set(&hair, patch(r#"{"texture": null}"#));
+    assert_eq!(f.drawn(&hair), None, "null draws none");
 }
 
 /// Clearing on a node that could never draw is ignored, the way every other
@@ -251,7 +229,7 @@ fn clearing_on_a_node_that_is_not_a_part_is_ignored() {
     let dropped = match f.set(
         &group,
         NodePatch {
-            clear_texture: true,
+            texture: Some(None),
             ..NodePatch::default()
         },
     ) {
@@ -261,8 +239,8 @@ fn clearing_on_a_node_that_is_not_a_part_is_ignored() {
     assert!(dropped.is_empty());
 }
 
-/// Pointing at a texture the model does not carry is still refused, and
-/// `clear_texture` does not smuggle a bad Id past that check by winning.
+/// Pointing at a texture the model does not carry is refused, and the null
+/// state is a different edit rather than a way around that check.
 #[test]
 fn pointing_at_an_unknown_texture_is_still_an_error() {
     let mut f = Fixture::new(&["hair.png"]);
@@ -274,7 +252,7 @@ fn pointing_at_an_unknown_texture_is_still_an_error() {
             session,
             node: part,
             patch: NodePatch {
-                texture: Some(TexId::new("tex-deadbeef").unwrap()),
+                texture: Some(Some(TexId::new("tex-deadbeef").unwrap())),
                 ..NodePatch::default()
             },
         }),

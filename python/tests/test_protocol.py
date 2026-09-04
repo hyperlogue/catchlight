@@ -15,6 +15,7 @@ import dataclasses
 import pytest
 
 from catchlight import (
+    CLEAR,
     COMMAND_KINDS,
     AutoMeshGrid,
     BindingList,
@@ -25,6 +26,7 @@ from catchlight import (
     EventDocumentChanged,
     MeshAuto,
     MeshCopy,
+    MeshSet,
     NodeAdd,
     NodeKindArg,
     NodeSet,
@@ -116,12 +118,12 @@ ROUND_TRIPS: list[tuple[CommandKind, object, dict]] = [
     ),
     (
         CommandKind.SCRATCH,
-        ScratchDeform(session=3, node="root/part-1", offsets=[0.5, -0.5]),
+        ScratchDeform(session=3, node="root/part-1", offsets=[(0.5, -0.5)]),
         {
             "cmd": "scratch_deform",
             "session": 3,
             "node": "root/part-1",
-            "offsets": [0.5, -0.5],
+            "offsets": [[0.5, -0.5]],
         },
     ),
     (
@@ -157,12 +159,57 @@ def test_an_absent_option_is_left_off_rather_than_sent_as_null() -> None:
 def test_a_flattened_struct_is_flat_on_the_wire() -> None:
     """`NodeSet` carries a `NodePatch` under `#[serde(flatten)]`, and
     `BindingKey` carries its params the same way, so both are one level deep."""
-    assert NodeSet(session=1, node="hair", opacity=0.5, clear_texture=True).to_wire() == {
+    assert NodeSet(session=1, node="hair", opacity=0.5, texture="tex-1").to_wire() == {
         "cmd": "node_set",
         "session": 1,
         "node": "hair",
         "opacity": 0.5,
-        "clear_texture": True,
+        "texture": "tex-1",
+    }
+
+
+def test_a_merge_patch_field_says_which_of_its_three_states_it_means() -> None:
+    """`texture` is the one field with three of them: `None` leaves the part
+    drawing what it drew, `CLEAR` makes it draw none, and a `TexId` points it
+    at that texture. Absent and null are the two a two-state field cannot tell
+    apart, which is why `CLEAR` exists."""
+    absent = NodeSet(session=1, node="hair").to_wire()
+    assert "texture" not in absent
+
+    assert NodeSet(session=1, node="hair", texture=CLEAR).to_wire() == {
+        "cmd": "node_set",
+        "session": 1,
+        "node": "hair",
+        "texture": None,
+    }
+
+    assert NodeSet(session=1, node="hair", texture="tex-1").to_wire() == {
+        "cmd": "node_set",
+        "session": 1,
+        "node": "hair",
+        "texture": "tex-1",
+    }
+
+
+def test_a_mesh_travels_as_lists_of_points() -> None:
+    """A vertex is a pair and a triangle is a triple, so a flat run that lost
+    half a coordinate is refused by the editor's parser rather than by a length
+    check it had to remember to write."""
+    assert MeshSet(
+        session=1,
+        node="hair",
+        verts=[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)],
+        uvs=[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)],
+        indices=[(0, 1, 2)],
+        origin=(0.0, 0.0),
+    ).to_wire() == {
+        "cmd": "mesh_set",
+        "session": 1,
+        "node": "hair",
+        "verts": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        "uvs": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        "indices": [[0, 1, 2]],
+        "origin": [0.0, 0.0],
     }
 
 

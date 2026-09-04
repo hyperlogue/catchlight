@@ -268,6 +268,11 @@ impl ReplicaState {
 
     /// Write a node's scratch deform from a flat `[dx, dy, ...]` array. A
     /// trailing odd value is dropped rather than read as half a vertex.
+    ///
+    /// Flat where the wire's `scratch_deform` carries pairs: this is not the
+    /// wire. A drag calls it once per pointer move from JavaScript, where the
+    /// cheap thing to hand over is one `Float32Array`, and there is no parser
+    /// in between for a pair to buy a check from.
     pub fn set_scratch_deform(&mut self, node: &str, offsets: &[f32]) -> bool {
         let Some(idx) = self.node_idx(node) else {
             return false;
@@ -1026,9 +1031,9 @@ mod tests {
         let meshed = call(
             &editor,
             json!({"id": 4, "cmd": "mesh_set", "session": session.0, "node": part,
-                   "verts": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-                   "uvs": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-                   "indices": [0, 1, 2], "origin": [0.0, 0.0]}),
+                   "verts": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                   "uvs": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                   "indices": [[0, 1, 2]], "origin": [0.0, 0.0]}),
         );
         assert_eq!(meshed["reply"], "ok", "reply was {meshed}");
 
@@ -1227,9 +1232,9 @@ mod tests {
         let reply = call(
             editor,
             json!({"id": 21, "cmd": "mesh_set", "session": session.0, "node": node,
-                   "verts": [-half, -half, half, -half, half, half, -half, half],
-                   "uvs": [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
-                   "indices": [0, 1, 2, 0, 2, 3],
+                   "verts": [[-half, -half], [half, -half], [half, half], [-half, half]],
+                   "uvs": [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+                   "indices": [[0, 1, 2], [0, 2, 3]],
                    "origin": [0.0, 0.0]}),
         );
         assert_eq!(reply["reply"], "ok", "reply was {reply}");

@@ -268,9 +268,7 @@ function Fields({
             label="Texture"
             value={info.texture ?? NO_TEXTURE}
             options={textureOptions(textures)}
-            commit={(next) =>
-              next === NO_TEXTURE ? submit({ clear_texture: true }) : submit({ texture: next })
-            }
+            commit={(next) => submit({ texture: next === NO_TEXTURE ? null : next })}
           />
         </Row>
       )}
@@ -560,10 +558,10 @@ const RGB = ["r", "g", "b"] as const;
 /**
  * What a part with no albedo shows, and what picking it authors.
  *
- * `node_set` reads `texture` as "point at this one" and reads the field being
- * absent as "unchanged", so the empty value cannot travel under that key at
- * all. `clear_texture` is the spelling for "draw none", which is why this
- * option commits a different field from every other one in the select.
+ * A select's value is a string, and the empty one is not a `TexId`. `texture`
+ * on `node_set` is a merge patch — absent is "unchanged", `null` is "draw
+ * none", an Id is "draw this" — so this option is the one that sends `null`
+ * under the same key as every other one.
  */
 const NO_TEXTURE = "";
 

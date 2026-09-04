@@ -215,9 +215,10 @@ enum NodeCmd {
         enabled: Option<bool>,
         #[arg(long)]
         texture: Option<TexId>,
-        /// Draw no texture at all. Wins over `--texture`; the last part
-        /// drawing a texture takes it with it.
-        #[arg(long = "clear-texture")]
+        /// Draw no texture at all. The wire says this with one field, so this
+        /// and `--texture` cannot both be given; the last part drawing a
+        /// texture takes it with it.
+        #[arg(long = "clear-texture", conflicts_with = "texture")]
         clear_texture: bool,
         #[arg(long = "lock-to-root")]
         lock_to_root: Option<bool>,
@@ -267,8 +268,8 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum MeshCmd {
-    /// Replace a node's mesh from a JSON file
-    /// `{"verts": [...], "uvs": [...], "indices": [...], "origin": [x, y]}`.
+    /// Replace a node's mesh from a JSON file `{"verts": [[x, y], …],
+    /// "uvs": [[u, v], …], "indices": [[a, b, c], …], "origin": [x, y]}`.
     /// Deform bindings on the node are re-fitted in the same undo step, and
     /// every seam slot on the part is emptied — the reply lists them.
     Set {
@@ -733,7 +734,7 @@ enum PresenceCmd {
     /// half of a vertex drag. Never bumps the revision, never records undo.
     Scratch {
         node: NodeId,
-        /// A JSON array of `[dx, dy, …]`, two per mesh vertex.
+        /// A JSON array of `[dx, dy]` pairs, one per mesh vertex.
         #[arg(long)]
         file: Option<String>,
         /// Drop the scratch deform instead.
@@ -1118,9 +1119,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 MeshCmd::Set { node, file } => {
                     #[derive(serde::Deserialize)]
                     struct MeshJson {
-                        verts: Vec<f32>,
-                        uvs: Vec<f32>,
-                        indices: Vec<u32>,
+                        verts: Vec<[f32; 2]>,
+                        uvs: Vec<[f32; 2]>,
+                        indices: Vec<[u32; 3]>,
                         #[serde(default)]
                         origin: [f32; 2],
                     }
@@ -1452,8 +1453,11 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
                 z_order: *z_order,
                 opacity: *opacity,
                 enabled: *enabled,
-                texture: texture.clone(),
-                clear_texture: *clear_texture,
+                texture: match (clear_texture, texture) {
+                    (true, _) => Some(None),
+                    (false, Some(tex)) => Some(Some(tex.clone())),
+                    (false, None) => None,
+                },
                 lock_to_root: *lock_to_root,
                 blend_mode: *blend_mode,
                 tint: tint.as_deref().map(parse_vec3).transpose()?,
@@ -1583,8 +1587,8 @@ fn parse_weight(s: &str) -> Result<SlotWeight> {
     })
 }
 
-/// A JSON array of per-vertex offsets, `[dx, dy, …]`.
-fn read_offsets(path: &str) -> Result<Vec<f32>> {
+/// A JSON array of per-vertex offsets, one `[dx, dy]` each.
+fn read_offsets(path: &str) -> Result<Vec<[f32; 2]>> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
 }
 

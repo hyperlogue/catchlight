@@ -82,7 +82,7 @@ describe("the inspector", () => {
     await view.unmount();
   });
 
-  test("the texture select points at one, and clears with its own field", async () => {
+  test("the texture select points at one, and clears with a null under the same key", async () => {
     const { wasm, session, node, view } = await inspecting("part");
     // Something to clear: a part drawing nothing is already at "none", and a
     // select that did not move authors nothing either way.
@@ -103,10 +103,10 @@ describe("the inspector", () => {
 
     const cleared = nodeSets(wasm);
     expect(cleared).toHaveLength(1);
-    // `texture` has no spelling for "point at nothing", so the empty value
-    // must not travel under it — `clear_texture` is the whole command.
-    expect(cleared[0]).toMatchObject({ cmd: "node_set", node, clear_texture: true });
-    expect(keys(cleared[0])).toEqual(["clear_texture", "cmd", "id", "node", "session"]);
+    // `texture` is a merge patch, so "draw none" is an explicit null under
+    // the same key the Id travels under — not a second field.
+    expect(cleared[0]).toMatchObject({ cmd: "node_set", node, texture: null });
+    expect(keys(cleared[0])).toEqual(["cmd", "id", "node", "session", "texture"]);
 
     // And picking a texture again is still the ordinary field.
     texture.value = "tex-1";

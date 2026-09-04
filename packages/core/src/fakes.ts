@@ -172,14 +172,14 @@ export class FakeEditor implements WasmEditor {
         this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "node", node }, doc.rev);
       }
-      // Only the albedo: it is the one node field the fake holds, because
-      // `texture` and `clear_texture` are two spellings of it and a panel has
-      // to be able to tell them apart.
+      // Only the albedo: it is the one node field the fake holds, and its
+      // three states are what a panel has to be able to tell apart — absent
+      // is unchanged, null is "draw none", an Id is "draw this".
       case "node_set": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
-        if (request.clear_texture) delete doc.albedo[request.node];
-        else if (request.texture) doc.albedo[request.node] = request.texture;
+        if (request.texture === null) delete doc.albedo[request.node];
+        else if (request.texture !== undefined) doc.albedo[request.node] = request.texture;
         doc.rev += 1;
         this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "node", node: request.node }, doc.rev);

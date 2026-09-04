@@ -343,9 +343,9 @@ fn a_part_that_already_has_a_mesh_keeps_its_mapping() {
     f.body(Command::MeshSet {
         session,
         node: part.clone(),
-        verts: vec![-32.0, -32.0, 32.0, -32.0, 32.0, 32.0, -32.0, 32.0],
-        uvs: vec![0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
-        indices: vec![0, 1, 2, 0, 2, 3],
+        verts: vec![[-32.0, -32.0], [32.0, -32.0], [32.0, 32.0], [-32.0, 32.0]],
+        uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+        indices: vec![[0, 1, 2], [0, 2, 3]],
         origin: [0.0, 0.0],
     });
     f.auto(&part, AutoMesh::default());
@@ -363,9 +363,9 @@ fn a_trace_is_one_undoable_edit() {
     f.body(Command::MeshSet {
         session,
         node: part.clone(),
-        verts: vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0],
-        uvs: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
-        indices: vec![0, 1, 2],
+        verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        indices: vec![[0, 1, 2]],
         origin: [0.0, 0.0],
     });
     let before = f.mesh(&part);

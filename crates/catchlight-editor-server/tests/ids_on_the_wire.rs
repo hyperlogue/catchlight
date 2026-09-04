@@ -56,9 +56,9 @@ fn quad(session: catchlight_editor_protocol::SessionId, node: NodeId) -> Command
     Command::MeshSet {
         session,
         node,
-        verts: vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0],
-        uvs: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
-        indices: vec![0, 1, 2, 0, 2, 3],
+        verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        indices: vec![[0, 1, 2], [0, 2, 3]],
         origin: [0.0, 0.0],
     }
 }
