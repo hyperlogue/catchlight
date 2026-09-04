@@ -101,3 +101,16 @@ jobs:
       - run: nix develop -c bash -c 'cd python && uv run pytest -q'
       # The one step that wants the browser, and the only one that pays for it.
       - run: nix develop -c bun run --filter catchlight-site e2e
+
+  packages:
+    name: nix packages
+    runs-on: ubuntu-latest
+    steps:
+      # No `lfs: true`: the flake's source filter keeps only what a build
+      # reads, and nothing under `tests/` is that.
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      # The three shipped binaries, built from the flake so the packaging
+      # cannot rot while the workspace moves under it.
+      - run: nix build --print-build-logs .#catchlight-editor-server .#catchlight-cli .#catchlight-editor-cli
