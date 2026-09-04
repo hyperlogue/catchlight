@@ -294,7 +294,7 @@ fn other_commands(session: SessionId, node: NodeId) -> Vec<Command> {
             session,
             pose: Vec::new(),
             size: None,
-            out: None,
+            camera: None,
         },
         Command::PresenceSet {
             session,

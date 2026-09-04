@@ -30,7 +30,7 @@ use catchlight_core::{BindingKey, BindingTarget as CoreBindingTarget, Model, Mod
 use catchlight_editor_protocol::{
     BindingKeyEntry, BindingParams, BindingTarget, Command, NodeId, NodeKind, NodePatch, ParamId,
     ParamInfo, PhysicsKind, PhysicsTargets, Rename, Reply, Request, ResponseBody, SessionId,
-    SlotAddr, TexId, TreeNode, WeldInfo,
+    SlotAddr, TexId, TextureEncoding as WireTextureEncoding, TreeNode, WeldInfo,
 };
 use catchlight_editor_server::{slot_info, weld_info, Editor};
 use eframe::egui;
@@ -2824,7 +2824,11 @@ impl App {
                     self.guard_texture_drop(DroppingEdit::Send(Box::new(Command::TextureAdd {
                         session,
                         node,
-                        path: path.display().to_string(),
+                        // The desktop app names a filesystem path rather than
+                        // attaching bytes, so the editor reads the encoding off
+                        // the key's tail and this field goes unread.
+                        path: Some(path.display().to_string()),
+                        encoding: WireTextureEncoding::default(),
                         texture: None,
                     })));
                 }

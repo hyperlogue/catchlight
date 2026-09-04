@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use catchlight_core::formats::clm::ClmMesh;
 use catchlight_editor_protocol::{
     AutoMesh, Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
+    TextureEncoding,
 };
 use catchlight_editor_server::{Editor, Storage};
 
@@ -134,7 +135,8 @@ impl Fixture {
         self.body(Command::TextureAdd {
             session,
             node: node.clone(),
-            path: key.to_string(),
+            path: Some(key.to_string()),
+            encoding: TextureEncoding::default(),
             texture: None,
         });
         node

@@ -214,7 +214,18 @@ export type Command =
     "cmd": "texture_add",
     session: SessionId,
     node: NodeId,
-    path: string,
+    /**
+     * A storage key to read the image from instead of the attachment —
+     * the transitional form, and the one place an encoding is still
+     * sniffed off a key's tail. Exactly one of this and the attachment,
+     * else [`ErrorCode::BadRequest`]. Goes away once every client sends
+     * the attachment.
+     */
+    path?: string | null,
+    /**
+     * How to read the attached bytes. The field, never a sniff.
+     */
+    encoding: TextureEncoding,
     /**
      * The Id to create it under. Absent generates one; an Id the model
      * already carries is [`ErrorCode::DuplicateId`].
@@ -538,7 +549,16 @@ export type Command =
     session: SessionId,
     pose: Array<ParamPose>,
     size: [number, number] | null,
-    out: string | null,
+    camera: Camera | null,
+  }
+  | {
+    "cmd": "import_file",
+    session: SessionId,
+    parent?: NodeId | null,
+  }
+  | {
+    "cmd": "import_manifest",
+    session: SessionId,
   };
 
 export type NodeKindArg =
@@ -609,6 +629,14 @@ export type BlendMode =
   | "add"
   | "inverse"
   | "subtract";
+
+/**
+ * How to read a texture's bytes. The field a command carries beside its
+ * image, so nothing has to guess from a file name.
+ */
+export type TextureEncoding =
+  | "png"
+  | "tga";
 
 /**
  * A property a binding drives with one number per cell.
@@ -947,7 +975,9 @@ export type ErrorCode =
   | "io"
   | "image"
   | "preview"
-  | "native_only";
+  | "native_only"
+  | "bulk_over_http"
+  | "not_empty";
 
 export type ResponseBody =
   | {
@@ -1264,8 +1294,11 @@ export type WeldInfo = {
   pairs: Array<SlotPair>,
 };
 
+/**
+ * What a [`Command::Preview`] rendered. The pixels are the reply's payload;
+ * this says how to read them.
+ */
 export type PreviewInfo = {
-  path: string,
   width: number,
   height: number,
 };
@@ -1328,7 +1361,9 @@ export type DocumentCommandTag =
   | "weld_delete"
   | "physics_add"
   | "undo"
-  | "redo";
+  | "redo"
+  | "import_file"
+  | "import_manifest";
 export type DocumentCommand = Extract<Command, { cmd: DocumentCommandTag }>;
 
 /**
@@ -1393,3 +1428,43 @@ export type ServerQueryCommand = Extract<Command, { cmd: ServerQueryCommandTag }
  */
 export type QueryCommandTag = ReplicaQueryCommandTag | ServerQueryCommandTag;
 export type QueryCommand = ReplicaQueryCommand | ServerQueryCommand;
+
+/**
+ * What bytes each command carries, keyed by its `cmd` tag.
+ *
+ * A command absent from this table carries none. `attachments` names what
+ * travels in beside the command: a `fixed` name is one the command needs,
+ * and a `family` admits any number of `<name>:<suffix>` attachments.
+ * `payload` says the reply carries bytes back.
+ */
+export const COMMAND_BYTES: Record<
+  string,
+  {
+    attachments: ReadonlyArray<{ kind: "fixed" | "family"; name: string }>;
+    payload: boolean;
+  }
+> = {
+  texture_add: {
+    attachments: [
+      { kind: "fixed", name: "texture" },
+    ],
+    payload: false,
+  },
+  import_file: {
+    attachments: [
+      { kind: "fixed", name: "model" },
+    ],
+    payload: false,
+  },
+  import_manifest: {
+    attachments: [
+      { kind: "fixed", name: "manifest" },
+      { kind: "family", name: "texture" },
+    ],
+    payload: false,
+  },
+  preview: {
+    attachments: [],
+    payload: true,
+  },
+};

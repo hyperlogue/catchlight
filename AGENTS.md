@@ -161,10 +161,11 @@ that enforces them, not here. Add new ones there.
   goes through it, and that the readback is premultiplied
 - `crates/catchlight-editor-protocol/src/lib.rs` — Ids on the wire, the five
   command kinds a client routes by, written down once and checked from both
-  ends, a reply that names its revision, an add may name the Id it makes and
-  never calls it `id`
+  ends, bytes travel beside a command and never in it, a reply that names its
+  revision, an add may name the Id it makes and never calls it `id`
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
-  undo budget, an observer never runs under a lock, each session draws its own
+  undo budget, an observer never runs under a lock, bytes never enter except
+  inside the command that uses them, each session draws its own
   Ids, the editor traces a part's alpha; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the HTTP
   transport, why loopback is not a permission, the token before the body, and

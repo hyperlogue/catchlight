@@ -99,6 +99,17 @@
 //!   relative to the manifest, and the tail after the last `.` picks a texture
 //!   decoder. A client that builds keys should not assume more.
 //!
+//! - **Bytes travel beside a command, never in it.** A command that needs
+//!   bytes declares the names they arrive under in [`COMMAND_BYTES`], and one
+//!   whose reply is bytes declares that there too; [`Command::bytes`] reads
+//!   the table by tag, so a command absent from it carries none. How the
+//!   names and the blobs are framed is each transport's business — the wire
+//!   types here are the same either way. A name the command did not declare,
+//!   and a declared [`Attachment::Fixed`] that did not arrive, are both
+//!   [`ErrorCode::BadRequest`] before the command runs; an
+//!   [`Attachment::Family`]'s suffixes are the command's own to check against
+//!   its fields.
+//!
 //! - **Every command says what it does, in one place.** [`COMMAND_KINDS`]
 //!   gives each one a [`CommandKind`], and that is what a client routes by.
 //!   `Document` moves the session's revision, records undo and is saved.
@@ -314,14 +325,26 @@ pub enum Command {
         session: SessionId,
         node: NodeId,
     },
-    /// Read an image from `path` and give it to `node`, which has to be a
-    /// part: a texture is added and assigned in one edit. If that part was
-    /// the last thing drawing whatever it drew before, that texture goes with
-    /// this edit — see [`ResponseBody::Texture`].
+    /// Give an image to `node`, which has to be a part: a texture is added
+    /// and assigned in one edit. If that part was the last thing drawing
+    /// whatever it drew before, that texture goes with this edit — see
+    /// [`ResponseBody::Texture`].
+    ///
+    /// The bytes arrive as attachment `texture`, and `encoding` says how to
+    /// read them.
     TextureAdd {
         session: SessionId,
         node: NodeId,
-        path: String,
+        /// A storage key to read the image from instead of the attachment —
+        /// the transitional form, and the one place an encoding is still
+        /// sniffed off a key's tail. Exactly one of this and the attachment,
+        /// else [`ErrorCode::BadRequest`]. Goes away once every client sends
+        /// the attachment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// How to read the attached bytes. The field, never a sniff.
+        #[serde(default)]
+        encoding: TextureEncoding,
         /// The Id to create it under. Absent generates one; an Id the model
         /// already carries is [`ErrorCode::DuplicateId`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -679,6 +702,12 @@ pub enum Command {
         node: NodeId,
         offsets: Vec<[f32; 2]>,
     },
+    /// Render one frame of a session and answer with the PNG as the reply's
+    /// payload.
+    ///
+    /// The camera is explicit: absent it is the default height at the origin,
+    /// and what a tab last looked at is never consulted, so a script's output
+    /// does not depend on anyone else's view.
     Preview {
         session: SessionId,
         #[serde(default)]
@@ -686,7 +715,32 @@ pub enum Command {
         #[serde(default)]
         size: Option<[u32; 2]>,
         #[serde(default)]
-        out: Option<String>,
+        camera: Option<Camera>,
+    },
+    /// Import a `.clm` — complete or fragment, textures inside — from
+    /// attachment `model` into an open session.
+    ///
+    /// `parent` absent replaces the session's whole model, and needs a
+    /// pristine one (what [`Command::SessionNew`] makes) and a complete
+    /// document: anything else is [`ErrorCode::NotEmpty`]. `parent` present
+    /// installs the document's roots under that node, overriding whatever
+    /// parent the document's own roots name; Ids travel verbatim, and a
+    /// collision or a missing requirement is refused whole.
+    ImportFile {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<NodeId>,
+    },
+    /// Build a model from a manifest and its images and replace the session's
+    /// model with it.
+    ///
+    /// The manifest arrives as attachment `manifest`; each texture it names
+    /// arrives as `texture:<ref>`, where `<ref>` is the path string the
+    /// manifest spells, verbatim. A reference with no attachment is
+    /// [`ErrorCode::Manifest`] naming it. The session has to be pristine, on
+    /// the same rule as [`Command::ImportFile`].
+    ImportManifest {
+        session: SessionId,
     },
 }
 
@@ -799,6 +853,78 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("presence_get", CommandKind::ServerQuery),
     ("scratch_deform", CommandKind::Scratch),
     ("preview", CommandKind::ServerQuery),
+    ("import_file", CommandKind::Document),
+    ("import_manifest", CommandKind::Document),
+];
+
+/// One name a command's bytes travel under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attachment {
+    /// Exactly this name, and the command needs it.
+    Fixed(&'static str),
+    /// Any name of the form `<family>:<suffix>`, as many as the command's own
+    /// fields call for. What the suffixes have to be is the command's to
+    /// check: `Family("texture")` admits `texture:body.png` and says nothing
+    /// about whether the manifest asked for one.
+    Family(&'static str),
+}
+
+impl Attachment {
+    /// Does `name` belong to this attachment?
+    pub fn admits(&self, name: &str) -> bool {
+        match self {
+            Self::Fixed(fixed) => name == *fixed,
+            Self::Family(family) => name
+                .strip_prefix(family)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some_and(|suffix| !suffix.is_empty()),
+        }
+    }
+}
+
+/// What bytes one command carries in, and whether its reply carries bytes out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bytes {
+    pub attachments: &'static [Attachment],
+    pub payload: bool,
+}
+
+/// Every command that carries bytes, and which ones.
+///
+/// The companion to [`COMMAND_KINDS`], written down once and checked from both
+/// ends the same way: `xtask generate` fails on a tag here that is not a
+/// command, and emits the table to TypeScript and Python so a client knows
+/// what to attach without a table of its own. A command absent from this list
+/// carries no bytes at all.
+pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
+    (
+        "texture_add",
+        Bytes {
+            attachments: &[Attachment::Fixed("texture")],
+            payload: false,
+        },
+    ),
+    (
+        "import_file",
+        Bytes {
+            attachments: &[Attachment::Fixed("model")],
+            payload: false,
+        },
+    ),
+    (
+        "import_manifest",
+        Bytes {
+            attachments: &[Attachment::Fixed("manifest"), Attachment::Family("texture")],
+            payload: false,
+        },
+    ),
+    (
+        "preview",
+        Bytes {
+            attachments: &[],
+            payload: true,
+        },
+    ),
 ];
 
 impl Command {
@@ -876,6 +1002,8 @@ impl Command {
             Command::PresenceGet { .. } => "presence_get",
             Command::ScratchDeform { .. } => "scratch_deform",
             Command::Preview { .. } => "preview",
+            Command::ImportFile { .. } => "import_file",
+            Command::ImportManifest { .. } => "import_manifest",
         }
     }
 
@@ -895,6 +1023,18 @@ impl Command {
             .find(|(name, _)| *name == tag)
             .map(|(_, kind)| *kind)
             .unwrap_or(CommandKind::Document)
+    }
+
+    /// What bytes this command carries, or `None` when it carries none.
+    ///
+    /// Resolved through [`COMMAND_BYTES`] by tag, the same way
+    /// [`Command::kind`] resolves through [`COMMAND_KINDS`].
+    pub fn bytes(&self) -> Option<&'static Bytes> {
+        let tag = self.tag();
+        COMMAND_BYTES
+            .iter()
+            .find(|(name, _)| *name == tag)
+            .map(|(_, bytes)| bytes)
     }
 
     /// The session this command addresses, if it addresses one.
@@ -974,7 +1114,9 @@ impl Command {
             | Command::PresenceSet { session, .. }
             | Command::PresenceGet { session }
             | Command::ScratchDeform { session, .. }
-            | Command::Preview { session, .. } => Some(*session),
+            | Command::Preview { session, .. }
+            | Command::ImportFile { session, .. }
+            | Command::ImportManifest { session } => Some(*session),
         }
     }
 }
@@ -1380,6 +1522,36 @@ impl From<catchlight_core::interpolate::InterpolateMode> for Interpolate {
             M::Stepped => Self::Stepped,
             M::Linear => Self::Linear,
             M::Cubic => Self::Cubic,
+        }
+    }
+}
+
+/// How to read a texture's bytes. The field a command carries beside its
+/// image, so nothing has to guess from a file name.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum TextureEncoding {
+    #[default]
+    Png,
+    Tga,
+}
+
+impl From<TextureEncoding> for catchlight_core::formats::clm::TextureEncoding {
+    fn from(encoding: TextureEncoding) -> Self {
+        match encoding {
+            TextureEncoding::Png => Self::Png,
+            TextureEncoding::Tga => Self::Tga,
+        }
+    }
+}
+
+impl From<catchlight_core::formats::clm::TextureEncoding> for TextureEncoding {
+    fn from(encoding: catchlight_core::formats::clm::TextureEncoding) -> Self {
+        use catchlight_core::formats::clm::TextureEncoding as E;
+        match encoding {
+            E::Png => Self::Png,
+            E::Tga => Self::Tga,
         }
     }
 }
@@ -1849,6 +2021,12 @@ pub enum ErrorCode {
     /// The command needs a filesystem or a GPU and this build has neither
     /// (wasm).
     NativeOnly,
+    /// A command carrying bytes was sent over a transport that cannot carry
+    /// them; send it over one that can.
+    BulkOverHttp,
+    /// An import that would replace the whole model was asked of a session
+    /// that already holds one; import into a fresh session instead.
+    NotEmpty,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2174,8 +2352,9 @@ pub struct NodeInfo {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+/// What a [`Command::Preview`] rendered. The pixels are the reply's payload;
+/// this says how to read them.
 pub struct PreviewInfo {
-    pub path: String,
     pub width: u32,
     pub height: u32,
 }
@@ -2194,6 +2373,56 @@ pub fn default_socket_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The byte table is what a client reads to know what to attach, so its
+    /// tags have to be tags and its names have to match the way the server
+    /// matches them.
+    #[test]
+    fn a_command_finds_its_own_bytes_in_the_table() {
+        for (tag, _) in COMMAND_BYTES {
+            assert!(
+                COMMAND_KINDS.iter().any(|(known, _)| known == tag),
+                "{tag} carries bytes but is not a command",
+            );
+        }
+        let texture_add = Command::TextureAdd {
+            session: SessionId(1),
+            node: node("face"),
+            path: None,
+            encoding: TextureEncoding::Png,
+            texture: None,
+        };
+        let bytes = texture_add.bytes().expect("texture_add carries bytes");
+        assert_eq!(bytes.attachments, &[Attachment::Fixed("texture")]);
+        assert!(!bytes.payload);
+        assert!(Command::SessionList.bytes().is_none());
+    }
+
+    #[test]
+    fn a_family_admits_its_own_suffixes_and_nothing_else() {
+        let family = Attachment::Family("texture");
+        assert!(family.admits("texture:images/face.png"));
+        assert!(!family.admits("texture"), "a family needs a suffix");
+        assert!(!family.admits("texture:"), "and not an empty one");
+        assert!(!family.admits("textures:face"));
+        assert!(Attachment::Fixed("model").admits("model"));
+        assert!(!Attachment::Fixed("model").admits("model:one"));
+    }
+
+    /// A code a client branches on has to survive the wire under the word it
+    /// is written down as.
+    #[test]
+    fn the_new_refusals_travel_as_their_own_words() {
+        for (code, word) in [
+            (ErrorCode::BulkOverHttp, "\"bulk_over_http\""),
+            (ErrorCode::NotEmpty, "\"not_empty\""),
+        ] {
+            let json = serde_json::to_string(&code).expect("a code serializes");
+            assert_eq!(json, word);
+            let back: ErrorCode = serde_json::from_str(&json).expect("and parses back");
+            assert_eq!(back, code);
+        }
+    }
 
     fn node(id: &str) -> NodeId {
         NodeId::new(id).expect("valid id")

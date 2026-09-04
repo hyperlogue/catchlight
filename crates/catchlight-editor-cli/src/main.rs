@@ -121,7 +121,10 @@ enum Cmd {
         #[command(subcommand)]
         action: PresenceCmd,
     },
-    /// Render a preview PNG and print its path.
+    /// Render a preview and print the size that came back.
+    ///
+    /// The PNG itself is the reply's payload, which this socket does not yet
+    /// carry — `catchlight-cli render` writes a file today.
     Preview {
         /// Pose a param: `--param <id>=0.5` (repeatable).
         #[arg(long = "param")]
@@ -129,9 +132,12 @@ enum Cmd {
         /// Output size, e.g. `512x512`.
         #[arg(long)]
         size: Option<String>,
-        /// Output path (defaults to a temp file).
-        #[arg(long)]
-        out: Option<String>,
+        /// Orthographic height in world units (defaults to the editor's).
+        #[arg(long = "camera-height")]
+        camera_height: Option<f32>,
+        /// Camera centre, e.g. `0,120`. Needs `--camera-height`.
+        #[arg(long = "camera-center")]
+        camera_center: Option<String>,
     },
 }
 
@@ -1306,21 +1312,41 @@ fn build_command(cli: &Cli) -> Result<Command> {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
                 node: node.clone(),
-                path: path.clone(),
+                // This client names a key rather than attaching bytes, and
+                // the editor reads the encoding off the key's tail, so the
+                // field goes unread.
+                path: Some(path.clone()),
+                encoding: TextureEncoding::default(),
                 texture: id.clone(),
             },
             TextureCmd::List => Command::TextureList {
                 session: resolve_session(cli)?,
             },
         },
-        Cmd::Preview { params, size, out } => Command::Preview {
+        Cmd::Preview {
+            params,
+            size,
+            camera_height,
+            camera_center,
+        } => Command::Preview {
             session: resolve_session(cli)?,
             pose: params
                 .iter()
                 .map(|p| parse_param(p))
                 .collect::<Result<_>>()?,
             size: size.as_deref().map(parse_size).transpose()?,
-            out: out.clone(),
+            camera: camera_height
+                .map(|height| -> Result<Camera> {
+                    Ok(Camera {
+                        center: camera_center
+                            .as_deref()
+                            .map(parse_center)
+                            .transpose()?
+                            .unwrap_or([0.0, 0.0]),
+                        height,
+                    })
+                })
+                .transpose()?,
         },
     })
 }
@@ -1477,6 +1503,14 @@ fn parse_size(s: &str) -> Result<[u32; 2]> {
         .split_once(['x', 'X'])
         .ok_or_else(|| anyhow!("size must look like 512x512, got {s:?}"))?;
     Ok([w.trim().parse()?, h.trim().parse()?])
+}
+
+/// `<x>,<y>` — where the camera looks, in world units.
+fn parse_center(s: &str) -> Result<[f32; 2]> {
+    let (x, y) = s
+        .split_once(',')
+        .ok_or_else(|| anyhow!("a camera centre must look like 0,120, got {s:?}"))?;
+    Ok([x.trim().parse()?, y.trim().parse()?])
 }
 
 /// `<param id>=<value>`. Params are scalar, so there is one number.
@@ -1681,10 +1715,7 @@ fn print_body(body: &ResponseBody) {
             }
         }
         ResponseBody::Preview { preview } => {
-            println!(
-                "preview -> {} ({}x{})",
-                preview.path, preview.width, preview.height
-            )
+            println!("preview {}x{}", preview.width, preview.height)
         }
         ResponseBody::Saved { path } => println!("saved -> {path}"),
         ResponseBody::ManifestRequirements { textures } => {

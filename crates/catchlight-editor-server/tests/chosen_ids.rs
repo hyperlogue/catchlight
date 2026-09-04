@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeKind, NodeKindArg, ParamId, PhysicsKind, PhysicsTargets, Reply,
-    Request, ResponseBody, SessionId, TexId,
+    Request, ResponseBody, SessionId, TexId, TextureEncoding,
 };
 use catchlight_editor_server::{Editor, Storage};
 
@@ -129,7 +129,8 @@ fn an_add_creates_under_the_id_it_was_given() {
             Command::TextureAdd {
                 session,
                 node: hair.clone(),
-                path: "hair.png".into(),
+                path: Some("hair.png".into()),
+                encoding: TextureEncoding::default(),
                 texture: Some(albedo.clone()),
             }
         ),
@@ -209,7 +210,8 @@ fn an_id_the_model_already_carries_is_refused_under_its_own_code() {
     let texture = || Command::TextureAdd {
         session,
         node: hair.clone(),
-        path: "hair.png".into(),
+        path: Some("hair.png".into()),
+        encoding: TextureEncoding::default(),
         texture: Some(albedo.clone()),
     };
 

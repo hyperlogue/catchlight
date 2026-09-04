@@ -53,7 +53,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use catchlight_editor_protocol as proto;
 use syn::{Attribute, Expr, Fields, File, Item, Lit, Meta, Type};
 
-use super::{check_aliased, check_classified, tags_of, Decl, KINDS, QUERY_UNION_DOC};
+use super::{
+    byte_rows, check_aliased, check_byte_bearing, check_classified, tags_of, Decl, BYTES_DOC,
+    KINDS, QUERY_UNION_DOC,
+};
 
 /// Where the generated module lands, relative to the workspace root.
 ///
@@ -689,13 +692,22 @@ fn render(decls: &[Decl]) -> Result<String> {
     let tags = command_wire_tags(&wires)?;
     check_classified(&tags)?;
     check_aliased(&tags)?;
+    check_byte_bearing(&tags)?;
 
     let mut out = String::from(HEADER);
     out.push_str(PREAMBLE);
     out.push_str(&render_kind_enum());
+    out.push_str(ATTACHMENTS);
     out.push_str(RUNTIME);
 
-    let mut exports: Vec<String> = vec!["Clear".into(), "CLEAR".into(), "CommandKind".into()];
+    let mut exports: Vec<String> = vec![
+        "Clear".into(),
+        "CLEAR".into(),
+        "CommandKind".into(),
+        "AttachmentKind".into(),
+        "Attachment".into(),
+        "CommandBytes".into(),
+    ];
     for wire in &wires {
         out.push_str(&render_wire(wire, &tags, &mut exports)?);
     }
@@ -810,6 +822,8 @@ fn render_wire(wire: &Wire, tags: &[String], exports: &mut Vec<String>) -> Resul
             if is_command {
                 out.push_str(&render_command_kinds(variants)?);
                 exports.push("COMMAND_KINDS".into());
+                out.push_str(&render_command_bytes());
+                exports.push("COMMAND_BYTES".into());
                 out.push_str(&render_kind_aliases(variants, tags)?);
                 for kind in KINDS {
                     exports.push(kind.name.to_string());
@@ -951,6 +965,30 @@ fn render_command_kinds(variants: &[Variant]) -> Result<String> {
     Ok(out)
 }
 
+fn render_command_bytes() -> String {
+    let mut out = String::from("\n\n");
+    out.push_str(&comment_block(BYTES_DOC, 0));
+    out.push_str("COMMAND_BYTES: dict[str, CommandBytes] = {\n");
+    for row in byte_rows() {
+        out.push_str(&format!("    {:?}: CommandBytes(\n        (", row.tag));
+        for (kind, name) in &row.attachments {
+            out.push_str(&format!(
+                "\n            Attachment(AttachmentKind.{}, {name:?}),",
+                kind.to_uppercase()
+            ));
+        }
+        if !row.attachments.is_empty() {
+            out.push_str("\n        ");
+        }
+        out.push_str(&format!(
+            "),\n        {},\n    ),\n",
+            if row.payload { "True" } else { "False" }
+        ));
+    }
+    out.push_str("}\n");
+    out
+}
+
 fn render_kind_aliases(variants: &[Variant], tags: &[String]) -> Result<String> {
     let class_of: BTreeMap<&str, &str> = variants
         .iter()
@@ -1060,6 +1098,37 @@ from functools import lru_cache
 from types import UnionType
 from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
 
+"#;
+
+/// The two records the byte table is built out of. Written here rather than
+/// generated from the Rust types: they carry no wire shape of their own, and a
+/// client reads them the way it reads `CommandKind`.
+const ATTACHMENTS: &str = r#"
+
+class AttachmentKind(StrEnum):
+    """Whether an attachment name is exact or a family of them."""
+
+    # Exactly this name, and the command needs it.
+    FIXED = "fixed"
+    # Any number of `<name>:<suffix>` attachments; the suffixes are the
+    # command's own to say.
+    FAMILY = "family"
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """One name a command's bytes travel under."""
+
+    kind: AttachmentKind
+    name: str
+
+
+@dataclass(frozen=True)
+class CommandBytes:
+    """What one command carries in, and whether its reply carries bytes out."""
+
+    attachments: tuple[Attachment, ...]
+    payload: bool
 "#;
 
 const RUNTIME: &str = r#"
