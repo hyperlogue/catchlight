@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use catchlight_cli::{
-    diff, fragment, patch, poses, render, texture, Error, EXIT_DIFFERS, EXIT_ERROR,
+    diff, fragment, isolate, patch, poses, render, texture, Error, EXIT_DIFFERS, EXIT_ERROR,
 };
 use catchlight_core::formats::clm::TextureAlpha;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -140,6 +140,33 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
+    /// Draw only the parts named by --keep, over transparency, into a
+    /// straight-alpha PNG framed to a world rect.
+    Isolate {
+        /// The .clm to read.
+        file: PathBuf,
+        /// The node ids of the parts to draw. Everything else is hidden.
+        #[arg(long, required = true, value_delimiter = ',')]
+        keep: Vec<String>,
+        /// Node ids whose masks come off the kept parts, so a clipped part
+        /// renders as its full art. Naming a node that masks nothing is fine.
+        #[arg(long, value_delimiter = ',')]
+        strip_masks: Vec<String>,
+        /// The world-space window, y-up, x0,y0 its minimum corner. A
+        /// minimum corner is usually negative, so hyphens are values here.
+        #[arg(long, value_name = "x0,y0,w,h", allow_hyphen_values = true)]
+        rect: String,
+        /// Pixels per world unit.
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+        /// Pose one param, repeatable. Every other param sits at its default.
+        /// A negative value is a value, not a flag.
+        #[arg(long, value_name = "param=value", allow_hyphen_values = true)]
+        set: Vec<String>,
+        /// Where to write the PNG.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
     /// Render the model at rest to a PNG and print the render list it drew.
     Render {
         /// The .clm to render.
@@ -229,6 +256,25 @@ fn run() -> Result<i32, Error> {
         Cmd::Poses { file, out } => {
             let written = poses::run(&file, &out)?;
             println!("{written}");
+        }
+        Cmd::Isolate {
+            file,
+            keep,
+            strip_masks,
+            rect,
+            scale,
+            set,
+            out,
+        } => {
+            let request = isolate::Request {
+                keep,
+                strip_masks,
+                rect: isolate::Rect::parse(&rect)?,
+                scale,
+                set,
+            };
+            let isolated = isolate::run(&file, &out, &request)?;
+            println!("{isolated}");
         }
         Cmd::Render {
             file,

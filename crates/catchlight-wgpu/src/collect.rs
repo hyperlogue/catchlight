@@ -5,7 +5,7 @@
 //!
 //! - **Z order: higher `z_order` draws in front.** A node's z is its own
 //!   plus every ancestor's, which is `Puppet::accumulated_z` and reaches this
-//!   walk through [`DrawSource::accumulated_z`] — the rule is in core so the
+//!   walk through `DrawSource::accumulated_z` — the rule is in core so the
 //!   CLI's `poses` dump reports the same order the renderer draws. The sort
 //!   is ascending, so the last draw is the frontmost. `.inx` is authored the
 //!   other way round, lower in front; the flip happens at import, never
