@@ -53,6 +53,13 @@ impl ModelFormat {
 /// Textures arrive source-encoded, exactly as the file stores them — a render
 /// cache is what decodes and downsamples them, so there is no texture budget
 /// here.
+///
+/// A cache decodes them at their full authored size by default. A host that
+/// wants them smaller — a phone, a thumbnail, a browser tab holding several
+/// models — asks for that when it prepares the cache, not here: in
+/// `catchlight-wgpu`, `PrepareOptions::texture_halvings` halves every texture
+/// that many times on the way to the GPU. Nothing in this crate can name that
+/// type, so this is the pointer rather than a link.
 pub fn load_model(bytes: &[u8], format: ModelFormat) -> Result<Model, ModelError> {
     match format {
         ModelFormat::Clm => Model::from_clm_bytes(bytes),
