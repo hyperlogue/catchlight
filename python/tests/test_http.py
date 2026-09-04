@@ -1,44 +1,27 @@
 """The HTTP door, against a server serving one.
 
 The socket and the door carry the same commands, so what is worth testing here
-is only what differs: the token, the events the socket never pushes, and the
-bytes that go over HTTP because the editor's store is not this filesystem.
+is only what differs: the token, the loopback rule, and the bytes that go over
+HTTP because the editor's store is not this filesystem. How the connection
+under those is made and remade is `test_transport.py`.
 """
 
 from __future__ import annotations
 
-import time
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from catchlight import (
     Client,
-    EventDocumentChanged,
     HttpTransport,
     LaunchedServer,
     SessionList,
     TransportError,
     connect,
-    launch,
 )
-from catchlight.protocol_gen import Event, ResponseBodySessions
+from catchlight.protocol_gen import ResponseBodySessions
 from support import write_png
-
-
-@pytest.fixture
-def served(tmp_path: Path) -> Iterator[LaunchedServer]:
-    """A server with both doors open. Port 0 asks the OS for a free one, and
-    the server prints which it got."""
-    with launch(store=tmp_path, http="127.0.0.1:0") as running:
-        yield running
-
-
-@pytest.fixture
-def over_http(served: LaunchedServer) -> Iterator[Client]:
-    with served.connect() as client:
-        yield client
 
 
 def test_the_launch_reports_the_address_and_token_the_server_printed(
@@ -61,16 +44,20 @@ def test_a_client_over_the_door_answers_a_query_and_a_document_command(
     assert over_http.revision(session) is not None
 
 
-def test_a_document_command_pushes_an_event_the_socket_never_would(
+def test_an_edit_over_the_door_is_the_editors_and_not_the_connections(
     served: LaunchedServer, over_http: Client
 ) -> None:
-    """The editor fires observers inside `handle`, so the event may reach the
-    connection before the reply it belongs to. Either order queues it."""
+    """Every POST is its own round trip, so what an edit changed has to outlive
+    the connection that carried it — and be there for a client on the other
+    door, which is how a script and a tab share one editor."""
     session = over_http.new()
     over_http.add_part(session, name="Body")
-    changed = _await_document_changed(over_http, session)
-    assert changed.rev == over_http.revision(session)
-    assert served.client().events() == [], "the socket pushes none of this"
+    rev = over_http.revision(session)
+
+    body = served.client().send(SessionList())
+    assert isinstance(body, ResponseBodySessions)
+    listed = [info for info in body.sessions if info.session == session]
+    assert [info.rev for info in listed] == [rev]
 
 
 def test_the_bytes_the_door_hands_out_are_the_bytes_a_save_writes(
@@ -101,24 +88,16 @@ def test_a_texture_staged_over_http_is_the_one_the_editor_reads(
         assert transport.get_texture(session, texture) == source.read_bytes()
 
 
-def test_a_wrong_token_never_opens_the_door(served: LaunchedServer) -> None:
-    with pytest.raises(TransportError):
-        connect(served.http_url or "", "0" * 64)
+def test_a_wrong_token_is_refused_on_the_first_command(served: LaunchedServer) -> None:
+    """A command is one POST, so there is no connection for `connect` to open
+    and nothing for it to refuse; the token is checked on the first request."""
+    client = connect(served.http_url or "", "0" * 64)
+    with pytest.raises(TransportError) as raised:
+        client.send(SessionList())
+    assert "401" in str(raised.value)
 
 
 def test_a_url_that_is_not_loopback_is_refused_without_sending_the_token() -> None:
     with pytest.raises(TransportError) as raised:
         connect("http://example.test:9377", "unused")
     assert "loopback" in str(raised.value)
-
-
-def _await_document_changed(client: Client, session: int) -> EventDocumentChanged:
-    deadline = time.monotonic() + 5.0
-    seen: list[Event] = []
-    while time.monotonic() < deadline:
-        seen += client.events()
-        for event in seen:
-            if isinstance(event, EventDocumentChanged) and event.session == session:
-                return event
-        time.sleep(0.02)
-    raise AssertionError(f"no document_changed for session {session}, saw {seen}")

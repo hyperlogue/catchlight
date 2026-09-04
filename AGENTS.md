@@ -49,7 +49,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | `catchlight-bevy` | Bevy integration: components, systems, and a render-graph node. |
 | `catchlight-editor-core` | Authoring tools over a `Model`: `WorkingMesh` (triangulation, automesh) and `Manifest`. Pure, wasm-safe. |
 | `catchlight-editor-protocol` | Wire types: transport-agnostic request/reply/event over newline-delimited JSON, keyed by the model's own Ids. |
-| `catchlight-editor-server` | Multi-session editor server: a `Model` per session plus a warm headless renderer, driven in-process, over a Unix socket, or by a browser tab over a WebSocket (commands and events) and HTTP (bytes). |
+| `catchlight-editor-server` | Multi-session editor server: a `Model` per session plus a warm headless renderer, driven in-process, over a Unix socket, or over HTTP: a tab holds a WebSocket (commands and events), a script sends one `POST /request` per command, and bytes go over plain routes. |
 | `catchlight-editor` | The desktop editor GUI (egui): embeds the server and its socket. Frozen: bug fixes only. |
 | `catchlight-editor-cli` | Thin client that drives an editing session over the Unix socket. |
 | `catchlight-editor-wasm` | The browser's door into the editor: the in-tab `Editor` behind `handle(request) -> reply` with byte staging, the `Replica` (one session's model, puppet and render cache, fed forward-only by the backend and never mutated locally), one `Gpu` per tab, and a `Viewport` per canvas that owns its frame loop. |
@@ -156,8 +156,9 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
   undo budget, an observer never runs under a lock, each session draws its own
   Ids, the editor traces a part's alpha; `query.rs` — one
-  implementation for the reads a replica can answer; `http.rs` — the browser
-  transport, why loopback is not a permission, and the token before the body;
+  implementation for the reads a replica can answer; `http.rs` — the HTTP
+  transport, why loopback is not a permission, the token before the body, and
+  on `POST /request` a status is the listener and a refusal is a 200;
   `storage.rs` — a `path` is a storage key, a relative one resolves against
   the store root, and an upload is not a file on disk
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording

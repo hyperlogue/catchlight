@@ -60,11 +60,12 @@
 //! - **A browser gets the same protocol, plus bytes.** See [`http`]: `/ws`
 //!   carries one JSON [`Request`] per text frame and answers each with its
 //!   [`Reply`], exactly as [`serve_unix`] does, and additionally pushes every
-//!   [`Event`] to the connections that are open; the structure and texture
-//!   payloads a replica needs go over HTTP rather than through a frame. Loopback
-//!   is not a permission — any page on any origin can reach that port — so a
-//!   random per-launch token gates every door, and `GET /token` is readable only
-//!   from an allowlisted origin.
+//!   [`Event`] to the connections that are open; `POST /request` takes one
+//!   [`Request`] and answers its [`Reply`] for a client that holds no socket;
+//!   the structure and texture payloads a replica needs go over HTTP rather
+//!   than through a frame. Loopback is not a permission — any page on any
+//!   origin can reach that port — so a random per-launch token gates every
+//!   door, and `GET /token` is readable only from an allowlisted origin.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod http;

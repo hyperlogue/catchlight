@@ -1,4 +1,5 @@
-//! The browser's transport: one WebSocket for messages, HTTP for bytes.
+//! The editor over HTTP: a WebSocket for a tab, one POST for a script, and
+//! bytes for both.
 //!
 //! A tab holds a replica of a session's model and talks to this listener.
 //! `/ws` carries exactly what the Unix socket carries — one JSON [`Request`]
@@ -8,6 +9,14 @@
 //! than a message goes over HTTP instead, because a replica wants the
 //! structure, the whole file and the textures as payloads, not as base64
 //! inside a frame.
+//!
+//! `POST /request` is the third door onto the same [`Editor::handle`]: one
+//! JSON [`Request`] as the body, its [`Reply`] as the answer. It is there for
+//! a client that only ever blocks on the command it just sent — a script, an
+//! agent — and would otherwise have to implement WebSocket masking and a
+//! reader thread in order to hear nothing it did not ask for. `/ws` stays, and
+//! stays the only way to be *told* something: a route that answers a request
+//! can push no event.
 //!
 //! Invariants this module enforces:
 //!
@@ -57,6 +66,13 @@
 //!   answered a ping itself. So the reader's socket writes go to a channel
 //!   ([`Bounce`]) and the writer replays those bytes between its own frames.
 //!
+//! - **On `POST /request`, a status is a transport failure and a refusal is a
+//!   200.** The two are what a caller confuses otherwise. The status describes
+//!   this listener only: 401 for a missing or wrong token, 413 for a body over
+//!   [`MAX_REQUEST_BYTES`], 400 for a body that is not one [`Request`]. Every
+//!   refusal the editor itself decided — an unknown Id, a session that is not
+//!   open — is a 200 carrying `Reply::Err`, exactly as the socket answers it.
+//!
 //! - **An event can precede the reply that caused it.** Observers fire inside
 //!   [`Editor::handle`], so a client's own `node_add` may see
 //!   `document_changed` before its `ok`. A client keyed on `rev` does not
@@ -87,7 +103,8 @@ use tungstenite::protocol::{Message, Role, WebSocket, WebSocketConfig};
 use crate::storage::StagingStorage;
 use crate::{Editor, EditorError};
 
-/// One frame, one request — the same cap the Unix socket puts on one line.
+/// One frame, one request — the same cap the Unix socket puts on one line, and
+/// the same one a `POST /request` body gets.
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// A request line plus its headers. Bounded before anything is parsed.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -386,6 +403,7 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
         .collect::<Vec<_>>();
 
     let response = match (request.method.as_str(), segments.as_slice()) {
+        ("POST", ["request"]) => command(state, request),
         ("GET", ["sessions", id, "structure"]) => structure(state, id),
         ("GET", ["sessions", id, "clm"]) => clm(state, id),
         ("GET", ["sessions", id, "textures", tex]) => texture(state, id, tex),
@@ -393,6 +411,25 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
         _ => Response::text(404, "Not Found", "no such endpoint"),
     };
     cors(response, allowed)
+}
+
+/// One request in the body, its reply in the answer. The same [`Editor`] entry
+/// `/ws` and the Unix socket reach, so a caller gets the same answer here — a
+/// refusal included, which is a 200 carrying `Reply::Err` rather than a status.
+/// Only a body that is not a [`Request`] at all is a 400: at that point there
+/// is no `id` to answer against and nothing the editor was asked to do.
+fn command(state: &ServerState, request: &HttpRequest) -> Response {
+    let parsed = match serde_json::from_slice::<Request>(&request.body) {
+        Ok(parsed) => parsed,
+        Err(e) => return Response::text(400, "Bad Request", &format!("bad request: {e}")),
+    };
+    match serde_json::to_vec(&state.editor.handle(parsed)) {
+        Ok(bytes) => Response::new(200, "OK")
+            .with("Content-Type", "application/json")
+            .with("X-Content-Type-Options", "nosniff")
+            .body(bytes),
+        Err(e) => Response::text(500, "Internal Server Error", &e.to_string()),
+    }
 }
 
 /// The structure-only container plus the revision it describes, read under one
@@ -833,8 +870,7 @@ fn read_head(reader: &mut BufReader<TcpStream>) -> Result<(HttpRequest, usize), 
 
 /// The body the head declared, read once the request has earned it. The
 /// generous ceiling belongs to the one endpoint that takes a payload; every
-/// other route is buffered whole into one reply, so it gets the frame-sized
-/// cap instead.
+/// other body is one command, so it gets the cap the socket puts on a line.
 fn read_body(
     reader: &mut BufReader<TcpStream>,
     request: &HttpRequest,
@@ -996,7 +1032,7 @@ fn cors(response: Response, origin: Option<&str>) -> Response {
                 "Access-Control-Allow-Headers",
                 "Authorization, Content-Type",
             )
-            .with("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+            .with("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
             .with(
                 "Access-Control-Expose-Headers",
                 "X-Catchlight-Rev, X-Catchlight-Encoding",

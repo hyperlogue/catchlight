@@ -123,7 +123,9 @@ def connect(url: str, token: str) -> Client:
     """A client onto a server something else is running, over its HTTP door.
 
     The caller owns the connection and nothing else: closing this client leaves
-    the editor exactly as it found it.
+    the editor exactly as it found it. Nothing is sent here either — a command
+    is one POST, so a wrong token or an editor that has gone away surfaces on
+    the first `send` rather than on this call.
     """
     return Client(HttpTransport(url, token))
 
@@ -179,7 +181,8 @@ class LaunchedServer:
         """A second client onto the same editor, over its HTTP door.
 
         Only when [`launch`] was given an `http` address; a socket-only server
-        has no door to connect to.
+        has no door to connect to. Like [`connect`], it sends nothing until the
+        first command.
         """
         if self.http_url is None or self.token is None:
             raise ServerError("this server was launched without an http address")

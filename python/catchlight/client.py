@@ -18,9 +18,10 @@ Invariants this module enforces:
   [`ProtocolError`] carrying the `ErrorCode` a caller branches on. A connection
   that failed is a `TransportError` from the transport.
 
-- **The revision is what this client last saw.** It comes from replies, never
-  from events: a blocking caller acts on the answer to its own command, and an
-  event says only that somebody else's landed.
+- **The revision is what this client last saw.** It comes from replies and
+  from nothing else. Neither door this client speaks hears an event — those go
+  to the browser tab's WebSocket — so a blocking caller acts on the answer to
+  its own command.
 
 - **A path is absolute before it is sent.** The wire carries a storage key, and
   what a relative one resolves against is the *server's* store root, not this
@@ -43,7 +44,6 @@ from .protocol_gen import (
     Command,
     CommandKind,
     ErrorCode,
-    Event,
     NodeAdd,
     NodeKindArg,
     NodeId,
@@ -61,7 +61,6 @@ from .protocol_gen import (
     SessionOpen,
     TexId,
     TextureAdd,
-    parse_event,
     parse_reply,
 )
 from .transport import ByteTransport, Transport
@@ -111,13 +110,6 @@ class Client:
             )
         self._record(command, reply)
         return reply.body
-
-    def events(self) -> list[Event]:
-        """Every event that arrived unasked since the last call.
-
-        Always empty over the socket, which pushes none.
-        """
-        return [parse_event(message) for message in self._transport.events()]
 
     def revision(self, session: SessionId) -> int | None:
         """The revision this client's last reply reported for `session`."""

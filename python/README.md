@@ -22,7 +22,7 @@ with catchlight.launch() as server:
 | Module | What it is |
 | --- | --- |
 | `protocol_gen.py` | Generated wire types. Never edited by hand. |
-| `transport.py` | One `request` interface, two doors: the Unix socket and HTTP + WebSocket. |
+| `transport.py` | One `request` interface, two doors: the Unix socket and HTTP. |
 | `server.py` | `launch()` starts an editor and owns it; `connect(url, token)` attaches to one it does not. |
 | `client.py` | `Client.send` for any command, plus the handful of round trips that are more than one call. |
 | `builder.py` | `Builder`: a group, a part, a param, a binding — one call each, over one session. |
@@ -40,9 +40,11 @@ and the socket never collides with the editor a person already has open. On
 exit the process is terminated, killed if it lingers, and the directory
 removed.
 
-`connect(url, token)` attaches over the server's HTTP door instead — the one a
-browser tab uses — for an editor something else is running. It never stops what
-it did not start. The URL must name loopback: the token travels in clear text.
+`connect(url, token)` attaches over the server's HTTP door instead, for an
+editor something else is running. It never stops what it did not start. The URL
+must name loopback: the token travels in clear text. A command there is one
+`POST /request` carrying the very JSON object the socket carries, so there is
+no connection to open and a wrong token surfaces on the first `send`.
 
 What differs between them is where the bytes are. Over the socket the editor
 reads the very filesystem the script is on, so a texture is a path and
@@ -51,9 +53,14 @@ texture is staged with `PUT /files/…` and then named, and `save_to` fetches th
 document and writes it here. `Client` picks by transport; a script reads the
 same either way.
 
-Events only exist on the HTTP door. The socket carries request and reply, and a
-blocking caller learns its document moved from the `rev` on its own reply —
-`client.revision(session)`.
+Neither door hears an event. The editor pushes those over the WebSocket a
+browser tab holds, which this package does not open; a blocking caller learns
+its document moved from the `rev` on its own reply — `client.revision(session)`.
+
+Over HTTP a status is this listener refusing the request — no token, a body
+over the cap — and raises `TransportError`. A command the *editor* refused is a
+200 carrying an `err` reply, which raises `ProtocolError` with the code to
+branch on, exactly as it does over the socket.
 
 ## Commands
 

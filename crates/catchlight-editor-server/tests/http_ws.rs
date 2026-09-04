@@ -1,12 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The browser's two channels: messages over a WebSocket, bytes over HTTP.
+//! The browser's channels: messages over a WebSocket or one POST, bytes over
+//! HTTP.
 //!
 //! Loopback is not a permission — any page the user's browser loads can reach
 //! this port — so most of what follows is about who is refused. The rest
 //! checks that a tab can do its job: send the same commands the Unix socket
 //! takes, hear about edits another connection made, pull a session's structure
 //! against the revision it belongs to, and hand up bytes it fetched itself.
+//! `POST /request` is the same commands for a client that wants no socket, so
+//! what it is checked on is where a status ends and a `Reply::Err` begins.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -175,6 +178,27 @@ fn http(
 
 fn bearer() -> String {
     format!("Bearer {TOKEN}")
+}
+
+/// One command over `POST /request`, the way a client with no socket sends it.
+fn post(addr: SocketAddr, request: &Request) -> HttpResponse {
+    http(
+        addr,
+        "POST",
+        "/request",
+        &[
+            ("Authorization", &bearer()),
+            ("Content-Type", "application/json"),
+        ],
+        serde_json::to_vec(request).unwrap().as_slice(),
+    )
+}
+
+/// The reply a 200 carries.
+fn posted(response: &HttpResponse) -> Reply {
+    assert_eq!(response.status, 200, "POST /request");
+    assert_eq!(response.header("content-type"), Some("application/json"));
+    serde_json::from_slice(&response.body).expect("the body is one reply")
 }
 
 type Socket = WebSocket<TcpStream>;
@@ -437,6 +461,215 @@ fn an_edit_on_one_connection_is_pushed_to_the_other() {
         }
     }
 }
+
+// ------------------------------------------------------- POST /request
+
+#[test]
+fn a_command_over_post_answers_with_its_revision() {
+    let server = start();
+
+    let reply = posted(&post(
+        server.addr,
+        &Request {
+            id: 1,
+            command: Command::SessionNew { name: None },
+        },
+    ));
+    assert_eq!(rev_of(&reply), 0);
+    let session = match reply {
+        Reply::Ok {
+            id,
+            body: ResponseBody::Session { session },
+            ..
+        } => {
+            assert_eq!(id, 1, "the reply is answered against the id that was sent");
+            session
+        }
+        other => panic!("expected Session, got {other:?}"),
+    };
+
+    // That POST closed its connection, and the session outlived it: a session
+    // belongs to the editor, never to whatever carried the command that made
+    // it.
+    let reply = posted(&post(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::NodeTree { session },
+        },
+    ));
+    assert!(matches!(body_of(reply), ResponseBody::Tree { .. }));
+}
+
+/// The split this route exists to make: a status describes the transport, and
+/// everything the editor itself decided comes back 200 carrying `Reply::Err`.
+#[test]
+fn a_command_the_editor_refuses_over_post_is_a_200_carrying_the_error() {
+    let server = start();
+    let response = post(
+        server.addr,
+        &Request {
+            id: 7,
+            command: Command::NodeTree {
+                session: SessionId(999),
+            },
+        },
+    );
+    match posted(&response) {
+        Reply::Err { id, code, .. } => {
+            assert_eq!(id, 7);
+            assert_eq!(code, ErrorCode::NoSession);
+        }
+        other => panic!("expected Err, got {other:?}"),
+    }
+}
+
+/// A body that is not a request at all names no id to answer against, so there
+/// is no reply to be made and the status carries it instead.
+#[test]
+fn a_post_that_is_not_a_request_is_a_400() {
+    let server = start();
+    for body in [&b"{}"[..], b"not json at all", b"[1,2,3]", b""] {
+        let response = http(
+            server.addr,
+            "POST",
+            "/request",
+            &[("Authorization", &bearer())],
+            body,
+        );
+        assert_eq!(
+            response.status,
+            400,
+            "body {:?}",
+            String::from_utf8_lossy(body)
+        );
+    }
+}
+
+/// The gate closes on the head alone here too: the length declared below is
+/// well under the cap, so nothing but the token can decide, and the body it
+/// promises is never sent.
+#[test]
+fn a_post_without_a_token_is_refused_before_its_body() {
+    let server = start();
+    let started = Instant::now();
+    let response = http(
+        server.addr,
+        "POST",
+        "/request",
+        &[("Content-Length", "500000")],
+        b"",
+    );
+    assert_eq!(response.status, 401);
+    assert_eq!(response.header("connection"), Some("close"));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the 401 waited on a body that was never sent"
+    );
+
+    // A wrong token is the same refusal, body and all.
+    let refused = http(
+        server.addr,
+        "POST",
+        "/request",
+        &[("Authorization", "Bearer not-the-token")],
+        &serde_json::to_vec(&Request {
+            id: 1,
+            command: Command::SessionNew { name: None },
+        })
+        .unwrap(),
+    );
+    assert_eq!(refused.status, 401);
+
+    // And neither of those reached the editor: no session was made.
+    match body_of(posted(&post(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::SessionList,
+        },
+    ))) {
+        ResponseBody::Sessions { sessions } => assert!(sessions.is_empty()),
+        other => panic!("expected Sessions, got {other:?}"),
+    }
+}
+
+/// One POST is one command, so it gets the cap the socket puts on one line.
+/// Only a little over it, so the body is drained and the status arrives
+/// instead of the reset that answering over unread bytes would be.
+#[test]
+fn a_post_over_the_request_cap_is_413() {
+    let server = start();
+    let response = http(
+        server.addr,
+        "POST",
+        "/request",
+        &[("Authorization", &bearer())],
+        &vec![b'x'; 2 * 1024 * 1024],
+    );
+    assert_eq!(response.status, 413);
+    assert_eq!(response.header("connection"), Some("close"));
+    assert_eq!(String::from_utf8_lossy(&response.body), "body too large");
+}
+
+/// The reason `/ws` stays: a POST answers the caller and pushes nothing, while
+/// the tab watching hears about the edit anyway. An observer is the editor's,
+/// not the connection's, so the POST is long closed by the time this arrives.
+#[test]
+fn an_edit_made_over_post_reaches_a_websocket_subscriber() {
+    let server = start();
+    let mut watcher = connect(server.addr, TOKEN, None).unwrap();
+
+    let session = match body_of(posted(&post(
+        server.addr,
+        &Request {
+            id: 1,
+            command: Command::SessionNew { name: None },
+        },
+    ))) {
+        ResponseBody::Session { session } => session,
+        other => panic!("expected Session, got {other:?}"),
+    };
+    let root = match body_of(posted(&post(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::NodeTree { session },
+        },
+    ))) {
+        ResponseBody::Tree { root } => root.id,
+        other => panic!("expected Tree, got {other:?}"),
+    };
+    let rev = rev_of(&posted(&post(
+        server.addr,
+        &Request {
+            id: 3,
+            command: Command::NodeAdd {
+                session,
+                parent: root,
+                kind: NodeKindArg::Group,
+                name: Some("Hat".into()),
+                node: None,
+            },
+        },
+    )));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "no document_changed arrived");
+        if let Reply::Event(catchlight_editor_protocol::Event::DocumentChanged {
+            session: changed,
+            rev: at,
+        }) = read_frame(&mut watcher)
+        {
+            if changed == session && at == rev {
+                break;
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------- byte routes
 
 #[test]
 fn the_structure_endpoint_pairs_its_bytes_with_the_revision_they_are() {
@@ -871,6 +1104,12 @@ fn a_preflight_is_answered_for_an_allowlisted_origin_only() {
     assert_eq!(
         allowed.header("access-control-allow-headers"),
         Some("Authorization, Content-Type")
+    );
+    // A cross-origin `POST /request` is preflighted, so the method has to be
+    // named here or a browser never sends the command.
+    assert_eq!(
+        allowed.header("access-control-allow-methods"),
+        Some("GET, POST, PUT, OPTIONS")
     );
 
     let foreign = http(

@@ -96,13 +96,6 @@ def test_closing_a_session_forgets_the_revision_it_had(client: Client) -> None:
     assert raised.value.code is ErrorCode.NO_SESSION
 
 
-def test_the_socket_carries_no_events(client: Client) -> None:
-    """Events are a WebSocket thing; a blocking caller reads its own `rev`."""
-    session = client.new()
-    client.add_part(session, name="Body")
-    assert client.events() == []
-
-
 def test_a_model_authored_here_is_read_back_by_the_editors_own_reader(
     client: Client, tmp_path: Path
 ) -> None:
