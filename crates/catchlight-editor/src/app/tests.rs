@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::inspector::PhysicsPatch;
+use catchlight_editor_protocol::ScalarTarget;
 
 fn welded_seam() -> Vec<u8> {
     std::fs::read(concat!(
@@ -325,7 +326,7 @@ fn split_pair(app: &mut App, session: SessionId, node: &NodeId) -> (ParamId, Par
         session,
         params: BindingParams::two(x.clone(), y.clone()),
         node: node.clone(),
-        target: "tx".into(),
+        target: ScalarTarget::Tx,
     });
     (x, y)
 }
@@ -368,7 +369,7 @@ fn recording_on_half_a_pair_joins_its_binding_instead_of_starting_a_rival() {
                 x.clone(),
                 y.clone(),
                 node.clone(),
-                BindingTarget::Scalar(catchlight_core::ScalarTarget::Tx),
+                CoreBindingTarget::Scalar(catchlight_core::ScalarTarget::Tx),
             );
             let authored: Vec<[u32; 2]> = m
                 .binding(&key)
@@ -454,7 +455,7 @@ fn arming_a_pair_records_into_the_pairs_grid() {
                 x.clone(),
                 y.clone(),
                 node.clone(),
-                BindingTarget::Scalar(catchlight_core::ScalarTarget::Ty),
+                CoreBindingTarget::Scalar(catchlight_core::ScalarTarget::Ty),
             );
             m.binding(&key)
                 .and_then(|b| catchlight_core::scalar_cells(b.values()))
@@ -525,7 +526,7 @@ fn the_physics_inspector_aims_a_driver_at_both_of_its_params() {
         session,
         parent: root,
         name: Some("Pendulum".into()),
-        kind: "rigid".into(),
+        kind: PhysicsKind::Rigid,
         target_params: PhysicsTargets::default(),
         length: None,
         gravity: None,

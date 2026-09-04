@@ -7,14 +7,22 @@
  * the revision moves. Nothing is mirrored into React state.
  *
  * **The names come from the wire, not from an enum this package invented.**
- * [`BINDING_TARGETS`] is the list `binding_add` documents and
- * [`INTERPOLATE_MODES`] the list `binding_interpolate` takes, so a `<select>`
- * built from either sends a word the editor already accepts. `deform` is
- * deliberately absent from the targets: a deform binding is authored by
- * dragging vertices, and `binding_add` refuses it.
+ * Both tables are typed by the generated `ScalarTarget` and `Interpolate`
+ * unions, and each is checked against its union below, so a `<select>` built
+ * from either sends a word the editor already accepts and a target added in
+ * Rust fails the typecheck here. `deform` is deliberately absent from the
+ * targets: a deform binding is authored by dragging vertices, and
+ * `binding_add` refuses it.
  */
 
-import type { BindingInfo, NodeId, ParamInfo, Session } from "@catchlight/core";
+import type {
+  BindingInfo,
+  Interpolate,
+  NodeId,
+  ParamInfo,
+  ScalarTarget,
+  Session,
+} from "@catchlight/core";
 import { useMemo } from "react";
 
 import { useRevision } from "./replica.js";
@@ -23,7 +31,7 @@ import { useRevision } from "./replica.js";
  * The properties a binding can drive, in the order a picker lists them: the
  * transform, then z order, then the colour a drawable carries.
  */
-export const BINDING_TARGETS: readonly string[] = [
+export const BINDING_TARGETS: readonly ScalarTarget[] = [
   "tx",
   "ty",
   "sx",
@@ -44,7 +52,17 @@ export const BINDING_TARGETS: readonly string[] = [
 ];
 
 /** How a binding reads between its cells. */
-export const INTERPOLATE_MODES: readonly string[] = ["nearest", "stepped", "linear", "cubic"];
+export const INTERPOLATE_MODES: readonly Interpolate[] = ["nearest", "stepped", "linear", "cubic"];
+
+// Typing the tables only rules out a word the wire does not carry. These say
+// the other half: a target or a mode added in Rust is missing from them.
+type Unlisted<Union extends string, Listed extends string> = Exclude<Union, Listed>;
+type _EveryTargetListed = Unlisted<ScalarTarget, (typeof BINDING_TARGETS)[number]> extends never
+  ? true
+  : never;
+type _EveryModeListed = Unlisted<Interpolate, (typeof INTERPOLATE_MODES)[number]> extends never
+  ? true
+  : never;
 
 /**
  * Every binding on one node, redone whenever the document moves.

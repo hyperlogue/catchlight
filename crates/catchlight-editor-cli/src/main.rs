@@ -221,9 +221,9 @@ enum NodeCmd {
         clear_texture: bool,
         #[arg(long = "lock-to-root")]
         lock_to_root: Option<bool>,
-        /// Blend-mode name (Normal | Multiply | ColorDodge | …).
-        #[arg(long = "blend-mode")]
-        blend_mode: Option<String>,
+        /// normal | multiply | color_dodge | …
+        #[arg(long = "blend-mode", value_parser = wire_enum::<BlendMode>)]
+        blend_mode: Option<BlendMode>,
         /// `r,g,b`
         #[arg(long, allow_hyphen_values = true)]
         tint: Option<String>,
@@ -520,8 +520,8 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
+        #[arg(long, value_parser = wire_enum::<ScalarTarget>)]
+        target: ScalarTarget,
     },
     /// Set one keypoint of a binding (auto-creates it). `--cell x,y`.
     Key {
@@ -529,8 +529,8 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
+        #[arg(long, value_parser = wire_enum::<ScalarTarget>)]
+        target: ScalarTarget,
         #[arg(long)]
         cell: String,
         #[arg(long, allow_hyphen_values = true)]
@@ -542,8 +542,8 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
+        #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+        target: BindingTarget,
         #[arg(long)]
         cell: String,
     },
@@ -553,8 +553,8 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
+        #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+        target: BindingTarget,
         #[arg(long)]
         cell: String,
     },
@@ -564,8 +564,8 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
+        #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+        target: BindingTarget,
     },
     /// Set interpolation: nearest | stepped | linear | cubic.
     Interpolate {
@@ -573,10 +573,10 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
-        #[arg(long)]
-        mode: String,
+        #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+        target: BindingTarget,
+        #[arg(long, value_parser = wire_enum::<Interpolate>)]
+        mode: Interpolate,
     },
     /// Negate every authored value.
     Invert {
@@ -584,8 +584,8 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
+        #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+        target: BindingTarget,
     },
     /// List a node's bindings, each with its authored key grid.
     List {
@@ -598,8 +598,8 @@ enum BindingCmd {
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long)]
-        target: String,
+        #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+        target: BindingTarget,
         #[arg(long)]
         from: String,
         #[arg(long)]
@@ -613,8 +613,8 @@ enum PhysicsCmd {
     Add {
         #[arg(long)]
         parent: NodeId,
-        #[arg(long)]
-        kind: String,
+        #[arg(long, value_parser = wire_enum::<PhysicsKind>)]
+        kind: PhysicsKind,
         #[arg(long)]
         name: Option<String>,
         /// The param the driver's first output writes. Absent binds it to
@@ -643,10 +643,10 @@ enum PhysicsCmd {
     /// `--map-mode xy|yx|angle_length|length_angle`.
     Set {
         node: NodeId,
-        #[arg(long)]
-        kind: Option<String>,
-        #[arg(long = "map-mode")]
-        map_mode: Option<String>,
+        #[arg(long, value_parser = wire_enum::<PhysicsKind>)]
+        kind: Option<PhysicsKind>,
+        #[arg(long = "map-mode", value_parser = wire_enum::<PhysicsMapMode>)]
+        map_mode: Option<PhysicsMapMode>,
         #[arg(long = "local-only")]
         local_only: Option<bool>,
         /// Rebind both of the driver's outputs, to whatever the two flags
@@ -691,16 +691,16 @@ enum MaskCmd {
         node: NodeId,
         #[arg(long)]
         source: NodeId,
-        #[arg(long, default_value = "mask")]
-        mode: String,
+        #[arg(long, default_value = "mask", value_parser = wire_enum::<MaskMode>)]
+        mode: MaskMode,
     },
     /// Change the mode of the mask at `--index`.
     Set {
         node: NodeId,
         #[arg(long)]
         index: u32,
-        #[arg(long)]
-        mode: String,
+        #[arg(long, value_parser = wire_enum::<MaskMode>)]
+        mode: MaskMode,
     },
     /// Move the mask at `--index` to `--to`.
     Reorder {
@@ -945,7 +945,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
+                    target: *target,
                 },
                 BindingCmd::Key {
                     params,
@@ -957,7 +957,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
+                    target: *target,
                     cell: parse_cell(cell)?,
                     value: *value,
                 },
@@ -970,7 +970,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
+                    target: *target,
                     cell: parse_cell(cell)?,
                 },
                 BindingCmd::Reset {
@@ -982,7 +982,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
+                    target: *target,
                     cell: parse_cell(cell)?,
                 },
                 BindingCmd::Delete {
@@ -993,7 +993,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
+                    target: *target,
                 },
                 BindingCmd::Interpolate {
                     params,
@@ -1004,8 +1004,8 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
-                    mode: mode.clone(),
+                    target: *target,
+                    mode: *mode,
                 },
                 BindingCmd::Invert {
                     params,
@@ -1015,7 +1015,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
+                    target: *target,
                 },
                 BindingCmd::List { node } => Command::BindingList {
                     session,
@@ -1031,7 +1031,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     params: params.wire(),
                     node: node.clone(),
-                    target: target.clone(),
+                    target: *target,
                     from: parse_cell(from)?,
                     to: parse_cell(to)?,
                 },
@@ -1056,7 +1056,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     parent: parent.clone(),
                     name: name.clone(),
-                    kind: kind.clone(),
+                    kind: *kind,
                     target_params: PhysicsTargets {
                         angle: target_angle.clone(),
                         length: target_length.clone(),
@@ -1085,8 +1085,8 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 } => Command::PhysicsSet {
                     session,
                     node: node.clone(),
-                    kind: kind.clone(),
-                    map_mode: map_mode.clone(),
+                    kind: *kind,
+                    map_mode: *map_mode,
                     local_only: *local_only,
                     // Naming an output is itself a request to rebind, so the
                     // bare flag is only needed to detach both.
@@ -1294,13 +1294,13 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     node: node.clone(),
                     source: source.clone(),
-                    mode: mode.clone(),
+                    mode: *mode,
                 },
                 MaskCmd::Set { node, index, mode } => Command::MaskSet {
                     session,
                     node: node.clone(),
                     index: *index,
-                    mode: mode.clone(),
+                    mode: *mode,
                 },
                 MaskCmd::Reorder { node, index, to } => Command::MaskReorder {
                     session,
@@ -1455,7 +1455,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
                 texture: texture.clone(),
                 clear_texture: *clear_texture,
                 lock_to_root: *lock_to_root,
-                blend_mode: blend_mode.clone(),
+                blend_mode: *blend_mode,
                 tint: tint.as_deref().map(parse_vec3).transpose()?,
                 screen_tint: screen_tint.as_deref().map(parse_vec3).transpose()?,
                 mask_threshold: *mask_threshold,
@@ -1493,6 +1493,13 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
             node: node.clone(),
         },
     })
+}
+
+/// A flag whose value is one of the protocol's own closed sets, parsed as
+/// the wire parses it — so a flag takes exactly the word the JSON carries and
+/// serde's error names the alternatives.
+fn wire_enum<T: serde::de::DeserializeOwned>(s: &str) -> std::result::Result<T, String> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(|e| e.to_string())
 }
 
 fn parse_kind(s: &str) -> Result<NodeKindArg> {

@@ -13,8 +13,9 @@ use std::io::Cursor;
 
 use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_editor_protocol::{
-    BindingInfo, Command, CommandKind, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId,
-    Presence, Reply, Request, ResponseBody, SeamAddr, SeamId, SessionId, SlotId, COMMAND_KINDS,
+    BindingInfo, BindingTarget, BlendMode, Command, CommandKind, ErrorCode, Interpolate, NodeId,
+    NodeKind, NodeKindArg, NodePatch, ParamId, Presence, Reply, Request, ResponseBody,
+    ScalarTarget, SeamAddr, SeamId, SessionId, SlotId, COMMAND_KINDS,
 };
 use catchlight_editor_server::{replica_query, replica_reply, Editor};
 
@@ -100,7 +101,7 @@ impl Fixture {
             session,
             params: catchlight_editor_protocol::BindingParams::one(param),
             node: body_part.clone(),
-            target: "tx".into(),
+            target: ScalarTarget::Tx,
             cell: [1, 0],
             value: 12.0,
         });
@@ -353,7 +354,7 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
     })) {
         ResponseBody::Bindings { bindings } => {
             assert_eq!(bindings.len(), 1, "the fixture's one binding");
-            assert_eq!(bindings[0].target, "tx");
+            assert_eq!(bindings[0].target, BindingTarget::Tx);
         }
         other => panic!("expected Bindings, got {other:?}"),
     }
@@ -391,7 +392,7 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
     })) {
         ResponseBody::NodeInfo { node } => {
             assert_eq!(node.id, f.body_part);
-            assert_eq!(node.kind, "part");
+            assert_eq!(node.kind, NodeKind::Part);
             assert_eq!(node.parent.as_ref(), Some(&f.group));
             assert_eq!(node.name, "Body");
             assert_eq!(node.vertex_count, Some(4), "the fixture's quad");
@@ -429,7 +430,7 @@ fn node_info_reads_back_what_a_node_set_wrote() {
             opacity: Some(0.25),
             enabled: Some(false),
             lock_to_root: Some(true),
-            blend_mode: Some("Multiply".into()),
+            blend_mode: Some(BlendMode::Multiply),
             tint: Some([0.1, 0.2, 0.3]),
             screen_tint: Some([0.4, 0.5, 0.6]),
             mask_threshold: Some(0.75),
@@ -446,7 +447,7 @@ fn node_info_reads_back_what_a_node_set_wrote() {
     };
 
     assert_eq!(node.id, f.body_part);
-    assert_eq!(node.kind, "part");
+    assert_eq!(node.kind, NodeKind::Part);
     assert_eq!(node.parent.as_ref(), Some(&f.group));
     assert_eq!(node.name, "Torso skin");
     assert_eq!(node.translate, [1.0, -2.0, 3.0]);
@@ -456,7 +457,7 @@ fn node_info_reads_back_what_a_node_set_wrote() {
     assert!(!node.enabled);
     assert!(node.lock_to_root);
     assert_eq!(node.opacity, Some(0.25));
-    assert_eq!(node.blend_mode.as_deref(), Some("Multiply"));
+    assert_eq!(node.blend_mode, Some(BlendMode::Multiply));
     assert_eq!(node.tint, Some([0.1, 0.2, 0.3]));
     assert_eq!(node.screen_tint, Some([0.4, 0.5, 0.6]));
     assert_eq!(node.mask_threshold, Some(0.75));
@@ -476,7 +477,7 @@ fn node_info_reads_back_what_a_node_set_wrote() {
         ResponseBody::NodeInfo { node } => node,
         other => panic!("expected NodeInfo, got {other:?}"),
     };
-    assert_eq!(group.kind, "group");
+    assert_eq!(group.kind, NodeKind::Group);
     assert_eq!(group.opacity, None);
     assert_eq!(group.blend_mode, None);
     assert_eq!(group.tint, None);
@@ -530,7 +531,7 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
         node: composite,
     })) {
         ResponseBody::NodeInfo { node } => {
-            assert_eq!(node.kind, "composite");
+            assert_eq!(node.kind, NodeKind::Composite);
             assert_eq!(node.propagate_meshgroup, Some(true));
             assert_eq!(node.opacity, Some(1.0), "a composite is drawn");
             assert_eq!(node.texture, None, "and never carries one");
@@ -544,7 +545,7 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
         node: mesh_group,
     })) {
         ResponseBody::NodeInfo { node } => {
-            assert_eq!(node.kind, "mesh_group");
+            assert_eq!(node.kind, NodeKind::MeshGroup);
             assert_eq!(node.mg_dynamic, Some(true));
             assert_eq!(node.mg_translate_children, Some(true));
             // A mesh group is never drawn, so it has no colour to show — but
@@ -763,7 +764,7 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
         session,
         params: pair.clone(),
         node: f.body_part.clone(),
-        target: "ty".into(),
+        target: ScalarTarget::Ty,
         cell: [0, 2],
         value: -3.0,
     });
@@ -771,8 +772,8 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
         session,
         params: pair,
         node: f.body_part.clone(),
-        target: "ty".into(),
-        mode: "cubic".into(),
+        target: BindingTarget::Ty,
+        mode: Interpolate::Cubic,
     });
     // A deform binding authors a vertex list rather than a number, and the
     // fixture's part is a quad. `[1, 0]` is also both params' rest cell, so
@@ -790,23 +791,28 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
 
     // One param: one row. The 12 the fixture keyed, the identity the model
     // authors alongside a binding's first cell, and a hole between them.
-    let tx = find(&bindings, "tx");
+    let tx = find(&bindings, BindingTarget::Tx);
     assert_eq!(tx.param, pull);
     assert_eq!(tx.param_y, None);
     assert_eq!((tx.width, tx.height), (3, 1));
-    assert_eq!(tx.interpolate, "linear", "what a new binding reads at");
+    assert_eq!(
+        tx.interpolate,
+        Interpolate::Linear,
+        "what a new binding reads at"
+    );
     assert_eq!(tx.keys, vec![vec![Some(0.0), None, Some(12.0)]]);
     assert_eq!(tx.authored, vec![vec![true, false, true]]);
 
     // Two params: the grid is x's key positions by y's, indexed `[y][x]` — the
     // transpose of the `cell: [x, y]` that authored it.
-    let ty = find(&bindings, "ty");
+    let ty = find(&bindings, BindingTarget::Ty);
     assert_eq!(ty.param, pull);
     assert_eq!(ty.param_y.as_ref(), Some(&lean));
     assert_eq!((ty.width, ty.height), (3, 3));
     assert_eq!(
-        ty.interpolate, "cubic",
-        "the word `binding_interpolate` took"
+        ty.interpolate,
+        Interpolate::Cubic,
+        "the mode `binding_interpolate` took"
     );
     assert_eq!(ty.keys[2][0], Some(-3.0), "cell [0, 2] is keys[2][0]");
     assert_eq!(ty.keys[1][1], Some(0.0), "the identity at the rest cell");
@@ -816,7 +822,7 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
 
     // A deform cell is authored and has no scalar to report, so `keys` says
     // nothing about it and `authored` says everything.
-    let deform = find(&bindings, "deform");
+    let deform = find(&bindings, BindingTarget::Deform);
     assert_eq!(deform.keys, vec![vec![None, None, None]]);
     assert_eq!(deform.authored, vec![vec![false, true, false]]);
 
@@ -849,7 +855,7 @@ fn un_authoring_a_cell_reports_it_unset_again() {
     // cell alongside it, because one authored cell otherwise fills the grid.
     let bindings = f.bindings(&f.body_part);
     assert_eq!(
-        find(&bindings, "tx").keys,
+        find(&bindings, BindingTarget::Tx).keys,
         vec![vec![Some(0.0), Some(12.0)]]
     );
 
@@ -857,11 +863,11 @@ fn un_authoring_a_cell_reports_it_unset_again() {
         session,
         params: params.clone(),
         node: f.body_part.clone(),
-        target: "tx".into(),
+        target: BindingTarget::Tx,
         cell: [0, 0],
     });
     let bindings = f.bindings(&f.body_part);
-    let tx = find(&bindings, "tx");
+    let tx = find(&bindings, BindingTarget::Tx);
     assert_eq!(tx.keys, vec![vec![None, Some(12.0)]]);
     assert_eq!(tx.authored, vec![vec![false, true]]);
 
@@ -869,11 +875,11 @@ fn un_authoring_a_cell_reports_it_unset_again() {
         session,
         params,
         node: f.body_part.clone(),
-        target: "tx".into(),
+        target: BindingTarget::Tx,
         cell: [0, 0],
     });
     assert_eq!(
-        find(&f.bindings(&f.body_part), "tx").keys,
+        find(&f.bindings(&f.body_part), BindingTarget::Tx).keys,
         vec![vec![Some(0.0), Some(12.0)]],
         "a reset authors the target's identity"
     );
@@ -886,9 +892,9 @@ fn a_node_with_no_bindings_reports_an_empty_list() {
     assert!(f.bindings(&f.group).is_empty());
 }
 
-fn find<'a>(bindings: &'a [BindingInfo], target: &str) -> &'a BindingInfo {
+fn find(bindings: &[BindingInfo], target: BindingTarget) -> &BindingInfo {
     bindings
         .iter()
         .find(|b| b.target == target)
-        .unwrap_or_else(|| panic!("no {target} binding in {bindings:?}"))
+        .unwrap_or_else(|| panic!("no {target:?} binding in {bindings:?}"))
 }

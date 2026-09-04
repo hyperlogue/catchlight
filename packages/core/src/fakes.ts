@@ -17,8 +17,10 @@
 
 import type {
   BindingInfo,
+  BindingTarget,
   Command,
   Event,
+  Interpolate,
   NodeInfo,
   ParamInfo,
   Presence,
@@ -61,10 +63,10 @@ export interface FakeDoc {
  */
 export interface FakeBinding {
   node: string;
-  target: string;
+  target: BindingTarget;
   param: string;
   param_y?: string | null;
-  interpolate: string;
+  interpolate: Interpolate;
   /** `value: null` is authored with no scalar of its own, as a deform cell is. */
   cells: { x: number; y: number; value: number | null }[];
 }
@@ -587,7 +589,7 @@ function nodeInfo(
       ...(drawn
         ? {
             opacity: 1,
-            blend_mode: "Normal",
+            blend_mode: "normal" as const,
             tint: [1, 1, 1] as [number, number, number],
             screen_tint: [0, 0, 0] as [number, number, number],
             mask_threshold: 0.5,
@@ -620,7 +622,7 @@ function holds(tree: TreeNode, node: string): boolean {
 /** Whether `binding` is the one a command addresses. */
 function addresses(
   binding: FakeBinding,
-  at: { node: string; target: string; param: string; param_y?: string | null },
+  at: { node: string; target: BindingTarget; param: string; param_y?: string | null },
 ): boolean {
   return (
     binding.node === at.node &&
@@ -633,7 +635,7 @@ function addresses(
 /** The binding a command addresses, created if this is the first mention. */
 function binding(
   doc: FakeDoc,
-  at: { node: string; target: string; param: string; param_y?: string | null },
+  at: { node: string; target: BindingTarget; param: string; param_y?: string | null },
 ): FakeBinding {
   const found = doc.bindings.find((b) => addresses(b, at));
   if (found) return found;

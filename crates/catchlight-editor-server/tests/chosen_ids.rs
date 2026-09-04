@@ -14,8 +14,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, NodeId, NodeKindArg, ParamId, PhysicsTargets, Reply, Request, ResponseBody,
-    SessionId, TexId,
+    Command, ErrorCode, NodeId, NodeKind, NodeKindArg, ParamId, PhysicsKind, PhysicsTargets, Reply,
+    Request, ResponseBody, SessionId, TexId,
 };
 use catchlight_editor_server::{Editor, Storage};
 
@@ -145,7 +145,7 @@ fn an_add_creates_under_the_id_it_was_given() {
                 session,
                 parent: hair.clone(),
                 name: None,
-                kind: "rigid".into(),
+                kind: PhysicsKind::Rigid,
                 target_params: PhysicsTargets {
                     angle: Some(pull.clone()),
                     length: None,
@@ -172,7 +172,7 @@ fn an_add_creates_under_the_id_it_was_given() {
                 node: pendulum,
             }
         ),
-        ResponseBody::NodeInfo { node } if node.kind == "physics" && node.parent == Some(hair),
+        ResponseBody::NodeInfo { node } if node.kind == NodeKind::Physics && node.parent == Some(hair),
     ));
     assert!(matches!(
         body(&ed, 7, Command::TextureList { session }),

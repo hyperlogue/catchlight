@@ -66,6 +66,7 @@ from .protocol_gen import (
     ResponseBodyParam,
     ResponseBodyParams,
     ResponseBodyWarnings,
+    ScalarTarget,
     SessionId,
 )
 
@@ -192,14 +193,12 @@ class Builder:
         self,
         param: ParamId,
         node: NodeId,
-        target: str,
+        target: ScalarTarget,
         keys: Sequence[tuple[float, float]] = (),
     ) -> None:
         """Make `param` drive `target` on `node`, keyed at `keys`.
 
-        `target` is the property's wire name: `tx`, `ty`, `sx`, `sy`, `rx`,
-        `ry`, `rz`, `z_order`, `opacity`, `tint{r,g,b}`, `screentint{r,g,b}`
-        or `outputscale{x,y}`.
+        `ScalarTarget` is a `StrEnum`, so its own wire word does just as well.
 
         Each key is a param value and the value the target takes there. The
         param values are in the param's own range and this inserts the key

@@ -39,6 +39,7 @@ from catchlight.protocol_gen import (
     ResponseBodyParams,
     ResponseBodyTree,
     ResponseBodyWarnings,
+    ScalarTarget,
     TreeNode,
 )
 from support import write_png
@@ -76,7 +77,7 @@ def test_a_built_model_reopens_as_what_was_built(client: Client, tmp_path: Path)
     assert built.revision is not None
 
     tilt = built.param("Tilt", min=-1.0, max=1.0, default=0.0)
-    built.bind(tilt, front, "ty", [(-1.0, -0.2), (0.0, 0.0), (1.0, 0.2)])
+    built.bind(tilt, front, ScalarTarget.TY, [(-1.0, -0.2), (0.0, 0.0), (1.0, 0.2)])
     assert built.check() == []
 
     saved = built.save_to(tmp_path / "doll.clm")
@@ -164,7 +165,7 @@ def test_a_binding_with_no_keys_is_still_a_binding(client: Client, tmp_path: Pat
     built = Builder.new(client)
     part = built.part("Body", write_png(tmp_path / "body.png"))
     param = built.param("Wink", min=0.0, max=1.0, default=0.0)
-    built.bind(param, part, "opacity")
+    built.bind(param, part, ScalarTarget.OPACITY)
 
     bindings = built.client.send(BindingList(session=built.session, node=part))
     assert isinstance(bindings, ResponseBodyBindings)
@@ -180,7 +181,7 @@ def test_a_key_outside_the_params_range_names_the_param(
     part = built.part("Body", write_png(tmp_path / "body.png"))
     param = built.param("Tilt", min=-1.0, max=1.0, default=0.0)
     with pytest.raises(BuilderError) as raised:
-        built.bind(param, part, "ty", [(2.0, 0.5)])
+        built.bind(param, part, ScalarTarget.TY, [(2.0, 0.5)])
     assert param in str(raised.value) and "does not reach 2.0" in str(raised.value)
 
 

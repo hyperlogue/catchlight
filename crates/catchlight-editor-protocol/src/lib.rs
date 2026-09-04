@@ -47,6 +47,14 @@
 //!   breaking change for an addon that named that Id — undo restores it in
 //!   the session, nothing restores it downstream.
 //!
+//! - **A closed set travels as itself.** A mask mode, a blend mode, a
+//!   physics kind or map mode, an interpolation, a node kind, a binding
+//!   target: each is an enum here, so serde parses it and a client reads a
+//!   union rather than a string. The spelling is exact — there is no case
+//!   folding and there are no aliases — and a word outside the set is
+//!   [`ErrorCode::BadRequest`] before any command runs, not a validation the
+//!   server does afterwards.
+//!
 //! - **Nothing is addressed by name.** [`Name`](catchlight_core::id::Name) is
 //!   a label a person reads; two nodes may share one. Commands that carry a
 //!   `name` are setting or reporting that label.
@@ -223,19 +231,19 @@ pub enum Command {
         session: SessionId,
         rename: Rename,
     },
-    /// Append a mask source to a Part/Composite. `mode` is mask|dodge.
+    /// Append a mask source to a Part/Composite.
     MaskAdd {
         session: SessionId,
         node: NodeId,
         source: NodeId,
-        mode: String,
+        mode: MaskMode,
     },
     /// Change the mode of the mask at `index`.
     MaskSet {
         session: SessionId,
         node: NodeId,
         index: u32,
-        mode: String,
+        mode: MaskMode,
     },
     /// Move the mask at `index` to position `to` (clamped).
     MaskReorder {
@@ -253,12 +261,10 @@ pub enum Command {
     PhysicsSet {
         session: SessionId,
         node: NodeId,
-        /// rigid | spring
         #[serde(default)]
-        kind: Option<String>,
-        /// xy | yx | angle_length | length_angle
+        kind: Option<PhysicsKind>,
         #[serde(default)]
-        map_mode: Option<String>,
+        map_mode: Option<PhysicsMapMode>,
         #[serde(default)]
         local_only: Option<bool>,
         /// The params the driver writes ([`PhysicsTargets`]). Absent leaves
@@ -379,8 +385,7 @@ pub enum Command {
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        /// tx|ty|sx|sy|rx|ry|rz|z_order|opacity|tint{r,g,b}|screentint{r,g,b}|outputscale{x,y}
-        target: String,
+        target: ScalarTarget,
     },
     /// Author one scalar keypoint (auto-creates the binding).
     BindingKey {
@@ -388,7 +393,7 @@ pub enum Command {
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: String,
+        target: ScalarTarget,
         /// `[x, y]` index into the binding's key grid; `y` is 0 for a
         /// one-param binding.
         cell: [u32; 2],
@@ -404,14 +409,13 @@ pub enum Command {
         cell: [u32; 2],
         entries: Vec<BindingKeyEntry>,
     },
-    /// Un-author a keypoint (back to derived). `target` additionally accepts
-    /// `deform`.
+    /// Un-author a keypoint (back to derived).
     BindingUnset {
         session: SessionId,
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: String,
+        target: BindingTarget,
         cell: [u32; 2],
     },
     /// Author the identity value at a keypoint.
@@ -420,7 +424,7 @@ pub enum Command {
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: String,
+        target: BindingTarget,
         cell: [u32; 2],
     },
     BindingDelete {
@@ -428,16 +432,15 @@ pub enum Command {
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: String,
+        target: BindingTarget,
     },
-    /// nearest | stepped | linear | cubic
     BindingInterpolate {
         session: SessionId,
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: String,
-        mode: String,
+        target: BindingTarget,
+        mode: Interpolate,
     },
     /// Negate every authored value.
     BindingInvert {
@@ -445,7 +448,7 @@ pub enum Command {
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: String,
+        target: BindingTarget,
     },
     /// Author the value evaluated at `from` into cell `to`.
     BindingCopyKey {
@@ -453,7 +456,7 @@ pub enum Command {
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: String,
+        target: BindingTarget,
         from: [u32; 2],
         to: [u32; 2],
     },
@@ -620,13 +623,13 @@ pub enum Command {
         a: SeamAddr,
         b: SeamAddr,
     },
-    /// Add a SimplePhysics node. `kind` is rigid|spring.
+    /// Add a SimplePhysics node.
     PhysicsAdd {
         session: SessionId,
         parent: NodeId,
         #[serde(default)]
         name: Option<String>,
-        kind: String,
+        kind: PhysicsKind,
         /// The params the driver writes ([`PhysicsTargets`]). Absent binds
         /// neither output.
         #[serde(default)]
@@ -1194,6 +1197,508 @@ pub enum NodeKindArg {
     MeshGroup,
 }
 
+/// What a node is, as a reply reports it. [`NodeKindArg`] is the add side and
+/// carries no `Physics`: [`Command::PhysicsAdd`] is what makes one.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum NodeKind {
+    Group,
+    Part,
+    Composite,
+    MeshGroup,
+    Physics,
+}
+
+impl NodeKind {
+    /// The word this travels under.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Group => "group",
+            Self::Part => "part",
+            Self::Composite => "composite",
+            Self::MeshGroup => "mesh_group",
+            Self::Physics => "physics",
+        }
+    }
+
+    /// The kind of a node the model holds.
+    pub fn of(kind: &catchlight_core::ModelNodeKind) -> Self {
+        use catchlight_core::ModelNodeKind as K;
+        match kind {
+            K::Group => Self::Group,
+            K::Part(_) => Self::Part,
+            K::Composite(_) => Self::Composite,
+            K::MeshGroup(_) => Self::MeshGroup,
+            K::SimplePhysics(_) => Self::Physics,
+        }
+    }
+}
+
+/// What a mask source does to the drawable it is attached to.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum MaskMode {
+    Mask,
+    Dodge,
+}
+
+impl MaskMode {
+    /// The word this travels under.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Mask => "mask",
+            Self::Dodge => "dodge",
+        }
+    }
+}
+
+impl From<MaskMode> for catchlight_core::components::MaskMode {
+    fn from(mode: MaskMode) -> Self {
+        match mode {
+            MaskMode::Mask => Self::Mask,
+            MaskMode::Dodge => Self::DodgeMask,
+        }
+    }
+}
+
+impl From<catchlight_core::components::MaskMode> for MaskMode {
+    fn from(mode: catchlight_core::components::MaskMode) -> Self {
+        match mode {
+            catchlight_core::components::MaskMode::Mask => Self::Mask,
+            catchlight_core::components::MaskMode::DodgeMask => Self::Dodge,
+        }
+    }
+}
+
+/// The pendulum a physics driver swings.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum PhysicsKind {
+    Rigid,
+    Spring,
+}
+
+impl PhysicsKind {
+    /// The word this travels under.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Rigid => "rigid",
+            Self::Spring => "spring",
+        }
+    }
+}
+
+impl From<PhysicsKind> for catchlight_core::physics::PendulumKind {
+    fn from(kind: PhysicsKind) -> Self {
+        match kind {
+            PhysicsKind::Rigid => Self::RigidPendulum,
+            PhysicsKind::Spring => Self::SpringPendulum,
+        }
+    }
+}
+
+impl From<catchlight_core::physics::PendulumKind> for PhysicsKind {
+    fn from(kind: catchlight_core::physics::PendulumKind) -> Self {
+        match kind {
+            catchlight_core::physics::PendulumKind::RigidPendulum => Self::Rigid,
+            catchlight_core::physics::PendulumKind::SpringPendulum => Self::Spring,
+        }
+    }
+}
+
+/// What a physics driver's two outputs mean; see [`PhysicsTargets`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum PhysicsMapMode {
+    Xy,
+    Yx,
+    AngleLength,
+    LengthAngle,
+}
+
+impl PhysicsMapMode {
+    /// The word this travels under.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Xy => "xy",
+            Self::Yx => "yx",
+            Self::AngleLength => "angle_length",
+            Self::LengthAngle => "length_angle",
+        }
+    }
+}
+
+impl From<PhysicsMapMode> for catchlight_core::physics::PhysicsParamMapMode {
+    fn from(mode: PhysicsMapMode) -> Self {
+        match mode {
+            PhysicsMapMode::Xy => Self::XY,
+            PhysicsMapMode::Yx => Self::YX,
+            PhysicsMapMode::AngleLength => Self::AngleLength,
+            PhysicsMapMode::LengthAngle => Self::LengthAngle,
+        }
+    }
+}
+
+impl From<catchlight_core::physics::PhysicsParamMapMode> for PhysicsMapMode {
+    fn from(mode: catchlight_core::physics::PhysicsParamMapMode) -> Self {
+        use catchlight_core::physics::PhysicsParamMapMode as M;
+        match mode {
+            M::XY => Self::Xy,
+            M::YX => Self::Yx,
+            M::AngleLength => Self::AngleLength,
+            M::LengthAngle => Self::LengthAngle,
+        }
+    }
+}
+
+/// How a binding reads between the cells its author keyed.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum Interpolate {
+    Nearest,
+    Stepped,
+    Linear,
+    Cubic,
+}
+
+impl Interpolate {
+    /// The word this travels under.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Nearest => "nearest",
+            Self::Stepped => "stepped",
+            Self::Linear => "linear",
+            Self::Cubic => "cubic",
+        }
+    }
+
+    /// Every mode, for a picker that offers them all.
+    pub const ALL: [Self; 4] = [Self::Nearest, Self::Stepped, Self::Linear, Self::Cubic];
+}
+
+impl From<Interpolate> for catchlight_core::interpolate::InterpolateMode {
+    fn from(mode: Interpolate) -> Self {
+        match mode {
+            Interpolate::Nearest => Self::Nearest,
+            Interpolate::Stepped => Self::Stepped,
+            Interpolate::Linear => Self::Linear,
+            Interpolate::Cubic => Self::Cubic,
+        }
+    }
+}
+
+impl From<catchlight_core::interpolate::InterpolateMode> for Interpolate {
+    fn from(mode: catchlight_core::interpolate::InterpolateMode) -> Self {
+        use catchlight_core::interpolate::InterpolateMode as M;
+        match mode {
+            M::Nearest => Self::Nearest,
+            M::Stepped => Self::Stepped,
+            M::Linear => Self::Linear,
+            M::Cubic => Self::Cubic,
+        }
+    }
+}
+
+/// How a drawable composites onto what is already under it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    ColorDodge,
+    LinearDodge,
+    Screen,
+    ClipToLower,
+    SliceFromLower,
+    Overlay,
+    ColorBurn,
+    LinearBurn,
+    Darken,
+    Lighten,
+    Add,
+    Inverse,
+    Subtract,
+}
+
+impl BlendMode {
+    /// The word this travels under. Snake_case, like everything else on this
+    /// wire — the model file spells the same modes in PascalCase.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Multiply => "multiply",
+            Self::ColorDodge => "color_dodge",
+            Self::LinearDodge => "linear_dodge",
+            Self::Screen => "screen",
+            Self::ClipToLower => "clip_to_lower",
+            Self::SliceFromLower => "slice_from_lower",
+            Self::Overlay => "overlay",
+            Self::ColorBurn => "color_burn",
+            Self::LinearBurn => "linear_burn",
+            Self::Darken => "darken",
+            Self::Lighten => "lighten",
+            Self::Add => "add",
+            Self::Inverse => "inverse",
+            Self::Subtract => "subtract",
+        }
+    }
+
+    /// Every mode, for a picker that offers them all.
+    pub const ALL: [Self; 15] = [
+        Self::Normal,
+        Self::Multiply,
+        Self::ColorDodge,
+        Self::LinearDodge,
+        Self::Screen,
+        Self::ClipToLower,
+        Self::SliceFromLower,
+        Self::Overlay,
+        Self::ColorBurn,
+        Self::LinearBurn,
+        Self::Darken,
+        Self::Lighten,
+        Self::Add,
+        Self::Inverse,
+        Self::Subtract,
+    ];
+}
+
+impl From<BlendMode> for catchlight_core::components::BlendMode {
+    fn from(mode: BlendMode) -> Self {
+        match mode {
+            BlendMode::Normal => Self::Normal,
+            BlendMode::Multiply => Self::Multiply,
+            BlendMode::ColorDodge => Self::ColorDodge,
+            BlendMode::LinearDodge => Self::LinearDodge,
+            BlendMode::Screen => Self::Screen,
+            BlendMode::ClipToLower => Self::ClipToLower,
+            BlendMode::SliceFromLower => Self::SliceFromLower,
+            BlendMode::Overlay => Self::Overlay,
+            BlendMode::ColorBurn => Self::ColorBurn,
+            BlendMode::LinearBurn => Self::LinearBurn,
+            BlendMode::Darken => Self::Darken,
+            BlendMode::Lighten => Self::Lighten,
+            BlendMode::Add => Self::Add,
+            BlendMode::Inverse => Self::Inverse,
+            BlendMode::Subtract => Self::Subtract,
+        }
+    }
+}
+
+impl From<catchlight_core::components::BlendMode> for BlendMode {
+    fn from(mode: catchlight_core::components::BlendMode) -> Self {
+        use catchlight_core::components::BlendMode as M;
+        match mode {
+            M::Normal => Self::Normal,
+            M::Multiply => Self::Multiply,
+            M::ColorDodge => Self::ColorDodge,
+            M::LinearDodge => Self::LinearDodge,
+            M::Screen => Self::Screen,
+            M::ClipToLower => Self::ClipToLower,
+            M::SliceFromLower => Self::SliceFromLower,
+            M::Overlay => Self::Overlay,
+            M::ColorBurn => Self::ColorBurn,
+            M::LinearBurn => Self::LinearBurn,
+            M::Darken => Self::Darken,
+            M::Lighten => Self::Lighten,
+            M::Add => Self::Add,
+            M::Inverse => Self::Inverse,
+            M::Subtract => Self::Subtract,
+        }
+    }
+}
+
+/// A property a binding drives with one number per cell.
+///
+/// The spellings are the model file's own, which is why the colour and
+/// output-scale channels run their words together rather than reading as
+/// snake_case.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ScalarTarget {
+    Tx,
+    Ty,
+    Sx,
+    Sy,
+    Rx,
+    Ry,
+    Rz,
+    ZOrder,
+    Opacity,
+    #[serde(rename = "tintr")]
+    TintR,
+    #[serde(rename = "tintg")]
+    TintG,
+    #[serde(rename = "tintb")]
+    TintB,
+    #[serde(rename = "screentintr")]
+    ScreenTintR,
+    #[serde(rename = "screentintg")]
+    ScreenTintG,
+    #[serde(rename = "screentintb")]
+    ScreenTintB,
+    #[serde(rename = "outputscalex")]
+    OutputScaleX,
+    #[serde(rename = "outputscaley")]
+    OutputScaleY,
+}
+
+/// Any property a binding drives: one of [`ScalarTarget`]'s scalars, or the
+/// per-vertex deform, which the deform commands author instead.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum BindingTarget {
+    Tx,
+    Ty,
+    Sx,
+    Sy,
+    Rx,
+    Ry,
+    Rz,
+    ZOrder,
+    Opacity,
+    #[serde(rename = "tintr")]
+    TintR,
+    #[serde(rename = "tintg")]
+    TintG,
+    #[serde(rename = "tintb")]
+    TintB,
+    #[serde(rename = "screentintr")]
+    ScreenTintR,
+    #[serde(rename = "screentintg")]
+    ScreenTintG,
+    #[serde(rename = "screentintb")]
+    ScreenTintB,
+    #[serde(rename = "outputscalex")]
+    OutputScaleX,
+    #[serde(rename = "outputscaley")]
+    OutputScaleY,
+    Deform,
+}
+
+impl ScalarTarget {
+    /// The word this travels under — the model's own, which is why it is
+    /// read out of the core table rather than spelled again here.
+    pub fn wire_name(self) -> &'static str {
+        catchlight_core::ScalarTarget::from(self).name()
+    }
+}
+
+impl BindingTarget {
+    /// The word this travels under, under the same rule.
+    pub fn wire_name(self) -> &'static str {
+        catchlight_core::BindingTarget::from(self).name()
+    }
+}
+
+/// Both target enums against the core ones, in one table, so a variant added
+/// to any of the four cannot be spelled differently in the others.
+macro_rules! scalar_targets {
+    ($($variant:ident),* $(,)?) => {
+        impl From<ScalarTarget> for catchlight_core::ScalarTarget {
+            fn from(t: ScalarTarget) -> Self {
+                match t { $(ScalarTarget::$variant => Self::$variant),* }
+            }
+        }
+
+        impl From<catchlight_core::ScalarTarget> for ScalarTarget {
+            fn from(t: catchlight_core::ScalarTarget) -> Self {
+                match t { $(catchlight_core::ScalarTarget::$variant => Self::$variant),* }
+            }
+        }
+
+        impl From<ScalarTarget> for BindingTarget {
+            fn from(t: ScalarTarget) -> Self {
+                match t { $(ScalarTarget::$variant => Self::$variant),* }
+            }
+        }
+
+        impl BindingTarget {
+            /// The scalar this names, or `None` for the deform — which is
+            /// what the commands that take only a scalar are asking.
+            pub fn scalar(self) -> Option<ScalarTarget> {
+                match self {
+                    $(Self::$variant => Some(ScalarTarget::$variant),)*
+                    Self::Deform => None,
+                }
+            }
+        }
+
+        impl From<BindingTarget> for catchlight_core::BindingTarget {
+            fn from(t: BindingTarget) -> Self {
+                match t {
+                    $(BindingTarget::$variant => {
+                        Self::Scalar(catchlight_core::ScalarTarget::$variant)
+                    })*
+                    BindingTarget::Deform => Self::Deform,
+                }
+            }
+        }
+
+        impl From<catchlight_core::BindingTarget> for BindingTarget {
+            fn from(t: catchlight_core::BindingTarget) -> Self {
+                match t {
+                    $(catchlight_core::BindingTarget::Scalar(
+                        catchlight_core::ScalarTarget::$variant,
+                    ) => Self::$variant,)*
+                    catchlight_core::BindingTarget::Deform => Self::Deform,
+                }
+            }
+        }
+    };
+}
+
+scalar_targets!(
+    Tx,
+    Ty,
+    Sx,
+    Sy,
+    Rx,
+    Ry,
+    Rz,
+    ZOrder,
+    Opacity,
+    TintR,
+    TintG,
+    TintB,
+    ScreenTintR,
+    ScreenTintG,
+    ScreenTintB,
+    OutputScaleX,
+    OutputScaleY,
+);
+
+/// Every closed set prints as the word it travels under, so a tool shows a
+/// value its user could type straight back.
+macro_rules! display_as_wire {
+    ($($t:ty),* $(,)?) => {$(
+        impl std::fmt::Display for $t {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.wire_name())
+            }
+        }
+    )*};
+}
+
+display_as_wire!(
+    NodeKind,
+    MaskMode,
+    PhysicsKind,
+    PhysicsMapMode,
+    Interpolate,
+    BlendMode,
+    ScalarTarget,
+    BindingTarget,
+);
+
 /// Fields to change on a node; every field is optional (absent = unchanged).
 /// Kind-specific fields are ignored on nodes of another kind: the colour fields
 /// (`opacity`, `blend_mode`, `tint`, `screen_tint`) reach parts and composites
@@ -1227,9 +1732,8 @@ pub struct NodePatch {
     pub clear_texture: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_to_root: Option<bool>,
-    /// Blend-mode name (Normal | Multiply | ColorDodge | …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blend_mode: Option<String>,
+    pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint: Option<[f32; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1248,7 +1752,7 @@ pub struct NodePatch {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BindingKeyEntry {
-    pub target: String,
+    pub target: ScalarTarget,
     pub value: f32,
 }
 
@@ -1308,8 +1812,9 @@ pub enum ErrorCode {
     /// The request did not parse: bad JSON, an unknown command, or a string
     /// that is not a valid Id.
     BadRequest,
-    /// A binding target, blend mode or other enum name the server does not
-    /// know, or one that does not fit the node it names.
+    /// A target that does not fit the thing it names: a physics field on a
+    /// node that is not a driver, a `deform` where only a scalar can go. A
+    /// *misspelled* one never gets this far — it is [`Self::BadRequest`].
     BadTarget,
     NothingToUndo,
     NothingToRedo,
@@ -1547,18 +2052,17 @@ pub struct ParamInfo {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BindingInfo {
-    /// The property driven, spelled the way [`Command::BindingAdd`] and every
-    /// other binding command take it — plus `deform`, which only the deform
-    /// commands author.
-    pub target: String,
+    /// The property driven — plus `deform`, which only the deform commands
+    /// author.
+    pub target: BindingTarget,
     /// The param along the grid's x axis.
     pub param: ParamId,
     /// The param along the grid's y axis. Absent when the grid is one row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param_y: Option<ParamId>,
-    /// nearest | stepped | linear | cubic — the name
-    /// [`Command::BindingInterpolate`] takes back.
-    pub interpolate: String,
+    /// How it reads between cells, as [`Command::BindingInterpolate`] takes
+    /// it back.
+    pub interpolate: Interpolate,
     /// How many key positions `param` has, so how wide the grid is.
     pub width: u32,
     /// How many key positions `param_y` has, or 1.
@@ -1606,7 +2110,7 @@ pub struct TreeNode {
     pub id: NodeId,
     /// What a person reads. Free to repeat.
     pub name: String,
-    pub kind: String,
+    pub kind: NodeKind,
     pub z_order: f32,
     #[serde(default = "yes")]
     pub enabled: bool,
@@ -1635,9 +2139,8 @@ fn yes() -> bool {
 pub struct NodeInfo {
     /// What the node is addressed by, here and in the file.
     pub id: NodeId,
-    /// group | part | composite | mesh_group | physics — the same word
-    /// [`TreeNode::kind`] carries.
-    pub kind: String,
+    /// The same kind [`TreeNode::kind`] carries.
+    pub kind: NodeKind,
     /// Absent on the root, which is the one node with no parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<NodeId>,
@@ -1651,9 +2154,8 @@ pub struct NodeInfo {
     pub lock_to_root: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    /// Blend-mode name (Normal | Multiply | ColorDodge | …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blend_mode: Option<String>,
+    pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint: Option<[f32; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1751,7 +2253,7 @@ mod tests {
                 session: SessionId(2),
                 params: BindingParams::two(param("head.x"), param("head.y")),
                 node: node("root/part-3f9a2c1e"),
-                target: "tx".into(),
+                target: ScalarTarget::Tx,
                 cell: [1, 2],
                 value: 0.5,
             },
@@ -1781,7 +2283,7 @@ mod tests {
                 session: SessionId(1),
                 params: BindingParams::one(param("pull")),
                 node: node("body"),
-                target: "tx".into(),
+                target: ScalarTarget::Tx,
             },
         })
         .unwrap();
@@ -1965,7 +2467,7 @@ mod tests {
     fn a_node_info_reply_parses_as_the_patch_that_would_restore_it() {
         let info = NodeInfo {
             id: node("root/part-1"),
-            kind: "part".into(),
+            kind: NodeKind::Part,
             parent: Some(node("root")),
             name: "Body".into(),
             translate: [1.0, 2.0, 3.0],
@@ -1975,7 +2477,7 @@ mod tests {
             enabled: false,
             lock_to_root: true,
             opacity: Some(0.5),
-            blend_mode: Some("Multiply".into()),
+            blend_mode: Some(BlendMode::Multiply),
             tint: Some([0.1, 0.2, 0.3]),
             screen_tint: Some([0.4, 0.5, 0.6]),
             mask_threshold: Some(0.75),
@@ -1997,7 +2499,7 @@ mod tests {
         assert_eq!(patch.enabled, Some(false));
         assert_eq!(patch.lock_to_root, Some(true));
         assert_eq!(patch.opacity, Some(0.5));
-        assert_eq!(patch.blend_mode.as_deref(), Some("Multiply"));
+        assert_eq!(patch.blend_mode, Some(BlendMode::Multiply));
         assert_eq!(patch.tint, Some([0.1, 0.2, 0.3]));
         assert_eq!(patch.screen_tint, Some([0.4, 0.5, 0.6]));
         assert_eq!(patch.mask_threshold, Some(0.75));
@@ -2020,7 +2522,7 @@ mod tests {
         let body = ResponseBody::NodeInfo {
             node: Box::new(NodeInfo {
                 id: node("root/part-1"),
-                kind: "part".into(),
+                kind: NodeKind::Part,
                 parent: Some(node("root")),
                 name: "Body".into(),
                 translate: [0.0; 3],
@@ -2030,7 +2532,7 @@ mod tests {
                 enabled: true,
                 lock_to_root: false,
                 opacity: Some(1.0),
-                blend_mode: Some("Normal".into()),
+                blend_mode: Some(BlendMode::Normal),
                 tint: Some([1.0; 3]),
                 screen_tint: Some([0.0; 3]),
                 mask_threshold: Some(0.5),
@@ -2057,6 +2559,124 @@ mod tests {
             .kind(),
             CommandKind::ReplicaQuery,
         );
+    }
+
+    /// Every closed set has two tables — serde's, which the wire is parsed
+    /// and written by, and `wire_name`, which a CLI or a panel prints. They
+    /// have to be the same table, or a tool would show a word its user cannot
+    /// type back.
+    #[test]
+    fn what_a_closed_set_prints_is_what_it_travels_as() {
+        fn same<T: Serialize + std::fmt::Display + Copy>(values: &[T]) {
+            for v in values {
+                let json = serde_json::to_value(v).unwrap();
+                assert_eq!(json, serde_json::json!(v.to_string()), "{v}");
+            }
+        }
+        same(&[
+            NodeKind::Group,
+            NodeKind::Part,
+            NodeKind::Composite,
+            NodeKind::MeshGroup,
+            NodeKind::Physics,
+        ]);
+        same(&[MaskMode::Mask, MaskMode::Dodge]);
+        same(&[PhysicsKind::Rigid, PhysicsKind::Spring]);
+        same(&[
+            PhysicsMapMode::Xy,
+            PhysicsMapMode::Yx,
+            PhysicsMapMode::AngleLength,
+            PhysicsMapMode::LengthAngle,
+        ]);
+        same(&Interpolate::ALL);
+        same(&BlendMode::ALL);
+        same(&SCALAR_TARGETS);
+        same(&BINDING_TARGETS);
+    }
+
+    /// The scalar spellings are the model file's own, and a rigger types them
+    /// by hand, so they are pinned here rather than left to `rename_all`.
+    #[test]
+    fn a_binding_target_travels_under_the_models_own_spelling() {
+        let words: Vec<String> = SCALAR_TARGETS.iter().map(|t| t.to_string()).collect();
+        assert_eq!(
+            words,
+            [
+                "tx",
+                "ty",
+                "sx",
+                "sy",
+                "rx",
+                "ry",
+                "rz",
+                "z_order",
+                "opacity",
+                "tintr",
+                "tintg",
+                "tintb",
+                "screentintr",
+                "screentintg",
+                "screentintb",
+                "outputscalex",
+                "outputscaley",
+            ]
+        );
+        // `deform` is the one target no scalar command takes.
+        assert_eq!(BindingTarget::Deform.to_string(), "deform");
+        assert_eq!(BindingTarget::from(ScalarTarget::Rz), BindingTarget::Rz);
+    }
+
+    const SCALAR_TARGETS: [ScalarTarget; 17] = [
+        ScalarTarget::Tx,
+        ScalarTarget::Ty,
+        ScalarTarget::Sx,
+        ScalarTarget::Sy,
+        ScalarTarget::Rx,
+        ScalarTarget::Ry,
+        ScalarTarget::Rz,
+        ScalarTarget::ZOrder,
+        ScalarTarget::Opacity,
+        ScalarTarget::TintR,
+        ScalarTarget::TintG,
+        ScalarTarget::TintB,
+        ScalarTarget::ScreenTintR,
+        ScalarTarget::ScreenTintG,
+        ScalarTarget::ScreenTintB,
+        ScalarTarget::OutputScaleX,
+        ScalarTarget::OutputScaleY,
+    ];
+
+    const BINDING_TARGETS: [BindingTarget; 18] = [
+        BindingTarget::Tx,
+        BindingTarget::Ty,
+        BindingTarget::Sx,
+        BindingTarget::Sy,
+        BindingTarget::Rx,
+        BindingTarget::Ry,
+        BindingTarget::Rz,
+        BindingTarget::ZOrder,
+        BindingTarget::Opacity,
+        BindingTarget::TintR,
+        BindingTarget::TintG,
+        BindingTarget::TintB,
+        BindingTarget::ScreenTintR,
+        BindingTarget::ScreenTintG,
+        BindingTarget::ScreenTintB,
+        BindingTarget::OutputScaleX,
+        BindingTarget::OutputScaleY,
+        BindingTarget::Deform,
+    ];
+
+    /// A misspelled word in a closed set is a request that does not parse, so
+    /// it is answered before any command runs rather than validated after.
+    #[test]
+    fn a_word_outside_a_closed_set_does_not_parse() {
+        let line =
+            r#"{"id":4,"cmd":"mask_add","session":1,"node":"a","source":"b","mode":"dodge_mask"}"#;
+        let err = serde_json::from_str::<Request>(line).unwrap_err();
+        assert!(err.to_string().contains("unknown variant"), "{err}");
+        let RequestId { id } = serde_json::from_str(line).unwrap();
+        assert_eq!(id, 4);
     }
 
     #[test]

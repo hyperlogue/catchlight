@@ -15,7 +15,9 @@
 //!   and the cell of the binding it lists, because arming one param of a pair
 //!   lists rows whose grid has a second axis the armed param does not.
 
-use catchlight_editor_protocol::{BindingParams, NodeId, ParamId, ParamInfo};
+use catchlight_editor_protocol::{
+    BindingParams, BindingTarget, Interpolate, NodeId, ParamId, ParamInfo,
+};
 use eframe::egui;
 
 /// What recording writes through: one param, or two params authored jointly.
@@ -54,7 +56,7 @@ impl Armed {
 pub(crate) struct BindingAddr {
     pub params: BindingParams,
     pub node: NodeId,
-    pub target: String,
+    pub target: BindingTarget,
     pub cell: [u32; 2],
 }
 
@@ -65,7 +67,7 @@ pub(crate) enum BindingOp {
     Reset,
     Delete,
     Invert,
-    Interpolate(String),
+    Interpolate(Interpolate),
     Copy,
     Paste,
 }
@@ -125,8 +127,8 @@ pub(crate) struct ArmedInfo {
 pub(crate) struct BindingRow {
     pub node: NodeId,
     pub node_name: String,
-    pub target: String,
-    pub interpolate: String,
+    pub target: BindingTarget,
+    pub interpolate: Interpolate,
     pub authored_at_cell: bool,
     /// The binding's own params and cell — not the armed param's, which may
     /// be one half of them.
@@ -484,7 +486,7 @@ impl ParamsPanel<'_> {
             let addr = || BindingAddr {
                 params: row.params.clone(),
                 node: row.node.clone(),
-                target: row.target.clone(),
+                target: row.target,
                 cell: row.cell,
             };
             ui.horizontal(|ui| {
@@ -497,15 +499,15 @@ impl ParamsPanel<'_> {
                     .unwrap_or_default();
                 ui.label(format!("{mark} {} · {}", row.node_name, row.target))
                     .on_hover_text(format!("{}{pair}", row.node));
-                egui::ComboBox::from_id_salt(("interp", row.node.as_str(), &row.target))
-                    .selected_text(&row.interpolate)
+                egui::ComboBox::from_id_salt(("interp", row.node.as_str(), row.target.wire_name()))
+                    .selected_text(row.interpolate.wire_name())
                     .width(70.0)
                     .show_ui(ui, |ui| {
-                        for mode in ["nearest", "stepped", "linear", "cubic"] {
-                            if ui.button(mode).clicked() {
+                        for mode in Interpolate::ALL {
+                            if ui.button(mode.wire_name()).clicked() {
                                 self.actions.push(ParamAction::Binding {
                                     row: addr(),
-                                    op: BindingOp::Interpolate(mode.into()),
+                                    op: BindingOp::Interpolate(mode),
                                 });
                                 ui.close();
                             }
