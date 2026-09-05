@@ -505,11 +505,22 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
         name: Some("Cloth".into()),
         node: None,
     });
+    // A mesh group the editor makes carries its meshless descendants; the
+    // flag is the escape, so the patch below turns it off rather than on.
+    match ok(f.agree(Command::NodeInfo {
+        session,
+        node: mesh_group.clone(),
+    })) {
+        ResponseBody::NodeInfo { node } => {
+            assert_eq!(node.mg_translate_children, Some(true));
+        }
+        other => panic!("expected NodeInfo, got {other:?}"),
+    }
     f.step(Command::NodeSet {
         session,
         node: mesh_group.clone(),
         patch: NodePatch {
-            mg_translate_children: Some(true),
+            mg_translate_children: Some(false),
             ..NodePatch::default()
         },
     });
@@ -534,7 +545,7 @@ fn node_info_reports_the_fields_a_composite_and_a_mesh_group_carry() {
     })) {
         ResponseBody::NodeInfo { node } => {
             assert_eq!(node.kind, NodeKind::MeshGroup);
-            assert_eq!(node.mg_translate_children, Some(true));
+            assert_eq!(node.mg_translate_children, Some(false));
             // A mesh group is never drawn, so it has no colour to show — but
             // it does hold a mesh, so it reports an empty one rather than
             // none at all.

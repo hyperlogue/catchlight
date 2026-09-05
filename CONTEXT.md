@@ -83,9 +83,9 @@ A node setting: the node's transform is relative to the model's root,
 ignoring every ancestor's transform.
 
 **Translate children**:
-A mesh group setting: descendants without a mesh (groups, simple physics
-nodes) are moved as whole nodes by the group's deform instead of being left
-in place.
+A mesh group setting, on unless turned off: descendants without a mesh
+(groups, simple physics nodes) are moved as whole nodes by the group's
+deform. Turned off, they stay where they are.
 
 **Propagate mesh group**:
 A composite setting: whether a mesh group above the composite deforms the

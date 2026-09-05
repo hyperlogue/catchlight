@@ -537,10 +537,11 @@ pub struct ModelMeshGroup {
 }
 
 impl ModelMeshGroup {
-    /// A mesh group over `mesh`, leaving meshless descendants in place.
+    /// A mesh group over `mesh`, carrying meshless descendants along with
+    /// its deform.
     pub fn new(mesh: impl Into<ModelMesh>) -> Self {
         Self {
-            translate_children: false,
+            translate_children: true,
             mesh: mesh.into(),
         }
     }
@@ -4113,6 +4114,15 @@ mod tests {
             Err(ModelError::UnknownTexture)
         ));
         assert!(r.model.to_clm_bytes().is_ok());
+    }
+
+    /// A mesh group authored in catchlight carries its meshless descendants
+    /// by default; the flag is the escape for leaving them in place. An
+    /// imported model is not affected — the importer writes the key the
+    /// source authored.
+    #[test]
+    fn a_new_mesh_group_translates_its_children() {
+        assert!(ModelMeshGroup::new(quad()).translate_children);
     }
 
     fn physics_target(m: &Model, node: &NodeId) -> Option<ParamId> {
