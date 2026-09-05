@@ -40,7 +40,7 @@ Invariants this module enforces:
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from .client import Client, ProtocolError
 from .layers import Layer, Placement, read_layers
@@ -50,6 +50,7 @@ from .protocol_gen import (
     BindingKey,
     Check,
     CommandNodeInfo,
+    DeformVertices,
     MeshAuto,
     NodeAdd,
     NodeId,
@@ -229,6 +230,43 @@ class Builder:
                     target=target,
                     cell=(self._cell(info, position), 0),
                     value=value,
+                )
+            )
+
+    def bind_deform(
+        self,
+        param: ParamId,
+        node: NodeId,
+        cells: Mapping[tuple[int, int] | int, Sequence[tuple[float, float]]],
+        param_y: ParamId | None = None,
+    ) -> None:
+        """Make `param` deform `node`'s mesh, one authored cell at a time.
+
+        A deform binding's grid is the product of its params' key positions,
+        and `cells` is keyed by *key index* rather than by param value — `2`
+        or `(2, 0)` is the third key of `param`, and `(2, 1)` is that key
+        crossed with the second key of `param_y`. Unlike `bind`, this inserts
+        no key positions: a deform grid is sized by the keys the param already
+        has, so add them first if you need them.
+
+        Each value is the whole deformed mesh: one `(dx, dy)` per vertex, in
+        the mesh's own order, and every cell has to carry the same count the
+        node's mesh does. Offsets are from the rest pose, so an all-zero cell
+        is the rest pose spelled out.
+
+        The binding is created by the first cell authored, so there is no
+        separate call to make one.
+        """
+        for cell, offsets in cells.items():
+            at = (cell, 0) if isinstance(cell, int) else cell
+            self.client.send(
+                DeformVertices(
+                    session=self.session,
+                    param=param,
+                    param_y=param_y,
+                    node=node,
+                    cell=at,
+                    offsets=[tuple(offset) for offset in offsets],
                 )
             )
 

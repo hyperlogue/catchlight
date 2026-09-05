@@ -82,11 +82,12 @@
 //!   over any two params, not a property of either.
 //!
 //! - **A session's model is always complete.** A fragment enters one way and
-//!   one way only: [`Command::ImportFile`] naming a `parent`, which installs
-//!   it under that node in a single atomic edit and leaves a complete model
-//!   behind. It never *becomes* the session's model, there is no extract
-//!   command to match it, and no reply carries a multi-root tree — so every
-//!   tree reply, the inspector and the commit gate keep one shape.
+//!   one way only: an import naming a `parent` ([`Command::ImportFile`] or
+//!   [`Command::ImportJson`]), which installs it under that node in a single
+//!   atomic edit and leaves a complete model behind. It never *becomes* the
+//!   session's model, there is no extract command to match it, and no reply
+//!   carries a multi-root tree — so every tree reply, the inspector and the
+//!   commit gate keep one shape.
 //!   `catchlight-cli` is where a fragment is cut, scanned and merged at the
 //!   file level, without a session at all. [`Command::NodeTree`] on a
 //!   fragment is [`ErrorCode::Fragment`], which nothing should see.
@@ -720,6 +721,36 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<NodeId>,
     },
+    /// Import a `.clm` **structure document as JSON**, with its textures
+    /// attached separately, into an open session.
+    ///
+    /// The same operation as [`Command::ImportFile`] and the same two paths —
+    /// `parent` absent replaces a pristine session's model, `parent` present
+    /// installs the document's roots under that node — differing only in how
+    /// the model arrives. A client that is authoring a model rather than
+    /// forwarding a file has the structure in hand and the images beside it,
+    /// and this saves it building a container.
+    ///
+    /// Attachment `document` is the structure document as JSON, spelled
+    /// exactly as the `.clm` format's serde spells it. Each entry of
+    /// `textures` names an image arriving as `texture:<texture>`; an entry
+    /// with no attachment, and a `texture:` attachment no entry names, are
+    /// both [`ErrorCode::BadRequest`] naming the id. A texture the document
+    /// *references* but `textures` does not list is the reader's own refusal,
+    /// the same one a `.clm` missing a payload gets.
+    ///
+    /// **A JSON import carries no extension bytes.** A byte extension is a
+    /// `{size, hash}` marker in the document and its payload lives in a
+    /// section a JSON document has no room for, so a marker here is refused
+    /// by key. Import the document, then set the extension.
+    ImportJson {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<NodeId>,
+        /// Every texture the attachments carry, in any order.
+        #[serde(default)]
+        textures: Vec<ImportTexture>,
+    },
     /// Build a model from a manifest and its images and replace the session's
     /// model with it.
     ///
@@ -841,6 +872,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("scratch_deform", CommandKind::Scratch),
     ("preview", CommandKind::ServerQuery),
     ("import_file", CommandKind::Document),
+    ("import_json", CommandKind::Document),
     ("import_manifest", CommandKind::Document),
 ];
 
@@ -895,6 +927,13 @@ pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
         "import_file",
         Bytes {
             attachments: &[Attachment::Fixed("model")],
+            payload: false,
+        },
+    ),
+    (
+        "import_json",
+        Bytes {
+            attachments: &[Attachment::Fixed("document"), Attachment::Family("texture")],
             payload: false,
         },
     ),
@@ -988,6 +1027,7 @@ impl Command {
             Command::ScratchDeform { .. } => "scratch_deform",
             Command::Preview { .. } => "preview",
             Command::ImportFile { .. } => "import_file",
+            Command::ImportJson { .. } => "import_json",
             Command::ImportManifest { .. } => "import_manifest",
         }
     }
@@ -1097,6 +1137,7 @@ impl Command {
             | Command::ScratchDeform { session, .. }
             | Command::Preview { session, .. }
             | Command::ImportFile { session, .. }
+            | Command::ImportJson { session, .. }
             | Command::ImportManifest { session } => Some(*session),
         }
     }
@@ -1537,6 +1578,39 @@ impl From<catchlight_core::formats::clm::TextureEncoding> for TextureEncoding {
     }
 }
 
+/// What a texture's stored bytes mean by their alpha channel.
+///
+/// The bytes cannot say, so the command carrying them does. Straight is the
+/// default because it is what an editor writes and what every PNG a person
+/// exports holds; `.inx` textures are the premultiplied ones.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum TextureAlpha {
+    #[default]
+    Straight,
+    PremultipliedSrgb,
+}
+
+impl From<TextureAlpha> for catchlight_core::formats::clm::TextureAlpha {
+    fn from(alpha: TextureAlpha) -> Self {
+        match alpha {
+            TextureAlpha::Straight => Self::Straight,
+            TextureAlpha::PremultipliedSrgb => Self::PremultipliedSrgb,
+        }
+    }
+}
+
+impl From<catchlight_core::formats::clm::TextureAlpha> for TextureAlpha {
+    fn from(alpha: catchlight_core::formats::clm::TextureAlpha) -> Self {
+        use catchlight_core::formats::clm::TextureAlpha as A;
+        match alpha {
+            A::Straight => Self::Straight,
+            A::PremultipliedSrgb => Self::PremultipliedSrgb,
+        }
+    }
+}
+
 /// How a drawable composites onto what is already under it.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1909,6 +1983,23 @@ pub struct BindingKeyEntry {
 pub struct ParamPose {
     pub param: ParamId,
     pub value: f32,
+}
+
+/// One texture an [`Command::ImportJson`] document names, and how to read the
+/// bytes that came with it.
+///
+/// The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
+/// fields rather than a sniff or a file-name tail, because a JSON document
+/// names no files: the client that has the image is the only thing that knows
+/// what it holds.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ImportTexture {
+    pub texture: TexId,
+    #[serde(default)]
+    pub encoding: TextureEncoding,
+    #[serde(default)]
+    pub alpha: TextureAlpha,
 }
 
 /// The server's answer. `Ok`/`Err` carry the request's `id`; `Event` is
