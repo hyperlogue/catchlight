@@ -308,6 +308,10 @@ fn py_type(ty: &Type, known: &BTreeSet<String>) -> Result<String> {
                     };
                     py_type(inner, known)
                 }
+                // An extension's JSON value. Catchlight reads none of it, so
+                // there is no shape to declare — `Any` is the honest type and
+                // the decoder passes it through untouched.
+                "Value" => Ok("Any".into()),
                 other if known.contains(other) => Ok(other.to_string()),
                 other => bail!(
                     "the protocol names `{other}`, which `declarations` in \
@@ -1110,6 +1114,9 @@ class AttachmentKind(StrEnum):
 
     # Exactly this name, and the command needs it.
     FIXED = "fixed"
+    # Exactly this name, and the command's own fields decide whether it is
+    # there.
+    OPTIONAL = "optional"
     # Any number of `<name>:<suffix>` attachments; the suffixes are the
     # command's own to say.
     FAMILY = "family"

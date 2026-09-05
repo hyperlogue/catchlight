@@ -110,6 +110,18 @@ export interface TextureRequest {
   alpha: string;
 }
 
+/**
+ * One byte extension a structure names and the replica has yet to fetch.
+ *
+ * By hash rather than by key alone: an extension's bytes change under a key
+ * that does not, so a feed after an unrelated edit needs none of them and a
+ * feed after a changed thumbnail needs exactly one.
+ */
+export interface ExtensionRequest {
+  key: string;
+  hash: string;
+}
+
 /** One session's model, puppet and render cache, in this tab. */
 export interface WasmReplica extends WasmOwned {
   /** The document revision this replica currently holds. */
@@ -120,10 +132,18 @@ export interface WasmReplica extends WasmOwned {
   /** Holds a texture payload under its id, for the structures that name it. */
   putTexture(id: TexId, bytes: Uint8Array): void;
   /**
+   * The `ExtensionRequest[]` a structure names whose bytes this replica does
+   * not hold, as JSON. A JSON extension is never among them: it rides inline
+   * in the structure.
+   */
+  extensionsNeeded(structure: Uint8Array): string;
+  /** Holds a byte extension's payload under its key, by the hash it carries. */
+  putExtension(key: string, bytes: Uint8Array): void;
+  /**
    * Applies a structure-only container at `rev`. Forward only: a `rev` at or
    * below the current one is ignored and returns false. Throws a string when
-   * the structure is malformed or names a texture that was not put, leaving
-   * the model untouched.
+   * the structure is malformed or names a texture or extension that was not
+   * put, leaving the model untouched.
    */
   applyStructure(structure: Uint8Array, rev: number): boolean;
   /** In-tab handoff: replace from the editor's own model. Returns the rev. */

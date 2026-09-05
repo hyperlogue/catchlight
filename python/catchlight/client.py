@@ -38,6 +38,11 @@ Invariants this module enforces:
   the command whichever door is underneath. Nothing is staged first, so there
   is no key to name, no upload to clean up, and the same call works over both
   transports.
+
+- **An extension's kind is its Python type.** `extension_set` files `bytes` as
+  a byte extension and anything else as JSON, and `extension_get` gives back
+  what was written. Catchlight reads neither: a value goes in, the same value
+  comes out of the next save, and nothing here interprets it.
 """
 
 from __future__ import annotations
@@ -53,6 +58,14 @@ from .protocol_gen import (
     Command,
     CommandKind,
     ErrorCode,
+    ExtensionDelete,
+    ExtensionGet,
+    ExtensionInfo,
+    ExtensionKey,
+    ExtensionSetBytes,
+    ExtensionSetJson,
+    Extensions,
+    CommandExtensionSet,
     ImportFile,
     ImportJson,
     ImportManifest,
@@ -65,6 +78,10 @@ from .protocol_gen import (
     ReplyErr,
     ReplyOk,
     ResponseBody,
+    ExtensionValueInfoBytes,
+    ExtensionValueInfoJson,
+    ResponseBodyExtension,
+    ResponseBodyExtensions,
     ResponseBodyNode,
     ResponseBodyPreview,
     ResponseBodySaved,
@@ -375,6 +392,63 @@ class Client:
         if out is not None:
             Path(_absolute(out)).write_bytes(payload)
         return payload
+
+    # -- extensions
+
+    def extension_set(self, session: SessionId, key: ExtensionKey, value: Any) -> None:
+        """File `value` under `key`, replacing whatever was there.
+
+        `bytes` (or a `bytearray`) is a byte extension and travels attached;
+        anything else is JSON and travels inline. The Python type decides,
+        because that is the distinction a caller already made when it built
+        the value.
+
+        `catchlight.` is the format's own prefix and is refused.
+        """
+        if isinstance(value, (bytes, bytearray)):
+            self.send_with(
+                CommandExtensionSet(session=session, key=key, value=ExtensionSetBytes()),
+                {"value": bytes(value)},
+            )
+        else:
+            self.send_with(
+                CommandExtensionSet(
+                    session=session, key=key, value=ExtensionSetJson(value=value)
+                )
+            )
+
+    def extension_get(self, session: SessionId, key: ExtensionKey) -> Any:
+        """The value filed under `key`: the JSON it holds, or its `bytes`.
+
+        The same split as `extension_set`, in reverse — so a value written
+        here comes back as what was written.
+        """
+        body, payload = self.send_with(ExtensionGet(session=session, key=key))
+        if not isinstance(body, ResponseBodyExtension):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"extension_get answered {body!r}")
+        if isinstance(body.value, ExtensionValueInfoJson):
+            return body.value.value
+        if payload is None:
+            raise ProtocolError(
+                ErrorCode.BAD_REQUEST, f"{key}: a bytes extension came back with no bytes"
+            )
+        return payload
+
+    def extension_delete(self, session: SessionId, key: ExtensionKey) -> None:
+        """Drop the extension filed under `key`. A key the model does not
+        carry raises, rather than quietly doing nothing."""
+        self.send(ExtensionDelete(session=session, key=key))
+
+    def extensions(self, session: SessionId) -> list[ExtensionInfo]:
+        """Every extension the model carries, in key order.
+
+        A byte value is reported as its size and hash — the marker a feed
+        compares — never its bytes; `extension_get` is what fetches those.
+        """
+        body = self.send(Extensions(session=session))
+        if not isinstance(body, ResponseBodyExtensions):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"extensions answered {body!r}")
+        return body.extensions
 
 
 def _encoding_of(path: Path) -> TextureEncoding:

@@ -142,6 +142,10 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::SlotPair,
         proto::Presence,
         proto::Camera,
+        proto::ExtensionKey,
+        proto::ExtensionSet,
+        proto::ExtensionValueInfo,
+        proto::ExtensionInfo,
         proto::Reply,
         proto::ErrorCode,
         proto::ResponseBody,
@@ -296,6 +300,7 @@ pub fn byte_rows() -> Vec<ByteRow> {
                 .map(|a| match a {
                     proto::Attachment::Fixed(name) => ("fixed", *name),
                     proto::Attachment::Family(name) => ("family", *name),
+                    proto::Attachment::Optional(name) => ("optional", *name),
                 })
                 .collect(),
             payload: bytes.payload,
@@ -309,6 +314,7 @@ pub const BYTES_DOC: &[&str] = &[
     "",
     "A command absent from this table carries none. `attachments` names what",
     "travels in beside the command: a `fixed` name is one the command needs,",
+    "an `optional` one is a name whose own fields decide whether it is there,",
     "and a `family` admits any number of `<name>:<suffix>` attachments.",
     "`payload` says the reply carries bytes back.",
 ];

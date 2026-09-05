@@ -8,6 +8,14 @@
 //!
 //! Invariants this module carries:
 //!
+//! - **A texture travels by Id and an extension by hash.** Both are payloads
+//!   a structure feed names without carrying, so both are fetched before the
+//!   structure is applied — but a texture is immutable under its Id, while an
+//!   extension's bytes change under a key that does not. So
+//!   [`ReplicaState::textures_needed`] asks "which Ids am I missing" and
+//!   [`ReplicaState::extensions_needed`] asks "which hashes do I not hold",
+//!   and an unrelated edit fetches neither.
+//!
 //! - **The revision only moves forward.** Every feed carries the revision it
 //!   is, and one at or below the revision already held is dropped whole —
 //!   nothing is applied, nothing is half-applied. Structure pushes and
@@ -65,15 +73,27 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use catchlight_core::formats::clm::structure_texture_ids;
 use catchlight_core::formats::clm::{
-    structure_texture_ids, ClmTextureRef, TextureAlpha, TextureEncoding,
+    decode_structure, extension_hash, ClmExtension, ClmTextureRef, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{
-    BlendMode, Mat4, Model, ModelTexture, Motion, NodeId, NodeKind, ParamId, Puppet,
-    ScratchTransform, TexId, Vec2, Vec3,
+    BlendMode, ExtensionKey, ExtensionValue, Mat4, Model, ModelTexture, Motion, NodeId, NodeKind,
+    ParamId, Puppet, ScratchTransform, TexId, Vec2, Vec3,
 };
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId};
 use catchlight_editor_server::{replica_reply, Editor};
+use serde::{Deserialize, Serialize};
+
+/// One byte extension a structure names and the replica has yet to fetch.
+///
+/// The hash is what identifies the payload, so a client that caches by
+/// content has it without a second round trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionNeed {
+    pub key: ExtensionKey,
+    pub hash: String,
+}
 
 /// One session's document and pose, in the tab. No GPU: everything here is
 /// testable natively, and the renderer that draws it lives one layer up.
@@ -83,6 +103,15 @@ pub struct ReplicaState {
     /// The encoded bytes of every texture the tab has fetched, by Id. Shared
     /// with the model, so a rebuild is a pointer copy.
     textures: HashMap<TexId, Arc<[u8]>>,
+    /// The bytes of every byte extension the tab holds, by key, beside the
+    /// hash they carry.
+    ///
+    /// Keyed rather than content-addressed because a key is what a structure
+    /// names; the hash rides along so deciding what to fetch costs no
+    /// re-hashing. A texture is immutable under its Id and an extension is
+    /// not, which is the whole reason one travels by Id and the other by
+    /// hash.
+    extension_bytes: HashMap<ExtensionKey, (String, Arc<[u8]>)>,
     /// The revision this document reads as, or `None` while pristine.
     rev: Option<u64>,
     /// The animation-frame timestamp of the last tick, in milliseconds, or
@@ -108,6 +137,7 @@ impl ReplicaState {
             model,
             puppet,
             textures: HashMap::new(),
+            extension_bytes: HashMap::new(),
             rev: None,
             last_frame_ms: None,
             motion: Motion::default(),
@@ -147,6 +177,45 @@ impl ReplicaState {
             .collect())
     }
 
+    /// The byte extensions `structure` names whose bytes this replica does not
+    /// already hold, as `(key, hash)`. Applies nothing.
+    ///
+    /// By hash, not by key: an extension's bytes change under a key that does
+    /// not, so "do I have this key" is the wrong question — a stale thumbnail
+    /// would answer it yes forever. A JSON extension is never here; it rides
+    /// inline in the structure and needs no fetch at all.
+    pub fn extensions_needed(&self, structure: &[u8]) -> Result<Vec<ExtensionNeed>, String> {
+        let structure = decode_structure(structure).map_err(|e| e.to_string())?;
+        Ok(structure
+            .doc
+            .extensions
+            .iter()
+            .filter_map(|(key, value)| match value {
+                ClmExtension::Bytes(marker) => Some((key, marker)),
+                ClmExtension::Json(_) => None,
+            })
+            .filter(|(key, marker)| {
+                self.extension_bytes
+                    .get(*key)
+                    .is_none_or(|(held, _)| *held != marker.hash)
+            })
+            .map(|(key, marker)| ExtensionNeed {
+                key: key.clone(),
+                hash: marker.hash.clone(),
+            })
+            .collect())
+    }
+
+    /// Hold `bytes` under `key`, for a structure about to name their hash. A
+    /// key that is not one is dropped, the way an unparseable texture Id is.
+    pub fn put_extension(&mut self, key: &str, bytes: Vec<u8>) {
+        if let Ok(key) = key.parse::<ExtensionKey>() {
+            let bytes: Arc<[u8]> = bytes.into();
+            self.extension_bytes
+                .insert(key, (extension_hash(&bytes), bytes));
+        }
+    }
+
     /// Hold `bytes` under `id`, for a structure that is about to name it. An
     /// Id that is not one is dropped: the structure that wanted it will fail
     /// naming it, which says more than an error here would.
@@ -168,17 +237,26 @@ impl ReplicaState {
             return Ok(false);
         }
         let textures = &self.textures;
+        let extension_bytes = &self.extension_bytes;
         self.model
-            .replace_structure(structure, |id| {
-                textures.get(id).map(|data| ModelTexture {
-                    // `replace_structure` takes the payload and nothing else:
-                    // the structure's own manifest says how each texture is
-                    // read, and overrides both of these. Any value does.
-                    encoding: TextureEncoding::Png,
-                    alpha: TextureAlpha::Straight,
-                    data: data.clone(),
-                })
-            })
+            .replace_structure_with_extensions(
+                structure,
+                |id| {
+                    textures.get(id).map(|data| ModelTexture {
+                        // `replace_structure` takes the payload and nothing
+                        // else: the structure's own manifest says how each
+                        // texture is read, and overrides both of these. Any
+                        // value does.
+                        encoding: TextureEncoding::Png,
+                        alpha: TextureAlpha::Straight,
+                        data: data.clone(),
+                    })
+                },
+                // A marker whose bytes were never put is an error naming the
+                // key, not a model that quietly lost the value — which is why
+                // `extensions_needed` runs first.
+                |key| extension_bytes.get(key).map(|(_, data)| data.clone()),
+            )
             .map_err(|e| e.to_string())?;
         self.accept(rev);
         Ok(true)
@@ -214,6 +292,17 @@ impl ReplicaState {
             .texture_ids()
             .iter()
             .filter_map(|id| Some((id.clone(), self.model.texture(id)?.data.clone())))
+            .collect();
+        self.extension_bytes = self
+            .model
+            .extensions()
+            .iter()
+            .filter_map(|(key, value)| match value {
+                ExtensionValue::Bytes(data) => {
+                    Some((key.clone(), (extension_hash(data), data.clone())))
+                }
+                ExtensionValue::Json(_) => None,
+            })
             .collect();
         // Eagerly, not at the next tick: `node_idx` answers off the bake, and
         // a caller may pose or scratch a node the feed just added before a
@@ -742,6 +831,28 @@ pub(crate) mod browser {
             self.inner.borrow_mut().state.put_texture(id, bytes);
         }
 
+        /// The byte extensions a structure names whose bytes this replica does
+        /// not hold, as JSON `[{ key, hash }]`. Empty when nothing changed,
+        /// which is the common case: an edit somewhere else in the document
+        /// leaves every marker's hash where it was.
+        #[wasm_bindgen(js_name = extensionsNeeded)]
+        pub fn extensions_needed(&self, structure: &[u8]) -> Result<String, JsValue> {
+            let needed = self
+                .inner
+                .borrow()
+                .state
+                .extensions_needed(structure)
+                .map_err(|e| JsValue::from_str(&e))?;
+            serde_json::to_string(&needed).map_err(|e| JsValue::from_str(&e.to_string()))
+        }
+
+        /// Hold a byte extension's payload under its key, for a structure
+        /// about to name its hash.
+        #[wasm_bindgen(js_name = putExtension)]
+        pub fn put_extension(&self, key: &str, bytes: Vec<u8>) {
+            self.inner.borrow_mut().state.put_extension(key, bytes);
+        }
+
         /// Apply a structure-only container at `rev`. `false` when `rev` is
         /// not newer; throws when the structure is malformed or names a
         /// texture that was not put, with the document untouched.
@@ -984,6 +1095,95 @@ mod tests {
             "a failed apply must not move the revision"
         );
         assert_eq!(replica.model().generation(), generation);
+    }
+
+    /// An extension travels by hash, so what a replica fetches is decided by
+    /// what changed rather than by what it has never seen.
+    #[test]
+    fn extensions_needed_follows_the_hash_and_not_the_key() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        set_extension(&editor, session, "molan.thumb", b"first");
+        set_json_extension(&editor, session, "molan.meta");
+        let structure = structure_of(&editor, session);
+
+        // Nothing held: the one byte extension is needed, and the JSON one is
+        // never needed at all — it rides inline.
+        let mut replica = ReplicaState::new();
+        let needed = replica.extensions_needed(&structure).unwrap();
+        assert_eq!(needed.len(), 1, "needed {needed:?}");
+        assert_eq!(needed[0].key.as_str(), "molan.thumb");
+        assert_eq!(needed[0].hash, extension_hash(b"first"));
+
+        // Held, so nothing is needed — and applying keeps it held.
+        replica.put_extension("molan.thumb", b"first".to_vec());
+        assert!(replica.extensions_needed(&structure).unwrap().is_empty());
+        assert!(replica.apply_structure(&structure, 1).unwrap());
+        assert!(replica.extensions_needed(&structure).unwrap().is_empty());
+        assert_eq!(
+            replica
+                .model()
+                .extension(&"molan.thumb".parse().unwrap())
+                .and_then(|v| v.bytes().cloned())
+                .as_deref(),
+            Some(&b"first"[..]),
+        );
+
+        // The same key with different bytes is a different hash, and exactly
+        // that one key is needed again.
+        set_extension(&editor, session, "molan.thumb", b"second");
+        let moved = structure_of(&editor, session);
+        let needed = replica.extensions_needed(&moved).unwrap();
+        assert_eq!(needed.len(), 1, "needed {needed:?}");
+        assert_eq!(needed[0].hash, extension_hash(b"second"));
+
+        // And a structure whose marker the replica cannot satisfy is refused
+        // whole rather than applied with the value dropped.
+        assert!(replica.apply_structure(&moved, 2).is_err());
+        replica.put_extension("molan.thumb", b"second".to_vec());
+        assert!(replica.apply_structure(&moved, 2).unwrap());
+    }
+
+    /// An edit that touches nothing about an extension leaves its marker
+    /// where it was, so a feed after one fetches nothing.
+    #[test]
+    fn an_unrelated_edit_needs_no_extension_fetch() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        set_extension(&editor, session, "molan.thumb", b"held");
+
+        let mut replica = ReplicaState::new();
+        replica.put_extension("molan.thumb", b"held".to_vec());
+        assert!(replica
+            .apply_structure(&structure_of(&editor, session), 1)
+            .unwrap());
+
+        add_node(&editor, session, ROOT, "group", "head");
+        let after = structure_of(&editor, session);
+        assert!(replica.extensions_needed(&after).unwrap().is_empty());
+        assert!(replica.apply_structure(&after, 2).unwrap());
+    }
+
+    fn set_extension(editor: &CatchlightEditor, session: SessionId, key: &str, bytes: &[u8]) {
+        let mut attachments = Attachments::none();
+        attachments.insert("value", bytes.to_vec());
+        let (reply, _) = editor.dispatch_with(
+            &json!({"id": 90, "cmd": "extension_set", "session": session.0,
+                    "key": key, "value": {"kind": "bytes"}})
+            .to_string(),
+            attachments,
+        );
+        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["reply"], "ok", "reply was {reply}");
+    }
+
+    fn set_json_extension(editor: &CatchlightEditor, session: SessionId, key: &str) {
+        let reply = call(
+            editor,
+            json!({"id": 91, "cmd": "extension_set", "session": session.0,
+                   "key": key, "value": {"kind": "json", "value": {"v": 1}}}),
+        );
+        assert_eq!(reply["reply"], "ok", "reply was {reply}");
     }
 
     #[test]

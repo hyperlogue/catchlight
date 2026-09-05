@@ -39,6 +39,12 @@
 //!   or the very [`Arc<[u8]>`](Arc) the model holds, cloned by refcount under
 //!   the session lock and written straight to the socket.
 //!
+//! - **A byte extension is fetched by hash, like a texture by Id.** The
+//!   structure feed carries a `{size, hash}` marker and never the bytes, so a
+//!   replica that sees a hash it does not hold fetches that one key from
+//!   `GET /sessions/{id}/extensions/{key}` and nothing else moves. A JSON
+//!   extension has no route: it is already in the structure.
+//!
 //! - **The token is checked before a body is read.** A multipart
 //!   `POST /request` may carry [`HttpOptions::max_upload_bytes`] — a quarter
 //!   of a gigabyte by default — and buffering that for a request that turns
@@ -103,8 +109,10 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use catchlight_core::formats::clm::TextureEncoding;
-use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId, SessionId, TexId};
+use catchlight_core::formats::clm::{extension_hash, TextureEncoding};
+use catchlight_editor_protocol::{
+    ErrorCode, ExtensionKey, Reply, Request, RequestId, SessionId, TexId,
+};
 use percent_encoding::percent_decode_str;
 use tungstenite::handshake::derive_accept_key;
 use tungstenite::protocol::{Message, Role, WebSocket, WebSocketConfig};
@@ -410,6 +418,7 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
         ("GET", ["sessions", id, "structure"]) => structure(state, id),
         ("GET", ["sessions", id, "clm"]) => clm(state, id),
         ("GET", ["sessions", id, "textures", tex]) => texture(state, id, tex),
+        ("GET", ["sessions", id, "extensions", key]) => extension(state, id, key),
         _ => Response::text(404, "Not Found", "no such endpoint"),
     };
     cors(response, allowed)
@@ -665,6 +674,35 @@ fn texture(state: &ServerState, id: &str, tex: &str) -> Response {
                 .body(data)
         }
         Ok(None) => Response::text(404, "Not Found", "no such texture"),
+        Err(EditorError::NoSession(_)) => Response::text(404, "Not Found", "no such session"),
+        Err(err) => Response::text(500, "Internal Server Error", &err.to_string()),
+    }
+}
+
+/// One byte extension's payload, for a replica catching up on a marker whose
+/// hash it does not hold.
+///
+/// The counterpart of the texture route and shaped like it: a structure feed
+/// carries `{size, hash}` and never the bytes, so this is where the bytes are
+/// fetched once and only when the hash moved. A JSON extension is not here —
+/// it travels inline in the structure — so asking for one is a 404, the same
+/// answer a key the model does not carry gets.
+fn extension(state: &ServerState, id: &str, key: &str) -> Response {
+    let Some(session) = parse_session(id) else {
+        return Response::text(400, "Bad Request", "session id is not a number");
+    };
+    let Ok(key) = decode(key).parse::<ExtensionKey>() else {
+        return Response::text(400, "Bad Request", "extension key is outside the charset");
+    };
+    let read = state.editor.with_model(session, |m| {
+        m.extension(&key).and_then(|v| v.bytes().cloned())
+    });
+    match read {
+        Ok(Some(data)) => Response::new(200, "OK")
+            .with("Content-Type", "application/octet-stream")
+            .with("X-Catchlight-Extension-Hash", extension_hash(&data))
+            .body(data),
+        Ok(None) => Response::text(404, "Not Found", "no such byte extension"),
         Err(EditorError::NoSession(_)) => Response::text(404, "Not Found", "no such session"),
         Err(err) => Response::text(500, "Internal Server Error", &err.to_string()),
     }

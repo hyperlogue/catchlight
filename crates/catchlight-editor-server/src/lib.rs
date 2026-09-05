@@ -62,6 +62,14 @@
 //!   a command did not declare, or a fixed one that did not arrive, is
 //!   refused before the command runs.
 //!
+//! - **An extension is carried, never interpreted.** A vendor's value goes in
+//!   under a dotted key and comes back out untouched: a JSON one travels
+//!   inline everywhere, including in the structure feed, while bytes travel
+//!   as a `{size, hash}` marker and are fetched once, by hash, from
+//!   [`http`]'s extension route. Setting one is a document edit like any
+//!   other — a revision, an undo entry, an event — because that is what makes
+//!   it survive a save.
+//!
 //! - **A model-only read has one implementation.** See [`query`]: the reads
 //!   [`CommandKind::ReplicaQuery`] names are pure functions of the [`Model`],
 //!   so a browser tab holding a replica answers them itself. `dispatch` routes
@@ -88,7 +96,7 @@ mod transport;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::{bind_http, serve_http, HttpOptions, HttpServer};
-pub use query::{replica_query, replica_reply, slot_info, weld_info};
+pub use query::{extension_value_info, replica_query, replica_reply, slot_info, weld_info};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
@@ -108,9 +116,9 @@ use catchlight_core::LoadBudget;
 
 use catchlight_core::Vec2;
 use catchlight_core::{
-    BindingKey, BindingTarget as CoreBindingTarget, InstallError, Model, ModelComposite,
-    ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics,
-    ModelTexture, ModelWeld, Puppet, Required,
+    BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Model,
+    ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
+    ModelPhysics, ModelTexture, ModelWeld, Puppet, Required,
 };
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
@@ -192,6 +200,9 @@ pub enum EditorError {
     /// requirement the base does not have.
     #[error("install: {0}")]
     Install(#[from] InstallError),
+    /// The model carries no extension under that key.
+    #[error("no extension {0:?}")]
+    NoExtension(String),
 }
 
 impl EditorError {
@@ -223,6 +234,7 @@ impl EditorError {
             Self::Preview(_) => ErrorCode::Preview,
             Self::NativeOnly => ErrorCode::NativeOnly,
             Self::NotEmpty(_) => ErrorCode::NotEmpty,
+            Self::NoExtension(_) => ErrorCode::NoExtension,
             // Install's refusals are the model's refusals under other names,
             // so they answer with the codes the equivalent edit answers with
             // — a client that branches on `duplicate_id` for an add branches
@@ -257,6 +269,10 @@ impl EditorError {
                 ModelError::WeldWeightOutOfRange => ErrorCode::WeldWeightOutOfRange,
                 ModelError::UnknownWeld => ErrorCode::UnknownWeld,
                 ModelError::Fragment => ErrorCode::Fragment,
+                ModelError::UnknownExtension(_) => ErrorCode::NoExtension,
+                ModelError::ReservedExtension(_) => ErrorCode::ReservedExtension,
+                // The size cap has no code of its own: a client that hit it
+                // has nothing to branch on, only a value to shrink.
                 _ => ErrorCode::Edit,
             },
         }
@@ -1171,7 +1187,8 @@ impl Editor {
             | Command::BindingList { session, .. }
             | Command::Slots { session, .. }
             | Command::Welds { session }
-            | Command::UnfilledSlots { session } => {
+            | Command::UnfilledSlots { session }
+            | Command::Extensions { session } => {
                 self.with_model(session, |model| query::replica_query(model, &cmd))?
             }
             Command::NodeAdd {
@@ -1878,6 +1895,59 @@ impl Editor {
             // be native-only now resolves its key through `storage`.
             #[cfg(target_arch = "wasm32")]
             Command::Preview { .. } => Err(EditorError::NativeOnly),
+            Command::ExtensionSet {
+                session,
+                key,
+                value,
+            } => {
+                // The gate has already refused a `value` attachment the
+                // command did not declare; which of the two kinds it is is
+                // this arm's to decide, because only the command knows.
+                let attached = attachments.take("value");
+                let value = match (value, attached) {
+                    (ExtensionSet::Json { .. }, Some(_)) => {
+                        return Err(EditorError::BadRequest(
+                            "a json extension carries its value inline; the `value` attachment \
+                             is for kind \"bytes\""
+                                .into(),
+                        ))
+                    }
+                    (ExtensionSet::Json { value }, None) => ExtensionValue::Json(value),
+                    (ExtensionSet::Bytes, Some(bytes)) => ExtensionValue::Bytes(bytes.into()),
+                    (ExtensionSet::Bytes, None) => {
+                        return Err(EditorError::BadRequest(
+                            "a bytes extension needs the `value` attachment".into(),
+                        ))
+                    }
+                };
+                self.edit_session(session, move |s| {
+                    s.model.set_extension(key.clone(), value)?;
+                    s.touch();
+                    Ok(ResponseBody::Empty)
+                })
+            }
+            Command::ExtensionDelete { session, key } => self.edit_session(session, move |s| {
+                s.model.delete_extension(&key)?;
+                s.touch();
+                Ok(ResponseBody::Empty)
+            }),
+            Command::ExtensionGet { session, key } => {
+                let (info, bytes) = self.with_model(session, |model| {
+                    model
+                        .extension(&key)
+                        .map(|value| (extension_value_info(value), value.bytes().cloned()))
+                        .ok_or_else(|| EditorError::NoExtension(key.to_string()))
+                })??;
+                if let Some(bytes) = bytes {
+                    // Bytes are the reply's payload, the way a preview's PNG
+                    // is: what a `.clm` holds opaquely leaves the same way.
+                    *payload = Some(Payload {
+                        content_type: "application/octet-stream",
+                        bytes: bytes.to_vec(),
+                    });
+                }
+                Ok(ResponseBody::Extension { key, value: info })
+            }
             Command::ImportFile { session, parent } => {
                 let bytes = attachments.take("model").unwrap_or_default();
                 self.import_file(session, parent, bytes)
@@ -2610,16 +2680,17 @@ fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), Edi
 
 /// What bytes this command carries, or `None` if it carries none.
 ///
-/// [`COMMAND_BYTES`] by tag, and nothing else — there is one way to carry
-/// bytes, so what a command may carry and what it does carry are the same
-/// question.
+/// The one question every transport asks, phrased once — and it is
+/// [`Command::carries_bytes`], which answers for the command in hand rather
+/// than for its tag. The two differ only where an attachment is optional: an
+/// `extension_set` of a JSON value carries nothing, and the socket takes it
+/// like any other small command.
 ///
-/// The one question every transport asks, phrased once. A transport that
-/// cannot carry bytes refuses anything this answers `Some` for with
-/// [`ErrorCode::BulkOverHttp`]; one that can reads the row to know what to
-/// frame in, and whether a payload is coming back.
+/// A transport that cannot carry bytes refuses anything this answers `Some`
+/// for with [`ErrorCode::BulkOverHttp`]; one that can reads the row to know
+/// what to frame in, and whether a payload is coming back.
 pub fn carries_bytes(cmd: &Command) -> Option<&'static Bytes> {
-    cmd.bytes()
+    cmd.carries_bytes()
 }
 
 /// How to read an image, from the tail of the reference that named it.

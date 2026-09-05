@@ -20,13 +20,32 @@
 //!   revision it is; the replica that holds it does. So [`replica_reply`]
 //!   takes the `rev` it stamps on the envelope rather than inventing one.
 
+use catchlight_core::formats::clm::extension_hash;
 use catchlight_core::{
-    deform_cells, scalar_cells, Model, ModelBinding, ModelError, ModelNode, ModelNodeKind,
-    ModelWeld,
+    deform_cells, scalar_cells, ExtensionValue, Model, ModelBinding, ModelError, ModelNode,
+    ModelNodeKind, ModelWeld,
 };
 use catchlight_editor_protocol::*;
 
 use crate::{image_dims, EditorError};
+
+/// One extension's value as a reply reports it: JSON whole, bytes as the size
+/// and hash their marker carries.
+///
+/// The one conversion, so a listing and a get never describe the same value
+/// two ways — and so what a client compares to decide whether to fetch is the
+/// hash the structure feed will carry.
+pub fn extension_value_info(value: &ExtensionValue) -> ExtensionValueInfo {
+    match value {
+        ExtensionValue::Json(json) => ExtensionValueInfo::Json {
+            value: json.clone(),
+        },
+        ExtensionValue::Bytes(data) => ExtensionValueInfo::Bytes {
+            size: data.len() as u32,
+            hash: extension_hash(data),
+        },
+    }
+}
 
 /// Answer one [`CommandKind::ReplicaQuery`] against `model`.
 ///
@@ -53,6 +72,16 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
                 node: Box::new(node_info(node, n)),
             })
         }
+        Command::Extensions { .. } => Ok(ResponseBody::Extensions {
+            extensions: model
+                .extensions()
+                .iter()
+                .map(|(key, value)| ExtensionInfo {
+                    key: key.clone(),
+                    value: extension_value_info(value),
+                })
+                .collect(),
+        }),
         Command::TextureList { .. } => {
             let mut textures = Vec::new();
             for tid in model.texture_ids() {

@@ -550,6 +550,26 @@ export type Command =
     textures: Array<ImportTexture>,
   }
   | {
+    "cmd": "extension_set",
+    session: SessionId,
+    key: ExtensionKey,
+    value: ExtensionSet,
+  }
+  | {
+    "cmd": "extension_delete",
+    session: SessionId,
+    key: ExtensionKey,
+  }
+  | {
+    "cmd": "extensions",
+    session: SessionId,
+  }
+  | {
+    "cmd": "extension_get",
+    session: SessionId,
+    key: ExtensionKey,
+  }
+  | {
     "cmd": "import_manifest",
     session: SessionId,
   };
@@ -933,6 +953,72 @@ export type Camera = {
 };
 
 /**
+ * The key an extension is filed under: the Id charset plus a required
+ * interior dot, vendor first (`molan.caster`).
+ *
+ * Hand-written rather than one of the [`string_id!`] types because it is the
+ * one Id-shaped string with a rule of its own ([`validate_extension_key`]),
+ * and because a key that fails on the way in is worth naming in the error —
+ * a file names its extensions in one flat map, so "which key" is the whole
+ * question.
+ */
+export type ExtensionKey = string;
+
+/**
+ * What [`Command::ExtensionSet`] is setting: a JSON value inline, or bytes
+ * that arrive as the `value` attachment.
+ *
+ * Tagged by `kind` rather than sniffed, because a byte extension's own
+ * marker is a JSON object and an untagged value could not tell the two
+ * apart. `kind: "bytes"` carries no value here — the bytes are attached —
+ * and an attachment on a `json` set is refused, so exactly one of the two
+ * says what the value is.
+ */
+export type ExtensionSet =
+  | {
+    "kind": "json",
+    /**
+     * Whatever JSON the vendor wrote. Nothing here reads it.
+     */
+    value: unknown,
+  }
+  | {
+    "kind": "bytes"
+  };
+
+/**
+ * What an extension holds, as a reply reports it.
+ *
+ * A JSON value travels whole; bytes travel as the size and hash their marker
+ * carries, which is what a client compares to decide whether to fetch them.
+ * The bytes themselves come back as [`Command::ExtensionGet`]'s payload.
+ */
+export type ExtensionValueInfo =
+  | {
+    "kind": "json",
+    /**
+     * Whatever JSON the vendor wrote. Nothing here reads it.
+     */
+    value: unknown,
+  }
+  | {
+    "kind": "bytes",
+    size: number,
+    /**
+     * Lowercase hex of the content hash the marker carries.
+     */
+    hash: string,
+  };
+
+/**
+ * One extension, as [`Command::Extensions`] lists it.
+ */
+export type ExtensionInfo = {
+  key: ExtensionKey,
+  value: ExtensionValueInfo,
+};
+
+/**
  * The server's answer. `Ok`/`Err` carry the request's `id`; `Event` is
  * unsolicited (a document changed on a session this client observes).
  */
@@ -996,7 +1082,9 @@ export type ErrorCode =
   | "preview"
   | "native_only"
   | "bulk_over_http"
-  | "not_empty";
+  | "not_empty"
+  | "no_extension"
+  | "reserved_extension";
 
 export type ResponseBody =
   | {
@@ -1095,6 +1183,15 @@ export type ResponseBody =
     "result": "emptied",
     node: NodeId,
     slots: Array<SlotId>,
+  }
+  | {
+    "result": "extensions",
+    extensions: Array<ExtensionInfo>,
+  }
+  | {
+    "result": "extension",
+    key: ExtensionKey,
+    value: ExtensionValueInfo,
   };
 
 export type Event =
@@ -1378,6 +1475,8 @@ export type DocumentCommandTag =
   | "redo"
   | "import_file"
   | "import_json"
+  | "extension_set"
+  | "extension_delete"
   | "import_manifest";
 export type DocumentCommand = Extract<Command, { cmd: DocumentCommandTag }>;
 
@@ -1417,7 +1516,8 @@ export type ReplicaQueryCommandTag =
   | "binding_list"
   | "slots"
   | "welds"
-  | "unfilled_slots";
+  | "unfilled_slots"
+  | "extensions";
 export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag }>;
 
 /**
@@ -1431,7 +1531,8 @@ export type ServerQueryCommandTag =
   | "export_manifest"
   | "status"
   | "presence_get"
-  | "preview";
+  | "preview"
+  | "extension_get";
 export type ServerQueryCommand = Extract<Command, { cmd: ServerQueryCommandTag }>;
 
 /**
@@ -1448,13 +1549,17 @@ export type QueryCommand = ReplicaQueryCommand | ServerQueryCommand;
  *
  * A command absent from this table carries none. `attachments` names what
  * travels in beside the command: a `fixed` name is one the command needs,
+ * an `optional` one is a name whose own fields decide whether it is there,
  * and a `family` admits any number of `<name>:<suffix>` attachments.
  * `payload` says the reply carries bytes back.
  */
 export const COMMAND_BYTES: Record<
   string,
   {
-    attachments: ReadonlyArray<{ kind: "fixed" | "family"; name: string }>;
+    attachments: ReadonlyArray<{
+      kind: "fixed" | "optional" | "family";
+      name: string;
+    }>;
     payload: boolean;
   }
 > = {
@@ -1485,6 +1590,16 @@ export const COMMAND_BYTES: Record<
     payload: false,
   },
   preview: {
+    attachments: [],
+    payload: true,
+  },
+  extension_set: {
+    attachments: [
+      { kind: "optional", name: "value" },
+    ],
+    payload: false,
+  },
+  extension_get: {
     attachments: [],
     payload: true,
   },

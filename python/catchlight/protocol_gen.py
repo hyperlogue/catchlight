@@ -76,6 +76,9 @@ class AttachmentKind(StrEnum):
 
     # Exactly this name, and the command needs it.
     FIXED = "fixed"
+    # Exactly this name, and the command's own fields decide whether it is
+    # there.
+    OPTIONAL = "optional"
     # Any number of `<name>:<suffix>` attachments; the suffixes are the
     # command's own to say.
     FAMILY = "family"
@@ -1641,6 +1644,95 @@ class ImportJson:
 
 
 @dataclass(frozen=True, kw_only=True)
+class CommandExtensionSet:
+    """Set the extension filed under `key`, replacing whatever was there.
+
+    `Document`: an extension is part of the document, so this moves the
+    revision and undo covers it. `catchlight.` is the format's own prefix
+    and is refused ([`ErrorCode::ReservedExtension`]); a byte value over
+    the format's cap is [`ErrorCode::Edit`].
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "extension_set"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+
+    session: SessionId
+    key: ExtensionKey
+    value: ExtensionSet
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionDelete:
+    """Drop the extension filed under `key`.
+
+    `Document`, like [`Command::ExtensionSet`]. A key the model does not
+    carry is [`ErrorCode::NoExtension`] rather than a quiet no-op, so a
+    typo in a key says so.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "extension_delete"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+
+    session: SessionId
+    key: ExtensionKey
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Extensions:
+    """Every extension the model carries, in key order.
+
+    `ReplicaQuery`: a pure read, so a tab holding a replica answers it
+    without asking. A byte value is reported as its size and hash, never
+    its bytes — [`Command::ExtensionGet`] is what fetches those.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "extensions"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionGet:
+    """One extension's value.
+
+    `ServerQuery`, because a byte value comes back as the reply's payload
+    and a replica has no payload channel. A JSON value is inline in the
+    reply either way.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "extension_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+    key: ExtensionKey
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ImportManifest:
     """Build a model from a manifest and its images and replace the session's
     model with it.
@@ -1733,6 +1825,10 @@ Command = (
     | Preview
     | ImportFile
     | ImportJson
+    | CommandExtensionSet
+    | ExtensionDelete
+    | Extensions
+    | ExtensionGet
     | ImportManifest
 )
 
@@ -1805,6 +1901,10 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "preview": Preview,
     "import_file": ImportFile,
     "import_json": ImportJson,
+    "extension_set": CommandExtensionSet,
+    "extension_delete": ExtensionDelete,
+    "extensions": Extensions,
+    "extension_get": ExtensionGet,
     "import_manifest": ImportManifest,
 }
 
@@ -1890,6 +1990,10 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "preview": CommandKind.SERVER_QUERY,
     "import_file": CommandKind.DOCUMENT,
     "import_json": CommandKind.DOCUMENT,
+    "extension_set": CommandKind.DOCUMENT,
+    "extension_delete": CommandKind.DOCUMENT,
+    "extensions": CommandKind.REPLICA_QUERY,
+    "extension_get": CommandKind.SERVER_QUERY,
     "import_manifest": CommandKind.DOCUMENT,
 }
 
@@ -1898,6 +2002,7 @@ COMMAND_KINDS: dict[str, CommandKind] = {
 #
 # A command absent from this table carries none. `attachments` names what
 # travels in beside the command: a `fixed` name is one the command needs,
+# an `optional` one is a name whose own fields decide whether it is there,
 # and a `family` admits any number of `<name>:<suffix>` attachments.
 # `payload` says the reply carries bytes back.
 COMMAND_BYTES: dict[str, CommandBytes] = {
@@ -1928,6 +2033,16 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
         False,
     ),
     "preview": CommandBytes(
+        (),
+        True,
+    ),
+    "extension_set": CommandBytes(
+        (
+            Attachment(AttachmentKind.OPTIONAL, "value"),
+        ),
+        False,
+    ),
+    "extension_get": CommandBytes(
         (),
         True,
     ),
@@ -1991,6 +2106,8 @@ DocumentCommand = (
     | Redo
     | ImportFile
     | ImportJson
+    | CommandExtensionSet
+    | ExtensionDelete
     | ImportManifest
 )
 
@@ -2021,6 +2138,7 @@ ReplicaQueryCommand = (
     | Slots
     | Welds
     | UnfilledSlots
+    | Extensions
 )
 
 # A read that needs the editor itself: its session bookkeeping, its store or
@@ -2033,6 +2151,7 @@ ServerQueryCommand = (
     | Status
     | PresenceGet
     | Preview
+    | ExtensionGet
 )
 
 # A command that reads, whoever answers it.
@@ -2510,6 +2629,127 @@ class Camera:
     center: tuple[float, float]
     height: float
 
+# The key an extension is filed under: the Id charset plus a required
+# interior dot, vendor first (`molan.caster`).
+#
+# Hand-written rather than one of the [`string_id!`] types because it is the
+# one Id-shaped string with a rule of its own ([`validate_extension_key`]),
+# and because a key that fails on the way in is worth naming in the error —
+# a file names its extensions in one flat map, so "which key" is the whole
+# question.
+ExtensionKey = str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionSetJson:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "json"
+
+    # Whatever JSON the vendor wrote. Nothing here reads it.
+    value: Any
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionSetBytes:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "bytes"
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+# What [`Command::ExtensionSet`] is setting: a JSON value inline, or bytes
+# that arrive as the `value` attachment.
+#
+# Tagged by `kind` rather than sniffed, because a byte extension's own
+# marker is a JSON object and an untagged value could not tell the two
+# apart. `kind: "bytes"` carries no value here — the bytes are attached —
+# and an attachment on a `json` set is refused, so exactly one of the two
+# says what the value is.
+ExtensionSet = (
+    ExtensionSetJson
+    | ExtensionSetBytes
+)
+
+EXTENSION_SET_VARIANTS: dict[str, type[ExtensionSet]] = {
+    "json": ExtensionSetJson,
+    "bytes": ExtensionSetBytes,
+}
+
+
+def parse_extension_set(message: Mapping[str, Any]) -> ExtensionSet:
+    """One JSON object as the ExtensionSet it is, by its "kind" tag."""
+    tag = message.get("kind")
+    found = EXTENSION_SET_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no ExtensionSet carries the kind {tag!r}")
+    return _decode_class(found, message)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionValueInfoJson:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "json"
+
+    # Whatever JSON the vendor wrote. Nothing here reads it.
+    value: Any
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionValueInfoBytes:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "bytes"
+
+    size: int
+    # Lowercase hex of the content hash the marker carries.
+    hash: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+# What an extension holds, as a reply reports it.
+#
+# A JSON value travels whole; bytes travel as the size and hash their marker
+# carries, which is what a client compares to decide whether to fetch them.
+# The bytes themselves come back as [`Command::ExtensionGet`]'s payload.
+ExtensionValueInfo = (
+    ExtensionValueInfoJson
+    | ExtensionValueInfoBytes
+)
+
+EXTENSION_VALUE_INFO_VARIANTS: dict[str, type[ExtensionValueInfo]] = {
+    "json": ExtensionValueInfoJson,
+    "bytes": ExtensionValueInfoBytes,
+}
+
+
+def parse_extension_value_info(message: Mapping[str, Any]) -> ExtensionValueInfo:
+    """One JSON object as the ExtensionValueInfo it is, by its "kind" tag."""
+    tag = message.get("kind")
+    found = EXTENSION_VALUE_INFO_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no ExtensionValueInfo carries the kind {tag!r}")
+    return _decode_class(found, message)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtensionInfo:
+    """One extension, as [`Command::Extensions`] lists it."""
+
+    key: ExtensionKey
+    value: ExtensionValueInfo
+
 
 @dataclass(frozen=True, kw_only=True)
 class ReplyOk:
@@ -2653,6 +2893,11 @@ class ErrorCode(StrEnum):
     # An import that would replace the whole model was asked of a session
     # that already holds one; import into a fresh session instead.
     NOT_EMPTY = "not_empty"
+    # The model carries no extension under that key.
+    NO_EXTENSION = "no_extension"
+    # `catchlight.` is the format's own prefix: a reader accepts a key under
+    # it, and nothing outside the format may author one.
+    RESERVED_EXTENSION = "reserved_extension"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2930,6 +3175,37 @@ class ResponseBodyEmptied:
         return _wire_fields(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyExtensions:
+    """Every extension the model carries, in key order."""
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "extensions"
+
+    extensions: list[ExtensionInfo]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyExtension:
+    """One extension's value. For a byte value the bytes are the reply's
+    payload; this says how big they are and what they hash to.
+    """
+
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "extension"
+
+    key: ExtensionKey
+    value: ExtensionValueInfo
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
 ResponseBody = (
     ResponseBodyEmpty
     | ResponseBodySession
@@ -2952,6 +3228,8 @@ ResponseBody = (
     | ResponseBodyWelds
     | ResponseBodyUnfilledSlots
     | ResponseBodyEmptied
+    | ResponseBodyExtensions
+    | ResponseBodyExtension
 )
 
 RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
@@ -2976,6 +3254,8 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "welds": ResponseBodyWelds,
     "unfilled_slots": ResponseBodyUnfilledSlots,
     "emptied": ResponseBodyEmptied,
+    "extensions": ResponseBodyExtensions,
+    "extension": ResponseBodyExtension,
 }
 
 
@@ -3298,6 +3578,10 @@ __all__ = [
     "Preview",
     "ImportFile",
     "ImportJson",
+    "CommandExtensionSet",
+    "ExtensionDelete",
+    "Extensions",
+    "ExtensionGet",
     "ImportManifest",
     "Command",
     "COMMAND_VARIANTS",
@@ -3343,6 +3627,18 @@ __all__ = [
     "SlotPair",
     "Presence",
     "Camera",
+    "ExtensionKey",
+    "ExtensionSetJson",
+    "ExtensionSetBytes",
+    "ExtensionSet",
+    "EXTENSION_SET_VARIANTS",
+    "parse_extension_set",
+    "ExtensionValueInfoJson",
+    "ExtensionValueInfoBytes",
+    "ExtensionValueInfo",
+    "EXTENSION_VALUE_INFO_VARIANTS",
+    "parse_extension_value_info",
+    "ExtensionInfo",
     "ReplyOk",
     "ReplyErr",
     "ReplyEvent",
@@ -3371,6 +3667,8 @@ __all__ = [
     "ResponseBodyWelds",
     "ResponseBodyUnfilledSlots",
     "ResponseBodyEmptied",
+    "ResponseBodyExtensions",
+    "ResponseBodyExtension",
     "ResponseBody",
     "RESPONSE_BODY_VARIANTS",
     "parse_response_body",

@@ -73,7 +73,10 @@ fn command_bytes(tags: &[String]) -> Result<String> {
         "\nexport const COMMAND_BYTES: Record<\n\
          \x20 string,\n\
          \x20 {\n\
-         \x20   attachments: ReadonlyArray<{ kind: \"fixed\" | \"family\"; name: string }>;\n\
+         \x20   attachments: ReadonlyArray<{\n\
+         \x20     kind: \"fixed\" | \"optional\" | \"family\";\n\
+         \x20     name: string;\n\
+         \x20   }>;\n\
          \x20   payload: boolean;\n\
          \x20 }\n\
          > = {\n",

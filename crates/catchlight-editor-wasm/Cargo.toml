@@ -17,6 +17,8 @@ catchlight-core = { workspace = true }
 catchlight-editor-core = { workspace = true }
 catchlight-editor-server = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
+# `ExtensionNeed` is answered as JSON, like every other list this hands JS.
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]

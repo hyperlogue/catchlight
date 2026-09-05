@@ -102,6 +102,15 @@
 //!   command that uses them. A client that builds keys should not assume
 //!   more.
 //!
+//! - **An extension is carried, never interpreted.** A vendor files a value
+//!   under a dotted key ([`ExtensionKey`], vendor first) and catchlight reads
+//!   none of it: [`Command::ExtensionSet`] takes it, [`Command::Extensions`]
+//!   and [`Command::ExtensionGet`] give it back, and a save round-trips it
+//!   untouched. The two kinds differ in how they travel rather than in what
+//!   they mean — a JSON value is inline everywhere, including in a structure
+//!   feed, while bytes travel as a `{size, hash}` marker and are fetched by
+//!   that hash, so a thumbnail does not ride along with every unrelated edit.
+//!
 //! - **Bytes travel beside a command, never in it.** A command that needs
 //!   bytes declares the names they arrive under in [`COMMAND_BYTES`], and one
 //!   whose reply is bytes declares that there too; [`Command::bytes`] reads
@@ -128,7 +137,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use catchlight_core::id::{NodeId, ParamId, SlotId, TexId};
+pub use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 
 /// One open editing session (one model and its undo history). Opaque: a
 /// session is not part of any model, so it has no Id of its own.
@@ -751,6 +760,43 @@ pub enum Command {
         #[serde(default)]
         textures: Vec<ImportTexture>,
     },
+    /// Set the extension filed under `key`, replacing whatever was there.
+    ///
+    /// `Document`: an extension is part of the document, so this moves the
+    /// revision and undo covers it. `catchlight.` is the format's own prefix
+    /// and is refused ([`ErrorCode::ReservedExtension`]); a byte value over
+    /// the format's cap is [`ErrorCode::Edit`].
+    ExtensionSet {
+        session: SessionId,
+        key: ExtensionKey,
+        value: ExtensionSet,
+    },
+    /// Drop the extension filed under `key`.
+    ///
+    /// `Document`, like [`Command::ExtensionSet`]. A key the model does not
+    /// carry is [`ErrorCode::NoExtension`] rather than a quiet no-op, so a
+    /// typo in a key says so.
+    ExtensionDelete {
+        session: SessionId,
+        key: ExtensionKey,
+    },
+    /// Every extension the model carries, in key order.
+    ///
+    /// `ReplicaQuery`: a pure read, so a tab holding a replica answers it
+    /// without asking. A byte value is reported as its size and hash, never
+    /// its bytes — [`Command::ExtensionGet`] is what fetches those.
+    Extensions {
+        session: SessionId,
+    },
+    /// One extension's value.
+    ///
+    /// `ServerQuery`, because a byte value comes back as the reply's payload
+    /// and a replica has no payload channel. A JSON value is inline in the
+    /// reply either way.
+    ExtensionGet {
+        session: SessionId,
+        key: ExtensionKey,
+    },
     /// Build a model from a manifest and its images and replace the session's
     /// model with it.
     ///
@@ -874,6 +920,10 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("import_file", CommandKind::Document),
     ("import_json", CommandKind::Document),
     ("import_manifest", CommandKind::Document),
+    ("extension_set", CommandKind::Document),
+    ("extension_delete", CommandKind::Document),
+    ("extensions", CommandKind::ReplicaQuery),
+    ("extension_get", CommandKind::ServerQuery),
 ];
 
 /// One name a command's bytes travel under.
@@ -886,13 +936,18 @@ pub enum Attachment {
     /// check: `Family("texture")` admits `texture:body.png` and says nothing
     /// about whether the manifest asked for one.
     Family(&'static str),
+    /// Exactly this name, and the command may or may not need it — its own
+    /// fields decide. [`Command::ExtensionSet`] is the case: a `json` value
+    /// travels inline and a `bytes` one is attached, so neither "always" nor
+    /// "never" is the truth about the same command.
+    Optional(&'static str),
 }
 
 impl Attachment {
     /// Does `name` belong to this attachment?
     pub fn admits(&self, name: &str) -> bool {
         match self {
-            Self::Fixed(fixed) => name == *fixed,
+            Self::Fixed(fixed) | Self::Optional(fixed) => name == *fixed,
             Self::Family(family) => name
                 .strip_prefix(family)
                 .and_then(|rest| rest.strip_prefix(':'))
@@ -946,6 +1001,20 @@ pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
     ),
     (
         "preview",
+        Bytes {
+            attachments: &[],
+            payload: true,
+        },
+    ),
+    (
+        "extension_set",
+        Bytes {
+            attachments: &[Attachment::Optional("value")],
+            payload: false,
+        },
+    ),
+    (
+        "extension_get",
         Bytes {
             attachments: &[],
             payload: true,
@@ -1029,6 +1098,10 @@ impl Command {
             Command::ImportFile { .. } => "import_file",
             Command::ImportJson { .. } => "import_json",
             Command::ImportManifest { .. } => "import_manifest",
+            Command::ExtensionSet { .. } => "extension_set",
+            Command::ExtensionDelete { .. } => "extension_delete",
+            Command::Extensions { .. } => "extensions",
+            Command::ExtensionGet { .. } => "extension_get",
         }
     }
 
@@ -1060,6 +1133,22 @@ impl Command {
             .iter()
             .find(|(name, _)| *name == tag)
             .map(|(_, bytes)| bytes)
+    }
+
+    /// What bytes *this* command carries, or `None` when it carries none.
+    ///
+    /// [`Command::bytes`] answers for the tag — what a command of this kind
+    /// *may* carry. This answers for the one in hand, which differs only
+    /// where an [`Attachment::Optional`] is declared: an `extension_set` of a
+    /// JSON value carries nothing at all, and a transport that cannot carry
+    /// bytes should take it rather than refuse it for a shape it does not
+    /// have. Every other command carries exactly what it declares.
+    pub fn carries_bytes(&self) -> Option<&'static Bytes> {
+        let carrying = match self {
+            Command::ExtensionSet { value, .. } => matches!(value, ExtensionSet::Bytes),
+            _ => true,
+        };
+        self.bytes().filter(|_| carrying)
     }
 
     /// The session this command addresses, if it addresses one.
@@ -1138,7 +1227,11 @@ impl Command {
             | Command::Preview { session, .. }
             | Command::ImportFile { session, .. }
             | Command::ImportJson { session, .. }
-            | Command::ImportManifest { session } => Some(*session),
+            | Command::ImportManifest { session }
+            | Command::ExtensionSet { session, .. }
+            | Command::ExtensionDelete { session, .. }
+            | Command::Extensions { session }
+            | Command::ExtensionGet { session, .. } => Some(*session),
         }
     }
 }
@@ -2099,6 +2192,11 @@ pub enum ErrorCode {
     /// An import that would replace the whole model was asked of a session
     /// that already holds one; import into a fresh session instead.
     NotEmpty,
+    /// The model carries no extension under that key.
+    NoExtension,
+    /// `catchlight.` is the format's own prefix: a reader accepts a key under
+    /// it, and nothing outside the format may author one.
+    ReservedExtension,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2186,6 +2284,16 @@ pub enum ResponseBody {
         node: NodeId,
         slots: Vec<SlotId>,
     },
+    /// Every extension the model carries, in key order.
+    Extensions {
+        extensions: Vec<ExtensionInfo>,
+    },
+    /// One extension's value. For a byte value the bytes are the reply's
+    /// payload; this says how big they are and what they hash to.
+    Extension {
+        key: ExtensionKey,
+        value: ExtensionValueInfo,
+    },
 }
 
 /// Ephemeral shared view state. Rides its own path — decoupled from the document
@@ -2199,6 +2307,55 @@ pub struct Presence {
     pub camera: Option<Camera>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<NodeId>,
+}
+
+/// What [`Command::ExtensionSet`] is setting: a JSON value inline, or bytes
+/// that arrive as the `value` attachment.
+///
+/// Tagged by `kind` rather than sniffed, because a byte extension's own
+/// marker is a JSON object and an untagged value could not tell the two
+/// apart. `kind: "bytes"` carries no value here — the bytes are attached —
+/// and an attachment on a `json` set is refused, so exactly one of the two
+/// says what the value is.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ExtensionSet {
+    Json {
+        /// Whatever JSON the vendor wrote. Nothing here reads it.
+        #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+        value: serde_json::Value,
+    },
+    Bytes,
+}
+
+/// What an extension holds, as a reply reports it.
+///
+/// A JSON value travels whole; bytes travel as the size and hash their marker
+/// carries, which is what a client compares to decide whether to fetch them.
+/// The bytes themselves come back as [`Command::ExtensionGet`]'s payload.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ExtensionValueInfo {
+    Json {
+        /// Whatever JSON the vendor wrote. Nothing here reads it.
+        #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+        value: serde_json::Value,
+    },
+    Bytes {
+        size: u32,
+        /// Lowercase hex of the content hash the marker carries.
+        hash: String,
+    },
+}
+
+/// One extension, as [`Command::Extensions`] lists it.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ExtensionInfo {
+    pub key: ExtensionKey,
+    pub value: ExtensionValueInfo,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]

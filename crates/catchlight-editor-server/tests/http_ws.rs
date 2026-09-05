@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId, SessionInfo,
-    TextureEncoding,
+    Command, ErrorCode, ExtensionSet, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
+    SessionInfo, TextureEncoding,
 };
 use catchlight_editor_server::{bind_http, Editor, HttpOptions, Storage};
 use tungstenite::client::IntoClientRequest;
@@ -1511,4 +1511,117 @@ fn a_texture_add_over_the_websocket_is_refused() {
         Reply::Err { code, .. } => assert_eq!(code, ErrorCode::BulkOverHttp),
         other => panic!("expected Err, got {other:?}"),
     }
+}
+
+// ------------------------------------------------- extensions over the feed
+
+/// A byte extension is fetched by key, once, when a marker's hash moved. The
+/// structure carries the marker; this route carries the bytes.
+#[test]
+fn a_byte_extension_has_a_route_of_its_own() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+
+    let bytes = b"a thumbnail, more or less";
+    let response = post_multipart(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::ExtensionSet {
+                session,
+                key: "molan.thumb".parse().unwrap(),
+                value: ExtensionSet::Bytes,
+            },
+        },
+        &[("value", bytes)],
+    );
+    posted(&response);
+
+    let fetched = http(
+        server.addr,
+        "GET",
+        &format!("/sessions/{}/extensions/molan.thumb", session.0),
+        &[("Authorization", &bearer())],
+        b"",
+    );
+    assert_eq!(fetched.status, 200);
+    assert_eq!(
+        fetched.header("content-type"),
+        Some("application/octet-stream")
+    );
+    assert_eq!(fetched.body, bytes);
+    // The hash the marker carries, so a client can check what it got.
+    assert_eq!(
+        fetched.header("x-catchlight-extension-hash"),
+        Some(catchlight_core::formats::clm::extension_hash(bytes).as_str()),
+    );
+
+    // The structure names it and does not carry it: that is the whole point.
+    let structure = http(
+        server.addr,
+        "GET",
+        &format!("/sessions/{}/structure", session.0),
+        &[("Authorization", &bearer())],
+        b"",
+    );
+    assert_eq!(structure.status, 200);
+    assert!(
+        !structure
+            .body
+            .windows(bytes.len())
+            .any(|window| window == bytes),
+        "a structure feed must not carry an extension's bytes",
+    );
+}
+
+/// A JSON extension has no route: it is already in the structure. Neither does
+/// a key the model does not carry.
+#[test]
+fn only_a_byte_extension_answers_on_that_route() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+
+    send(
+        &mut socket,
+        Request {
+            id: 2,
+            command: Command::ExtensionSet {
+                session,
+                key: "molan.caster".parse().unwrap(),
+                value: ExtensionSet::Json {
+                    value: serde_json::json!({ "v": 1 }),
+                },
+            },
+        },
+    );
+    assert!(matches!(
+        body_of(reply_to(&mut socket, 2)),
+        ResponseBody::Empty
+    ));
+
+    for (key, why) in [
+        ("molan.caster", "a json extension is inline, not a payload"),
+        ("molan.nothing", "a key the model does not carry"),
+    ] {
+        let response = http(
+            server.addr,
+            "GET",
+            &format!("/sessions/{}/extensions/{key}", session.0),
+            &[("Authorization", &bearer())],
+            b"",
+        );
+        assert_eq!(response.status, 404, "{why}");
+    }
+
+    // And a key outside the charset is the request's own fault, not a miss.
+    let response = http(
+        server.addr,
+        "GET",
+        &format!("/sessions/{}/extensions/nodot", session.0),
+        &[("Authorization", &bearer())],
+        b"",
+    );
+    assert_eq!(response.status, 400);
 }

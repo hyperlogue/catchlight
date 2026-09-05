@@ -39,7 +39,15 @@ import type {
 } from "./backend.js";
 import { FeedQueue, ProtocolError } from "./backend.js";
 import type { FetchInit, HttpResponse, SocketLike } from "./connected.js";
-import type { TextureRequest, WasmEditor, WasmGpu, WasmModule, WasmReplica, WasmViewport } from "./wasm.js";
+import type {
+  ExtensionRequest,
+  TextureRequest,
+  WasmEditor,
+  WasmGpu,
+  WasmModule,
+  WasmReplica,
+  WasmViewport,
+} from "./wasm.js";
 
 /** One document, as both the fake editor and the fake replica hold it. */
 export interface FakeDoc {
@@ -56,7 +64,18 @@ export interface FakeDoc {
    */
   albedo: Record<string, string>;
   bindings: FakeBinding[];
+  /**
+   * The extensions the document carries. A JSON one rides here whole; a byte
+   * one is the marker a feed compares, which is the only part a structure
+   * ever carries.
+   */
+  extensions: FakeExtension[];
 }
+
+/** One extension in a fake structure: JSON inline, or a marker by hash. */
+export type FakeExtension =
+  | { key: string; kind: "json"; value: unknown }
+  | { key: string; kind: "bytes"; hash: string };
 
 /**
  * A binding as the fake stores it: the cells a command authored, and nothing
@@ -88,6 +107,7 @@ export function emptyDoc(title: string): FakeDoc {
     textures: [],
     albedo: {},
     bindings: [],
+    extensions: [],
   };
 }
 
@@ -398,6 +418,8 @@ export class FakeReplica implements WasmReplica {
   applied: Array<{ rev: number; textures: string[] }> = [];
   syncs: number[] = [];
   held = new Set<string>();
+  /** Byte extensions this replica holds, by key, keyed to the hash it has. */
+  heldExtensions = new Map<string, string>();
   pose = new Map<string, number>();
   scratchDeforms = new Map<string, Float32Array>();
   scratchTransforms = new Map<string, number[]>();
@@ -425,10 +447,30 @@ export class FakeReplica implements WasmReplica {
     this.held.add(id);
   }
 
+  extensionsNeeded(structure: Uint8Array): string {
+    const doc = readStructure(structure);
+    const needed: ExtensionRequest[] = doc.extensions
+      .filter((e) => e.kind === "bytes" && this.heldExtensions.get(e.key) !== e.hash)
+      .map((e) => ({ key: e.key, hash: e.kind === "bytes" ? e.hash : "" }));
+    return JSON.stringify(needed);
+  }
+
+  putExtension(key: string, bytes: Uint8Array): void {
+    // The fake's "hash" is the bytes as text, which is all a test needs: what
+    // matters is that a changed value is a changed hash.
+    this.heldExtensions.set(key, new TextDecoder().decode(bytes));
+  }
+
   applyStructure(structure: Uint8Array, rev: number): boolean {
     const doc = readStructure(structure);
     const missing = doc.textures.filter((texture) => !this.held.has(texture.id));
     if (missing.length > 0) throw `missing textures: ${missing.map((t) => t.id).join(", ")}`;
+    const unfetched = doc.extensions.filter(
+      (e) => e.kind === "bytes" && this.heldExtensions.get(e.key) !== e.hash,
+    );
+    if (unfetched.length > 0) {
+      throw `missing extensions: ${unfetched.map((e) => e.key).join(", ")}`;
+    }
     if (rev <= this.#rev) return false;
     this.doc = doc;
     this.#rev = rev;
@@ -987,6 +1029,16 @@ export class GuardedReplica extends FakeReplica {
   override texturesNeeded(structure: Uint8Array): string {
     this.#live("texturesNeeded");
     return super.texturesNeeded(structure);
+  }
+
+  override extensionsNeeded(structure: Uint8Array): string {
+    this.#live("extensionsNeeded");
+    return super.extensionsNeeded(structure);
+  }
+
+  override putExtension(key: string, bytes: Uint8Array): void {
+    this.#live("putExtension");
+    super.putExtension(key, bytes);
   }
 
   override putTexture(id: string): void {
