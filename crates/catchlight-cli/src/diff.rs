@@ -36,7 +36,7 @@ use catchlight_core::formats::clm::{
 use catchlight_core::{deform_cells, mask_mode_name, scalar_cells, target_of};
 use serde::Serialize;
 
-use crate::{file, Error};
+use crate::{extension, file, Error};
 
 /// The line `diff` emits when the two files differ in something no renderer
 /// here describes. Its presence is a bug report, not a normal outcome.
@@ -91,6 +91,8 @@ pub fn diff(a: &ClmFile, b: &ClmFile) -> Vec<String> {
         animation_fields,
         &mut out,
     );
+
+    extensions(&a.doc, &b.doc, &mut out);
 
     if out.is_empty() && a != b {
         out.push(UNRENDERED.to_string());
@@ -211,6 +213,29 @@ fn physics(a: &ClmDocument, b: &ClmDocument, out: &mut Vec<String>) {
             "~ physics gravity: {} -> {}",
             a.physics.gravity, b.physics.gravity
         ));
+    }
+}
+
+/// One line per extension key, not one per field: a value is a single thing
+/// a vendor owns, and half of it is bytes nothing here can render anyway.
+/// A JSON value is shown whole; a byte value as the size and hash its marker
+/// carries, which is exactly what changed when the bytes changed.
+fn extensions(a: &ClmDocument, b: &ClmDocument, out: &mut Vec<String>) {
+    for (key, before) in &a.extensions {
+        match b.extensions.get(key) {
+            None => out.push(format!("- extension {key}: {}", extension::render(before))),
+            Some(after) if after != before => out.push(format!(
+                "~ extension {key}: {} -> {}",
+                extension::render(before),
+                extension::render(after)
+            )),
+            Some(_) => {}
+        }
+    }
+    for (key, after) in &b.extensions {
+        if !a.extensions.contains_key(key) {
+            out.push(format!("+ extension {key}: {}", extension::render(after)));
+        }
     }
 }
 

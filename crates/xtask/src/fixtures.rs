@@ -58,9 +58,13 @@ pub fn generate(name: &str) -> Result<PathBuf> {
         .map(|(_, build)| build)
         .ok_or_else(|| anyhow!("unknown fixture: {name}"))?;
     let (doc, textures) = build();
-    let encoded = Model::from_clm_file(&ClmFile { doc, textures })
-        .and_then(|m| m.to_clm_bytes())
-        .context("encoding .clm")?;
+    let encoded = Model::from_clm_file(&ClmFile {
+        doc,
+        textures,
+        extensions: Vec::new(),
+    })
+    .and_then(|m| m.to_clm_bytes())
+    .context("encoding .clm")?;
 
     let relative = Path::new("tests")
         .join("models")

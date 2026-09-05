@@ -138,7 +138,7 @@ pub use check::CheckWarning;
 pub use eval::Pose;
 pub use file::ClmLoadError;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -148,7 +148,9 @@ use crate::formats::clm::{
     self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha,
     TextureEncoding,
 };
-use crate::id::{HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId};
+use crate::id::{
+    ExtensionKey, HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId,
+};
 use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
@@ -222,6 +224,18 @@ pub enum ModelError {
     WrongTarget,
     #[error("index out of range")]
     IndexOutOfRange,
+    #[error("this model carries no extension {0:?}")]
+    UnknownExtension(String),
+    #[error(
+        "extension key {0:?} is catchlight's own to define; a vendor key names its vendor first"
+    )]
+    ReservedExtension(String),
+    #[error("extension {key:?} carries {size} bytes, over the {max}-byte cap")]
+    ExtensionTooLarge {
+        key: String,
+        size: usize,
+        max: usize,
+    },
     #[error("mesh is malformed: {0}")]
     MalformedMesh(&'static str),
     #[error("an animation lane's keyframes must be in frame order")]
@@ -268,6 +282,40 @@ impl From<&ModelTexture> for crate::texture::EncodedTexture {
     }
 }
 
+/// What an extension holds. The two arms are the two things a vendor may
+/// keep: something small and structured, or an opaque blob.
+///
+/// The split is not about size alone. A JSON value lives inline in the
+/// structure document, so it travels with every structure feed and shows up
+/// whole in a `diff`; bytes live in their own section and travel by hash, so
+/// a thumbnail does not ride along with an unrelated edit.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtensionValue {
+    /// A JSON-compatible value: string-keyed maps, arrays, strings, numbers,
+    /// bools, null. Nothing else survives the reader.
+    Json(serde_json::Value),
+    /// Opaque bytes, at most [`clm::MAX_EXTENSION_BYTES`] of them.
+    Bytes(Arc<[u8]>),
+}
+
+impl ExtensionValue {
+    /// The bytes, for the arm that has them.
+    pub fn bytes(&self) -> Option<&Arc<[u8]>> {
+        match self {
+            Self::Bytes(data) => Some(data),
+            Self::Json(_) => None,
+        }
+    }
+
+    /// The JSON value, for the arm that has one.
+    pub fn json(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Json(value) => Some(value),
+            Self::Bytes(_) => None,
+        }
+    }
+}
+
 /// The authored model: a tree of nodes by Id, ordered params and textures, the
 /// bindings params drive nodes through, and authored physics. The tree is
 /// always valid (single root, no cycles, no dangling cross-references), so
@@ -289,6 +337,10 @@ pub struct Model {
     texture_order: Vec<TexId>,
     bindings: Vec<ModelBinding>,
     animations: Vec<ClmAnimation>,
+    /// Vendor annotations, keyed and ordered by [`ExtensionKey`]. Nothing in
+    /// catchlight reads them; they ride along so a tool built on top of the
+    /// format has somewhere to keep what it knows.
+    extensions: BTreeMap<ExtensionKey, ExtensionValue>,
     /// `bindings` by key. Derived, so it is built on the first lookup and
     /// dropped by [`Model::bump`] — every mutating path invalidates it
     /// without having to know it exists.
@@ -856,6 +908,7 @@ impl Model {
             texture_order: Vec::new(),
             bindings: Vec::new(),
             animations: Vec::new(),
+            extensions: BTreeMap::new(),
             binding_index: OnceLock::new(),
         }
     }
@@ -1937,6 +1990,65 @@ impl Model {
     /// The model's animations, in authored order.
     pub fn animations(&self) -> &[ClmAnimation] {
         &self.animations
+    }
+
+    // ---- extensions ----
+
+    /// Every extension this model carries, in key order.
+    ///
+    /// Catchlight reads none of them. They are a vendor's to define and a
+    /// vendor's to interpret; the format's whole contribution is to carry
+    /// them across a save without dropping or reordering them.
+    pub fn extensions(&self) -> &BTreeMap<ExtensionKey, ExtensionValue> {
+        &self.extensions
+    }
+
+    /// One extension's value.
+    pub fn extension(&self, key: &ExtensionKey) -> Option<&ExtensionValue> {
+        self.extensions.get(key)
+    }
+
+    /// Set an extension, replacing whatever was under that key.
+    ///
+    /// A reserved key is refused: `catchlight.` is the format's own prefix,
+    /// and a reader accepts one because the format may write one some day,
+    /// but nothing outside the format may author it. A byte value over
+    /// [`clm::MAX_EXTENSION_BYTES`] is refused with the same cap the reader
+    /// applies, so a model that takes a value is one that can be saved.
+    pub fn set_extension(
+        &mut self,
+        key: ExtensionKey,
+        value: ExtensionValue,
+    ) -> Result<(), ModelError> {
+        if key.is_reserved() {
+            return Err(ModelError::ReservedExtension(key.to_string()));
+        }
+        if let ExtensionValue::Bytes(data) = &value {
+            if data.len() > clm::MAX_EXTENSION_BYTES {
+                return Err(ModelError::ExtensionTooLarge {
+                    key: key.to_string(),
+                    size: data.len(),
+                    max: clm::MAX_EXTENSION_BYTES,
+                });
+            }
+        }
+        self.extensions.insert(key, value);
+        self.bump();
+        Ok(())
+    }
+
+    /// Drop an extension. Deleting a key the model does not carry is an
+    /// error, as it is everywhere else here: a delete that quietly does
+    /// nothing hides a typo in the key.
+    pub fn delete_extension(&mut self, key: &ExtensionKey) -> Result<(), ModelError> {
+        if key.is_reserved() {
+            return Err(ModelError::ReservedExtension(key.to_string()));
+        }
+        if self.extensions.remove(key).is_none() {
+            return Err(ModelError::UnknownExtension(key.to_string()));
+        }
+        self.bump();
+        Ok(())
     }
 
     /// Replace the animation list. Every lane must name a live param — an

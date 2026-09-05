@@ -37,6 +37,11 @@
 //!   pay: duplicated bytes in the addon file, and — because an Id an addon
 //!   provides is exclusive — a shared texture that makes the addon collide
 //!   with the very base it was cut from until that base drops it.
+//! - **An addon carries no extensions.** An extension annotates a whole
+//!   model, and nothing in it says which subtree it is about, so
+//!   [`Model::extract`] leaves every one behind and install refuses an addon
+//!   that carries one ([`InstallError::CarriesExtension`]). Merging two
+//!   vendors' annotations is a question the format cannot answer.
 //! - **An addon never adds or changes a param.** A `ParamId` it uses has to be
 //!   in the base already — that is a requirement like any other — so
 //!   [`Model::extract`] carries no params and install refuses an addon that
@@ -201,6 +206,11 @@ pub enum InstallError {
          params it drives have to be in the base model already"
     )]
     CarriesParam { param: String },
+    #[error(
+        "the addon carries extension {key:?}: an extension annotates a whole model, and an addon \
+         is a subtree of one"
+    )]
+    CarriesExtension { key: String },
     #[error(
         "the addon's {target} binding names node {node:?}, which the addon does not provide: an \
          addon binds its own nodes"
@@ -437,6 +447,11 @@ impl Model {
                 param: param.to_string(),
             });
         }
+        if let Some((key, _)) = addon.extensions.first_key_value() {
+            return Err(InstallError::CarriesExtension {
+                key: key.to_string(),
+            });
+        }
         for b in &addon.bindings {
             if !addon.nodes.contains_key(&b.key.node) {
                 return Err(InstallError::BindsOffAddon {
@@ -595,6 +610,9 @@ impl Model {
                 })
                 .collect(),
             animations: Vec::new(),
+            // An extension annotates a whole model, so there is no telling
+            // which of them a cut subtree is about; the base keeps them all.
+            extensions: BTreeMap::new(),
             binding_index: OnceLock::new(),
         }
     }

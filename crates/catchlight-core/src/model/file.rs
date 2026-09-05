@@ -67,12 +67,12 @@
 //!   `Arc` came back unchanged. The new state is built whole before either
 //!   field moves, so a refused structure leaves the model exactly as it was.
 //!
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::formats::clm::{
-    self as clm, ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmMask, ClmMeshGroup, ClmNode,
-    ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmTexture,
-    ClmTextureRef, ClmWeld,
+    self as clm, ClmBinding, ClmComposite, ClmDocument, ClmExtension, ClmExtensionBlob,
+    ClmExtensionMarker, ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart,
+    ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmTexture, ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
 use crate::{charge_clm_document, charge_clm_structure, charge_texture_payloads, LoadBudget};
@@ -216,6 +216,47 @@ impl Shape {
     }
 }
 
+/// Pair a structure's extension markers with the bytes behind them.
+///
+/// A JSON value is already whole in the document. A byte value is only a
+/// `{size, hash}` there, so `bytes` has to produce the payload, and it is
+/// held against the marker on the way in: the marker is what two readers of
+/// one structure agree on, so a payload that does not match it is refused
+/// rather than trusted.
+fn extensions_of(
+    doc: &ClmDocument,
+    bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
+) -> Result<BTreeMap<ExtensionKey, ExtensionValue>, ModelError> {
+    let mut out = BTreeMap::new();
+    for (key, value) in &doc.extensions {
+        let value = match value {
+            ClmExtension::Json(json) => ExtensionValue::Json(json.clone()),
+            ClmExtension::Bytes(marker) => {
+                let data = bytes(key).ok_or_else(|| clm::ClmError::ExtensionBytesMissing {
+                    key: key.to_string(),
+                })?;
+                if data.len() as u64 != marker.size {
+                    return Err(clm::ClmError::ExtensionSizeMismatch {
+                        key: key.to_string(),
+                        expected: marker.size,
+                        actual: data.len() as u64,
+                    }
+                    .into());
+                }
+                if clm::extension_hash(&data) != marker.hash {
+                    return Err(clm::ClmError::ExtensionHashMismatch {
+                        key: key.to_string(),
+                    }
+                    .into());
+                }
+                ExtensionValue::Bytes(data)
+            }
+        };
+        out.insert(key.clone(), value);
+    }
+    Ok(out)
+}
+
 impl Model {
     /// Snapshot the model's `Structure` document — everything a `.clm`
     /// carries except the texture payloads. Total for any Model whose deform
@@ -302,6 +343,23 @@ impl Model {
             bindings,
             welds,
             animations: self.animations.clone(),
+            // A byte value leaves only its size and hash here; the bytes go
+            // in their own section, which is what keeps a structure feed from
+            // carrying a thumbnail on every unrelated edit.
+            extensions: self
+                .extensions
+                .iter()
+                .map(|(key, value)| {
+                    let value = match value {
+                        ExtensionValue::Json(json) => ClmExtension::Json(json.clone()),
+                        ExtensionValue::Bytes(data) => ClmExtension::Bytes(ClmExtensionMarker {
+                            size: data.len() as u64,
+                            hash: clm::extension_hash(data),
+                        }),
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
         })
     }
 
@@ -320,13 +378,31 @@ impl Model {
                 data: t.data.to_vec(),
             });
         }
-        Ok(ClmFile { doc, textures })
+        Ok(ClmFile {
+            doc,
+            textures,
+            extensions: self.extension_blobs(),
+        })
+    }
+
+    /// The bytes behind every byte extension, in key order — the payload half
+    /// of what [`Self::to_clm_document`] wrote markers for.
+    fn extension_blobs(&self) -> Vec<ClmExtensionBlob> {
+        self.extensions
+            .iter()
+            .filter_map(|(key, value)| {
+                Some(ClmExtensionBlob {
+                    key: key.clone(),
+                    data: value.bytes()?.to_vec(),
+                })
+            })
+            .collect()
     }
 
     /// [`Self::to_clm_file`] then encode.
     pub fn to_clm_bytes(&self) -> Result<Vec<u8>, ModelError> {
         let file = self.to_clm_file()?;
-        Ok(clm::encode(&file.doc, &file.textures)?)
+        Ok(clm::encode(&file.doc, &file.textures, &file.extensions)?)
     }
 
     /// The document alone, as a **structure-only** container: the same
@@ -400,7 +476,17 @@ impl Model {
             texture_order.push(t.id.clone());
         }
 
-        Self::build(&file.doc, textures, texture_order, shape)
+        // Decoding already held the markers against the bytes, but a
+        // `ClmFile` can also be built by hand and handed straight to
+        // `from_clm_file`, so the pairing is checked here too.
+        clm::check_extensions(&file.doc, &file.extensions)?;
+        let blobs: HashMap<&ExtensionKey, &[u8]> = file
+            .extensions
+            .iter()
+            .map(|blob| (&blob.key, blob.data.as_slice()))
+            .collect();
+        let extensions = extensions_of(&file.doc, |key| blobs.get(key).map(|d| Arc::from(*d)))?;
+        Self::build(&file.doc, textures, texture_order, extensions, shape)
     }
 
     /// Every check the reader runs, over a document and a texture table that
@@ -411,6 +497,7 @@ impl Model {
         doc: &ClmDocument,
         textures: HashMap<TexId, ModelTexture>,
         texture_order: Vec<TexId>,
+        extensions: BTreeMap<ExtensionKey, ExtensionValue>,
         shape: Shape,
     ) -> Result<Model, ModelError> {
         let mut params = HashMap::with_capacity(doc.params.len());
@@ -685,6 +772,7 @@ impl Model {
             texture_order,
             bindings,
             animations: doc.animations.clone(),
+            extensions,
             binding_index: OnceLock::new(),
         })
     }
@@ -747,10 +835,45 @@ impl Model {
         self.replace_structure_with_budget(structure, textures, &mut LoadBudget::default())
     }
 
+    /// [`Self::replace_structure`] for a structure whose extensions carry
+    /// bytes: `extension_bytes` supplies a marker's payload the way
+    /// `textures` supplies a texture's.
+    ///
+    /// A byte extension travels by hash, not by value — that is the point of
+    /// the marker — so a client fetches the payload it lacks and hands it in
+    /// here. A marker the lookup cannot satisfy is an error naming the key,
+    /// never a silently dropped value.
+    pub fn replace_structure_with_extensions(
+        &mut self,
+        structure: &[u8],
+        textures: impl Fn(&TexId) -> Option<ModelTexture>,
+        extension_bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
+    ) -> Result<(), ModelError> {
+        self.replace_structure_with_budget_and_extensions(
+            structure,
+            textures,
+            extension_bytes,
+            &mut LoadBudget::default(),
+        )
+    }
+
     pub fn replace_structure_with_budget(
         &mut self,
         structure: &[u8],
         textures: impl Fn(&TexId) -> Option<ModelTexture>,
+        budget: &mut LoadBudget,
+    ) -> Result<(), ModelError> {
+        // A caller with no way to fetch a payload supplies none, so a
+        // structure carrying a byte marker is refused by name rather than
+        // read as a model that quietly lost it.
+        self.replace_structure_with_budget_and_extensions(structure, textures, |_| None, budget)
+    }
+
+    pub fn replace_structure_with_budget_and_extensions(
+        &mut self,
+        structure: &[u8],
+        textures: impl Fn(&TexId) -> Option<ModelTexture>,
+        extension_bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
         budget: &mut LoadBudget,
     ) -> Result<(), ModelError> {
         let structure = clm::decode_structure_with_budget(structure, budget)?;
@@ -783,7 +906,8 @@ impl Model {
         )?;
         charge_clm_document(&structure.doc, budget)?;
 
-        let next = Self::build(&structure.doc, table, order, Shape::Base)?;
+        let extensions = extensions_of(&structure.doc, extension_bytes)?;
+        let next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
         self.become_model(next);
         Ok(())
     }
@@ -1388,7 +1512,7 @@ mod tests {
     #[test]
     fn a_fragment_round_trips_with_its_dangling_references() {
         let file = sample_fragment_file();
-        let bytes = clm::encode(&file.doc, &file.textures).unwrap();
+        let bytes = clm::encode(&file.doc, &file.textures, &file.extensions).unwrap();
         let f = Model::from_clm_bytes_fragment(&bytes).unwrap();
 
         assert!(f.is_fragment());
@@ -2168,7 +2292,7 @@ mod tests {
     fn an_absent_animations_section_reads_as_none() {
         let mut file = sample().to_clm_file().unwrap();
         file.doc.animations.clear();
-        let bytes = clm::encode(&file.doc, &file.textures).unwrap();
+        let bytes = clm::encode(&file.doc, &file.textures, &file.extensions).unwrap();
 
         let m = Model::from_clm_bytes(&bytes).unwrap();
 

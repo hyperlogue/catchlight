@@ -44,7 +44,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | --- | --- |
 | `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, slots and welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
 | `catchlight-import-inochi2d` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
-| `catchlight-cli` | The command line over a `.clm`: the file ops (patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files; no image is decoded) plus inspection — `render` draws the model headless and prints its render list, `isolate` draws named parts alone as straight-alpha art, `poses` dumps every key pose as CBOR. Never depends on the editor server, its protocol, or a client of either. |
+| `catchlight-cli` | The command line over a `.clm`: the file ops (patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files, read or write a vendor `extension`; no image is decoded) plus inspection — `render` draws the model headless and prints its render list, `isolate` draws named parts alone as straight-alpha art, `poses` dumps every key pose as CBOR. Never depends on the editor server, its protocol, or a client of either. |
 | `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model, one per model serving every puppet of it; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws a frame of them. |
 | `catchlight-bevy` | Bevy integration: components, systems, and a render-graph node. |
 | `catchlight-editor-core` | Authoring tools over a `Model`: `WorkingMesh` (triangulation, automesh) and `Manifest`. Pure, wasm-safe. |
@@ -116,7 +116,9 @@ Non-obvious invariants and gotchas are documented in the `//!` doc of the module
 that enforces them, not here. Add new ones there.
 
 - `crates/catchlight-core/src/id.rs` — the Id charset, what a `/` in one does
-  not mean, `Name` is never a key, a free generated Id is the model's to check
+  not mean, `Name` is never a key, a free generated Id is the model's to
+  check, what the dot in an extension key is for and who may write
+  `catchlight.`
 - `crates/catchlight-core/src/model/mod.rs` — the generation clock, the identity
   nonce, what a Model's tree always holds
 - `crates/catchlight-core/src/model/file.rs` — writing is total, reading trusts
@@ -134,7 +136,8 @@ that enforces them, not here. Add new ones there.
   premultiply, alpha crop, the UV crop it hands back
 - `crates/catchlight-core/src/load.rs` — `.clm` is the only load path
 - `crates/catchlight-core/src/formats/clm.rs` — the `.clm` document: keyed by
-  Id, byte-stable, and what it refuses
+  Id, byte-stable, what it refuses, and why an extension's bytes live in their
+  own section behind a hash
 - `crates/catchlight-import-inochi2d/src/lib.rs` — the single reflection, Ids
   minted from position, the reader is total
 - `crates/catchlight-cli/src/lib.rs` — the one dependency rule and what it
@@ -142,7 +145,7 @@ that enforces them, not here. Add new ones there.
   own schema, what a diff leaves out, and why a pair is not a sweep;
   `isolate.rs` — why only Parts are disabled, why a disabled mask source
   still clips, which corner the rect names, and why the unpremultiply is
-  there
+  there; `extension.rs` — what a value may be and why bytes are not inline
 - `crates/catchlight-wgpu/src/render_cache.rs` — what `prepare` and `refresh`
   own, the generation gate, the Idx arena, one cache and one renderer for N
   puppets
@@ -233,14 +236,15 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 - `bun run --filter catchlight-site dev` — the web editor at
   `http://localhost:5173/`: in-tab by default, `?server=http://127.0.0.1:9377`
   to use the local editor above.
-- `cargo run -p catchlight-cli -- <patch|replace-texture|extract|merge|requirements|diff|render|isolate|poses>`
+- `cargo run -p catchlight-cli -- <patch|replace-texture|extract|merge|requirements|diff|extension|render|isolate|poses>`
   — the command line over a `.clm`; `--help` documents the Id charset and the
   exit statuses. `render <model.clm> <out.png> [w] [h] [cam_h]` prints the
   render list and writes a PNG; `isolate <model.clm> --keep <id,…>
   [--strip-masks <id,…>] --rect x0,y0,w,h [--scale S] [--set <param>=<value>]…
   --out <png>` draws only those parts over transparency; `poses <model.clm>
   --out <poses.cbor>` dumps every key pose, rest in full and the rest as
-  sparse diffs.
+  sparse diffs; `extension <list|get|set|delete>` reads and writes the vendor
+  annotations a file carries.
 - `cargo xtask build-wasm [--debug]` — build `packages/wasm/`.
 - `cargo xtask generate [typescript|python]` — regenerate
   `packages/core/src/protocol.gen.ts` and `python/catchlight/protocol_gen.py`;

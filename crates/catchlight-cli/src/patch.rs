@@ -117,7 +117,13 @@ pub fn patch(
     want: Option<Kind>,
 ) -> Result<Change, Error> {
     let kind = resolve(clm, path, id, want)?;
-    let ClmFile { doc, textures } = clm;
+    // Extensions are not a patchable field, so they are carried through
+    // untouched: a patch of an unrelated field leaves them byte-identical.
+    let ClmFile {
+        doc,
+        textures,
+        extensions: _,
+    } = clm;
 
     let (before, after) = match kind {
         Kind::Node => {

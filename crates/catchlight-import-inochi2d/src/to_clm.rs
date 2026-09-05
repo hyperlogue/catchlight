@@ -234,8 +234,11 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
             // An `.inx` names no vertex, so it has no slots and no welds.
             welds: Vec::new(),
             animations: convert_animations(obj.get("animations"), &refs),
+            // An `.inx` has no vendor annotations to carry over.
+            extensions: Default::default(),
         },
         textures,
+        extensions: Vec::new(),
     })
 }
 
