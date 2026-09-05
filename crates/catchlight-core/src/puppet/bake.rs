@@ -183,7 +183,7 @@ pub(super) fn bake(model: &Model) -> Baked {
         })
         .collect();
 
-    arena.rebuild_all_mesh_group_attachments();
+    arena.rebuild_all_mesh_group_pins();
 
     let mut params = Vec::with_capacity(model.param_ids().len());
     let mut slot_of_param = HashMap::with_capacity(model.param_ids().len());
@@ -336,7 +336,7 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
                 mesh,
                 translate_children: mg.translate_children,
                 deform_stack,
-                attachments: Default::default(),
+                pins: Default::default(),
                 bitmap: None,
             }))
         }

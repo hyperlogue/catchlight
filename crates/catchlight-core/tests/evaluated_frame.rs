@@ -13,7 +13,7 @@
 //! `tests/fixtures/evaluated_frame.json`.
 //!
 //! The combined deform is what proves the passes downstream of the fold: a
-//! mesh group's attachments, the `translate_children` filter and the weld
+//! mesh group's pins, the `translate_children` filter and the weld
 //! solve all land in a node's deform stack, so a difference in any of them
 //! shows up here as a per-vertex difference. Nothing else observes them.
 //!
@@ -766,7 +766,7 @@ fn two_params_deforming_one_node() -> FixtureFile {
     file(nodes, params, Vec::new())
 }
 
-/// A mesh group over two parts, keyed by a param: the descent, the attachment
+/// A mesh group over two parts, keyed by a param: the descent, the pin
 /// bake and the `translate_children` filter all have to land the same.
 fn mesh_group_fixture(translate_children: bool) -> FixtureFile {
     let nodes = vec![
