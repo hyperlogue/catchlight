@@ -327,27 +327,23 @@ impl Arena {
         }
     }
 
-    pub(crate) fn propagate_mesh_group_deforms(&mut self, transforms: &GlobalTransforms) {
+    /// Run the mesh groups in pre-order: each combines its stack, shifts its
+    /// `translate_children` targets and brings the globals under them up to
+    /// date in `transforms`, then pushes the combined deform to its meshed
+    /// children. `root` is the same fold `compute_transforms_with_root` takes.
+    pub(crate) fn propagate_mesh_group_deforms(
+        &mut self,
+        transforms: &mut GlobalTransforms,
+        root: Mat4,
+    ) {
         let _span = tracing::trace_span!("propagate_mesh_group_deforms").entered();
-        crate::meshgroup::propagate_mesh_group_deforms(self, transforms);
+        crate::meshgroup::propagate_mesh_group_deforms(self, transforms, root);
     }
 
     /// Solve every weld into the parts' `DeformSource::Weld` slots. Call
     /// after `propagate_mesh_group_deforms` and before `combine_deforms`.
     pub(crate) fn apply_welds(&mut self, transforms: &GlobalTransforms) {
         crate::weld::apply_welds(self, transforms);
-    }
-
-    /// Run the `translateChildren=true` MG filter on each tc=true MG's
-    /// descendants without a mesh (Origin Nodes, Group Nodes, SimplePhysics
-    /// nodes). Returns whether any target was shifted; when false the
-    /// caller's transforms are still valid and the re-walk can be skipped.
-    pub(crate) fn apply_translate_children_filter(
-        &mut self,
-        transforms: &GlobalTransforms,
-    ) -> bool {
-        let _span = tracing::trace_span!("apply_translate_children_filter").entered();
-        crate::meshgroup::apply_translate_children_filter(self, transforms)
     }
 
     /// Allocate a new id, attach as a child of `parent`, and install `node`.
@@ -423,25 +419,7 @@ impl Arena {
             for &id in order {
                 let slot = id.0 as usize;
                 let node = self.nodes.get(slot);
-                // Skip Transform::to_matrix() if (a) the fold didn't
-                // write this frame and (b) the transform still matches
-                // base (invariant preserved when no external code has
-                // touched the Transform fields). A 36-byte equality
-                // compare is cheaper than from_scale_rotation_translation
-                // + Quat::from_euler.
-                let local_matrix = if let Some(n) = node {
-                    let dirty = self.node_transform_dirty.get(slot).copied().unwrap_or(true);
-                    if !dirty && n.transform == n.base_transform {
-                        self.base_local_matrix
-                            .get(slot)
-                            .copied()
-                            .unwrap_or_else(|| n.transform.to_matrix())
-                    } else {
-                        n.transform.to_matrix()
-                    }
-                } else {
-                    Mat4::IDENTITY
-                };
+                let local_matrix = self.local_matrix(slot, node);
                 let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
 
                 let parent_matrix = if lock_to_root {
@@ -457,6 +435,55 @@ impl Arena {
                 out.insert(id, global_matrix);
             }
         });
+    }
+
+    /// One node's local matrix. Skips `Transform::to_matrix()` if (a) the
+    /// fold didn't write this frame and (b) the transform still matches base
+    /// (invariant preserved when no external code has touched the Transform
+    /// fields). A 36-byte equality compare is cheaper than
+    /// `from_scale_rotation_translation` + `Quat::from_euler`.
+    #[inline]
+    fn local_matrix(&self, slot: usize, node: Option<&Node>) -> Mat4 {
+        let Some(n) = node else {
+            return Mat4::IDENTITY;
+        };
+        let dirty = self.node_transform_dirty.get(slot).copied().unwrap_or(true);
+        if !dirty && n.transform == n.base_transform {
+            self.base_local_matrix
+                .get(slot)
+                .copied()
+                .unwrap_or_else(|| n.transform.to_matrix())
+        } else {
+            n.transform.to_matrix()
+        }
+    }
+
+    /// Recompute the globals of `subtree_root` and everything under it,
+    /// reading the parent's global back out of `out`. Same per-node logic as
+    /// `compute_transforms_with_root`, restricted to one subtree: a mesh
+    /// group's `translate_children` shift moves a whole node mid-pass, and
+    /// what sits under it has to read the shifted place.
+    pub(crate) fn recompute_subtree_transforms(
+        &self,
+        out: &mut GlobalTransforms,
+        subtree_root: NodeIdx,
+        root: Mat4,
+    ) {
+        let below = self.tree.get_all_descendants(subtree_root);
+        for id in std::iter::once(subtree_root).chain(below) {
+            let slot = id.0 as usize;
+            let node = self.nodes.get(slot);
+            let local_matrix = self.local_matrix(slot, node);
+            let parent_matrix = if node.map(|n| n.lock_to_root).unwrap_or(false) {
+                root
+            } else {
+                self.tree
+                    .get_parent(id)
+                    .map(|parent| out.get(parent))
+                    .unwrap_or(root)
+            };
+            out.insert(id, parent_matrix * local_matrix);
+        }
     }
 
     /// Anchor point for a physics driver in the driver's own **Y-down**
@@ -568,19 +595,7 @@ impl Arena {
                     continue;
                 }
                 let node = self.nodes.get(slot);
-                let local_matrix = if let Some(n) = node {
-                    let dirty = self.node_transform_dirty.get(slot).copied().unwrap_or(true);
-                    if !dirty && n.transform == n.base_transform {
-                        self.base_local_matrix
-                            .get(slot)
-                            .copied()
-                            .unwrap_or_else(|| n.transform.to_matrix())
-                    } else {
-                        n.transform.to_matrix()
-                    }
-                } else {
-                    Mat4::IDENTITY
-                };
+                let local_matrix = self.local_matrix(slot, node);
                 let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
                 let parent_matrix = if lock_to_root {
                     Mat4::IDENTITY

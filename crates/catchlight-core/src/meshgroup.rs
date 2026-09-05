@@ -1,5 +1,14 @@
 //! Mesh groups: vertex-level deforms applied to a subtree.
 //!
+//! **A group's effect on what is beneath it includes every outer group's,
+//! parent first.** One pre-order pass runs the groups
+//! (`propagate_mesh_group_deforms`): each combines its stack — its own Param
+//! sources plus what outer groups pushed onto its lattice earlier in the same
+//! pass — then shifts its `translate_children` targets by that combined
+//! deform and pushes it to its meshed children. A shifted node's subtree gets
+//! its globals recomputed on the spot, so the meshed children below it and
+//! every inner group later in the pass read the shifted place.
+//!
 //! **Mesh-group descent stops at a nested MG.** `descendant_meshed_nodes`
 //! recurses through Parts and Composites, collects Parts and nested MGs, and
 //! halts at each nested MG; the outer deform reaches the inner MG's children
@@ -246,7 +255,7 @@ fn find_triangle_strict_hint(
 /// MG's children transitively through the pre-order propagation pass. Binding
 /// those children directly to the outer MG would apply its deform twice.
 /// Descendants without a mesh, under a `translateChildren=true` MG, receive a
-/// Node-level shift through `apply_translate_children_filter` instead.
+/// Node-level shift through `shift_translate_children` instead.
 fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeIdx> = tree.get_children(root);
@@ -440,11 +449,12 @@ fn take_mg_pre_order(arena: &mut Arena) -> Vec<NodeIdx> {
 }
 
 /// Per-MeshGroup: combine its own stack (Param sources targeting the
-/// MG's lattice, plus Node sources pushed by an outer MG), then push
-/// the combined deform to each child in `per_child` via
-/// `DeformSource::Node(mg_id)` — Parts and nested MGs alike (see
-/// `mesh_group_pre_order` for the ordering that makes the nested
-/// chain compose).
+/// MG's lattice, plus Node sources pushed by an outer MG), shift its
+/// `translate_children` targets by that combined deform
+/// (`shift_translate_children`), then push it to each child in
+/// `per_child` via `DeformSource::Node(mg_id)` — Parts and nested MGs
+/// alike (see `mesh_group_pre_order` for the ordering that makes the
+/// nested chain compose).
 ///
 /// One path, per child: map the child's CURRENT position
 /// (`base + cur_deform`, where `cur_deform` excludes any prior
@@ -454,7 +464,11 @@ fn take_mg_pre_order(arena: &mut Arena) -> Vec<NodeIdx> {
 /// the current rather than the base position is what keeps a child's
 /// own Param deltas and the MG's deltas from double-pulling at extreme
 /// param values.
-pub(crate) fn propagate_mesh_group_deforms(arena: &mut Arena, transforms: &GlobalTransforms) {
+pub(crate) fn propagate_mesh_group_deforms(
+    arena: &mut Arena,
+    transforms: &mut GlobalTransforms,
+    root: Mat4,
+) {
     let _span = tracing::debug_span!("propagate_mesh_group_deforms").entered();
     let order = take_mg_pre_order(arena);
 
@@ -471,6 +485,16 @@ pub(crate) fn propagate_mesh_group_deforms(arena: &mut Arena, transforms: &Globa
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.deform_stack.combine();
             }
+        }
+
+        // The shift goes before this MG pushes anything, so its targets move
+        // by the stack just combined — own Params plus every outer MG's push.
+        let translate_children = matches!(
+            arena.get(mg_id).map(|n| &n.kind),
+            Some(NodeKind::MeshGroup(mg)) if mg.translate_children
+        );
+        if translate_children {
+            shift_translate_children(arena, mg_id, transforms, root);
         }
 
         // Gather child ids. Propagation still runs when the MG has zero
@@ -546,11 +570,11 @@ pub(crate) fn propagate_mesh_group_deforms(arena: &mut Arena, transforms: &Globa
     }
 }
 
-/// Apply each `translate_children=true` MG's deformation as a
-/// Node-level transform shift on its descendants without a mesh
-/// (Origin Nodes, Group Nodes, SimplePhysics nodes).
+/// Shift one MG's `translate_children` targets — its descendants without a
+/// mesh (Group Nodes, SimplePhysics nodes) — as a Node-level transform shift,
+/// then bring the globals under each shifted node up to date.
 ///
-/// For each target Origin node:
+/// For each target:
 ///
 ///   centerMatrix = MG.global.inverse * parent.global
 ///   cVertex      = centerMatrix * local_translation
@@ -562,139 +586,111 @@ pub(crate) fn propagate_mesh_group_deforms(arena: &mut Arena, transforms: &Globa
 /// already shifted — is the vertex, and the resulting delta is added back
 /// into it.
 ///
-/// Must run AFTER `compute_transforms` (we read parent.global) and
-/// BEFORE the second `compute_transforms` pass that propagates the
-/// shifted Origin Node transforms to descendants. The MG's stack is
-/// combined here from Param sources only — outer-MG-pushed Node
-/// sources are intentionally ignored because this filter uses the MG's own
-/// parameter-driven deformation, not an outer MG's contribution.
-pub(crate) fn apply_translate_children_filter(
+/// Runs from inside `propagate_mesh_group_deforms`, which has combined the
+/// MG's stack, so the deform read here carries every outer MG's same-frame
+/// push as well as this MG's own Param sources. One MG's targets are disjoint
+/// subtrees — the target walk stops at each one — so a shift never moves an
+/// earlier target's parent, and the MG's own global cannot move under it.
+fn shift_translate_children(
     arena: &mut Arena,
-    transforms: &GlobalTransforms,
-) -> bool {
-    let _span = tracing::trace_span!("apply_translate_children_filter").entered();
+    mg_id: NodeIdx,
+    transforms: &mut GlobalTransforms,
+    root: Mat4,
+) {
+    let _span = tracing::trace_span!("shift_translate_children").entered();
 
-    let order = take_mg_pre_order(arena);
-    let mut targets: smallvec::SmallVec<[NodeIdx; 8]> = smallvec::SmallVec::new();
-    let mut shifted = false;
+    let targets = translate_children_targets(&arena.tree, mg_id, arena);
+    if targets.is_empty() {
+        return;
+    }
 
-    for &mg_id in &order {
-        // Collect tc=true info up-front under a non-mut borrow.
-        let tc = match arena.get(mg_id).map(|n| &n.kind) {
-            Some(NodeKind::MeshGroup(mg)) => mg.translate_children,
+    let mg_global = transforms.get(mg_id);
+    let Some(mg_global_inv) = checked_affine_inverse(mg_global) else {
+        return;
+    };
+
+    for target_id in targets {
+        let parent_id = match arena.tree.get_parent(target_id) {
+            Some(p) => p,
+            None => continue,
+        };
+        let parent_global = transforms.get(parent_id);
+
+        // Project the target's CURRENT position (= base plus the
+        // transform delta) into MG-local space: transform.translation
+        // already includes any param shift this frame (apply_params has
+        // run).
+        let cur_local = match arena.get(target_id) {
+            Some(n) => Vec2::new(n.transform.translation.x, n.transform.translation.y),
+            None => continue,
+        };
+        let world_cur = parent_global * Vec4::new(cur_local.x, cur_local.y, 0.0, 1.0);
+        let cvertex_full = mg_global_inv * world_cur;
+        let cvertex_proj = Vec2::new(cvertex_full.x, cvertex_full.y);
+
+        // Find the MG triangle covering cvertex_proj. If outside,
+        // skip — newPos = cvertex_proj makes delta = 0.
+        let delta_mg = match arena.get(mg_id).map(|n| &n.kind) {
+            Some(NodeKind::MeshGroup(mg)) => {
+                let mg_indices = &mg.mesh.indices;
+                let mg_local = local_positions(&mg.mesh);
+                let combined = mg.deform_stack.combined();
+                let tri_idx = match mg.bitmap.as_ref() {
+                    Some(bm) => bm.lookup(cvertex_proj),
+                    None => find_triangle_strict_hint(&mg_local, mg_indices, cvertex_proj, 0),
+                };
+                let Some(tri_idx) = tri_idx else { continue };
+                let base_idx = tri_idx as usize * 3;
+                let i0 = mg_indices.get(base_idx).map(|i| i as usize);
+                let i1 = mg_indices.get(base_idx + 1).map(|i| i as usize);
+                let i2 = mg_indices.get(base_idx + 2).map(|i| i as usize);
+                let (a, b, c) = match (i0, i1, i2) {
+                    (Some(a), Some(b), Some(c))
+                        if a < mg_local.len()
+                            && b < mg_local.len()
+                            && c < mg_local.len()
+                            && a < combined.len()
+                            && b < combined.len()
+                            && c < combined.len() =>
+                    {
+                        (a, b, c)
+                    }
+                    _ => continue,
+                };
+                let w = barycentric(cvertex_proj, mg_local[a], mg_local[b], mg_local[c]);
+                if w[0].is_nan() {
+                    continue;
+                }
+                // delta_mg = barycentric-weighted MG deform at
+                // cvertex_proj. Equivalent to (newPos - cvertex_proj)
+                // since newPos = cvertex_proj + delta_mg once the
+                // base barycentric weights sum to 1.
+                combined[a] * w[0] + combined[b] * w[1] + combined[c] * w[2]
+            }
             _ => continue,
         };
-        if !tc {
-            continue;
-        }
 
-        // Combine the MG's stack so we can read combined() below.
-        // Idempotent + cheap when nothing's dirty.
-        if let Some(node) = arena.get_mut(mg_id) {
-            if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.deform_stack.combine();
-            }
-        }
-
-        targets.clear();
-        targets.extend(translate_children_targets(&arena.tree, mg_id, arena));
-        if targets.is_empty() {
-            continue;
-        }
-
-        let mg_global = transforms.get(mg_id);
-        let Some(mg_global_inv) = checked_affine_inverse(mg_global) else {
+        // mg_to_parent linear: (parent.global.inverse * MG.global)
+        // upper-left 2x2. Translation is stripped because this maps a
+        // displacement vector rather than a point.
+        let Some(parent_global_inv) = checked_affine_inverse(parent_global) else {
             continue;
         };
+        let mg_to_parent = parent_global_inv * mg_global;
+        let mg_to_parent_linear = linear_mat2(mg_to_parent);
+        let delta_parent = mg_to_parent_linear * delta_mg;
 
-        for &target_id in &targets {
-            let parent_id = match arena.tree.get_parent(target_id) {
-                Some(p) => p,
-                None => continue,
-            };
-            let parent_global = transforms.get(parent_id);
-
-            // Project the target's CURRENT position (= base plus the
-            // transform delta) into MG-local space: transform.translation
-            // already includes any param shift this frame (apply_params has
-            // run).
-            let cur_local = match arena.get(target_id) {
-                Some(n) => Vec2::new(n.transform.translation.x, n.transform.translation.y),
-                None => continue,
-            };
-            let world_cur = parent_global * Vec4::new(cur_local.x, cur_local.y, 0.0, 1.0);
-            let cvertex_full = mg_global_inv * world_cur;
-            let cvertex_proj = Vec2::new(cvertex_full.x, cvertex_full.y);
-
-            // Find the MG triangle covering cvertex_proj. If outside,
-            // skip — newPos = cvertex_proj makes delta = 0.
-            let delta_mg = match arena.get(mg_id).map(|n| &n.kind) {
-                Some(NodeKind::MeshGroup(mg)) => {
-                    let mg_indices = &mg.mesh.indices;
-                    let mg_local = local_positions(&mg.mesh);
-                    let combined = mg.deform_stack.combined();
-                    let tri_idx = match mg.bitmap.as_ref() {
-                        Some(bm) => bm.lookup(cvertex_proj),
-                        None => find_triangle_strict_hint(&mg_local, mg_indices, cvertex_proj, 0),
-                    };
-                    let Some(tri_idx) = tri_idx else { continue };
-                    let base_idx = tri_idx as usize * 3;
-                    let i0 = mg_indices.get(base_idx).map(|i| i as usize);
-                    let i1 = mg_indices.get(base_idx + 1).map(|i| i as usize);
-                    let i2 = mg_indices.get(base_idx + 2).map(|i| i as usize);
-                    let (a, b, c) = match (i0, i1, i2) {
-                        (Some(a), Some(b), Some(c))
-                            if a < mg_local.len()
-                                && b < mg_local.len()
-                                && c < mg_local.len()
-                                && a < combined.len()
-                                && b < combined.len()
-                                && c < combined.len() =>
-                        {
-                            (a, b, c)
-                        }
-                        _ => continue,
-                    };
-                    let w = barycentric(cvertex_proj, mg_local[a], mg_local[b], mg_local[c]);
-                    if w[0].is_nan() {
-                        continue;
-                    }
-                    // delta_mg = barycentric-weighted MG deform at
-                    // cvertex_proj. Equivalent to (newPos - cvertex_proj)
-                    // since newPos = cvertex_proj + delta_mg once the
-                    // base barycentric weights sum to 1.
-                    combined[a] * w[0] + combined[b] * w[1] + combined[c] * w[2]
-                }
-                _ => continue,
-            };
-
-            // mg_to_parent linear: (parent.global.inverse * MG.global)
-            // upper-left 2x2. Translation is stripped because this maps a
-            // displacement vector rather than a point.
-            let Some(parent_global_inv) = checked_affine_inverse(parent_global) else {
-                continue;
-            };
-            let mg_to_parent = parent_global_inv * mg_global;
-            let mg_to_parent_linear = linear_mat2(mg_to_parent);
-            let delta_parent = mg_to_parent_linear * delta_mg;
-
-            if delta_parent == Vec2::ZERO {
-                continue;
-            }
-
-            if let Some(node) = arena.get_mut(target_id) {
-                node.transform.translation.x += delta_parent.x;
-                node.transform.translation.y += delta_parent.y;
-            }
-            arena.mark_transform_dirty(target_id);
-            shifted = true;
+        if delta_parent == Vec2::ZERO {
+            continue;
         }
-    }
 
-    if arena.mg_pre_order_cache.is_none() {
-        arena.mg_pre_order_cache = Some(order);
+        if let Some(node) = arena.get_mut(target_id) {
+            node.transform.translation.x += delta_parent.x;
+            node.transform.translation.y += delta_parent.y;
+        }
+        arena.mark_transform_dirty(target_id);
+        arena.recompute_subtree_transforms(transforms, target_id, root);
     }
-    shifted
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1045,7 +1041,7 @@ mod tests {
             }
         }
 
-        propagate_mesh_group_deforms(&mut arena, &tx);
+        propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
 
         arena.combine_deforms();
         if let Some(node) = arena.get(child_id) {
@@ -1162,7 +1158,7 @@ mod tests {
         let (mut puppet, child_id) = build();
         let mut tx = GlobalTransforms::new();
         puppet.compute_transforms(&mut tx);
-        propagate_mesh_group_deforms(&mut puppet, &tx);
+        propagate_mesh_group_deforms(&mut puppet, &mut tx, Mat4::IDENTITY);
         puppet.combine_deforms();
         let node = puppet.get(child_id).unwrap();
         let NodeKind::Part(part) = &node.kind else {
@@ -1291,7 +1287,7 @@ mod tests {
             }
         }
 
-        propagate_mesh_group_deforms(&mut arena, &tx);
+        propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();
 
         let node = arena.get(part_id).expect("part");
@@ -1330,7 +1326,7 @@ mod tests {
         }
         arena.mark_transform_dirty(outer_id);
         arena.compute_transforms(&mut tx);
-        propagate_mesh_group_deforms(&mut arena, &tx);
+        propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();
 
         let Some(Node {
@@ -1439,7 +1435,7 @@ mod tests {
             }
         }
 
-        propagate_mesh_group_deforms(&mut arena, &tx);
+        propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();
 
         // Outer deform at the inner's lattice vertex (10,10) is (4,0);
@@ -1456,6 +1452,152 @@ mod tests {
             c[0]
         );
         assert!(c[0].y.abs() < 1e-4, "nested part offset = {:?}", c[0]);
+    }
+
+    /// A nested `translate_children` MG shifts its mesh-less descendants by
+    /// the outer MG's same-frame deform as well as by its own params: the
+    /// hierarchy rule says a group's effect on what is beneath it always
+    /// carries every outer group's, parent first.
+    #[test]
+    fn outer_mg_deform_shifts_group_child_through_nested_tc_mg() {
+        use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, Transform};
+        use glam::Vec3;
+
+        // root > outer MG > inner MG (translate_children) > Group at (5,5).
+        // Both lattices are the same quad, so a deform of (+4,0) on the
+        // corner (10,10) warps the group child's spot (5,5) by (+2,0)
+        // whichever of the two drives it.
+        fn build() -> (Arena, GlobalTransforms, NodeIdx, NodeIdx, NodeIdx) {
+            let quad = || {
+                Mesh::new(
+                    vec![
+                        Vec2::new(0.0, 0.0),
+                        Vec2::new(10.0, 0.0),
+                        Vec2::new(10.0, 10.0),
+                        Vec2::new(0.0, 10.0),
+                    ],
+                    vec![Vec2::ZERO; 4],
+                    MeshIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+                    Vec2::ZERO,
+                )
+            };
+
+            let mut arena = Arena::new();
+            let outer_id = arena.insert_child(
+                arena.root(),
+                Node {
+                    kind: NodeKind::MeshGroup(Box::new(MeshGroupData {
+                        mesh: quad(),
+                        translate_children: false,
+                        deform_stack: crate::deform::DeformStack::new(4),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+            );
+            let inner_id = arena.insert_child(
+                outer_id,
+                Node {
+                    kind: NodeKind::MeshGroup(Box::new(MeshGroupData {
+                        mesh: quad(),
+                        translate_children: true,
+                        deform_stack: crate::deform::DeformStack::new(4),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+            );
+            let at_5_5 = Transform {
+                translation: Vec3::new(5.0, 5.0, 0.0),
+                ..Default::default()
+            };
+            let group_id = arena.insert_child(
+                inner_id,
+                Node {
+                    kind: NodeKind::Group,
+                    transform: at_5_5,
+                    base_transform: at_5_5,
+                    ..Default::default()
+                },
+            );
+
+            let mut tx = GlobalTransforms::new();
+            arena.compute_transforms(&mut tx);
+            let outer_pins = bake_mesh_group_pins(&arena, &tx, outer_id);
+            let inner_pins = bake_mesh_group_pins(&arena, &tx, inner_id);
+            assert!(outer_pins.per_child.contains_key(&inner_id));
+            for (id, pins) in [(outer_id, outer_pins), (inner_id, inner_pins)] {
+                if let Some(node) = arena.get_mut(id) {
+                    if let NodeKind::MeshGroup(mg) = &mut node.kind {
+                        mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
+                        mg.pins = pins;
+                    }
+                }
+            }
+            (arena, tx, outer_id, inner_id, group_id)
+        }
+
+        let corner_pull = || vec![Vec2::ZERO, Vec2::ZERO, Vec2::new(4.0, 0.0), Vec2::ZERO];
+        let translation_of = |arena: &Arena, id: NodeIdx| {
+            let t = arena.get(id).expect("group").transform.translation;
+            Vec2::new(t.x, t.y)
+        };
+
+        // Neither driven: the group child stays where it was authored.
+        {
+            let (mut arena, mut tx, _outer_id, _inner_id, group_id) = build();
+            propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
+            assert_eq!(translation_of(&arena, group_id), Vec2::new(5.0, 5.0));
+        }
+
+        // Control: the inner group's own params shift its group child by
+        // half the corner pull.
+        let own = {
+            let (mut arena, mut tx, _outer_id, inner_id, group_id) = build();
+            if let Some(node) = arena.get_mut(inner_id) {
+                if let NodeKind::MeshGroup(mg) = &mut node.kind {
+                    mg.deform_stack
+                        .set(DeformSource::Param(0), corner_pull())
+                        .unwrap();
+                }
+            }
+            propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
+            let shifted = translation_of(&arena, group_id);
+            assert!(
+                (shifted - Vec2::new(7.0, 5.0)).length() < 1e-4,
+                "own shift = {shifted:?}"
+            );
+            assert_eq!(tx.get(group_id).w_axis.x, shifted.x);
+            shifted
+        };
+
+        // The rule: drive the OUTER only and the same shift reaches the
+        // group child, through the inner group's lattice. Before the shift
+        // joined the pre-order pass it stayed at (5,5), because the filter
+        // read the inner group's Param sources alone.
+        {
+            let (mut arena, mut tx, outer_id, _inner_id, group_id) = build();
+            if let Some(node) = arena.get_mut(outer_id) {
+                if let NodeKind::MeshGroup(mg) = &mut node.kind {
+                    mg.deform_stack
+                        .set(DeformSource::Param(0), corner_pull())
+                        .unwrap();
+                }
+            }
+            propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
+            let shifted = translation_of(&arena, group_id);
+            assert!(
+                (shifted - own).length() < 1e-4,
+                "outer-driven shift = {shifted:?}, inner-driven = {own:?}"
+            );
+            // The recompute inside the pass leaves the globals under the
+            // shifted node current, not one frame behind.
+            assert!(
+                (tx.get(group_id).w_axis.x - shifted.x).abs() < 1e-4,
+                "global = {:?}",
+                tx.get(group_id).w_axis
+            );
+        }
     }
 
     #[test]
@@ -1553,7 +1695,7 @@ mod tests {
                     .unwrap();
             }
         }
-        propagate_mesh_group_deforms(&mut arena, &tx);
+        propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();
 
         let node = arena.get(child_id).unwrap();
@@ -1648,7 +1790,7 @@ mod tests {
                     .unwrap();
             }
         }
-        propagate_mesh_group_deforms(&mut arena, &tx);
+        propagate_mesh_group_deforms(&mut arena, &mut tx, Mat4::IDENTITY);
         arena.combine_deforms();
 
         let node = arena.get(child_id).unwrap();

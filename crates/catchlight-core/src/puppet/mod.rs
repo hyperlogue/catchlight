@@ -8,16 +8,17 @@
 //!
 //! - **A tick is one pipeline, in one order.** [`Puppet::tick`] is: fold
 //!   animations → pose the physics anchors and step the drivers → fold the
-//!   bindings → compute transforms → apply the `translate_children` mesh-group
-//!   filter and recompute → propagate mesh-group deforms → solve welds →
-//!   combine deforms. The code is an optimized form of exactly that, cached in
-//!   three places, and the caching is where a bug hides: the anchor pre-pass
-//!   is skipped unless the pose moved (`last_anchor_pose_generation`), the
-//!   whole fold is skipped when neither the pose nor the pre-pass touched
-//!   anything (`last_tick_folded_param_generation`), and the third transform
-//!   walk runs only when the filter actually shifted something. A pre-pass
-//!   that ran **forces** the final fold, because it reset colour and
-//!   deactivated every deform stack.
+//!   bindings → compute transforms → run the mesh groups → solve welds →
+//!   combine deforms. The mesh-group pass is itself ordered, outer group
+//!   first: each group shifts its `translate_children` targets and recomputes
+//!   the globals under them before pushing its deform down, so an inner group
+//!   inherits the outer one's same-frame warp. The code is an optimized form
+//!   of exactly that, cached in two places, and the caching is where a bug
+//!   hides: the anchor pre-pass is skipped unless the pose moved
+//!   (`last_anchor_pose_generation`) and the whole fold is skipped when
+//!   neither the pose nor the pre-pass touched anything
+//!   (`last_tick_folded_param_generation`). A pre-pass that ran **forces** the
+//!   final fold, because it reset colour and deactivated every deform stack.
 //! - **The generation gate is the only staleness check.** A puppet records
 //!   `model.generation()` when it bakes; every method that takes a `&Model`
 //!   compares it first and rebakes when it moved. Nothing else may assume the
@@ -692,10 +693,9 @@ impl Puppet {
     /// It outlives the folds that follow it exactly as a scratch deform does:
     /// every [`Self::tick`] re-applies it, at the point in the frame where the
     /// bindings have folded and nothing downstream has run yet, so the
-    /// transform walk, the `translate_children` filter, mesh-group
-    /// propagation, welds and the deform combine all see the previewed pose
-    /// and the node's dependents move with it. A client writes it once per
-    /// pointer move rather than once per frame.
+    /// transform walk, the mesh-group pass, welds and the deform combine all
+    /// see the previewed pose and the node's dependents move with it. A client
+    /// writes it once per pointer move rather than once per frame.
     ///
     /// See [`ScratchTransform`] for what the fields mean and why they are
     /// absolute. Replaces any scratch transform already on the node; `false`
@@ -801,12 +801,11 @@ impl Puppet {
     /// This is not a tick: no driver steps and no animation advances. The
     /// bindings are folded again from the model's authored values, `edit`
     /// writes over what they produced, and then everything that reads a
-    /// transform is redone — the transform walk, the `translate_children`
-    /// filter, mesh-group propagation, welds and the deform combine. Doing
-    /// them again is the point: a previewed transform has to move the
-    /// children of a translate-children group and the mesh groups above them,
-    /// or the frame shows a node in its new place and its dependents in their
-    /// old one.
+    /// transform is redone — the transform walk, the mesh-group pass, welds
+    /// and the deform combine. Doing them again is the point: a previewed
+    /// transform has to move the children of a translate-children group and
+    /// the mesh groups above them, or the frame shows a node in its new place
+    /// and its dependents in their old one.
     ///
     /// The edit lives until the next fold. [`Self::tick`] starts from the
     /// model's authored values, so a preview never accumulates and nothing has
@@ -823,10 +822,8 @@ impl Puppet {
         });
         let mut out = std::mem::take(&mut self.transforms);
         self.arena.compute_transforms(&mut out);
-        if self.arena.apply_translate_children_filter(&out) {
-            self.arena.compute_transforms(&mut out);
-        }
-        self.arena.propagate_mesh_group_deforms(&out);
+        self.arena
+            .propagate_mesh_group_deforms(&mut out, Mat4::IDENTITY);
         self.arena.apply_welds(&out);
         self.arena.combine_deforms();
         self.transforms = out;
@@ -1438,12 +1435,7 @@ impl Puppet {
             // children sit where this frame's pose put them.
             self.arena.compute_transforms_with_root(&mut out, root);
             if has_mesh_group_work {
-                // Re-walk only when the filter actually shifted something; a
-                // model with no translate_children mesh group never needs it.
-                if self.arena.apply_translate_children_filter(&out) {
-                    self.arena.compute_transforms_with_root(&mut out, root);
-                }
-                self.arena.propagate_mesh_group_deforms(&out);
+                self.arena.propagate_mesh_group_deforms(&mut out, root);
                 self.last_tick_mesh_group_generation = Some(self.mesh_group_param_generation);
             }
             self.arena.apply_welds(&out);
