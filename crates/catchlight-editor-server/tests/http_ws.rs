@@ -1226,3 +1226,355 @@ fn await_ping(socket: &mut Socket) {
     }
     panic!("no keepalive ping arrived");
 }
+
+// ------------------------------------------------- bytes beside the command
+
+/// One `multipart/form-data` body: the parts in order, each `(name, bytes)`.
+fn multipart(parts: &[(&str, &[u8])]) -> (String, Vec<u8>) {
+    let boundary = "catchlightTestBoundary";
+    let mut body = Vec::new();
+    for (name, bytes) in parts {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+/// One command with its attachments, the way a script sends bytes.
+fn post_multipart(
+    addr: SocketAddr,
+    request: &Request,
+    attachments: &[(&str, &[u8])],
+) -> HttpResponse {
+    let json = serde_json::to_vec(request).unwrap();
+    let mut parts: Vec<(&str, &[u8])> = vec![("request", &json)];
+    parts.extend_from_slice(attachments);
+    let (content_type, body) = multipart(&parts);
+    http(
+        addr,
+        "POST",
+        "/request",
+        &[
+            ("Authorization", &bearer()),
+            ("Content-Type", &content_type),
+        ],
+        &body,
+    )
+}
+
+/// A session with one part in it, over the socket, so a byte test can get to
+/// the interesting line quickly.
+fn a_part(socket: &mut Socket, session: SessionId, id: u64) -> NodeId {
+    let root = root_of(socket, id, session);
+    send(
+        socket,
+        Request {
+            id: id + 1,
+            command: Command::NodeAdd {
+                session,
+                parent: root,
+                kind: NodeKindArg::Part,
+                name: Some("Face".into()),
+                node: None,
+            },
+        },
+    );
+    match body_of(reply_to(socket, id + 1)) {
+        ResponseBody::Node { node, .. } => node,
+        other => panic!("expected Node, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_multipart_post_carries_a_textures_bytes_into_the_command() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let part = a_part(&mut socket, session, 2);
+
+    let response = post_multipart(
+        server.addr,
+        &Request {
+            id: 4,
+            command: Command::TextureAdd {
+                session,
+                node: part,
+                path: None,
+                encoding: TextureEncoding::Png,
+                texture: None,
+            },
+        },
+        &[("texture", &one_pixel_png())],
+    );
+    assert!(matches!(
+        body_of(posted(&response)),
+        ResponseBody::Texture { .. }
+    ));
+    // Nothing was staged on the way through: the bytes went into the command.
+    assert!(server.staging.staged_keys().is_empty());
+}
+
+/// The reply rides in a header so the body can be the bytes themselves.
+#[test]
+fn a_payload_is_the_body_and_the_reply_is_a_header() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+
+    let response = post_multipart(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::Preview {
+                session,
+                pose: Vec::new(),
+                size: Some([48, 32]),
+                camera: None,
+            },
+        },
+        &[],
+    );
+    assert_eq!(response.status, 200);
+    assert_eq!(response.header("content-type"), Some("image/png"));
+    let decoded = image::load_from_memory(&response.body).expect("the body is the png");
+    assert_eq!((decoded.width(), decoded.height()), (48, 32));
+
+    let header = response
+        .header("x-catchlight-reply")
+        .expect("the reply rides in a header");
+    assert!(header.is_ascii(), "a header value is ASCII: {header:?}");
+    match serde_json::from_str::<Reply>(header).expect("the header is one reply") {
+        Reply::Ok {
+            body: ResponseBody::Preview { preview },
+            id,
+            ..
+        } => {
+            assert_eq!(id, 2);
+            assert_eq!([preview.width, preview.height], [48, 32]);
+        }
+        other => panic!("expected a preview reply, got {other:?}"),
+    }
+}
+
+/// A payload-bearing command needs no attachments, so a plain JSON post
+/// carries it too — and the answer is still the bytes.
+#[test]
+fn a_json_post_of_a_payload_command_answers_with_the_bytes() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+
+    let response = post(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::Preview {
+                session,
+                pose: Vec::new(),
+                size: Some([16, 16]),
+                camera: None,
+            },
+        },
+    );
+    assert_eq!(response.status, 200);
+    assert_eq!(response.header("content-type"), Some("image/png"));
+    assert!(response.header("x-catchlight-reply").is_some());
+    assert_eq!(
+        image::load_from_memory(&response.body)
+            .expect("the body is the png")
+            .width(),
+        16
+    );
+}
+
+#[test]
+fn a_part_name_the_command_does_not_take_is_a_refusal_not_a_status() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let part = a_part(&mut socket, session, 2);
+
+    let response = post_multipart(
+        server.addr,
+        &Request {
+            id: 4,
+            command: Command::TextureAdd {
+                session,
+                node: part,
+                path: None,
+                encoding: TextureEncoding::Png,
+                texture: None,
+            },
+        },
+        &[("image", &one_pixel_png())],
+    );
+    // The transport carried it perfectly; the editor is what refused it.
+    assert_eq!(response.status, 200);
+    match serde_json::from_slice::<Reply>(&response.body).expect("one reply") {
+        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::BadRequest),
+        other => panic!("expected Err, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_multipart_body_this_parser_will_not_take_is_a_400() {
+    let server = start();
+    for (why, body) in [
+        (
+            "no closing boundary",
+            "--b\r\nContent-Disposition: form-data; name=\"request\"\r\n\r\n{}\r\n".to_string(),
+        ),
+        (
+            "no opening boundary",
+            "Content-Disposition: form-data; name=\"request\"\r\n\r\n{}\r\n--b--\r\n".to_string(),
+        ),
+        (
+            "a part with no name",
+            "--b\r\nContent-Type: application/json\r\n\r\n{}\r\n--b--\r\n".to_string(),
+        ),
+        (
+            "headers never terminated",
+            "--b\r\nContent-Disposition: form-data; name=\"request\"\r\n--b--\r\n".to_string(),
+        ),
+    ] {
+        let response = http(
+            server.addr,
+            "POST",
+            "/request",
+            &[
+                ("Authorization", &bearer()),
+                ("Content-Type", "multipart/form-data; boundary=b"),
+            ],
+            body.as_bytes(),
+        );
+        assert_eq!(response.status, 400, "{why}");
+    }
+
+    // Well-formed multipart with no `request` part is the same answer.
+    let (content_type, body) = multipart(&[("texture", b"bytes")]);
+    assert_eq!(
+        http(
+            server.addr,
+            "POST",
+            "/request",
+            &[
+                ("Authorization", &bearer()),
+                ("Content-Type", &content_type),
+            ],
+            &body,
+        )
+        .status,
+        400,
+        "no request part",
+    );
+}
+
+/// A multipart command carries a model, so it gets the upload ceiling rather
+/// than the one-megabyte command ceiling — and past that it is drained and
+/// refused like any other oversized body.
+#[test]
+fn a_multipart_body_over_the_upload_ceiling_is_refused_and_drained() {
+    let server = start_with(|options| options.max_upload_bytes = 64 * 1024);
+    let (content_type, body) = multipart(&[("texture", &vec![0u8; 128 * 1024])]);
+    let response = http(
+        server.addr,
+        "POST",
+        "/request",
+        &[
+            ("Authorization", &bearer()),
+            ("Content-Type", &content_type),
+        ],
+        &body,
+    );
+    assert_eq!(response.status, 413);
+
+    // A body between the command cap and the upload cap is fine, which is the
+    // point of the multipart route having its own ceiling.
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let part = a_part(&mut socket, session, 2);
+    let big = image::RgbaImage::from_pixel(600, 600, image::Rgba([3, 4, 5, 255]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    big.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    let response = post_multipart(
+        server.addr,
+        &Request {
+            id: 4,
+            command: Command::TextureAdd {
+                session,
+                node: part,
+                path: None,
+                encoding: TextureEncoding::Png,
+                texture: None,
+            },
+        },
+        &[("texture", &png)],
+    );
+    assert!(matches!(
+        body_of(posted(&response)),
+        ResponseBody::Texture { .. }
+    ));
+}
+
+/// The socket is text frames for commands and events. Bulk goes to the POST.
+#[test]
+fn a_byte_bearing_command_over_the_websocket_is_refused() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+
+    for (id, command) in [
+        (2, Command::ImportManifest { session }),
+        (
+            3,
+            Command::Preview {
+                session,
+                pose: Vec::new(),
+                size: None,
+                camera: None,
+            },
+        ),
+    ] {
+        send(&mut socket, Request { id, command });
+        match reply_to(&mut socket, id) {
+            Reply::Err { code, .. } => assert_eq!(code, ErrorCode::BulkOverHttp, "request {id}"),
+            other => panic!("expected Err, got {other:?}"),
+        }
+    }
+}
+
+/// The transitional form names a staged key rather than attaching bytes, so it
+/// is not byte-bearing and the socket still takes it.
+#[test]
+fn a_texture_add_naming_a_key_still_goes_over_the_websocket() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+    let part = a_part(&mut socket, session, 2);
+
+    upload(&server, "face.png", &one_pixel_png());
+    send(
+        &mut socket,
+        Request {
+            id: 4,
+            command: Command::TextureAdd {
+                session,
+                node: part,
+                path: Some("face.png".into()),
+                encoding: TextureEncoding::default(),
+                texture: None,
+            },
+        },
+    );
+    assert!(matches!(
+        body_of(reply_to(&mut socket, 4)),
+        ResponseBody::Texture { .. }
+    ));
+}

@@ -3,8 +3,10 @@
 One interface, two doors. [`UnixSocketTransport`] speaks the newline-delimited
 JSON the editor's socket speaks; [`HttpTransport`] puts the same JSON object in
 a `POST /request` body and carries payloads over the same connection beside it.
-Nothing here knows what a command means: a transport moves one JSON object out
-and the matching one back, and [`catchlight.client`] is what reads them.
+Nothing here knows what a command *means*: a transport moves one JSON object
+out and the matching one back, and [`catchlight.client`] is what reads them.
+The one thing it does read is `COMMAND_BYTES`, which says what bytes a command
+carries — that is a framing fact, and framing is all this module does.
 
 Invariants this module enforces:
 
@@ -16,6 +18,21 @@ Invariants this module enforces:
   and a document command applied twice is a document nobody asked for, so a
   failure once a request is on the wire raises rather than retries. The only
   reconnect is *before* a request, on a connection old enough to be suspect.
+
+- **Bytes ride beside a command, and each door frames them its own way.**
+  `request_with` takes the attachments a command declares and hands back the
+  payload its reply carries. Over the socket both are files: the editor reads
+  the very filesystem this script is on, so the attachments are written to
+  temporary files named in a sibling `files` map and a payload is read back out
+  of a temporary `out` path — nothing is uploaded. Over HTTP the request
+  becomes `multipart/form-data` — a part named `request` holding the command
+  and one part per attachment — and a payload comes back as the response body
+  with its reply in `X-Catchlight-Reply`.
+
+- **A temporary file outlives nothing.** Every file the socket transport writes
+  for a request lives in one directory it makes and removes around that
+  request, so a failure leaves nothing behind and two requests never see each
+  other's bytes.
 
 - **Neither door hears an event.** The editor pushes events over the WebSocket
   the browser tab holds, and this package holds none: a blocking caller learns
@@ -45,11 +62,16 @@ import http.client
 import json
 import os
 import socket
+import tempfile
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from .protocol_gen import COMMAND_BYTES
 
 __all__ = [
     "MAX_REQUEST_BYTES",
@@ -91,7 +113,23 @@ class Transport(Protocol):
     def request(self, command_wire: dict[str, Any]) -> dict[str, Any]:
         """Send one command and block until its reply arrives.
 
-        `command_wire` is a command's `to_wire()`; the `id` is added here.
+        `command_wire` is a command's `to_wire()`; the `id` is added here. For
+        a command that carries no bytes — every command but the four in
+        `COMMAND_BYTES`.
+        """
+        ...
+
+    def request_with(
+        self,
+        command_wire: dict[str, Any],
+        attachments: Mapping[str, bytes] | None = None,
+    ) -> tuple[dict[str, Any], bytes | None]:
+        """Send one command with the bytes it declares, and take back its reply
+        and whatever bytes came with it.
+
+        `attachments` is keyed by attachment name, as `COMMAND_BYTES` spells
+        them. The payload is `None` unless the command's row says its reply
+        carries one.
         """
         ...
 
@@ -160,8 +198,46 @@ class UnixSocketTransport:
         self.close()
 
     def request(self, command_wire: dict[str, Any]) -> dict[str, Any]:
+        return self.request_with(command_wire)[0]
+
+    def request_with(
+        self,
+        command_wire: dict[str, Any],
+        attachments: Mapping[str, bytes] | None = None,
+    ) -> tuple[dict[str, Any], bytes | None]:
+        """One line, plus the sibling keys this socket carries beside it.
+
+        Both halves are files. The editor is on this filesystem, so an
+        attachment is written where it can read it and a payload is written
+        where this can read it; the directory holding them is made and removed
+        around the request.
+        """
+        wants_payload = _carries_payload(command_wire)
+        if not attachments and not wants_payload:
+            return self._line(command_wire, {}), None
+        with tempfile.TemporaryDirectory(prefix="catchlight-") as scratch:
+            scratch = Path(scratch)
+            siblings: dict[str, Any] = {}
+            if attachments:
+                files = {}
+                for name, data in attachments.items():
+                    # The name is an attachment's, not a filename's, and may
+                    # carry a `/` (`texture:images/face.png`), so the file is
+                    # named by nothing but a counter.
+                    path = scratch / f"attachment-{uuid.uuid4().hex}"
+                    path.write_bytes(data)
+                    files[name] = str(path)
+                siblings["files"] = files
+            out = scratch / "payload"
+            if wants_payload:
+                siblings["out"] = str(out)
+            reply = self._line(command_wire, siblings)
+            payload = out.read_bytes() if wants_payload and out.exists() else None
+        return reply, payload
+
+    def _line(self, command_wire: dict[str, Any], siblings: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            line = _encode_request(self._mint_id(), command_wire)
+            line = _encode_request(self._mint_id(), command_wire, siblings)
             sock = self._connection()
             try:
                 sock.sendall(line + b"\n")
@@ -251,14 +327,30 @@ class UnixSocketTransport:
             self._buffer.extend(chunk)
 
 
-def _encode_request(request_id: int, command_wire: dict[str, Any]) -> bytes:
+def _carries_payload(command_wire: dict[str, Any]) -> bool:
+    """Does this command's reply carry bytes? `COMMAND_BYTES` is where that is
+    written down, once, for every language."""
+    row = COMMAND_BYTES.get(str(command_wire.get("cmd", "")))
+    return row is not None and row.payload
+
+
+def _encode_request(
+    request_id: int,
+    command_wire: dict[str, Any],
+    siblings: Mapping[str, Any] | None = None,
+) -> bytes:
     """One request as the editor reads it: the correlation id, then the command.
+
+    `siblings` are the socket's own keys — `files` and `out` — which sit beside
+    the command's fields rather than inside them.
 
     No newline — the socket adds one and a POST body carries none — but the cap
     is checked against the line the socket would write, which is the stricter of
     the two by exactly that byte.
     """
-    line = json.dumps({"id": request_id, **command_wire}, separators=(",", ":")).encode()
+    line = json.dumps(
+        {"id": request_id, **command_wire, **(siblings or {})}, separators=(",", ":")
+    ).encode()
     if len(line) + 1 > MAX_REQUEST_BYTES:
         raise TransportError(
             f"request is {len(line) + 1} bytes, over the {MAX_REQUEST_BYTES} the editor reads"
@@ -345,10 +437,37 @@ class HttpTransport:
     # -- messages
 
     def request(self, command_wire: dict[str, Any]) -> dict[str, Any]:
+        return self.request_with(command_wire)[0]
+
+    def request_with(
+        self,
+        command_wire: dict[str, Any],
+        attachments: Mapping[str, bytes] | None = None,
+    ) -> tuple[dict[str, Any], bytes | None]:
+        """One `POST /request`, with the bytes framed the way HTTP frames them.
+
+        With attachments the body is `multipart/form-data`: a part named
+        `request` holding the command, one part per attachment named for the
+        attachment. Without them it is the JSON body it has always been —
+        a command whose reply is bytes and whose request is not needs no form.
+
+        A payload comes back as the response body under its own content type,
+        and the reply rides in `X-Catchlight-Reply`, escaped to ASCII by the
+        server so a header can hold it.
+        """
         with self._lock:
-            body = _encode_request(self._mint_id(), command_wire)
-            answer = self._exchange("POST", "/request", body, "application/json")
-        return _decode(answer)
+            encoded = _encode_request(self._mint_id(), command_wire)
+            if attachments:
+                content_type, body = _multipart(encoded, attachments)
+            else:
+                content_type, body = "application/json", encoded
+            headers, answer = self._exchange_seen(
+                "POST", "/request", body, content_type
+            )
+        in_header = headers.get("X-Catchlight-Reply")
+        if in_header is not None:
+            return _decode(in_header.encode()), answer
+        return _decode(answer), None
 
     def close(self) -> None:
         with self._lock:
@@ -383,7 +502,12 @@ class HttpTransport:
     def _exchange(
         self, method: str, path: str, body: bytes | None, content_type: str | None
     ) -> bytes:
-        """One round trip, with the lock held, and the body of what came back.
+        return self._exchange_seen(method, path, body, content_type)[1]
+
+    def _exchange_seen(
+        self, method: str, path: str, body: bytes | None, content_type: str | None
+    ) -> tuple[http.client.HTTPMessage, bytes]:
+        """One round trip, with the lock held: the response's headers and body.
 
         A status that is not a success is this door refusing the request, so it
         raises here. A command the *editor* refused is a 200 whose body is an
@@ -409,7 +533,7 @@ class HttpTransport:
         if response.status // 100 != 2:
             detail = answer.decode("utf-8", "replace").strip()
             raise TransportError(f"{method} {path}: {response.status} {response.reason}: {detail}")
-        return answer
+        return response.headers, answer
 
     def _connection(self) -> _Connection:
         """The connection to send on, remade first if it has been idle too long.
@@ -438,6 +562,28 @@ class HttpTransport:
                 conn.close()
             except OSError:
                 pass
+
+
+def _multipart(
+    request: bytes, attachments: Mapping[str, bytes]
+) -> tuple[str, bytes]:
+    """The command and its bytes as one `multipart/form-data` body.
+
+    Hand-rolled because the editor's parser is: CRLF everywhere, a name on
+    every part, the closing boundary required. The boundary is random so it
+    cannot appear in a part it is meant to delimit.
+    """
+    boundary = f"catchlight{uuid.uuid4().hex}"
+    body = bytearray()
+    for name, data in (("request", request), *attachments.items()):
+        if '"' in name or "\r" in name or "\n" in name:
+            raise TransportError(f"attachment name {name!r} cannot go in a part header")
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        body += data
+        body += b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    return f"multipart/form-data; boundary={boundary}", bytes(body)
 
 
 def _loopback_authority(url: str) -> tuple[str, int]:

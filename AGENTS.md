@@ -168,10 +168,12 @@ that enforces them, not here. Add new ones there.
   inside the command that uses them, each session draws its own
   Ids, the editor traces a part's alpha; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the HTTP
-  transport, why loopback is not a permission, the token before the body, and
-  on `POST /request` a status is the listener and a refusal is a 200;
-  `storage.rs` — a `path` is a storage key, a relative one resolves against
-  the store root, and an upload is not a file on disk
+  transport, why loopback is not a permission, the token before the body,
+  bytes cross on `POST /request` and nowhere else, and on `POST /request` a
+  status is the listener and a refusal is a 200; `transport.rs` — the socket
+  carries paths and never bytes, a file it cannot read is answered, a payload
+  needs an `out`; `storage.rs` — a `path` is a storage key, a relative one
+  resolves against the store root, and an upload is not a file on disk
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording
   never authors
 - `crates/catchlight-editor/src/mesh_edit.rs` — when the slot tool is
@@ -184,7 +186,8 @@ that enforces them, not here. Add new ones there.
   and one wgpu across the workspace (also `Cargo.toml`, at the `glam` / `wgpu`
   workspace deps)
 - `crates/catchlight-editor-wasm/src/lib.rs` — one door, the same protocol,
-  where the browser's asynchrony stops, and Rust never calls JavaScript
+  bytes cross once inside the command that uses them, where the browser's
+  asynchrony stops, and Rust never calls JavaScript
 - `crates/catchlight-editor-wasm/src/replica.rs` — the revision moves forward
   only, the two ways the document changes and neither is local, pose and
   scratch never reach the model, gizmo math lives here
@@ -229,7 +232,9 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 - `cargo run -p catchlight-wgpu --example load-model -- <model.clm> [--control]` —
   winit viewer with optional per-param sliders.
 - `cargo run -p catchlight-editor [-- <model.clm>]` — the editor GUI.
-- `cargo run -p catchlight-editor-cli` — thin client for an editor session.
+- `cargo run -p catchlight-editor-cli` — thin client for an editor session;
+  its `preview --out <png>` names the path the server writes the frame to,
+  since the two share a filesystem.
 - `cargo run -p catchlight-editor-server -- [--socket <path>] [--store <dir>] --http 127.0.0.1:9377 --allow-origin http://localhost:5173 [<model.clm>]`
   — the local editor a browser tab and an agent drive together; prints its URL
   and per-launch token. `--socket` gives a harness a socket of its own and

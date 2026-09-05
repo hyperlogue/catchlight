@@ -28,29 +28,42 @@ Invariants this module enforces:
   script's directory. Every convenience method here makes the path absolute, so
   the two agree without either having to know the other's working directory.
 
-- **Bytes go where the store is.** Over the socket the editor reads the very
-  filesystem this script is on, so a texture is a path and a save is a save.
-  Over HTTP it is somewhere else: a texture is staged with `PUT /files/…` and
-  then named, and a save is the document fetched back and written here.
+- **Bytes go where the store is.** A *stored* file is still the store's: over
+  the socket the editor reads the very filesystem this script is on, so a save
+  is a save; over HTTP the store is somewhere else, so a save is the document
+  fetched back and written here.
+
+- **Bytes a command needs travel with it.** An image, a `.clm`, a manifest and
+  its textures are read here and handed to `send_with`, which puts them beside
+  the command whichever door is underneath. Nothing is staged first, so there
+  is no key to name, no upload to clean up, and the same call works over both
+  transports.
 """
 
 from __future__ import annotations
 
+import json
 import os
-import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 from .protocol_gen import (
+    Camera,
     Command,
     CommandKind,
     ErrorCode,
+    ImportFile,
+    ImportManifest,
     NodeAdd,
     NodeKindArg,
     NodeId,
+    ParamPose,
+    Preview,
     ReplyErr,
     ReplyOk,
     ResponseBody,
     ResponseBodyNode,
+    ResponseBodyPreview,
     ResponseBodySaved,
     ResponseBodySession,
     ResponseBodyTexture,
@@ -61,6 +74,7 @@ from .protocol_gen import (
     SessionOpen,
     TexId,
     TextureAdd,
+    TextureEncoding,
     parse_reply,
 )
 from .transport import ByteTransport, Transport
@@ -110,6 +124,29 @@ class Client:
             )
         self._record(command, reply)
         return reply.body
+
+    def send_with(
+        self,
+        command: Command,
+        attachments: Mapping[str, bytes] | None = None,
+    ) -> tuple[ResponseBody, bytes | None]:
+        """[`Client.send`] for a command that carries bytes.
+
+        The attachments go beside the command and the payload comes back beside
+        the reply, whichever door the transport is; what the framing looks like
+        is [`catchlight.transport`]'s business and differs between the two.
+        """
+        wire, payload = self._transport.request_with(command.to_wire(), attachments)
+        reply = parse_reply(wire)
+        if isinstance(reply, ReplyErr):
+            raise ProtocolError(reply.code, reply.message)
+        if not isinstance(reply, ReplyOk):
+            raise ProtocolError(
+                ErrorCode.BAD_REQUEST,
+                f"expected a reply to {type(command).CMD}, got an event",
+            )
+        self._record(command, reply)
+        return reply.body, payload
 
     def revision(self, session: SessionId) -> int | None:
         """The revision this client's last reply reported for `session`."""
@@ -200,22 +237,116 @@ class Client:
     ) -> TexId:
         """Give `node` the image at `path`, and return the texture's Id.
 
-        Over the socket the editor opens the file itself. Over HTTP it cannot,
-        so the bytes are staged under a key first and the command names that
-        key; the key keeps the file's extension, which is what the editor reads
-        the encoding from.
+        The bytes are read here and travel with the command, over either door.
+        The encoding is decided here too, from the file's suffix, because it is
+        a field on the command now rather than something the editor sniffs off
+        a key.
         """
         source = Path(_absolute(path))
-        transport = self._transport
-        if isinstance(transport, ByteTransport):
-            key = f"upload/{uuid.uuid4().hex}{source.suffix}"
-            transport.put_file(key, source.read_bytes())
-        else:
-            key = str(source)
-        body = self.send(TextureAdd(session=session, node=node, path=key))
+        body, _ = self.send_with(
+            TextureAdd(
+                session=session,
+                node=node,
+                encoding=_encoding_of(source),
+            ),
+            {"texture": source.read_bytes()},
+        )
         if not isinstance(body, ResponseBodyTexture):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"texture_add answered {body!r}")
         return body.texture
+
+    # -- import
+
+    def import_file(
+        self,
+        session: SessionId,
+        path: str | os.PathLike[str],
+        parent: NodeId | None = None,
+    ) -> None:
+        """Import the `.clm` at `path` into `session`.
+
+        `parent` absent replaces the session's whole model, which needs a
+        session that is still empty — `new()` and then this. `parent` present
+        installs the document's roots under that node instead.
+        """
+        self.send_with(
+            ImportFile(session=session, parent=parent),
+            {"model": Path(_absolute(path)).read_bytes()},
+        )
+
+    def import_manifest(
+        self,
+        session: SessionId,
+        manifest_path: str | os.PathLike[str],
+    ) -> None:
+        """Build `session`'s model from the manifest at `manifest_path`.
+
+        The manifest and every image it names travel with the command. A
+        texture reference is resolved against the manifest's own directory —
+        which is what the reference means — and attached under `texture:<ref>`,
+        spelled exactly as the manifest spells it.
+        """
+        source = Path(_absolute(manifest_path))
+        manifest = source.read_bytes()
+        attachments: dict[str, bytes] = {"manifest": manifest}
+        for reference in _texture_references(manifest, source):
+            attachments[f"texture:{reference}"] = (source.parent / reference).read_bytes()
+        self.send_with(ImportManifest(session=session), attachments)
+
+    # -- rendering
+
+    def preview(
+        self,
+        session: SessionId,
+        pose: Mapping[str, float] | None = None,
+        size: tuple[int, int] | None = None,
+        camera: Camera | None = None,
+        out: str | os.PathLike[str] | None = None,
+    ) -> bytes:
+        """Render one frame of `session` and return the PNG.
+
+        `camera` absent frames the editor's default; what any tab is looking at
+        is never consulted, so this answers the same whoever else is connected.
+        `out` writes the bytes here as well as returning them.
+        """
+        body, payload = self.send_with(
+            Preview(
+                session=session,
+                pose=[ParamPose(param=p, value=v) for p, v in (pose or {}).items()],
+                size=size,
+                camera=camera,
+            )
+        )
+        if not isinstance(body, ResponseBodyPreview) or payload is None:
+            raise ProtocolError(
+                ErrorCode.BAD_REQUEST, f"preview answered {body!r} with no png"
+            )
+        if out is not None:
+            Path(_absolute(out)).write_bytes(payload)
+        return payload
+
+
+def _encoding_of(path: Path) -> TextureEncoding:
+    """How to read an image, from its suffix. The client's call now: the
+    command carries the encoding as a field."""
+    if path.suffix.lower() == ".tga":
+        return TextureEncoding.TGA
+    return TextureEncoding.PNG
+
+
+def _texture_references(manifest: bytes, source: Path) -> list[str]:
+    """Every `path` the manifest's textures name, verbatim.
+
+    Verbatim is the point: the editor matches an attachment to a reference by
+    the string the manifest spells, so normalising one here would name a
+    texture the manifest never asked for.
+    """
+    try:
+        document = json.loads(manifest)
+    except ValueError as err:
+        raise ProtocolError(ErrorCode.MANIFEST, f"{source}: {err}") from err
+    textures = document.get("textures", []) if isinstance(document, dict) else []
+    return [t["path"] for t in textures if isinstance(t, dict) and "path" in t]
 
 
 def _absolute(path: str | os.PathLike[str]) -> str:

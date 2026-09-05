@@ -2577,6 +2577,21 @@ fn names_its_bytes_another_way(cmd: &Command) -> bool {
     matches!(cmd, Command::TextureAdd { path: Some(_), .. })
 }
 
+/// What bytes *this* command actually carries, or `None` if it carries none.
+///
+/// [`COMMAND_BYTES`] says what a command may carry; this says what the one in
+/// hand does. The difference is the transitional forms — a
+/// [`Command::TextureAdd`] naming a `path` reads its image through the store
+/// and so needs nothing beside it — and it disappears when that field does.
+///
+/// The one question every transport asks, phrased once. A transport that
+/// cannot carry bytes refuses anything this answers `Some` for with
+/// [`ErrorCode::BulkOverHttp`]; one that can reads the row to know what to
+/// frame in, and whether a payload is coming back.
+pub fn carries_bytes(cmd: &Command) -> Option<&'static Bytes> {
+    cmd.bytes().filter(|_| !names_its_bytes_another_way(cmd))
+}
+
 fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
         CoreTextureEncoding::Tga
