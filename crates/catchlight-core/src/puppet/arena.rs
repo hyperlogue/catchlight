@@ -9,7 +9,7 @@
 //!
 //! The arena holds the *evaluated frame* — each node's working transform,
 //! z order, colour and deform stack — plus what is baked once from the model
-//! it came from: mesh-group attachments, the triangle bitmap, and the base
+//! it came from: mesh-group pins, the triangle bitmap, and the base
 //! matrices the transform walk reuses when a node has no delta this frame.
 //! What it does not hold is a pose: a fold writes into the arena, but which
 //! fold to run and at what values is the owning runtime's business. That is
@@ -232,7 +232,7 @@ impl Arena {
         self.physics_ancestor_mask = None;
     }
 
-    pub(crate) fn rebuild_all_mesh_group_attachments(&mut self) {
+    pub(crate) fn rebuild_all_mesh_group_pins(&mut self) {
         self.reset_dynamic_state();
         self.reset_deforms();
         if self.mesh_group_node_ids.is_empty() {
@@ -244,8 +244,7 @@ impl Arena {
             .mesh_group_node_ids
             .iter()
             .map(|&id| {
-                let attachments =
-                    crate::meshgroup::bake_mesh_group_attachments(self, &transforms, id);
+                let pins = crate::meshgroup::bake_mesh_group_pins(self, &transforms, id);
                 let bitmap = self
                     .nodes
                     .get(id.0 as usize)
@@ -255,14 +254,14 @@ impl Arena {
                         }
                         _ => None,
                     });
-                (id, attachments, bitmap)
+                (id, pins, bitmap)
             })
             .collect();
-        for (id, attachments, bitmap) in baked {
+        for (id, pins, bitmap) in baked {
             if let Some(crate::NodeKind::MeshGroup(mesh_group)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             {
-                mesh_group.attachments = attachments;
+                mesh_group.pins = pins;
                 mesh_group.bitmap = bitmap;
             }
         }

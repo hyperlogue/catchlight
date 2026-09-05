@@ -28,13 +28,13 @@ use std::collections::HashMap;
 /// from current globals (see `propagate_mesh_group_deforms`), because
 /// params that drive transforms would make load-time values stale.
 #[derive(Debug, Clone)]
-pub(crate) struct ChildAttachment {
+pub(crate) struct ChildPins {
     pub(crate) vertices: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct MeshGroupAttachments {
-    pub(crate) per_child: HashMap<NodeIdx, ChildAttachment>,
+pub(crate) struct MeshGroupPins {
+    pub(crate) per_child: HashMap<NodeIdx, ChildPins>,
 }
 
 /// O(1) point-in-triangle lookup baked at load time. Each cell stores
@@ -240,9 +240,9 @@ fn find_triangle_strict_hint(
     None
 }
 
-/// Meshed descendants that receive this MG's vertex-level deform
-/// attachments: recurse into Parts and Composites, collect Parts and
-/// nested MGs, and stop at each nested MG. The outer deform reaches an inner
+/// Meshed descendants that receive this MG's vertex-level deform pins:
+/// recurse into Parts and Composites, collect Parts and nested MGs,
+/// and stop at each nested MG. The outer deform reaches an inner
 /// MG's children transitively through the pre-order propagation pass. Binding
 /// those children directly to the outer MG would apply its deform twice.
 /// Descendants without a mesh, under a `translateChildren=true` MG, receive a
@@ -326,16 +326,16 @@ pub(crate) fn affine2_from_mat4(m: Mat4) -> Affine2 {
 /// 2x2 so `propagate_mesh_group_deforms` can apply MG-local offsets as
 /// child-local offsets the renderer can add to child vertices in
 /// child-local space. Without this, any MG whose children don't share
-/// its local frame produces misplaced attachments and offsets applied in
+/// its local frame produces misplaced pins and offsets applied in
 /// the wrong basis, which shows up as dramatic distortion when a deform
 /// param drives those MGs. `transforms` is the arena's load-time
 /// GlobalTransforms; callers should compute it immediately before baking.
-pub(crate) fn bake_mesh_group_attachments(
+pub(crate) fn bake_mesh_group_pins(
     arena: &Arena,
     transforms: &GlobalTransforms,
     mesh_group_id: NodeIdx,
-) -> MeshGroupAttachments {
-    let mut out = MeshGroupAttachments::default();
+) -> MeshGroupPins {
+    let mut out = MeshGroupPins::default();
     let Some(mg_node) = arena.get(mesh_group_id) else {
         return out;
     };
@@ -375,7 +375,7 @@ pub(crate) fn bake_mesh_group_attachments(
             );
         }
         if !vertices.is_empty() {
-            out.per_child.insert(child_id, ChildAttachment { vertices });
+            out.per_child.insert(child_id, ChildPins { vertices });
         }
     }
 
@@ -484,7 +484,7 @@ pub(crate) fn propagate_mesh_group_deforms(arena: &mut Arena, transforms: &Globa
             let NodeKind::MeshGroup(mg) = &node.kind else {
                 continue;
             };
-            child_ids.extend(mg.attachments.per_child.keys().copied());
+            child_ids.extend(mg.pins.per_child.keys().copied());
 
             // Pre-compute mg_vertices[i] + mg_combined[i] once per MG;
             // reused across every child of this MG. Several children
@@ -738,7 +738,7 @@ fn propagate_to_child(
         let NodeKind::MeshGroup(mg) = &mg_node.kind else {
             return;
         };
-        let Some(attachment) = mg.attachments.per_child.get(&child_id) else {
+        let Some(pins) = mg.pins.per_child.get(&child_id) else {
             return;
         };
 
@@ -786,7 +786,7 @@ fn propagate_to_child(
             let tri_idx = match bitmap {
                 Some(bm) => bm.lookup(cv_mg_local),
                 None => {
-                    let hint = attachment.vertices.get(i).copied().unwrap_or(0);
+                    let hint = pins.vertices.get(i).copied().unwrap_or(0);
                     find_triangle_strict_hint(&mg_local, mg_indices, cv_mg_local, hint)
                 }
             };
@@ -1020,14 +1020,14 @@ mod tests {
             },
         );
 
-        // Bake the attachments and install them.
+        // Bake the pins and install them.
         let mut tx = GlobalTransforms::new();
         arena.compute_transforms(&mut tx);
-        let attachments = bake_mesh_group_attachments(&arena, &tx, mg_id);
-        assert!(attachments.per_child.contains_key(&child_id));
+        let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
+        assert!(pins.per_child.contains_key(&child_id));
         if let Some(node) = arena.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.attachments = attachments;
+                mg.pins = pins;
             }
         }
 
@@ -1116,11 +1116,11 @@ mod tests {
 
             let mut tx = GlobalTransforms::new();
             arena.compute_transforms(&mut tx);
-            let attachments = bake_mesh_group_attachments(&arena, &tx, mg_id);
+            let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
             if let Some(node) = arena.get_mut(mg_id) {
                 if let NodeKind::MeshGroup(mg) = &mut node.kind {
                     mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
-                    mg.attachments = attachments;
+                    mg.pins = pins;
                     // Non-linear MG deform: vertex 1 +(2,0), vertex 2 +(4,0).
                     mg.deform_stack
                         .set(
@@ -1248,20 +1248,20 @@ mod tests {
         // binds the grandchild Part directly.
         let mut tx = GlobalTransforms::new();
         arena.compute_transforms(&mut tx);
-        let outer_attachments = bake_mesh_group_attachments(&arena, &tx, outer_id);
-        let inner_attachments = bake_mesh_group_attachments(&arena, &tx, inner_id);
-        assert!(!outer_attachments.per_child.contains_key(&part_id));
-        assert!(inner_attachments.per_child.contains_key(&part_id));
-        assert!(outer_attachments.per_child.contains_key(&inner_id));
+        let outer_pins = bake_mesh_group_pins(&arena, &tx, outer_id);
+        let inner_pins = bake_mesh_group_pins(&arena, &tx, inner_id);
+        assert!(!outer_pins.per_child.contains_key(&part_id));
+        assert!(inner_pins.per_child.contains_key(&part_id));
+        assert!(outer_pins.per_child.contains_key(&inner_id));
 
         if let Some(node) = arena.get_mut(outer_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.attachments = outer_attachments;
+                mg.pins = outer_pins;
             }
         }
         if let Some(node) = arena.get_mut(inner_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.attachments = inner_attachments;
+                mg.pins = inner_pins;
             }
         }
 
@@ -1416,15 +1416,15 @@ mod tests {
 
         let mut tx = GlobalTransforms::new();
         arena.compute_transforms(&mut tx);
-        let outer_attachments = bake_mesh_group_attachments(&arena, &tx, outer_id);
-        let inner_attachments = bake_mesh_group_attachments(&arena, &tx, inner_id);
-        assert!(outer_attachments.per_child.contains_key(&inner_id));
+        let outer_pins = bake_mesh_group_pins(&arena, &tx, outer_id);
+        let inner_pins = bake_mesh_group_pins(&arena, &tx, inner_id);
+        assert!(outer_pins.per_child.contains_key(&inner_id));
 
         // Drive the OUTER only: move its vertex 2 (10,10) by (+4,0).
         if let Some(node) = arena.get_mut(outer_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
                 mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
-                mg.attachments = outer_attachments;
+                mg.pins = outer_pins;
                 mg.deform_stack
                     .set(
                         DeformSource::Param(0),
@@ -1435,7 +1435,7 @@ mod tests {
         }
         if let Some(node) = arena.get_mut(inner_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.attachments = inner_attachments;
+                mg.pins = inner_pins;
             }
         }
 
@@ -1536,16 +1536,13 @@ mod tests {
 
         let mut tx = GlobalTransforms::new();
         arena.compute_transforms(&mut tx);
-        let attachments = bake_mesh_group_attachments(&arena, &tx, mg_id);
-        let attachment = attachments
-            .per_child
-            .get(&child_id)
-            .expect("child attachments present");
+        let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
+        let child_pins = pins.per_child.get(&child_id).expect("child pins present");
         // Center of tri 0 (verts 0,1,2), whose baryc is (0, 0.5, 0.5).
-        assert_eq!(attachment.vertices[0], 0, "should fall inside triangle 0");
+        assert_eq!(child_pins.vertices[0], 0, "should fall inside triangle 0");
         if let Some(node) = arena.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.attachments = attachments;
+                mg.pins = pins;
                 // Move MG vertex 2 (at (10,10)) by (+4,0). Child at
                 // barycentric (0, 0.5, 0.5) picks up 0.5*(4,0) = (2,0).
                 mg.deform_stack
@@ -1608,7 +1605,7 @@ mod tests {
 
         // Child vertex (5, -5) child-local. After +90° z-rotation, it
         // maps to (5, 5) MG-local, which sits inside the MG mesh (the
-        // strict-inside attachment requires this; out-of-bounds vertices produce
+        // strict-inside pin requires this; out-of-bounds vertices produce
         // zero offset).
         let child_part = PartData {
             mesh: Mesh::new(
@@ -1638,12 +1635,12 @@ mod tests {
 
         let mut tx = GlobalTransforms::new();
         arena.compute_transforms(&mut tx);
-        let attachments = bake_mesh_group_attachments(&arena, &tx, mg_id);
-        let attachment = attachments.per_child.get(&child_id).unwrap().clone();
+        let pins = bake_mesh_group_pins(&arena, &tx, mg_id);
+        let child_pins = pins.per_child.get(&child_id).unwrap().clone();
 
         if let Some(node) = arena.get_mut(mg_id) {
             if let NodeKind::MeshGroup(mg) = &mut node.kind {
-                mg.attachments.per_child.insert(child_id, attachment);
+                mg.pins.per_child.insert(child_id, child_pins);
                 // Set MG deforms so barycentric sum at the child vertex
                 // yields (1, 0) in MG-local.
                 mg.deform_stack

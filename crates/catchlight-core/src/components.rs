@@ -256,9 +256,9 @@ pub struct MeshGroupData {
     pub mesh: Mesh,
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
-    pub(crate) attachments: crate::meshgroup::MeshGroupAttachments,
+    pub(crate) pins: crate::meshgroup::MeshGroupPins,
     /// O(1) point-in-triangle bitmap baked from `mesh` at load time
-    /// (alongside `attachments`). `None` when the mesh is empty or
+    /// (alongside `pins`). `None` when the mesh is empty or
     /// degenerate; the propagation path then falls back to the linear
     /// hinted scan.
     pub(crate) bitmap: Option<crate::meshgroup::MgTriangleBitmap>,
@@ -270,7 +270,7 @@ impl Default for MeshGroupData {
             mesh: Mesh::default(),
             translate_children: true,
             deform_stack: crate::deform::DeformStack::default(),
-            attachments: crate::meshgroup::MeshGroupAttachments::default(),
+            pins: crate::meshgroup::MeshGroupPins::default(),
             bitmap: None,
         }
     }
