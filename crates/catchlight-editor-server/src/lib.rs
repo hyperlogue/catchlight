@@ -104,6 +104,7 @@ use catchlight_core::formats::clm::{
     self as clm, ClmIndices, ClmMesh, TextureAlpha, TextureEncoding as CoreTextureEncoding,
 };
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
+use catchlight_core::LoadBudget;
 
 use catchlight_core::Vec2;
 use catchlight_core::{
@@ -1881,6 +1882,15 @@ impl Editor {
                 let bytes = attachments.take("model").unwrap_or_default();
                 self.import_file(session, parent, bytes)
             }
+            Command::ImportJson {
+                session,
+                parent,
+                textures,
+            } => {
+                let document = attachments.take("document").unwrap_or_default();
+                let images = attachments.take_family("texture");
+                self.import_json(session, parent, textures, document, images)
+            }
             Command::ImportManifest { session } => {
                 let manifest = attachments.take("manifest").unwrap_or_default();
                 let textures = attachments.take_family("texture");
@@ -1908,15 +1918,62 @@ impl Editor {
         parent: Option<NodeId>,
         bytes: Vec<u8>,
     ) -> Result<ResponseBody, EditorError> {
+        // One budget across the decode and the read, as `from_clm_bytes` has
+        // always had: the two halves of reading one file are charged together.
+        let mut budget = LoadBudget::default();
+        let file = clm::decode_with_budget(&bytes, &mut budget).map_err(ModelError::from)?;
+        self.import_clm(session, parent, file, &mut budget)
+    }
+
+    /// [`Command::ImportJson`]: a structure document as JSON, its textures
+    /// attached beside it.
+    ///
+    /// The same two paths [`Self::import_file`] takes, reached from a
+    /// different envelope. Everything specific to this command happens before
+    /// they start: parse the document, pair each declared texture with the
+    /// attachment carrying it, and refuse either side naming what is missing.
+    fn import_json(
+        &self,
+        session: SessionId,
+        parent: Option<NodeId>,
+        textures: Vec<ImportTexture>,
+        document: Vec<u8>,
+        images: Vec<(String, Vec<u8>)>,
+    ) -> Result<ResponseBody, EditorError> {
+        let file = clm_file_from_json(&document, &textures, images)?;
+        self.import_clm(session, parent, file, &mut LoadBudget::default())
+    }
+
+    /// The whole of what an import does once the model is a [`ClmFile`],
+    /// however it arrived.
+    ///
+    /// Without a `parent` the document has to be a complete model and the
+    /// session's has to be pristine, and the session's model is *replaced* —
+    /// keeping its identity, so the puppet and the render cache built on it
+    /// rebake rather than refuse. With a `parent` every root of the document
+    /// is re-parented onto that node and the whole thing goes through
+    /// [`Model::install`], which is atomic: Ids verbatim, a collision or a
+    /// missing requirement refused with nothing moved.
+    ///
+    /// The session's `file` stays whatever it was. Imported bytes are not a
+    /// file on disk, so a bare `save` on a session that only ever imported
+    /// still refuses with [`EditorError::NoSavePath`].
+    fn import_clm(
+        &self,
+        session: SessionId,
+        parent: Option<NodeId>,
+        file: clm::ClmFile,
+        budget: &mut LoadBudget,
+    ) -> Result<ResponseBody, EditorError> {
         match parent {
             None => {
-                let incoming = Model::from_clm_bytes(&bytes)?;
+                let incoming = Model::from_clm_file_with_budget(&file, budget)?;
                 self.replace_pristine(session, incoming, None)
             }
             Some(parent) => {
                 // A parent the session does not carry needs no check here:
                 // install reports it as the requirement it is.
-                let addon = fragment_under(&bytes, &parent)?;
+                let addon = fragment_under(file, &parent)?;
                 self.edit_session(session, |s| {
                     s.model.install(&addon)?;
                     s.touch();
@@ -2396,11 +2453,68 @@ fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
 /// The encoding a storage key's extension implies. A key is opaque to
 /// everything else; this is the one place its tail is read, and only to
 /// pick a decoder.
-/// Read `.clm` bytes as a fragment whose every root hangs from `parent`.
+/// Build a [`clm::ClmFile`] from a JSON structure document and the images
+/// that came with it.
+///
+/// Two pairings have to hold and both are the client's to get right, so both
+/// are refused here naming what is wrong: every declared texture needs its
+/// attachment, and every attachment needs a declaration. A texture the
+/// *document* references but nobody declared is left to the reader, which
+/// already refuses a dangling albedo by Id — one check, in the one place that
+/// knows what a document references.
+fn clm_file_from_json(
+    document: &[u8],
+    textures: &[ImportTexture],
+    images: Vec<(String, Vec<u8>)>,
+) -> Result<clm::ClmFile, EditorError> {
+    let json = std::str::from_utf8(document).map_err(|e| {
+        EditorError::BadRequest(format!("the document attachment is not UTF-8: {e}"))
+    })?;
+    let doc: clm::ClmDocument = serde_json::from_str(json).map_err(|e| {
+        EditorError::BadRequest(format!("the document is not a .clm document: {e}"))
+    })?;
+
+    let mut attached: HashMap<String, Vec<u8>> = images.into_iter().collect();
+    let mut table = Vec::with_capacity(textures.len());
+    for want in textures {
+        let data = attached.remove(want.texture.as_str()).ok_or_else(|| {
+            EditorError::BadRequest(format!(
+                "texture {:?} was declared but no attachment texture:{} arrived",
+                want.texture.as_str(),
+                want.texture
+            ))
+        })?;
+        table.push(clm::ClmTexture {
+            id: want.texture.clone(),
+            encoding: want.encoding.into(),
+            alpha: want.alpha.into(),
+            data,
+        });
+    }
+    // Whatever is left named a texture the command did not declare. Silently
+    // dropping it would import a model missing an image the client thought it
+    // had sent.
+    if let Some(stray) = attached.keys().min() {
+        return Err(EditorError::BadRequest(format!(
+            "attachment texture:{stray} names no texture this import declared"
+        )));
+    }
+
+    Ok(clm::ClmFile {
+        doc,
+        textures: table,
+        // A byte extension's payload lives in a container section, and a JSON
+        // document has none; a marker with no bytes is refused by key when
+        // the file is read. Set such an extension after the import.
+        extensions: Vec::new(),
+    })
+}
+
+/// Read a decoded `.clm` as a fragment whose every root hangs from `parent`.
 ///
 /// The two shapes are disjoint on the wire — a complete model has exactly one
-/// parentless node and a fragment has none — so this decodes once and re-parents
-/// at the document, before either reader sees it: a node whose named parent the
+/// parentless node and a fragment has none — so this re-parents at the
+/// document, before either reader sees it: a node whose named parent the
 /// document does not itself carry is one of its roots, and a complete model's
 /// root, which names no parent at all, is the same thing. Both then read as a
 /// fragment, and [`Model::install`] applies the same checks to either.
@@ -2408,8 +2522,7 @@ fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
 /// The `parent` on the wire wins over whatever a fragment's roots name: a
 /// client says where a subtree goes, and an addon authored against another
 /// base does not get to say it instead.
-fn fragment_under(bytes: &[u8], parent: &NodeId) -> Result<Model, EditorError> {
-    let mut file = clm::decode(bytes).map_err(ModelError::from)?;
+fn fragment_under(mut file: clm::ClmFile, parent: &NodeId) -> Result<Model, EditorError> {
     let carried: std::collections::HashSet<&NodeId> =
         file.doc.nodes.iter().map(|n| &n.id).collect();
     let roots: Vec<usize> = file

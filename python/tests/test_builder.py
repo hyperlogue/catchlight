@@ -31,6 +31,7 @@ from catchlight import (
     build_from_layers,
     write_layers,
 )
+from catchlight.client import ProtocolError
 from catchlight.protocol_gen import (
     NodeInfo,
     ResponseBodyBindings,
@@ -183,6 +184,41 @@ def test_a_key_outside_the_params_range_names_the_param(
     with pytest.raises(BuilderError) as raised:
         built.bind(param, part, ScalarTarget.TY, [(2.0, 0.5)])
     assert param in str(raised.value) and "does not reach 2.0" in str(raised.value)
+
+
+def test_a_deform_binding_authors_a_cell_per_key(
+    client: Client, tmp_path: Path
+) -> None:
+    """A deform grid is keyed by key index, and the first cell authored is
+    what creates the binding."""
+    built = Builder.new(client)
+    part = built.part("Body", write_png(tmp_path / "body.png"))
+    built.mesh(part)
+    param = built.param("Pull", min=0.0, max=1.0, default=0.0)
+
+    vertices, _ = built.mesh_size(part)
+    rest = [(0.0, 0.0)] * vertices
+    pulled = [(4.0, 0.0)] * vertices
+    built.bind_deform(param, part, {0: rest, 1: pulled})
+
+    bindings = built.client.send(BindingList(session=built.session, node=part))
+    assert isinstance(bindings, ResponseBodyBindings)
+    (binding,) = bindings.bindings
+    assert binding.target == "deform"
+    assert binding.authored == [[True, True]]
+
+
+def test_a_deform_cell_of_the_wrong_length_is_refused(
+    client: Client, tmp_path: Path
+) -> None:
+    """Every cell is the whole mesh, so a short one is not a partial edit."""
+    built = Builder.new(client)
+    part = built.part("Body", write_png(tmp_path / "body.png"))
+    built.mesh(part)
+    param = built.param("Pull", min=0.0, max=1.0, default=0.0)
+
+    with pytest.raises(ProtocolError):
+        built.bind_deform(param, part, {0: [(1.0, 1.0)]})
 
 
 def _placement(root: Path) -> Placement:

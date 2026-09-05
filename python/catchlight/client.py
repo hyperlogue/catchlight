@@ -44,8 +44,9 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 from .protocol_gen import (
     Camera,
@@ -53,7 +54,9 @@ from .protocol_gen import (
     CommandKind,
     ErrorCode,
     ImportFile,
+    ImportJson,
     ImportManifest,
+    ImportTexture,
     NodeAdd,
     NodeKindArg,
     NodeId,
@@ -74,6 +77,7 @@ from .protocol_gen import (
     SessionOpen,
     TexId,
     TextureAdd,
+    TextureAlpha,
     TextureEncoding,
     parse_reply,
 )
@@ -272,6 +276,53 @@ class Client:
         self.send_with(
             ImportFile(session=session, parent=parent),
             {"model": Path(_absolute(path)).read_bytes()},
+        )
+
+    def import_json(
+        self,
+        session: SessionId,
+        document: Mapping[str, Any] | str,
+        textures: Mapping[str, str | os.PathLike[str]]
+        | Iterable[tuple[str, str | os.PathLike[str]]] = (),
+        parent: NodeId | None = None,
+        alpha: TextureAlpha = TextureAlpha.STRAIGHT,
+    ) -> None:
+        """Import a `.clm` structure document as JSON, with its images.
+
+        `document` is the structure as the format's serde spells it, either a
+        dict this encodes or a string already encoded. `textures` maps each
+        texture Id the document names to the image file holding it; the
+        encoding comes from each file's suffix the way `add_texture` decides
+        it, and `alpha` says what every one of them means by its alpha channel
+        (straight, which is what an editor writes).
+
+        `parent` absent replaces the session's whole model, which needs a
+        session that is still empty. `parent` present installs the document's
+        roots under that node instead.
+
+        A byte extension has nowhere to travel here — its payload lives in a
+        container section a JSON document has none of — so set one after the
+        import rather than in the document.
+        """
+        body = document if isinstance(document, str) else json.dumps(document)
+        pairs = textures.items() if isinstance(textures, Mapping) else list(textures)
+
+        declared: list[ImportTexture] = []
+        attachments: dict[str, bytes] = {"document": body.encode()}
+        for texture, path in pairs:
+            source = Path(_absolute(path))
+            declared.append(
+                ImportTexture(
+                    texture=TexId(texture),
+                    encoding=_encoding_of(source),
+                    alpha=alpha,
+                )
+            )
+            attachments[f"texture:{texture}"] = source.read_bytes()
+
+        self.send_with(
+            ImportJson(session=session, parent=parent, textures=declared),
+            attachments,
         )
 
     def import_manifest(

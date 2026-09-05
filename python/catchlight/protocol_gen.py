@@ -1600,6 +1600,47 @@ class ImportFile:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ImportJson:
+    """Import a `.clm` **structure document as JSON**, with its textures
+    attached separately, into an open session.
+
+    The same operation as [`Command::ImportFile`] and the same two paths —
+    `parent` absent replaces a pristine session's model, `parent` present
+    installs the document's roots under that node — differing only in how
+    the model arrives. A client that is authoring a model rather than
+    forwarding a file has the structure in hand and the images beside it,
+    and this saves it building a container.
+
+    Attachment `document` is the structure document as JSON, spelled
+    exactly as the `.clm` format's serde spells it. Each entry of
+    `textures` names an image arriving as `texture:<texture>`; an entry
+    with no attachment, and a `texture:` attachment no entry names, are
+    both [`ErrorCode::BadRequest`] naming the id. A texture the document
+    *references* but `textures` does not list is the reader's own refusal,
+    the same one a `.clm` missing a payload gets.
+
+    **A JSON import carries no extension bytes.** A byte extension is a
+    `{size, hash}` marker in the document and its payload lives in a
+    section a JSON document has no room for, so a marker here is refused
+    by key. Import the document, then set the extension.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "import_json"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+
+    session: SessionId
+    parent: NodeId | None = None
+    # Every texture the attachments carry, in any order.
+    textures: list[ImportTexture] = field(default_factory=list)
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ImportManifest:
     """Build a model from a manifest and its images and replace the session's
     model with it.
@@ -1691,6 +1732,7 @@ Command = (
     | ScratchDeform
     | Preview
     | ImportFile
+    | ImportJson
     | ImportManifest
 )
 
@@ -1762,6 +1804,7 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "scratch_deform": ScratchDeform,
     "preview": Preview,
     "import_file": ImportFile,
+    "import_json": ImportJson,
     "import_manifest": ImportManifest,
 }
 
@@ -1846,6 +1889,7 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "scratch_deform": CommandKind.SCRATCH,
     "preview": CommandKind.SERVER_QUERY,
     "import_file": CommandKind.DOCUMENT,
+    "import_json": CommandKind.DOCUMENT,
     "import_manifest": CommandKind.DOCUMENT,
 }
 
@@ -1866,6 +1910,13 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
     "import_file": CommandBytes(
         (
             Attachment(AttachmentKind.FIXED, "model"),
+        ),
+        False,
+    ),
+    "import_json": CommandBytes(
+        (
+            Attachment(AttachmentKind.FIXED, "document"),
+            Attachment(AttachmentKind.FAMILY, "texture"),
         ),
         False,
     ),
@@ -1939,6 +1990,7 @@ DocumentCommand = (
     | Undo
     | Redo
     | ImportFile
+    | ImportJson
     | ImportManifest
 )
 
@@ -2068,6 +2120,18 @@ class TextureEncoding(StrEnum):
 
     PNG = "png"
     TGA = "tga"
+
+
+class TextureAlpha(StrEnum):
+    """What a texture's stored bytes mean by their alpha channel.
+
+    The bytes cannot say, so the command carrying them does. Straight is the
+    default because it is what an editor writes and what every PNG a person
+    exports holds; `.inx` textures are the premultiplied ones.
+    """
+
+    STRAIGHT = "straight"
+    PREMULTIPLIED_SRGB = "premultiplied_srgb"
 
 
 class ScalarTarget(StrEnum):
@@ -2391,6 +2455,22 @@ class ParamPose:
 
     param: ParamId
     value: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class ImportTexture:
+    """One texture an [`Command::ImportJson`] document names, and how to read the
+    bytes that came with it.
+
+    The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
+    fields rather than a sniff or a file-name tail, because a JSON document
+    names no files: the client that has the image is the only thing that knows
+    what it holds.
+    """
+
+    texture: TexId
+    encoding: TextureEncoding | None = None
+    alpha: TextureAlpha | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3217,6 +3297,7 @@ __all__ = [
     "ScratchDeform",
     "Preview",
     "ImportFile",
+    "ImportJson",
     "ImportManifest",
     "Command",
     "COMMAND_VARIANTS",
@@ -3237,6 +3318,7 @@ __all__ = [
     "Interpolate",
     "BlendMode",
     "TextureEncoding",
+    "TextureAlpha",
     "ScalarTarget",
     "BindingTarget",
     "NodePatch",
@@ -3256,6 +3338,7 @@ __all__ = [
     "BindingParams",
     "BindingKeyEntry",
     "ParamPose",
+    "ImportTexture",
     "SlotAddr",
     "SlotPair",
     "Presence",

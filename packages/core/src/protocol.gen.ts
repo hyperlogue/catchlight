@@ -541,6 +541,15 @@ export type Command =
     parent?: NodeId | null,
   }
   | {
+    "cmd": "import_json",
+    session: SessionId,
+    parent?: NodeId | null,
+    /**
+     * Every texture the attachments carry, in any order.
+     */
+    textures: Array<ImportTexture>,
+  }
+  | {
     "cmd": "import_manifest",
     session: SessionId,
   };
@@ -621,6 +630,17 @@ export type BlendMode =
 export type TextureEncoding =
   | "png"
   | "tga";
+
+/**
+ * What a texture's stored bytes mean by their alpha channel.
+ *
+ * The bytes cannot say, so the command carrying them does. Straight is the
+ * default because it is what an editor writes and what every PNG a person
+ * exports holds; `.inx` textures are the premultiplied ones.
+ */
+export type TextureAlpha =
+  | "straight"
+  | "premultiplied_srgb";
 
 /**
  * A property a binding drives with one number per cell.
@@ -861,6 +881,21 @@ export type BindingKeyEntry = {
 export type ParamPose = {
   param: ParamId,
   value: number,
+};
+
+/**
+ * One texture an [`Command::ImportJson`] document names, and how to read the
+ * bytes that came with it.
+ *
+ * The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
+ * fields rather than a sniff or a file-name tail, because a JSON document
+ * names no files: the client that has the image is the only thing that knows
+ * what it holds.
+ */
+export type ImportTexture = {
+  texture: TexId,
+  encoding: TextureEncoding,
+  alpha: TextureAlpha,
 };
 
 /**
@@ -1342,6 +1377,7 @@ export type DocumentCommandTag =
   | "undo"
   | "redo"
   | "import_file"
+  | "import_json"
   | "import_manifest";
 export type DocumentCommand = Extract<Command, { cmd: DocumentCommandTag }>;
 
@@ -1431,6 +1467,13 @@ export const COMMAND_BYTES: Record<
   import_file: {
     attachments: [
       { kind: "fixed", name: "model" },
+    ],
+    payload: false,
+  },
+  import_json: {
+    attachments: [
+      { kind: "fixed", name: "document" },
+      { kind: "family", name: "texture" },
     ],
     payload: false,
   },

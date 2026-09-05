@@ -107,3 +107,63 @@ def is_running(pid: int) -> bool:
     except PermissionError:  # pragma: no cover - someone else's process
         return True
     return True
+
+
+def minimal_document(texture: str = "tex-0") -> dict:
+    """A `.clm` structure document with one part, spelled as the format's
+    serde spells it.
+
+    Written out by hand rather than read back off a saved file, because that
+    is the shape `import_json` exists for: a client that *authored* a
+    structure and holds its images, with no container anywhere.
+    """
+    return {
+        "physics": {"pixels_per_meter": 1000.0, "gravity": 9.8},
+        "nodes": [
+            _node("root", None, "root", "Group"),
+            _node(
+                "node-1",
+                "root",
+                "Body",
+                {
+                    "Part": {
+                        "mesh": {
+                            "verts": [-16.0, 16.0, 16.0, 16.0, 16.0, -16.0, -16.0, -16.0],
+                            "uvs": [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+                            "indices": {"U16": [0, 1, 2, 0, 2, 3]},
+                            "origin": [0.0, 0.0],
+                        },
+                        "albedo": texture,
+                        "opacity": 1.0,
+                        "blend_mode": "Normal",
+                        "tint": [1.0, 1.0, 1.0],
+                        "screen_tint": [0.0, 0.0, 0.0],
+                        "masks": [],
+                        "mask_threshold": 0.5,
+                        "slots": [],
+                    }
+                },
+            ),
+        ],
+        "params": [],
+        "bindings": [],
+        "welds": [],
+        "animations": [],
+    }
+
+
+def _node(node_id: str, parent: str | None, name: str, kind: object) -> dict:
+    return {
+        "id": node_id,
+        "parent": parent,
+        "name": name,
+        "enabled": True,
+        "z_order": 0.0,
+        "transform": {
+            "translation": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0],
+        },
+        "lock_to_root": False,
+        "kind": kind,
+    }
