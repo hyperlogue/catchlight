@@ -237,6 +237,7 @@ impl EditorError {
                 InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,
                 InstallError::NotAnAddon { .. }
                 | InstallError::CarriesParam { .. }
+                | InstallError::CarriesExtension { .. }
                 | InstallError::BindsOffAddon { .. } => ErrorCode::Edit,
             },
             // The model refuses an edit for many reasons; the ones a client
