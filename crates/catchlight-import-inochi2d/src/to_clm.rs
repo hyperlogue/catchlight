@@ -560,7 +560,10 @@ fn convert_composite(
         screen_tint: vec3_arr(&s.screen_tint, [0.0, 0.0, 0.0]),
         masks: convert_masks(s.masks.as_deref().unwrap_or(&[]), node, refs),
         mask_threshold: s.mask_threshold.unwrap_or(0.5),
-        propagate_meshgroup: s.propagate_meshgroup.unwrap_or(true),
+        // An absent key means `false`, not the field initializer's `true`:
+        // the reference's `deserializeFromFghj` else-branch sets it false
+        // (inochi2d v0.8.7).
+        propagate_meshgroup: s.propagate_meshgroup.unwrap_or(false),
     })
 }
 
@@ -1096,5 +1099,62 @@ mod tests {
             "an authored propagate_meshgroup=false composite must be captured"
         );
         assert!(!doc.bindings.is_empty());
+    }
+
+    /// A minimal model whose one Composite carries the
+    /// `propagate_meshgroup` key exactly when `propagate` is `Some`.
+    fn composite_fixture(propagate: Option<bool>) -> InxModel {
+        let mut composite = json!({
+            "uuid": 2,
+            "name": "composite",
+            "type": "Composite",
+            "zsort": 0.0,
+            "children": []
+        });
+        if let Some(v) = propagate {
+            composite["propagate_meshgroup"] = json!(v);
+        }
+        InxModel {
+            payload: json!({
+                "nodes": {
+                    "uuid": 1,
+                    "name": "root",
+                    "type": "Node",
+                    "zsort": 0.0,
+                    "children": [composite]
+                }
+            }),
+            textures: Vec::new(),
+            vendors: Vec::new(),
+        }
+    }
+
+    /// The absent key is `false`. inochi2d v0.8.7 initializes the field to
+    /// `true`, but its `deserializeFromFghj` else-branch sets it `false`
+    /// instead, so a legacy model
+    /// authored before the key existed halts mesh-group descent there.
+    #[test]
+    fn propagate_meshgroup_defaults_to_false_when_the_key_is_absent() {
+        let propagate = |model: InxModel| {
+            from_inx_model(&model)
+                .unwrap()
+                .doc
+                .nodes
+                .iter()
+                .find_map(|n| match &n.kind {
+                    ClmNodeKind::Composite(c) => Some(c.propagate_meshgroup),
+                    _ => None,
+                })
+                .expect("the fixture holds one composite")
+        };
+        assert!(!propagate(composite_fixture(None)), "key absent");
+        assert!(
+            propagate(composite_fixture(Some(true))),
+            "key authored true"
+        );
+        assert!(
+            !propagate(composite_fixture(Some(false))),
+            "key authored false"
+        );
     }
 }
