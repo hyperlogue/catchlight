@@ -123,9 +123,23 @@ pub(crate) struct Arena {
     // host world-scale: pendulum length and gravity are loaded in
     // puppet-local units, so anchors must be in matching units.
     pub(crate) physics_transforms: GlobalTransforms,
-    /// Cached `physics_anchor_skip_allowed`. Depends only on tree
-    /// structure + node flags, so invalidated on `insert_child`.
-    physics_anchor_skip_cached: Option<bool>,
+    /// Per-node `translate_children` shift from the **previous** frame's
+    /// mesh-group pass, in the node's own parent space; zero for a node no
+    /// such group shifted. `meshgroup::shift_translate_children` overwrites
+    /// every target's entry each frame — the delta it applied, or zero for a
+    /// target it skipped — and the physics anchor pre-pass adds it back
+    /// (`apply_previous_tc_shifts`), so a driver anchored under a shifted
+    /// node samples the shifted place one frame late. A rebake builds a new
+    /// arena, so this starts at zero and never outlives the tree it measured.
+    tc_shift_deltas: Vec<glam::Vec2>,
+    /// How many entries of `tc_shift_deltas` are non-zero, so a model with no
+    /// shifted node costs nothing per frame.
+    tc_shift_nonzero: usize,
+    /// Whether any entry of `tc_shift_deltas` actually moved since the last
+    /// `take_tc_shift_changed`. The tick consumes it to force one more anchor
+    /// pre-pass, so a shift that has just appeared reaches the anchors even if
+    /// the pose then stands still.
+    tc_shift_changed: bool,
     /// Slots that are a SimplePhysics node or an ancestor of one — the
     /// only slots the physics pre-pass transform walk needs to fill (see
     /// `compute_physics_ancestor_transforms`). Invalidated on
@@ -158,7 +172,9 @@ impl Arena {
             physics_node_ids: Vec::new(),
             mesh_group_node_ids: Vec::new(),
             physics_transforms: GlobalTransforms::new(),
-            physics_anchor_skip_cached: None,
+            tc_shift_deltas: vec![glam::Vec2::ZERO],
+            tc_shift_nonzero: 0,
+            tc_shift_changed: false,
             physics_ancestor_mask: None,
         }
     }
@@ -228,7 +244,6 @@ impl Arena {
     /// Drop every cache that depends on tree shape or node kinds.
     pub(crate) fn invalidate_structure_caches(&mut self) {
         self.mg_pre_order_cache = None;
-        self.physics_anchor_skip_cached = None;
         self.physics_ancestor_mask = None;
     }
 
@@ -376,6 +391,7 @@ impl Arena {
         let is_physics = matches!(&node.kind, crate::NodeKind::SimplePhysics(_));
         self.base_local_matrix.push(node.base_transform.to_matrix());
         self.node_transform_dirty.push(false);
+        self.tc_shift_deltas.push(glam::Vec2::ZERO);
         self.nodes.push(node);
         if is_deform_node {
             self.deform_node_ids.push(id);
@@ -386,8 +402,8 @@ impl Arena {
         if is_physics {
             self.physics_node_ids.push(id);
         }
-        // A new node changes the physics ancestor set, the tc-target guard and
-        // the mesh-group pre-order.
+        // A new node changes the physics ancestor set and the mesh-group
+        // pre-order.
         self.invalidate_structure_caches();
         id
     }
@@ -493,7 +509,8 @@ impl Arena {
     ///
     /// The `local_only` branch uses `node.transform.translation`, including
     /// parameter-driven offsets from the anchor pre-pass rather than the
-    /// frozen load pose.
+    /// frozen load pose — and, for a node a mesh group shifts, the previous
+    /// frame's shift the pre-pass replayed (`apply_previous_tc_shifts`).
     pub(crate) fn physics_anchor(
         &self,
         transforms: &GlobalTransforms,
@@ -512,51 +529,80 @@ impl Arena {
         Some(crate::Vec2::new(anchor.x, -anchor.y))
     }
 
-    /// True when the physics pre-pass may be skipped on a settled frame.
-    ///
-    /// A skip frame ticks physics against the cached `physics_transforms`
-    /// and, for `local_only` anchors, against `node.transform.translation`
-    /// — which by then holds the last final apply's pose, including any
-    /// `translate_children` shift, whereas a fresh pre-pass would produce
-    /// the pre-shift pose. A `local_only` physics node that is itself a
-    /// tc-filter target would pop between the two, so when any such node
-    /// exists the pre-pass runs every frame. World-anchored physics reads
-    /// only the cached transforms and is unaffected.
-    pub(crate) fn physics_anchor_skip_allowed(&mut self) -> bool {
-        if let Some(cached) = self.physics_anchor_skip_cached {
-            return cached;
+    /// Record what `translate_children` shift a mesh group applied to one of
+    /// its targets this frame, overwriting the last one. A target the pass
+    /// skipped is recorded as zero, so a stale delta never survives a frame.
+    pub(crate) fn set_tc_shift_delta(&mut self, id: NodeIdx, delta: glam::Vec2) {
+        let Some(slot) = self.tc_shift_deltas.get_mut(id.0 as usize) else {
+            return;
+        };
+        let previous = *slot;
+        if previous == delta {
+            return;
         }
-        let allowed = !self.any_local_physics_is_tc_target();
-        self.physics_anchor_skip_cached = Some(allowed);
-        allowed
+        *slot = delta;
+        self.tc_shift_changed = true;
+        match (previous != glam::Vec2::ZERO, delta != glam::Vec2::ZERO) {
+            (false, true) => self.tc_shift_nonzero += 1,
+            (true, false) => self.tc_shift_nonzero -= 1,
+            _ => {}
+        }
     }
 
-    /// Whether any `local_only` SimplePhysics node is a translate-children
-    /// target of a `translate_children` MeshGroup. Mirrors the target walk
-    /// in `meshgroup::translate_children_targets` (recurse through
-    /// Part/Composite, stop at nested MeshGroups).
-    fn any_local_physics_is_tc_target(&self) -> bool {
-        for &mg_id in &self.mesh_group_node_ids {
-            let tc = matches!(
-                self.nodes.get(mg_id.0 as usize).map(|n| &n.kind),
-                Some(crate::NodeKind::MeshGroup(mg)) if mg.translate_children
-            );
-            if !tc {
+    /// Whether a `translate_children` shift moved since this was last asked,
+    /// clearing the flag.
+    ///
+    /// The anchor pre-pass replays the *stored* shift, so a frame whose
+    /// mesh-group pass records a different one has left the anchors a frame
+    /// behind a shift that has genuinely changed. The tick answers that by
+    /// dropping its cached anchor pose, which costs one extra pre-pass while a
+    /// shift is settling and nothing once it has: the shift is a function of
+    /// the pose, so a still pose recomputes the same delta and stops asking.
+    pub(crate) fn take_tc_shift_changed(&mut self) -> bool {
+        std::mem::take(&mut self.tc_shift_changed)
+    }
+
+    /// Add the **previous** frame's `translate_children` shift back onto every
+    /// node one moved. The physics anchor pre-pass calls this after folding the
+    /// anchor bindings and before walking the transforms, so a driver whose
+    /// ancestor chain runs through a shifted node — or which is itself a target
+    /// and reads `node.transform.translation` — samples a shifted anchor rather
+    /// than a pre-shift one. The anchor is therefore one frame late;
+    /// running the mesh-group pass inside the
+    /// pre-pass instead would need the deform bindings folded and a second
+    /// transform walk every frame.
+    ///
+    /// `reset_dynamic_state` has restored each node's base transform first, so
+    /// this adds one frame's shift and never accumulates.
+    ///
+    /// **Why the pre-pass may still be skipped.** It is skipped when the pose
+    /// has not moved since the frame that built the cached anchor pose, and
+    /// `take_tc_shift_changed` has forced one more rebuild after any frame
+    /// whose shift moved. So a skipped frame is one where this ran with the
+    /// same deltas the last mesh-group pass recorded. A `local_only` driver
+    /// then reads `node.transform.translation` as the last final fold left it
+    /// — base plus bindings plus that shift — and a world-anchored one reads
+    /// the cached `physics_transforms`, built by that same pre-pass from base
+    /// plus the same bindings plus the same stored deltas. Both match what a
+    /// fresh pre-pass would produce, so neither pops. A `local_only` driver
+    /// that is itself a shift target needs no special case of its own.
+    pub(crate) fn apply_previous_tc_shifts(&mut self) {
+        if self.tc_shift_nonzero == 0 {
+            return;
+        }
+        for slot in 0..self.tc_shift_deltas.len() {
+            let delta = self.tc_shift_deltas[slot];
+            if delta == glam::Vec2::ZERO {
                 continue;
             }
-            let mut stack = self.tree.get_children(mg_id);
-            while let Some(id) = stack.pop() {
-                match self.nodes.get(id.0 as usize).map(|n| &n.kind) {
-                    Some(crate::NodeKind::Part(_)) | Some(crate::NodeKind::Composite(_)) => {
-                        stack.extend(self.tree.get_children(id));
-                    }
-                    Some(crate::NodeKind::MeshGroup(_)) => {}
-                    Some(crate::NodeKind::SimplePhysics(p)) if p.local_only => return true,
-                    _ => {}
-                }
+            if let Some(node) = self.nodes.get_mut(slot) {
+                node.transform.translation.x += delta.x;
+                node.transform.translation.y += delta.y;
+            }
+            if let Some(dirty) = self.node_transform_dirty.get_mut(slot) {
+                *dirty = true;
             }
         }
-        false
     }
 
     pub(crate) fn ensure_physics_ancestor_mask(&mut self) {

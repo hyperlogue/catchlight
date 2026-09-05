@@ -13,9 +13,18 @@
 //! `tests/fixtures/evaluated_frame.json`.
 //!
 //! The combined deform is what proves the passes downstream of the fold: a
-//! mesh group's pins, the `translate_children` filter and the weld
-//! solve all land in a node's deform stack, so a difference in any of them
-//! shows up here as a per-vertex difference. Nothing else observes them.
+//! mesh group's pins, the mesh-group pass that shifts its `translate_children`
+//! targets, and the weld solve all land in a node's deform stack or in a
+//! shifted node's transform, so a difference in any of them shows up here.
+//! Nothing else observes them.
+//!
+//! A driver's anchor carries the **previous** frame's `translate_children`
+//! shift, not this frame's: the anchor pre-pass runs before the mesh groups,
+//! so it replays the shift the last pass recorded rather than running that
+//! pass twice a frame. The `tc over local driver` numbers are the ones
+//! that show it — a pose
+//! change moves the group's shift, the anchor follows a frame later, and the
+//! driver swings in response.
 //!
 //! **Where the numbers came from.** They are the output of the runtime this
 //! suite used to compare against the one it replaced, frame for frame, at the
@@ -962,8 +971,9 @@ fn chained_physics_fixture() -> FixtureFile {
     file(nodes, params, Vec::new())
 }
 
-/// A mesh group whose `translate_children` filter targets a `local_only`
-/// driver — the case that forces the anchor pre-pass every frame.
+/// A mesh group whose `translate_children` shift targets a `local_only`
+/// driver — the case where the driver's own anchor is the thing being shifted,
+/// so it sees the shift a frame late.
 fn tc_over_local_driver_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),

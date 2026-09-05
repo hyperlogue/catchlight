@@ -9,6 +9,13 @@
 //! its globals recomputed on the spot, so the meshed children below it and
 //! every inner group later in the pass read the shifted place.
 //!
+//! **Every shift is recorded, because one reader runs before this pass.** The
+//! physics anchor pre-pass samples node transforms before any deform binding is
+//! folded, so it cannot see this frame's shift. `shift_translate_children`
+//! therefore writes each target's delta to `Arena::set_tc_shift_delta` — zero
+//! for a target it skipped, so nothing stale survives — and the pre-pass
+//! replays the previous frame's on the transform it is about to sample.
+//!
 //! **Mesh-group descent stops at a nested MG.** `descendant_meshed_nodes`
 //! recurses through Parts and Composites, collects Parts and nested MGs, and
 //! halts at each nested MG; the outer deform reaches the inner MG's children
@@ -586,6 +593,13 @@ pub(crate) fn propagate_mesh_group_deforms(
 /// already shifted — is the vertex, and the resulting delta is added back
 /// into it.
 ///
+/// Every target's delta is also recorded on the arena
+/// (`Arena::set_tc_shift_delta`), zero included, because the physics anchor
+/// pre-pass replays the previous frame's shift before it samples an anchor
+/// (`Arena::apply_previous_tc_shifts`). The delta is independent of the render
+/// root: it is built from a parent-relative and an MG-relative transform, and
+/// the root cancels out of both.
+///
 /// Runs from inside `propagate_mesh_group_deforms`, which has combined the
 /// MG's stack, so the deform read here carries every outer MG's same-frame
 /// push as well as this MG's own Param sources. One MG's targets are disjoint
@@ -606,79 +620,23 @@ fn shift_translate_children(
 
     let mg_global = transforms.get(mg_id);
     let Some(mg_global_inv) = checked_affine_inverse(mg_global) else {
+        // No shift is applied, so no target keeps last frame's.
+        for target_id in targets {
+            arena.set_tc_shift_delta(target_id, Vec2::ZERO);
+        }
         return;
     };
 
     for target_id in targets {
-        let parent_id = match arena.tree.get_parent(target_id) {
-            Some(p) => p,
-            None => continue,
-        };
-        let parent_global = transforms.get(parent_id);
-
-        // Project the target's CURRENT position (= base plus the
-        // transform delta) into MG-local space: transform.translation
-        // already includes any param shift this frame (apply_params has
-        // run).
-        let cur_local = match arena.get(target_id) {
-            Some(n) => Vec2::new(n.transform.translation.x, n.transform.translation.y),
-            None => continue,
-        };
-        let world_cur = parent_global * Vec4::new(cur_local.x, cur_local.y, 0.0, 1.0);
-        let cvertex_full = mg_global_inv * world_cur;
-        let cvertex_proj = Vec2::new(cvertex_full.x, cvertex_full.y);
-
-        // Find the MG triangle covering cvertex_proj. If outside,
-        // skip — newPos = cvertex_proj makes delta = 0.
-        let delta_mg = match arena.get(mg_id).map(|n| &n.kind) {
-            Some(NodeKind::MeshGroup(mg)) => {
-                let mg_indices = &mg.mesh.indices;
-                let mg_local = local_positions(&mg.mesh);
-                let combined = mg.deform_stack.combined();
-                let tri_idx = match mg.bitmap.as_ref() {
-                    Some(bm) => bm.lookup(cvertex_proj),
-                    None => find_triangle_strict_hint(&mg_local, mg_indices, cvertex_proj, 0),
-                };
-                let Some(tri_idx) = tri_idx else { continue };
-                let base_idx = tri_idx as usize * 3;
-                let i0 = mg_indices.get(base_idx).map(|i| i as usize);
-                let i1 = mg_indices.get(base_idx + 1).map(|i| i as usize);
-                let i2 = mg_indices.get(base_idx + 2).map(|i| i as usize);
-                let (a, b, c) = match (i0, i1, i2) {
-                    (Some(a), Some(b), Some(c))
-                        if a < mg_local.len()
-                            && b < mg_local.len()
-                            && c < mg_local.len()
-                            && a < combined.len()
-                            && b < combined.len()
-                            && c < combined.len() =>
-                    {
-                        (a, b, c)
-                    }
-                    _ => continue,
-                };
-                let w = barycentric(cvertex_proj, mg_local[a], mg_local[b], mg_local[c]);
-                if w[0].is_nan() {
-                    continue;
-                }
-                // delta_mg = barycentric-weighted MG deform at
-                // cvertex_proj. Equivalent to (newPos - cvertex_proj)
-                // since newPos = cvertex_proj + delta_mg once the
-                // base barycentric weights sum to 1.
-                combined[a] * w[0] + combined[b] * w[1] + combined[c] * w[2]
-            }
-            _ => continue,
-        };
-
-        // mg_to_parent linear: (parent.global.inverse * MG.global)
-        // upper-left 2x2. Translation is stripped because this maps a
-        // displacement vector rather than a point.
-        let Some(parent_global_inv) = checked_affine_inverse(parent_global) else {
-            continue;
-        };
-        let mg_to_parent = parent_global_inv * mg_global;
-        let mg_to_parent_linear = linear_mat2(mg_to_parent);
-        let delta_parent = mg_to_parent_linear * delta_mg;
+        let delta_parent = translate_children_delta(
+            arena,
+            mg_id,
+            mg_global,
+            mg_global_inv,
+            transforms,
+            target_id,
+        );
+        arena.set_tc_shift_delta(target_id, delta_parent);
 
         if delta_parent == Vec2::ZERO {
             continue;
@@ -691,6 +649,85 @@ fn shift_translate_children(
         arena.mark_transform_dirty(target_id);
         arena.recompute_subtree_transforms(transforms, target_id, root);
     }
+}
+
+/// One `translate_children` target's shift, in the target's parent space.
+/// `Vec2::ZERO` whenever the shift does not apply — the target sits outside
+/// the MG lattice, a transform will not invert, or the warp there is nil —
+/// which is also the value the caller records for it.
+fn translate_children_delta(
+    arena: &Arena,
+    mg_id: NodeIdx,
+    mg_global: Mat4,
+    mg_global_inv: Mat4,
+    transforms: &GlobalTransforms,
+    target_id: NodeIdx,
+) -> Vec2 {
+    let Some(parent_id) = arena.tree.get_parent(target_id) else {
+        return Vec2::ZERO;
+    };
+    let parent_global = transforms.get(parent_id);
+
+    // Project the target's CURRENT position (= base plus the transform
+    // delta) into MG-local space: transform.translation already includes
+    // any param shift this frame (apply_params has run).
+    let Some(node) = arena.get(target_id) else {
+        return Vec2::ZERO;
+    };
+    let cur_local = Vec2::new(node.transform.translation.x, node.transform.translation.y);
+    let world_cur = parent_global * Vec4::new(cur_local.x, cur_local.y, 0.0, 1.0);
+    let cvertex_full = mg_global_inv * world_cur;
+    let cvertex_proj = Vec2::new(cvertex_full.x, cvertex_full.y);
+
+    // Find the MG triangle covering cvertex_proj. If outside, the warp is
+    // the identity there: newPos = cvertex_proj makes delta = 0.
+    let Some(NodeKind::MeshGroup(mg)) = arena.get(mg_id).map(|n| &n.kind) else {
+        return Vec2::ZERO;
+    };
+    let mg_indices = &mg.mesh.indices;
+    let mg_local = local_positions(&mg.mesh);
+    let combined = mg.deform_stack.combined();
+    let tri_idx = match mg.bitmap.as_ref() {
+        Some(bm) => bm.lookup(cvertex_proj),
+        None => find_triangle_strict_hint(&mg_local, mg_indices, cvertex_proj, 0),
+    };
+    let Some(tri_idx) = tri_idx else {
+        return Vec2::ZERO;
+    };
+    let base_idx = tri_idx as usize * 3;
+    let i0 = mg_indices.get(base_idx).map(|i| i as usize);
+    let i1 = mg_indices.get(base_idx + 1).map(|i| i as usize);
+    let i2 = mg_indices.get(base_idx + 2).map(|i| i as usize);
+    let (a, b, c) = match (i0, i1, i2) {
+        (Some(a), Some(b), Some(c))
+            if a < mg_local.len()
+                && b < mg_local.len()
+                && c < mg_local.len()
+                && a < combined.len()
+                && b < combined.len()
+                && c < combined.len() =>
+        {
+            (a, b, c)
+        }
+        _ => return Vec2::ZERO,
+    };
+    let w = barycentric(cvertex_proj, mg_local[a], mg_local[b], mg_local[c]);
+    if w[0].is_nan() {
+        return Vec2::ZERO;
+    }
+    // delta_mg = barycentric-weighted MG deform at cvertex_proj. Equivalent
+    // to (newPos - cvertex_proj) since newPos = cvertex_proj + delta_mg once
+    // the base barycentric weights sum to 1.
+    let delta_mg = combined[a] * w[0] + combined[b] * w[1] + combined[c] * w[2];
+
+    // mg_to_parent linear: (parent.global.inverse * MG.global) upper-left
+    // 2x2. Translation is stripped because this maps a displacement vector
+    // rather than a point.
+    let Some(parent_global_inv) = checked_affine_inverse(parent_global) else {
+        return Vec2::ZERO;
+    };
+    let mg_to_parent = parent_global_inv * mg_global;
+    linear_mat2(mg_to_parent) * delta_mg
 }
 
 #[allow(clippy::too_many_arguments)]

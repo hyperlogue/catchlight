@@ -19,6 +19,13 @@
 //!   neither the pose nor the pre-pass touched anything
 //!   (`last_tick_folded_param_generation`). A pre-pass that ran **forces** the
 //!   final fold, because it reset colour and deactivated every deform stack.
+//! - **An anchor carries the previous frame's `translate_children` shift.**
+//!   The anchor pose is built before the mesh groups run, so the shift a group
+//!   applies to a driver or to one of its ancestors is not there yet. Rather
+//!   than run the mesh-group pass twice a frame, the pre-pass replays the shift
+//!   the last one recorded (`Arena::apply_previous_tc_shifts`), so an anchor
+//!   follows one frame late. It is also
+//!   what makes the pre-pass skippable: see that method for the argument.
 //! - **The generation gate is the only staleness check.** A puppet records
 //!   `model.generation()` when it bakes; every method that takes a `&Model`
 //!   compares it first and rebakes when it moved. Nothing else may assume the
@@ -1325,6 +1332,7 @@ impl Puppet {
         for _ in 0..=n {
             self.reset_frame();
             self.apply_anchor_transform_bindings();
+            self.arena.apply_previous_tc_shifts();
             self.arena
                 .compute_physics_ancestor_transforms(&mut transforms);
 
@@ -1391,10 +1399,11 @@ impl Puppet {
         let mut anchor_generation = 0;
         if has_physics {
             // Rebuild the anchor pose only when the pose or a driver output
-            // moved since the cached one, or when a local_only driver is a
-            // tc-filter target (see `Arena::physics_anchor_skip_allowed`).
-            let stale = self.last_anchor_pose_generation != Some(self.param_generation)
-                || !self.arena.physics_anchor_skip_allowed();
+            // moved since the cached one. A skipped frame reads the pose the
+            // last final fold left, shift included, and a rebuild replays the
+            // stored shift onto the same bindings, so the two agree whenever
+            // the pose stood still — see `Arena::apply_previous_tc_shifts`.
+            let stale = self.last_anchor_pose_generation != Some(self.param_generation);
             if stale {
                 // Capture the generation BEFORE the drivers bump it: if one
                 // moves this frame, next frame's staleness check then forces
@@ -1403,6 +1412,7 @@ impl Puppet {
                 pre_pass_ran = true;
                 self.reset_frame();
                 self.apply_anchor_transform_bindings();
+                self.arena.apply_previous_tc_shifts();
                 self.arena.ensure_physics_ancestor_mask();
                 let mut local = std::mem::take(&mut self.arena.physics_transforms);
                 self.arena.compute_physics_ancestor_transforms(&mut local);
@@ -1444,10 +1454,14 @@ impl Puppet {
         } else {
             self.arena.compute_transforms_with_root(&mut out, root);
         }
-        if pre_pass_ran {
+        // Always consumed, so a stale flag never survives into a later frame.
+        let tc_shift_moved = self.arena.take_tc_shift_changed();
+        if pre_pass_ran && !tc_shift_moved {
             // Set at the very end: the final fold's reset cleared this, and
             // using the pre-tick generation is what lets a moved driver force
-            // next frame's anchor rebuild.
+            // next frame's anchor rebuild. Left cleared when the mesh-group
+            // pass recorded a shift the pre-pass had not seen, so the next
+            // frame's anchors pick it up even if the pose then stands still.
             self.last_anchor_pose_generation = Some(anchor_generation);
         }
         self.transforms = out;
@@ -1922,6 +1936,196 @@ mod tests {
         assert!(
             !puppet.tick(&model, DT).any(),
             "settling ends the motion the displacement started",
+        );
+    }
+
+    // ---- the anchor and the translate-children shift ----------------------
+
+    /// A `translate_children` mesh group over a driver, built so the group's
+    /// deform shifts the driver's anchor by exactly `+SHIFT` in x.
+    ///
+    /// `local_only` picks which of the two anchor sources is under test: with
+    /// it the driver hangs straight off the group and is itself the shift
+    /// target, reading its own `transform.translation`; without it the driver
+    /// hangs off a plain group that is the target, and reads its world
+    /// position out of the pre-pass transforms.
+    fn tc_over_driver(local_only: bool) -> (Model, NodeId, ParamId) {
+        use crate::formats::clm::{ClmIndices, ClmMesh, ClmPhysics};
+        use crate::id::SeededHex;
+        use crate::model::{
+            BindingKey, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPhysics,
+        };
+        use crate::physics::PendulumKind;
+
+        let quad = ClmMesh {
+            verts: vec![-50.0, -50.0, 50.0, -50.0, 50.0, 50.0, -50.0, 50.0],
+            uvs: vec![0.0; 8],
+            indices: ClmIndices::U16(vec![0, 1, 2, 0, 2, 3]),
+            origin: [0.0, 0.0],
+        };
+
+        let mut model = Model::new();
+        model.set_physics(ClmPhysics {
+            pixels_per_meter: 1.0,
+            gravity: 1.0,
+        });
+        let mut hex = SeededHex::new(23);
+        let root = model.root().expect("a fresh model has one root").clone();
+
+        let mg = model
+            .add_node(
+                &root,
+                ModelNode::new(
+                    "mg",
+                    ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad.clone())),
+                ),
+                &mut hex,
+            )
+            .expect("add the mesh group");
+
+        // Without `local_only` the driver sits one group below the target, so
+        // the shift reaches it through its parent's global rather than through
+        // its own transform.
+        let driver_parent = if local_only {
+            mg.clone()
+        } else {
+            model
+                .add_node(
+                    &mg,
+                    ModelNode::new("carrier", ModelNodeKind::Group),
+                    &mut hex,
+                )
+                .expect("add the carrier")
+        };
+        let mut physics = ModelPhysics::new(PendulumKind::RigidPendulum);
+        physics.local_only = local_only;
+        physics.gravity = 981.0;
+        physics.length = 100.0;
+        let driver = model
+            .add_node(
+                &driver_parent,
+                ModelNode::new("driver", ModelNodeKind::SimplePhysics(physics)),
+                &mut hex,
+            )
+            .expect("add the driver");
+
+        let bend = ParamId::new("bend").expect("a valid param Id");
+        model
+            .add_param_with_id(
+                bend.clone(),
+                ModelParam::new(crate::id::Name::truncated("Bend"), 0.0, 1.0, 0.0),
+            )
+            .expect("add the param");
+        // Every lattice vertex moves the same way, so the warp is a pure
+        // translation and the shift is `SHIFT` wherever the target sits.
+        model
+            .set_deform_vertices(
+                &BindingKey::new(bend.clone(), mg.clone(), BindingTarget::Deform),
+                [1, 0],
+                vec![SHIFT, 0.0, SHIFT, 0.0, SHIFT, 0.0, SHIFT, 0.0],
+            )
+            .expect("author the deform");
+
+        (model, driver, bend)
+    }
+
+    /// How far the mesh group's deform moves its targets, in x.
+    const SHIFT: f32 = 20.0;
+
+    /// The x of the anchor the driver last sampled. `physics_anchor` flips y,
+    /// so x is the axis that reads straight.
+    fn anchor_x(puppet: &Puppet, driver: NodeIdx) -> f32 {
+        match puppet.arena.get(driver).map(|n| &n.kind) {
+            Some(NodeKind::SimplePhysics(p)) => p.anchor.x,
+            _ => panic!("the driver is a SimplePhysics node"),
+        }
+    }
+
+    /// The anchor pre-pass runs before the mesh groups, so the shift a
+    /// `translate_children` group applies cannot be in the pose it samples.
+    /// Rather than run the mesh-group pass twice a frame, the pre-pass replays
+    /// the shift the last one recorded — so the anchor follows one frame late,
+    /// and then holds still.
+    ///
+    /// This is the world-anchored half: the driver reads its own global out of
+    /// the pre-pass transforms, and the node the group shifts is its parent.
+    #[test]
+    fn a_world_anchor_follows_the_shift_one_frame_late() {
+        let (model, driver, bend) = tc_over_driver(false);
+        let mut puppet = Puppet::new(&model);
+        let idx = puppet.node_idx(&driver).expect("the driver baked");
+
+        puppet.tick(&model, DT);
+        assert!(
+            anchor_x(&puppet, idx).abs() < 1e-4,
+            "at rest the anchor is the authored spot, not {}",
+            anchor_x(&puppet, idx),
+        );
+
+        puppet.set_param_value(&bend, 1.0);
+        puppet.tick(&model, DT);
+        assert!(
+            anchor_x(&puppet, idx).abs() < 1e-4,
+            "the frame that first shifts must still anchor at the old spot, not {}",
+            anchor_x(&puppet, idx),
+        );
+
+        puppet.tick(&model, DT);
+        assert!(
+            (anchor_x(&puppet, idx) - SHIFT).abs() < 1e-4,
+            "the next frame anchors at the shifted spot, not {}",
+            anchor_x(&puppet, idx),
+        );
+
+        // And it stays there: a still pose lets the pre-pass be skipped, and a
+        // skipped frame must sample the same anchor a fresh one would.
+        puppet.tick(&model, DT);
+        assert!(
+            (anchor_x(&puppet, idx) - SHIFT).abs() < 1e-4,
+            "a skipped pre-pass must not pop the anchor back to {}",
+            anchor_x(&puppet, idx),
+        );
+    }
+
+    /// The `local_only` half of
+    /// [`a_world_anchor_follows_the_shift_one_frame_late`]: the driver is
+    /// itself the group's shift target and reads its own
+    /// `transform.translation`, which the pre-pass leaves pre-shift and the
+    /// final fold leaves post-shift. The replayed delta is what makes a
+    /// skipped frame and a fresh pre-pass agree.
+    #[test]
+    fn a_local_anchor_follows_the_shift_one_frame_late() {
+        let (model, driver, bend) = tc_over_driver(true);
+        let mut puppet = Puppet::new(&model);
+        let idx = puppet.node_idx(&driver).expect("the driver baked");
+
+        puppet.tick(&model, DT);
+        assert!(
+            anchor_x(&puppet, idx).abs() < 1e-4,
+            "at rest the anchor is the authored spot, not {}",
+            anchor_x(&puppet, idx),
+        );
+
+        puppet.set_param_value(&bend, 1.0);
+        puppet.tick(&model, DT);
+        assert!(
+            anchor_x(&puppet, idx).abs() < 1e-4,
+            "the frame that first shifts must still anchor at the old spot, not {}",
+            anchor_x(&puppet, idx),
+        );
+
+        puppet.tick(&model, DT);
+        assert!(
+            (anchor_x(&puppet, idx) - SHIFT).abs() < 1e-4,
+            "the next frame anchors at the shifted spot, not {}",
+            anchor_x(&puppet, idx),
+        );
+
+        puppet.tick(&model, DT);
+        assert!(
+            (anchor_x(&puppet, idx) - SHIFT).abs() < 1e-4,
+            "a skipped pre-pass must not pop the anchor back to {}",
+            anchor_x(&puppet, idx),
         );
     }
 }
