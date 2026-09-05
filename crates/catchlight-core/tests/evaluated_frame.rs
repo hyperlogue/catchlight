@@ -658,6 +658,7 @@ fn file(
                 welds,
                 ..ClmDocument::default()
             },
+            extensions: Vec::new(),
             textures: Vec::new(),
         },
         slots,

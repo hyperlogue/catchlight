@@ -22,7 +22,9 @@ fn decoding_and_re_encoding_a_fixture_gives_the_same_bytes() {
     for path in fixtures() {
         let original = read(&path);
         let file = decode(&path);
-        let again = catchlight_core::formats::clm::encode(&file.doc, &file.textures).unwrap();
+        let again =
+            catchlight_core::formats::clm::encode(&file.doc, &file.textures, &file.extensions)
+                .unwrap();
         assert_eq!(
             again,
             original,

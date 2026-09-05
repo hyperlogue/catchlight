@@ -63,7 +63,7 @@ pub fn decode(path: &Path) -> ClmFile {
 /// Write an edited document out as `<name>.clm` in `dir`.
 pub fn write_clm(dir: &Path, name: &str, file: &ClmFile) -> PathBuf {
     let path = dir.join(format!("{name}.clm"));
-    let bytes = clm::encode(&file.doc, &file.textures).expect("encode");
+    let bytes = clm::encode(&file.doc, &file.textures, &file.extensions).expect("encode");
     std::fs::write(&path, bytes).expect("write");
     path
 }

@@ -1,7 +1,8 @@
 //! `catchlight-cli` — the command line over a `.clm` model file.
 //!
 //! The file operations are patch a field, swap a texture, extract or merge an
-//! addon, list its requirements, diff two files. Every one of them works on
+//! addon, list its requirements, diff two files, and read or write the vendor
+//! `extension`s a file carries. Every one of them works on
 //! the file's **structure section**: decode the container, edit the CBOR
 //! document, write it back. Texture bytes are moved around as opaque blobs and
 //! are never decoded, so patching one field of a model carrying a hundred
@@ -71,6 +72,7 @@
 //!   is.
 
 pub mod diff;
+pub mod extension;
 pub mod file;
 pub mod fragment;
 pub mod isolate;
@@ -212,6 +214,22 @@ pub enum Error {
         path: PathBuf,
         #[source]
         source: ciborium::ser::Error<std::io::Error>,
+    },
+    #[error(
+        "extension {key:?} is a byte value; say where to write it with --out rather than printing \
+         bytes to a terminal"
+    )]
+    BytesNeedAFile { key: String },
+    #[error(
+        "extension key {key:?} starts with {prefix:?}, which is catchlight's own; a vendor key \
+         names its vendor first"
+    )]
+    ReservedExtension { key: String, prefix: &'static str },
+    #[error("extension {key:?} would carry {size} bytes, over the {max}-byte cap")]
+    ExtensionTooLarge {
+        key: String,
+        size: usize,
+        max: usize,
     },
     /// An edit `isolate` makes to its in-memory copy of the model was
     /// refused. Every one of them names a node this crate has already

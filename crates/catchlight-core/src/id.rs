@@ -82,6 +82,14 @@ pub enum IdError {
         /// Its zero-based byte offset in the input.
         offset: usize,
     },
+    /// Only an [`ExtensionKey`] produces this: it is the one Id-shaped string
+    /// that must carry a dot.
+    #[error("an extension key needs a dot: the vendor comes first, as in `molan.caster`")]
+    MissingDot,
+    /// Only an [`ExtensionKey`] produces this: `molan.` names a vendor and
+    /// nothing after it.
+    #[error("an extension key must not end with '.'")]
+    TrailingDot,
     /// Only [`Name`] produces this; Ids have no length cap.
     #[error("a name may be at most {max} bytes, got {bytes}")]
     TooLong {
@@ -115,6 +123,33 @@ pub fn validate_id(s: &str) -> Result<(), IdError> {
     }
     Ok(())
 }
+
+/// The Id charset, plus a required interior dot: an extension key is
+/// `vendor.name`, vendor first.
+///
+/// The dot is what keeps two vendors apart in one flat namespace. Without it
+/// a key is a land grab on a plain word, so `caster` is refused and
+/// `molan.caster` is not. A leading dot is already out by the charset, so the
+/// whole of the extra rule is "a dot, and not the last byte".
+///
+/// [`EXTENSION_RESERVED_PREFIX`] is *not* checked here. A file may carry a
+/// reserved key, because one day catchlight will write them, and the reader
+/// has to read what it wrote; refusing to author one is
+/// [`crate::Model::set_extension`]'s job.
+pub fn validate_extension_key(s: &str) -> Result<(), IdError> {
+    validate_id(s)?;
+    if !s.contains('.') {
+        return Err(IdError::MissingDot);
+    }
+    if s.ends_with('.') {
+        return Err(IdError::TrailingDot);
+    }
+    Ok(())
+}
+
+/// Keys under this prefix are catchlight's own to define. Nothing outside the
+/// format may author one.
+pub const EXTENSION_RESERVED_PREFIX: &str = "catchlight.";
 
 /// Wraps a string a generator in this module just built. The
 /// `debug_assert` catches a generator that stopped producing valid Ids in
@@ -339,6 +374,80 @@ impl SlotId {
     /// [`Model::slot_add_generated`](crate::Model::slot_add_generated).
     pub fn generate(hex: &mut impl HexSource) -> Self {
         Self(generated(format!("slot-{:08x}", hex.next_bits())))
+    }
+}
+
+/// The key an extension is filed under: the Id charset plus a required
+/// interior dot, vendor first (`molan.caster`).
+///
+/// Hand-written rather than one of the [`string_id!`] types because it is the
+/// one Id-shaped string with a rule of its own ([`validate_extension_key`]),
+/// and because a key that fails on the way in is worth naming in the error —
+/// a file names its extensions in one flat map, so "which key" is the whole
+/// question.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(type = "string"))]
+pub struct ExtensionKey(Arc<str>);
+
+impl ExtensionKey {
+    /// Validates `s` against [`validate_extension_key`].
+    pub fn new(s: impl AsRef<str>) -> Result<Self, IdError> {
+        let s = s.as_ref();
+        validate_extension_key(s)?;
+        Ok(Self(Arc::from(s)))
+    }
+
+    /// The key exactly as it is written in the file.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether this key is catchlight's own to define. A file may carry one;
+    /// nothing outside the format may author one.
+    pub fn is_reserved(&self) -> bool {
+        self.0.starts_with(EXTENSION_RESERVED_PREFIX)
+    }
+}
+
+impl fmt::Display for ExtensionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for ExtensionKey {
+    type Err = IdError;
+
+    fn from_str(s: &str) -> Result<Self, IdError> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for ExtensionKey {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Sound because `Hash` and `Eq` both delegate to the same `str`.
+impl Borrow<str> for ExtensionKey {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for ExtensionKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ExtensionKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        // The key goes in the message: a bad one is found while reading a map
+        // of them, where the offset alone says nothing.
+        Self::new(&s).map_err(|e| serde::de::Error::custom(format!("extension key {s:?}: {e}")))
     }
 }
 

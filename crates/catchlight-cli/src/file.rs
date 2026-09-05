@@ -78,7 +78,7 @@ pub fn read(path: &Path) -> Result<ClmFile, Error> {
 
 /// Encode `file` to bytes, reporting `path` as the file the failure is about.
 pub fn encode(file: &ClmFile, path: &Path) -> Result<Vec<u8>, Error> {
-    clm::encode(&file.doc, &file.textures).map_err(|source| Error::Encode {
+    clm::encode(&file.doc, &file.textures, &file.extensions).map_err(|source| Error::Encode {
         path: path.to_path_buf(),
         source: catchlight_core::ModelError::from(source),
     })

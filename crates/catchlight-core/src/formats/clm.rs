@@ -3,7 +3,10 @@
 //!
 //! A [`super::container`] file (magic `b"NYANPASU"`) with two sections:
 //! `Structure` (one CBOR document) and `Textures` (verbatim source-encoded
-//! bytes, never decoded or cropped).
+//! bytes, never decoded or cropped). A third, `Extensions`, appears only when
+//! some extension carries bytes: one keyed array of blobs, laid out like
+//! `Textures` and read the same way, so a file with no byte extension is
+//! byte-identical to one written before the section existed.
 //!
 //! There is a second shape on the same wire: a **structure-only** container,
 //! `Structure` beside a `TextureManifest` — the texture table with every
@@ -48,7 +51,24 @@
 //!   something must find it, a filled slot must be in mesh range, a weld must
 //!   join two different parts once and pair slots they carry, and a binding
 //!   must name one or two distinct params. The reader reports which Id in
-//!   which field failed.
+//!   which field failed. On extensions it refuses, each time naming the key:
+//!   a key off the charset or without its dot; a value that is neither
+//!   JSON-compatible nor a marker (bytes inline, a CBOR tag, a non-string map
+//!   key — `serde_json::Value` turns each into an "invalid type" on the way
+//!   in); a marker whose bytes are absent; bytes nothing names; a size or a
+//!   hash that disagrees with the marker; and a byte value over
+//!   [`MAX_EXTENSION_BYTES`]. The pairing is checked on the way *out* too, so
+//!   a writer never leaves a marker without its payload.
+//! - **An extension is carried, never interpreted.** A vendor files
+//!   annotations under a dotted key ([`crate::id::ExtensionKey`], vendor
+//!   first) and catchlight reads none of them. A value is either
+//!   JSON-compatible — string-keyed maps, arrays, strings, numbers, bools,
+//!   null, written as native CBOR inline in the structure — or opaque bytes,
+//!   which live in the `Extensions` section while the structure carries only
+//!   a `{size, hash}` marker. The split is what keeps a structure feed small:
+//!   a thumbnail travels once, by hash, instead of riding along with every
+//!   unrelated edit. Unknown keys are pass-through by construction, so
+//!   save→save stays byte-identical over a key this build has never heard of.
 //! - **A binding has to be one the runtime can fold.** A colour target
 //!   (`Opacity`, `Tint*`, `ScreenTint*`) on a mesh group has nowhere to land —
 //!   a mesh group is never drawn — and a deform cell holds one `[dx, dy]` per
@@ -66,12 +86,14 @@
 //! returns as `#[serde(default)]` and old/new readers interoperate. **Never**
 //! add `deny_unknown_fields`; a breaking change bumps [`FORMAT_VERSION`].
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::container::{self, ContainerError, Section};
 use crate::components::{BlendMode, MaskMode};
-use crate::id::{NodeId, ParamId, SlotId, TexId};
+use crate::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
 use crate::physics::{PendulumKind, PhysicsParamMapMode};
 
@@ -280,6 +302,9 @@ const SECTION_TEXTURES: u32 = 1;
 /// container carries in place of `Textures`. Its presence is what tells the
 /// two shapes apart, so neither reader ever guesses.
 const SECTION_TEXTURE_MANIFEST: u32 = 2;
+/// Every extension's byte value, keyed by extension key. Absent when no
+/// extension carries bytes, which is every file today.
+const SECTION_EXTENSIONS: u32 = 3;
 
 #[derive(Debug, Error)]
 pub enum ClmError {
@@ -287,6 +312,26 @@ pub enum ClmError {
     Container(#[from] ContainerError),
     #[error("CBOR encode: {0}")]
     Encode(String),
+    #[error("extension {key:?} names bytes the file does not carry")]
+    ExtensionBytesMissing { key: String },
+    #[error("the file carries bytes for extension {key:?}, which its structure does not name")]
+    ExtensionBytesOrphan { key: String },
+    #[error("the file carries the bytes of extension {key:?} twice")]
+    ExtensionBytesDuplicate { key: String },
+    #[error("extension {key:?} carries {actual} bytes but its marker says {expected}")]
+    ExtensionSizeMismatch {
+        key: String,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("extension {key:?}'s bytes do not hash to what its marker says")]
+    ExtensionHashMismatch { key: String },
+    #[error("extension {key:?} carries {size} bytes, over the {max}-byte cap")]
+    ExtensionTooLarge {
+        key: String,
+        size: usize,
+        max: usize,
+    },
     #[error("CBOR decode: {0}")]
     Decode(String),
     #[error("missing {0} section")]
@@ -312,6 +357,9 @@ pub enum ClmError {
 pub struct ClmFile {
     pub doc: ClmDocument,
     pub textures: Vec<ClmTexture>,
+    /// The bytes behind every `Bytes` marker in `doc.extensions`, in key
+    /// order. Empty unless some extension carries bytes.
+    pub extensions: Vec<ClmExtensionBlob>,
 }
 
 /// A decoded *structure-only* container: the same `Structure` document a
@@ -367,6 +415,61 @@ pub struct ClmDocument {
     pub welds: Vec<ClmWeld>,
     #[serde(default)]
     pub animations: Vec<ClmAnimation>,
+    /// Vendor annotations, keyed by [`ExtensionKey`]. Skipped when empty, so
+    /// every file written before extensions existed still writes the same
+    /// bytes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<ExtensionKey, ClmExtension>,
+}
+
+/// The most bytes one extension may carry. A structure feed is meant to stay
+/// small enough to push after every edit, and a byte value big enough to
+/// break that is a file, not an annotation.
+pub const MAX_EXTENSION_BYTES: usize = 1024 * 1024;
+
+/// What an extension holds, as the structure document spells it.
+///
+/// Externally tagged, so the two arms are a one-key map (`{"json": …}`,
+/// `{"bytes": …}`) and neither can be read as the other. That matters:
+/// a marker is itself a JSON-compatible object, so an untagged value would
+/// make `{"size": 3, "hash": "…"}` ambiguous.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClmExtension {
+    /// A JSON-compatible value, written as native CBOR inline in the
+    /// structure: string-keyed maps, arrays, strings, numbers, bools, null.
+    /// `serde_json::Value` is what refuses everything else — a CBOR byte
+    /// string, a tag, a non-string map key are each an "invalid type" on the
+    /// way in.
+    Json(serde_json::Value),
+    /// A stand-in for bytes in the [`SECTION_EXTENSIONS`] section. The
+    /// structure carries only the size and the hash, so a client watching a
+    /// structure feed sees that a thumbnail changed without the thumbnail
+    /// travelling with every unrelated edit.
+    Bytes(ClmExtensionMarker),
+}
+
+/// What the structure carries in place of an extension's bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClmExtensionMarker {
+    pub size: u64,
+    /// Lowercase hex of [`extension_hash`] over the bytes.
+    pub hash: String,
+}
+
+/// One extension's bytes, as the `Extensions` section stores them — the same
+/// shape the `Textures` section uses, a keyed array rather than a map, so the
+/// payload names itself and the section needs no side table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClmExtensionBlob {
+    pub key: ExtensionKey,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+/// The content hash on a byte extension's marker: blake3, lowercase hex.
+pub fn extension_hash(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
 }
 
 /// A texture as the author supplied it: never decoded, never re-encoded.
@@ -552,10 +655,73 @@ fn cbor_from_slice<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, ClmE
 /// Serialize to `.clm` bytes. Deterministic for a given input: ciborium writes
 /// struct fields in declaration order and the container lays sections out in
 /// order, so save→save is byte-stable.
-pub fn encode(doc: &ClmDocument, textures: &[ClmTexture]) -> Result<Vec<u8>, ClmError> {
+/// Hold a structure's extension markers against the bytes that came with
+/// them: every marker has its bytes, every blob is named, and each pair
+/// agrees on size and hash.
+///
+/// Run on the way in *and* on the way out. A reader trusts nothing, and a
+/// writer that emitted a marker without its bytes would leave a file that
+/// only fails at the next open.
+pub fn check_extensions(doc: &ClmDocument, blobs: &[ClmExtensionBlob]) -> Result<(), ClmError> {
+    let mut carried: BTreeMap<&ExtensionKey, &ClmExtensionBlob> = BTreeMap::new();
+    for blob in blobs {
+        if carried.insert(&blob.key, blob).is_some() {
+            return Err(ClmError::ExtensionBytesDuplicate {
+                key: blob.key.to_string(),
+            });
+        }
+        if blob.data.len() > MAX_EXTENSION_BYTES {
+            return Err(ClmError::ExtensionTooLarge {
+                key: blob.key.to_string(),
+                size: blob.data.len(),
+                max: MAX_EXTENSION_BYTES,
+            });
+        }
+    }
+
+    for (key, value) in &doc.extensions {
+        let ClmExtension::Bytes(marker) = value else {
+            continue;
+        };
+        let blob = carried
+            .remove(key)
+            .ok_or_else(|| ClmError::ExtensionBytesMissing {
+                key: key.to_string(),
+            })?;
+        if blob.data.len() as u64 != marker.size {
+            return Err(ClmError::ExtensionSizeMismatch {
+                key: key.to_string(),
+                expected: marker.size,
+                actual: blob.data.len() as u64,
+            });
+        }
+        if extension_hash(&blob.data) != marker.hash {
+            return Err(ClmError::ExtensionHashMismatch {
+                key: key.to_string(),
+            });
+        }
+    }
+
+    // Whatever the markers did not claim is a payload nothing names, whether
+    // its key is absent from the structure or filed there as a JSON value.
+    if let Some((key, _)) = carried.into_iter().next() {
+        return Err(ClmError::ExtensionBytesOrphan {
+            key: key.to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub fn encode(
+    doc: &ClmDocument,
+    textures: &[ClmTexture],
+    extensions: &[ClmExtensionBlob],
+) -> Result<Vec<u8>, ClmError> {
+    check_extensions(doc, extensions)?;
     let structure = cbor_to_vec(doc)?;
     let tex = cbor_to_vec(&textures)?;
-    let sections = [
+    let ext = cbor_to_vec(&extensions)?;
+    let mut sections = vec![
         Section {
             kind: SECTION_STRUCTURE,
             data: &structure,
@@ -565,6 +731,14 @@ pub fn encode(doc: &ClmDocument, textures: &[ClmTexture]) -> Result<Vec<u8>, Clm
             data: &tex,
         },
     ];
+    // Absent unless it holds something, so a file with no byte extension is
+    // byte-identical to one written before the section existed.
+    if !extensions.is_empty() {
+        sections.push(Section {
+            kind: SECTION_EXTENSIONS,
+            data: &ext,
+        });
+    }
     Ok(container::write(&MAGIC, FORMAT_VERSION, &sections))
 }
 
@@ -618,6 +792,11 @@ pub fn decode_structure_with_budget(
     if file.section(SECTION_TEXTURES).is_some() {
         return Err(ClmError::NotAStructure);
     }
+    // Byte extensions do not travel in a structure feed either: the markers
+    // ride in the document and a client fetches a changed one by its hash.
+    if file.section(SECTION_EXTENSIONS).is_some() {
+        return Err(ClmError::NotAStructure);
+    }
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
@@ -668,7 +847,16 @@ pub fn decode_with_budget(
         Some(b) => cbor_from_slice(b)?,
         None => Vec::new(),
     };
-    Ok(ClmFile { doc, textures })
+    let extensions: Vec<ClmExtensionBlob> = match file.section(SECTION_EXTENSIONS) {
+        Some(b) => cbor_from_slice(b)?,
+        None => Vec::new(),
+    };
+    check_extensions(&doc, &extensions)?;
+    Ok(ClmFile {
+        doc,
+        textures,
+        extensions,
+    })
 }
 
 fn decode_document(version: u16, bytes: &[u8]) -> Result<ClmDocument, ClmError> {
@@ -739,6 +927,7 @@ mod tests {
         let mouth = ParamId::new("param-mouth").unwrap();
         let doc = ClmDocument {
             physics: ClmPhysics::default(),
+            extensions: Default::default(),
             nodes: vec![root, part],
             params: vec![ClmParam {
                 id: mouth.clone(),
@@ -789,7 +978,7 @@ mod tests {
     #[test]
     fn roundtrip_preserves_structure_and_textures() {
         let (doc, textures) = sample();
-        let bytes = encode(&doc, &textures).unwrap();
+        let bytes = encode(&doc, &textures, &[]).unwrap();
         let file = decode(&bytes).unwrap();
         assert_eq!(file.doc, doc);
         assert_eq!(file.textures, textures);
@@ -798,8 +987,8 @@ mod tests {
     #[test]
     fn save_is_byte_stable() {
         let (doc, textures) = sample();
-        let a = encode(&doc, &textures).unwrap();
-        let b = encode(&doc, &textures).unwrap();
+        let a = encode(&doc, &textures, &[]).unwrap();
+        let b = encode(&doc, &textures, &[]).unwrap();
         assert_eq!(
             a, b,
             "encode must be deterministic for editor dirty-checking"
@@ -809,7 +998,7 @@ mod tests {
     #[test]
     fn decode_rejects_an_encoded_file_over_the_aggregate_budget() {
         let (doc, textures) = sample();
-        let bytes = encode(&doc, &textures).unwrap();
+        let bytes = encode(&doc, &textures, &[]).unwrap();
         let mut budget = crate::load_budget::LoadBudget::new(crate::load_budget::LoadLimits {
             encoded_bytes: bytes.len() as u64 - 1,
             ..crate::load_budget::LoadLimits::default()
@@ -871,7 +1060,7 @@ mod tests {
     #[test]
     fn an_older_or_newer_version_is_refused_not_silently_misread() {
         let (doc, textures) = sample();
-        let bytes = encode(&doc, &textures).unwrap();
+        let bytes = encode(&doc, &textures, &[]).unwrap();
         for version in [0u16, 1, 3, 0xFFFF] {
             let mut bytes = bytes.clone();
             bytes[8..10].copy_from_slice(&version.to_le_bytes());

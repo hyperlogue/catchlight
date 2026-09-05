@@ -18,6 +18,11 @@ bytemuck = "1.25.2"
 smallvec = { version = "1.15", features = ["union"] }
 ciborium = "0.2.2"
 serde_bytes = "0.11.19"
+# The content hash on an extension's byte marker. blake3 over sha2 because it
+# is already in the workspace tree (bevy_asset pulls it) and its licence chain
+# is already cleared; `default-features = false` drops std and rayon, which
+# this needs none of and which keep it wasm-safe.
+blake3 = { version = "1", default-features = false }
 # Only `id.rs` uses it, and only to say an Id crosses the wire as a string.
 # See the `ts` feature below.
 ts-rs = { workspace = true, optional = true }

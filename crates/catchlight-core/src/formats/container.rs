@@ -6,9 +6,9 @@
 //! validated against the buffer size before use, so a malformed or hostile
 //! file errors instead of panicking or over-allocating.
 //!
-//! Section *meaning* — which `kind` is Structure / Textures / Vendor — lives
-//! in the `.clm` layer; this module frames opaque byte sections and
-//! owns only the version word that layer branches on.
+//! Section *meaning* — which `kind` is Structure, Textures, TextureManifest
+//! or Extensions — lives in the `.clm` layer; this module frames opaque byte
+//! sections and owns only the version word that layer branches on.
 
 use thiserror::Error;
 
