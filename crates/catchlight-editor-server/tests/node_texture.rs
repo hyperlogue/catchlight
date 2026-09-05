@@ -15,7 +15,7 @@ use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeKindArg, NodePatch, Reply, Request, ResponseBody, TexId,
     TextureEncoding,
 };
-use catchlight_editor_server::{Editor, Storage};
+use catchlight_editor_server::{Attachments, Editor, Storage};
 
 /// A store that is only a map, so a texture needs no filesystem.
 #[derive(Debug, Default)]
@@ -56,13 +56,10 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// An editor whose store holds one image under each of the given keys.
-    fn new(keys: &[&str]) -> Self {
-        let store = MemStorage::default();
-        for key in keys {
-            store.write(key, PIXEL_PNG).unwrap();
-        }
-        let editor = Editor::with_storage(Arc::new(store));
+    /// An editor with an empty store: every image here arrives attached to
+    /// the command that uses it.
+    fn new() -> Self {
+        let editor = Editor::with_storage(Arc::new(MemStorage::default()));
         let mut fixture = Self {
             editor,
             session: catchlight_editor_protocol::SessionId(0),
@@ -90,8 +87,29 @@ impl Fixture {
         }
     }
 
+    /// One command with an image attached — the one way a texture gets in.
+    fn body_with(&mut self, command: Command, name: &str, bytes: &[u8]) -> ResponseBody {
+        self.next += 1;
+        let mut attachments = Attachments::none();
+        attachments.insert(name, bytes.to_vec());
+        match self
+            .editor
+            .handle_with(
+                Request {
+                    id: self.next,
+                    command,
+                },
+                attachments,
+            )
+            .0
+        {
+            Reply::Ok { body, .. } => body,
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
     /// A part under the root, with a texture of its own.
-    fn part(&mut self, key: &str) -> (NodeId, TexId) {
+    fn part(&mut self) -> (NodeId, TexId) {
         let session = self.session;
         let node = match self.body(Command::NodeAdd {
             session,
@@ -103,13 +121,16 @@ impl Fixture {
             ResponseBody::Node { node, .. } => node,
             other => panic!("{other:?}"),
         };
-        let texture = match self.body(Command::TextureAdd {
-            session,
-            node: node.clone(),
-            path: Some(key.to_string()),
-            encoding: TextureEncoding::default(),
-            texture: None,
-        }) {
+        let texture = match self.body_with(
+            Command::TextureAdd {
+                session,
+                node: node.clone(),
+                encoding: TextureEncoding::default(),
+                texture: None,
+            },
+            "texture",
+            PIXEL_PNG,
+        ) {
             ResponseBody::Texture { texture, .. } => texture,
             other => panic!("{other:?}"),
         };
@@ -150,8 +171,8 @@ impl Fixture {
 /// unmapping obeys, reported the same way.
 #[test]
 fn clearing_a_parts_texture_drops_the_texture_nothing_else_draws() {
-    let mut f = Fixture::new(&["hair.png"]);
-    let (part, texture) = f.part("hair.png");
+    let mut f = Fixture::new();
+    let (part, texture) = f.part();
     assert_eq!(f.drawn(&part), Some(texture.clone()));
 
     let dropped = match f.set(
@@ -174,8 +195,8 @@ fn clearing_a_parts_texture_drops_the_texture_nothing_else_draws() {
 /// second path around the history.
 #[test]
 fn clearing_a_texture_is_one_undoable_edit() {
-    let mut f = Fixture::new(&["hair.png"]);
-    let (part, texture) = f.part("hair.png");
+    let mut f = Fixture::new();
+    let (part, texture) = f.part();
     f.set(
         &part,
         NodePatch {
@@ -195,9 +216,9 @@ fn clearing_a_texture_is_one_undoable_edit() {
 /// fields to carry together and no rule about which of them wins.
 #[test]
 fn absent_null_and_an_id_are_three_different_edits() {
-    let mut f = Fixture::new(&["hair.png", "skin.png"]);
-    let (hair, hair_tex) = f.part("hair.png");
-    let (_, skin_tex) = f.part("skin.png");
+    let mut f = Fixture::new();
+    let (hair, hair_tex) = f.part();
+    let (_, skin_tex) = f.part();
 
     let patch = |json: &str| -> NodePatch { serde_json::from_str(json).unwrap() };
 
@@ -215,7 +236,7 @@ fn absent_null_and_an_id_are_three_different_edits() {
 /// kind-specific field on a patch is — not an error.
 #[test]
 fn clearing_on_a_node_that_is_not_a_part_is_ignored() {
-    let mut f = Fixture::new(&[]);
+    let mut f = Fixture::new();
     let session = f.session;
     let group = match f.body(Command::NodeAdd {
         session,
@@ -245,8 +266,8 @@ fn clearing_on_a_node_that_is_not_a_part_is_ignored() {
 /// state is a different edit rather than a way around that check.
 #[test]
 fn pointing_at_an_unknown_texture_is_still_an_error() {
-    let mut f = Fixture::new(&["hair.png"]);
-    let (part, _) = f.part("hair.png");
+    let mut f = Fixture::new();
+    let (part, _) = f.part();
     let session = f.session;
 
     assert!(matches!(

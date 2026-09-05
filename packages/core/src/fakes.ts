@@ -29,7 +29,14 @@ import type {
   TexInfo,
   TreeNode,
 } from "./protocol.gen.js";
-import type { Backend, OkReply, Request, Unsubscribe } from "./backend.js";
+import type {
+  Attachment,
+  Backend,
+  OkReply,
+  OkReplyWithPayload,
+  Request,
+  Unsubscribe,
+} from "./backend.js";
 import { FeedQueue, ProtocolError } from "./backend.js";
 import type { FetchInit, HttpResponse, SocketLike } from "./connected.js";
 import type { TextureRequest, WasmEditor, WasmGpu, WasmModule, WasmReplica, WasmViewport } from "./wasm.js";
@@ -96,10 +103,11 @@ export function readStructure(bytes: Uint8Array): FakeDoc {
 /** The wasm editor, answering the commands these tests send. */
 export class FakeEditor implements WasmEditor {
   docs = new Map<number, FakeDoc>();
-  staged = new Map<string, Uint8Array>();
+  /** The tab's store: what a `save` wrote, until something drains it. */
+  written = new Map<string, Uint8Array>();
   requests: Request[] = [];
-  /** What `manifest_requirements` reports. */
-  requirements: string[] = [];
+  /** The attachments each request arrived with, in order. */
+  attached: Array<Record<string, Uint8Array>> = [];
   /** Commands to refuse instead of running, keyed by `cmd`. */
   refuse = new Map<string, { code: string; message: string }>();
   /** What `presence_set` last stored per session, and `presence_get` answers. */
@@ -109,6 +117,14 @@ export class FakeEditor implements WasmEditor {
   #events: string[] = [];
   #nextSession = 1;
   #nextNode = 1;
+
+  handleWith(
+    requestJson: string,
+    attachments: Attachment[],
+  ): { reply: string; payload?: Uint8Array } {
+    this.attached.push(Object.fromEntries(attachments));
+    return { reply: this.handle(requestJson) };
+  }
 
   handle(requestJson: string): string {
     const request = JSON.parse(requestJson) as Request;
@@ -121,30 +137,33 @@ export class FakeEditor implements WasmEditor {
       case "session_new":
         return this.#opened(id, request.name ?? "untitled", null);
       case "session_open": {
-        if (!this.staged.has(request.path)) {
+        if (!this.written.has(request.path)) {
           return JSON.stringify({
             reply: "err",
             id,
             code: "io",
-            message: `${JSON.stringify(request.path)} was not staged`,
+            message: `${JSON.stringify(request.path)} is not in the store`,
           });
         }
         return this.#opened(id, request.path, request.path);
       }
-      case "session_import": {
-        const missing = this.requirements.filter((key) => !this.staged.has(key));
-        if (missing.length > 0) {
-          return JSON.stringify({
-            reply: "err",
-            id,
-            code: "io",
-            message: `not staged: ${missing.join(", ")}`,
-          });
-        }
-        return this.#opened(id, request.manifest_path, request.manifest_path);
+      // Both imports replace an empty session's model rather than making one.
+      case "import_file":
+      case "import_manifest": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        doc.root.children.push({
+          id: "imported",
+          name: "imported",
+          kind: "part",
+          z_order: 0,
+          enabled: true,
+          children: [],
+        });
+        doc.rev += 1;
+        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        return this.#ok(id, { result: "session", session: request.session }, doc.rev);
       }
-      case "manifest_requirements":
-        return this.#ok(id, { result: "manifest_requirements", textures: this.requirements });
       case "session_list": {
         const sessions: SessionInfo[] = [...this.docs].map(([session, doc]) => ({
           session,
@@ -248,15 +267,15 @@ export class FakeEditor implements WasmEditor {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
         const key = request.path ?? doc.file ?? "untitled.clm";
-        this.staged.set(key, structureBytes(doc));
+        this.written.set(key, structureBytes(doc));
         doc.file = key;
         return this.#ok(id, { result: "saved", path: key }, doc.rev);
       }
       case "export_manifest": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
-        this.staged.set(request.path, new TextEncoder().encode("{}"));
-        this.staged.set("tex0.png", new TextEncoder().encode("a texture"));
+        this.written.set(request.path, new TextEncoder().encode("{}"));
+        this.written.set("tex0.png", new TextEncoder().encode("a texture"));
         return this.#ok(id, { result: "saved", path: request.path }, doc.rev);
       }
       case "session_close": {
@@ -310,18 +329,14 @@ export class FakeEditor implements WasmEditor {
     return events;
   }
 
-  putBytes(key: string, bytes: Uint8Array): void {
-    this.staged.set(key, bytes);
-  }
-
   takeBytes(key: string): Uint8Array | undefined {
-    const bytes = this.staged.get(key);
-    this.staged.delete(key);
+    const bytes = this.written.get(key);
+    this.written.delete(key);
     return bytes;
   }
 
-  stagedKeys(): string[] {
-    return [...this.staged.keys()].sort();
+  writtenKeys(): string[] {
+    return [...this.written.keys()].sort();
   }
 
   free(): void {
@@ -761,6 +776,10 @@ export function fakeWasm(): FakeModule {
     failNextAcquire: undefined,
     module: {
       CatchlightEditor: FakeEditor,
+      manifestRequirements: (json: string): string[] => {
+        const doc = JSON.parse(json) as { textures?: Array<{ path?: string }> };
+        return (doc.textures ?? []).flatMap((t) => (t.path === undefined ? [] : [t.path]));
+      },
       Gpu: {
         acquire: (canvas: HTMLCanvasElement) => {
           const failure = made.failNextAcquire;
@@ -792,9 +811,10 @@ export function fakeWasm(): FakeModule {
 export class ScriptedBackend implements Backend {
   readonly kind = "in-tab";
   sent: Command[] = [];
-  staged = new Map<string, Uint8Array>();
-  stagedKeys: string[] = [];
-  discardedKeys: string[] = [];
+  /** The attachments each `sendWith` carried, in order. */
+  attached: Array<readonly Attachment[]> = [];
+  /** The tab's store, for `readDocument`. */
+  stored = new Map<string, Uint8Array>();
   feeds: Array<{ session: number; rev: number }> = [];
   /** The target of each feed that actually ran, coalescing included. */
   runs: number[] = [];
@@ -819,25 +839,17 @@ export class ScriptedBackend implements Backend {
     return Promise.resolve(rev === undefined ? { body: { result: "empty" } } : { body: { result: "empty" }, rev });
   }
 
-  putBytes(key: string, bytes: Uint8Array): Promise<void> {
-    this.staged.set(key, bytes);
-    return Promise.resolve();
+  async sendWith(
+    command: Command,
+    attachments: readonly Attachment[],
+  ): Promise<OkReplyWithPayload> {
+    this.attached.push(attachments);
+    return this.send(command);
   }
 
-  stageKey(key: string): Promise<void> {
-    this.stagedKeys.push(key);
-    return Promise.resolve();
-  }
-
-  discardKey(key: string): Promise<void> {
-    this.discardedKeys.push(key);
-    this.staged.delete(key);
-    return Promise.resolve();
-  }
-
-  /** Whatever a test staged under `key`; nothing there is "not in this tab". */
-  readBytes(key: string): Promise<Uint8Array | undefined> {
-    return Promise.resolve(this.staged.get(key));
+  /** Whatever a test put under `key`; nothing there is "not in this tab". */
+  readDocument(key: string): Promise<Uint8Array | undefined> {
+    return Promise.resolve(this.stored.get(key));
   }
 
   feed(replica: WasmReplica, session: number, rev: number): Promise<number> {

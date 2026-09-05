@@ -4,8 +4,7 @@
  * A `Backend` is either the wasm editor running in this tab or a local editor
  * process reached over HTTP and a WebSocket. Both answer the same commands,
  * emit the same events, and feed the same kind of replica; nothing above this
- * file may branch on which one it has, except where a key has to be staged
- * (see [`Backend.stageKey`]).
+ * file may branch on which one it has.
  *
  * **The tab holds a replica, not the document.** A command goes to the
  * backend; what comes back is a body and the revision the session is at
@@ -22,9 +21,17 @@
  * **Feeds for one session never overlap.** [`FeedQueue`] serializes them and
  * coalesces everything waiting into a single feed at the newest revision, so a
  * burst of edits costs one structure fetch rather than one per event.
+ *
+ * **Bytes ride with the command that uses them, over HTTP and never the
+ * socket.** [`COMMAND_BYTES`] says which commands carry bytes; those go
+ * through [`Backend.sendWith`], and passing one to [`Backend.send`] throws
+ * before anything is sent. There is nothing to stage and no key to name — a
+ * blob nothing ever names cannot exist — and a reply that carries bytes hands
+ * them back beside it.
  */
 
 import type { Command, ErrorCode, Event, Reply, ResponseBody } from "./protocol.gen.js";
+import { COMMAND_BYTES } from "./protocol.gen.js";
 import type { WasmReplica } from "./wasm.js";
 
 /**
@@ -80,52 +87,53 @@ export class ProtocolError extends Error {
   }
 }
 
+/** One attachment: the name the command declares it under, and its bytes. */
+export type Attachment = readonly [name: string, bytes: Uint8Array];
+
+/** What a [`Backend.sendWith`] call answers with. */
+export interface OkReplyWithPayload extends OkReply {
+  /** Present only when the command's reply carries bytes back. */
+  readonly payload?: Uint8Array | undefined;
+}
+
 /** Where an editor is, and how it is reached. */
 export interface Backend {
   readonly kind: "in-tab" | "connected";
 
-  /** Sends one command; resolves with its ok reply, rejects [`ProtocolError`]. */
+  /**
+   * Sends one command that carries no bytes; resolves with its ok reply,
+   * rejects [`ProtocolError`].
+   *
+   * A command listed in [`COMMAND_BYTES`] belongs to [`sendWith`], and passing
+   * one here throws before anything reaches the editor — it would otherwise be
+   * refused for a missing attachment, one round trip later and further from
+   * the mistake.
+   */
   send(command: Command): Promise<OkReply>;
 
   /**
-   * Makes `key` resolve to `bytes` for the editor: the staging map in-tab, a
-   * PUT into the editor's file store when connected.
+   * Sends one command with the bytes it declares, and hands back whatever
+   * bytes its reply carries.
+   *
+   * The one way bytes reach the editor. `attachments` are `[name, bytes]`
+   * pairs, named as [`COMMAND_BYTES`] spells them; how they are framed is the
+   * backend's business and differs between the two.
    */
-  putBytes(key: string, bytes: Uint8Array): Promise<void>;
+  sendWith(command: Command, attachments: readonly Attachment[]): Promise<OkReplyWithPayload>;
 
   /**
-   * Makes `key` resolvable when the caller has the key but not the bytes.
+   * The bytes this tab's store holds at `key`, or `undefined` when there is no
+   * copy here to hand out.
    *
-   * In-tab that means reading the key out of the backend's [`Storage`] and
-   * staging it; connected it is already the editor's own store, so nothing
-   * happens. This is what a manifest's texture keys go through — a command
-   * names them only indirectly, so `send` cannot stage them itself.
+   * The outward half of the in-tab store, and the only direction it has: a
+   * command that *needs* bytes is handed them. In-tab a save lands in the
+   * browser's own storage, and a document that stays there is one nobody can
+   * take to another machine, so the bytes come back and become a download.
+   * Connected, the save already landed on the machine the person is sitting
+   * at and there is nothing to hand out. A missing key in-tab is an error,
+   * not `undefined`: a save that reported a key wrote it.
    */
-  stageKey(key: string): Promise<void>;
-
-  /**
-   * Says `key` will not be read again, so whatever was staged for it can go.
-   *
-   * The counterpart of [`stageKey`], and only for keys a caller staged by
-   * hand: `send` discards the ones it staged itself. In-tab that empties the
-   * staging map, which otherwise holds a second copy of every document ever
-   * opened. Connected it does nothing at all — there the key names a file in
-   * the editor's own store, and deleting that is not what a caller meant.
-   */
-  discardKey(key: string): Promise<void>;
-
-  /**
-   * The bytes the backend's store holds at `key`, or `undefined` when this tab
-   * has no copy to hand out.
-   *
-   * What a save is read back through: in-tab the store is in this tab, and a
-   * document that stays there is one nobody can take to another machine, so
-   * the bytes come back and become a download. Connected, the key names a file
-   * in the editor's own store — already where the person asked it to go — and
-   * there is nothing to hand out. A missing key in-tab is an error, not
-   * `undefined`: a save that reported a key wrote it.
-   */
-  readBytes(key: string): Promise<Uint8Array | undefined>;
+  readDocument(key: string): Promise<Uint8Array | undefined>;
 
   /**
    * Brings `replica` to at least `rev`, resolving with the revision it holds
@@ -138,6 +146,29 @@ export interface Backend {
   onEvent(listener: (event: Event) => void): Unsubscribe;
 
   close(): void;
+}
+
+/**
+ * Does this command carry bytes? [`COMMAND_BYTES`] is where that is written
+ * down, once, for every language.
+ */
+export function carriesBytes(command: Command): boolean {
+  return COMMAND_BYTES[command.cmd] !== undefined;
+}
+
+/**
+ * Throws when a byte-bearing command was passed to [`Backend.send`].
+ *
+ * Caught here rather than by the editor: the editor would refuse it for a
+ * missing attachment, which is a true answer to the wrong question and arrives
+ * a round trip away from the call that made the mistake.
+ */
+export function refuseIfItCarriesBytes(command: Command): void {
+  if (!carriesBytes(command)) return;
+  throw new ProtocolError({
+    code: "bad_request",
+    message: `${command.cmd} carries bytes; send it with sendWith`,
+  });
 }
 
 /** Reads a JSON reply, turning anything but an `ok` into a [`ProtocolError`]. */

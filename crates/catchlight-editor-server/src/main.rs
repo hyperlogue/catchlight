@@ -29,7 +29,6 @@ mod unix_main {
     use catchlight_editor_protocol::{Command, Reply, Request};
     use catchlight_editor_server::{
         bind_http, default_socket_path, serve_unix, Editor, FileStorage, HttpOptions,
-        StagingStorage,
     };
 
     const USAGE: &str = "usage: catchlight-editor-server [--socket <path>] [--store <dir>] \
@@ -57,15 +56,14 @@ mod unix_main {
             }
         };
 
-        // Uploads arrive over HTTP and are named by the same `path` key a
-        // `session_open` carries, so the editor reads through staging even
-        // when there is a filesystem behind it.
+        // The store holds the server's own files: what `session_open` reads
+        // and what a save writes. Bytes a client holds arrive attached to the
+        // command that uses them and never become a key here.
         let store = match args.store {
             Some(dir) => FileStorage::new(dir),
             None => FileStorage::default(),
         };
-        let staging = Arc::new(StagingStorage::new(Arc::new(store)));
-        let editor = Arc::new(Editor::with_storage(staging.clone()));
+        let editor = Arc::new(Editor::with_storage(Arc::new(store)));
 
         if let Some(path) = args.model {
             // Through `handle`, not a side door: the session has to show up in
@@ -98,7 +96,6 @@ mod unix_main {
             HttpOptions {
                 allowed_origins: args.allowed_origins,
                 token: None,
-                staging: Some(staging),
                 ..HttpOptions::default()
             },
         )?;

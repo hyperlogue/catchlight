@@ -153,8 +153,6 @@ enum SessionCmd {
     },
     /// Open an existing `.clm`.
     Open { path: String },
-    /// Build a model from a JSON manifest + its textures.
-    Import { manifest: String },
     /// List open sessions.
     List,
     /// Remember a session as the default for later commands.
@@ -778,19 +776,12 @@ fn main() -> Result<()> {
     let persist = matches!(
         cli.cmd,
         Cmd::Session {
-            action: SessionCmd::New { .. } | SessionCmd::Open { .. } | SessionCmd::Import { .. }
+            action: SessionCmd::New { .. } | SessionCmd::Open { .. }
         }
     );
 
-    // The one command whose answer is bytes: the socket carries a sibling
-    // `out` path and the server writes the payload there.
-    let out = match &cli.cmd {
-        Cmd::Preview { out, .. } => Some(absolute(out)?),
-        _ => None,
-    };
-
     let mut stream = connect()?;
-    let reply = call(&mut stream, Request { id: 1, command }, out.as_deref())?;
+    let reply = call(&mut stream, Request { id: 1, command }, siblings(&cli)?)?;
 
     if persist {
         if let Reply::Ok {
@@ -814,9 +805,6 @@ fn build_command(cli: &Cli) -> Result<Command> {
         Cmd::Session { action } => match action {
             SessionCmd::New { name } => Command::SessionNew { name: name.clone() },
             SessionCmd::Open { path } => Command::SessionOpen { path: path.clone() },
-            SessionCmd::Import { manifest } => Command::SessionImport {
-                manifest_path: manifest.clone(),
-            },
             SessionCmd::List => Command::SessionList,
             SessionCmd::Close => Command::SessionClose {
                 session: resolve_session(cli)?,
@@ -1322,11 +1310,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
                 node: node.clone(),
-                // This client names a key rather than attaching bytes, and
-                // the editor reads the encoding off the key's tail, so the
-                // field goes unread.
-                path: Some(path.clone()),
-                encoding: TextureEncoding::default(),
+                // The socket carries the path in `files` and the editor reads
+                // it; the encoding is this client's to decide.
+                encoding: encoding_of(path),
                 texture: id.clone(),
             },
             TextureCmd::List => Command::TextureList {
@@ -1586,19 +1572,52 @@ fn connect() -> Result<UnixStream> {
     })
 }
 
-/// One request per line, plus the sibling keys the socket carries beside it.
+/// The sibling keys this command's line carries beside the request.
 ///
-/// `out` is where the server writes a payload. It is resolved against this
-/// process's directory before it is sent, because the server's directory is
-/// its own — the two share a filesystem, not a working directory.
-fn call(stream: &mut UnixStream, req: Request, out: Option<&str>) -> Result<Reply> {
+/// `files` names the bytes a command needs and `out` is where a payload goes.
+/// Both are the *client's* own files, and both are resolved against this
+/// process's directory before they are sent: the server shares this
+/// filesystem, not this working directory.
+fn siblings(cli: &Cli) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let mut out = serde_json::Map::new();
+    match &cli.cmd {
+        Cmd::Preview { out: path, .. } => {
+            out.insert("out".into(), absolute(path)?.into());
+        }
+        Cmd::Texture {
+            action: TextureCmd::Add { path, .. },
+        } => {
+            let files = serde_json::json!({ "texture": absolute(path)? });
+            out.insert("files".into(), files);
+        }
+        _ => {}
+    }
+    Ok(out)
+}
+
+/// How to read an image, from its suffix. `texture_add` carries the encoding
+/// as a field, so it is the client that decides.
+fn encoding_of(path: &str) -> TextureEncoding {
+    if path.to_ascii_lowercase().ends_with(".tga") {
+        TextureEncoding::Tga
+    } else {
+        TextureEncoding::Png
+    }
+}
+
+/// One request per line, plus the sibling keys the socket carries beside it.
+fn call(
+    stream: &mut UnixStream,
+    req: Request,
+    siblings: serde_json::Map<String, serde_json::Value>,
+) -> Result<Reply> {
     let want = req.id;
-    let mut line = match (serde_json::to_value(&req)?, out) {
-        (serde_json::Value::Object(mut object), Some(out)) => {
-            object.insert("out".into(), out.into());
+    let mut line = match serde_json::to_value(&req)? {
+        serde_json::Value::Object(mut object) if !siblings.is_empty() => {
+            object.extend(siblings);
             serde_json::to_string(&object)?
         }
-        (value, _) => serde_json::to_string(&value)?,
+        value => serde_json::to_string(&value)?,
     };
     line.push('\n');
     stream.write_all(line.as_bytes())?;
@@ -1747,14 +1766,6 @@ fn print_body(body: &ResponseBody) {
         }
 
         ResponseBody::Saved { path } => println!("saved -> {path}"),
-        ResponseBody::ManifestRequirements { textures } => {
-            if textures.is_empty() {
-                println!("(no textures)");
-            }
-            for key in textures {
-                println!("texture {key}");
-            }
-        }
         ResponseBody::Presence { presence } => match presence {
             None => println!("(no presence)"),
             Some(p) => {

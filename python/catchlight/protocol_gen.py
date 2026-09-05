@@ -261,48 +261,20 @@ class SessionNew:
 
 @dataclass(frozen=True, kw_only=True)
 class SessionOpen:
+    """Open the `.clm` the server's store holds at `path`.
+
+    A file of the server's, and the session can save back over it. Bytes a
+    client holds are not this command: those are [`Command::SessionNew`]
+    followed by [`Command::ImportFile`], which leaves the session with no
+    file to save to, because there is none.
+    """
+
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "session_open"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
 
     path: str
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class SessionImport:
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "session_import"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
-
-    manifest_path: str
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class ManifestRequirements:
-    """The storage keys [`Command::SessionImport`] would read for this
-    manifest, resolved relative to the manifest's own key.
-
-    A client whose store is not the editor's — a browser staging bytes it
-    fetched — asks this first and stages exactly these keys, so the import
-    itself never has to go looking for a file that is not there yet.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "manifest_requirements"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
-
-    manifest_path: str
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -737,12 +709,6 @@ class TextureAdd:
 
     session: SessionId
     node: NodeId
-    # A storage key to read the image from instead of the attachment —
-    # the transitional form, and the one place an encoding is still
-    # sniffed off a key's tail. Exactly one of this and the attachment,
-    # else [`ErrorCode::BadRequest`]. Goes away once every client sends
-    # the attachment.
-    path: str | None = None
     # How to read the attached bytes. The field, never a sniff.
     encoding: TextureEncoding | None = None
     # The Id to create it under. Absent generates one; an Id the model
@@ -1660,8 +1626,6 @@ class ImportManifest:
 Command = (
     SessionNew
     | SessionOpen
-    | SessionImport
-    | ManifestRequirements
     | SessionList
     | SessionClose
     | Save
@@ -1733,8 +1697,6 @@ Command = (
 COMMAND_VARIANTS: dict[str, type[Command]] = {
     "session_new": SessionNew,
     "session_open": SessionOpen,
-    "session_import": SessionImport,
-    "manifest_requirements": ManifestRequirements,
     "session_list": SessionList,
     "session_close": SessionClose,
     "save": Save,
@@ -1819,8 +1781,6 @@ def parse_command(message: Mapping[str, Any]) -> Command:
 COMMAND_KINDS: dict[str, CommandKind] = {
     "session_new": CommandKind.DOCUMENT,
     "session_open": CommandKind.DOCUMENT,
-    "session_import": CommandKind.DOCUMENT,
-    "manifest_requirements": CommandKind.SERVER_QUERY,
     "session_list": CommandKind.SERVER_QUERY,
     "session_close": CommandKind.DOCUMENT,
     "save": CommandKind.DOCUMENT,
@@ -1930,7 +1890,6 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
 DocumentCommand = (
     SessionNew
     | SessionOpen
-    | SessionImport
     | SessionClose
     | Save
     | NodeAdd
@@ -2017,8 +1976,7 @@ ReplicaQueryCommand = (
 #
 # A replica cannot answer one, so these always go over the wire.
 ServerQueryCommand = (
-    ManifestRequirements
-    | SessionList
+    SessionList
     | ExportManifest
     | Status
     | PresenceGet
@@ -2892,22 +2850,6 @@ class ResponseBodyEmptied:
         return _wire_fields(self)
 
 
-@dataclass(frozen=True, kw_only=True)
-class ResponseBodyManifestRequirements:
-    """Storage keys an import needs, already resolved against the manifest's
-    own key — so a client stages them verbatim.
-    """
-
-    TAG_FIELD: ClassVar[str] = "result"
-    TAG: ClassVar[str] = "manifest_requirements"
-
-    textures: list[str]
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
 ResponseBody = (
     ResponseBodyEmpty
     | ResponseBodySession
@@ -2930,7 +2872,6 @@ ResponseBody = (
     | ResponseBodyWelds
     | ResponseBodyUnfilledSlots
     | ResponseBodyEmptied
-    | ResponseBodyManifestRequirements
 )
 
 RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
@@ -2955,7 +2896,6 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "welds": ResponseBodyWelds,
     "unfilled_slots": ResponseBodyUnfilledSlots,
     "emptied": ResponseBodyEmptied,
-    "manifest_requirements": ResponseBodyManifestRequirements,
 }
 
 
@@ -3212,8 +3152,6 @@ __all__ = [
     "SlotId",
     "SessionNew",
     "SessionOpen",
-    "SessionImport",
-    "ManifestRequirements",
     "SessionList",
     "SessionClose",
     "Save",
@@ -3350,7 +3288,6 @@ __all__ = [
     "ResponseBodyWelds",
     "ResponseBodyUnfilledSlots",
     "ResponseBodyEmptied",
-    "ResponseBodyManifestRequirements",
     "ResponseBody",
     "RESPONSE_BODY_VARIANTS",
     "parse_response_body",

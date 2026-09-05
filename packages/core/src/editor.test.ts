@@ -55,56 +55,68 @@ describe("opening documents", () => {
     const { editor, storage, wasm } = await inTab();
     await storage.write("project/akari.clm", new TextEncoder().encode("a model"));
 
+    // The store here is the editor's, so the key names a file it can read.
+    wasm.written.set("project/akari.clm", new TextEncoder().encode("a model"));
     const session = await editor.openDocument("project/akari.clm");
 
     expect(session.id).toBe(1);
     expect(wasm.requests.map((request) => request.cmd)).toEqual(["session_open"]);
   });
 
-  test("opening a file the page holds stages it, then opens it", async () => {
+  test("a file the page holds is a fresh session and an import into it", async () => {
     const { editor, storage, wasm } = await inTab();
+    const bytes = new TextEncoder().encode("a model");
 
-    const session = await editor.openFile(new TextEncoder().encode("a model"), "Akari Final.clm");
+    const session = await editor.openFile(bytes, "Akari Final.clm");
 
     expect(session.id).toBe(1);
-    expect(wasm.requests[0]).toMatchObject({ cmd: "session_open", path: "Akari_Final.clm" });
-    // Staging is not storing: a dropped file is not written to the store until
-    // somebody saves it.
+    expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_new", "import_file"]);
+    expect(wasm.requests[0]).toMatchObject({ cmd: "session_new", name: "Akari_Final.clm" });
+    // The bytes went with the command that reads them, not under a key.
+    expect(wasm.attached[1]).toEqual({ model: bytes });
+    expect(wasm.writtenKeys()).toEqual([]);
+    // A dropped file is not written to the store until somebody saves it.
     expect(await storage.list()).toEqual([]);
   });
 
-  test("importing asks what the manifest needs, then stages exactly that", async () => {
+  test("importing reads the manifest here and attaches every texture it names", async () => {
     const { editor, storage, wasm } = await inTab();
-    await storage.write("rig/model.json", new TextEncoder().encode("{}"));
-    await storage.write("rig/tex0.png", new TextEncoder().encode("a texture"));
-    await storage.write("rig/tex1.png", new TextEncoder().encode("another"));
-    wasm.requirements = ["rig/tex0.png", "rig/tex1.png"];
+    const manifest = new TextEncoder().encode(
+      JSON.stringify({ textures: [{ id: "a", path: "tex0.png" }, { id: "b", path: "tex1.png" }] }),
+    );
+    const tex0 = new TextEncoder().encode("a texture");
+    const tex1 = new TextEncoder().encode("another");
+    await storage.write("rig/model.json", manifest);
+    await storage.write("rig/tex0.png", tex0);
+    await storage.write("rig/tex1.png", tex1);
 
     const session = await editor.importManifest("rig/model.json");
 
     expect(session.id).toBe(1);
-    // The requirements come first, because an in-tab editor cannot go looking
-    // for a file that is not staged yet.
-    expect(wasm.requests.map((request) => request.cmd)).toEqual([
-      "manifest_requirements",
-      "session_import",
-    ]);
-    // Staged for the import and dropped after it: the model decoded every one
-    // of them and owns its copy, so what is left would be the model twice.
-    expect(wasm.stagedKeys()).toEqual([]);
+    // No round trip to ask what it needs: the manifest says, and reading it is
+    // a pure function.
+    expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_new", "import_manifest"]);
+    // Each reference resolved against the manifest's own key, and attached
+    // under the name the import matches it by.
+    expect(wasm.attached[1]).toEqual({
+      manifest,
+      "texture:tex0.png": tex0,
+      "texture:tex1.png": tex1,
+    });
+    expect(wasm.writtenKeys()).toEqual([]);
   });
 
-  test("opening a file drops the bytes once the model has them", async () => {
+  test("opening a file twice is two documents", async () => {
     const { editor, wasm } = await inTab();
 
     await editor.openFile(new TextEncoder().encode("a model"), "akari.clm");
-    expect(wasm.stagedKeys()).toEqual([]);
+    expect(wasm.writtenKeys()).toEqual([]);
 
     // The same name again is a second document, not a failure: nothing here
     // depends on the first open's bytes still being around.
     const second = await editor.openFile(new TextEncoder().encode("a newer model"), "akari.clm");
     expect(second.id).toBe(2);
-    expect(wasm.stagedKeys()).toEqual([]);
+    expect(wasm.writtenKeys()).toEqual([]);
   });
 
   test("saving reports the key and leaves the bytes in the store", async () => {
@@ -126,7 +138,7 @@ describe("opening documents", () => {
     const bytes = await editor.readDocument(key);
 
     // What a download hands the browser: the store's copy, which is what the
-    // editor staged for the save — not a re-serialization here.
+    // editor wrote for the save — not a re-serialization here.
     if (!bytes) throw new Error("the store handed back nothing");
     expect(readStructure(bytes).title).toBe(wasm.snapshot(session.id).title);
     // And a key nobody wrote is an error, never an empty download.

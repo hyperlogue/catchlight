@@ -6,9 +6,9 @@
 
 use catchlight_editor_protocol::{
     BindingKeyEntry, BindingParams, BindingTarget, Command, NodeKindArg, Reply, Request,
-    ResponseBody, ScalarTarget,
+    ResponseBody, ScalarTarget, SessionId,
 };
-use catchlight_editor_server::Editor;
+use catchlight_editor_server::{Attachments, Editor};
 
 fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
     match ed.handle(Request { id, command }) {
@@ -27,7 +27,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
     ))
     .expect("welded_seam.clm");
     let ed = Editor::new();
-    let session = ed.open_bytes("welded_seam", &bytes).expect("open");
+    let session = open_bytes(&ed, "welded_seam", bytes);
 
     let root = match body(&ed, 1, Command::NodeTree { session }) {
         ResponseBody::Tree { root } => root.id,
@@ -126,4 +126,39 @@ fn recorded_binding_moves_the_rebaked_puppet() {
         (after_unset - rest).abs() < 1e-3,
         "unset binding still moves the node: rest={rest} after_unset={after_unset}"
     );
+}
+
+/// A session holding `bytes`: a fresh one, then the file imported into it.
+///
+/// The one way bytes a caller holds become a document — there is no side door
+/// that takes them, so a test opens a model exactly as a client does.
+fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
+    let reply = editor.handle(Request {
+        id: 0,
+        command: Command::SessionNew {
+            name: Some(title.to_string()),
+        },
+    });
+    let session = match reply {
+        Reply::Ok {
+            body: ResponseBody::Session { session },
+            ..
+        } => session,
+        other => panic!("expected a session, got {other:?}"),
+    };
+    let mut attachments = Attachments::none();
+    attachments.insert("model", bytes);
+    match editor.handle_with(
+        Request {
+            id: 0,
+            command: Command::ImportFile {
+                session,
+                parent: None,
+            },
+        },
+        attachments,
+    ) {
+        (Reply::Ok { .. }, _) => session,
+        (other, _) => panic!("import_file: {other:?}"),
+    }
 }

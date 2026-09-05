@@ -52,12 +52,16 @@ must name loopback: the token travels in clear text. A command there is one
 `POST /request` carrying the very JSON object the socket carries, so there is
 no connection to open and a wrong token surfaces on the first `send`.
 
-What differs between them is where the bytes are. Over the socket the editor
-reads the very filesystem the script is on, so a texture is a path and
-`save_to` is a save. Over HTTP the editor's store is somewhere else, so a
-texture is staged with `PUT /files/…` and then named, and `save_to` fetches the
-document and writes it here. `Client` picks by transport; a script reads the
-same either way.
+Bytes a command needs travel with it, over either door: an image, a `.clm`, a
+manifest and its textures are read here and attached, so `add_texture`,
+`import_file` and `import_manifest` are one call whichever transport is
+underneath. What the framing looks like differs — temporary files named in the
+socket's line, `multipart/form-data` on the POST — and a script never sees it.
+
+What is still the *store's* is where the two part. Over the socket the editor
+reads the very filesystem the script is on, so `open` names a file it can read
+and `save_to` is a save. Over HTTP the store is somewhere else, so `save_to`
+fetches the document and writes it here. `Client` picks by transport.
 
 Neither door hears an event. The editor pushes those over the WebSocket a
 browser tab holds, which this package does not open; a blocking caller learns

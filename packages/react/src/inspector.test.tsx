@@ -86,9 +86,10 @@ describe("the inspector", () => {
     const { wasm, session, node, view } = await inspecting("part");
     // Something to clear: a part drawing nothing is already at "none", and a
     // select that did not move authors nothing either way.
-    wasm.staged.set("hair.png", new TextEncoder().encode("not really a png"));
     await run(() =>
-      session.send({ cmd: "texture_add", node, path: "hair.png", encoding: "png" }),
+      session.sendWith({ cmd: "texture_add", node, encoding: "png" }, [
+        ["texture", new TextEncoder().encode("not really a png")],
+      ]),
     );
     await settle();
 

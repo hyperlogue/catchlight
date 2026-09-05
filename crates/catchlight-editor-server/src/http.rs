@@ -39,21 +39,15 @@
 //!   or the very [`Arc<[u8]>`](Arc) the model holds, cloned by refcount under
 //!   the session lock and written straight to the socket.
 //!
-//! - **The token is checked before a body is read.** `PUT /files/{key}` may
-//!   carry [`HttpOptions::max_upload_bytes`] — a quarter of a gigabyte by
-//!   default — and buffering that for a request that turns out to have no
-//!   token is memory any page on any origin could spend. So a connection
+//! - **The token is checked before a body is read.** A multipart
+//!   `POST /request` may carry [`HttpOptions::max_upload_bytes`] — a quarter
+//!   of a gigabyte by default — and buffering that for a request that turns
+//!   out to have no token is memory any page on any origin could spend. So a
+//!   connection
 //!   reads the request line and the headers, settles `Host`, origin and
 //!   bearer token against those alone, and only then reads the body. A
 //!   request refused there is answered with its body still in the socket,
 //!   which is one more reason no response here keeps its connection alive.
-//!
-//! - **An upload lives until the command that names it succeeds.**
-//!   `PUT /files/{key}` parks bytes in the editor's [`StagingStorage`] and
-//!   answers 204; the `session_open`, `session_import` or `texture_add` that
-//!   names the key reads them into a document and releases them there. Nothing
-//!   here expires an upload, so a key a tab stages and never names is held
-//!   until the process ends.
 //!
 //! - **A WebSocket's `Origin` must be allowlisted, and its absence is fine.**
 //!   Browsers always send one, so a foreign page is caught; non-browser
@@ -66,10 +60,12 @@
 //!   answered a ping itself. So the reader's socket writes go to a channel
 //!   ([`Bounce`]) and the writer replays those bytes between its own frames.
 //!
-//! - **Bytes cross on `POST /request` and nowhere else.** A command that
-//!   carries bytes goes there as `multipart/form-data`: a part named `request`
-//!   holding the command JSON, one part per attachment named for the
-//!   attachment. When the reply carries bytes back they *are* the response
+//! - **Bytes cross on `POST /request` and nowhere else.** There is no upload
+//!   route and no key a client can put bytes under: a command that carries
+//!   bytes goes to that one route as `multipart/form-data` — a part named
+//!   `request` holding the command JSON, one part per attachment named for
+//!   the attachment — so a blob nothing ever names cannot exist here. When
+//!   the reply carries bytes back they *are* the response
 //!   body, under the payload's own content type, and the JSON reply rides in
 //!   `X-Catchlight-Reply` — escaped to ASCII (`\uXXXX`) so a header value can
 //!   hold it and still parse as the same JSON. `/ws` refuses such a command
@@ -113,7 +109,6 @@ use percent_encoding::percent_decode_str;
 use tungstenite::handshake::derive_accept_key;
 use tungstenite::protocol::{Message, Role, WebSocket, WebSocketConfig};
 
-use crate::storage::StagingStorage;
 use crate::{carries_bytes, Attachments, Editor, EditorError, Payload};
 
 /// One frame, one request — the same cap the Unix socket puts on one line, and
@@ -126,7 +121,8 @@ const MAX_CONNECTIONS: usize = 64;
 /// Bounds the HTTP phase. A WebSocket re-arms this as its keepalive interval
 /// instead, because an idle tab is a live tab but a silent one is not.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(30);
-/// Default ceiling on a `PUT /files/{key}` body: a `.clm` with its textures.
+/// Default ceiling on a multipart `POST /request` body: a `.clm` with its
+/// textures, or a manifest and every image it names.
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 /// How long a WebSocket may say nothing before it is pinged; two of these with
 /// no answer and the peer is treated as gone.
@@ -147,16 +143,13 @@ pub struct HttpOptions {
     pub allowed_origins: Vec<String>,
     /// The bearer token. `None` mints a fresh random one for this launch.
     pub token: Option<String>,
-    /// Ceiling on a `PUT /files/{key}` body.
+    /// Ceiling on a multipart `POST /request` body — the one route that
+    /// carries a document rather than a command.
     pub max_upload_bytes: usize,
     /// How often an idle WebSocket is pinged, and half the silence it puts up
     /// with before the connection is dropped. The default suits a browser tab;
     /// shorten it only to exercise the keepalive.
     pub ping_interval: Duration,
-    /// Where `PUT /files/{key}` parks its bytes. This must be the very
-    /// [`StagingStorage`] the [`Editor`] was built on, or an upload will not
-    /// be visible to the `session_open` that names it. `None` refuses uploads.
-    pub staging: Option<Arc<StagingStorage>>,
 }
 
 impl Default for HttpOptions {
@@ -166,7 +159,6 @@ impl Default for HttpOptions {
             token: None,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
             ping_interval: DEFAULT_PING_INTERVAL,
-            staging: None,
         }
     }
 }
@@ -186,7 +178,6 @@ struct ServerState {
     origins: Vec<String>,
     max_upload_bytes: usize,
     ping_interval: Duration,
-    staging: Option<Arc<StagingStorage>>,
     connections: Arc<ConnectionLimiter>,
 }
 
@@ -219,7 +210,6 @@ pub fn bind_http(
             origins,
             max_upload_bytes: options.max_upload_bytes,
             ping_interval: options.ping_interval,
-            staging: options.staging,
             connections: Arc::new(ConnectionLimiter::default()),
         }),
     })
@@ -420,7 +410,6 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
         ("GET", ["sessions", id, "structure"]) => structure(state, id),
         ("GET", ["sessions", id, "clm"]) => clm(state, id),
         ("GET", ["sessions", id, "textures", tex]) => texture(state, id, tex),
-        ("PUT", ["files", ..]) => put_file(state, request),
         _ => Response::text(404, "Not Found", "no such endpoint"),
     };
     cors(response, allowed)
@@ -679,23 +668,6 @@ fn texture(state: &ServerState, id: &str, tex: &str) -> Response {
         Err(EditorError::NoSession(_)) => Response::text(404, "Not Found", "no such session"),
         Err(err) => Response::text(500, "Internal Server Error", &err.to_string()),
     }
-}
-
-/// Stage an upload under the key a later `session_open` will name. The bytes
-/// never touch the server's disk — see [`StagingStorage`].
-fn put_file(state: &ServerState, request: &HttpRequest) -> Response {
-    let Some(staging) = &state.staging else {
-        return Response::text(503, "Service Unavailable", "this server stages no uploads");
-    };
-    let Some(raw) = request.path.strip_prefix("/files/") else {
-        return Response::text(404, "Not Found", "no such endpoint");
-    };
-    let key = decode(raw);
-    if key.is_empty() {
-        return Response::text(400, "Bad Request", "empty file key");
-    }
-    staging.put(&key, request.body.clone());
-    Response::new(204, "No Content")
 }
 
 fn parse_session(id: &str) -> Option<SessionId> {
@@ -1078,10 +1050,9 @@ fn read_body(
 ) -> Result<Vec<u8>, BadRequest> {
     // A multipart command carries a model or an image, so it gets the upload
     // ceiling; a JSON one is a command and nothing else.
-    let bulk = (request.method == "PUT" && request.path.starts_with("/files/"))
-        || (request.method == "POST"
-            && request.path == "/request"
-            && multipart_boundary(request).is_some());
+    let bulk = request.method == "POST"
+        && request.path == "/request"
+        && multipart_boundary(request).is_some();
     let ceiling = if bulk { max_body } else { MAX_REQUEST_BYTES };
     if length > ceiling {
         drain_body(reader, length);

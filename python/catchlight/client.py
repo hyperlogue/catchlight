@@ -30,8 +30,8 @@ Invariants this module enforces:
 
 - **Bytes go where the store is.** A *stored* file is still the store's: over
   the socket the editor reads the very filesystem this script is on, so a save
-  is a save; over HTTP the store is somewhere else, so a save is the document
-  fetched back and written here.
+  is a save and `open` names a file it can read; over HTTP the store is
+  somewhere else, so a save is the document fetched back and written here.
 
 - **Bytes a command needs travel with it.** An image, a `.clm`, a manifest and
   its textures are read here and handed to `send_with`, which puts them beside

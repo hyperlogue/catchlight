@@ -81,23 +81,25 @@
 //!   `[x, y]` — the y index is 0 for a one-param binding. An XY pad is a view
 //!   over any two params, not a property of either.
 //!
-//! - **A session holds a complete model, never an addon fragment.** There is
-//!   deliberately no install/extract command pair and no multi-root tree
-//!   reply: `catchlight-cli` already installs, extracts and scans a fragment
-//!   at the file level without a session, which is the whole workflow, and a
-//!   session that could open one would need every tree reply, the inspector
-//!   and the commit gate to grow a second shape for a case nothing asks for.
-//!   [`Command::NodeTree`] on a fragment is [`ErrorCode::Fragment`].
+//! - **A session's model is always complete.** A fragment enters one way and
+//!   one way only: [`Command::ImportFile`] naming a `parent`, which installs
+//!   it under that node in a single atomic edit and leaves a complete model
+//!   behind. It never *becomes* the session's model, there is no extract
+//!   command to match it, and no reply carries a multi-root tree — so every
+//!   tree reply, the inspector and the commit gate keep one shape.
+//!   `catchlight-cli` is where a fragment is cut, scanned and merged at the
+//!   file level, without a session at all. [`Command::NodeTree`] on a
+//!   fragment is [`ErrorCode::Fragment`], which nothing should see.
 //!
-//! - **A `path` field is an opaque storage key.** [`Command::SessionOpen`],
-//!   [`Command::Save`], [`Command::SessionImport`],
-//!   [`Command::ManifestRequirements`], [`Command::ExportManifest`] and
-//!   [`Command::TextureAdd`] each name bytes with one string, and what that string addresses is the server's store:
-//!   a filesystem path natively, an OPFS entry or a fetched URL in the
-//!   browser, a blob key in the cloud. Only two things read a key's shape —
-//!   `/` separates segments so a manifest's texture references resolve
-//!   relative to the manifest, and the tail after the last `.` picks a texture
-//!   decoder. A client that builds keys should not assume more.
+//! - **A `path` field is an opaque storage key, and it is the server's own
+//!   store.** [`Command::SessionOpen`], [`Command::Save`] and
+//!   [`Command::ExportManifest`] each name a file with one string, and what
+//!   that string addresses is the server's store: a filesystem path natively,
+//!   an OPFS entry or a fetched URL in the browser, a blob key in the cloud.
+//!   Only one thing reads a key's shape — `/` separates segments. Bytes a
+//!   *client* holds never travel as a key: they are an attachment on the
+//!   command that uses them. A client that builds keys should not assume
+//!   more.
 //!
 //! - **Bytes travel beside a command, never in it.** A command that needs
 //!   bytes declares the names they arrive under in [`COMMAND_BYTES`], and one
@@ -160,20 +162,14 @@ pub enum Command {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Open the `.clm` the server's store holds at `path`.
+    ///
+    /// A file of the server's, and the session can save back over it. Bytes a
+    /// client holds are not this command: those are [`Command::SessionNew`]
+    /// followed by [`Command::ImportFile`], which leaves the session with no
+    /// file to save to, because there is none.
     SessionOpen {
         path: String,
-    },
-    SessionImport {
-        manifest_path: String,
-    },
-    /// The storage keys [`Command::SessionImport`] would read for this
-    /// manifest, resolved relative to the manifest's own key.
-    ///
-    /// A client whose store is not the editor's — a browser staging bytes it
-    /// fetched — asks this first and stages exactly these keys, so the import
-    /// itself never has to go looking for a file that is not there yet.
-    ManifestRequirements {
-        manifest_path: String,
     },
     SessionList,
     SessionClose {
@@ -335,13 +331,6 @@ pub enum Command {
     TextureAdd {
         session: SessionId,
         node: NodeId,
-        /// A storage key to read the image from instead of the attachment —
-        /// the transitional form, and the one place an encoding is still
-        /// sniffed off a key's tail. Exactly one of this and the attachment,
-        /// else [`ErrorCode::BadRequest`]. Goes away once every client sends
-        /// the attachment.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
         /// How to read the attached bytes. The field, never a sniff.
         #[serde(default)]
         encoding: TextureEncoding,
@@ -787,8 +776,6 @@ pub enum CommandKind {
 pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("session_new", CommandKind::Document),
     ("session_open", CommandKind::Document),
-    ("session_import", CommandKind::Document),
-    ("manifest_requirements", CommandKind::ServerQuery),
     ("session_list", CommandKind::ServerQuery),
     ("session_close", CommandKind::Document),
     ("save", CommandKind::Document),
@@ -936,8 +923,6 @@ impl Command {
         match self {
             Command::SessionNew { .. } => "session_new",
             Command::SessionOpen { .. } => "session_open",
-            Command::SessionImport { .. } => "session_import",
-            Command::ManifestRequirements { .. } => "manifest_requirements",
             Command::SessionList => "session_list",
             Command::SessionClose { .. } => "session_close",
             Command::Save { .. } => "save",
@@ -1047,11 +1032,7 @@ impl Command {
     /// not compile until it says whether it names a session.
     pub fn session(&self) -> Option<SessionId> {
         match self {
-            Command::SessionNew { .. }
-            | Command::SessionOpen { .. }
-            | Command::SessionImport { .. }
-            | Command::ManifestRequirements { .. }
-            | Command::SessionList => None,
+            Command::SessionNew { .. } | Command::SessionOpen { .. } | Command::SessionList => None,
             Command::SessionClose { session }
             | Command::Save { session, .. }
             | Command::ExportManifest { session, .. }
@@ -2114,11 +2095,6 @@ pub enum ResponseBody {
         node: NodeId,
         slots: Vec<SlotId>,
     },
-    /// Storage keys an import needs, already resolved against the manifest's
-    /// own key — so a client stages them verbatim.
-    ManifestRequirements {
-        textures: Vec<String>,
-    },
 }
 
 /// Ephemeral shared view state. Rides its own path — decoupled from the document
@@ -2388,7 +2364,6 @@ mod tests {
         let texture_add = Command::TextureAdd {
             session: SessionId(1),
             node: node("face"),
-            path: None,
             encoding: TextureEncoding::Png,
             texture: None,
         };
@@ -2666,8 +2641,8 @@ mod tests {
         );
         assert_eq!(Command::SessionList.session(), None);
         assert_eq!(
-            Command::ManifestRequirements {
-                manifest_path: "m.json".into()
+            Command::SessionOpen {
+                path: "m.clm".into()
             }
             .session(),
             None

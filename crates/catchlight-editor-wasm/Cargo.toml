@@ -12,6 +12,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 catchlight-core = { workspace = true }
+# For `manifest_requirements`: reading a manifest is a pure function, and the
+# tab needs the answer without a session.
+catchlight-editor-core = { workspace = true }
 catchlight-editor-server = { workspace = true }
 catchlight-editor-protocol = { workspace = true }
 serde_json = { workspace = true }

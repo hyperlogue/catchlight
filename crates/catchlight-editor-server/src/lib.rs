@@ -91,7 +91,7 @@ pub use http::{bind_http, serve_http, HttpOptions, HttpServer};
 pub use query::{replica_query, replica_reply, slot_info, weld_info};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
-pub use storage::{join_key, key_stem, parent_key, NoStorage, StagingStorage, Storage};
+pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};
 
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -853,19 +853,6 @@ impl Editor {
             .ok_or(EditorError::NoSession(id))
     }
 
-    /// Open a `.clm` from in-memory bytes — the browser file-picker path, and
-    /// the only document-open the wasm build has (no filesystem there).
-    pub fn open_bytes(
-        &self,
-        title: impl Into<String>,
-        bytes: &[u8],
-    ) -> Result<SessionId, EditorError> {
-        let model = Model::from_clm_bytes(bytes)?;
-        let id = self.alloc_id();
-        self.insert_session(id, Session::new(id, model, title.into(), None));
-        Ok(id)
-    }
-
     /// Serialize a session to `.clm` bytes; the caller owns where the bytes
     /// land (blob download, OPFS, a file) and confirms with [`Self::mark_saved`]
     /// once they actually landed — a failed download must not clear the dirty
@@ -1054,30 +1041,6 @@ impl Editor {
         Ok(f(model, puppet))
     }
 
-    /// Read a manifest and the storage keys its textures live at.
-    ///
-    /// The one place a manifest's texture references are resolved:
-    /// [`Command::SessionImport`] reads those keys, and
-    /// [`Command::ManifestRequirements`] reports them, so a client that stages
-    /// bytes itself stages exactly what the import will ask for.
-    fn read_manifest(&self, manifest_path: &str) -> Result<(Manifest, Vec<String>), EditorError> {
-        let json = String::from_utf8(self.storage.read(manifest_path)?).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("{manifest_path}: manifest is not UTF-8: {e}"),
-            )
-        })?;
-        let manifest = Manifest::from_json(&json)?;
-        // Texture references are relative to the manifest's own key.
-        let base = parent_key(manifest_path);
-        let keys = manifest
-            .textures
-            .iter()
-            .map(|t| join_key(base, &t.path))
-            .collect();
-        Ok((manifest, keys))
-    }
-
     /// The one match over every command. `attachments` holds the bytes that
     /// came in with it, already checked against what it declared; an arm that
     /// answers with bytes writes them into `payload`.
@@ -1099,35 +1062,11 @@ impl Editor {
                 let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
                 let id = self.alloc_id();
                 let title = key_stem(&path);
-                // The model owns its own copy now, so the store may drop a
-                // staged upload — and a key that was one is not a file this
-                // session can save back to. See [`storage`].
-                let file = (!self.storage.release(&path)).then_some(path);
-                self.insert_session(id, Session::new(id, model, title, file));
+                // A key names a file of the server's, so the session can save
+                // back over it. Bytes a client holds arrive as an attachment
+                // on `import_file` instead, and that session has no file.
+                self.insert_session(id, Session::new(id, model, title, Some(path)));
                 Ok(ResponseBody::Session { session: id })
-            }
-            Command::SessionImport { manifest_path } => {
-                let (manifest, keys) = self.read_manifest(&manifest_path)?;
-                let model =
-                    model_from_manifest(&manifest, |at, _| Ok(self.storage.read(&keys[at])?))?;
-                // Everything the import read is in the model; release what was
-                // staged for it. An import already has no `file`.
-                self.storage.release(&manifest_path);
-                for key in &keys {
-                    self.storage.release(key);
-                }
-                let id = self.alloc_id();
-                let title = if manifest.name.is_empty() {
-                    key_stem(&manifest_path)
-                } else {
-                    manifest.name.clone()
-                };
-                self.insert_session(id, Session::new(id, model, title, None));
-                Ok(ResponseBody::Session { session: id })
-            }
-            Command::ManifestRequirements { manifest_path } => {
-                let (_, textures) = self.read_manifest(&manifest_path)?;
-                Ok(ResponseBody::ManifestRequirements { textures })
             }
             Command::SessionList => {
                 let handles: Vec<_> = lock(&self.sessions)
@@ -1450,41 +1389,14 @@ impl Editor {
             Command::TextureAdd {
                 session,
                 node,
-                path,
                 encoding,
                 texture: id,
             } => {
-                let attached = attachments.take("texture");
-                // The bytes come from one place or the other, never both and
-                // never neither: two sources would be two answers to "what is
-                // this texture", and the command would have to pick.
-                let (bytes, encoding, key) = match (attached, path) {
-                    (Some(_), Some(_)) => {
-                        return Err(EditorError::BadRequest(
-                            "texture_add takes either a `path` or the `texture` attachment, \
-                             not both"
-                                .into(),
-                        ))
-                    }
-                    // With the attachment the encoding is the field, never a
-                    // sniff.
-                    (Some(bytes), None) => (bytes, encoding.into(), None),
-                    // Read outside `edit_session`: the store is not the
-                    // session's to borrow, and a failed read must not open an
-                    // edit.
-                    (None, Some(path)) => {
-                        let bytes = self.storage.read(&path)?;
-                        let encoding = encoding_from_path(&path);
-                        (bytes, encoding, Some(path))
-                    }
-                    (None, None) => {
-                        return Err(EditorError::BadRequest(
-                            "texture_add needs a `path` or the `texture` attachment".into(),
-                        ))
-                    }
-                };
-                let added = self.edit_session(session, move |s| {
-                    let bytes = bytes;
+                // The gate already refused a command with no `texture`
+                // attached, so this is the bytes the caller sent.
+                let bytes = attachments.take("texture").unwrap_or_default();
+                let encoding = encoding.into();
+                self.edit_session(session, move |s| {
                     image_dims(&bytes)?; // validate it decodes
                     let (texture, dropped) = s.add_texture(
                         &node,
@@ -1497,13 +1409,7 @@ impl Editor {
                     )?;
                     s.touch();
                     Ok(ResponseBody::Texture { texture, dropped })
-                })?;
-                // Only now: a command that failed keeps its bytes staged so
-                // the caller may retry without uploading them again.
-                if let Some(key) = key {
-                    self.storage.release(&key);
-                }
-                Ok(added)
+                })
             }
             Command::ParamAdd {
                 session,
@@ -2052,6 +1958,17 @@ impl Editor {
     /// Replace a pristine session's model with `incoming`, keeping the
     /// session's identity and its place in every observer's bookkeeping.
     ///
+    /// **A pristine replace is an open in all but name**, and what it leaves
+    /// is what [`Command::SessionOpen`] leaves minus the file: the revision
+    /// moves and `document_changed` fires, so every view re-reads — but the
+    /// session is *clean*, with nothing to undo. This is the one document
+    /// command that takes no snapshot, and it has to be: `session_new` plus
+    /// this is how a client opens bytes it holds, and an opened document that
+    /// warned about unsaved changes, or whose one undo emptied it back to a
+    /// bare root, would be a worse open than the one it replaced. Installing
+    /// a fragment under a parent ([`Command::ImportFile`] with one) is an
+    /// ordinary edit and keeps both.
+    ///
     /// Pristine is what [`Command::SessionNew`] makes: a bare root and nothing
     /// else. A session that holds anything is [`ErrorCode::NotEmpty`] — a
     /// client imports into a fresh session rather than having the editor
@@ -2064,7 +1981,12 @@ impl Editor {
         incoming: Model,
         title: Option<String>,
     ) -> Result<ResponseBody, EditorError> {
-        self.edit_session(session, |s| {
+        let handle = self.session(session)?;
+        // Not `edit_session`: that is the one place a snapshot is taken, and
+        // this is the one edit that must not take one. Nothing is mutated
+        // before the check, so there is also nothing for it to roll back.
+        let rev = {
+            let mut s = lock(&handle);
             if !is_pristine(&s.model) {
                 return Err(EditorError::NotEmpty(
                     "this session already holds a model; import into a new one".into(),
@@ -2075,8 +1997,14 @@ impl Editor {
                 s.title = title;
             }
             s.touch();
-            Ok(ResponseBody::Session { session })
-        })
+            // What an open leaves behind: clean, and nothing before it.
+            s.saved_rev = s.rev;
+            s.history = History::default();
+            s.rev
+        };
+        // Outside the guard: an observer reads the session it was told about.
+        self.notify_document(session, rev);
+        Ok(ResponseBody::Session { session })
     }
 
     /// Render one frame and hand back the PNG as the reply's payload.
@@ -2540,11 +2468,9 @@ fn model_from_manifest(
 /// Hold one command's attachments to what it declared in [`COMMAND_BYTES`].
 ///
 /// Two refusals, both before the command runs: a name the command does not
-/// declare at all, and a [`Attachment::Fixed`] name that did not arrive. The
-/// second has one exception while the transition lasts — a command whose own
-/// fields name its bytes another way, which today is only
-/// [`Command::TextureAdd`] carrying a `path`. That field goes, and with it
-/// this exception.
+/// declare at all, and an [`Attachment::Fixed`] name that did not arrive. So a
+/// dispatch arm can take what its command declared without deciding what to do
+/// when it is not there.
 fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), EditorError> {
     let declared: &[Attachment] = cmd.bytes().map_or(&[], |b| b.attachments);
     for name in attachments.names() {
@@ -2554,9 +2480,6 @@ fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), Edi
                 cmd.tag()
             )));
         }
-    }
-    if names_its_bytes_another_way(cmd) {
-        return Ok(());
     }
     for a in declared {
         if let Attachment::Fixed(name) = a {
@@ -2571,27 +2494,25 @@ fn check_attachments(cmd: &Command, attachments: &Attachments) -> Result<(), Edi
     Ok(())
 }
 
-/// The transitional forms: a command that still accepts a storage key in place
-/// of its attachment. Goes away with the `path` field it reads.
-fn names_its_bytes_another_way(cmd: &Command) -> bool {
-    matches!(cmd, Command::TextureAdd { path: Some(_), .. })
-}
-
-/// What bytes *this* command actually carries, or `None` if it carries none.
+/// What bytes this command carries, or `None` if it carries none.
 ///
-/// [`COMMAND_BYTES`] says what a command may carry; this says what the one in
-/// hand does. The difference is the transitional forms — a
-/// [`Command::TextureAdd`] naming a `path` reads its image through the store
-/// and so needs nothing beside it — and it disappears when that field does.
+/// [`COMMAND_BYTES`] by tag, and nothing else — there is one way to carry
+/// bytes, so what a command may carry and what it does carry are the same
+/// question.
 ///
 /// The one question every transport asks, phrased once. A transport that
 /// cannot carry bytes refuses anything this answers `Some` for with
 /// [`ErrorCode::BulkOverHttp`]; one that can reads the row to know what to
 /// frame in, and whether a payload is coming back.
 pub fn carries_bytes(cmd: &Command) -> Option<&'static Bytes> {
-    cmd.bytes().filter(|_| !names_its_bytes_another_way(cmd))
+    cmd.bytes()
 }
 
+/// How to read an image, from the tail of the reference that named it.
+///
+/// The one place a key's shape is read, and it is a *manifest's* references
+/// rather than a command's: a manifest names files by path and says nothing
+/// about how they are encoded. Every command carries an `encoding` field.
 fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     if path.to_ascii_lowercase().ends_with(".tga") {
         CoreTextureEncoding::Tga
@@ -2884,48 +2805,6 @@ mod tests {
             ed.handle(req(5, Command::SessionClose { session: s })),
             Reply::Ok { rev: None, .. }
         ));
-    }
-
-    /// What a browser asks before it stages bytes: exactly the keys the import
-    /// will read, resolved against the manifest's own key.
-    #[test]
-    fn manifest_requirements_names_the_keys_the_import_reads() {
-        let dir = std::env::temp_dir().join(format!("catchlight-reqs-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut img = image::RgbaImage::new(8, 8);
-        for px in img.pixels_mut() {
-            *px = image::Rgba([10, 20, 30, 255]);
-        }
-        img.save(dir.join("face.png")).unwrap();
-        let manifest = dir.join("m.json");
-        std::fs::write(
-            &manifest,
-            r#"{"textures":[{"id":"face","path":"face.png"}],
-               "nodes":[{"id":"face","kind":"part","texture":"face","mesh":{"auto":"quad"}}]}"#,
-        )
-        .unwrap();
-
-        let ed = Editor::new();
-        let manifest_path = manifest.display().to_string();
-        match body(ed.handle(req(
-            1,
-            Command::ManifestRequirements {
-                manifest_path: manifest_path.clone(),
-            },
-        ))) {
-            ResponseBody::ManifestRequirements { textures } => assert_eq!(
-                textures,
-                vec![dir.join("face.png").display().to_string()],
-                "a texture reference resolves against the manifest's key",
-            ),
-            other => panic!("{other:?}"),
-        }
-        // The keys are the import's keys: it reads them and nothing else.
-        session_of(body(
-            ed.handle(req(2, Command::SessionImport { manifest_path })),
-        ));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn body(reply: Reply) -> ResponseBody {
@@ -3527,30 +3406,33 @@ mod tests {
 
     #[test]
     fn preview_renders_png_smoke() {
-        let dir = std::env::temp_dir().join(format!("catchlight-prev-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
         let mut img = image::RgbaImage::new(32, 32);
         for px in img.pixels_mut() {
             *px = image::Rgba([220, 40, 40, 255]);
         }
-        img.save(dir.join("face.png")).unwrap();
-        std::fs::write(
-            dir.join("m.json"),
-            r#"{"textures":[{"id":"face","path":"face.png"}],
-               "nodes":[{"id":"face","kind":"part","texture":"face","mesh":{"auto":"quad"}}]}"#,
-        )
-        .unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
 
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(
-            1,
-            Command::SessionImport {
-                manifest_path: dir.join("m.json").display().to_string(),
-            },
-        ))));
+        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let mut attachments = Attachments::none();
+        attachments.insert(
+            "manifest",
+            br#"{"textures":[{"id":"face","path":"face.png"}],
+               "nodes":[{"id":"face","kind":"part","texture":"face","mesh":{"auto":"quad"}}]}"#
+                .to_vec(),
+        );
+        attachments.insert("texture:face.png", png.into_inner());
+        assert!(matches!(
+            ed.handle_with(req(2, Command::ImportManifest { session: s }), attachments)
+                .0,
+            Reply::Ok { .. }
+        ));
         let (reply, payload) = ed.handle_with(
             req(
-                2,
+                3,
                 Command::Preview {
                     session: s,
                     pose: vec![],
@@ -3572,7 +3454,6 @@ mod tests {
             }
             other => panic!("preview failed: {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A Preview request names params by Id and a param is a scalar, so the
@@ -3587,7 +3468,23 @@ mod tests {
         ))
         .unwrap();
         let ed = Editor::new();
-        let s = ed.open_bytes("welded_seam", &bytes).unwrap();
+        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let mut attachments = Attachments::none();
+        attachments.insert("model", bytes);
+        assert!(matches!(
+            ed.handle_with(
+                req(
+                    2,
+                    Command::ImportFile {
+                        session: s,
+                        parent: None
+                    }
+                ),
+                attachments
+            )
+            .0,
+            Reply::Ok { .. }
+        ));
         let shot = |id: u64, pose: Vec<ParamPose>| -> Vec<u8> {
             let (reply, payload) = ed.handle_with(
                 req(

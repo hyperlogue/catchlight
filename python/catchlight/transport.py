@@ -140,17 +140,13 @@ class Transport(Protocol):
 
 @runtime_checkable
 class ByteTransport(Transport, Protocol):
-    """A transport whose editor is reached over the network rather than over a
-    shared filesystem, so payloads travel as bytes.
+    """A transport that can hand back a document or a texture as bytes.
 
-    A client checks for this to decide whether a texture is a path the editor
-    can open or bytes it has to stage first. The socket transport carries none:
-    its editor reads the very filesystem the script is running on.
+    A client checks for this to decide whether a save is a save or a fetch:
+    the socket's editor writes the very filesystem the script is on, and an
+    HTTP one writes its own. Nothing goes *in* this way — bytes a command
+    needs travel with it.
     """
-
-    def put_file(self, key: str, data: bytes) -> None:
-        """Stage `data` under the storage key a later command will name."""
-        ...
 
     def get_clm(self, session: int) -> bytes:
         """The session's complete document, as `.clm` bytes."""
@@ -474,12 +470,6 @@ class HttpTransport:
             self._drop()
 
     # -- bytes
-
-    def put_file(self, key: str, data: bytes) -> None:
-        """`PUT /files/{key}`, which parks the bytes until the command that
-        names the key reads them into a document."""
-        quoted = urllib.parse.quote(key, safe="/")
-        self._bytes("PUT", f"/files/{quoted}", data)
 
     def get_clm(self, session: int) -> bytes:
         return self._bytes("GET", f"/sessions/{session}/clm")

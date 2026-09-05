@@ -8,9 +8,9 @@
 //! real textures).
 
 use catchlight_editor_protocol::{
-    BindingParams, Command, NodeId, ParamId, Reply, Request, ResponseBody,
+    BindingParams, Command, NodeId, ParamId, Reply, Request, ResponseBody, SessionId,
 };
-use catchlight_editor_server::Editor;
+use catchlight_editor_server::{Attachments, Editor};
 
 fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
     match ed.handle(Request { id, command }) {
@@ -30,7 +30,7 @@ fn welded_seam() -> Vec<u8> {
 #[test]
 fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     let ed = Editor::new();
-    let session = ed.open_bytes("welded_seam", &welded_seam()).unwrap();
+    let session = open_bytes(&ed, "welded_seam", welded_seam());
 
     // Any meshed node and any param will do: the test is about which path the
     // commands take, not about what they draw.
@@ -138,7 +138,7 @@ fn a_scratch_deform_is_checked_against_the_node_it_names() {
     use catchlight_editor_protocol::ErrorCode;
 
     let ed = Editor::new();
-    let session = ed.open_bytes("welded_seam", &welded_seam()).unwrap();
+    let session = open_bytes(&ed, "welded_seam", welded_seam());
     let node = ed
         .with_model(session, |model| {
             model
@@ -190,4 +190,39 @@ fn a_scratch_deform_is_checked_against_the_node_it_names() {
         Reply::Ok { .. }
     ));
     assert_eq!(ed.history(session).unwrap(), (0, 0));
+}
+
+/// A session holding `bytes`: a fresh one, then the file imported into it.
+///
+/// The one way bytes a caller holds become a document — there is no side door
+/// that takes them, so a test opens a model exactly as a client does.
+fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
+    let reply = editor.handle(Request {
+        id: 0,
+        command: Command::SessionNew {
+            name: Some(title.to_string()),
+        },
+    });
+    let session = match reply {
+        Reply::Ok {
+            body: ResponseBody::Session { session },
+            ..
+        } => session,
+        other => panic!("expected a session, got {other:?}"),
+    };
+    let mut attachments = Attachments::none();
+    attachments.insert("model", bytes);
+    match editor.handle_with(
+        Request {
+            id: 0,
+            command: Command::ImportFile {
+                session,
+                parent: None,
+            },
+        },
+        attachments,
+    ) {
+        (Reply::Ok { .. }, _) => session,
+        (other, _) => panic!("import_file: {other:?}"),
+    }
 }

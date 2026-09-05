@@ -7,14 +7,13 @@
  * So "the file lives somewhere else" is a `Storage`, never a second command
  * channel.
  *
- * Keys are opaque to everything but the editor, which reads exactly two things
- * out of them: `/` separates segments, so a manifest's texture references
- * resolve relative to the manifest, and the tail after the last `.` picks a
- * texture decoder.
+ * Keys are opaque to everything but their reader, which reads one thing out of
+ * them: `/` separates segments, so a manifest's texture references resolve
+ * relative to the manifest ([`parentKey`], [`joinKey`]).
  *
- * The in-tab editor reads a key synchronously, so bytes are resolved here
- * first and staged before a command names the key. That sequence lives in
- * `in-tab.ts`; nothing above it should have to know the order.
+ * Bytes reach the editor as attachments on the command that uses them, so a
+ * store is never in that path: what a caller does is read the key here and
+ * hand the bytes over, and nothing above has to know an order.
  */
 
 /** A byte store addressed by opaque keys. */
@@ -25,6 +24,21 @@ export interface Storage {
   list(prefix?: string): Promise<string[]>;
   /** Removes `key`. Removing one that is not there is not an error. */
   delete(key: string): Promise<void>;
+}
+
+/**
+ * The key a relative reference inside `key`'s document resolves against —
+ * everything before the last `/`, or `""` when the key has no separator.
+ */
+export function parentKey(key: string): string {
+  const at = key.lastIndexOf("/");
+  return at < 0 ? "" : key.slice(0, at);
+}
+
+/** `name` resolved against `base`, the way a manifest's references resolve. */
+export function joinKey(base: string, name: string): string {
+  const trimmed = base.replace(/\/+$/, "");
+  return trimmed === "" ? name : `${trimmed}/${name}`;
 }
 
 /** A key that is not in the store. Distinguishable from a backend failure. */

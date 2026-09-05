@@ -52,7 +52,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | `catchlight-editor-server` | Multi-session editor server: a `Model` per session plus a warm headless renderer, driven in-process, over a Unix socket, or over HTTP: a tab holds a WebSocket (commands and events), a script sends one `POST /request` per command, and bytes go over plain routes. |
 | `catchlight-editor` | The desktop editor GUI (egui): embeds the server and its socket. Frozen: bug fixes only. |
 | `catchlight-editor-cli` | Thin client that drives an editing session over the Unix socket. |
-| `catchlight-editor-wasm` | The browser's door into the editor: the in-tab `Editor` behind `handle(request) -> reply` with byte staging, the `Replica` (one session's model, puppet and render cache, fed forward-only by the backend and never mutated locally), one `Gpu` per tab, and a `Viewport` per canvas that owns its frame loop. |
+| `catchlight-editor-wasm` | The browser's door into the editor: the in-tab `Editor` behind `handle(request, attachments) -> (reply, payload)`, the `Replica` (one session's model, puppet and render cache, fed forward-only by the backend and never mutated locally), one `Gpu` per tab, and a `Viewport` per canvas that owns its frame loop. |
 | `visual-tests` | Visual regression harness: render a curated matrix of param/camera configs and diff against committed baselines. `publish = false`. |
 | `xtask` | Workspace automation, run as `cargo xtask <cmd>`. `publish = false`. |
 
@@ -172,8 +172,9 @@ that enforces them, not here. Add new ones there.
   bytes cross on `POST /request` and nowhere else, and on `POST /request` a
   status is the listener and a refusal is a 200; `transport.rs` — the socket
   carries paths and never bytes, a file it cannot read is answered, a payload
-  needs an `out`; `storage.rs` — a `path` is a storage key, a relative one
-  resolves against the store root, and an upload is not a file on disk
+  needs an `out`; `storage.rs` — a `path` is a storage key for the server's
+  own files, a relative one resolves against the store root, and nothing a
+  client holds ever becomes one
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording
   never authors
 - `crates/catchlight-editor/src/mesh_edit.rs` — when the slot tool is
@@ -204,8 +205,9 @@ that enforces them, not here. Add new ones there.
 - `packages/core/src/backend.ts`, `session.ts`, `in-tab.ts`, `connected.ts`,
   `editor.ts`, `storage.ts`, `viewport.ts` — one seam and where the editor is,
   a send that resolves once the replica caught up, feeds that never overlap,
-  bulk over HTTP and never the socket, why a store is not a transport, and
-  when a viewport is allowed to idle
+  bytes ride with the command over HTTP and never the socket, the tab's store
+  is outward only, why a store is not a transport, and when a viewport is
+  allowed to idle
 - `apps/site/e2e/run.ts`, `drive.ts` — the browser smoke test: the built site,
   both backends and every GPU tier the browser can be forced into, why the
   browser is an argument, a WebGPU device on llvmpipe that never composites,
