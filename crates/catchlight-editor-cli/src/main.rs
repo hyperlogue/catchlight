@@ -1508,6 +1508,17 @@ fn absolute(path: &str) -> Result<String> {
     Ok(std::path::absolute(path)?.display().to_string())
 }
 
+/// One extension's value in a line. Bytes are described, never printed: what
+/// a byte extension holds is opaque, and the payload is where it travels.
+fn describe_extension(value: &ExtensionValueInfo) -> String {
+    match value {
+        ExtensionValueInfo::Json { value } => {
+            serde_json::to_string(value).unwrap_or_else(|_| "<unprintable json>".into())
+        }
+        ExtensionValueInfo::Bytes { size, hash } => format!("{size} bytes  {hash}"),
+    }
+}
+
 /// `<x>,<y>` — where the camera looks, in world units.
 fn parse_center(s: &str) -> Result<[f32; 2]> {
     let (x, y) = s
@@ -1687,6 +1698,17 @@ fn print_body(body: &ResponseBody) {
         }
         ResponseBody::Param { param } => println!("param {param}"),
         ResponseBody::Slot { slot } => println!("slot {} on {}", slot.slot, slot.node),
+        ResponseBody::Extensions { extensions } => {
+            if extensions.is_empty() {
+                println!("(no extensions)");
+            }
+            for e in extensions {
+                println!("extension {}  {}", e.key, describe_extension(&e.value));
+            }
+        }
+        ResponseBody::Extension { key, value } => {
+            println!("extension {key}  {}", describe_extension(value));
+        }
         ResponseBody::Params { params } => {
             if params.is_empty() {
                 println!("(no params)");

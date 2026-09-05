@@ -280,6 +280,7 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
         Command::Slots { session, node },
         Command::Welds { session },
         Command::UnfilledSlots { session },
+        Command::Extensions { session },
     ]
 }
 

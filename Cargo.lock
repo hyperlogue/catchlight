@@ -1657,6 +1657,7 @@ dependencies = [
  "glam",
  "image",
  "js-sys",
+ "serde",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",

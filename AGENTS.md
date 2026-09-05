@@ -161,15 +161,18 @@ that enforces them, not here. Add new ones there.
   goes through it, and that the readback is premultiplied
 - `crates/catchlight-editor-protocol/src/lib.rs` — Ids on the wire, the five
   command kinds a client routes by, written down once and checked from both
-  ends, bytes travel beside a command and never in it, a reply that names its
-  revision, an add may name the Id it makes and never calls it `id`
+  ends, bytes travel beside a command and never in it, an extension is carried
+  and never interpreted, a reply that names its revision, an add may name the
+  Id it makes and never calls it `id`
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
   undo budget, an observer never runs under a lock, bytes never enter except
   inside the command that uses them, each session draws its own
-  Ids, the editor traces a part's alpha; `query.rs` — one
+  Ids, the editor traces a part's alpha, an extension is carried and never
+  interpreted; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the HTTP
   transport, why loopback is not a permission, the token before the body,
-  bytes cross on `POST /request` and nowhere else, and on `POST /request` a
+  bytes cross on `POST /request` and nowhere else, a byte extension is fetched
+  by hash the way a texture is fetched by Id, and on `POST /request` a
   status is the listener and a refusal is a 200; `transport.rs` — the socket
   carries paths and never bytes, a file it cannot read is answered, a payload
   needs an `out`; `storage.rs` — a `path` is a storage key for the server's
@@ -190,8 +193,9 @@ that enforces them, not here. Add new ones there.
   bytes cross once inside the command that uses them, where the browser's
   asynchrony stops, and Rust never calls JavaScript
 - `crates/catchlight-editor-wasm/src/replica.rs` — the revision moves forward
-  only, the two ways the document changes and neither is local, pose and
-  scratch never reach the model, gizmo math lives here
+  only, the two ways the document changes and neither is local, a texture
+  travels by Id and an extension by hash, pose and scratch never reach the
+  model, gizmo math lives here
 - `crates/catchlight-editor-wasm/src/gpu.rs` — one device per tab on both
   tiers, two instances tried in order, a GL surface is a colour target only so
   the first canvas is the GL device's one surface and outlives the rest, one
@@ -204,10 +208,10 @@ that enforces them, not here. Add new ones there.
   after acquire
 - `packages/core/src/backend.ts`, `session.ts`, `in-tab.ts`, `connected.ts`,
   `editor.ts`, `storage.ts`, `viewport.ts` — one seam and where the editor is,
-  a send that resolves once the replica caught up, feeds that never overlap,
-  bytes ride with the command over HTTP and never the socket, the tab's store
-  is outward only, why a store is not a transport, and when a viewport is
-  allowed to idle
+  a send that resolves once the replica caught up, feeds that never overlap and
+  fetch what a structure names before applying it, bytes ride with the command
+  over HTTP and never the socket, the tab's store is outward only, why a store
+  is not a transport, and when a viewport is allowed to idle
 - `apps/site/e2e/run.ts`, `drive.ts` — the browser smoke test: the built site,
   both backends and every GPU tier the browser can be forced into, why the
   browser is an argument, a WebGPU device on llvmpipe that never composites,

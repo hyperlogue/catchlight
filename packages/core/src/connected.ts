@@ -15,6 +15,11 @@
  * server refuses on the socket anyway. Its promise keeps the same contract a
  * socket send does, resolving once the reply is in hand.
  *
+ * **A payload a structure names is fetched before the structure is applied.**
+ * Textures by Id and byte extensions by hash: both are named in the structure
+ * and carried outside it, so [`feed`] fetches what the replica lacks and only
+ * then applies. An unrelated edit fetches neither.
+ *
  * **The revision a feed applies is the one the response header names.** The
  * editor may have moved on between the event and the GET, and the bytes are
  * what they are; trusting the asked-for revision would file newer state under
@@ -53,7 +58,7 @@ import {
   refuseIfItCarriesBytes,
   takeReply,
 } from "./backend.js";
-import type { TextureRequest, WasmReplica } from "./wasm.js";
+import type { ExtensionRequest, TextureRequest, WasmReplica } from "./wasm.js";
 
 /** The `fetch` surface this backend calls. The platform's own satisfies it. */
 export type FetchLike = (url: string, init?: FetchInit) => Promise<HttpResponse>;
@@ -284,6 +289,24 @@ export class ConnectedBackend implements Backend {
         "feed",
       );
       replica.putTexture(texture.id, new Uint8Array(await payload.arrayBuffer()));
+    }
+
+    // The same shape for byte extensions, and the same reason: a structure
+    // names them and never carries them. The difference is what "needed"
+    // means — a texture is immutable under its Id, so having it once is
+    // enough, while an extension's bytes change under a key that does not.
+    let extensions: ExtensionRequest[];
+    try {
+      extensions = JSON.parse(replica.extensionsNeeded(structure)) as ExtensionRequest[];
+    } catch (cause) {
+      throw asProtocolError(cause);
+    }
+    for (const extension of extensions) {
+      const payload = await this.#http(
+        `/sessions/${session}/extensions/${encodeURIComponent(extension.key)}`,
+        "feed",
+      );
+      replica.putExtension(extension.key, new Uint8Array(await payload.arrayBuffer()));
     }
 
     try {

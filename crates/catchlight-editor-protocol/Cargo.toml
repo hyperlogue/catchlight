@@ -7,6 +7,9 @@ repository.workspace = true
 description = "Wire types for the catchlight editor: transport-agnostic request/reply/event over newline-delimited JSON"
 
 [dependencies]
+# An extension's JSON value travels as itself: catchlight reads none of it,
+# so the wire type is whatever JSON the vendor wrote.
+serde_json = { workspace = true }
 # For the Id types: the wire names a node, param or texture by the same
 # validated string the model file stores, so there is one definition of what
 # an Id is rather than two that can drift.
@@ -23,7 +26,6 @@ ts-rs = { workspace = true, optional = true }
 ts = ["dep:ts-rs", "catchlight-core/ts"]
 
 [dev-dependencies]
-serde_json = { workspace = true }
 
 [lints]
 workspace = true
