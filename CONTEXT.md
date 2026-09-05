@@ -10,10 +10,10 @@ suggest 3D movement.
 
 **Model**:
 A complete character — its node tree, params and their bindings, textures,
-welds, physics settings and animations — as authored, plus what is derived
-from them without any pose. The one form everything else comes from: the file
-stores it, the editor changes it, puppets animate it, render caches are built
-from it.
+welds, physics settings, animations and extensions — as authored, plus what
+is derived from them without any pose. The one form everything else comes
+from: the file stores it, the editor changes it, puppets animate it, render
+caches are built from it.
 _Avoid_: rig, document
 
 **Model file**:
@@ -56,8 +56,10 @@ scene, so opacity, blend mode and masks apply to the subtree as a whole.
 
 **Mesh group**:
 A node whose mesh deforms the geometry beneath it: every descendant vertex
-inside its mesh follows the triangle it sits in. A mesh group is never drawn.
-_Avoid_: deformer, warp
+inside its mesh follows the triangle it currently sits in, after the vertex's
+own deforms, so a child's deforms compose with the group's. A mesh group is
+never drawn.
+_Avoid_: deformer, warp, dynamic mesh group (every mesh group is)
 
 **Simple physics**:
 A driver node holding a pendulum hung at its own position; the pendulum's
@@ -70,14 +72,15 @@ _Avoid_: drawable (that's what the renderer draws)
 **Drawable**:
 A node the renderer draws: a part or a composite.
 
+**Opacity**:
+How solid a drawable is. Authored on the drawable and not inherited: a
+part's opacity is its own, and a composite's applies to its subtree as one
+image.
+_Avoid_: alpha (that's a pixel channel)
+
 **Lock to root**:
 A node setting: the node's transform is relative to the model's root,
 ignoring every ancestor's transform.
-
-**Dynamic mesh group**:
-A mesh group setting: the group deforms each vertex from where the vertex
-currently is, after the deforms already applied to it, rather than from its
-authored position — so a child's own deforms compose with the group's.
 
 **Translate children**:
 A mesh group setting: descendants without a mesh (groups, simple physics
@@ -139,7 +142,7 @@ A param's control over one property of one node — or two params' joint
 control over it. Its grid has a cell at every key position of its param, or
 at every pair of key positions of its two params, and the params' current
 values interpolate between the cells.
-_Avoid_: mask binding (that's a mask), child binding (that's an attachment)
+_Avoid_: mask binding (that's a mask), child binding (that's a pin)
 
 **Cell**:
 One point of a binding's grid, holding one value — authored or derived.
@@ -164,6 +167,13 @@ _Avoid_: base (alone — say base value or base model)
 **Rest**:
 The state of a puppet whose params are all at their defaults and whose
 drivers have all settled.
+
+**Key pose**:
+A pose holding one param at one of its key positions — or two params that
+some binding spans together at a pair of theirs — with every other param at
+its default and no driver running. Together a model's key poses visit every
+authored cell.
+_Avoid_: keyframe (that's animation), sweep
 
 **Authored**:
 Set directly by a person and stored as they set it.
@@ -196,21 +206,32 @@ cache is refreshed from.
 Evaluating a puppet's next frame: drivers step, the pose is applied through
 bindings, and transforms and deforms are resolved.
 
-**Attachment**:
-A mesh group's hold on one descendant vertex: the triangle it lies in and its
-position within that triangle. Never authored: baked once for a mesh group
-that is not dynamic, found afresh every tick for a dynamic one.
-_Avoid_: binding, child binding
+**Pin**:
+A mesh group's hold on one descendant vertex: the triangle it currently lies
+in, found afresh every tick from where the vertex is. Never authored.
+_Avoid_: attachment (that's bytes beside a command), binding, child binding
 
-**Scratch deform**:
-A deform a puppet holds for an edit in progress — shown live, never part of
-the model.
-_Avoid_: preview deform
+**Scratch**:
+An edit in progress, shown live on a puppet and never in the model: a
+deform, a transform or a param value under a drag. It lasts until a command
+authors it or the drag ends.
+_Avoid_: preview (that's a rendered image), draft, optimistic update
 
 **Render cache**:
 The renderer's own derived copy of a model — prepared from the model,
 refreshed from a puppet every frame, rebuilt when the model changes. Never
 authoritative.
+
+**Camera**:
+The view a frame is drawn through: a centre and a height in world units,
+the width following the target. World space is Y-up and the camera never
+flips it.
+_Avoid_: framing, view
+
+**Render list**:
+What a posed puppet hands the renderer: its drawables in the order they are
+drawn, with the masking and compositing each one needs.
+_Avoid_: draw list, scene
 
 **Animation**:
 A named, timed sequence of param values with a length in frames: an optional
@@ -227,8 +248,10 @@ _Avoid_: keypoint (that's an authored binding cell)
 ### Authoring
 
 **Import**:
-Producing a model from something that is not a model: an inochi2d export, or
-a manifest.
+Producing a session's model from what a client supplies — an inochi2d
+export, a manifest, a structure with its images, or a model file — rather
+than opening one from the store. Into a pristine session it becomes the
+session's model; under a parent it is installed as an addon.
 
 **Manifest**:
 A hand-written description of a model assembled from loose textures, with
@@ -239,19 +262,114 @@ The model an addon is authored against and installed into.
 _Avoid_: base (alone — say base value or base model), host
 
 **Addon**:
-A partial model — a subtree with its bindings, welds and textures — authored
-against a base model and installed into it. It references what it needs from
-the base model by Id and never changes the base model's params. Two addons
-that provide the same Id are alternatives: only one can be installed at a
-time.
+A fragment — a subtree with its bindings, welds and textures — authored
+against a base model and installed into it. It names what it needs from the
+base by Id, carries no params and no extensions, and never changes the
+base's params. Two addons that provide the same Id are alternatives: only
+one can be installed at a time.
+
+**Fragment**:
+The shape of an addon: a model whose every root names a parent it does not
+carry. A complete model has one root with no parent, and a model is one
+shape or the other, never guessed.
+_Avoid_: partial model, subtree
+
+**Requirement**:
+An Id an addon or a manifest names but does not carry — a base model's node
+or param, a manifest's texture — which must be present wherever it is
+installed or imported. Found by scanning, never declared.
+_Avoid_: dependency
 
 **Install**:
-Merging an addon into a model, after checking that every Id the addon needs
-is present.
+Merging an addon into a model as one edit, after checking that every
+requirement is present and no Id the addon provides is already taken.
+
+**Extract**:
+Cutting a subtree out of a model as an addon: the subtree, the bindings on
+it, the welds touching it and the textures it draws. Install's inverse, up
+to order.
+
+**Extension**:
+A vendor's annotation on a whole model, filed under a key the vendor owns
+and carried without ever being read: its value is JSON or opaque bytes. The
+key is vendor first, then a dot — `molan.caster` — and `catchlight.` is the
+format's own. An addon carries none.
+_Avoid_: metadata, custom data, plugin
+
+### Editing
+
+**Editor**:
+The one thing that edits: it holds sessions, takes commands and keeps each
+session's history. It runs in the tab, in a local process or in a service,
+and every client speaks to it the same way.
+_Avoid_: server (that's one place it runs), backend
 
 **Session**:
-One open model in the editor, with its undo history.
+One open model in the editor, with its history and its revision.
+
+**Revision**:
+The count of edits a session has taken. Every reply and every feed names the
+revision the session is at, and a replica only ever moves to a higher one.
+_Avoid_: version, generation
+
+**Pristine**:
+A session that has never been edited: a bare root and nothing else. The one
+state an import may replace whole.
+_Avoid_: empty, blank
+
+**Store**:
+Where the editor's own files live. A path on the wire names a file in the
+store, never one a client holds.
+_Avoid_: filesystem, storage
+
+**Open**:
+Reading a model file from the store into a new session, which saves back to
+it.
+_Avoid_: load (that's the runtime reading a file), import
+
+**Replica**:
+A tab's own copy of one session's model, with a puppet posing it: fed by the
+editor and never edited locally, so it answers reads and draws frames
+without a round trip.
+_Avoid_: mirror, cache, local model
+
+**Structure**:
+A model with the bytes of its textures and byte extensions taken out. It is
+what a feed carries and what the first section of a model file holds.
+_Avoid_: skeleton, metadata
+
+**Feed**:
+Bringing a replica to a revision: the structure at that revision, plus any
+bytes it names that the replica lacks. Feeds of one session never overlap
+and never go backwards.
+_Avoid_: sync, push
+
+**Command**:
+One request to the editor. An edit changes the session's model and moves
+the revision; a presence command publishes view state and changes nothing;
+a scratch command is served by the local puppet; a replica query is
+answered from a replica; a server query needs the editor itself.
+_Avoid_: request (that's the envelope), action, document command
+
+**Attachment**:
+Bytes that arrive beside a command, under a name the command declares — a
+texture, a model file, a manifest. Nothing is ever staged: bytes enter only
+inside the command that uses them.
+_Avoid_: upload, blob, staged file
+
+**Payload**:
+Bytes that leave beside a reply — a preview's image, an extension's bytes.
+_Avoid_: attachment (that's the way in), body
+
+**Presence**:
+What one client shows the others about itself — its selection, for now.
+Published, never saved, never undone.
 
 **Preview**:
-A rendered image of a session's model at a given pose.
+A rendered image of a session's model at a given pose, through a camera.
 _Avoid_: scratch (that's the live edit)
+
+**Isolate**:
+Drawing a chosen few parts and nothing else, over transparency, so a part's
+art comes back whole rather than as what its masks leave of it.
+_Avoid_: solo, extract (that's cutting an addon out)
