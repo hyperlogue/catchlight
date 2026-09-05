@@ -121,11 +121,14 @@ enum Cmd {
         #[command(subcommand)]
         action: PresenceCmd,
     },
-    /// Render a preview and print the size that came back.
+    /// Render a preview to a PNG.
     ///
-    /// The PNG itself is the reply's payload, which this socket does not yet
-    /// carry — `catchlight-cli render` writes a file today.
+    /// The PNG is the reply's payload; the server writes it to `--out`, which
+    /// this client and the server both name on the same filesystem.
     Preview {
+        /// Where the server writes the PNG.
+        #[arg(long)]
+        out: String,
         /// Pose a param: `--param <id>=0.5` (repeatable).
         #[arg(long = "param")]
         params: Vec<String>,
@@ -779,8 +782,15 @@ fn main() -> Result<()> {
         }
     );
 
+    // The one command whose answer is bytes: the socket carries a sibling
+    // `out` path and the server writes the payload there.
+    let out = match &cli.cmd {
+        Cmd::Preview { out, .. } => Some(absolute(out)?),
+        _ => None,
+    };
+
     let mut stream = connect()?;
-    let reply = call(&mut stream, Request { id: 1, command })?;
+    let reply = call(&mut stream, Request { id: 1, command }, out.as_deref())?;
 
     if persist {
         if let Reply::Ok {
@@ -1324,6 +1334,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
             },
         },
         Cmd::Preview {
+            out: _,
             params,
             size,
             camera_height,
@@ -1505,6 +1516,12 @@ fn parse_size(s: &str) -> Result<[u32; 2]> {
     Ok([w.trim().parse()?, h.trim().parse()?])
 }
 
+/// A path as the server will read it: this process's directory is not the
+/// server's, so a relative one is resolved here.
+fn absolute(path: &str) -> Result<String> {
+    Ok(std::path::absolute(path)?.display().to_string())
+}
+
 /// `<x>,<y>` — where the camera looks, in world units.
 fn parse_center(s: &str) -> Result<[f32; 2]> {
     let (x, y) = s
@@ -1569,9 +1586,20 @@ fn connect() -> Result<UnixStream> {
     })
 }
 
-fn call(stream: &mut UnixStream, req: Request) -> Result<Reply> {
+/// One request per line, plus the sibling keys the socket carries beside it.
+///
+/// `out` is where the server writes a payload. It is resolved against this
+/// process's directory before it is sent, because the server's directory is
+/// its own — the two share a filesystem, not a working directory.
+fn call(stream: &mut UnixStream, req: Request, out: Option<&str>) -> Result<Reply> {
     let want = req.id;
-    let mut line = serde_json::to_string(&req)?;
+    let mut line = match (serde_json::to_value(&req)?, out) {
+        (serde_json::Value::Object(mut object), Some(out)) => {
+            object.insert("out".into(), out.into());
+            serde_json::to_string(&object)?
+        }
+        (value, _) => serde_json::to_string(&value)?,
+    };
     line.push('\n');
     stream.write_all(line.as_bytes())?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -1717,6 +1745,7 @@ fn print_body(body: &ResponseBody) {
         ResponseBody::Preview { preview } => {
             println!("preview {}x{}", preview.width, preview.height)
         }
+
         ResponseBody::Saved { path } => println!("saved -> {path}"),
         ResponseBody::ManifestRequirements { textures } => {
             if textures.is_empty() {

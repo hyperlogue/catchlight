@@ -7,6 +7,7 @@ tests inherit that: a texture the editor can decode has to be built out of
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 import tempfile
@@ -45,6 +46,48 @@ def write_png(path: str | os.PathLike[str], width: int = 32, height: int = 32) -
     target = Path(path)
     target.write_bytes(png_bytes(width, height))
     return target
+
+
+def png_size(data: bytes) -> tuple[int, int]:
+    """A PNG's width and height, read out of its IHDR.
+
+    The package has no dependencies and these tests inherit that, so a preview
+    is checked by parsing eight bytes of header rather than by decoding it.
+    """
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("not a PNG")
+    width, height = struct.unpack("!II", data[16:24])
+    return width, height
+
+
+def write_manifest(directory: str | os.PathLike[str]) -> Path:
+    """A one-part manifest and the image it names, written under `directory`.
+
+    The texture reference is `images/face.png` rather than a bare name so the
+    tests exercise a reference with a separator in it — which is what the
+    attachment name has to carry verbatim.
+    """
+    root = Path(directory)
+    (root / "images").mkdir(parents=True, exist_ok=True)
+    write_png(root / "images" / "face.png")
+    manifest = root / "model.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "akari",
+                "textures": [{"id": "face", "path": "images/face.png"}],
+                "nodes": [
+                    {
+                        "id": "face",
+                        "kind": "part",
+                        "texture": "face",
+                        "mesh": {"auto": "quad"},
+                    }
+                ],
+            }
+        )
+    )
+    return manifest
 
 
 def launched_directories() -> set[Path]:

@@ -66,10 +66,23 @@
 //!   answered a ping itself. So the reader's socket writes go to a channel
 //!   ([`Bounce`]) and the writer replays those bytes between its own frames.
 //!
+//! - **Bytes cross on `POST /request` and nowhere else.** A command that
+//!   carries bytes goes there as `multipart/form-data`: a part named `request`
+//!   holding the command JSON, one part per attachment named for the
+//!   attachment. When the reply carries bytes back they *are* the response
+//!   body, under the payload's own content type, and the JSON reply rides in
+//!   `X-Catchlight-Reply` — escaped to ASCII (`\uXXXX`) so a header value can
+//!   hold it and still parse as the same JSON. `/ws` refuses such a command
+//!   with [`ErrorCode::BulkOverHttp`] instead of carrying it: that channel is
+//!   text frames for low-latency commands and events, and one large frame
+//!   blocks every frame queued behind it.
+//!
 //! - **On `POST /request`, a status is a transport failure and a refusal is a
 //!   200.** The two are what a caller confuses otherwise. The status describes
 //!   this listener only: 401 for a missing or wrong token, 413 for a body over
-//!   [`MAX_REQUEST_BYTES`], 400 for a body that is not one [`Request`]. Every
+//!   the route's ceiling ([`MAX_REQUEST_BYTES`] for a JSON body,
+//!   [`HttpOptions::max_upload_bytes`] for a multipart one), 400 for a body
+//!   that is not one [`Request`], or multipart this parser will not take. Every
 //!   refusal the editor itself decided — an unknown Id, a session that is not
 //!   open — is a 200 carrying `Reply::Err`, exactly as the socket answers it.
 //!
@@ -101,7 +114,7 @@ use tungstenite::handshake::derive_accept_key;
 use tungstenite::protocol::{Message, Role, WebSocket, WebSocketConfig};
 
 use crate::storage::StagingStorage;
-use crate::{Editor, EditorError};
+use crate::{carries_bytes, Attachments, Editor, EditorError, Payload};
 
 /// One frame, one request — the same cap the Unix socket puts on one line, and
 /// the same one a `POST /request` body gets.
@@ -418,18 +431,191 @@ fn route(state: &ServerState, request: &HttpRequest, allowed: Option<&str>) -> R
 /// refusal included, which is a 200 carrying `Reply::Err` rather than a status.
 /// Only a body that is not a [`Request`] at all is a 400: at that point there
 /// is no `id` to answer against and nothing the editor was asked to do.
+///
+/// Two body shapes by `Content-Type`. `application/json` (or anything else) is
+/// the command alone. `multipart/form-data` is the command in a part named
+/// `request` and one part per attachment, named for the attachment — which is
+/// the only way bytes reach the editor over HTTP.
 fn command(state: &ServerState, request: &HttpRequest) -> Response {
-    let parsed = match serde_json::from_slice::<Request>(&request.body) {
+    let (parsed, attachments) = match multipart_boundary(request) {
+        None => (
+            serde_json::from_slice::<Request>(&request.body),
+            Attachments::none(),
+        ),
+        Some(boundary) => match parse_multipart(&request.body, &boundary) {
+            Err(why) => return Response::text(400, "Bad Request", why),
+            Ok(parts) => {
+                let mut attachments = Attachments::none();
+                let mut command = None;
+                for (name, bytes) in parts {
+                    if name == "request" {
+                        command = Some(bytes);
+                    } else {
+                        attachments.insert(name, bytes);
+                    }
+                }
+                let Some(command) = command else {
+                    return Response::text(400, "Bad Request", "no part named `request`");
+                };
+                (serde_json::from_slice::<Request>(&command), attachments)
+            }
+        },
+    };
+    let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(e) => return Response::text(400, "Bad Request", &format!("bad request: {e}")),
     };
-    match serde_json::to_vec(&state.editor.handle(parsed)) {
-        Ok(bytes) => Response::new(200, "OK")
+
+    let (reply, payload) = state.editor.handle_with(parsed, attachments);
+    let json = match serde_json::to_vec(&reply) {
+        Ok(json) => json,
+        Err(e) => return Response::text(500, "Internal Server Error", &e.to_string()),
+    };
+    match payload {
+        // The bytes are the body, so the reply rides in a header. It is
+        // escaped to ASCII first: a header value is bytes, not UTF-8, and a
+        // model's name may be anything.
+        Some(Payload {
+            content_type,
+            bytes,
+        }) => Response::new(200, "OK")
+            .with("Content-Type", content_type)
+            .with("X-Content-Type-Options", "nosniff")
+            .with("X-Catchlight-Reply", ascii_json(&json))
+            .body(bytes),
+        None => Response::new(200, "OK")
             .with("Content-Type", "application/json")
             .with("X-Content-Type-Options", "nosniff")
-            .body(bytes),
-        Err(e) => Response::text(500, "Internal Server Error", &e.to_string()),
+            .body(json),
     }
+}
+
+/// One JSON document with every non-ASCII character written as a `\uXXXX`
+/// escape, so it fits in a header value and still parses as the same JSON.
+///
+/// Safe as a byte-wise pass because JSON puts non-ASCII only inside string
+/// literals, and `serde_json` has already escaped the control characters a
+/// header could not carry.
+fn ascii_json(json: &[u8]) -> String {
+    let text = String::from_utf8_lossy(json);
+    if text.is_ascii() {
+        return text.into_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            for unit in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    out
+}
+
+/// The `boundary` parameter of a `multipart/form-data` content type, if the
+/// request is one.
+fn multipart_boundary(request: &HttpRequest) -> Option<String> {
+    let content_type = request.header("content-type")?;
+    let (kind, params) = content_type.split_once(';')?;
+    if !kind.trim().eq_ignore_ascii_case("multipart/form-data") {
+        return None;
+    }
+    for param in params.split(';') {
+        let (name, value) = param.split_once('=')?;
+        if name.trim().eq_ignore_ascii_case("boundary") {
+            let value = value.trim();
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or(value);
+            return (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    None
+}
+
+/// `multipart/form-data`, strictly: `--boundary`, then one part per
+/// `Content-Disposition: form-data; name="…"` with its headers, a blank line
+/// and its bytes, and a closing `--boundary--`.
+///
+/// Hand-written because this server is: it speaks HTTP over a [`TcpStream`]
+/// with no framework under it, and one form encoding is less to own than a
+/// dependency. What that costs is strictness — CRLF everywhere, a name on
+/// every part, the closing boundary required — and anything else is a 400
+/// rather than a guess. A part's `filename` is ignored: the part's *name* is
+/// the attachment's name, and the file it came from is the client's business.
+fn parse_multipart(body: &[u8], boundary: &str) -> Result<Vec<(String, Vec<u8>)>, &'static str> {
+    let opening = format!("--{boundary}");
+    let delimiter = format!("\r\n--{boundary}");
+    if !body.starts_with(opening.as_bytes()) {
+        return Err("the body does not open with its boundary");
+    }
+    let mut at = opening.len();
+    let mut parts: Vec<(String, Vec<u8>)> = Vec::new();
+    loop {
+        let rest = &body[at..];
+        if rest.starts_with(b"--") {
+            return Ok(parts);
+        }
+        let Some(after) = rest.strip_prefix(b"\r\n") else {
+            return Err("a boundary is followed by CRLF or by the closing --");
+        };
+        at += 2;
+        let Some(head_len) = find(after, b"\r\n\r\n") else {
+            return Err("a part's headers are not terminated");
+        };
+        let name = part_name(&after[..head_len])?;
+        let data_at = at + head_len + 4;
+        let Some(data_len) = find(&body[data_at..], delimiter.as_bytes()) else {
+            return Err("a part is not terminated by its boundary");
+        };
+        if parts.iter().any(|(known, _)| *known == name) {
+            return Err("two parts share one name");
+        }
+        parts.push((name, body[data_at..data_at + data_len].to_vec()));
+        at = data_at + data_len + delimiter.len();
+    }
+}
+
+/// The `name` of one part, from its `Content-Disposition` header.
+fn part_name(headers: &[u8]) -> Result<String, &'static str> {
+    let headers = std::str::from_utf8(headers).map_err(|_| "a part header is not UTF-8")?;
+    for line in headers.split("\r\n") {
+        let Some((field, value)) = line.split_once(':') else {
+            return Err("a part header is not `name: value`");
+        };
+        if !field.trim().eq_ignore_ascii_case("content-disposition") {
+            continue;
+        }
+        for param in value.split(';').skip(1) {
+            let Some((key, raw)) = param.split_once('=') else {
+                continue;
+            };
+            if !key.trim().eq_ignore_ascii_case("name") {
+                continue;
+            }
+            let raw = raw.trim();
+            let name = raw
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or(raw);
+            return if name.is_empty() {
+                Err("a part is named with an empty string")
+            } else {
+                Ok(name.to_string())
+            };
+        }
+    }
+    Err("a part carries no `Content-Disposition` name")
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// The structure-only container plus the revision it describes, read under one
@@ -742,8 +928,21 @@ fn timed_out(err: &io::Error) -> bool {
 
 /// One frame in, one reply out. A frame that does not parse is still answered
 /// against the id the client is blocked on, exactly as the socket does it.
+///
+/// A command that carries bytes is refused here rather than dispatched: this
+/// channel is text frames for low-latency commands and events, and a
+/// megabyte-scale frame on it blocks everything queued behind it. The same
+/// client already speaks `POST /request`, where bulk belongs.
 fn answer(editor: &Editor, frame: &str) -> String {
     let reply = match serde_json::from_str::<Request>(frame) {
+        Ok(request) if carries_bytes(&request.command).is_some() => Reply::Err {
+            id: request.id,
+            code: ErrorCode::BulkOverHttp,
+            message: format!(
+                "{} carries bytes; send it to POST /request as multipart/form-data",
+                request.command.tag()
+            ),
+        },
         Ok(request) => editor.handle(request),
         Err(e) => Reply::Err {
             id: serde_json::from_str::<RequestId>(frame).map_or(0, |r| r.id),
@@ -877,11 +1076,13 @@ fn read_body(
     length: usize,
     max_body: usize,
 ) -> Result<Vec<u8>, BadRequest> {
-    let ceiling = if request.method == "PUT" && request.path.starts_with("/files/") {
-        max_body
-    } else {
-        MAX_REQUEST_BYTES
-    };
+    // A multipart command carries a model or an image, so it gets the upload
+    // ceiling; a JSON one is a command and nothing else.
+    let bulk = (request.method == "PUT" && request.path.starts_with("/files/"))
+        || (request.method == "POST"
+            && request.path == "/request"
+            && multipart_boundary(request).is_some());
+    let ceiling = if bulk { max_body } else { MAX_REQUEST_BYTES };
     if length > ceiling {
         drain_body(reader, length);
         return Err(BadRequest::BodyTooLarge);
@@ -1082,6 +1283,77 @@ fn decode(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header value is bytes on the wire and a model's title is not, so the
+    /// reply is escaped before it becomes one — and it has to still be the
+    /// same JSON afterwards.
+    #[test]
+    fn a_reply_in_a_header_is_ascii_and_still_the_same_json() {
+        let json = b"{\"title\":\"\xe3\x81\x82 \xf0\x9f\x8e\xa8\"}";
+        let escaped = ascii_json(json);
+        assert!(escaped.is_ascii(), "{escaped}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&escaped).expect("the escaped form is the same JSON");
+        assert_eq!(parsed["title"], "\u{3042} \u{1f3a8}");
+        // An ASCII reply is handed back untouched.
+        assert_eq!(ascii_json(b"{\"id\":1}"), "{\"id\":1}");
+    }
+
+    #[test]
+    fn a_boundary_is_read_off_the_content_type_and_nothing_else_is() {
+        let with = |value: &str| HttpRequest {
+            method: "POST".into(),
+            path: "/request".into(),
+            query: HashMap::new(),
+            headers: vec![("content-type".into(), value.into())],
+            body: Vec::new(),
+        };
+        assert_eq!(
+            multipart_boundary(&with("multipart/form-data; boundary=abc")).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            multipart_boundary(&with(
+                "Multipart/Form-Data; charset=utf-8; boundary=\"a b\""
+            ))
+            .as_deref(),
+            Some("a b")
+        );
+        assert!(multipart_boundary(&with("application/json")).is_none());
+        assert!(multipart_boundary(&with("multipart/form-data")).is_none());
+        assert!(multipart_boundary(&with("multipart/form-data; boundary=")).is_none());
+    }
+
+    /// The parser is strict on purpose: every shape it will not take is a 400
+    /// rather than a guess about what the sender meant.
+    #[test]
+    fn multipart_takes_only_what_it_says_it_takes() {
+        let body = b"--b\r\nContent-Disposition: form-data; name=\"request\"\r\n\r\n{}\r\n\
+                     --b\r\nContent-Disposition: form-data; name=\"texture\"; filename=\"a.png\"\r\n\
+                     Content-Type: image/png\r\n\r\n\x00\x01\r\n--b--\r\n";
+        let parts = parse_multipart(body, "b").expect("a well-formed body");
+        assert_eq!(parts[0].0, "request");
+        assert_eq!(parts[0].1, b"{}");
+        // The filename is ignored; the part's name is the attachment's.
+        assert_eq!(parts[1].0, "texture");
+        assert_eq!(parts[1].1, b"\x00\x01");
+
+        for bad in [
+            // No closing boundary.
+            &b"--b\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n"[..],
+            // No opening boundary.
+            &b"Content-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n--b--\r\n"[..],
+            // A part with no name.
+            &b"--b\r\nContent-Type: text/plain\r\n\r\nx\r\n--b--\r\n"[..],
+            // Two parts sharing one name.
+            &b"--b\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n\
+               --b\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\ny\r\n--b--\r\n"[..],
+            // Bare LF where CRLF is required.
+            &b"--b\nContent-Disposition: form-data; name=\"a\"\n\nx\n--b--\n"[..],
+        ] {
+            assert!(parse_multipart(bad, "b").is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn only_a_loopback_host_is_served() {
