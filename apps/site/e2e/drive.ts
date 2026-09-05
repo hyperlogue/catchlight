@@ -271,7 +271,7 @@ const canvasFrame = async (
   // Before the wait below, so a viewport that will never arrive is reported as
   // the reason it did not rather than as this step timing out.
   await checkProblem();
-  // A document swap rebuilds the viewport, and the rebuild is asynchronous.
+  // A model swap rebuilds the viewport, and the rebuild is asynchronous.
   // Waiting is not the assertion — a canvas that never gets one fails here
   // with a timeout naming this step, which is the same verdict.
   await page.waitForFunction(
@@ -381,7 +381,7 @@ async function draws(): Promise<void> {
     if (said !== tier) throw new Error(`the tab draws on ${said}, not on ${tier}`);
   });
 
-  await step("document open", async () => {
+  await step("model open", async () => {
     await page.locator("canvas[data-catchlight-viewport]").first().waitFor({ timeout: 20000 });
     await page.locator("[data-catchlight-node]").first().waitFor({ timeout: 20000 });
     await page.waitForTimeout(1500);
@@ -448,12 +448,12 @@ async function draws(): Promise<void> {
         // needed. The layout box is fractional and is what the resize
         // observer turns into a backing store, and the rounded pair is what
         // the React viewport passed to `fitCamera` when it framed this
-        // document, so it is what reproduces the camera.
+        // model, so it is what reproduces the camera.
         const box = main.getBoundingClientRect();
         const framing = { width: main.clientWidth, height: main.clientHeight };
         const open = await editor.listSessions();
         const info = open[open.length - 1];
-        if (!info) return "no document to draw twice";
+        if (!info) return "no model to draw twice";
         const session = await editor.attachSession(info);
 
         const canvas = document.createElement("canvas");
@@ -474,9 +474,9 @@ async function draws(): Promise<void> {
         const view = await editor.attach(session, canvas);
 
         // The camera the React viewport computed when it opened this
-        // document: same function, same bounds, same size, same padding.
+        // model: same function, same bounds, same size, same padding.
         const framed = fitCamera(session.bounds(), framing);
-        if (!framed) return "the document has no bounds to frame";
+        if (!framed) return "the model has no bounds to frame";
         view.setCamera(framed.center[0], framed.center[1], framed.height);
         view.start();
         (globalThis as unknown as Record<string, unknown>).__catchlightProbeView = view;

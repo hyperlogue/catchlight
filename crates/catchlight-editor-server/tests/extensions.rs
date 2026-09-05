@@ -304,7 +304,7 @@ fn a_key_the_model_does_not_carry_says_so() {
 }
 
 #[test]
-fn a_set_is_a_document_edit_and_undo_covers_it() {
+fn a_set_is_an_edit_and_undo_covers_it() {
     let mut f = Fixture::new();
     f.set_json("molan.caster", json!("first"));
     f.set_json("molan.caster", json!("second"));

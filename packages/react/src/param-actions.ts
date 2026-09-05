@@ -2,20 +2,20 @@
  * Editing params and the bindings they drive: one call per command.
  *
  * **Every action is a command, and nothing here touches the model.** What a
- * panel draws comes back from the replica once the editor says the document
+ * panel draws comes back from the replica once the editor says the model
  * moved, so an action's whole job is to send the right command and hand its
  * promise on. The same shape as `useNodeActions`, for the same reason.
  *
  * **A pose is not in here.** Clicking a keypoint or a grid cell moves the
  * puppet to that key and authors nothing — that is `session.setParam`, on the
  * repaint channel, and it stays out of this hook so a panel cannot reach for a
- * document command by accident.
+ * edit by accident.
  *
  * **A binding is addressed the way the wire addresses it**: the node, the
  * target, and the one or two params whose key positions its grid spans.
  * There is no handle and no local index, so an action built from what a panel
  * read a moment ago still names the same binding after somebody else edited
- * the document.
+ * the model.
  */
 
 import type {

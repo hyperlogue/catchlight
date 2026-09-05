@@ -2,15 +2,15 @@
  * The editor, as everything above it sees it.
  *
  * This is the whole public surface of `@catchlight/core`: what a React hook or
- * a host application needs, and nothing about where the document is served
+ * a host application needs, and nothing about where the model is served
  * from. Nothing above this file may reach the backend, the wasm module or the
  * store directly — that is what keeps "the tab holds a replica" (see
  * `session.ts`) and "where the bytes live" (see `storage.ts`) changeable in
  * one package.
  *
  * **One device, acquired at the first attach, from that attach's canvas.**
- * Not at creation: opening a document, reading a tree and running a drag need
- * no GPU, and a tab that only ever lists documents should not hold one. So
+ * Not at creation: opening a model, reading a tree and running a drag need
+ * no GPU, and a tab that only ever lists models should not hold one. So
  * [`attach`] acquires it, once, and every later viewport and replica shares
  * it. The canvas goes with the request because the fallback tier needs it: a
  * WebGL2 device is a canvas's rendering context, so the first element to ask
@@ -74,7 +74,7 @@ export class Editor {
   }
 
   /**
-   * Where the document lives: the wasm editor in this tab, or a process this
+   * Where the model lives: the wasm editor in this tab, or a process this
    * tab is connected to.
    *
    * The one thing above this class that may legitimately branch on which
@@ -113,24 +113,24 @@ export class Editor {
     };
   }
 
-  /** An empty document. */
-  async newDocument(name?: string): Promise<Session> {
+  /** An empty model. */
+  async newSession(name?: string): Promise<Session> {
     return this.#adopt(await this.#backend.send({ cmd: "session_new", name: name ?? null }));
   }
 
   /**
-   * Opens the document the *editor's* store holds at `key`.
+   * Opens the model the *editor's* store holds at `key`.
    *
    * A file of the editor's, which the session can then save back over. Bytes
    * this page holds are [`openFile`] instead.
    */
-  async openDocument(key: string): Promise<Session> {
+  async openSession(key: string): Promise<Session> {
     return this.#adopt(await this.#backend.send({ cmd: "session_open", path: key }));
   }
 
   /**
    * Opens bytes the page already holds — a dropped file, a picked one, a
-   * fetch — as a document named `name`.
+   * fetch — as a model named `name`.
    *
    * A fresh session and then the file imported into it, because the two mean
    * different things: nothing named a file of the editor's, so the session
@@ -175,7 +175,7 @@ export class Editor {
    * Writes `session` back to the store, at `key` or wherever it was opened
    * from, and returns the key it landed under.
    */
-  async saveDocument(session: Session, key?: string): Promise<string> {
+  async saveSession(session: Session, key?: string): Promise<string> {
     const body = await session.send({ cmd: "save", path: key ?? null });
     return expectResult(body, "saved").path;
   }
@@ -185,24 +185,24 @@ export class Editor {
    * this tab to be had.
    *
    * What makes a save in a tab worth anything: the store an in-tab editor
-   * writes to is the browser's own, and a document that never leaves it is
+   * writes to is the browser's own, and a model that never leaves it is
    * one the person cannot take anywhere. So a host saves, reads the key back
    * through here, and hands the bytes to the browser as a download. A
    * connected editor wrote the file where it was asked to and hands back
    * nothing — the host then says where it went rather than downloading it.
    */
-  readDocument(key: string): Promise<Uint8Array | undefined> {
-    return this.#backend.readDocument(key);
+  readFile(key: string): Promise<Uint8Array | undefined> {
+    return this.#backend.readFile(key);
   }
 
   /**
-   * Closes the document on the editor and frees this tab's replica of it.
+   * Closes the model on the editor and frees this tab's replica of it.
    *
    * By id rather than by `Session`, because the list a person closes from
    * names sessions this tab may never have attached. Closing one it did hold
    * frees the replica too; anything still waiting on that session rejects.
    */
-  async closeDocument(id: SessionId): Promise<void> {
+  async closeSession(id: SessionId): Promise<void> {
     await this.#backend.send({ cmd: "session_close", session: id });
     const held = this.#sessions.get(id);
     if (!held) return;
@@ -210,7 +210,7 @@ export class Editor {
     held.close();
   }
 
-  /** Every document the editor has open, including ones this tab did not open. */
+  /** Every model the editor has open, including ones this tab did not open. */
   async listSessions(): Promise<SessionInfo[]> {
     const reply = await this.#backend.send({ cmd: "session_list" });
     return expectResult(reply.body, "sessions").sessions;
@@ -231,14 +231,14 @@ export class Editor {
 
   /**
    * Registers `listener`, called whenever what [`listSessions`] reports may
-   * have changed: a document opened or closed anywhere, and a document that
+   * have changed: a model opened or closed anywhere, and a model that
    * moved — a `SessionInfo` carries the revision, the node count and whether
    * there is anything unsaved, and every one of those follows an edit or a
    * save.
    */
   onSessionsChanged(listener: () => void): Unsubscribe {
     return this.#backend.onEvent((event) => {
-      if (event.event === "sessions_changed" || event.event === "document_changed") listener();
+      if (event.event === "sessions_changed" || event.event === "model_changed") listener();
     });
   }
 
@@ -323,7 +323,7 @@ export class Editor {
    * so plainly rather than sending an import with nothing attached.
    */
   async #read(key: string): Promise<Uint8Array> {
-    const bytes = await this.#backend.readDocument(key);
+    const bytes = await this.#backend.readFile(key);
     if (bytes) return bytes;
     throw new ProtocolError({
       code: "io",
@@ -342,7 +342,7 @@ export class Editor {
    * the revision that import produced.
    *
    * A session that stays empty is worse than none — it would sit in every
-   * list as a document nobody opened — so a refused import takes it with it.
+   * list as a model nobody opened — so a refused import takes it with it.
    */
   async #fill(
     session: SessionId,
@@ -378,7 +378,7 @@ export class Editor {
  * A storage key for a file the page holds.
  *
  * Only the last segment is kept — a picked file's `webkitRelativePath` or a
- * dropped one's name can carry a whole tree, and a document that writes itself
+ * dropped one's name can carry a whole tree, and a model that writes itself
  * back somewhere the user did not name is worse than one with a flattened
  * name. Everything outside the key charset becomes `_` so the key survives a
  * round trip through a URL path.

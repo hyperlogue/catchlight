@@ -40,11 +40,11 @@
  * zoom on every edit. A host that has its own idea where the camera starts
  * says so with `defaultCamera`, and that turns this off.
  *
- * **A canvas outlives its document.** `session` may be `undefined`: the
+ * **A canvas outlives its model.** `session` may be `undefined`: the
  * element is measured and listened to, and nothing is attached until a
  * session arrives — on the same element, which is the point. The camera, the
- * observers and the wheel listener are the element's and survive the document
- * that was drawn on it, so a host that swapped canvases between documents
+ * observers and the wheel listener are the element's and survive the model
+ * that was drawn on it, so a host that swapped canvases between models
  * would rebuild all three and hand the person a stage that jumped.
  */
 
@@ -234,7 +234,7 @@ export function ViewportRoot(props: ViewportRootProps) {
             return;
           }
           attempts += 1;
-          // A document that draws nothing never gets a box, and this must not
+          // A model that draws nothing never gets a box, and this must not
           // become a callback on every frame for the life of the tab.
           if (attempts < AUTO_FIT_FRAMES) frame = requestFrame(tryFit);
         };
@@ -386,7 +386,7 @@ export interface ViewportCamera {
    * of — what a "Fit" button runs.
    *
    * `false` when there is nothing to frame: the box is posed, so a viewport
-   * that has not drawn a frame yet has none, and neither does a document that
+   * that has not drawn a frame yet has none, and neither does a model that
    * draws nothing. The camera is left alone in both cases.
    */
   fit: (session: Session) => boolean;
@@ -439,7 +439,7 @@ const MIDDLE = 1;
 /**
  * How many frames the auto-fit waits for geometry before giving up.
  *
- * A document that draws nothing never produces a box, and a callback on every
+ * A model that draws nothing never produces a box, and a callback on every
  * frame for the life of the tab is exactly what the renderer's own idling
  * rules exist to avoid. Four seconds at sixty hertz is long enough for a
  * model whose textures are still decoding.

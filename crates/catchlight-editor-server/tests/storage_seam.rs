@@ -2,7 +2,7 @@
 
 //! A `path` on the wire is a storage key, not a filesystem path.
 //!
-//! These drive the document commands against a store with no filesystem
+//! These drive the file commands against a store with no filesystem
 //! behind it — the shape the browser and the cloud both use. If these pass,
 //! the same commands the CLI sends over the Unix socket work unchanged in
 //! wasm, which is the whole point of the seam.

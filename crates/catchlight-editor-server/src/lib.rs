@@ -22,7 +22,7 @@
 //!   returns without touching `rev`, so a drag of any length costs no undo
 //!   entries. It is the only command a client with its own puppet may serve
 //!   itself instead of sending here. [`Command::DeformVertices`] authors the same offsets into the
-//!   model and costs exactly one. Everything that edits the document goes
+//!   model and costs exactly one. Everything that edits the model goes
 //!   through [`Editor::edit_session`], which is the single place an undo
 //!   snapshot is taken.
 //!
@@ -36,7 +36,7 @@
 //!   snapshots of one model hold its textures once, not 64 times.
 //!
 //! - **Each session draws its own Ids.** See [`session_hex`]: the seed comes
-//!   from the [`SessionId`], so two documents open at once and edited the same
+//!   from the [`SessionId`], so two sessions open at once and edited the same
 //!   way do not name their new nodes identically — while replaying a script
 //!   against a fresh editor still rebuilds the same model, Ids included.
 //!
@@ -47,7 +47,7 @@
 //! - **A `path` is a storage key, not a filesystem path.** See [`storage`]:
 //!   every command that names bytes resolves its key through a [`Storage`],
 //!   so the same command set serves the filesystem, the browser and a blob
-//!   store, and a command that read a key *into* a document releases it — so a
+//!   store, and a command that read a key *into* a session releases it — so a
 //!   session opened from a transient upload holds no `file` to save back to.
 //!   [`Command::Preview`] is the one command that is still native — it
 //!   needs the headless renderer, not just bytes.
@@ -66,7 +66,7 @@
 //!   under a dotted key and comes back out untouched: a JSON one travels
 //!   inline everywhere, including in the structure feed, while bytes travel
 //!   as a `{size, hash}` marker and are fetched once, by hash, from
-//!   [`http`]'s extension route. Setting one is a document edit like any
+//!   [`http`]'s extension route. Setting one is an edit like any
 //!   other — a revision, an undo entry, an event — because that is what makes
 //!   it survive a save.
 //!
@@ -317,7 +317,7 @@ struct Session {
     /// Lazily baked from `model` for preview. Rebaked by its own generation
     /// gate on the next use after an edit, so nothing has to invalidate it.
     puppet: Option<Puppet>,
-    /// rev-gated document view for in-process observers (the GUI).
+    /// rev-gated model view for in-process observers (the GUI).
     snapshot: Option<Arc<DocSnapshot>>,
     /// Latest shared view state — its own path, never touches the model/rev.
     presence: Option<Presence>,
@@ -723,7 +723,7 @@ impl Editor {
     /// two halves: how `attachments` were framed on the way in, and how the
     /// [`Payload`] is framed on the way out.
     pub fn handle_with(&self, req: Request, attachments: Attachments) -> (Reply, Option<Payload>) {
-        // `Document` is the one kind that may move a session's revision.
+        // `Edit` is the one kind that may move a session's revision.
         // That classification is what a client picks its send method by — a
         // presence or scratch command that quietly bumped `rev` would
         // re-render every panel on every pointer move, and a query that did
@@ -762,12 +762,12 @@ impl Editor {
         };
 
         #[cfg(debug_assertions)]
-        if kind != CommandKind::Document {
+        if kind != CommandKind::Edit {
             debug_assert_eq!(
                 self.revs(),
                 revs_before,
                 "a {kind:?} command moved a session revision; either it belongs \
-                 in CommandKind::Document or it should not be editing",
+                 in CommandKind::Edit or it should not be editing",
             );
         }
         debug_assert!(
@@ -823,11 +823,11 @@ impl Editor {
         }
     }
 
-    /// Say that `session`'s document now reads as `rev`. Every revision move
+    /// Say that `session`'s model now reads as `rev`. Every revision move
     /// routes through here, and so does a save — a title bar reads `dirty` the
     /// same way it reads the tree.
-    fn notify_document(&self, session: SessionId, rev: u64) {
-        self.notify(Event::DocumentChanged { session, rev });
+    fn notify_model_changed(&self, session: SessionId, rev: u64) {
+        self.notify(Event::ModelChanged { session, rev });
     }
 
     /// Say that the set of open sessions changed. Carries nothing: an
@@ -885,7 +885,7 @@ impl Editor {
             s.saved_rev = s.rev;
             Ok(s.rev)
         })?;
-        self.notify_document(id, rev);
+        self.notify_model_changed(id, rev);
         Ok(())
     }
 
@@ -903,7 +903,7 @@ impl Editor {
         Ok(s.dirty())
     }
 
-    /// Read the session's document directly — the in-process observer path for
+    /// Read the session's model directly — the in-process observer path for
     /// panels that need more than the tree snapshot (inspector, textures).
     /// Deep-read protocol commands wait until a remote client exists.
     pub fn with_model<R>(
@@ -942,10 +942,10 @@ impl Editor {
     }
 
     /// Run `f` against a session. No undo snapshot is taken, so `f` must not
-    /// edit the document (session metadata like `file`/`saved_rev` is fine);
-    /// document edits go through `edit_session`. The signature can't express
+    /// edit the model (session metadata like `file`/`saved_rev` is fine);
+    /// model edits go through `edit_session`. The signature can't express
     /// this — both hand out `&mut Session` because metadata mutation is allowed
-    /// — so a debug assert catches a stray document edit (any edit bumps `rev`,
+    /// — so a debug assert catches a stray model edit (any edit bumps `rev`,
     /// which is exactly what `edit_session` snapshots on).
     fn with_session<R>(
         &self,
@@ -958,14 +958,14 @@ impl Editor {
         let result = f(&mut session);
         debug_assert_eq!(
             session.rev, rev_before,
-            "with_session edited the document (rev bumped) without an undo snapshot; use edit_session",
+            "with_session edited the model (rev bumped) without an undo snapshot; use edit_session",
         );
         result
     }
 
-    /// Run a document edit `f` against a session, auto-capturing a pre-edit undo
+    /// Run an edit `f` against a session, auto-capturing a pre-edit undo
     /// snapshot that is pushed only when the edit succeeds and actually changed
-    /// the document (rev bumped). The snapshot is a shallow clone — meshes,
+    /// the model (rev bumped). The snapshot is a shallow clone — meshes,
     /// binding grids and texture payloads all ride behind an `Arc` and are
     /// copied only when something edits them (see [`History`]) — but it still
     /// walks and copies the whole tree, which is why read-only commands stay
@@ -1000,12 +1000,12 @@ impl Editor {
         };
         // Outside the guard: an observer reads the session it was told about.
         if let Some(rev) = moved {
-            self.notify_document(id, rev);
+            self.notify_model_changed(id, rev);
         }
         result
     }
 
-    /// Current document view for an in-process observer (the GUI), rebuilt only
+    /// Current model view for an in-process observer (the GUI), rebuilt only
     /// when the session's revision changed.
     pub fn doc_snapshot(&self, id: SessionId) -> Option<Arc<DocSnapshot>> {
         let session = self.session(id).ok()?;
@@ -1131,7 +1131,7 @@ impl Editor {
                 }
                 // A save moves no revision but does flip `dirty`, which a
                 // title bar reads the same way it reads the tree.
-                self.notify_document(session, rev);
+                self.notify_model_changed(session, rev);
                 Ok(ResponseBody::Saved { path: key })
             }
             Command::ExportManifest { session, path } => {
@@ -1788,7 +1788,7 @@ impl Editor {
                     s.undo()?;
                     s.rev
                 };
-                self.notify_document(session, rev);
+                self.notify_model_changed(session, rev);
                 Ok(ResponseBody::Empty)
             }
             Command::Redo { session } => {
@@ -1798,7 +1798,7 @@ impl Editor {
                     s.redo()?;
                     s.rev
                 };
-                self.notify_document(session, rev);
+                self.notify_model_changed(session, rev);
                 Ok(ResponseBody::Empty)
             }
             Command::PhysicsAdd {
@@ -1845,7 +1845,7 @@ impl Editor {
             }),
             Command::PresenceSet { session, presence } => {
                 // Deliberately not via with_session: presence must not bump rev,
-                // snapshot, or record undo — it is not the document.
+                // snapshot, or record undo — it is not the model.
                 let handle = self.session(session)?;
                 lock(&handle).presence = Some(presence);
                 Ok(ResponseBody::Empty)
@@ -1957,9 +1957,9 @@ impl Editor {
                 parent,
                 textures,
             } => {
-                let document = attachments.take("document").unwrap_or_default();
+                let structure = attachments.take("structure").unwrap_or_default();
                 let images = attachments.take_family("texture");
-                self.import_json(session, parent, textures, document, images)
+                self.import_json(session, parent, textures, structure, images)
             }
             Command::ImportManifest { session } => {
                 let manifest = attachments.take("manifest").unwrap_or_default();
@@ -1971,11 +1971,11 @@ impl Editor {
 
     /// [`Command::ImportFile`]: a `.clm` from bytes into an open session.
     ///
-    /// Two shapes, one operation. Without a `parent` the document has to be a
+    /// Two shapes, one operation. Without a `parent` the bytes have to be a
     /// complete model and the session's has to be pristine, and the session's
     /// model is *replaced* — keeping its identity, so the puppet and the
     /// render cache built on it rebake rather than refuse. With a `parent`
-    /// every root of the document is re-parented onto that node and the whole
+    /// every imported root is re-parented onto that node and the whole
     /// thing goes through [`Model::install`], which is atomic: Ids verbatim,
     /// a collision or a missing requirement refused with nothing moved.
     ///
@@ -1995,32 +1995,32 @@ impl Editor {
         self.import_clm(session, parent, file, &mut budget)
     }
 
-    /// [`Command::ImportJson`]: a structure document as JSON, its textures
-    /// attached beside it.
+    /// [`Command::ImportJson`]: a structure as JSON, its textures attached
+    /// beside it.
     ///
     /// The same two paths [`Self::import_file`] takes, reached from a
     /// different envelope. Everything specific to this command happens before
-    /// they start: parse the document, pair each declared texture with the
+    /// they start: parse the structure, pair each declared texture with the
     /// attachment carrying it, and refuse either side naming what is missing.
     fn import_json(
         &self,
         session: SessionId,
         parent: Option<NodeId>,
         textures: Vec<ImportTexture>,
-        document: Vec<u8>,
+        structure: Vec<u8>,
         images: Vec<(String, Vec<u8>)>,
     ) -> Result<ResponseBody, EditorError> {
-        let file = clm_file_from_json(&document, &textures, images)?;
+        let file = clm_file_from_json(&structure, &textures, images)?;
         self.import_clm(session, parent, file, &mut LoadBudget::default())
     }
 
     /// The whole of what an import does once the model is a [`ClmFile`],
     /// however it arrived.
     ///
-    /// Without a `parent` the document has to be a complete model and the
+    /// Without a `parent` the bytes have to be a complete model and the
     /// session's has to be pristine, and the session's model is *replaced* —
     /// keeping its identity, so the puppet and the render cache built on it
-    /// rebake rather than refuse. With a `parent` every root of the document
+    /// rebake rather than refuse. With a `parent` every imported root
     /// is re-parented onto that node and the whole thing goes through
     /// [`Model::install`], which is atomic: Ids verbatim, a collision or a
     /// missing requirement refused with nothing moved.
@@ -2088,10 +2088,10 @@ impl Editor {
     ///
     /// **A pristine replace is an open in all but name**, and what it leaves
     /// is what [`Command::SessionOpen`] leaves minus the file: the revision
-    /// moves and `document_changed` fires, so every view re-reads — but the
-    /// session is *clean*, with nothing to undo. This is the one document
+    /// moves and `model_changed` fires, so every view re-reads — but the
+    /// session is *clean*, with nothing to undo. This is the one edit
     /// command that takes no snapshot, and it has to be: `session_new` plus
-    /// this is how a client opens bytes it holds, and an opened document that
+    /// this is how a client opens bytes it holds, and an opened model that
     /// warned about unsaved changes, or whose one undo emptied it back to a
     /// bare root, would be a worse open than the one it replaced. Installing
     /// a fragment under a parent ([`Command::ImportFile`] with one) is an
@@ -2131,7 +2131,7 @@ impl Editor {
             s.rev
         };
         // Outside the guard: an observer reads the session it was told about.
-        self.notify_document(session, rev);
+        self.notify_model_changed(session, rev);
         Ok(ResponseBody::Session { session })
     }
 
@@ -2417,7 +2417,7 @@ fn joins(weld: &ModelWeld, a: &NodeId, b: &NodeId) -> bool {
     (weld.a() == a && weld.b() == b) || (weld.a() == b && weld.b() == a)
 }
 
-/// In-process document view handed to observers (the GUI); refs are stable for
+/// In-process model view handed to observers (the GUI); refs are stable for
 /// the session's lifetime.
 #[derive(Debug, Clone)]
 pub struct DocSnapshot {
@@ -2523,25 +2523,25 @@ fn set_opacity(kind: &mut ModelNodeKind, op: f32) {
 /// The encoding a storage key's extension implies. A key is opaque to
 /// everything else; this is the one place its tail is read, and only to
 /// pick a decoder.
-/// Build a [`clm::ClmFile`] from a JSON structure document and the images
-/// that came with it.
+/// Build a [`clm::ClmFile`] from a JSON structure and the images that came
+/// with it.
 ///
 /// Two pairings have to hold and both are the client's to get right, so both
 /// are refused here naming what is wrong: every declared texture needs its
 /// attachment, and every attachment needs a declaration. A texture the
-/// *document* references but nobody declared is left to the reader, which
+/// *structure* references but nobody declared is left to the reader, which
 /// already refuses a dangling albedo by Id — one check, in the one place that
-/// knows what a document references.
+/// knows what a structure references.
 fn clm_file_from_json(
-    document: &[u8],
+    structure: &[u8],
     textures: &[ImportTexture],
     images: Vec<(String, Vec<u8>)>,
 ) -> Result<clm::ClmFile, EditorError> {
-    let json = std::str::from_utf8(document).map_err(|e| {
-        EditorError::BadRequest(format!("the document attachment is not UTF-8: {e}"))
+    let json = std::str::from_utf8(structure).map_err(|e| {
+        EditorError::BadRequest(format!("the structure attachment is not UTF-8: {e}"))
     })?;
-    let doc: clm::ClmDocument = serde_json::from_str(json).map_err(|e| {
-        EditorError::BadRequest(format!("the document is not a .clm document: {e}"))
+    let doc: clm::ClmStructure = serde_json::from_str(json).map_err(|e| {
+        EditorError::BadRequest(format!("the attachment is not a .clm structure: {e}"))
     })?;
 
     let mut attached: HashMap<String, Vec<u8>> = images.into_iter().collect();
@@ -2573,8 +2573,8 @@ fn clm_file_from_json(
     Ok(clm::ClmFile {
         doc,
         textures: table,
-        // A byte extension's payload lives in a container section, and a JSON
-        // document has none; a marker with no bytes is refused by key when
+        // A byte extension's payload lives in a container section, and JSON
+        // has none; a marker with no bytes is refused by key when
         // the file is read. Set such an extension after the import.
         extensions: Vec::new(),
     })
@@ -2584,8 +2584,8 @@ fn clm_file_from_json(
 ///
 /// The two shapes are disjoint on the wire — a complete model has exactly one
 /// parentless node and a fragment has none — so this re-parents at the
-/// document, before either reader sees it: a node whose named parent the
-/// document does not itself carry is one of its roots, and a complete model's
+/// structure, before either reader sees it: a node whose named parent the
+/// structure does not itself carry is one of its roots, and a complete model's
 /// root, which names no parent at all, is the same thing. Both then read as a
 /// fragment, and [`Model::install`] applies the same checks to either.
 ///
@@ -2895,7 +2895,7 @@ mod tests {
         let sink = seen.clone();
         let weak = Arc::downgrade(&ed);
         let handle = ed.subscribe(Box::new(move |event| {
-            if let (Event::DocumentChanged { session, .. }, Some(ed)) = (event, weak.upgrade()) {
+            if let (Event::ModelChanged { session, .. }, Some(ed)) = (event, weak.upgrade()) {
                 // Re-entering the editor from an observer is the normal case.
                 ed.with_model(*session, |m| m.node_count()).unwrap();
             }
@@ -2920,11 +2920,11 @@ mod tests {
             },
         )));
         match lock(&seen).as_slice() {
-            [Event::DocumentChanged { session, rev }] => {
+            [Event::ModelChanged { session, rev }] => {
                 assert_eq!(*session, s);
                 assert_eq!(*rev, 1, "the event carries the revision after the edit");
             }
-            other => panic!("expected one DocumentChanged, got {other:?}"),
+            other => panic!("expected one ModelChanged, got {other:?}"),
         }
         lock(&seen).clear();
 
@@ -3549,7 +3549,7 @@ mod tests {
     }
 
     #[test]
-    fn presence_is_off_the_document_path() {
+    fn presence_is_off_the_model_path() {
         let ed = Editor::new();
         let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
         let snap0 = ed.doc_snapshot(s).unwrap();
@@ -3571,7 +3571,7 @@ mod tests {
             )),
             Reply::Ok { .. }
         ));
-        // presence must not change the document: same cached snapshot Arc.
+        // presence must not change the model: same cached snapshot Arc.
         let snap1 = ed.doc_snapshot(s).unwrap();
         assert!(Arc::ptr_eq(&snap0, &snap1));
         match body(ed.handle(req(3, Command::PresenceGet { session: s }))) {
@@ -3583,7 +3583,7 @@ mod tests {
         match body(ed.handle(req(4, Command::Status { session: s }))) {
             ResponseBody::Status { status } => {
                 assert_eq!(status.rev, 0, "presence does not bump rev");
-                assert!(!status.dirty, "presence does not dirty the document");
+                assert!(!status.dirty, "presence does not dirty the model");
             }
             other => panic!("{other:?}"),
         }

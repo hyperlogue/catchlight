@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! A live vertex drag rides the presence path and the commit rides the
-//! document path. That split is what keeps the undo history usable: dragging
+//! edit path. That split is what keeps the undo history usable: dragging
 //! a vertex emits a `ScratchDeform` per mouse move, and if those touched the
 //! model, one gesture would bury every earlier edit under a hundred
 //! indistinguishable snapshots (and blow the 256 MiB budget on any model with
@@ -82,7 +82,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
         rev_before,
         "a drag must not bump the revision"
     );
-    assert!(!status(3).dirty, "a drag must not dirty the document");
+    assert!(!status(3).dirty, "a drag must not dirty the model");
 
     // The commit — the same offsets, authored into a deform keypoint.
     let offsets: Vec<[f32; 2]> = (0..vertices)
@@ -194,7 +194,7 @@ fn a_scratch_deform_is_checked_against_the_node_it_names() {
 
 /// A session holding `bytes`: a fresh one, then the file imported into it.
 ///
-/// The one way bytes a caller holds become a document — there is no side door
+/// The one way bytes a caller holds become a session's model — no side door
 /// that takes them, so a test opens a model exactly as a client does.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
     let reply = editor.handle(Request {

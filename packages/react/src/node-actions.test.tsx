@@ -13,7 +13,7 @@ import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
 import type { Command, NodeId, Session, TreeNode } from "@catchlight/core";
-import { Session as DocumentSession } from "@catchlight/core";
+import { Session as SessionClass } from "@catchlight/core";
 import { emptyDoc, FakeReplica, ScriptedBackend, structureBytes } from "@catchlight/core/fakes";
 
 import { dropIndex, useNodeActions } from "./node-actions.js";
@@ -34,7 +34,7 @@ function scripted(root: TreeNode): { backend: ScriptedBackend; session: Session 
   doc.root = root;
   doc.rev = 1;
   replica.applyStructure(structureBytes(doc), 1);
-  return { backend, session: new DocumentSession(backend, 1, replica) };
+  return { backend, session: new SessionClass(backend, 1, replica) };
 }
 
 /** Mounts the hook under a selection, and hands both back. */
@@ -78,7 +78,7 @@ async function open(
 }
 
 /**
- * Every document command the backend was sent, in order.
+ * Every edit the backend was sent, in order.
  *
  * Presence is dropped whole rather than by name: a selection publishes one on
  * every click and the provider asks for the session's own on mount, and none

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use catchlight_core::formats::clm::{
-    self as clm, ClmDocument, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile,
+    self as clm, ClmExtension, ClmExtensionBlob, ClmExtensionMarker, ClmFile, ClmStructure,
     MAX_EXTENSION_BYTES,
 };
 use catchlight_core::id::ExtensionKey;
@@ -107,7 +107,7 @@ fn setting_and_deleting_moves_the_generation() {
     let before = model.generation();
     model.set_extension(key("molan.caster"), json()).unwrap();
     let after_set = model.generation();
-    assert!(after_set > before, "a set is a document edit");
+    assert!(after_set > before, "a set is a model edit");
     model.delete_extension(&key("molan.caster")).unwrap();
     assert!(model.generation() > after_set, "so is a delete");
     assert!(model.extensions().is_empty());
@@ -138,11 +138,11 @@ fn a_reserved_key_is_refused_to_an_author_and_accepted_from_a_file() {
     assert!(model.delete_extension(&reserved).is_err());
 
     // The same key straight off the wire loads.
-    let doc = ClmDocument {
+    let doc = ClmStructure {
         extensions: [(reserved.clone(), ClmExtension::Json(serde_json::json!(1)))]
             .into_iter()
             .collect(),
-        ..root_document()
+        ..root_structure()
     };
     let read = Model::from_clm_file(&ClmFile {
         doc,
@@ -168,10 +168,10 @@ fn a_byte_value_over_the_cap_is_refused() {
 
 // ---- what the reader refuses --------------------------------------------
 
-/// A one-node document, the smallest complete model.
-fn root_document() -> ClmDocument {
+/// A one-node structure, the smallest complete model.
+fn root_structure() -> ClmStructure {
     use catchlight_core::formats::clm::{ClmNode, ClmNodeKind, ClmTransform};
-    ClmDocument {
+    ClmStructure {
         nodes: vec![ClmNode {
             id: catchlight_core::NodeId::new("root").unwrap(),
             parent: None,
@@ -186,14 +186,14 @@ fn root_document() -> ClmDocument {
             lock_to_root: false,
             kind: ClmNodeKind::Group,
         }],
-        ..ClmDocument::default()
+        ..ClmStructure::default()
     }
 }
 
-fn with_extensions(entries: Vec<(ExtensionKey, ClmExtension)>) -> ClmDocument {
-    ClmDocument {
+fn with_extensions(entries: Vec<(ExtensionKey, ClmExtension)>) -> ClmStructure {
+    ClmStructure {
         extensions: entries.into_iter().collect::<BTreeMap<_, _>>(),
-        ..root_document()
+        ..root_structure()
     }
 }
 
@@ -213,7 +213,7 @@ fn blob(k: &str, data: &[u8]) -> ClmExtensionBlob {
 
 /// `check_extensions` is what both the reader and the writer run, so driving
 /// it directly is driving both.
-fn refusal(doc: &ClmDocument, blobs: &[ClmExtensionBlob]) -> clm::ClmError {
+fn refusal(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> clm::ClmError {
     clm::check_extensions(doc, blobs).expect_err("this pairing must be refused")
 }
 
@@ -228,7 +228,7 @@ fn a_marker_without_its_bytes_is_refused_by_key() {
 #[test]
 fn bytes_nothing_names_are_refused_by_key() {
     // No entry at all, and an entry of the wrong kind, are both orphans.
-    let empty = root_document();
+    let empty = root_structure();
     assert!(
         matches!(refusal(&empty, &[blob("molan.thumb", b"abc")]), clm::ClmError::ExtensionBytesOrphan { key } if key == "molan.thumb")
     );

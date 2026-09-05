@@ -280,7 +280,7 @@ fn an_attachment_the_command_did_not_declare_is_refused() {
             session: s,
             parent: None,
         },
-        with(vec![("document", a_model())]),
+        with(vec![("structure", a_model())]),
     );
     assert_eq!(code(reply), ErrorCode::BadRequest);
 }
@@ -324,7 +324,7 @@ fn an_import_replaces_a_pristine_session_keeping_its_identity() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let heard = seen.clone();
     ed.subscribe(Box::new(move |event: &Event| {
-        if let Event::DocumentChanged { session, rev } = event {
+        if let Event::ModelChanged { session, rev } = event {
             heard.lock().unwrap().push((*session, *rev));
         }
     }));
@@ -349,16 +349,16 @@ fn an_import_replaces_a_pristine_session_keeping_its_identity() {
     assert_eq!(
         *seen.lock().unwrap(),
         vec![(s, 1)],
-        "an import is a document change like any other",
+        "an import is a model change like any other",
     );
 
-    // And it leaves what an open leaves: a document nobody has edited.
+    // And it leaves what an open leaves: a model nobody has edited.
     assert_clean_and_unundoable(&ed, 4, s);
 }
 
 /// A pristine replace is an open, so the session it leaves is clean with
 /// nothing behind it. Anything else and a tab warns about unsaved changes the
-/// moment a file is opened, and one undo empties the document.
+/// moment a file is opened, and one undo empties the model.
 fn assert_clean_and_unundoable(ed: &Editor, id: u64, session: SessionId) {
     match ok(ed.handle(req(id, Command::Status { session }))) {
         ResponseBody::Status { status } => {
@@ -406,7 +406,7 @@ fn a_fragment_cannot_replace_a_model() {
         },
         with(vec![("model", a_fragment())]),
     );
-    // Whole-model replacement reads the bytes as a complete document, and a
+    // Whole-model replacement reads the bytes as a complete model, and a
     // fragment's roots name a parent, so the reader refuses it.
     assert_eq!(code(reply), ErrorCode::Edit);
     assert_eq!(node_count(&ed, 3, s), 1);

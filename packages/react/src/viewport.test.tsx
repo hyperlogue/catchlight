@@ -38,7 +38,7 @@ afterEach(() => restore());
 describe("attaching", () => {
   test("StrictMode's double mount leaves exactly one live viewport", async () => {
     const { editor, viewports } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     const view = await mount(
       <StrictMode>
@@ -63,7 +63,7 @@ describe("attaching", () => {
 
   test("the canvas says what it is and claims its own touch gestures", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     const view = await mount(
       <EditorProvider editor={editor}>
@@ -82,7 +82,7 @@ describe("attaching", () => {
 
   test("a ref the host passed still gets the element", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let seen: HTMLCanvasElement | null = null;
 
     const view = await mount(
@@ -105,7 +105,7 @@ describe("attaching", () => {
 describe("an attach that cannot happen", () => {
   test("the reason goes to the host, which is the only place a person reads it", async () => {
     const editor = await editorWithoutADevice(NO_DEVICE);
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const seen: unknown[] = [];
 
     const view = await mount(
@@ -123,7 +123,7 @@ describe("an attach that cannot happen", () => {
 
   test("with no handler it falls back to the console, and that is all it is", async () => {
     const editor = await editorWithoutADevice(NO_DEVICE);
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const warned = stubWarn();
 
     const view = await mount(
@@ -146,7 +146,7 @@ describe("an attach that cannot happen", () => {
 describe("a stage with nothing to draw", () => {
   test("waits with its canvas, and attaches on that same element when a session arrives", async () => {
     const { editor, viewports } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const stage = (drawn: typeof session | undefined) => (
       <EditorProvider editor={editor}>
         <Viewport.Root session={drawn} />
@@ -161,7 +161,7 @@ describe("a stage with nothing to draw", () => {
 
     await view.render(stage(session));
     await settle();
-    // The same element: the canvas is the stage, and a fresh one per document
+    // The same element: the canvas is the stage, and a fresh one per model
     // would rebuild its observers and lose the camera it was framed with.
     expect(view.container.querySelector("canvas")).toBe(canvas);
     expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
@@ -179,7 +179,7 @@ describe("a stage with nothing to draw", () => {
 describe("pointers", () => {
   test("a pointer arrives in world units, Y-up", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const seen: ViewportPointerEvent[] = [];
 
     const view = await mount(
@@ -207,7 +207,7 @@ describe("pointers", () => {
 
   test("the camera the host set is the one the pointer is read against", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const seen: ViewportPointerEvent[] = [];
 
     const view = await mount(
@@ -234,7 +234,7 @@ describe("pointers", () => {
 describe("the camera gestures", () => {
   test("a middle drag pans, and the host hears about it instead of the pointer props", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const cameras: Camera[] = [];
     const pointers: string[] = [];
 
@@ -270,7 +270,7 @@ describe("the camera gestures", () => {
 
   test("a primary drag pans while Space is held", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const cameras: Camera[] = [];
     const pointers: string[] = [];
 
@@ -304,7 +304,7 @@ describe("the camera gestures", () => {
 
   test("a wheel zooms about the cursor", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const cameras: Camera[] = [];
 
     const view = await mount(
@@ -344,7 +344,7 @@ describe("the camera gestures", () => {
 
   test("a controlled camera moves only when the host says so", async () => {
     const { editor, viewports } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const cameras: Camera[] = [];
 
     const view = await mount(
@@ -381,7 +381,7 @@ describe("the camera gestures", () => {
 describe("framing the model", () => {
   test("a session is framed on the first frame that has something to frame", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const cameras: Camera[] = [];
     const frames = stubFrames();
 
@@ -417,7 +417,7 @@ describe("framing the model", () => {
 
   test("a host that named a starting camera keeps it", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const cameras: Camera[] = [];
     const frames = stubFrames();
 
@@ -443,7 +443,7 @@ describe("framing the model", () => {
 
   test("the camera hook frames on demand, against the size the canvas reported", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let api: ViewportCamera | undefined;
 
     function Host(): ReactNode {
@@ -484,7 +484,7 @@ describe("framing the model", () => {
 
   test("the zoom is measured against the fit, whichever side framed it", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const frames = stubFrames();
     let api: ViewportCamera | undefined;
 

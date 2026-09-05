@@ -7,15 +7,15 @@
 //! these pin which half each case takes.
 //!
 //! The rest of the file is the repair-or-refuse rule from the crate doc, one
-//! test per behaviour. A repair is pinned twice: what the document holds, and
-//! that the document still loads — a "repair" that leaves a `.clm` no reader
+//! test per behaviour. A repair is pinned twice: what the structure holds,
+//! and that it still loads — a "repair" that leaves a `.clm` no reader
 //! accepts has repaired nothing.
 
 use crate::inx::InxModel;
 use crate::to_clm::from_inx_model;
 use crate::ImportError;
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmDocument, ClmFile, ClmIndices, ClmNode, ClmNodeKind,
+    ClmAnimation, ClmFile, ClmIndices, ClmNode, ClmNodeKind, ClmStructure,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::texture::{EncodedTexture, TextureFormat};
@@ -24,11 +24,11 @@ use serde_json::json;
 use std::sync::Arc;
 
 /// Read one node tree, given as the `.inx` payload's `nodes` value.
-fn doc(nodes: serde_json::Value) -> ClmDocument {
+fn doc(nodes: serde_json::Value) -> ClmStructure {
     try_doc(nodes).expect("import")
 }
 
-fn try_doc(nodes: serde_json::Value) -> Result<ClmDocument, ImportError> {
+fn try_doc(nodes: serde_json::Value) -> Result<ClmStructure, ImportError> {
     let model = InxModel {
         payload: json!({ "nodes": nodes }),
         // One slot, so a `"textures": [0]` fixture resolves; the bytes are
@@ -62,18 +62,18 @@ fn import(payload: serde_json::Value, textures: usize) -> Result<ClmFile, Import
     from_inx_model(&model)
 }
 
-/// The imported document, read back the way a `.clm` off disk is read: through
-/// the loader, out to bytes, and in through the byte reader. A repair that
-/// leaves a document this refuses is not a repair.
+/// The imported structure, read back the way a `.clm` off disk is read:
+/// through the loader, out to bytes, and in through the byte reader. A repair
+/// that leaves a structure this refuses is not a repair.
 fn reread(file: &ClmFile) -> Model {
     let bytes = Model::from_clm_file(file)
-        .expect("the repaired document loads")
+        .expect("the repaired structure loads")
         .to_clm_bytes()
         .expect("and writes back out");
     Model::from_clm_bytes(&bytes).expect("and reads back in")
 }
 
-fn node_named<'a>(doc: &'a ClmDocument, name: &str) -> &'a ClmNode {
+fn node_named<'a>(doc: &'a ClmStructure, name: &str) -> &'a ClmNode {
     doc.nodes
         .iter()
         .find(|n| n.name == name)
@@ -192,7 +192,7 @@ fn a_mask_whose_source_is_not_there_is_dropped() {
 /// `Model::mask_add` and the `.clm` reader take only a part or a composite.
 /// An `.inx` may point one at anything, and a mask on a node that draws
 /// nothing clipped nothing in the source runtime either — so it is dropped
-/// like one whose source does not resolve, and the document still loads.
+/// like one whose source does not resolve, and the structure still loads.
 #[test]
 fn a_mask_whose_source_is_never_drawn_is_dropped() {
     let file = import(
@@ -601,7 +601,7 @@ fn a_deform_cell_that_disagrees_with_the_mesh_is_zipped_against_it() {
         ],
     );
 
-    // Without the fit, `.clm` refuses the document outright.
+    // Without the fit, `.clm` refuses the structure outright.
     reread(&file);
 }
 
@@ -653,7 +653,7 @@ fn a_deform_binding_on_a_node_with_no_mesh_is_dropped() {
 
     let model = reread(&file);
     // `.clm` refuses a deform on a meshless node, so the drop is what makes
-    // this document loadable at all.
+    // this structure loadable at all.
     assert_eq!(
         model
             .node(&NodeId::new("node-1").unwrap())
@@ -807,7 +807,7 @@ fn a_clip_carries_its_timing_and_a_lane_per_axis() {
     );
 
     // The clip has to survive the reader, the writer and the reader again:
-    // a lane naming a param the document does not carry is a load error, so
+    // a lane naming a param the structure does not carry is a load error, so
     // this is what proves the Ids the lanes resolved to are the minted ones.
     let model = reread(&file);
     assert_eq!(model.animations(), file.doc.animations);

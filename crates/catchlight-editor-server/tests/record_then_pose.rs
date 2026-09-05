@@ -20,7 +20,7 @@ fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
 #[test]
 fn recorded_binding_moves_the_rebaked_puppet() {
     // Any model will do: the test authors its own node, param and binding, and
-    // only needs a document to open.
+    // only needs a model to open.
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/models/welded_seam.clm"
@@ -130,7 +130,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
 
 /// A session holding `bytes`: a fresh one, then the file imported into it.
 ///
-/// The one way bytes a caller holds become a document — there is no side door
+/// The one way bytes a caller holds become a session's model — no side door
 /// that takes them, so a test opens a model exactly as a client does.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
     let reply = editor.handle(Request {

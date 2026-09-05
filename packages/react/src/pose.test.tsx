@@ -5,7 +5,7 @@
 import "./test/setup.js";
 
 import { afterEach, describe, expect, jest, test } from "bun:test";
-import type { Command, ParamInfo, Session, SessionDocumentCommand } from "@catchlight/core";
+import type { Command, ParamInfo, Session, SessionEditCommand } from "@catchlight/core";
 import type { FakeEditor } from "@catchlight/core/fakes";
 
 import {
@@ -17,7 +17,7 @@ import {
 } from "./index.js";
 import { fire, harness, mount, run, settle } from "./test/harness.js";
 
-const param = (name: string, fallback: number): SessionDocumentCommand => ({
+const param = (name: string, fallback: number): SessionEditCommand => ({
   cmd: "param_add",
   name,
   min: 0,
@@ -45,7 +45,7 @@ afterEach(() => {
 describe("publishing the pose", () => {
   test("moving a slider publishes every param, and the slider was not told", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(param("eye_open", 1)));
     await run(() => session.send(param("mouth_open", 0)));
     const [eye, mouth] = session.params() as [ParamInfo, ParamInfo];
@@ -81,7 +81,7 @@ describe("publishing the pose", () => {
 
   test("reset puts every param at its default, and that is what goes out", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(param("eye_open", 1)));
     await run(() => session.send(param("mouth_open", 0)));
     const [eye, mouth] = session.params() as [ParamInfo, ParamInfo];

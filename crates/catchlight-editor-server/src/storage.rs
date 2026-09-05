@@ -1,7 +1,7 @@
 //! Where a session's bytes live.
 //!
 //! **A `path` on the wire is an opaque storage key, not a filesystem path.**
-//! The protocol carries one string for "which document"; what that string
+//! The protocol carries one string for "which file"; what that string
 //! names is this trait's business. Natively it is a filesystem path
 //! ([`FileStorage`]); in the browser it is an OPFS entry or a fetched URL; in
 //! the cloud it is a blob key. That is why the path-taking commands
@@ -10,13 +10,13 @@
 //! rather than a native surface and a browser surface that drift apart.
 //!
 //! Keys are `/`-separated by convention so [`parent_key`] and [`join_key`] can
-//! resolve one document's references relative to it. Nothing parses a key
+//! resolve one file's references relative to it. Nothing parses a key
 //! beyond that: a backend is free to treat it as flat.
 //!
 //! **A relative key resolves against the store, not against the process.**
 //! [`FileStorage`] carries a root directory fixed at construction — the
 //! current directory when nobody says otherwise — and a relative key joins
-//! onto it, so where a document lands is a property of the store a server was
+//! onto it, so where a file lands is a property of the store a server was
 //! built with rather than of whatever directory the process happens to be in
 //! when a read arrives. An absolute key is already a path and joins onto
 //! nothing, which is what keeps `session_open /abs/model.clm` meaning the file
@@ -51,7 +51,7 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
 }
 
-/// The key a relative reference inside `key`'s document resolves against —
+/// The key a relative reference inside `key`'s file resolves against —
 /// everything before the last `/`, or `""` when the key has no separator.
 pub fn parent_key(key: &str) -> &str {
     match key.rsplit_once('/') {
@@ -111,7 +111,7 @@ fn unconfigured(key: &str) -> io::Error {
 ///
 /// A relative key joins onto the root; an absolute key is itself. The root is
 /// read once, here, so nothing a process does to its working directory later
-/// moves a session's document.
+/// moves a session's file.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone)]
 pub struct FileStorage {

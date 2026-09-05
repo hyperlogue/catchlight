@@ -1,15 +1,15 @@
 /**
- * One open document: the replica it is drawn from, and the only thing React
+ * One open model: the replica it is drawn from, and the only thing React
  * subscribes to.
  *
  * **The replica is a copy the backend owns.** Nothing here mutates the model.
- * A command goes to the editor, the editor emits `document_changed`, and the
+ * A command goes to the editor, the editor emits `model_changed`, and the
  * feed that event starts is the only thing that moves the replica forward.
  * Applying an edit locally as well would be a second source of truth that can
  * disagree with the picture on the canvas, and every new command would need a
  * patch handler written twice.
  *
- * **A document command resolves once the replica can answer for it.** The
+ * **An edit resolves once the replica can answer for it.** The
  * reply carries the revision the session reached; [`send`] waits until the
  * replica is at least there before it resolves. That is what makes the Id a
  * `node_add` minted readable the moment the promise settles — a caller never
@@ -17,7 +17,7 @@
  * ends when the feed completes, never by feeding from `send`: two paths into
  * the replica is how two versions of one revision get applied.
  *
- * **That wait is bounded.** A `document_changed` frame can be lost on a socket
+ * **That wait is bounded.** A `model_changed` frame can be lost on a socket
  * that stays up, and nothing else would ever bring the replica to the revision
  * a caller is waiting for. So a wait that reaches [`CATCH_UP_TIMEOUT_MS`]
  * re-feeds — through [`catchUp`], the same path the missing event would have
@@ -29,7 +29,7 @@
  *
  * **One method per kind of command, and the type picks it.** The split is
  * generated from Rust (`CommandKind` in `catchlight-editor-protocol`), so
- * passing `scratch_deform` to [`send`] does not typecheck. A document command
+ * passing `scratch_deform` to [`send`] does not typecheck. An edit
  * moves the revision; a presence command publishes view state to other
  * clients and moves nothing; a replica query is answered here, synchronously,
  * with no round trip at all; a server query is the only read that has to go
@@ -39,10 +39,10 @@
  * scratch deform, scratch transform — because those run per pointer move and
  * a JSON round trip per move is exactly the cost this split exists to avoid.
  * The editor never learns about them, so nothing is undoable and nothing is
- * saved until a document command authors it.
+ * saved until an edit authors it.
  *
  * **Two channels, because they run at different rates.** [`subscribe`] is the
- * document's revision, and React reads it once per commit. [`onInvalidate`] is
+ * model's revision, and React reads it once per commit. [`onInvalidate`] is
  * "the picture changed", and a viewport reads it, possibly on every pointer
  * move.
  */
@@ -50,7 +50,7 @@
 import type {
   BindingInfo,
   Command,
-  DocumentCommand,
+  EditCommand,
   Event,
   NodeId,
   NodeInfo,
@@ -75,14 +75,14 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
  * The arms of `T` that address a session, with the `session` field removed.
  *
  * Filling it in is the session's own job, so a caller cannot address the wrong
- * document by accident — and a command that names no session (`session_new`,
+ * model by accident — and a command that names no session (`session_new`,
  * `session_list`) drops out of the union entirely, because it belongs on the
  * `Editor` rather than here.
  */
 type OnSession<T> = DistributiveOmit<Extract<T, { session: SessionId }>, "session">;
 
-/** A command that changes this session's document. Goes to [`Session#send`]. */
-export type SessionDocumentCommand = OnSession<DocumentCommand>;
+/** A command that changes this session's model. Goes to [`Session#send`]. */
+export type SessionEditCommand = OnSession<EditCommand>;
 /** A command that publishes shared view state. Goes to [`Session#sendPresence`]. */
 export type SessionPresenceCommand = OnSession<PresenceCommand>;
 /** A read the replica answers. Goes to [`Session#query`], synchronously. */
@@ -92,7 +92,7 @@ export type SessionServerQueryCommand = OnSession<ServerQueryCommand>;
 
 /** Any command aimed at a session, whatever it does. */
 export type SessionCommand =
-  | SessionDocumentCommand
+  | SessionEditCommand
   | SessionPresenceCommand
   | SessionReplicaQueryCommand
   | SessionServerQueryCommand;
@@ -124,7 +124,7 @@ interface Waiter {
   timer: ReturnType<typeof setTimeout> | undefined;
 }
 
-/** A document the editor has open, and this tab's replica of it. */
+/** A model the editor has open, and this tab's replica of it. */
 export class Session {
   readonly id: SessionId;
   /**
@@ -163,11 +163,11 @@ export class Session {
   }
 
   /**
-   * Runs a command that changes the document, resolving once the replica is at
+   * Runs a command that changes the model, resolving once the replica is at
    * the revision the reply named — so the body it hands back describes a model
    * a caller can immediately read.
    */
-  async send(command: SessionDocumentCommand): Promise<ResponseBody> {
+  async send(command: SessionEditCommand): Promise<ResponseBody> {
     const reply = await this.#backend.send(this.#address(command));
     if (reply.rev !== undefined) await this.#reached(reply.rev);
     this.#advance();
@@ -175,14 +175,14 @@ export class Session {
   }
 
   /**
-   * [`send`] for a document command that carries bytes — an image, a `.clm`,
+   * [`send`] for an edit that carries bytes — an image, a `.clm`,
    * a manifest and its textures.
    *
    * The same contract: the attachments go beside the command, and the promise
    * resolves once the replica is at the revision the reply named.
    */
   async sendWith(
-    command: SessionDocumentCommand,
+    command: SessionEditCommand,
     attachments: readonly Attachment[],
   ): Promise<ResponseBody> {
     const reply = await this.#backend.sendWith(this.#address(command), attachments);
@@ -374,7 +374,7 @@ export class Session {
 
   /**
    * The world-space box the last tick left the drawn geometry in:
-   * `[min_x, min_y, max_x, max_y]`, Y-up. `undefined` when the document draws
+   * `[min_x, min_y, max_x, max_y]`, Y-up. `undefined` when the model draws
    * nothing.
    *
    * A read like [`tree`], answered off the replica with no round trip, so a
@@ -466,9 +466,9 @@ export class Session {
   }
 
   /**
-   * Frees the replica and stops following the document.
+   * Frees the replica and stops following the model.
    *
-   * The document itself stays open on the backend — `session_close` is a
+   * The model itself stays open on the backend — `session_close` is a
    * command, and this is not it. Anything still waiting on a revision rejects
    * rather than hanging on a replica that is gone.
    *
@@ -507,10 +507,10 @@ export class Session {
   }
 
   #observe(event: Event): void {
-    if (event.event !== "document_changed" || event.session !== this.id) return;
+    if (event.event !== "model_changed" || event.session !== this.id) return;
     // A feed nobody awaited still has to fail loudly: the commands waiting on
     // this revision reject, and anyone watching is told. Unless the session was
-    // closed while it ran — then nobody asked for the document any more, and
+    // closed while it ran — then nobody asked for the model any more, and
     // the failure is the close.
     void this.catchUp(event.rev).catch((cause: unknown) => {
       if (this.#closed) return;
@@ -546,7 +546,7 @@ export class Session {
   }
 
   /**
-   * Fetches the document once more for a waiter whose frame never came.
+   * Fetches the model once more for a waiter whose frame never came.
    *
    * A feed rather than anything cleverer because a feed is the only way into
    * the replica; the backend's queue is what keeps it from overlapping one
@@ -622,7 +622,7 @@ export class Session {
   #report(error: ProtocolError): void {
     if (this.#errors.size === 0) {
       // Nobody is listening, and a replica that silently stopped following the
-      // document is the one failure a user cannot see for themselves.
+      // model is the one failure a user cannot see for themselves.
       console.error(`session ${this.id}: ${error.message}`);
       return;
     }

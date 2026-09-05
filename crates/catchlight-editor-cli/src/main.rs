@@ -116,7 +116,7 @@ enum Cmd {
     Undo,
     /// Redo the last undone edit.
     Redo,
-    /// Shared view state (pose / selection) — a separate path from the document.
+    /// Shared view state (pose / selection) — a separate path from the model.
     Presence {
         #[command(subcommand)]
         action: PresenceCmd,

@@ -2,7 +2,7 @@
 //!
 //! `.clm` stores only authored keypoint cells; the dense grid the runtime
 //! interpolates over (see `params.rs`) is a derived cache computed here, at
-//! load (runtime) or on document change (editor). This is the single fill
+//! load (runtime) or on model change (editor). This is the single fill
 //! implementation both sides call. Pixel stability depends on runtime and
 //! editor deriving identical values for unauthored cells.
 //!

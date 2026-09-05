@@ -106,7 +106,7 @@ describe("device pixels", () => {
   });
 });
 
-describe("the picture and the document", () => {
+describe("the picture and the model", () => {
   test("a scratch edit repaints without bumping the revision", () => {
     const open = session();
     const view = new FakeViewport();
@@ -135,7 +135,7 @@ describe("the picture and the document", () => {
     expect(view.stopped).toBe(1);
     expect(view.freed).toBe(1);
     // A disposed viewport that stayed subscribed would keep the whole GPU
-    // state alive behind the session for as long as the document is open.
+    // state alive behind the session for as long as the model is open.
     expect(view.invalidated).toBe(0);
   });
 });
@@ -245,7 +245,7 @@ describe("reading a frame back", () => {
 
   test("a late dispose does not take a newer viewport's hook away", async () => {
     const canvas = {} as HTMLCanvasElement;
-    // What a document swap on one canvas does: the outgoing attach loses its
+    // What a model swap on one canvas does: the outgoing attach loses its
     // race, the next viewport is already drawing, and the loser disposes.
     const outgoing = new Viewport(new FakeViewport(), canvas);
     const live = new FakeViewport();

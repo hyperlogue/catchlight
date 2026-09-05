@@ -60,7 +60,7 @@ pub fn decode(path: &Path) -> ClmFile {
     clm::decode(&read(path)).expect("decode")
 }
 
-/// Write an edited document out as `<name>.clm` in `dir`.
+/// Write an edited structure out as `<name>.clm` in `dir`.
 pub fn write_clm(dir: &Path, name: &str, file: &ClmFile) -> PathBuf {
     let path = dir.join(format!("{name}.clm"));
     let bytes = clm::encode(&file.doc, &file.textures, &file.extensions).expect("encode");

@@ -1,7 +1,7 @@
 //! Transform gizmo: screen-space handles over the viewport that drive a node's
 //! local transform. World-aligned axes; the drag delta is mapped into the
 //! node's parent space at drag start, so it lands in the same frame the
-//! document stores. Preview while dragging, one commit on release; ctrl snaps.
+//! model stores. Preview while dragging, one commit on release; ctrl snaps.
 
 use eframe::egui;
 use glam::{Mat4, Vec2};

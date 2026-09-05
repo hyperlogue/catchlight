@@ -838,7 +838,7 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
         ResponseBody::UnfilledSlots { slots } if slots.is_empty()
     ));
 
-    // Undo brings the weld back, so this is one ordinary document edit.
+    // Undo brings the weld back, so this is one ordinary edit.
     step(Command::Undo { session });
     assert!(matches!(
         step(Command::Welds { session }),

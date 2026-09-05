@@ -109,8 +109,8 @@ def is_running(pid: int) -> bool:
     return True
 
 
-def minimal_document(texture: str = "tex-0") -> dict:
-    """A `.clm` structure document with one part, spelled as the format's
+def minimal_structure(texture: str = "tex-0") -> dict:
+    """A `.clm` structure with one part, spelled as the format's
     serde spells it.
 
     Written out by hand rather than read back off a saved file, because that

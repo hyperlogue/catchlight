@@ -246,7 +246,7 @@ pub struct Installed {
 }
 
 impl Installed {
-    /// Every node the install added, in document order.
+    /// Every node the install added, in tree order.
     pub fn nodes(&self) -> &[NodeId] {
         &self.nodes
     }

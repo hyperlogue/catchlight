@@ -4,7 +4,7 @@
 //! and handed to egui by `TextureIdx` via `register_native_texture` — catchlight
 //! and egui-wgpu share the one wgpu device, so there is no GPU→CPU→GPU
 //! readback. The same texture is re-rendered in place every time the pose,
-//! camera, document revision or preview state changes; egui samples its current
+//! camera, model revision or preview state changes; egui samples its current
 //! GPU contents.
 //!
 //! The live edit in progress is *not* passed in: a vertex drag is a scratch
@@ -47,8 +47,8 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const EGUI_VIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Transient per-node overrides applied after `tick`, before drawing — the
-/// preview half of gesture-scoped editing (the document sees one command on
-/// release). Working state only; the next document change rebuilds the puppet.
+/// preview half of gesture-scoped editing (the model sees one command on
+/// release). Working state only; the next model change rebuilds the puppet.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct NodePreview {
     pub core_id: u32,

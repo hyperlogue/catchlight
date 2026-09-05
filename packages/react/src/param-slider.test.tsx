@@ -5,13 +5,13 @@
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
-import type { ParamInfo, SessionDocumentCommand } from "@catchlight/core";
+import type { ParamInfo, SessionEditCommand } from "@catchlight/core";
 
 import { EditorProvider, ParamList, ParamSlider } from "./index.js";
 import { fakeReplica, fire, harness, mount, run } from "./test/harness.js";
 
 /** One continuous param, keyed at both ends. */
-const eyeOpen = (name = "eye_open"): SessionDocumentCommand => ({
+const eyeOpen = (name = "eye_open"): SessionEditCommand => ({
   cmd: "param_add",
   name,
   min: 0,
@@ -23,7 +23,7 @@ const eyeOpen = (name = "eye_open"): SessionDocumentCommand => ({
 describe("posing a param", () => {
   test("moving the slider poses the replica and sends no command", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(eyeOpen()));
     const param = session.params()[0] as ParamInfo;
     const commands = wasm.requests.length;
@@ -51,7 +51,7 @@ describe("posing a param", () => {
 
   test("a pose from elsewhere shows up without a revision", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(eyeOpen()));
     const param = session.params()[0] as ParamInfo;
 
@@ -62,7 +62,7 @@ describe("posing a param", () => {
     );
 
     // An animation, an agent, another panel: the repaint channel is what
-    // carries it, because the document did not move.
+    // carries it, because the model did not move.
     await run(() => session.setParam(param.id, 0.5));
 
     expect(view.container.querySelector("input")?.value).toBe("0.5");
@@ -71,7 +71,7 @@ describe("posing a param", () => {
 
   test("the list is every param, and the render prop replaces the row", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(eyeOpen()));
     await run(() => session.send(eyeOpen("mouth_open")));
 
@@ -97,7 +97,7 @@ describe("posing a param", () => {
 
   test("the value is the replica's pose, not React state", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(eyeOpen()));
     const param = session.params()[0] as ParamInfo;
 

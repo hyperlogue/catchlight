@@ -61,11 +61,11 @@ socket's line, `multipart/form-data` on the POST — and a script never sees it.
 What is still the *store's* is where the two part. Over the socket the editor
 reads the very filesystem the script is on, so `open` names a file it can read
 and `save_to` is a save. Over HTTP the store is somewhere else, so `save_to`
-fetches the document and writes it here. `Client` picks by transport.
+fetches the model and writes it here. `Client` picks by transport.
 
 Neither door hears an event. The editor pushes those over the WebSocket a
 browser tab holds, which this package does not open; a blocking caller learns
-its document moved from the `rev` on its own reply — `client.revision(session)`.
+its model moved from the `rev` on its own reply — `client.revision(session)`.
 
 Over HTTP a status is this listener refusing the request — no token, a body
 over the cap — and raises `TransportError`. A command the *editor* refused is a
@@ -76,7 +76,7 @@ branch on, exactly as it does over the socket.
 
 `Client.send` takes any command in the protocol and returns its reply body,
 raising `ProtocolError` with an `ErrorCode` if the editor refused it. The
-command's own `KIND` says what sending it does: `document` moves the session's
+command's own `KIND` says what sending it does: `edit` moves the session's
 revision, `presence` and `scratch` move nothing, and the two query kinds read.
 
 ```python

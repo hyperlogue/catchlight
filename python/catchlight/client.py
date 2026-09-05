@@ -7,7 +7,7 @@ offering a method per kind that a caller could pick wrong.
 
 Invariants this module enforces:
 
-- **One send, routed by kind.** A `document` command moves the session's
+- **One send, routed by kind.** An `edit` command moves the session's
   revision and the reply says what it moved to; a `presence` or `scratch`
   command publishes view state and moves nothing; the two query kinds read.
   `send` returns the reply's body for all of them, and records a revision for
@@ -31,7 +31,7 @@ Invariants this module enforces:
 - **Bytes go where the store is.** A *stored* file is still the store's: over
   the socket the editor reads the very filesystem this script is on, so a save
   is a save and `open` names a file it can read; over HTTP the store is
-  somewhere else, so a save is the document fetched back and written here.
+  somewhere else, so a save is the model fetched back and written here.
 
 - **Bytes a command needs travel with it.** An image, a `.clm`, a manifest and
   its textures are read here and handed to `send_with`, which puts them beside
@@ -174,7 +174,7 @@ class Client:
         return self._revisions.get(session)
 
     def _record(self, command: Command, reply: ReplyOk) -> None:
-        """A document command's reply names the revision it produced.
+        """An edit's reply names the revision it produced.
 
         A `session_close` is the one that names none — its session is gone —
         so it drops the entry instead of moving it.
@@ -182,7 +182,7 @@ class Client:
         if isinstance(command, SessionClose):
             self._revisions.pop(command.session, None)
             return
-        if type(command).KIND is not CommandKind.DOCUMENT or reply.rev is None:
+        if type(command).KIND is not CommandKind.EDIT or reply.rev is None:
             return
         session = getattr(command, "session", None)
         if session is None and isinstance(reply.body, ResponseBodySession):
@@ -213,7 +213,7 @@ class Client:
     # -- output
 
     def save(self, session: SessionId, key: str | None = None) -> str:
-        """Write the document into the editor's store and return the key.
+        """Write the model into the editor's store and return the key.
 
         `key` absent saves back over what the session was opened from, which a
         session created from an upload does not have.
@@ -221,11 +221,11 @@ class Client:
         return _saved(self.send(Save(session=session, path=key)))
 
     def save_to(self, session: SessionId, path: str | os.PathLike[str]) -> str:
-        """Write the document to a local file and return its path.
+        """Write the model to a local file and return its path.
 
         Over the socket that is a save, because the editor's store is this
         filesystem. Over HTTP the editor's store is somewhere else, so the
-        document is fetched and written here.
+        model is fetched and written here.
         """
         target = _absolute(path)
         transport = self._transport
@@ -288,7 +288,7 @@ class Client:
 
         `parent` absent replaces the session's whole model, which needs a
         session that is still empty — `new()` and then this. `parent` present
-        installs the document's roots under that node instead.
+        installs the imported roots under that node instead.
         """
         self.send_with(
             ImportFile(session=session, parent=parent),
@@ -298,34 +298,34 @@ class Client:
     def import_json(
         self,
         session: SessionId,
-        document: Mapping[str, Any] | str,
+        structure: Mapping[str, Any] | str,
         textures: Mapping[str, str | os.PathLike[str]]
         | Iterable[tuple[str, str | os.PathLike[str]]] = (),
         parent: NodeId | None = None,
         alpha: TextureAlpha = TextureAlpha.STRAIGHT,
     ) -> None:
-        """Import a `.clm` structure document as JSON, with its images.
+        """Import a `.clm` structure as JSON, with its images.
 
-        `document` is the structure as the format's serde spells it, either a
+        `structure` is the structure as the format's serde spells it, either a
         dict this encodes or a string already encoded. `textures` maps each
-        texture Id the document names to the image file holding it; the
+        texture Id the structure names to the image file holding it; the
         encoding comes from each file's suffix the way `add_texture` decides
         it, and `alpha` says what every one of them means by its alpha channel
         (straight, which is what an editor writes).
 
         `parent` absent replaces the session's whole model, which needs a
-        session that is still empty. `parent` present installs the document's
+        session that is still empty. `parent` present installs the imported
         roots under that node instead.
 
         A byte extension has nowhere to travel here — its payload lives in a
-        container section a JSON document has none of — so set one after the
-        import rather than in the document.
+        container section JSON has none of — so set one after the import
+        rather than in the structure.
         """
-        body = document if isinstance(document, str) else json.dumps(document)
+        body = structure if isinstance(structure, str) else json.dumps(structure)
         pairs = textures.items() if isinstance(textures, Mapping) else list(textures)
 
         declared: list[ImportTexture] = []
-        attachments: dict[str, bytes] = {"document": body.encode()}
+        attachments: dict[str, bytes] = {"structure": body.encode()}
         for texture, path in pairs:
             source = Path(_absolute(path))
             declared.append(
@@ -467,10 +467,10 @@ def _texture_references(manifest: bytes, source: Path) -> list[str]:
     texture the manifest never asked for.
     """
     try:
-        document = json.loads(manifest)
+        parsed = json.loads(manifest)
     except ValueError as err:
         raise ProtocolError(ErrorCode.MANIFEST, f"{source}: {err}") from err
-    textures = document.get("textures", []) if isinstance(document, dict) else []
+    textures = parsed.get("textures", []) if isinstance(parsed, dict) else []
     return [t["path"] for t in textures if isinstance(t, dict) and "path" in t]
 
 

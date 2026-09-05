@@ -3,7 +3,7 @@
  * deliberately does not.
  *
  * Every assertion here is about the *wire*. A param is metadata and its key
- * positions are part of the document, so adding, renaming, re-ranging or
+ * positions are part of the model, so adding, renaming, re-ranging or
  * keying one has to be a command the editor sees — while posing the puppet at
  * a key has to be none.
  */
@@ -11,14 +11,14 @@
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
-import type { ParamInfo, Request, SessionDocumentCommand } from "@catchlight/core";
+import type { ParamInfo, Request, SessionEditCommand } from "@catchlight/core";
 import { act } from "react";
 
 import { EditorProvider, ParamAdd, ParamFields, ParamKeys } from "./index.js";
 import { fire, harness, mount, run } from "./test/harness.js";
 
 /** One param, keyed at both ends and in the middle. */
-const yaw = (): SessionDocumentCommand => ({
+const yaw = (): SessionEditCommand => ({
   cmd: "param_add",
   name: "head:yaw",
   min: -1,
@@ -41,7 +41,7 @@ function last(requests: Request[]): Request {
 describe("editing params", () => {
   test("the add form sends one param_add with the range it was given", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     const view = await mount(
       <EditorProvider editor={editor}>
@@ -82,7 +82,7 @@ describe("editing params", () => {
 
   test("renaming, re-ranging and deleting each send one command", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(yaw()));
     const param = session.params()[0] as ParamInfo;
 
@@ -135,7 +135,7 @@ describe("editing params", () => {
 describe("the keypoint strip", () => {
   test("clicking a marker poses the param and sends nothing", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(yaw()));
     const param = session.params()[0] as ParamInfo;
 
@@ -164,7 +164,7 @@ describe("the keypoint strip", () => {
 
   test("insert keys at the pose, and delete the one it is standing on", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(yaw()));
     const param = session.params()[0] as ParamInfo;
 
@@ -214,7 +214,7 @@ describe("the keypoint strip", () => {
 
   test("dragging a marker is one param_key_move, on release", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send(yaw()));
     const param = session.params()[0] as ParamInfo;
 

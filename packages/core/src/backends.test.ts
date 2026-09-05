@@ -229,11 +229,11 @@ describe("connected", () => {
     const seen: Event[] = [];
     backend.onEvent((event) => seen.push(event));
 
-    socket.deliver({ reply: "event", event: "document_changed", session: 3, rev: 9 });
+    socket.deliver({ reply: "event", event: "model_changed", session: 3, rev: 9 });
     socket.deliver({ reply: "event", event: "sessions_changed" });
 
     expect(seen).toEqual([
-      { event: "document_changed", session: 3, rev: 9 },
+      { event: "model_changed", session: 3, rev: 9 },
       { event: "sessions_changed" },
     ]);
   });
@@ -404,6 +404,6 @@ describe("connected", () => {
 
   test("reading a key back is nothing: the file is already where it was asked to go", async () => {
     const { backend } = await connect();
-    expect(await backend.readDocument("project/akari.clm")).toBeUndefined();
+    expect(await backend.readFile("project/akari.clm")).toBeUndefined();
   });
 });

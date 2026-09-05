@@ -46,12 +46,12 @@
 //!   the wire (a complete model always has a parentless node and a fragment
 //!   never does), so a caller that does not know which it holds decodes once
 //!   and tries both readers against the same [`ClmFile`]; nothing else about
-//!   the container or the document changes between them.
+//!   the container or the structure changes between them.
 //! - **A structure carries no bytes, and reading one is the same reading.**
-//!   [`Model::to_structure_bytes`] writes the `Structure` document and a
+//!   [`Model::to_structure_bytes`] writes the `Structure` section and a
 //!   manifest of the model's textures, no payloads;
 //!   [`Model::replace_structure`] reads it back against payloads a caller
-//!   supplies by Id. Both sides go through the same document builder as a
+//!   supplies by Id. Both sides go through the same structure builder as a
 //!   `.clm`, so a structure is held to every rule a file is — including that
 //!   every texture the manifest lists is one a part draws — and a payload the
 //!   caller cannot supply is [`ClmLoadError::MissingTexture`] rather than a
@@ -70,12 +70,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::formats::clm::{
-    self as clm, ClmBinding, ClmComposite, ClmDocument, ClmExtension, ClmExtensionBlob,
-    ClmExtensionMarker, ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart,
-    ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmTexture, ClmTextureRef, ClmWeld,
+    self as clm, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker,
+    ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics,
+    ClmSlot, ClmSlotPair, ClmStructure, ClmTexture, ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
-use crate::{charge_clm_document, charge_clm_structure, charge_texture_payloads, LoadBudget};
+use crate::{charge_clm_file, charge_clm_structure, charge_texture_payloads, LoadBudget};
 
 use super::*;
 
@@ -218,13 +218,13 @@ impl Shape {
 
 /// Pair a structure's extension markers with the bytes behind them.
 ///
-/// A JSON value is already whole in the document. A byte value is only a
+/// A JSON value is already whole in the structure. A byte value is only a
 /// `{size, hash}` there, so `bytes` has to produce the payload, and it is
 /// held against the marker on the way in: the marker is what two readers of
 /// one structure agree on, so a payload that does not match it is refused
 /// rather than trusted.
 fn extensions_of(
-    doc: &ClmDocument,
+    doc: &ClmStructure,
     bytes: impl Fn(&ExtensionKey) -> Option<Arc<[u8]>>,
 ) -> Result<BTreeMap<ExtensionKey, ExtensionValue>, ModelError> {
     let mut out = BTreeMap::new();
@@ -258,10 +258,10 @@ fn extensions_of(
 }
 
 impl Model {
-    /// Snapshot the model's `Structure` document — everything a `.clm`
+    /// Snapshot the model's `Structure` section — everything a `.clm`
     /// carries except the texture payloads. Total for any Model whose deform
     /// cells are sized to the meshes they sit on.
-    pub fn to_clm_document(&self) -> Result<ClmDocument, ModelError> {
+    pub fn to_clm_structure(&self) -> Result<ClmStructure, ModelError> {
         let order = self.nodes_in_order();
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
@@ -336,7 +336,7 @@ impl Model {
             });
         }
 
-        Ok(ClmDocument {
+        Ok(ClmStructure {
             physics: self.physics,
             nodes,
             params,
@@ -363,11 +363,11 @@ impl Model {
         })
     }
 
-    /// Snapshot the model into a `.clm` document plus its texture table. The
+    /// Snapshot the model into a `.clm` structure plus its texture table. The
     /// payloads are copied out of their `Arc`s here, which is what makes this
     /// the *file* path and [`Self::to_structure_bytes`] the push path.
     pub fn to_clm_file(&self) -> Result<ClmFile, ModelError> {
-        let doc = self.to_clm_document()?;
+        let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
         for id in &self.texture_order {
             let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
@@ -386,7 +386,7 @@ impl Model {
     }
 
     /// The bytes behind every byte extension, in key order — the payload half
-    /// of what [`Self::to_clm_document`] wrote markers for.
+    /// of what [`Self::to_clm_structure`] wrote markers for.
     fn extension_blobs(&self) -> Vec<ClmExtensionBlob> {
         self.extensions
             .iter()
@@ -405,17 +405,17 @@ impl Model {
         Ok(clm::encode(&file.doc, &file.textures, &file.extensions)?)
     }
 
-    /// The document alone, as a **structure-only** container: the same
+    /// The structure alone, in a **structure-only** container: the same
     /// `Structure` section [`Self::to_clm_bytes`] would write, beside a
     /// manifest naming the model's textures in order, and no payload bytes at
     /// all.
     ///
     /// This is what a server pushes a replica after every edit, so it never
-    /// touches a texture: writing it costs the document and nothing else, and
+    /// touches a texture: writing it costs the structure and nothing else, and
     /// [`Self::replace_structure`] reads it back against payloads the replica
     /// already holds.
     pub fn to_structure_bytes(&self) -> Result<Vec<u8>, ModelError> {
-        let doc = self.to_clm_document()?;
+        let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
         for id in &self.texture_order {
             let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
@@ -455,7 +455,7 @@ impl Model {
     }
 
     fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
-        charge_clm_structure(file, budget)?;
+        charge_clm_file(file, budget)?;
 
         let mut textures = HashMap::with_capacity(file.textures.len());
         let mut texture_order = Vec::with_capacity(file.textures.len());
@@ -489,12 +489,12 @@ impl Model {
         Self::build(&file.doc, textures, texture_order, extensions, shape)
     }
 
-    /// Every check the reader runs, over a document and a texture table that
+    /// Every check the reader runs, over a structure and a texture table that
     /// is already in the Model's own form. The one path both a `.clm` and a
     /// structure push come through, so neither can drift into accepting what
     /// the other refuses. Charges nothing: its callers charge what they read.
     fn build(
-        doc: &ClmDocument,
+        doc: &ClmStructure,
         textures: HashMap<TexId, ModelTexture>,
         texture_order: Vec<TexId>,
         extensions: BTreeMap<ExtensionKey, ExtensionValue>,
@@ -607,7 +607,7 @@ impl Model {
 
         // Every mask source the file itself carries has to be a kind the
         // renderer draws — the reader's half of `Model::mask_add`. Walked in
-        // document order so a file with two bad masks always names the first.
+        // tree order so a file with two bad masks always names the first.
         // A source the file does *not* carry is a fragment's requirement, and
         // `Model::install` kind-checks it against the base.
         for cn in &doc.nodes {
@@ -647,7 +647,7 @@ impl Model {
             .into());
         }
 
-        // Children in document order, which is the model's sibling order.
+        // Children in tree order, which is the model's sibling order.
         for cn in &doc.nodes {
             if let Some(parent) = &cn.parent {
                 if let Some(pn) = nodes.get_mut(parent) {
@@ -807,7 +807,7 @@ impl Model {
     /// ([`Self::to_structure_bytes`]), taking every texture payload from
     /// `textures` rather than from the bytes.
     ///
-    /// This is the replica's one edit: a server pushes the document after
+    /// This is the replica's one edit: a server pushes the structure after
     /// each change and the client applies it over the payloads it already
     /// holds, so a per-commit sync costs no texture transfer, no decode and
     /// no re-upload. The lookup supplies the *bytes* and nothing else — a
@@ -904,7 +904,7 @@ impl Model {
                 .map(|t| t.data.len() as u64),
             budget,
         )?;
-        charge_clm_document(&structure.doc, budget)?;
+        charge_clm_structure(&structure.doc, budget)?;
 
         let extensions = extensions_of(&structure.doc, extension_bytes)?;
         let next = Self::build(&structure.doc, table, order, extensions, Shape::Base)?;
@@ -2406,7 +2406,7 @@ mod tests {
         assert_eq!(listed[0].alpha, held.alpha);
     }
 
-    /// The whole point: the document crosses, the payloads do not, and what
+    /// The whole point: the structure crosses, the payloads do not, and what
     /// lands is the model the server holds — same bytes, same texture order.
     #[test]
     fn applying_a_structure_rebuilds_the_model_over_the_payloads_it_has() {
@@ -2438,7 +2438,7 @@ mod tests {
     #[test]
     fn a_structure_is_read_as_strictly_as_a_file() {
         let m = sample();
-        let mut doc = m.to_clm_document().unwrap();
+        let mut doc = m.to_clm_structure().unwrap();
         doc.nodes[1].parent = Some(NodeId::new("ghost").unwrap());
         let refs: Vec<ClmTextureRef> = m
             .texture_ids()

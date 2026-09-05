@@ -1,7 +1,7 @@
 /**
  * What this client is looking at, published as one record.
  *
- * Presence is view state, not document state: it moves no revision and is
+ * Presence is view state, not model state: it moves no revision and is
  * never undone. It still goes to the editor, because an agent on the socket
  * and another tab both read "what is this person looking at, and how have they
  * posed it" from there, and a selection only React knows about is invisible
@@ -30,7 +30,7 @@
  * for and applied locally, so a tab joins what is already going on rather
  * than overwriting it with an empty record on its first click.
  *
- * **No document, nobody to tell.** The provider may be given no session at
+ * **No model, nobody to tell.** The provider may be given no session at
  * all — a screen that keeps its cells mounted while nothing is open, so that
  * its canvas survives (see `viewport.tsx`). A selection is then held locally
  * and a pose is dropped; both start over when a session arrives.
@@ -86,7 +86,7 @@ function clearTimer(held: Held): void {
 
 export function PresenceProvider({ session, children }: PresenceProviderProps): ReactNode {
   // The selection is remembered with the session it was made in, so a switch
-  // to another document shows nothing selected rather than a node id that
+  // to another model shows nothing selected rather than a node id that
   // belongs to the previous one — and does so on the very render that
   // switches, with no effect and no flash in between.
   const [chosen, setChosen] = useState<{

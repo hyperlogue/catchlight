@@ -4,7 +4,7 @@
  * `handle` is a synchronous call into wasm, so every promise here resolves
  * without ever yielding to the network. The class exists anyway, and exists
  * behind the same [`Backend`] interface as the connected one, so that nothing
- * above it can be written against "the document is right here" — and so the
+ * above it can be written against "the model is right here" — and so the
  * whole thing can move into a Worker without touching a caller.
  *
  * **Bytes go in with the command and come out of the tab's store.** A command
@@ -101,7 +101,7 @@ export class InTabBackend implements Backend {
    * what a command wrote into the store before it resolves, so what is there
    * is what was written.
    */
-  readDocument(key: string): Promise<Uint8Array | undefined> {
+  readFile(key: string): Promise<Uint8Array | undefined> {
     this.#live();
     return this.#storage.read(key);
   }
@@ -177,7 +177,7 @@ export class InTabBackend implements Backend {
       if (!bytes) {
         if (key !== saved) continue;
         // Reporting a write that produced no bytes is the worst outcome an
-        // authoring tool has: the caller believes the document is on disk.
+        // authoring tool has: the caller believes the model is on disk.
         throw new ProtocolError({
           code: "bad_reply",
           message: `save reported ${key} but staged no bytes for it`,

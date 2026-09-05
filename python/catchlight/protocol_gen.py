@@ -9,7 +9,7 @@ turns back into a `Reply`, or with an unsolicited `Event`.
 
 Ids are plain strings — the same ones the model file stores — and a `SessionId`
 is an int the editor allocates. Every command carries `CMD`, the tag it travels
-under, and `KIND`, what applying it does to the document; a client routes by the
+under, and `KIND`, what applying it does to the model; a client routes by the
 second. Nothing here is a transport: this module opens no socket and holds no
 state.
 
@@ -32,23 +32,23 @@ from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
 
 
 class CommandKind(StrEnum):
-    """What applying a command does to the document it addresses.
+    """What applying a command does to the model it addresses.
 
     This is what a client routes by: one send method per kind, so picking
     the wrong one is a type error rather than a missing repaint.
     """
 
-    # A command that changes the document, or which documents exist.
+    # A command that changes a session's model, or which sessions exist.
     #
     # The session's revision moves, so every view of it re-reads. These are the
     # commands that cost an undo entry and a React render, and the only ones
-    # that must reach the editor that owns the document.
-    DOCUMENT = "document"
+    # that must reach the editor that owns the model.
+    EDIT = "edit"
 
     # A command that publishes shared view state: pose, camera, selection.
     #
     # It goes to the editor because other clients read it back, and it changes no
-    # document: no revision, no undo entry, invisible to a panel.
+    # model: no revision, no undo entry, invisible to a panel.
     PRESENCE = "presence"
 
     # A command that shows a live edit on a puppet without authoring it.
@@ -253,7 +253,7 @@ class SessionNew:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "session_new"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     name: str | None = None
 
@@ -275,7 +275,7 @@ class SessionOpen:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "session_open"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     path: str
 
@@ -301,7 +301,7 @@ class SessionClose:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "session_close"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
 
@@ -315,7 +315,7 @@ class Save:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "save"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     path: str | None = None
@@ -408,7 +408,7 @@ class NodeAdd:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_add"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     parent: NodeId
@@ -428,7 +428,7 @@ class NodeSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -464,7 +464,7 @@ class NodeReparent:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_reparent"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -482,7 +482,7 @@ class NodeReorder:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_reorder"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -502,7 +502,7 @@ class NodeMove:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_move"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -524,7 +524,7 @@ class NodeDuplicate:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_duplicate"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -547,7 +547,7 @@ class RenameId:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "rename_id"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     rename: Rename
@@ -564,7 +564,7 @@ class MaskAdd:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mask_add"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -583,7 +583,7 @@ class MaskSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mask_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -602,7 +602,7 @@ class MaskReorder:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mask_reorder"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -619,7 +619,7 @@ class MaskDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mask_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -637,7 +637,7 @@ class PhysicsSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "physics_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -668,7 +668,7 @@ class PhysicsGlobals:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "physics_globals"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     gravity: float | None = None
@@ -684,7 +684,7 @@ class NodeDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -708,7 +708,7 @@ class TextureAdd:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "texture_add"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -746,7 +746,7 @@ class ParamAdd:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_add"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     name: str
@@ -786,7 +786,7 @@ class ParamSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -805,7 +805,7 @@ class ParamDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -824,7 +824,7 @@ class ParamKeyInsert:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_key_insert"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -842,7 +842,7 @@ class ParamKeyDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_key_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -862,7 +862,7 @@ class ParamKeyMove:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_key_move"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -883,7 +883,7 @@ class ParamFlip:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_flip"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -898,7 +898,7 @@ class BindingAdd:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_add"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -918,7 +918,7 @@ class BindingKey:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_key"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -944,7 +944,7 @@ class BindingKeys:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_keys"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -965,7 +965,7 @@ class BindingUnset:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_unset"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -986,7 +986,7 @@ class BindingReset:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_reset"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -1005,7 +1005,7 @@ class BindingDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -1023,7 +1023,7 @@ class BindingInterpolate:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_interpolate"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -1044,7 +1044,7 @@ class BindingInvert:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_invert"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -1064,7 +1064,7 @@ class BindingCopyKey:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "binding_copy_key"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
     WIRE: ClassVar[Mapping[str, str]] = {
         "from_": "from",
     }
@@ -1111,7 +1111,7 @@ class DeformSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "deform_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -1136,7 +1136,7 @@ class DeformVertices:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "deform_vertices"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     param: ParamId
@@ -1160,7 +1160,7 @@ class MeshSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mesh_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -1192,7 +1192,7 @@ class MeshAuto:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mesh_auto"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -1213,7 +1213,7 @@ class MeshCopy:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "mesh_copy"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
     WIRE: ClassVar[Mapping[str, str]] = {
         "from_": "from",
     }
@@ -1236,7 +1236,7 @@ class SlotAdd:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_add"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -1256,7 +1256,7 @@ class SlotFill:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_fill"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -1277,7 +1277,7 @@ class SlotClear:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_clear"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -1297,7 +1297,7 @@ class SlotDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "slot_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     node: NodeId
@@ -1374,7 +1374,7 @@ class WeldWeight:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "weld_weight"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     a: NodeId
@@ -1397,7 +1397,7 @@ class WeldSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "weld_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     a: NodeId
@@ -1419,7 +1419,7 @@ class WeldDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "weld_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     a: NodeId
@@ -1437,7 +1437,7 @@ class PhysicsAdd:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "physics_add"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     parent: NodeId
@@ -1465,7 +1465,7 @@ class Undo:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "undo"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
 
@@ -1479,7 +1479,7 @@ class Redo:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "redo"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
 
@@ -1491,7 +1491,7 @@ class Redo:
 @dataclass(frozen=True, kw_only=True)
 class PresenceSet:
     """Publish ephemeral view state (pose / camera / selection) — a separate
-    path from the document: never bumps rev, never undone, never saved.
+    path from the model: never bumps rev, never undone, never saved.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1583,16 +1583,16 @@ class ImportFile:
 
     `parent` absent replaces the session's whole model, and needs a
     pristine one (what [`Command::SessionNew`] makes) and a complete
-    document: anything else is [`ErrorCode::NotEmpty`]. `parent` present
-    installs the document's roots under that node, overriding whatever
-    parent the document's own roots name; Ids travel verbatim, and a
+    model: anything else is [`ErrorCode::NotEmpty`]. `parent` present
+    installs the imported roots under that node, overriding whatever
+    parent those roots name; Ids travel verbatim, and a
     collision or a missing requirement is refused whole.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "import_file"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     parent: NodeId | None = None
@@ -1604,34 +1604,34 @@ class ImportFile:
 
 @dataclass(frozen=True, kw_only=True)
 class ImportJson:
-    """Import a `.clm` **structure document as JSON**, with its textures
+    """Import a `.clm` **structure as JSON**, with its textures
     attached separately, into an open session.
 
     The same operation as [`Command::ImportFile`] and the same two paths —
     `parent` absent replaces a pristine session's model, `parent` present
-    installs the document's roots under that node — differing only in how
+    installs the imported roots under that node — differing only in how
     the model arrives. A client that is authoring a model rather than
     forwarding a file has the structure in hand and the images beside it,
     and this saves it building a container.
 
-    Attachment `document` is the structure document as JSON, spelled
-    exactly as the `.clm` format's serde spells it. Each entry of
-    `textures` names an image arriving as `texture:<texture>`; an entry
-    with no attachment, and a `texture:` attachment no entry names, are
-    both [`ErrorCode::BadRequest`] naming the id. A texture the document
+    Attachment `structure` is the structure as JSON, spelled exactly as
+    the `.clm` format's serde spells it. Each entry of `textures` names an
+    image arriving as `texture:<texture>`; an entry with no attachment,
+    and a `texture:` attachment no entry names, are both
+    [`ErrorCode::BadRequest`] naming the id. A texture the structure
     *references* but `textures` does not list is the reader's own refusal,
     the same one a `.clm` missing a payload gets.
 
     **A JSON import carries no extension bytes.** A byte extension is a
-    `{size, hash}` marker in the document and its payload lives in a
-    section a JSON document has no room for, so a marker here is refused
-    by key. Import the document, then set the extension.
+    `{size, hash}` marker in the structure and its payload lives in a
+    section JSON has no room for, so a marker here is refused by key.
+    Import the structure, then set the extension.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "import_json"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     parent: NodeId | None = None
@@ -1647,7 +1647,7 @@ class ImportJson:
 class CommandExtensionSet:
     """Set the extension filed under `key`, replacing whatever was there.
 
-    `Document`: an extension is part of the document, so this moves the
+    `Edit`: an extension is part of the model, so this moves the
     revision and undo covers it. `catchlight.` is the format's own prefix
     and is refused ([`ErrorCode::ReservedExtension`]); a byte value over
     the format's cap is [`ErrorCode::Edit`].
@@ -1656,7 +1656,7 @@ class CommandExtensionSet:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "extension_set"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     key: ExtensionKey
@@ -1671,7 +1671,7 @@ class CommandExtensionSet:
 class ExtensionDelete:
     """Drop the extension filed under `key`.
 
-    `Document`, like [`Command::ExtensionSet`]. A key the model does not
+    `Edit`, like [`Command::ExtensionSet`]. A key the model does not
     carry is [`ErrorCode::NoExtension`] rather than a quiet no-op, so a
     typo in a key says so.
     """
@@ -1679,7 +1679,7 @@ class ExtensionDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "extension_delete"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     key: ExtensionKey
@@ -1747,7 +1747,7 @@ class ImportManifest:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "import_manifest"
     CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.DOCUMENT
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
 
@@ -1918,83 +1918,83 @@ def parse_command(message: Mapping[str, Any]) -> Command:
     return _decode_class(found, message)
 
 
-# What each command does to the document, keyed by its `cmd` tag. Written
+# What each command does to the model, keyed by its `cmd` tag. Written
 # down once in Rust, in `COMMAND_KINDS`; a command missing from it fails the
 # build rather than reaching a client unclassified.
 COMMAND_KINDS: dict[str, CommandKind] = {
-    "session_new": CommandKind.DOCUMENT,
-    "session_open": CommandKind.DOCUMENT,
+    "session_new": CommandKind.EDIT,
+    "session_open": CommandKind.EDIT,
     "session_list": CommandKind.SERVER_QUERY,
-    "session_close": CommandKind.DOCUMENT,
-    "save": CommandKind.DOCUMENT,
+    "session_close": CommandKind.EDIT,
+    "save": CommandKind.EDIT,
     "export_manifest": CommandKind.SERVER_QUERY,
     "status": CommandKind.SERVER_QUERY,
     "check": CommandKind.REPLICA_QUERY,
     "node_tree": CommandKind.REPLICA_QUERY,
     "node_info": CommandKind.REPLICA_QUERY,
-    "node_add": CommandKind.DOCUMENT,
-    "node_set": CommandKind.DOCUMENT,
-    "node_reparent": CommandKind.DOCUMENT,
-    "node_reorder": CommandKind.DOCUMENT,
-    "node_move": CommandKind.DOCUMENT,
-    "node_duplicate": CommandKind.DOCUMENT,
-    "rename_id": CommandKind.DOCUMENT,
-    "mask_add": CommandKind.DOCUMENT,
-    "mask_set": CommandKind.DOCUMENT,
-    "mask_reorder": CommandKind.DOCUMENT,
-    "mask_delete": CommandKind.DOCUMENT,
-    "physics_set": CommandKind.DOCUMENT,
-    "physics_globals": CommandKind.DOCUMENT,
-    "node_delete": CommandKind.DOCUMENT,
-    "texture_add": CommandKind.DOCUMENT,
+    "node_add": CommandKind.EDIT,
+    "node_set": CommandKind.EDIT,
+    "node_reparent": CommandKind.EDIT,
+    "node_reorder": CommandKind.EDIT,
+    "node_move": CommandKind.EDIT,
+    "node_duplicate": CommandKind.EDIT,
+    "rename_id": CommandKind.EDIT,
+    "mask_add": CommandKind.EDIT,
+    "mask_set": CommandKind.EDIT,
+    "mask_reorder": CommandKind.EDIT,
+    "mask_delete": CommandKind.EDIT,
+    "physics_set": CommandKind.EDIT,
+    "physics_globals": CommandKind.EDIT,
+    "node_delete": CommandKind.EDIT,
+    "texture_add": CommandKind.EDIT,
     "texture_list": CommandKind.REPLICA_QUERY,
-    "param_add": CommandKind.DOCUMENT,
+    "param_add": CommandKind.EDIT,
     "param_list": CommandKind.REPLICA_QUERY,
-    "param_set": CommandKind.DOCUMENT,
-    "param_delete": CommandKind.DOCUMENT,
-    "param_key_insert": CommandKind.DOCUMENT,
-    "param_key_delete": CommandKind.DOCUMENT,
-    "param_key_move": CommandKind.DOCUMENT,
-    "param_flip": CommandKind.DOCUMENT,
-    "binding_add": CommandKind.DOCUMENT,
-    "binding_key": CommandKind.DOCUMENT,
-    "binding_keys": CommandKind.DOCUMENT,
-    "binding_unset": CommandKind.DOCUMENT,
-    "binding_reset": CommandKind.DOCUMENT,
-    "binding_delete": CommandKind.DOCUMENT,
-    "binding_interpolate": CommandKind.DOCUMENT,
-    "binding_invert": CommandKind.DOCUMENT,
-    "binding_copy_key": CommandKind.DOCUMENT,
+    "param_set": CommandKind.EDIT,
+    "param_delete": CommandKind.EDIT,
+    "param_key_insert": CommandKind.EDIT,
+    "param_key_delete": CommandKind.EDIT,
+    "param_key_move": CommandKind.EDIT,
+    "param_flip": CommandKind.EDIT,
+    "binding_add": CommandKind.EDIT,
+    "binding_key": CommandKind.EDIT,
+    "binding_keys": CommandKind.EDIT,
+    "binding_unset": CommandKind.EDIT,
+    "binding_reset": CommandKind.EDIT,
+    "binding_delete": CommandKind.EDIT,
+    "binding_interpolate": CommandKind.EDIT,
+    "binding_invert": CommandKind.EDIT,
+    "binding_copy_key": CommandKind.EDIT,
     "binding_list": CommandKind.REPLICA_QUERY,
-    "deform_set": CommandKind.DOCUMENT,
-    "deform_vertices": CommandKind.DOCUMENT,
-    "mesh_set": CommandKind.DOCUMENT,
-    "mesh_auto": CommandKind.DOCUMENT,
-    "mesh_copy": CommandKind.DOCUMENT,
-    "slot_add": CommandKind.DOCUMENT,
-    "slot_fill": CommandKind.DOCUMENT,
-    "slot_clear": CommandKind.DOCUMENT,
-    "slot_delete": CommandKind.DOCUMENT,
+    "deform_set": CommandKind.EDIT,
+    "deform_vertices": CommandKind.EDIT,
+    "mesh_set": CommandKind.EDIT,
+    "mesh_auto": CommandKind.EDIT,
+    "mesh_copy": CommandKind.EDIT,
+    "slot_add": CommandKind.EDIT,
+    "slot_fill": CommandKind.EDIT,
+    "slot_clear": CommandKind.EDIT,
+    "slot_delete": CommandKind.EDIT,
     "slots": CommandKind.REPLICA_QUERY,
     "welds": CommandKind.REPLICA_QUERY,
     "unfilled_slots": CommandKind.REPLICA_QUERY,
-    "weld_weight": CommandKind.DOCUMENT,
-    "weld_set": CommandKind.DOCUMENT,
-    "weld_delete": CommandKind.DOCUMENT,
-    "physics_add": CommandKind.DOCUMENT,
-    "undo": CommandKind.DOCUMENT,
-    "redo": CommandKind.DOCUMENT,
+    "weld_weight": CommandKind.EDIT,
+    "weld_set": CommandKind.EDIT,
+    "weld_delete": CommandKind.EDIT,
+    "physics_add": CommandKind.EDIT,
+    "undo": CommandKind.EDIT,
+    "redo": CommandKind.EDIT,
     "presence_set": CommandKind.PRESENCE,
     "presence_get": CommandKind.SERVER_QUERY,
     "scratch_deform": CommandKind.SCRATCH,
     "preview": CommandKind.SERVER_QUERY,
-    "import_file": CommandKind.DOCUMENT,
-    "import_json": CommandKind.DOCUMENT,
-    "extension_set": CommandKind.DOCUMENT,
-    "extension_delete": CommandKind.DOCUMENT,
+    "import_file": CommandKind.EDIT,
+    "import_json": CommandKind.EDIT,
+    "extension_set": CommandKind.EDIT,
+    "extension_delete": CommandKind.EDIT,
     "extensions": CommandKind.REPLICA_QUERY,
     "extension_get": CommandKind.SERVER_QUERY,
-    "import_manifest": CommandKind.DOCUMENT,
+    "import_manifest": CommandKind.EDIT,
 }
 
 
@@ -2020,7 +2020,7 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
     ),
     "import_json": CommandBytes(
         (
-            Attachment(AttachmentKind.FIXED, "document"),
+            Attachment(AttachmentKind.FIXED, "structure"),
             Attachment(AttachmentKind.FAMILY, "texture"),
         ),
         False,
@@ -2048,12 +2048,12 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
     ),
 }
 
-# A command that changes the document, or which documents exist.
+# A command that changes a session's model, or which sessions exist.
 #
 # The session's revision moves, so every view of it re-reads. These are the
 # commands that cost an undo entry and a React render, and the only ones
-# that must reach the editor that owns the document.
-DocumentCommand = (
+# that must reach the editor that owns the model.
+EditCommand = (
     SessionNew
     | SessionOpen
     | SessionClose
@@ -2114,7 +2114,7 @@ DocumentCommand = (
 # A command that publishes shared view state: pose, camera, selection.
 #
 # It goes to the editor because other clients read it back, and it changes no
-# document: no revision, no undo entry, invisible to a panel.
+# model: no revision, no undo entry, invisible to a panel.
 PresenceCommand = PresenceSet
 
 # A command that shows a live edit on a puppet without authoring it.
@@ -2578,11 +2578,11 @@ class ParamPose:
 
 @dataclass(frozen=True, kw_only=True)
 class ImportTexture:
-    """One texture an [`Command::ImportJson`] document names, and how to read the
+    """One texture an [`Command::ImportJson`] structure names, and how to read the
     bytes that came with it.
 
     The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
-    fields rather than a sniff or a file-name tail, because a JSON document
+    fields rather than a sniff or a file-name tail, because a JSON structure
     names no files: the client that has the image is the only thing that knows
     what it holds.
     """
@@ -2615,8 +2615,8 @@ class SlotPair:
 
 @dataclass(frozen=True, kw_only=True)
 class Presence:
-    """Ephemeral shared view state. Rides its own path — decoupled from the document
-    so scrubbing/panning generate zero document traffic and never persist.
+    """Ephemeral shared view state. Rides its own path — decoupled from the model
+    so scrubbing/panning generate zero edit traffic and never persist.
     """
 
     pose: list[ParamPose] = field(default_factory=list)
@@ -2803,7 +2803,7 @@ class ReplyEvent:
 
 
 # The server's answer. `Ok`/`Err` carry the request's `id`; `Event` is
-# unsolicited (a document changed on a session this client observes).
+# unsolicited (a model changed on a session this client observes).
 Reply = (
     ReplyOk
     | ReplyErr
@@ -3269,13 +3269,13 @@ def parse_response_body(message: Mapping[str, Any]) -> ResponseBody:
 
 
 @dataclass(frozen=True, kw_only=True)
-class EventDocumentChanged:
-    """The document changed; `rev` is the session's new revision. Observers
+class EventModelChanged:
+    """The model changed; `rev` is the session's new revision. Observers
     re-read when their last-seen rev is older.
     """
 
     TAG_FIELD: ClassVar[str] = "event"
-    TAG: ClassVar[str] = "document_changed"
+    TAG: ClassVar[str] = "model_changed"
 
     session: SessionId
     rev: int
@@ -3302,12 +3302,12 @@ class EventSessionsChanged:
 
 
 Event = (
-    EventDocumentChanged
+    EventModelChanged
     | EventSessionsChanged
 )
 
 EVENT_VARIANTS: dict[str, type[Event]] = {
-    "document_changed": EventDocumentChanged,
+    "model_changed": EventModelChanged,
     "sessions_changed": EventSessionsChanged,
 }
 
@@ -3588,7 +3588,7 @@ __all__ = [
     "parse_command",
     "COMMAND_KINDS",
     "COMMAND_BYTES",
-    "DocumentCommand",
+    "EditCommand",
     "PresenceCommand",
     "ScratchCommand",
     "ReplicaQueryCommand",
@@ -3672,7 +3672,7 @@ __all__ = [
     "ResponseBody",
     "RESPONSE_BODY_VARIANTS",
     "parse_response_body",
-    "EventDocumentChanged",
+    "EventModelChanged",
     "EventSessionsChanged",
     "Event",
     "EVENT_VARIANTS",

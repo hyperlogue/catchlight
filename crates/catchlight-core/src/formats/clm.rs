@@ -2,7 +2,7 @@
 //! written down.
 //!
 //! A [`super::container`] file (magic `b"NYANPASU"`) with two sections:
-//! `Structure` (one CBOR document) and `Textures` (verbatim source-encoded
+//! `Structure` (one CBOR value) and `Textures` (verbatim source-encoded
 //! bytes, never decoded or cropped). A third, `Extensions`, appears only when
 //! some extension carries bytes: one keyed array of blobs, laid out like
 //! `Textures` and read the same way, so a file with no byte extension is
@@ -19,7 +19,7 @@
 //! ([`ClmError::StructureOnly`], [`ClmError::NotAStructure`]) rather than
 //! reading a structure as a model whose textures all went missing. The
 //! manifest also carries the model's texture *order* and each texture's
-//! encoding, which the `Structure` document does not: a part names its albedo
+//! encoding, which the `Structure` section does not: a part names its albedo
 //! and nothing more, so a client fetching a payload it lacks would otherwise
 //! not know how to decode it or where it sits.
 //!
@@ -291,7 +291,7 @@ pub struct ClmKeyframe {
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
 /// Bumped for every breaking wire change. **2** is the only version
-/// `decode_document` accepts; there is no migration path, no reader for the
+/// `decode_structure` accepts; there is no migration path, no reader for the
 /// pre-public v0 arena, and none for v1, which grouped a part's slots into
 /// named seams and was never released.
 pub const FORMAT_VERSION: u16 = 2;
@@ -352,28 +352,28 @@ pub enum ClmError {
     LoadLimit(#[from] crate::load_budget::LoadLimitError),
 }
 
-/// The whole decoded `.clm`: the structure document plus the texture table.
+/// The whole decoded `.clm`: the structure plus the texture table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClmFile {
-    pub doc: ClmDocument,
+    pub doc: ClmStructure,
     pub textures: Vec<ClmTexture>,
     /// The bytes behind every `Bytes` marker in `doc.extensions`, in key
     /// order. Empty unless some extension carries bytes.
     pub extensions: Vec<ClmExtensionBlob>,
 }
 
-/// A decoded *structure-only* container: the same `Structure` document a
+/// A decoded *structure-only* container: the same `Structure` section a
 /// `.clm` carries, plus the texture table with the payloads taken out.
 ///
 /// This is what a replica is sent after every edit — see
 /// [`Model::to_structure_bytes`](crate::Model::to_structure_bytes). The
-/// manifest is not decoration: a `Structure` document names a part's albedo
+/// manifest is not decoration: a `Structure` section names a part's albedo
 /// and nothing else, so without it a client that has to *fetch* a texture
 /// knows neither the order the model holds its textures in nor how to decode
 /// the bytes when they arrive.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClmStructure {
-    pub doc: ClmDocument,
+pub struct ClmStructureFile {
+    pub doc: ClmStructure,
     /// The model's texture order, headers only.
     pub textures: Vec<ClmTextureRef>,
 }
@@ -398,7 +398,7 @@ impl From<&ClmTexture> for ClmTextureRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClmDocument {
+pub struct ClmStructure {
     #[serde(default)]
     pub physics: ClmPhysics,
     /// Every node, in topological order: a node's `parent` names one that
@@ -427,7 +427,7 @@ pub struct ClmDocument {
 /// break that is a file, not an annotation.
 pub const MAX_EXTENSION_BYTES: usize = 1024 * 1024;
 
-/// What an extension holds, as the structure document spells it.
+/// What an extension holds, as the structure spells it.
 ///
 /// Externally tagged, so the two arms are a one-key map (`{"json": …}`,
 /// `{"bytes": …}`) and neither can be read as the other. That matters:
@@ -662,7 +662,7 @@ fn cbor_from_slice<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, ClmE
 /// Run on the way in *and* on the way out. A reader trusts nothing, and a
 /// writer that emitted a marker without its bytes would leave a file that
 /// only fails at the next open.
-pub fn check_extensions(doc: &ClmDocument, blobs: &[ClmExtensionBlob]) -> Result<(), ClmError> {
+pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Result<(), ClmError> {
     let mut carried: BTreeMap<&ExtensionKey, &ClmExtensionBlob> = BTreeMap::new();
     for blob in blobs {
         if carried.insert(&blob.key, blob).is_some() {
@@ -713,7 +713,7 @@ pub fn check_extensions(doc: &ClmDocument, blobs: &[ClmExtensionBlob]) -> Result
 }
 
 pub fn encode(
-    doc: &ClmDocument,
+    doc: &ClmStructure,
     textures: &[ClmTexture],
     extensions: &[ClmExtensionBlob],
 ) -> Result<Vec<u8>, ClmError> {
@@ -742,15 +742,15 @@ pub fn encode(
     Ok(container::write(&MAGIC, FORMAT_VERSION, &sections))
 }
 
-/// Serialize the `Structure` half alone: the same CBOR document
-/// [`encode`] writes, in the same container framing, with the texture
-/// payloads replaced by their headers.
+/// Serialize the `Structure` half alone: the same CBOR value [`encode`]
+/// writes, in the same container framing, with the texture payloads replaced
+/// by their headers.
 ///
 /// The `Structure` section is byte-for-byte the one [`encode`] would write
-/// for the same document, so a structure push and a save agree about what the
-/// document is.
+/// for the same structure, so a structure push and a save agree about what
+/// the model is.
 pub fn encode_structure(
-    doc: &ClmDocument,
+    doc: &ClmStructure,
     textures: &[ClmTextureRef],
 ) -> Result<Vec<u8>, ClmError> {
     let structure = cbor_to_vec(doc)?;
@@ -772,18 +772,18 @@ pub fn decode(bytes: &[u8]) -> Result<ClmFile, ClmError> {
     decode_with_budget(bytes, &mut crate::load_budget::LoadBudget::default())
 }
 
-/// Read a **structure-only** container: the document plus the texture
+/// Read a **structure-only** container: the structure plus the texture
 /// manifest, no payloads. A complete `.clm` is refused
 /// ([`ClmError::NotAStructure`]) rather than read as a model with no
 /// textures.
-pub fn decode_structure(bytes: &[u8]) -> Result<ClmStructure, ClmError> {
+pub fn decode_structure(bytes: &[u8]) -> Result<ClmStructureFile, ClmError> {
     decode_structure_with_budget(bytes, &mut crate::load_budget::LoadBudget::default())
 }
 
 pub fn decode_structure_with_budget(
     bytes: &[u8],
     budget: &mut crate::load_budget::LoadBudget,
-) -> Result<ClmStructure, ClmError> {
+) -> Result<ClmStructureFile, ClmError> {
     budget.charge(
         crate::load_budget::LoadResource::EncodedBytes,
         bytes.len() as u64,
@@ -793,14 +793,14 @@ pub fn decode_structure_with_budget(
         return Err(ClmError::NotAStructure);
     }
     // Byte extensions do not travel in a structure feed either: the markers
-    // ride in the document and a client fetches a changed one by its hash.
+    // ride in the structure and a client fetches a changed one by its hash.
     if file.section(SECTION_EXTENSIONS).is_some() {
         return Err(ClmError::NotAStructure);
     }
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = decode_document(file.version, structure)?;
+    let doc = decode_section(file.version, structure)?;
     let manifest = file
         .section(SECTION_TEXTURE_MANIFEST)
         .ok_or(ClmError::MissingSection("TextureManifest"))?;
@@ -809,11 +809,11 @@ pub fn decode_structure_with_budget(
         crate::load_budget::LoadResource::Textures,
         textures.len() as u64,
     )?;
-    Ok(ClmStructure { doc, textures })
+    Ok(ClmStructureFile { doc, textures })
 }
 
 /// The textures a structure names, in the model's own order, without
-/// building anything from the document — so a client can fetch the payloads
+/// building anything from the structure — so a client can fetch the payloads
 /// it lacks before it applies the structure. Each entry carries the encoding
 /// and alpha convention the fetched bytes are read with.
 pub fn structure_texture_ids(bytes: &[u8]) -> Result<Vec<ClmTextureRef>, ClmError> {
@@ -842,7 +842,7 @@ pub fn decode_with_budget(
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = decode_document(file.version, structure)?;
+    let doc = decode_section(file.version, structure)?;
     let textures = match file.section(SECTION_TEXTURES) {
         Some(b) => cbor_from_slice(b)?,
         None => Vec::new(),
@@ -859,7 +859,7 @@ pub fn decode_with_budget(
     })
 }
 
-fn decode_document(version: u16, bytes: &[u8]) -> Result<ClmDocument, ClmError> {
+fn decode_section(version: u16, bytes: &[u8]) -> Result<ClmStructure, ClmError> {
     if version != FORMAT_VERSION {
         return Err(ClmError::UnsupportedVersion(version));
     }
@@ -871,7 +871,7 @@ mod tests {
     use super::*;
     use ciborium::value::Value;
 
-    fn sample() -> (ClmDocument, Vec<ClmTexture>) {
+    fn sample() -> (ClmStructure, Vec<ClmTexture>) {
         let root = ClmNode {
             id: NodeId::new("root").unwrap(),
             parent: None,
@@ -925,7 +925,7 @@ mod tests {
             }),
         };
         let mouth = ParamId::new("param-mouth").unwrap();
-        let doc = ClmDocument {
+        let doc = ClmStructure {
             physics: ClmPhysics::default(),
             extensions: Default::default(),
             nodes: vec![root, part],
@@ -1024,7 +1024,7 @@ mod tests {
         } else {
             panic!("expected a CBOR map");
         }
-        let back: ClmDocument = cbor_from_slice(&cbor_to_vec(&value).unwrap()).unwrap();
+        let back: ClmStructure = cbor_from_slice(&cbor_to_vec(&value).unwrap()).unwrap();
         assert_eq!(back, doc);
     }
 
@@ -1044,13 +1044,13 @@ mod tests {
         assert_eq!(node.transform, ClmTransform::default());
     }
 
-    /// A document with no `animations`, `bindings` or `welds` key at all is a
-    /// legal model with none of them.
+    /// A structure with no `animations`, `bindings` or `welds` key at all is
+    /// a legal model with none of them.
     #[test]
-    fn an_empty_document_decodes() {
-        let doc: ClmDocument = cbor_from_slice(&cbor_to_vec(&Value::Map(Vec::new())).unwrap())
-            .expect("an empty map is a legal document");
-        assert_eq!(doc, ClmDocument::default());
+    fn an_empty_structure_decodes() {
+        let doc: ClmStructure = cbor_from_slice(&cbor_to_vec(&Value::Map(Vec::new())).unwrap())
+            .expect("an empty map is a legal structure");
+        assert_eq!(doc, ClmStructure::default());
     }
 
     /// v0 is the pre-public arena format and v1 grouped a part's slots into

@@ -289,7 +289,7 @@ fn root_of(socket: &mut Socket, id: u64, session: SessionId) -> NodeId {
     }
 }
 
-/// Open the document staged under `key`, expecting it to succeed.
+/// Open the model staged under `key`, expecting it to succeed.
 fn open_session(socket: &mut Socket, id: u64, key: &str) -> SessionId {
     send(
         socket,
@@ -435,8 +435,8 @@ fn an_edit_on_one_connection_is_pushed_to_the_other() {
     // about the session appearing first, then about the edit.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        assert!(Instant::now() < deadline, "no document_changed arrived");
-        if let Reply::Event(catchlight_editor_protocol::Event::DocumentChanged {
+        assert!(Instant::now() < deadline, "no model_changed arrived");
+        if let Reply::Event(catchlight_editor_protocol::Event::ModelChanged {
             session: changed,
             rev: at,
         }) = read_frame(&mut watcher)
@@ -642,8 +642,8 @@ fn an_edit_made_over_post_reaches_a_websocket_subscriber() {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        assert!(Instant::now() < deadline, "no document_changed arrived");
-        if let Reply::Event(catchlight_editor_protocol::Event::DocumentChanged {
+        assert!(Instant::now() < deadline, "no model_changed arrived");
+        if let Reply::Event(catchlight_editor_protocol::Event::ModelChanged {
             session: changed,
             rev: at,
         }) = read_frame(&mut watcher)

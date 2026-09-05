@@ -11,12 +11,12 @@
  * moment `node_set` is sent leaves the node back where it started for as long
  * as the round trip takes, which reads as the drag snapping back. `send`
  * resolves only once the replica can answer at the new revision, so clearing
- * after it is the one point where the preview and the document agree. A
- * refused send clears too, because then the document never moved and the
+ * after it is the one point where the preview and the model agree. A
+ * refused send clears too, because then the model never moved and the
  * preview is a lie.
  *
  * With no session — a stage that is showing nothing — every handler is a
- * no-op, so a host can keep the canvas mounted between documents.
+ * no-op, so a host can keep the canvas mounted between models.
  */
 
 import type { NodeId, Session } from "@catchlight/core";
@@ -77,7 +77,7 @@ export function useNodeDrag(session: Session | undefined, node: NodeId | undefin
       if (!active || active.pointerId !== event.pointerId) return;
       drag.current = undefined;
       setDragging(false);
-      // The document went away under the gesture: nothing to author or clear.
+      // The model went away under the gesture: nothing to author or clear.
       if (!session) return;
       const translate = active.translate;
       if (!translate) {

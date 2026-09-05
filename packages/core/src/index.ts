@@ -7,7 +7,7 @@
  *
  * The shape of the whole package: an [`Editor`] over a [`Backend`], which is
  * either the wasm editor in this tab ([`InTabBackend`]) or a local editor
- * process ([`ConnectedBackend`]). Each open document is a [`Session`] holding
+ * process ([`ConnectedBackend`]). Each open model is a [`Session`] holding
  * a replica — this tab's copy of the model, which answers reads synchronously,
  * is what a [`Viewport`] draws, and moves only when the backend feeds it.
  *
@@ -24,7 +24,7 @@ export { Session } from "./session.js";
 export type {
   ScratchTransform,
   SessionCommand,
-  SessionDocumentCommand,
+  SessionEditCommand,
   SessionPresenceCommand,
   SessionReplicaQueryCommand,
   SessionServerQueryCommand,

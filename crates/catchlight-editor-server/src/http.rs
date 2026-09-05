@@ -90,7 +90,7 @@
 //!
 //! - **An event can precede the reply that caused it.** Observers fire inside
 //!   [`Editor::handle`], so a client's own `node_add` may see
-//!   `document_changed` before its `ok`. A client keyed on `rev` does not
+//!   `model_changed` before its `ok`. A client keyed on `rev` does not
 //!   care; one that assumes reply-then-event does.
 //!
 //! - **An idle socket is proved live, not assumed.** A tab that is only
@@ -152,7 +152,7 @@ pub struct HttpOptions {
     /// The bearer token. `None` mints a fresh random one for this launch.
     pub token: Option<String>,
     /// Ceiling on a multipart `POST /request` body — the one route that
-    /// carries a document rather than a command.
+    /// carries a model rather than a command.
     pub max_upload_bytes: usize,
     /// How often an idle WebSocket is pinged, and half the silence it puts up
     /// with before the connection is dropped. The default suits a browser tab;
@@ -488,7 +488,7 @@ fn command(state: &ServerState, request: &HttpRequest) -> Response {
     }
 }
 
-/// One JSON document with every non-ASCII character written as a `\uXXXX`
+/// One JSON value with every non-ASCII character written as a `\uXXXX`
 /// escape, so it fits in a header value and still parses as the same JSON.
 ///
 /// Safe as a byte-wise pass because JSON puts non-ASCII only inside string
@@ -636,7 +636,7 @@ fn structure(state: &ServerState, id: &str) -> Response {
     }
 }
 
-/// The whole document as a `.clm`, encoded on demand — what a tab downloads
+/// The whole model as a `.clm`, encoded on demand — what a tab downloads
 /// or writes back to storage. The bytes are built for this answer, so the body
 /// owns them.
 fn clm(state: &ServerState, id: &str) -> Response {
@@ -1154,7 +1154,7 @@ struct Response {
     body: Body,
 }
 
-/// What a response carries. A status line or a serialized document is built
+/// What a response carries. A status line or a serialized value is built
 /// for the answer and owned by it; a texture is the model's own payload, held
 /// by refcount so the biggest bodies this server writes are never copied.
 enum Body {

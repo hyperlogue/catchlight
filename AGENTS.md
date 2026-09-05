@@ -135,7 +135,7 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-core/src/texture.rs` — the whole texture strategy: decode,
   premultiply, alpha crop, the UV crop it hands back
 - `crates/catchlight-core/src/load.rs` — `.clm` is the only load path
-- `crates/catchlight-core/src/formats/clm.rs` — the `.clm` document: keyed by
+- `crates/catchlight-core/src/formats/clm.rs` — the `.clm` file: keyed by
   Id, byte-stable, what it refuses, and why an extension's bytes live in their
   own section behind a hash
 - `crates/catchlight-import-inochi2d/src/lib.rs` — the single reflection, Ids
@@ -181,7 +181,7 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor/src/app.rs` — drag against commit, what recording
   never authors
 - `crates/catchlight-editor/src/mesh_edit.rs` — when the slot tool is
-  reachable, slot edits are document edits
+  reachable, slot edits are model edits
 - `crates/catchlight-editor/src/params_panel.rs` — a param is a scalar, a row
   addresses its own binding
 - `crates/catchlight-editor/src/viewport.rs` — no readback, one renderer holding
@@ -193,7 +193,7 @@ that enforces them, not here. Add new ones there.
   bytes cross once inside the command that uses them, where the browser's
   asynchrony stops, and Rust never calls JavaScript
 - `crates/catchlight-editor-wasm/src/replica.rs` — the revision moves forward
-  only, the two ways the document changes and neither is local, a texture
+  only, the two ways the model changes and neither is local, a texture
   travels by Id and an extension by hash, pose and scratch never reach the
   model, gizmo math lives here
 - `crates/catchlight-editor-wasm/src/gpu.rs` — one device per tab on both
@@ -268,7 +268,7 @@ with `cargo xtask import <model.inx|.inp> [-o <model.clm>]`.
 - The editor is **web-first**: React over a wasm replica, **WebGPU with a
   WebGL2 tier** because iOS reaches WebGPU only from Safari 26; the desktop
   egui app is frozen. The runtime is tier-1 on **Windows**.
-- **The editor owns the document; the tab holds a replica.** The `Editor` runs
+- **The editor owns the model; the tab holds a replica.** The `Editor` runs
   in the tab (Pages) or in a local process an agent also drives; the browser
   never mutates its model locally, reads answer from the replica synchronously,
   and a drag is one commit whose scratch is held until its revision lands.

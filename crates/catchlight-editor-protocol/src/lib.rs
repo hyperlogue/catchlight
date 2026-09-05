@@ -124,7 +124,7 @@
 //!
 //! - **Every command says what it does, in one place.** [`COMMAND_KINDS`]
 //!   gives each one a [`CommandKind`], and that is what a client routes by.
-//!   `Document` moves the session's revision, records undo and is saved.
+//!   `Edit` moves the session's revision, records undo and is saved.
 //!   `Presence` publishes shared view state and moves nothing. `Scratch` shows
 //!   a live edit on a puppet and never authors it. `ReplicaQuery` is a pure
 //!   function of the [`Model`](catchlight_core::Model), so a client holding a
@@ -678,7 +678,7 @@ pub enum Command {
         session: SessionId,
     },
     /// Publish ephemeral view state (pose / camera / selection) — a separate
-    /// path from the document: never bumps rev, never undone, never saved.
+    /// path from the model: never bumps rev, never undone, never saved.
     PresenceSet {
         session: SessionId,
         #[serde(flatten)]
@@ -721,37 +721,37 @@ pub enum Command {
     ///
     /// `parent` absent replaces the session's whole model, and needs a
     /// pristine one (what [`Command::SessionNew`] makes) and a complete
-    /// document: anything else is [`ErrorCode::NotEmpty`]. `parent` present
-    /// installs the document's roots under that node, overriding whatever
-    /// parent the document's own roots name; Ids travel verbatim, and a
+    /// model: anything else is [`ErrorCode::NotEmpty`]. `parent` present
+    /// installs the imported roots under that node, overriding whatever
+    /// parent those roots name; Ids travel verbatim, and a
     /// collision or a missing requirement is refused whole.
     ImportFile {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<NodeId>,
     },
-    /// Import a `.clm` **structure document as JSON**, with its textures
+    /// Import a `.clm` **structure as JSON**, with its textures
     /// attached separately, into an open session.
     ///
     /// The same operation as [`Command::ImportFile`] and the same two paths —
     /// `parent` absent replaces a pristine session's model, `parent` present
-    /// installs the document's roots under that node — differing only in how
+    /// installs the imported roots under that node — differing only in how
     /// the model arrives. A client that is authoring a model rather than
     /// forwarding a file has the structure in hand and the images beside it,
     /// and this saves it building a container.
     ///
-    /// Attachment `document` is the structure document as JSON, spelled
-    /// exactly as the `.clm` format's serde spells it. Each entry of
-    /// `textures` names an image arriving as `texture:<texture>`; an entry
-    /// with no attachment, and a `texture:` attachment no entry names, are
-    /// both [`ErrorCode::BadRequest`] naming the id. A texture the document
+    /// Attachment `structure` is the structure as JSON, spelled exactly as
+    /// the `.clm` format's serde spells it. Each entry of `textures` names an
+    /// image arriving as `texture:<texture>`; an entry with no attachment,
+    /// and a `texture:` attachment no entry names, are both
+    /// [`ErrorCode::BadRequest`] naming the id. A texture the structure
     /// *references* but `textures` does not list is the reader's own refusal,
     /// the same one a `.clm` missing a payload gets.
     ///
     /// **A JSON import carries no extension bytes.** A byte extension is a
-    /// `{size, hash}` marker in the document and its payload lives in a
-    /// section a JSON document has no room for, so a marker here is refused
-    /// by key. Import the document, then set the extension.
+    /// `{size, hash}` marker in the structure and its payload lives in a
+    /// section JSON has no room for, so a marker here is refused by key.
+    /// Import the structure, then set the extension.
     ImportJson {
         session: SessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -762,7 +762,7 @@ pub enum Command {
     },
     /// Set the extension filed under `key`, replacing whatever was there.
     ///
-    /// `Document`: an extension is part of the document, so this moves the
+    /// `Edit`: an extension is part of the model, so this moves the
     /// revision and undo covers it. `catchlight.` is the format's own prefix
     /// and is refused ([`ErrorCode::ReservedExtension`]); a byte value over
     /// the format's cap is [`ErrorCode::Edit`].
@@ -773,7 +773,7 @@ pub enum Command {
     },
     /// Drop the extension filed under `key`.
     ///
-    /// `Document`, like [`Command::ExtensionSet`]. A key the model does not
+    /// `Edit`, like [`Command::ExtensionSet`]. A key the model does not
     /// carry is [`ErrorCode::NoExtension`] rather than a quiet no-op, so a
     /// typo in a key says so.
     ExtensionDelete {
@@ -810,7 +810,7 @@ pub enum Command {
     },
 }
 
-/// What applying a [`Command`] does to the document it addresses.
+/// What applying a [`Command`] does to the model it addresses.
 ///
 /// This is the fact the whole notification story hangs on, and it is written
 /// down exactly once — in [`COMMAND_KINDS`]. `cargo xtask generate` splits the
@@ -819,12 +819,12 @@ pub enum Command {
 /// asserts against it in debug builds (see `Editor::handle`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
-    /// Changes the document, or which documents exist. The session's `rev`
-    /// moves — or its saved/open state does, which a title bar reads the same
-    /// way — so every view has to re-read. The only kind that moves `rev`.
-    Document,
+    /// Changes the session's model, or which sessions exist. The session's
+    /// `rev` moves — or its saved/open state does, which a title bar reads the
+    /// same way — so every view has to re-read. The only kind that moves `rev`.
+    Edit,
     /// Publishes shared view state: pose, camera, selection. It goes to the
-    /// editor because other clients read it back, and it changes no document.
+    /// editor because other clients read it back, and it changes no model.
     Presence,
     /// Shows a live edit on a puppet without authoring it — the drag path.
     /// No revision, no undo entry, and nothing to read back: whoever owns the
@@ -839,7 +839,7 @@ pub enum CommandKind {
     /// store, or its renderer. A replica cannot answer one.
     ///
     /// `export_manifest` is here despite writing bytes: what it writes lands
-    /// in the store, not in the session, and no view of the document changes.
+    /// in the store, not in the session, and no view of the model changes.
     ServerQuery,
 }
 
@@ -851,77 +851,77 @@ pub enum CommandKind {
 /// through here, so a tag missing from the list panics the first time it is
 /// dispatched.
 pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
-    ("session_new", CommandKind::Document),
-    ("session_open", CommandKind::Document),
+    ("session_new", CommandKind::Edit),
+    ("session_open", CommandKind::Edit),
     ("session_list", CommandKind::ServerQuery),
-    ("session_close", CommandKind::Document),
-    ("save", CommandKind::Document),
+    ("session_close", CommandKind::Edit),
+    ("save", CommandKind::Edit),
     ("export_manifest", CommandKind::ServerQuery),
     ("status", CommandKind::ServerQuery),
     ("check", CommandKind::ReplicaQuery),
     ("node_tree", CommandKind::ReplicaQuery),
     ("node_info", CommandKind::ReplicaQuery),
-    ("node_add", CommandKind::Document),
-    ("node_set", CommandKind::Document),
-    ("node_reparent", CommandKind::Document),
-    ("node_reorder", CommandKind::Document),
-    ("node_move", CommandKind::Document),
-    ("node_duplicate", CommandKind::Document),
-    ("rename_id", CommandKind::Document),
-    ("mask_add", CommandKind::Document),
-    ("mask_set", CommandKind::Document),
-    ("mask_reorder", CommandKind::Document),
-    ("mask_delete", CommandKind::Document),
-    ("physics_set", CommandKind::Document),
-    ("physics_globals", CommandKind::Document),
-    ("node_delete", CommandKind::Document),
-    ("texture_add", CommandKind::Document),
+    ("node_add", CommandKind::Edit),
+    ("node_set", CommandKind::Edit),
+    ("node_reparent", CommandKind::Edit),
+    ("node_reorder", CommandKind::Edit),
+    ("node_move", CommandKind::Edit),
+    ("node_duplicate", CommandKind::Edit),
+    ("rename_id", CommandKind::Edit),
+    ("mask_add", CommandKind::Edit),
+    ("mask_set", CommandKind::Edit),
+    ("mask_reorder", CommandKind::Edit),
+    ("mask_delete", CommandKind::Edit),
+    ("physics_set", CommandKind::Edit),
+    ("physics_globals", CommandKind::Edit),
+    ("node_delete", CommandKind::Edit),
+    ("texture_add", CommandKind::Edit),
     ("texture_list", CommandKind::ReplicaQuery),
-    ("param_add", CommandKind::Document),
+    ("param_add", CommandKind::Edit),
     ("param_list", CommandKind::ReplicaQuery),
-    ("param_set", CommandKind::Document),
-    ("param_delete", CommandKind::Document),
-    ("param_key_insert", CommandKind::Document),
-    ("param_key_delete", CommandKind::Document),
-    ("param_key_move", CommandKind::Document),
-    ("param_flip", CommandKind::Document),
-    ("binding_add", CommandKind::Document),
-    ("binding_key", CommandKind::Document),
-    ("binding_keys", CommandKind::Document),
-    ("binding_unset", CommandKind::Document),
-    ("binding_reset", CommandKind::Document),
-    ("binding_delete", CommandKind::Document),
-    ("binding_interpolate", CommandKind::Document),
-    ("binding_invert", CommandKind::Document),
-    ("binding_copy_key", CommandKind::Document),
+    ("param_set", CommandKind::Edit),
+    ("param_delete", CommandKind::Edit),
+    ("param_key_insert", CommandKind::Edit),
+    ("param_key_delete", CommandKind::Edit),
+    ("param_key_move", CommandKind::Edit),
+    ("param_flip", CommandKind::Edit),
+    ("binding_add", CommandKind::Edit),
+    ("binding_key", CommandKind::Edit),
+    ("binding_keys", CommandKind::Edit),
+    ("binding_unset", CommandKind::Edit),
+    ("binding_reset", CommandKind::Edit),
+    ("binding_delete", CommandKind::Edit),
+    ("binding_interpolate", CommandKind::Edit),
+    ("binding_invert", CommandKind::Edit),
+    ("binding_copy_key", CommandKind::Edit),
     ("binding_list", CommandKind::ReplicaQuery),
-    ("deform_set", CommandKind::Document),
-    ("deform_vertices", CommandKind::Document),
-    ("mesh_set", CommandKind::Document),
-    ("mesh_auto", CommandKind::Document),
-    ("mesh_copy", CommandKind::Document),
-    ("slot_add", CommandKind::Document),
-    ("slot_fill", CommandKind::Document),
-    ("slot_clear", CommandKind::Document),
-    ("slot_delete", CommandKind::Document),
+    ("deform_set", CommandKind::Edit),
+    ("deform_vertices", CommandKind::Edit),
+    ("mesh_set", CommandKind::Edit),
+    ("mesh_auto", CommandKind::Edit),
+    ("mesh_copy", CommandKind::Edit),
+    ("slot_add", CommandKind::Edit),
+    ("slot_fill", CommandKind::Edit),
+    ("slot_clear", CommandKind::Edit),
+    ("slot_delete", CommandKind::Edit),
     ("slots", CommandKind::ReplicaQuery),
     ("welds", CommandKind::ReplicaQuery),
     ("unfilled_slots", CommandKind::ReplicaQuery),
-    ("weld_set", CommandKind::Document),
-    ("weld_weight", CommandKind::Document),
-    ("weld_delete", CommandKind::Document),
-    ("physics_add", CommandKind::Document),
-    ("undo", CommandKind::Document),
-    ("redo", CommandKind::Document),
+    ("weld_set", CommandKind::Edit),
+    ("weld_weight", CommandKind::Edit),
+    ("weld_delete", CommandKind::Edit),
+    ("physics_add", CommandKind::Edit),
+    ("undo", CommandKind::Edit),
+    ("redo", CommandKind::Edit),
     ("presence_set", CommandKind::Presence),
     ("presence_get", CommandKind::ServerQuery),
     ("scratch_deform", CommandKind::Scratch),
     ("preview", CommandKind::ServerQuery),
-    ("import_file", CommandKind::Document),
-    ("import_json", CommandKind::Document),
-    ("import_manifest", CommandKind::Document),
-    ("extension_set", CommandKind::Document),
-    ("extension_delete", CommandKind::Document),
+    ("import_file", CommandKind::Edit),
+    ("import_json", CommandKind::Edit),
+    ("import_manifest", CommandKind::Edit),
+    ("extension_set", CommandKind::Edit),
+    ("extension_delete", CommandKind::Edit),
     ("extensions", CommandKind::ReplicaQuery),
     ("extension_get", CommandKind::ServerQuery),
 ];
@@ -988,7 +988,10 @@ pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
     (
         "import_json",
         Bytes {
-            attachments: &[Attachment::Fixed("document"), Attachment::Family("texture")],
+            attachments: &[
+                Attachment::Fixed("structure"),
+                Attachment::Family("texture"),
+            ],
             payload: false,
         },
     ),
@@ -1105,14 +1108,14 @@ impl Command {
         }
     }
 
-    /// What applying this command does to the document.
+    /// What applying this command does to the session's model.
     ///
-    /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Document`].
+    /// A tag missing from [`COMMAND_KINDS`] reads as [`CommandKind::Edit`].
     /// That case is unreachable — `xtask generate` fails the build on it — but the
     /// fallback still has to be the conservative one: calling an edit a
-    /// `Document` costs a redundant redraw, while calling it any of the other
+    /// `Edit` costs a redundant redraw, while calling it any of the other
     /// four loses the notification entirely and leaves a panel showing stale
-    /// data. It also sends the command to whoever owns the document, which is
+    /// data. It also sends the command to whoever owns the model, which is
     /// the only place an unknown command can be safely applied.
     pub fn kind(&self) -> CommandKind {
         let tag = self.tag();
@@ -1120,7 +1123,7 @@ impl Command {
             .iter()
             .find(|(name, _)| *name == tag)
             .map(|(_, kind)| *kind)
-            .unwrap_or(CommandKind::Document)
+            .unwrap_or(CommandKind::Edit)
     }
 
     /// What bytes this command carries, or `None` when it carries none.
@@ -1155,7 +1158,7 @@ impl Command {
     ///
     /// `None` for the editor-level commands: the ones that make a session
     /// ([`Command::SessionNew`] and friends, which name it in their *reply*),
-    /// and the ones that read the editor rather than a document.
+    /// and the ones that read the editor rather than a model.
     ///
     /// Exhaustive by construction, like [`Command::tag`] — a new variant does
     /// not compile until it says whether it names a session.
@@ -2078,11 +2081,11 @@ pub struct ParamPose {
     pub value: f32,
 }
 
-/// One texture an [`Command::ImportJson`] document names, and how to read the
+/// One texture an [`Command::ImportJson`] structure names, and how to read the
 /// bytes that came with it.
 ///
 /// The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
-/// fields rather than a sniff or a file-name tail, because a JSON document
+/// fields rather than a sniff or a file-name tail, because a JSON structure
 /// names no files: the client that has the image is the only thing that knows
 /// what it holds.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -2096,7 +2099,7 @@ pub struct ImportTexture {
 }
 
 /// The server's answer. `Ok`/`Err` carry the request's `id`; `Event` is
-/// unsolicited (a document changed on a session this client observes).
+/// unsolicited (a model changed on a session this client observes).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "reply", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -2296,8 +2299,8 @@ pub enum ResponseBody {
     },
 }
 
-/// Ephemeral shared view state. Rides its own path — decoupled from the document
-/// so scrubbing/panning generate zero document traffic and never persist.
+/// Ephemeral shared view state. Rides its own path — decoupled from the model
+/// so scrubbing/panning generate zero edit traffic and never persist.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Presence {
@@ -2369,9 +2372,9 @@ pub struct Camera {
 #[serde(tag = "event", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Event {
-    /// The document changed; `rev` is the session's new revision. Observers
+    /// The model changed; `rev` is the session's new revision. Observers
     /// re-read when their last-seen rev is older.
-    DocumentChanged { session: SessionId, rev: u64 },
+    ModelChanged { session: SessionId, rev: u64 },
     /// The set of open sessions changed: one was created, opened, imported or
     /// closed. Carries nothing — an observer that cares re-reads
     /// [`Command::SessionList`], which is the only answer that is not already
@@ -2803,7 +2806,7 @@ mod tests {
         assert!(s.contains("\"reply\":\"ok\""));
         assert!(s.contains("\"rev\":4"), "{s}");
         assert!(s.contains("\"result\":\"session\""));
-        let evt = Reply::Event(Event::DocumentChanged {
+        let evt = Reply::Event(Event::ModelChanged {
             session: SessionId(3),
             rev: 9,
         });
@@ -2811,7 +2814,7 @@ mod tests {
         let back: Reply = serde_json::from_str(&s).unwrap();
         assert!(matches!(
             back,
-            Reply::Event(Event::DocumentChanged { rev: 9, .. })
+            Reply::Event(Event::ModelChanged { rev: 9, .. })
         ));
     }
 

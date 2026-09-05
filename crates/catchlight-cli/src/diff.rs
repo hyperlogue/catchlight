@@ -30,8 +30,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmDocument, ClmFile, ClmIndices, ClmMask, ClmMesh, ClmNode,
-    ClmNodeKind, ClmParam, ClmTexture, ClmWeld,
+    ClmAnimation, ClmBinding, ClmFile, ClmIndices, ClmMask, ClmMesh, ClmNode, ClmNodeKind,
+    ClmParam, ClmStructure, ClmTexture, ClmWeld,
 };
 use catchlight_core::{deform_cells, mask_mode_name, scalar_cells, target_of};
 use serde::Serialize;
@@ -201,7 +201,7 @@ fn field_diff(a: &Fields, b: &Fields) -> Vec<(String, String, String)> {
 
 // ---- rendering one value's fields ----------------------------------------
 
-fn physics(a: &ClmDocument, b: &ClmDocument, out: &mut Vec<String>) {
+fn physics(a: &ClmStructure, b: &ClmStructure, out: &mut Vec<String>) {
     if a.physics.pixels_per_meter != b.physics.pixels_per_meter {
         out.push(format!(
             "~ physics pixels_per_meter: {} -> {}",
@@ -220,7 +220,7 @@ fn physics(a: &ClmDocument, b: &ClmDocument, out: &mut Vec<String>) {
 /// a vendor owns, and half of it is bytes nothing here can render anyway.
 /// A JSON value is shown whole; a byte value as the size and hash its marker
 /// carries, which is exactly what changed when the bytes changed.
-fn extensions(a: &ClmDocument, b: &ClmDocument, out: &mut Vec<String>) {
+fn extensions(a: &ClmStructure, b: &ClmStructure, out: &mut Vec<String>) {
     for (key, before) in &a.extensions {
         match b.extensions.get(key) {
             None => out.push(format!("- extension {key}: {}", extension::render(before))),

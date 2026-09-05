@@ -3,12 +3,12 @@
  *
  * This is the whole of the site. Everything a person sees is
  * `@catchlight/editor`; what is left here is the two decisions only a host can
- * make — where the document is served from, and what to do when the page
+ * make — where the model is served from, and what to do when the page
  * cannot start at all.
  *
  * **The backend comes from the URL.** `?server=<http base>` points the tab at a
  * `catchlight-editor-server` running on the machine, which is how an agent and
- * a person drive the same document. Without it the editor runs in this tab,
+ * a person drive the same model. Without it the editor runs in this tab,
  * over the wasm module, against the origin private file system — so the plain
  * URL is a self-contained editor with no process behind it.
  *
@@ -55,7 +55,7 @@ async function start(): Promise<void> {
     const editor = await Editor.create(catchlight, await pick(server));
 
     // Before the mount, so the editor comes up showing something: the panel
-    // takes the first document the editor lists as the current one.
+    // takes the first model the editor lists as the current one.
     if (server === null) await sample(editor);
 
     mount(editor);
@@ -129,7 +129,7 @@ function mount(editor: Editor): void {
  *
  * `fitCamera` rides along because the test's second viewport has to be framed
  * the way the editor frames the first. It is the same function the React
- * viewport calls when it opens a document, so a driver that calls it with the
+ * viewport calls when it opens a model, so a driver that calls it with the
  * same bounds and the same size gets the same camera, and the two canvases can
  * then be compared pixel for pixel.
  */

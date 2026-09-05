@@ -7,9 +7,9 @@
  * fake is a few lines. A host passes the real module in.
  *
  * The split these types encode is the whole architecture. The **editor** owns
- * the document and is the only thing that answers a command. The **replica**
+ * the model and is the only thing that answers a command. The **replica**
  * is this tab's copy of one session — model, puppet and render cache — and it
- * is never mutated locally: it moves only when a backend feeds it a document
+ * is never mutated locally: it moves only when a backend feeds it a model
  * state at a revision, forward only. The **viewport** draws a replica on a
  * canvas and owns its own frame loop. The **gpu** is one device, shared by
  * everything under one editor, on whichever of the two graphics tiers the
@@ -49,7 +49,7 @@ export interface WasmEditor extends WasmOwned {
   handle(requestJson: string): string;
   /**
    * The same, with the bytes the command declares and the bytes its reply
-   * carries. The one way an image or a document reaches the editor.
+   * carries. The one way an image or a model reaches the editor.
    */
   handleWith(
     requestJson: string,
@@ -124,7 +124,7 @@ export interface ExtensionRequest {
 
 /** One session's model, puppet and render cache, in this tab. */
 export interface WasmReplica extends WasmOwned {
-  /** The document revision this replica currently holds. */
+  /** The model revision this replica currently holds. */
   rev(): number;
 
   /** The `TextureRequest[]` a structure names and this replica lacks, as JSON. */
@@ -188,7 +188,7 @@ export interface WasmReplica extends WasmOwned {
   /**
    * The world-space box the last tick left the drawn geometry in:
    * `[min_x, min_y, max_x, max_y]` in world units, Y-up. `undefined` when the
-   * model draws nothing — an empty document, or one whose every part is
+   * model draws nothing — an empty model, or one whose every part is
    * disabled, untextured or fully transparent. What a "frame the model" camera
    * is computed from, and posed rather than at rest, so a limb physics has
    * swung out is inside the box.

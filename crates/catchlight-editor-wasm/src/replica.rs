@@ -3,7 +3,7 @@
 //! A replica is what makes the browser editor feel local. It holds the
 //! session's [`Model`], a [`Puppet`] posing it, and the texture payloads both
 //! were built from, so the tab answers a read and draws a frame without a
-//! round trip. It is a *copy*: the server's session is the document, and this
+//! round trip. It is a *copy*: the server's session owns the model, and this
 //! follows it.
 //!
 //! Invariants this module carries:
@@ -20,24 +20,24 @@
 //!   is, and one at or below the revision already held is dropped whole —
 //!   nothing is applied, nothing is half-applied. Structure pushes and
 //!   reconnects arrive out of order over a live connection, and a stale one
-//!   that overwrote a newer document would show the user an edit being undone.
+//!   that overwrote a newer revision would show the user an edit being undone.
 //!   The one exception is a **pristine** replica, whose revision is not `0`
 //!   but *absent*: a session that has never been edited is itself at rev `0`,
 //!   so a replica that refused it would sit empty forever.
 //!
-//! - **There are exactly two ways the document changes**, and neither is
+//! - **There are exactly two ways the model changes**, and neither is
 //!   local. [`ReplicaState::apply_structure`] takes a structure-only container
 //!   the server pushed; [`ReplicaState::sync_from_editor`] takes an in-tab
 //!   [`Editor`]'s own model. Nothing else in this crate writes to the model.
-//!   The tab authors commands, never documents — that is what keeps one
+//!   The tab authors commands, never models — that is what keeps one
 //!   [`catchlight_editor_server::replica_query`] answering for both ends.
 //!
 //! - **Pose and scratch live on the puppet and never reach the model.** A
 //!   param value, a drag's scratch transform and a scratch deform are the
-//!   frame the user is looking at, not the document: they survive the rebake a
+//!   frame the user is looking at, not the model: they survive the rebake a
 //!   feed triggers precisely because the model does not carry them, and a
 //!   commit turns into a command like any other edit. Writing them into the
-//!   model would make every pointer move a document change and the next
+//!   model would make every pointer move a model change and the next
 //!   structure push would erase it. A scratch deform is also **summed before
 //!   the write returns** — see [`ReplicaState::combine_scratch_deforms`].
 //!
@@ -66,7 +66,7 @@
 //!   lacks once and every later structure is applied over the same `Arc`s —
 //!   which is what lets a render cache rebuild after an edit without decoding
 //!   or re-uploading a single image. After a feed the
-//!   held set is exactly what the model names: a payload the document dropped
+//!   held set is exactly what the model names: a payload the model dropped
 //!   is dropped here too, or a replica would grow by the size of every texture
 //!   the session ever had.
 
@@ -95,7 +95,7 @@ pub struct ExtensionNeed {
     pub hash: String,
 }
 
-/// One session's document and pose, in the tab. No GPU: everything here is
+/// One session's model and pose, in the tab. No GPU: everything here is
 /// testable natively, and the renderer that draws it lives one layer up.
 pub struct ReplicaState {
     model: Model,
@@ -112,7 +112,7 @@ pub struct ReplicaState {
     /// not, which is the whole reason one travels by Id and the other by
     /// hash.
     extension_bytes: HashMap<ExtensionKey, (String, Arc<[u8]>)>,
-    /// The revision this document reads as, or `None` while pristine.
+    /// The revision this model reads as, or `None` while pristine.
     rev: Option<u64>,
     /// The animation-frame timestamp of the last tick, in milliseconds, or
     /// `None` before the first one. See [`ReplicaState::frame`].
@@ -144,7 +144,7 @@ impl ReplicaState {
         }
     }
 
-    /// The revision the document reads as; `0` while pristine.
+    /// The revision the model reads as; `0` while pristine.
     pub fn rev(&self) -> u64 {
         self.rev.unwrap_or(0)
     }
@@ -225,7 +225,7 @@ impl ReplicaState {
         }
     }
 
-    /// Rebuild the document from a structure-only container at `rev`, over the
+    /// Rebuild the model from a structure-only container at `rev`, over the
     /// payloads already held.
     ///
     /// `Ok(false)` when `rev` is not newer, with nothing touched. `Err` when
@@ -262,7 +262,7 @@ impl ReplicaState {
         Ok(true)
     }
 
-    /// Take the document straight from an in-tab [`Editor`]'s session, at that
+    /// Take the model straight from an in-tab [`Editor`]'s session, at that
     /// session's revision. The in-page path: no encode, no decode, and every
     /// texture payload `Arc`-shared with the editor.
     ///
@@ -284,7 +284,7 @@ impl ReplicaState {
     }
 
     /// Stamp the revision a feed just applied, drop the payloads the new
-    /// document does not name, and rebake the puppet onto it.
+    /// model does not name, and rebake the puppet onto it.
     fn accept(&mut self, rev: u64) {
         self.rev = Some(rev);
         self.textures = self
@@ -312,7 +312,7 @@ impl ReplicaState {
 
     // ---- reading it --------------------------------------------------------
 
-    /// Answer one JSON [`Request`] against this document, in the same envelope
+    /// Answer one JSON [`Request`] against this model, in the same envelope
     /// [`crate::CatchlightEditor::handle`] uses. A command that is not a
     /// model-only query is `bad_request`, named.
     pub fn query(&self, request_json: &str) -> String {
@@ -335,7 +335,7 @@ impl ReplicaState {
 
     // ---- pose and scratch --------------------------------------------------
 
-    /// Pose one param. `false` when the document has no such param.
+    /// Pose one param. `false` when the model has no such param.
     pub fn set_param(&mut self, id: &str, value: f32) -> bool {
         let Ok(id) = id.parse::<ParamId>() else {
             return false;
@@ -456,7 +456,7 @@ impl ReplicaState {
     // ---- gizmo math --------------------------------------------------------
 
     /// The node's evaluated world transform after the last tick, as 16 floats
-    /// in column-major order. `None` for a node the document does not have.
+    /// in column-major order. `None` for a node the model does not have.
     ///
     /// This is where a handle is drawn, so it is the *evaluated* transform —
     /// bindings, physics, mesh groups and any standing scratch already folded
@@ -468,7 +468,7 @@ impl ReplicaState {
     }
 
     /// The node's **authored** local translation moved by a world-space delta,
-    /// as `[x, y, z]`. `None` for a node the document does not have.
+    /// as `[x, y, z]`. `None` for a node the model does not have.
     ///
     /// This is the other half of a drag: the pointer moves in world units, and
     /// what a `node_set` patch commits is a local translation. So the delta is
@@ -542,7 +542,7 @@ impl ReplicaState {
     /// The world-space axis-aligned box the last tick left the drawn geometry
     /// in, as `[min_x, min_y, max_x, max_y]`. `None` when nothing is drawn.
     ///
-    /// A read like any other: bounds are a question about the document and the
+    /// A read like any other: bounds are a question about the model and the
     /// pose in front of the user, so the replica answers them synchronously
     /// off state it already holds, rather than the page asking the editor and
     /// waiting a round trip for a number it needs to place a camera.
@@ -555,7 +555,7 @@ impl ReplicaState {
     ///
     /// What counts as drawn is what the render list counts: a part whose
     /// `enabled` holds all the way up the tree, whose albedo names a texture
-    /// the document carries, and which opacity has not culled. Upload state is
+    /// the model carries, and which opacity has not culled. Upload state is
     /// the one thing not consulted — that belongs to a render cache, and this
     /// half has no GPU.
     pub fn bounds(&self) -> Option<[f32; 4]> {
@@ -587,7 +587,7 @@ impl ReplicaState {
             let NodeKind::Part(part) = &node.kind else {
                 return;
             };
-            // A part with no albedo in the document draws nothing, and opacity
+            // A part with no albedo in the model draws nothing, and opacity
             // 0 culls every blend mode but Darken, whose Min blend ignores
             // blend factors — both exactly as the collector decides it.
             if (part.albedo_texture.0 as usize) >= self.model.texture_ids().len() {
@@ -806,7 +806,7 @@ pub(crate) mod browser {
             }
         }
 
-        /// The revision this document reads as; `0` while pristine.
+        /// The revision this model reads as; `0` while pristine.
         pub fn rev(&self) -> f64 {
             self.inner.borrow().state.rev() as f64
         }
@@ -833,7 +833,7 @@ pub(crate) mod browser {
 
         /// The byte extensions a structure names whose bytes this replica does
         /// not hold, as JSON `[{ key, hash }]`. Empty when nothing changed,
-        /// which is the common case: an edit somewhere else in the document
+        /// which is the common case: an edit somewhere else in the model
         /// leaves every marker's hash where it was.
         #[wasm_bindgen(js_name = extensionsNeeded)]
         pub fn extensions_needed(&self, structure: &[u8]) -> Result<String, JsValue> {
@@ -855,7 +855,7 @@ pub(crate) mod browser {
 
         /// Apply a structure-only container at `rev`. `false` when `rev` is
         /// not newer; throws when the structure is malformed or names a
-        /// texture that was not put, with the document untouched.
+        /// texture that was not put, with the model untouched.
         #[wasm_bindgen(js_name = applyStructure)]
         pub fn apply_structure(&self, structure: &[u8], rev: f64) -> Result<bool, JsValue> {
             self.inner
@@ -865,7 +865,7 @@ pub(crate) mod browser {
                 .map_err(|e| JsValue::from_str(&e))
         }
 
-        /// Take the document from an in-tab editor's session. Returns the
+        /// Take the model from an in-tab editor's session. Returns the
         /// revision held afterwards.
         #[wasm_bindgen(js_name = syncFromEditor)]
         pub fn sync_from_editor(&self, editor: &CatchlightEditor, session: f64) -> f64 {
@@ -875,7 +875,7 @@ pub(crate) mod browser {
                 .sync_from_editor(editor.editor(), SessionId(session as u64)) as f64
         }
 
-        /// Answer one JSON `Request` against this document. A command that is
+        /// Answer one JSON `Request` against this model. A command that is
         /// not a model-only query is `bad_request`.
         pub fn query(&self, request_json: &str) -> String {
             self.inner.borrow().state.query(request_json)
@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_texture_leaves_the_document_alone() {
+    fn a_missing_texture_leaves_the_model_alone() {
         let editor = CatchlightEditor::new();
         let session = new_session(&editor);
         add_node(&editor, session, ROOT, "group", "head");
@@ -1276,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn a_document_command_is_refused_by_a_replica() {
+    fn an_edit_command_is_refused_by_a_replica() {
         let replica = ReplicaState::new();
         let reply: Value = serde_json::from_str(
             &replica.query(
@@ -1298,7 +1298,7 @@ mod tests {
     fn drain_events_yields_what_a_command_caused_and_then_nothing() {
         let editor = CatchlightEditor::new();
         let session = new_session(&editor);
-        // session_new is a session change, not a document one.
+        // session_new is a session change, not a model one.
         let opened = editor.drain_events();
         assert!(
             opened.iter().all(|e| e.contains("sessions_changed")),
@@ -1314,7 +1314,7 @@ mod tests {
         let changed: Vec<Value> = events
             .iter()
             .map(|e| serde_json::from_str(e).unwrap())
-            .filter(|e: &Value| e["event"] == "document_changed")
+            .filter(|e: &Value| e["event"] == "model_changed")
             .collect();
         assert_eq!(changed.len(), 1, "events were {events:?}");
         assert_eq!(changed[0]["session"], session.0);

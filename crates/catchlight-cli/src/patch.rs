@@ -1,6 +1,6 @@
 //! `patch <file> <id> <field> <value>` — set one field on one node or param.
 //!
-//! The edit happens on the decoded structure document and nowhere else: the
+//! The edit happens on the decoded structure and nowhere else: the
 //! texture table is carried from the input to the output untouched, so the
 //! cost of patching a model is the cost of copying its bytes and never the
 //! cost of decoding its images.
@@ -19,7 +19,7 @@
 //!   Id the file does not carry. Everything else `patch` writes is a scalar,
 //!   because changing what names what is what `extract` and `merge` are for.
 //! - **A patch that would break the file is refused, not saved.** The edited
-//!   document is rebuilt into a [`Model`](catchlight_core::Model) — which
+//!   structure is rebuilt into a [`Model`](catchlight_core::Model) — which
 //!   resolves every Id and runs every load-time invariant, and decodes no
 //!   images — before anything is written. A `min` above `max`, a name past the
 //!   256-byte cap, an albedo naming nothing: caught here, with the reader's
@@ -199,7 +199,7 @@ fn resolve(clm: &ClmFile, path: &Path, id: &str, want: Option<Kind>) -> Result<K
     }
 }
 
-/// Rebuild a Model from the patched document, so a patch that breaks a
+/// Rebuild a Model from the patched structure, so a patch that breaks a
 /// load-time invariant is refused instead of written.
 ///
 /// If the file did not load before the patch either, that is what gets

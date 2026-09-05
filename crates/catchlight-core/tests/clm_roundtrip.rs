@@ -37,7 +37,7 @@ fn fixtures() -> Vec<PathBuf> {
 }
 
 /// Every Id and Name in a model, in the model's own orders — what a field-by-
-/// field comparison of the decoded documents would miss if the reader silently
+/// field comparison of the decoded structures would miss if the reader silently
 /// re-minted an Id.
 fn identity(model: &Model) -> Vec<String> {
     let mut out = vec![format!("roots={:?}", model.roots())];

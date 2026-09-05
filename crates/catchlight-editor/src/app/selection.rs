@@ -10,7 +10,7 @@ use super::*;
 /// of `puppet.transforms()`.
 ///
 /// What makes reading it safe is the *rev gate*, not a copy: `App::rendered_rev`
-/// says which document revision the last render evaluated, and the tools sit
+/// says which model revision the last render evaluated, and the tools sit
 /// out any frame where that is older than the session's. Right after an edit
 /// the puppet has rebaked but not been ticked, so its frame describes a pose
 /// nobody has recomputed yet.
@@ -154,7 +154,7 @@ impl App {
         let session = self.session?;
         let primary = self.primary()?;
         // Recording edits the *posed* value, so the handle sits on the
-        // puppet's frame; a document edit starts from the model's own.
+        // puppet's frame; a model edit starts from the model's own.
         let armed = self.armed.is_some();
         self.editor
             .with_puppet(session, |model, p| {

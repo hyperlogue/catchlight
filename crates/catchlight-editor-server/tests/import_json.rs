@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `import_json`: a structure document as JSON, its images beside it.
+//! `import_json`: a structure as JSON, its images beside it.
 //!
 //! The property that matters is that this is not a second importer. It is the
 //! same two paths `import_file` takes, reached from a different envelope, so
@@ -80,17 +80,17 @@ fn fixtures() -> Vec<PathBuf> {
     paths
 }
 
-/// The JSON document, the `textures` list and the attachments one file turns
+/// The JSON structure, the `textures` list and the attachments one file turns
 /// into — what a client authoring a model would put together itself.
 struct AsJson {
-    document: Vec<u8>,
+    structure: Vec<u8>,
     textures: Vec<ImportTexture>,
     attachments: Vec<(String, Vec<u8>)>,
 }
 
 fn as_json(file: &ClmFile) -> AsJson {
     AsJson {
-        document: serde_json::to_vec(&file.doc).expect("the document serializes as json"),
+        structure: serde_json::to_vec(&file.doc).expect("the structure serializes as json"),
         textures: file
             .textures
             .iter()
@@ -110,7 +110,7 @@ fn as_json(file: &ClmFile) -> AsJson {
 
 fn send_json(ed: &Editor, session: SessionId, parent: Option<NodeId>, sent: &AsJson) -> Reply {
     let mut attachments = Attachments::none();
-    attachments.insert("document", sent.document.clone());
+    attachments.insert("structure", sent.structure.clone());
     for (name, bytes) in &sent.attachments {
         attachments.insert(name.clone(), bytes.clone());
     }
@@ -184,7 +184,7 @@ fn a_json_import_builds_what_the_same_file_would() {
 }
 
 /// Every committed fixture survives the trip out through JSON and back, which
-/// is the whole promise: a client may hold a model as a document and its
+/// is the whole promise: a client may hold a model as a structure and its
 /// images and lose nothing by it.
 #[test]
 fn every_fixture_round_trips_through_json() {
@@ -244,10 +244,10 @@ fn an_attachment_no_texture_declares_is_refused_naming_it() {
     assert!(message.contains("tex-stray"), "{message}");
 }
 
-/// A texture the document references but nobody declared is the reader's
+/// A texture the structure references but nobody declared is the reader's
 /// refusal, not a second check here.
 #[test]
-fn a_texture_the_document_references_but_nobody_sent_is_refused_by_the_reader() {
+fn a_texture_the_structure_references_but_nobody_sent_is_refused_by_the_reader() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
     let file = clm::decode(&bytes).unwrap();
     let mut sent = as_json(&file);
@@ -261,10 +261,10 @@ fn a_texture_the_document_references_but_nobody_sent_is_refused_by_the_reader() 
     assert!(message.contains(gone.as_str()), "{message}");
 }
 
-/// `parent` present installs the document's roots under that node, the same
+/// `parent` present installs the structure's roots under that node, the same
 /// way a file does, and it is an ordinary edit: dirty, and undoable.
 #[test]
-fn a_document_installs_under_the_parent_the_command_names() {
+fn a_structure_installs_under_the_parent_the_command_names() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
     let file = clm::decode(&bytes).unwrap();
 
@@ -314,13 +314,13 @@ fn importing_over_a_session_that_holds_a_model_is_refused() {
     assert_eq!(code, ErrorCode::NotEmpty);
 }
 
-/// A byte extension's payload has no room in a JSON document, so a marker in
+/// A byte extension's payload has no room in a JSON structure, so a marker in
 /// one is refused by key rather than imported as a model missing its bytes.
 #[test]
 fn a_byte_extension_marker_is_refused_by_key() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
     let mut file = clm::decode(&bytes).unwrap();
-    // A marker for bytes nothing carries: legal in a document, unreadable
+    // A marker for bytes nothing carries: legal in a structure, unreadable
     // without the section a JSON import has no room for.
     file.doc.extensions.insert(
         catchlight_core::id::ExtensionKey::new("molan.thumb").unwrap(),
@@ -336,7 +336,7 @@ fn a_byte_extension_marker_is_refused_by_key() {
     assert!(message.contains("molan.thumb"), "{message}");
 }
 
-/// The same document with every node and texture Id prefixed, so it can be
+/// The same structure with every node and texture Id prefixed, so it can be
 /// installed beside itself.
 fn renamed_fragment(file: &ClmFile) -> ClmFile {
     let mut out = file.clone();
@@ -345,7 +345,7 @@ fn renamed_fragment(file: &ClmFile) -> ClmFile {
         node.id = rename(node.id.as_str());
         node.parent = node.parent.as_ref().map(|p| rename(p.as_str()));
     }
-    // The roots' parents now name nodes the document does not carry, which is
+    // The roots' parents now name nodes the structure does not carry, which is
     // what makes it a fragment; the command's `parent` overrides them anyway.
     for texture in &mut out.textures {
         texture.id = catchlight_core::TexId::new(format!("copy{}", texture.id)).unwrap();

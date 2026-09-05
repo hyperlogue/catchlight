@@ -2,13 +2,13 @@
  * Hand-written stand-ins for the wasm module and the network, for the tests.
  *
  * Deliberately not the real module: the suites assert the *contract* — that a
- * document command resolves only once the replica can answer for it, that a
+ * edit resolves only once the replica can answer for it, that a
  * drag never becomes a revision, that a feed fetches exactly the textures a
  * structure named — and each of those is a few lines here against 2 MiB of
  * WebAssembly, a GPU and a fixture model. The real module gets its own thin
  * integration suite; that one proves the wiring, these prove the rules.
  *
- * The fake editor keeps one small document per session and emits the events
+ * The fake editor keeps one small model per session and emits the events
  * the real one would. The fake replica holds whatever it was last fed and
  * answers the two reads the panels want. A "structure" here is JSON, because
  * the only thing these tests care about is that the right bytes reached the
@@ -49,7 +49,7 @@ import type {
   WasmViewport,
 } from "./wasm.js";
 
-/** One document, as both the fake editor and the fake replica hold it. */
+/** One model, as both the fake editor and the fake replica hold it. */
 export interface FakeDoc {
   rev: number;
   title: string;
@@ -65,7 +65,7 @@ export interface FakeDoc {
   albedo: Record<string, string>;
   bindings: FakeBinding[];
   /**
-   * The extensions the document carries. A JSON one rides here whole; a byte
+   * The extensions the model carries. A JSON one rides here whole; a byte
    * one is the marker a feed compares, which is the only part a structure
    * ever carries.
    */
@@ -111,7 +111,7 @@ export function emptyDoc(title: string): FakeDoc {
   };
 }
 
-/** A document as bytes, the way a structure container travels. */
+/** A model as bytes, the way a structure container travels. */
 export function structureBytes(doc: FakeDoc): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(doc));
 }
@@ -181,7 +181,7 @@ export class FakeEditor implements WasmEditor {
           children: [],
         });
         doc.rev += 1;
-        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "session", session: request.session }, doc.rev);
       }
       case "session_list": {
@@ -208,7 +208,7 @@ export class FakeEditor implements WasmEditor {
           children: [],
         });
         doc.rev += 1;
-        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "node", node }, doc.rev);
       }
       // Only the albedo: it is the one node field the fake holds, and its
@@ -220,7 +220,7 @@ export class FakeEditor implements WasmEditor {
         if (request.texture === null) delete doc.albedo[request.node];
         else if (request.texture !== undefined) doc.albedo[request.node] = request.texture;
         doc.rev += 1;
-        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "node", node: request.node }, doc.rev);
       }
       // A texture belongs to a part: it arrives named by the node that draws
@@ -232,7 +232,7 @@ export class FakeEditor implements WasmEditor {
         doc.textures.push({ id: texture, width: 4, height: 4 });
         doc.albedo[request.node] = texture;
         doc.rev += 1;
-        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "texture", texture, dropped: [] }, doc.rev);
       }
       case "param_add": {
@@ -249,7 +249,7 @@ export class FakeEditor implements WasmEditor {
           bindings: 0,
         });
         doc.rev += 1;
-        this.#emit({ event: "document_changed", session: request.session, rev: doc.rev });
+        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
         return this.#ok(id, { result: "param", param }, doc.rev);
       }
       case "param_delete": {
@@ -329,10 +329,10 @@ export class FakeEditor implements WasmEditor {
     }
   }
 
-  /** Moves the document on and answers `empty`, as an edit with no Id does. */
+  /** Moves the model on and answers `empty`, as an edit with no Id does. */
   #changed(id: number, session: number, doc: FakeDoc): string {
     doc.rev += 1;
-    this.#emit({ event: "document_changed", session, rev: doc.rev });
+    this.#emit({ event: "model_changed", session, rev: doc.rev });
     return this.#ok(id, { result: "empty" }, doc.rev);
   }
 
@@ -412,7 +412,7 @@ export class FakeGpu implements WasmGpu {
   acquiredFrom: HTMLCanvasElement[] = [];
 }
 
-/** This tab's copy of one document, and what it was told. */
+/** This tab's copy of one model, and what it was told. */
 export class FakeReplica implements WasmReplica {
   doc: FakeDoc | undefined;
   applied: Array<{ rev: number; textures: string[] }> = [];
@@ -584,7 +584,7 @@ export class FakeReplica implements WasmReplica {
     return new Float32Array([x + dx, y + dy, z]);
   }
 
-  /** Whether the fed document names `node` anywhere in its tree. */
+  /** Whether the fed model names `node` anywhere in its tree. */
   #holds(node: string): boolean {
     return this.doc ? holds(this.doc.root, node) : false;
   }
@@ -615,7 +615,7 @@ export class FakeReplica implements WasmReplica {
 /**
  * The tree row for `node`, as the `node_info` reply carries it.
  *
- * A fake document holds a tree and its albedo, so the transform is the rest
+ * A fake model holds a tree and its albedo, so the transform is the rest
  * pose and the values are defaults. Which fields are *present* is not a
  * default: a panel decides what to draw from the kind carrying a field or not,
  * so the fake omits the same ones the model does — colour on anything but a
@@ -855,7 +855,7 @@ export class ScriptedBackend implements Backend {
   sent: Command[] = [];
   /** The attachments each `sendWith` carried, in order. */
   attached: Array<readonly Attachment[]> = [];
-  /** The tab's store, for `readDocument`. */
+  /** The tab's store, for `readFile`. */
   stored = new Map<string, Uint8Array>();
   feeds: Array<{ session: number; rev: number }> = [];
   /** The target of each feed that actually ran, coalescing included. */
@@ -890,7 +890,7 @@ export class ScriptedBackend implements Backend {
   }
 
   /** Whatever a test put under `key`; nothing there is "not in this tab". */
-  readDocument(key: string): Promise<Uint8Array | undefined> {
+  readFile(key: string): Promise<Uint8Array | undefined> {
     return Promise.resolve(this.stored.get(key));
   }
 
@@ -925,7 +925,7 @@ export class ScriptedBackend implements Backend {
   /** The editor moved a session forward, and said so. */
   changed(session: number, rev: number): void {
     this.revs.set(session, rev);
-    this.emit({ event: "document_changed", session, rev });
+    this.emit({ event: "model_changed", session, rev });
   }
 
   emit(event: Event): void {

@@ -1,19 +1,19 @@
 //! Mesh edit mode: a tool-local editing session over a [`WorkingMesh`], with
-//! its own snapshot undo stack. The document is untouched until Apply, which
-//! flattens the CDT (alpha-culled) into one `MeshSet` command — the document
+//! its own snapshot undo stack. The model is untouched until Apply, which
+//! flattens the CDT (alpha-culled) into one `MeshSet` command — the model
 //! undo sees a single step, and the deform re-fit rides in it server-side.
 //!
 //! Invariants this module carries:
 //!
-//! - **A slot names a vertex of the mesh the document holds, so the slot tool
+//! - **A slot names a vertex of the mesh the model holds, so the slot tool
 //!   is only reachable while the working mesh still is that mesh** — on entry,
 //!   or straight after an Apply. Filling a slot from an edited working mesh
-//!   would point it at an index the document does not have yet, which is
+//!   would point it at an index the model does not have yet, which is
 //!   exactly the mistake slots exist to prevent.
 //!
-//! - **Slot and weld edits are document edits.** Unlike everything else in
+//! - **Slot and weld edits are model edits.** Unlike everything else in
 //!   this mode they bump the revision the moment they are made, so they land
-//!   on the *document's* undo stack, not the mode's; the slot panel offers its
+//!   on the *model's* undo stack, not the mode's; the slot panel offers its
 //!   own undo button for that reason.
 //!
 //! - **Apply does not leave the mode when it emptied a slot.** Re-meshing a
@@ -40,7 +40,7 @@ pub(crate) enum MeshTool {
     /// Pin / unpin constraint edges between two picked vertices.
     Connect,
     /// Name vertices as slots, and weld this part to another.
-    /// Only reachable while the working mesh is the document's.
+    /// Only reachable while the working mesh is the model's.
     Slot,
 }
 
@@ -54,7 +54,7 @@ pub(crate) enum MeshEditAction {
     Slot(SlotAction),
 }
 
-/// A slot or weld edit. Each is one document command, so each is one undo
+/// A slot or weld edit. Each is one edit command, so each is one undo
 /// entry — unlike the working-mesh edits around them.
 pub(crate) enum SlotAction {
     /// `None` lets the editor draw a free `slot-<8 hex>`.
@@ -88,7 +88,7 @@ pub(crate) enum SlotAction {
     WeldDelete {
         other: NodeId,
     },
-    /// The document's undo, not the mode's.
+    /// The model's undo, not the mode's.
     Undo,
 }
 
@@ -125,8 +125,8 @@ pub(crate) struct MeshEditState {
     drag: Option<VertDrag>,
     marquee: Option<egui::Pos2>,
     connect_from: Option<u32>,
-    /// The working mesh has been edited since it last matched the document's.
-    /// While it has, a vertex index here names nothing the document holds, so
+    /// The working mesh has been edited since it last matched the model's.
+    /// While it has, a vertex index here names nothing the model holds, so
     /// the slot tool is out.
     edited: bool,
     /// The slot the next viewport click fills.
@@ -186,7 +186,7 @@ impl MeshEditState {
         s
     }
 
-    /// Re-seat the mode on the document's mesh — what Apply does when it
+    /// Re-seat the mode on the model's mesh — what Apply does when it
     /// emptied slots the author has to refill before the model can be saved.
     pub(crate) fn reseat(&mut self, working: WorkingMesh, emptied: Vec<SlotId>) {
         self.working = working;
@@ -200,8 +200,8 @@ impl MeshEditState {
         self.retriangulate();
     }
 
-    /// Is the working mesh still the one the document holds?
-    pub(crate) fn matches_document(&self) -> bool {
+    /// Is the working mesh still the one the model holds?
+    pub(crate) fn matches_model(&self) -> bool {
         !self.edited
     }
 
@@ -333,7 +333,7 @@ impl MeshEditState {
     ) -> bool {
         let mods = ui.input(|i| i.modifiers);
         // Keyboard: delete + nudge. Not while the slot tool is up — it is the
-        // one tool that must leave the mesh exactly as the document has it.
+        // one tool that must leave the mesh exactly as the model has it.
         if !ui.ctx().egui_wants_keyboard_input() && self.tool != MeshTool::Slot {
             if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
                 && !self.selection.is_empty()
@@ -486,8 +486,8 @@ impl MeshEditState {
                 },
                 MeshTool::Slot => {
                     // The click that fills a slot. Vertex indices here are the
-                    // document's, because the slot tool only runs while the
-                    // working mesh is the document's mesh.
+                    // model's, because the slot tool only runs while the
+                    // working mesh is the model's mesh.
                     match (self.armed_slot.clone(), self.vertex_at(rect, camera, pos)) {
                         (Some(slot), Some(vertex)) => {
                             self.armed_slot = None;
@@ -652,7 +652,7 @@ impl MeshEditState {
             // With nothing edited there is nothing to apply, and re-applying
             // would empty the part's slots all over again — so the button says
             // what it does, which is leave.
-            let label = if self.matches_document() {
+            let label = if self.matches_model() {
                 "✔ Done"
             } else {
                 "✔ Apply"
@@ -676,9 +676,9 @@ impl MeshEditState {
                     self.armed_slot = None;
                 }
             }
-            // A slot names a vertex of the mesh the document holds, so the
+            // A slot names a vertex of the mesh the model holds, so the
             // slot tool waits for the edits to land.
-            let slot_ok = self.matches_document();
+            let slot_ok = self.matches_model();
             let slot = ui.add_enabled(
                 slot_ok,
                 egui::Button::new("Slots").selected(self.tool == MeshTool::Slot),
@@ -690,7 +690,7 @@ impl MeshEditState {
             if !slot_ok {
                 slot.on_hover_text(
                     "apply the mesh first — a slot names a vertex of the mesh \
-                     the document holds",
+                     the model holds",
                 );
             }
             ui.separator();
@@ -826,7 +826,7 @@ impl MeshEditState {
         }
     }
 
-    /// The slot and weld tool. Every button here is one document command, so
+    /// The slot and weld tool. Every button here is one edit command, so
     /// every one of them is its own undo entry.
     fn slot_panel(&mut self, ui: &mut egui::Ui, view: &SlotView) {
         if !self.emptied.is_empty() {
@@ -866,7 +866,7 @@ impl MeshEditState {
             }
             if ui
                 .button("⟲ undo")
-                .on_hover_text("slot edits are document edits — this is the document's undo")
+                .on_hover_text("slot edits are model edits — this is the model's undo")
                 .clicked()
             {
                 self.actions.push(MeshEditAction::Slot(SlotAction::Undo));

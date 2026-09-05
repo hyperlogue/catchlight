@@ -1,5 +1,5 @@
 /**
- * The surface a host actually calls: opening documents, and what is true about
+ * The surface a host actually calls: opening models, and what is true about
  * a `Session` the moment it is handed over.
  */
 
@@ -23,11 +23,11 @@ async function inTab(): Promise<{
   return { editor, wasm, storage, module };
 }
 
-describe("opening documents", () => {
+describe("opening models", () => {
   test("a new session is already readable when it is handed over", async () => {
     const { editor } = await inTab();
 
-    const session = await editor.newDocument("akari");
+    const session = await editor.newSession("akari");
 
     // Fed before the caller ever saw it: the first thing a panel does is a
     // read, and a read that answers "nothing loaded yet" is a bug a host
@@ -39,7 +39,7 @@ describe("opening documents", () => {
 
   test("an edit is readable the moment its promise settles", async () => {
     const { editor } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     const body = await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" });
     const node = body.result === "node" ? body.node : "";
@@ -57,7 +57,7 @@ describe("opening documents", () => {
 
     // The store here is the editor's, so the key names a file it can read.
     wasm.written.set("project/akari.clm", new TextEncoder().encode("a model"));
-    const session = await editor.openDocument("project/akari.clm");
+    const session = await editor.openSession("project/akari.clm");
 
     expect(session.id).toBe(1);
     expect(wasm.requests.map((request) => request.cmd)).toEqual(["session_open"]);
@@ -106,13 +106,13 @@ describe("opening documents", () => {
     expect(wasm.writtenKeys()).toEqual([]);
   });
 
-  test("opening a file twice is two documents", async () => {
+  test("opening a file twice is two models", async () => {
     const { editor, wasm } = await inTab();
 
     await editor.openFile(new TextEncoder().encode("a model"), "akari.clm");
     expect(wasm.writtenKeys()).toEqual([]);
 
-    // The same name again is a second document, not a failure: nothing here
+    // The same name again is a second model, not a failure: nothing here
     // depends on the first open's bytes still being around.
     const second = await editor.openFile(new TextEncoder().encode("a newer model"), "akari.clm");
     expect(second.id).toBe(2);
@@ -121,39 +121,39 @@ describe("opening documents", () => {
 
   test("saving reports the key and leaves the bytes in the store", async () => {
     const { editor, storage } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
-    expect(await editor.saveDocument(session, "out/akari.clm")).toBe("out/akari.clm");
+    expect(await editor.saveSession(session, "out/akari.clm")).toBe("out/akari.clm");
     expect(await storage.list()).toEqual(["out/akari.clm"]);
 
     // With no key it saves where it saved last.
-    expect(await editor.saveDocument(session)).toBe("out/akari.clm");
+    expect(await editor.saveSession(session)).toBe("out/akari.clm");
   });
 
-  test("a saved document reads back as the bytes the editor wrote", async () => {
+  test("a saved model reads back as the bytes the editor wrote", async () => {
     const { editor, wasm } = await inTab();
-    const session = await editor.newDocument("akari");
+    const session = await editor.newSession("akari");
 
-    const key = await editor.saveDocument(session, "akari.clm");
-    const bytes = await editor.readDocument(key);
+    const key = await editor.saveSession(session, "akari.clm");
+    const bytes = await editor.readFile(key);
 
     // What a download hands the browser: the store's copy, which is what the
     // editor wrote for the save — not a re-serialization here.
     if (!bytes) throw new Error("the store handed back nothing");
     expect(readStructure(bytes).title).toBe(wasm.snapshot(session.id).title);
     // And a key nobody wrote is an error, never an empty download.
-    await expect(editor.readDocument("nowhere.clm")).rejects.toThrow("nowhere.clm");
+    await expect(editor.readFile("nowhere.clm")).rejects.toThrow("nowhere.clm");
   });
 
-  test("closing a document frees its replica and tells the list", async () => {
+  test("closing a model frees its replica and tells the list", async () => {
     const { editor, wasm, module } = await inTab();
-    const session = await editor.newDocument("akari");
+    const session = await editor.newSession("akari");
     let changes = 0;
     const off = editor.onSessionsChanged(() => {
       changes += 1;
     });
 
-    await editor.closeDocument(session.id);
+    await editor.closeSession(session.id);
 
     expect(wasm.requests.map((request) => request.cmd)).toEqual(["session_new", "session_close"]);
     expect(await editor.listSessions()).toEqual([]);
@@ -167,13 +167,13 @@ describe("opening documents", () => {
     wasm.drainEvents();
     const [info] = await editor.listSessions();
     if (!info) throw new Error("the editor listed no sessions");
-    await editor.closeDocument(info.session);
+    await editor.closeSession(info.session);
     expect(await editor.listSessions()).toEqual([]);
   });
 
-  test("a document that moved reaches onSessionsChanged too", async () => {
+  test("a model that moved reaches onSessionsChanged too", async () => {
     const { editor } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let changes = 0;
     const off = editor.onSessionsChanged(() => {
       changes += 1;
@@ -181,7 +181,7 @@ describe("opening documents", () => {
 
     // The list carries the revision, the node count and the dirty flag, and
     // an edit moves all three — a list that only refreshed on open and close
-    // would show a document as clean forever.
+    // would show a model as clean forever.
     await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" });
     expect(changes).toBe(1);
     off();
@@ -203,18 +203,18 @@ describe("opening documents", () => {
     expect(await editor.attachSession(info)).toBe(session);
   });
 
-  test("a document opened anywhere reaches onSessionsChanged", async () => {
+  test("a model opened anywhere reaches onSessionsChanged", async () => {
     const { editor } = await inTab();
     let changes = 0;
     const off = editor.onSessionsChanged(() => {
       changes += 1;
     });
 
-    await editor.newDocument();
+    await editor.newSession();
     expect(changes).toBe(1);
 
     off();
-    await editor.newDocument();
+    await editor.newSession();
     expect(changes).toBe(1);
   });
 });
@@ -222,7 +222,7 @@ describe("opening documents", () => {
 describe("viewports and lifetime", () => {
   test("a viewport draws the session it was attached to", async () => {
     const { editor, module } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     await editor.attach(session, {} as HTMLCanvasElement);
     session.setParam("param-1", 0.5);
@@ -232,11 +232,11 @@ describe("viewports and lifetime", () => {
     expect(view?.invalidated).toBe(1);
   });
 
-  test("a document opens with no device at all", async () => {
+  test("a model opens with no device at all", async () => {
     const { editor, module } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
-    // Reading a tree never needed a GPU, and a tab that only lists documents
+    // Reading a tree never needed a GPU, and a tab that only lists models
     // should not be holding a device.
     expect(module.gpu.acquires).toBe(0);
     expect(session.tree().id).toBe("root");
@@ -244,7 +244,7 @@ describe("viewports and lifetime", () => {
 
   test("the first canvas acquires the device, and the second shares it", async () => {
     const { editor, module } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const first = { id: "first" } as unknown as HTMLCanvasElement;
     const second = { id: "second" } as unknown as HTMLCanvasElement;
 
@@ -265,7 +265,7 @@ describe("viewports and lifetime", () => {
 
   test("an acquisition that failed is tried again, not remembered", async () => {
     const { editor, module } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     module.failNextAcquire = "this browser needs WebGPU or WebGL2";
 
     await expect(editor.attach(session, {} as HTMLCanvasElement)).rejects.toThrow(
@@ -282,8 +282,8 @@ describe("viewports and lifetime", () => {
 
   test("closing frees every replica, the device and the backend", async () => {
     const { editor, module, wasm } = await inTab();
-    const session = await editor.newDocument();
-    await editor.newDocument();
+    const session = await editor.newSession();
+    await editor.newSession();
     await editor.attach(session, {} as HTMLCanvasElement);
 
     editor.close();
@@ -295,7 +295,7 @@ describe("viewports and lifetime", () => {
 
   test("closing an editor that never drew anything frees no device", async () => {
     const { editor, module, wasm } = await inTab();
-    await editor.newDocument();
+    await editor.newSession();
 
     editor.close();
 
@@ -312,10 +312,10 @@ describe("what the editor says about itself", () => {
 
   test("there is no graphics tier until a canvas has asked for a device", async () => {
     const { editor, module } = await inTab();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     module.gpu.tierName = "webgl2";
 
-    // Opening a document, reading it and running a drag need no device, so
+    // Opening a model, reading it and running a drag need no device, so
     // there is nothing truthful to say until an attach happens.
     expect(editor.gpuTier()).toBeUndefined();
 

@@ -24,9 +24,9 @@ function Dragger({ session, node }: { session: Session; node: string }) {
   return <Viewport.Root session={session} data-dragging={dragging ? "" : undefined} {...handlers} />;
 }
 
-async function documentWithNode() {
+async function modelWithNode() {
   const { editor, wasm } = await harness();
-  const session = await editor.newDocument();
+  const session = await editor.newSession();
   const body = await run(() =>
     session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }),
   );
@@ -39,7 +39,7 @@ function nodeOf(body: ResponseBody): string {
 
 describe("dragging a node", () => {
   test("a move previews through the scratch, and only the end authors anything", async () => {
-    const { editor, wasm, session, node } = await documentWithNode();
+    const { editor, wasm, session, node } = await modelWithNode();
     const replica = fakeReplica(session);
     const commands = wasm.requests.length;
 
@@ -79,7 +79,7 @@ describe("dragging a node", () => {
   });
 
   test("the preview is held until the revision lands, not until the send is posted", async () => {
-    const { editor, wasm, session, node } = await documentWithNode();
+    const { editor, wasm, session, node } = await modelWithNode();
     const replica = fakeReplica(session);
 
     // Hold the command open: everything between posting it and the replica
@@ -121,7 +121,7 @@ describe("dragging a node", () => {
   });
 
   test("a refused command clears the preview too", async () => {
-    const { editor, wasm, session, node } = await documentWithNode();
+    const { editor, wasm, session, node } = await modelWithNode();
     const replica = fakeReplica(session);
     wasm.refuse.set("node_set", { code: "bad_request", message: "no" });
 
@@ -138,13 +138,13 @@ describe("dragging a node", () => {
     await fire(canvas, pointer("pointerup", { clientX: 430, clientY: 300 }));
     await settle();
 
-    // The document never moved, so the preview is a lie and has to go.
+    // The model never moved, so the preview is a lie and has to go.
     expect(replica.scratchTransforms.has(node)).toBe(false);
     await view.unmount();
   });
 
   test("a cancelled gesture authors nothing and drops the preview", async () => {
-    const { editor, wasm, session, node } = await documentWithNode();
+    const { editor, wasm, session, node } = await modelWithNode();
     const replica = fakeReplica(session);
 
     const view = await mount(
@@ -166,7 +166,7 @@ describe("dragging a node", () => {
   });
 
   test("a press that never moved authors nothing", async () => {
-    const { editor, wasm, session, node } = await documentWithNode();
+    const { editor, wasm, session, node } = await modelWithNode();
 
     const view = await mount(
       <EditorProvider editor={editor}>
@@ -186,7 +186,7 @@ describe("dragging a node", () => {
   });
 
   test("without a node the handlers do nothing", async () => {
-    const { editor, wasm, session } = await documentWithNode();
+    const { editor, wasm, session } = await modelWithNode();
     const replica = fakeReplica(session);
     const commands = wasm.requests.length;
 

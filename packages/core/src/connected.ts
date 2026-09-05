@@ -227,7 +227,7 @@ export class ConnectedBackend implements Backend {
       });
     }
     const reply = takeReply(parsed, command.cmd);
-    // A document command's promise means the same thing whichever route it
+    // An edit's promise means the same thing whichever route it
     // took: the caller may read the model the reply describes.
     if (inHeader === null) return reply;
     return { ...reply, payload: bytes };
@@ -238,7 +238,7 @@ export class ConnectedBackend implements Backend {
    * person is sitting at, and there is no route that reads a key back — nor a
    * reason for one while the file is already where it was asked to go.
    */
-  readDocument(_key: string): Promise<Uint8Array | undefined> {
+  readFile(_key: string): Promise<Uint8Array | undefined> {
     return Promise.resolve(undefined);
   }
 

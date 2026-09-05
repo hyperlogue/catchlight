@@ -191,7 +191,7 @@ fn clearing_a_parts_texture_drops_the_texture_nothing_else_draws() {
     assert!(f.textures().is_empty(), "and the model carries no texture");
 }
 
-/// Undo puts it back, because clearing is an ordinary document edit and not a
+/// Undo puts it back, because clearing is an ordinary edit and not a
 /// second path around the history.
 #[test]
 fn clearing_a_texture_is_one_undoable_edit() {

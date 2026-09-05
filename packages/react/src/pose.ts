@@ -11,7 +11,7 @@
  * The read is deferred, never done per repaint: a drag invalidates on every
  * pointer move, and the params list is a replica query. The list comes from
  * the revision-keyed read the panels share, so it is fetched again when the
- * document moves and never per frame; only the values are read at send time.
+ * model moves and never per frame; only the values are read at send time.
  */
 
 import type { ParamInfo, ParamPose, Session } from "@catchlight/core";

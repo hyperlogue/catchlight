@@ -904,11 +904,11 @@ export type ParamPose = {
 };
 
 /**
- * One texture an [`Command::ImportJson`] document names, and how to read the
+ * One texture an [`Command::ImportJson`] structure names, and how to read the
  * bytes that came with it.
  *
  * The bytes arrive as attachment `texture:<texture>`. Encoding and alpha are
- * fields rather than a sniff or a file-name tail, because a JSON document
+ * fields rather than a sniff or a file-name tail, because a JSON structure
  * names no files: the client that has the image is the only thing that knows
  * what it holds.
  */
@@ -938,8 +938,8 @@ export type SlotPair = {
 };
 
 /**
- * Ephemeral shared view state. Rides its own path — decoupled from the document
- * so scrubbing/panning generate zero document traffic and never persist.
+ * Ephemeral shared view state. Rides its own path — decoupled from the model
+ * so scrubbing/panning generate zero edit traffic and never persist.
  */
 export type Presence = {
   pose: Array<ParamPose>,
@@ -1020,7 +1020,7 @@ export type ExtensionInfo = {
 
 /**
  * The server's answer. `Ok`/`Err` carry the request's `id`; `Event` is
- * unsolicited (a document changed on a session this client observes).
+ * unsolicited (a model changed on a session this client observes).
  */
 export type Reply =
   | {
@@ -1196,7 +1196,7 @@ export type ResponseBody =
 
 export type Event =
   | {
-    "event": "document_changed",
+    "event": "model_changed",
     session: SessionId,
     rev: number,
   }
@@ -1416,13 +1416,13 @@ export type PreviewInfo = {
 };
 
 /**
- * A command that changes the document, or which documents exist.
+ * A command that changes a session's model, or which sessions exist.
  *
  * The session's revision moves, so every view of it re-reads. These are the
  * commands that cost an undo entry and a React render, and the only ones
- * that must reach the editor that owns the document.
+ * that must reach the editor that owns the model.
  */
-export type DocumentCommandTag =
+export type EditCommandTag =
   | "session_new"
   | "session_open"
   | "session_close"
@@ -1478,13 +1478,13 @@ export type DocumentCommandTag =
   | "extension_set"
   | "extension_delete"
   | "import_manifest";
-export type DocumentCommand = Extract<Command, { cmd: DocumentCommandTag }>;
+export type EditCommand = Extract<Command, { cmd: EditCommandTag }>;
 
 /**
  * A command that publishes shared view state: pose, camera, selection.
  *
  * It goes to the editor because other clients read it back, and it changes no
- * document: no revision, no undo entry, invisible to a panel.
+ * model: no revision, no undo entry, invisible to a panel.
  */
 export type PresenceCommandTag =
   | "presence_set";
@@ -1577,7 +1577,7 @@ export const COMMAND_BYTES: Record<
   },
   import_json: {
     attachments: [
-      { kind: "fixed", name: "document" },
+      { kind: "fixed", name: "structure" },
       { kind: "family", name: "texture" },
     ],
     payload: false,

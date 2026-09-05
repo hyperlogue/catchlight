@@ -366,7 +366,7 @@ impl Hash for TexturePrepKey {
 /// rebuilding the puppet after every edit skips decode and crop work for
 /// unchanged textures. Keys retain the encoded bytes so hash collisions are
 /// verified by equality. Each rebuild discards entries that are not used by
-/// the current document, so revisions cannot accumulate stale texture data.
+/// the current model, so revisions cannot accumulate stale texture data.
 #[derive(Default)]
 pub struct TexturePrepCache {
     entries: std::collections::HashMap<TexturePrepKey, (DecodedTexture, Plan)>,
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_discards_entries_outside_the_current_document() {
+    fn cache_discards_entries_outside_the_current_model() {
         let first = encoded_png([255, 0, 0, 255], false);
         let second = encoded_png([0, 255, 0, 255], false);
         let first_key = prep_key(&first, 0);

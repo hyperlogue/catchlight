@@ -1,4 +1,4 @@
-//! `poses`: what every key pose of a rig does to it, as one CBOR document.
+//! `poses`: what every key pose of a rig does to it, as one CBOR value.
 //!
 //! This is the ground truth a rig evaluator scores a generated rig against.
 //! It is CPU only — no GPU, no textures decoded — and it is deterministic:

@@ -1,7 +1,7 @@
-//! The document: the reflected values assembled into the `.clm` a
+//! The structure: the reflected values assembled into the `.clm` a
 //! [`Model`](catchlight_core::Model) is read from.
 //!
-//! The inx node *tree* is flattened DFS pre-order, so the document is
+//! The inx node *tree* is flattened DFS pre-order, so the structure is
 //! topologically ordered (a parent is written before its children) with the
 //! root first and sibling order preserved. inochi's globally-unique `uuid`s
 //! resolve against that flattening — `binding.node` / `mask.source` to a node,
@@ -50,9 +50,9 @@
 use std::collections::{HashMap, HashSet};
 
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmComposite, ClmDocument, ClmFile, ClmKeyframe, ClmLane, ClmMask,
-    ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics,
-    ClmTexture, TextureAlpha, TextureEncoding,
+    ClmAnimation, ClmBinding, ClmComposite, ClmFile, ClmKeyframe, ClmLane, ClmMask, ClmMesh,
+    ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics,
+    ClmStructure, ClmTexture, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
@@ -72,7 +72,7 @@ use crate::schema::{
 
 /// Import a parsed `.inx` into a [`Model`].
 ///
-/// The document [`from_inx_model`] builds is read back through
+/// The structure [`from_inx_model`] builds is read back through
 /// [`Model::from_clm_file`], so an import that succeeds has already been
 /// through the same reader a `.clm` off disk goes through: whatever this
 /// returns can be written and opened again.
@@ -85,7 +85,7 @@ pub fn import_inx_bytes(bytes: &[u8]) -> Result<Model, ImportError> {
     import_inx_model(&InxModel::parse(std::io::Cursor::new(bytes))?)
 }
 
-/// Reflect a parsed `.inx` model into the `.clm` document it becomes.
+/// Reflect a parsed `.inx` model into the `.clm` structure it becomes.
 pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     let obj = model
         .payload
@@ -226,7 +226,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
     }
 
     Ok(ClmFile {
-        doc: ClmDocument {
+        doc: ClmStructure {
             physics,
             nodes,
             params,
@@ -1031,7 +1031,7 @@ mod tests {
 
     #[test]
     #[ignore = "needs the reference model at example_models/reference/"]
-    fn the_document_is_topologically_ordered_with_one_root() {
+    fn the_structure_is_topologically_ordered_with_one_root() {
         let file = from_inx_model(&load_reference()).unwrap();
         let doc = &file.doc;
         let nodes = &doc.nodes;

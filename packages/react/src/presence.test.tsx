@@ -33,7 +33,7 @@ afterEach(() => {
 describe("publishing presence", () => {
   test("a selection goes out at once, and carries the pose that was waiting", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let selection: Selection | undefined;
     let pose: Pose | undefined;
 
@@ -74,7 +74,7 @@ describe("publishing presence", () => {
 
   test("a pose is coalesced: many publishes, one command, the last one wins", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let pose: Pose | undefined;
 
     function Host() {
@@ -124,7 +124,7 @@ describe("publishing presence", () => {
 
   test("what the editor already holds is adopted when a session is taken up", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() =>
       session.send({ cmd: "param_add", name: "eye", min: 0, max: 1, default: 1, key_positions: [0, 1] }),
     );
@@ -157,7 +157,7 @@ describe("publishing presence", () => {
 
   test("the selection provider is this provider, under the name the panels use", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let selection: Selection | undefined;
 
     function Host() {

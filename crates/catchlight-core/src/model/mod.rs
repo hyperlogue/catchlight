@@ -92,7 +92,7 @@
 //!   over an unknown param and [`Model::delete_param`] drops the lanes that
 //!   named the param it removed. A lane's keyframes stay in frame order for
 //!   the same reason: playback reads a lane by binary search.
-//! - **Sibling order is document state.** It is the draw order for equal z
+//! - **Sibling order is model state.** It is the draw order for equal z
 //!   order, so [`Model::reorder`] is an edit, not view state.
 //! - **Textures stay source-encoded, and a payload is immutable.** A
 //!   [`ModelTexture`] keeps the author's bytes verbatim; decoding is the
@@ -105,7 +105,7 @@
 //!   whole state in place, keeping [`Model::identity`] and bumping
 //!   [`Model::generation`]. Every derived object then reads "the same model
 //!   moved" and carries what its own rules say it carries. This is the
-//!   replica path: an editor server owns the document and pushes it after
+//!   replica path: an editor server owns the model and pushes it after
 //!   each edit, and the client holds a model it never mutates locally. See
 //!   [`file`] for the wire shape.
 //! - **Derived values are memoized, never stored.** A binding's dense grid —
@@ -286,7 +286,7 @@ impl From<&ModelTexture> for crate::texture::EncodedTexture {
 /// keep: something small and structured, or an opaque blob.
 ///
 /// The split is not about size alone. A JSON value lives inline in the
-/// structure document, so it travels with every structure feed and shows up
+/// structure, so it travels with every structure feed and shows up
 /// whole in a `diff`; bytes live in their own section and travel by hash, so
 /// a thumbnail does not ride along with an unrelated edit.
 #[derive(Debug, Clone, PartialEq)]
@@ -327,7 +327,7 @@ pub struct Model {
     physics: ClmPhysics,
     welds: Vec<ModelWeld>,
     nodes: HashMap<NodeId, ModelNode>,
-    /// The nodes whose parent this model does not carry, in document order.
+    /// The nodes whose parent this model does not carry, in tree order.
     /// A complete model has exactly one and its `parent` is `None`; a
     /// fragment has one or more, each naming a base node that is absent.
     roots: Vec<NodeId>,
@@ -957,7 +957,7 @@ impl Model {
         }
     }
 
-    /// The nodes at the top of this model's tree, in document order: the ones
+    /// The nodes at the top of this model's tree, in tree order: the ones
     /// whose parent it does not carry. One for a complete model, one or more
     /// for a fragment.
     pub fn roots(&self) -> &[NodeId] {
@@ -1162,7 +1162,7 @@ impl Model {
     }
 
     /// Move `id` to `index` within its parent's children (clamped to the end).
-    /// Sibling order is draw-list order for equal z order, so this is a document
+    /// Sibling order is draw-list order for equal z order, so this is a model
     /// edit, not view state.
     pub fn reorder(&mut self, id: &NodeId, index: usize) -> Result<(), ModelError> {
         if self.root() == Some(id) {
@@ -1588,7 +1588,7 @@ impl Model {
     }
 
     /// Move the mask at `index` to `to` (clamped). Mask order is evaluation
-    /// order, so this is a document edit.
+    /// order, so this is a model edit.
     pub fn mask_reorder(&mut self, id: &NodeId, index: usize, to: usize) -> Result<(), ModelError> {
         let masks = self.masks_mut(id)?;
         if index >= masks.len() {

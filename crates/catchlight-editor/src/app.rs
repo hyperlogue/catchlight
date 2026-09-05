@@ -3,12 +3,12 @@
 //!
 //! Fixed three-region layout: tree (+textures) | viewport | inspector (+params).
 //! The viewport renders on eframe's own wgpu device into an egui texture,
-//! re-rendered when the document revision, pose, camera or preview state
+//! re-rendered when the model revision, pose, camera or preview state
 //! changes — no readback.
 //!
 //! Invariants this module carries:
 //!
-//! - **A drag rides the presence path; only the release edits the document.**
+//! - **A drag rides the presence path; only the release edits the model.**
 //!   A vertex drag sends [`Command::ScratchDeform`] per pointer move — the
 //!   same command an out-of-process client sends, so there is one live-edit
 //!   path and not a GUI-only copy of it — which shows the drag on the
@@ -69,7 +69,7 @@ pub struct App {
     texture_id: Option<egui::TextureId>,
     /// Signature the viewport texture was last rendered at.
     rendered: Option<RenderSig>,
-    /// Document rev the last render evaluated. Pick, gizmo and vertex tools
+    /// Model rev the last render evaluated. Pick, gizmo and vertex tools
     /// read the puppet's frame and only run when this matches the current rev:
     /// right after an edit the puppet has rebaked but nothing has ticked it,
     /// so its frame describes a pose nobody has recomputed yet.
@@ -121,12 +121,12 @@ pub struct App {
     brush_flow: bool,
     deform_selection: HashSet<usize>,
     lasso_points: Vec<egui::Pos2>,
-    /// Mesh edit mode — tool-local working mesh; the document changes on Apply.
+    /// Mesh edit mode — tool-local working mesh; the model changes on Apply.
     mesh_edit: Option<MeshEditState>,
 
     /// A PNG snapshot readback runs after the next render.
     snapshot_requested: bool,
-    /// The document revision this app has already reacted to.
+    /// The model revision this app has already reacted to.
     last_rev_seen: u64,
     /// A previous session's autosave waiting for the user's restore decision.
     pending_restore: Option<Vec<u8>>,
@@ -376,7 +376,7 @@ impl App {
         reply
     }
 
-    /// Open a document this process already holds the bytes of.
+    /// Open a model this process already holds the bytes of.
     fn open_bytes(&mut self, title: &str, bytes: Vec<u8>) {
         match open_bytes(&self.editor, title, bytes) {
             Ok(session) => self.adopt_session(session, title.to_string()),
@@ -799,9 +799,9 @@ impl App {
     }
 
     /// Route a committed patch: recordable fields go to binding keys when
-    /// armed; the rest stays a document NodeSet. When armed but the keypoint
+    /// armed; the rest stays a model NodeSet. When armed but the keypoint
     /// can't be resolved (the param vanished), the recordable fields are
-    /// dropped rather than baked into the document as posed values.
+    /// dropped rather than baked into the model as posed values.
     fn commit_patch(&mut self, node: NodeId, patch: NodePatch) {
         let Some(session) = self.session else { return };
         if self.armed.is_some() {
@@ -1185,7 +1185,7 @@ impl App {
         ));
     }
 
-    /// Apply the working mesh to the document.
+    /// Apply the working mesh to the model.
     ///
     /// The reply says which slots the new mesh emptied. Those are the
     /// author's to refill — a slot names a vertex of a mesh that no longer
@@ -1198,10 +1198,10 @@ impl App {
         let Some(mesh) = self.mesh_edit.take() else {
             return;
         };
-        // Nothing edited since the working mesh last was the document's: there
+        // Nothing edited since the working mesh last was the model's: there
         // is nothing to apply, and applying anyway would empty every slot
         // on the part a second time — including the ones just refilled.
-        if mesh.matches_document() {
+        if mesh.matches_model() {
             return;
         }
         let new_mesh = match mesh.working.to_mesh(&mesh.uv_map, mesh.alpha.as_ref()) {
@@ -1252,7 +1252,7 @@ impl App {
         if emptied.is_empty() {
             return;
         }
-        // Re-seat on what the document now holds: the slot the author is about
+        // Re-seat on what the model now holds: the slot the author is about
         // to fill has to name a vertex of *that* mesh.
         let editor = self.editor.clone();
         let Ok(Some(doc_mesh)) = editor.with_model(session, |m| m.node_mesh(&node).cloned()) else {
@@ -1444,7 +1444,7 @@ impl App {
         true
     }
 
-    /// Replace the *working* mesh with another node's topology (the document
+    /// Replace the *working* mesh with another node's topology (the model
     /// is untouched until Apply).
     fn mesh_copy_into_working(&mut self, src: NodeId) {
         let Some(session) = self.session else { return };
@@ -1717,7 +1717,7 @@ impl eframe::App for App {
         let rev = snapshot.as_ref().map(|s| s.rev).unwrap_or(0);
         // The armed param can vanish under us (undo of its ParamAdd, a
         // co-driving agent's delete) — recording must stop, not fall back to
-        // document edits of posed values.
+        // model edits of posed values.
         if let (Some(armed), Some(snap)) = (self.armed.clone(), &snapshot) {
             if !armed
                 .iter()
@@ -2010,7 +2010,7 @@ impl App {
             }
         }
         ui.separator();
-        // Mesh edit mode has its own nested undo scope; the document stack
+        // Mesh edit mode has its own nested undo scope; the model stack
         // only sees the final Apply.
         if ui.button("Undo").clicked() {
             if let Some(mesh) = &mut self.mesh_edit {
@@ -2156,7 +2156,7 @@ impl App {
         }
         // The frame picking/gizmo/vertex tools read is the puppet's, and one
         // render pass has to tick it after an edit before it describes the
-        // current document — so interactive tools sit out that frame.
+        // current model — so interactive tools sit out that frame.
         let transforms_fresh = self.rendered_rev == rev && self.viewport.is_some();
         let isolate = snapshot.as_ref().and_then(|s| self.isolate_set(&s.root));
 
@@ -2541,7 +2541,7 @@ impl App {
             return false;
         };
         // Lasso indices belong to one node's mesh — a different primary (or a
-        // rebuilt document, which renumbers core ids) invalidates them.
+        // rebuilt model, which renumbers core ids) invalidates them.
         if self.deform_sel_core != Some(core) {
             self.deform_selection.clear();
             self.lasso_points.clear();
@@ -2724,7 +2724,7 @@ impl App {
     }
 
     /// End the live drag: the puppet drops the scratch deform and the next
-    /// render shows the document again.
+    /// render shows the model again.
     fn clear_scratch_deform(&mut self) {
         let (Some(session), Some(node)) = (self.session, self.scratch.take()) else {
             return;

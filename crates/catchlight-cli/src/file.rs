@@ -1,19 +1,19 @@
 //! Reading and writing a `.clm` without going through a [`Model`] first.
 //!
 //! [`read`] decodes the container and the structure section and hands back the
-//! [`ClmFile`] — the document to edit and the texture table as verbatim bytes.
+//! [`ClmFile`] — the structure to edit and the texture table as verbatim bytes.
 //! [`write`] encodes it again and replaces the destination atomically.
 //!
 //! The one thing that needs deciding before anything else is the file's
 //! **shape**: a complete model has exactly one node whose `parent` is absent,
 //! an addon fragment has none, and the two have separate readers that must not
 //! be guessed between (`crates/catchlight-core/src/model/file.rs` says why).
-//! [`shape_of`] answers that from the document alone — it is a scan of one
+//! [`shape_of`] answers that from the structure alone — it is a scan of one
 //! field, no Model involved — and [`load`] uses it to pick the reader.
 
 use std::path::{Path, PathBuf};
 
-use catchlight_core::formats::clm::{self, ClmDocument, ClmFile};
+use catchlight_core::formats::clm::{self, ClmFile, ClmStructure};
 use catchlight_core::{Model, ModelFormat};
 
 use crate::Error;
@@ -40,7 +40,7 @@ pub fn load_model(path: &Path) -> Result<Model, Error> {
     })
 }
 
-/// Which of the two disjoint wire shapes a document is.
+/// Which of the two disjoint wire shapes a structure is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// A complete model: exactly one node has no parent.
@@ -50,12 +50,12 @@ pub enum Shape {
     Fragment,
 }
 
-/// The shape of `doc`, or `None` for a document with no nodes at all — which
+/// The shape of `doc`, or `None` for a structure with no nodes at all — which
 /// is neither, and which no reader accepts.
 ///
 /// This is deliberately the *whole* test: a node without a parent is what
 /// makes a file a complete model, and the readers disagree about nothing else.
-pub fn shape_of(doc: &ClmDocument) -> Option<Shape> {
+pub fn shape_of(doc: &ClmStructure) -> Option<Shape> {
     if doc.nodes.is_empty() {
         return None;
     }
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn a_parentless_node_is_the_whole_difference_between_the_two_shapes() {
-        let mut doc = ClmDocument::default();
+        let mut doc = ClmStructure::default();
         assert_eq!(shape_of(&doc), None, "no nodes is neither shape");
 
         doc.nodes = vec![node("root", None), node("root/a", Some("root"))];

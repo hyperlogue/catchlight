@@ -3,10 +3,10 @@
 //! Two sessions never draw the same generated Id for the same edits.
 //!
 //! Uniqueness is checked *within* a model, so one seed shared by every session
-//! made every open document mint `root/part-<the same hex>` first. Nothing in
+//! made every open session mint `root/part-<the same hex>` first. Nothing in
 //! one session noticed, and everything that carries a node out of one and into
 //! another did: a copied subtree collided on arrival, and an addon extracted
-//! from one document named a node in the other by accident.
+//! from one session named a node in the other by accident.
 //!
 //! The draw stays deterministic — a given session Id always mints the same
 //! sequence — because a recorded script replayed against a fresh editor should
@@ -81,7 +81,7 @@ fn drawn(ed: &Editor, base: u64, session: SessionId) -> Vec<String> {
     vec![node.to_string(), param, slot]
 }
 
-/// Two documents open at once, edited the same way, must not name their new
+/// Two sessions open at once, edited the same way, must not name their new
 /// things identically — that is what makes an Id from one recognisable inside
 /// a model merged from both.
 #[test]

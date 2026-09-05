@@ -3,7 +3,7 @@
  * build one.
  *
  * **Every action is a command, and nothing here touches the model.** The tree
- * a panel draws comes back from the replica when the editor says the document
+ * a panel draws comes back from the replica when the editor says the model
  * moved, so an action's whole job is to send the right command and hand its
  * promise on. A caller that wants to report a failure awaits it; a caller that
  * does not, ignores it.

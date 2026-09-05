@@ -20,7 +20,7 @@
  * **Both backends, one run.** The tab is the same editor either way, but the
  * seam underneath is not: in-tab it drives the wasm module against OPFS, and
  * connected it drives `catchlight-editor-server` over a WebSocket and HTTP.
- * The connected pass also makes an agent edit the document over the Unix
+ * The connected pass also makes an agent edit the model over the Unix
  * socket, which is the one thing no unit test can show: a command from outside
  * the browser landing in the tab's replica.
  *
@@ -183,7 +183,7 @@ async function reachable(url: string, name: string, child: Bun.Subprocess): Prom
  *
  * A developer running the editor server, or a second copy of this, holds 9377
  * — and a run that quietly drove *that* server would report a passing tab
- * against a document nobody set up. Binding here first is the cheap way to
+ * against a model nobody set up. Binding here first is the cheap way to
  * find out, and moving is better than refusing to run.
  */
 async function pick(name: string, override: string | undefined, preferred: number): Promise<number> {

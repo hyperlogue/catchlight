@@ -23,7 +23,7 @@ from catchlight import (
     Command,
     CommandKind,
     ErrorCode,
-    EventDocumentChanged,
+    EventModelChanged,
     MeshAuto,
     MeshCopy,
     MeshSet,
@@ -76,7 +76,7 @@ def test_every_command_is_reachable_through_its_kind() -> None:
     reached: set[str] = set()
     for kind in CommandKind:
         alias = {
-            CommandKind.DOCUMENT: protocol_gen.DocumentCommand,
+            CommandKind.EDIT: protocol_gen.EditCommand,
             CommandKind.PRESENCE: protocol_gen.PresenceCommand,
             CommandKind.SCRATCH: protocol_gen.ScratchCommand,
             CommandKind.REPLICA_QUERY: protocol_gen.ReplicaQueryCommand,
@@ -92,7 +92,7 @@ def test_every_command_is_reachable_through_its_kind() -> None:
 # One command of each kind, with the JSON the editor expects to read.
 ROUND_TRIPS: list[tuple[CommandKind, object, dict]] = [
     (
-        CommandKind.DOCUMENT,
+        CommandKind.EDIT,
         NodeAdd(session=1, parent="root", kind=NodeKindArg.PART, name="Body"),
         {
             "cmd": "node_add",
@@ -297,12 +297,12 @@ def test_an_err_reply_parses_to_a_code_a_client_can_branch_on() -> None:
 def test_an_event_arrives_flattened_into_its_reply() -> None:
     """`Reply::Event` is a newtype variant of an internally tagged enum, so the
     event's own fields sit beside the `reply` tag rather than under a key."""
-    line = {"reply": "event", "event": "document_changed", "session": 3, "rev": 9}
+    line = {"reply": "event", "event": "model_changed", "session": 3, "rev": 9}
     reply = parse_reply(line)
     assert isinstance(reply, ReplyEvent)
-    assert reply.event == EventDocumentChanged(session=3, rev=9)
+    assert reply.event == EventModelChanged(session=3, rev=9)
     assert reply.to_wire() == line
-    assert parse_event(line) == EventDocumentChanged(session=3, rev=9)
+    assert parse_event(line) == EventModelChanged(session=3, rev=9)
 
 
 def test_a_tree_reply_decodes_all_the_way_down() -> None:
