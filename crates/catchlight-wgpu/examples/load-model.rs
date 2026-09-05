@@ -484,7 +484,6 @@ impl ApplicationHandler for App {
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("load-model frame"),
                             });
-                    renderer.begin_camera_submit();
                     if let Err(e) = renderer.render_list(
                         &render_list,
                         &mut encoder,

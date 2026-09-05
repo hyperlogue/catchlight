@@ -181,7 +181,6 @@ impl HarnessInner {
             let key = format!("{}#{i}", puppet.model_stem);
             let slot = self.ensure_slot(&key, &puppet.model_stem)?;
             let render_list = prepare_puppet(&mut slot.ctx, &mut slot.cached, &[], world)?;
-            slot.ctx.renderer.begin_camera_submit();
             slot.ctx.renderer.update_camera(camera);
             slot.ctx
                 .renderer

@@ -61,7 +61,6 @@ pub(crate) fn catchlight_2d_pass(
         formats,
         size,
         missing_format_warned,
-        camera_overflow_warned,
         ..
     } = &mut *guard;
 
@@ -160,17 +159,7 @@ pub(crate) fn catchlight_2d_pass(
             h,
             None,
         ) {
-            if matches!(
-                &e,
-                catchlight_wgpu::RendererError::TooManyCameraViews { .. }
-            ) {
-                if !*camera_overflow_warned {
-                    *camera_overflow_warned = true;
-                    tracing::warn!("catchlight: {e}; skipping excess camera views");
-                }
-            } else {
-                tracing::error!("catchlight render_list error: {e}");
-            }
+            tracing::error!("catchlight render_list error: {e}");
         }
     }
 

@@ -170,7 +170,6 @@ impl RenderContext {
         render_lists: &[&RenderList],
         clear: Option<wgpu::Color>,
     ) -> Result<RenderStats, Box<dyn std::error::Error>> {
-        self.renderer.begin_camera_submit();
         let mut encoder =
             self.renderer
                 .device

@@ -214,7 +214,6 @@ impl ViewportRenderer {
             retain_isolated(&mut render_list, &allowed);
         }
         let aspect = width as f32 / height as f32;
-        self.renderer.begin_camera_submit();
         self.renderer.update_camera(create_orthographic_camera_at(
             camera.height,
             aspect,

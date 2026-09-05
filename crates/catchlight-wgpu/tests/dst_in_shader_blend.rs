@@ -100,7 +100,6 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let mut encoder = renderer
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    renderer.begin_camera_submit();
 
     // wgpu/WebGPU clear color values are interpreted as **linear-space**
     // floats: when the attachment is sRGB the value is sRGB-encoded on
@@ -391,7 +390,6 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
         let mut encoder = renderer
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        renderer.begin_camera_submit();
         renderer
             .render_list(
                 &render_list,

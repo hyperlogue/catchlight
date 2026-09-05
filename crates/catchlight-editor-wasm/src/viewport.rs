@@ -801,7 +801,6 @@ impl Inner {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("catchlight viewport"),
                 });
-        render.renderer.begin_camera_submit();
         render.renderer.update_camera(view_proj);
         let result = render.renderer.render_list(
             &self.list,

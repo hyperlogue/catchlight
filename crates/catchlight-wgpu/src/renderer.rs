@@ -41,12 +41,15 @@
 //!   every texture and every vertex buffer and differ only in these bytes.
 //!   Sets are recycled by index, and a set whose bytes may still hold a
 //!   previous tenant's pose is zeroed before its first upload.
-//! - **One camera slot per view.** `reserve_camera` writes each
-//!   `render_list`'s view-proj into its own slot of a `CAMERA_RING_SLOTS`-deep
-//!   ring and binds it as a dynamic offset, so views sharing a submit can't
-//!   alias. `begin_camera_submit` resets the count at the *external*
-//!   submission boundary — do not call it between `render_list` calls that
-//!   will be submitted together.
+//! - **The camera ring advances and wraps.** `reserve_camera` writes each
+//!   `render_list`'s view-proj into the next slot of a `CAMERA_RING_SLOTS`-deep
+//!   ring and binds it as a dynamic offset. Distinct slots are what keep views
+//!   recorded into *one* submission from aliasing under `write_buffer`
+//!   batching. Across submissions a slot is free to be reused: the later
+//!   submission's write is ordered after the earlier one's draws on the queue
+//!   timeline. So the ring only ever advances — there is nothing to reset and
+//!   no submission boundary to announce. A single submission carrying more
+//!   than `CAMERA_RING_SLOTS` views would alias its last views onto its first.
 //! - **Masking blends need matching color and alpha factors.** A mode whose
 //!   color component masks via `DstAlpha` or `Zero` (`ClipToLower`,
 //!   `SliceFromLower`, and likewise `Multiply` / `ColorDodge`) must use the
@@ -129,9 +132,6 @@ pub enum RendererError {
         expected: usize,
         actual: usize,
     },
-
-    #[error("a single GPU submission cannot contain more than {limit} camera views per renderer")]
-    TooManyCameraViews { limit: u32 },
 
     #[error("preparing a model's textures: {0}")]
     TexturePrep(String),
@@ -1536,17 +1536,13 @@ pub struct Pipelines {
 /// Slots in the per-renderer camera ring. Bounds how many distinct
 /// view-proj matrices one renderer can have live in a single submit
 /// (i.e. the number of `CatchlightCamera` views a puppet draws into per
-/// frame). The next reservation is rejected rather than wrapping onto a
-/// slot still referenced by an earlier command buffer.
-const CAMERA_RING_SLOTS: u32 = 64;
+/// frame). Reservations wrap rather than fail, so a submission carrying
+/// more views than this aliases its last onto its first.
+#[doc(hidden)]
+pub const CAMERA_RING_SLOTS: u32 = 64;
 
-fn camera_slot_offset(slot: u32, stride: u64) -> RendererResult<u64> {
-    if slot >= CAMERA_RING_SLOTS {
-        return Err(RendererError::TooManyCameraViews {
-            limit: CAMERA_RING_SLOTS,
-        });
-    }
-    Ok(u64::from(slot) * stride)
+fn camera_slot_offset(slot: u32, stride: u64) -> u64 {
+    u64::from(slot % CAMERA_RING_SLOTS) * stride
 }
 
 /// Dense `Vec<Option<V>>` keyed by a small integer id. MeshId and
@@ -1729,9 +1725,11 @@ pub struct WgpuRenderer {
     frame_draw_calls: AtomicU32,
     // Per-view camera uniform ring. Each `render_list` writes the retained
     // view-proj into the next slot and binds that dynamic offset for all its
-    // passes. Distinct slots keep views in one submit from aliasing under
-    // queue.write_buffer batching; `begin_camera_submit` resets the count at
-    // the external submission boundary.
+    // passes. Distinct slots keep views recorded into one submission from
+    // aliasing under queue.write_buffer batching; across submissions a slot
+    // is free to be reused, since queue order puts the later write after the
+    // earlier draws. The counter only advances and wraps — there is no
+    // boundary to announce.
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     camera_slots_used: u32,
@@ -2483,21 +2481,22 @@ impl WgpuRenderer {
         offset as u32
     }
 
-    /// Reset camera-slot reservations before recording command buffers for a
-    /// new queue submission. Do not call this between `render_list` calls that
-    /// will be submitted together.
-    pub fn begin_camera_submit(&mut self) {
-        self.camera_slots_used = 0;
-    }
-
     /// Set the camera view-projection retained for subsequent `render_list`
     /// calls. The render call reserves and uploads a distinct uniform slot.
     pub fn update_camera(&mut self, view_proj: glam::Mat4) {
         self.camera_view_proj = view_proj;
     }
 
-    fn reserve_camera(&mut self) -> RendererResult<()> {
-        let offset = camera_slot_offset(self.camera_slots_used, self.shared.camera_stride)?;
+    /// The camera-ring dynamic offset the last render call bound.
+    /// Test-facing, as [`Self::live_mesh_slots`]: it is how a test sees that
+    /// two views recorded into one submission took distinct slots.
+    #[doc(hidden)]
+    pub fn camera_dynamic_offset(&self) -> u32 {
+        self.camera_offset
+    }
+
+    fn reserve_camera(&mut self) {
+        let offset = camera_slot_offset(self.camera_slots_used, self.shared.camera_stride);
         let camera_uniform = CameraUniform {
             view_proj: self.camera_view_proj.to_cols_array_2d(),
         };
@@ -2508,8 +2507,7 @@ impl WgpuRenderer {
             bytemuck::cast_slice(&[camera_uniform]),
         );
         self.camera_offset = offset as u32;
-        self.camera_slots_used += 1;
-        Ok(())
+        self.camera_slots_used = (self.camera_slots_used + 1) % CAMERA_RING_SLOTS;
     }
 
     /// Framebuffer-pixel AABB of one part's rendered geometry: its
@@ -4573,7 +4571,7 @@ impl WgpuRenderer {
         // reset has to precede it.
         self.frame_stats = FrameStats::default();
         self.frame_sizing_closed = false;
-        self.reserve_camera()?;
+        self.reserve_camera();
         self.current_stats = RenderStats::default();
         self.frame_render_passes.store(0, Ordering::Relaxed);
         self.frame_draw_calls.store(0, Ordering::Relaxed);
@@ -5610,7 +5608,7 @@ mod tests {
     use super::{
         blend_mode_to_wgpu, blend_transparent_src_is_identity, camera_slot_offset,
         pixels_to_scissor, project_aabb_to_pixels, renders_as_over, same_mask_signature, Aabb2,
-        RendererError, ScreenRect, TextureSource, CAMERA_RING_SLOTS,
+        ScreenRect, TextureSource, CAMERA_RING_SLOTS,
     };
     use catchlight_core::{BlendMode, DecodedTexture};
     use std::sync::Arc;
@@ -5637,19 +5635,18 @@ mod tests {
     }
 
     #[test]
-    fn camera_slot_reservation_rejects_wraparound() {
+    fn camera_slot_reservation_wraps_around() {
         let stride = 256;
-        assert!(matches!(camera_slot_offset(0, stride), Ok(0)));
-        assert!(matches!(
+        assert_eq!(camera_slot_offset(0, stride), 0);
+        assert_eq!(
             camera_slot_offset(CAMERA_RING_SLOTS - 1, stride),
-            Ok(offset) if offset == u64::from(CAMERA_RING_SLOTS - 1) * stride
-        ));
-        assert!(matches!(
-            camera_slot_offset(CAMERA_RING_SLOTS, stride),
-            Err(RendererError::TooManyCameraViews {
-                limit: CAMERA_RING_SLOTS
-            })
-        ));
+            u64::from(CAMERA_RING_SLOTS - 1) * stride
+        );
+        // One past the last slot is the first slot again, not an error: only
+        // reuse inside one submission aliases, and a submission that deep
+        // does not exist.
+        assert_eq!(camera_slot_offset(CAMERA_RING_SLOTS, stride), 0);
+        assert_eq!(camera_slot_offset(CAMERA_RING_SLOTS + 1, stride), stride);
     }
 
     /// Root-composite flattening draws children straight to the parent

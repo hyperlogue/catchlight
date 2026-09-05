@@ -23,6 +23,10 @@
 //! * `shared_composite_pool_*` — several puppets in one frame share one
 //!   caller-owned `CompositePool`, so its allocation is the deepest
 //!   puppet's need, not the sum.
+//! * `camera_ring_*` — the per-view camera ring advances and wraps on its
+//!   own. Views recorded into one submission take distinct slots; across
+//!   submissions a slot is reused freely, so a caller has no boundary to
+//!   announce and a long-running loop never runs out.
 
 mod common;
 
@@ -30,6 +34,7 @@ use catchlight_core::{Mesh, Model, Vec3};
 use catchlight_wgpu::{
     create_headless_context, create_orthographic_camera, CompositePool, FrameStats,
     FramebufferSnapshotPool, Pipelines, RenderList, RenderStats, StencilTarget, WgpuRenderer,
+    CAMERA_RING_SLOTS,
 };
 use common::{Scene, NO_ADAPTER};
 use std::path::PathBuf;
@@ -156,7 +161,6 @@ impl Stage {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("lifecycle-frame"),
             });
-        renderer.begin_camera_submit();
         let out = self.record(
             renderer,
             &mut encoder,
@@ -167,6 +171,18 @@ impl Stage {
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submits += 1;
         out
+    }
+
+    /// The target's pixels, straight after a submit.
+    fn readback(&self) -> Vec<u8> {
+        pollster::block_on(catchlight_wgpu::read_texture_to_rgba(
+            &self.device,
+            &self.queue,
+            &self.target,
+            W,
+            H,
+        ))
+        .expect("readback")
     }
 }
 
@@ -531,11 +547,6 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("shared-pool-frame"),
         });
-    // One camera-submit boundary for the whole frame: every renderer's
-    // views live in the same submission.
-    for (r, _) in scenes.iter_mut() {
-        r.begin_camera_submit();
-    }
     for (i, ((renderer, _), list)) in scenes.iter_mut().zip(&lists).enumerate() {
         // Only the first puppet clears; the rest compose onto it, which
         // is what makes them one frame rather than three.
@@ -569,5 +580,89 @@ fn shared_composite_pool_costs_the_deepest_puppet_not_the_sum() {
         "one pool across {} puppets must allocate the deepest puppet's slots \
          ({deepest}), not the sum ({sum}): {alone:?}",
         stems.len(),
+    );
+}
+
+// ---------------------------------------------------------------------
+// E. The camera ring advances and wraps on its own.
+// ---------------------------------------------------------------------
+
+/// The footgun this ring used to carry: a caller that just renders, one
+/// submit per frame, would exhaust the ring and start failing about a
+/// second in at 60 fps. Reuse across submissions is safe — a later
+/// submission's `write_buffer` is ordered after an earlier submission's
+/// draws on the queue timeline — so the ring wraps and every frame is
+/// identical to the first, forever.
+#[test]
+fn camera_ring_wraps_over_many_submissions_with_no_boundary_call() {
+    let mut stage = Stage::new();
+    let mut pool = CompositePool::new(W, H);
+    let mut renderer = stage.renderer();
+    let mut scene = stage.admit(&mut renderer, grid_model(6));
+
+    // `Stage::frame` is the whole loop: one encoder, one submit, nothing
+    // else. `record` unwraps, so a refused reservation fails the test.
+    let (stats, _) = stage.frame(&mut renderer, &mut scene, &mut pool);
+    assert!(stats.drawn_parts > 0, "frame 0 drew nothing");
+    let first = stage.readback();
+
+    let frames = CAMERA_RING_SLOTS + 2;
+    let mut last = Vec::new();
+    for i in 1..frames {
+        let (stats, fs) = stage.frame(&mut renderer, &mut scene, &mut pool);
+        assert!(stats.drawn_parts > 0, "frame {i} drew nothing");
+        assert_eq!(
+            fs.camera_buffer_writes, 1,
+            "frame {i} must take exactly one camera slot",
+        );
+        last = stage.readback();
+    }
+
+    assert_eq!(
+        stage.submits, frames,
+        "one submit per frame, {frames} frames",
+    );
+    assert_eq!(
+        first,
+        last,
+        "frame {} is past the ring's wrap and must match frame 0 pixel for pixel",
+        frames - 1,
+    );
+}
+
+/// Two views in one submission are what the ring is *for*: bevy records a
+/// second `CatchlightCamera` into the same encoder. The lists are the same
+/// puppet, so only the view-proj differs — and the two draws must read two
+/// different slots, or `write_buffer` batching makes the second camera win
+/// for both.
+#[test]
+fn two_views_in_one_submission_bind_distinct_camera_slots() {
+    let mut stage = Stage::new();
+    let mut pool = CompositePool::new(W, H);
+    let mut renderer = stage.renderer();
+    let mut scene = stage.admit(&mut renderer, grid_model(6));
+    let list = scene.frame(&mut renderer, 0.0);
+
+    let mut encoder = stage
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("two-view-frame"),
+        });
+
+    let aspect = W as f32 / H as f32;
+    renderer.update_camera(create_orthographic_camera(CAMERA_HEIGHT, aspect));
+    stage.record(&mut renderer, &mut encoder, &list, &mut pool, Some(CLEAR));
+    let first = renderer.camera_dynamic_offset();
+
+    renderer.update_camera(create_orthographic_camera(CAMERA_HEIGHT * 2.0, aspect));
+    stage.record(&mut renderer, &mut encoder, &list, &mut pool, None);
+    let second = renderer.camera_dynamic_offset();
+
+    stage.queue.submit(std::iter::once(encoder.finish()));
+    stage.submits += 1;
+
+    assert_ne!(
+        first, second,
+        "two views sharing a submission must bind distinct camera offsets",
     );
 }

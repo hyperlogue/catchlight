@@ -233,7 +233,6 @@ pub(crate) struct CatchlightRenderInner {
     /// extract so both extraction and preparation build caches the same way.
     pub(crate) options: PrepareOptions,
     pub(crate) missing_format_warned: bool,
-    pub(crate) camera_overflow_warned: bool,
     // Reused across frames so GC doesn't allocate a fresh HashSet every tick.
     live_scratch: HashSet<Entity>,
     live_models: HashSet<ModelKey>,
@@ -406,7 +405,6 @@ pub(crate) fn prepare_puppets(
     // timing for the overlay therefore trails by one frame.
     for gpu in gpus.values_mut() {
         gpu.renderer.end_gpu_frame();
-        gpu.renderer.begin_camera_submit();
     }
 }
 

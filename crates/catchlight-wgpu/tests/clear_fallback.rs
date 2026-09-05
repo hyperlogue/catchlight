@@ -40,7 +40,6 @@ fn empty_render_list_still_clears_the_target() {
 
         // Frame 1: green garbage standing in for "the previous frame".
         let mut paint = |renderer: &mut WgpuRenderer, list: &RenderList, color: wgpu::Color| {
-            renderer.begin_camera_submit();
             let mut encoder = renderer
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
