@@ -135,10 +135,11 @@ describe("opening a file", () => {
     await settle();
 
     expect(opened).toHaveLength(1);
-    // The name is sanitized into a storage key on the way, by the editor.
-    expect(wasm.requests.map((request) => request.cmd)).toContain("session_open");
-    expect(wasm.requests.find((request) => request.cmd === "session_open")).toMatchObject({
-      path: "Akari_Final.clm",
+    // A file the page holds is a fresh session and an import into it; the name
+    // is sanitized on the way, by the editor.
+    expect(wasm.requests.map((request) => request.cmd)).toContain("import_file");
+    expect(wasm.requests.find((request) => request.cmd === "session_new")).toMatchObject({
+      name: "Akari_Final.clm",
     });
     // Reset, so picking the same file again fires again.
     expect(input.value).toBe("");

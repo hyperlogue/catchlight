@@ -20,7 +20,7 @@ fn welded_seam() -> Vec<u8> {
 /// An app on a session over the given `.clm` bytes, with no window behind it.
 fn app_on(bytes: &[u8]) -> (Arc<Editor>, SessionId, App) {
     let editor = Arc::new(Editor::new());
-    let session = editor.open_bytes("model", bytes).expect("open");
+    let session = crate::app::open_bytes(&editor, "model", bytes.to_vec()).expect("open");
     let app = App::with_session(
         editor.clone(),
         egui::Context::default(),
@@ -932,7 +932,7 @@ fn a_held_texture_drop_does_not_survive_a_session_change() {
     })));
     assert!(app.texture_drop.is_some(), "the delete is held");
 
-    let other = editor.open_bytes("other", &welded_seam()).expect("open");
+    let other = crate::app::open_bytes(&editor, "other", welded_seam()).expect("open");
     app.adopt_session(other, "other".into());
 
     assert!(

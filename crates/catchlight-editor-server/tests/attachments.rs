@@ -211,7 +211,6 @@ fn a_texture_arrives_as_an_attachment_under_the_encoding_it_declares() {
         Command::TextureAdd {
             session: s,
             node: part,
-            path: None,
             encoding: TextureEncoding::Png,
             texture: Some(TexId::new("face").unwrap()),
         },
@@ -236,8 +235,10 @@ fn a_texture_arrives_as_an_attachment_under_the_encoding_it_declares() {
     .unwrap();
 }
 
+/// There is one place the bytes can come from, so a command without them is
+/// refused rather than reaching for a store.
 #[test]
-fn a_path_and_an_attachment_together_are_refused() {
+fn a_texture_add_with_no_image_attached_is_refused() {
     let ed = editor();
     let s = new_session(&ed, 1);
     let root = root_of(&ed, 2, s);
@@ -249,29 +250,6 @@ fn a_path_and_an_attachment_together_are_refused() {
         Command::TextureAdd {
             session: s,
             node: part,
-            path: Some("face.png".into()),
-            encoding: TextureEncoding::Png,
-            texture: None,
-        },
-        with(vec![("texture", png([1, 2, 3, 255]))]),
-    );
-    assert_eq!(code(reply), ErrorCode::BadRequest);
-}
-
-#[test]
-fn neither_a_path_nor_an_attachment_is_refused() {
-    let ed = editor();
-    let s = new_session(&ed, 1);
-    let root = root_of(&ed, 2, s);
-    let part = add_part(&ed, 3, s, &root, "face");
-
-    let (reply, _) = send(
-        &ed,
-        4,
-        Command::TextureAdd {
-            session: s,
-            node: part,
-            path: None,
             encoding: TextureEncoding::Png,
             texture: None,
         },
@@ -374,9 +352,25 @@ fn an_import_replaces_a_pristine_session_keeping_its_identity() {
         "an import is a document change like any other",
     );
 
-    // One undo entry, and it puts the bare root back.
-    ok(ed.handle(req(4, Command::Undo { session: s })));
-    assert_eq!(node_count(&ed, 5, s), 1);
+    // And it leaves what an open leaves: a document nobody has edited.
+    assert_clean_and_unundoable(&ed, 4, s);
+}
+
+/// A pristine replace is an open, so the session it leaves is clean with
+/// nothing behind it. Anything else and a tab warns about unsaved changes the
+/// moment a file is opened, and one undo empties the document.
+fn assert_clean_and_unundoable(ed: &Editor, id: u64, session: SessionId) {
+    match ok(ed.handle(req(id, Command::Status { session }))) {
+        ResponseBody::Status { status } => {
+            assert!(!status.dirty, "an import leaves the session clean")
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+    assert_eq!(
+        code(ed.handle(req(id + 1, Command::Undo { session }))),
+        ErrorCode::NothingToUndo,
+        "an import is not an edit to undo",
+    );
 }
 
 #[test]
@@ -451,9 +445,14 @@ fn a_fragment_installs_under_the_parent_the_command_names() {
         other => panic!("expected NodeInfo, got {other:?}"),
     }
 
-    // And an undo takes exactly that back.
-    ok(ed.handle(req(6, Command::Undo { session: s })));
-    assert_eq!(node_count(&ed, 7, s), 2);
+    // A subtree install is an ordinary edit, unlike a pristine replace: it
+    // dirties the session and one undo takes exactly it back.
+    match ok(ed.handle(req(6, Command::Status { session: s }))) {
+        ResponseBody::Status { status } => assert!(status.dirty),
+        other => panic!("expected Status, got {other:?}"),
+    }
+    ok(ed.handle(req(7, Command::Undo { session: s })));
+    assert_eq!(node_count(&ed, 8, s), 2);
 }
 
 /// The wire's `parent` wins over the parent a fragment's roots name.
@@ -553,8 +552,7 @@ const MANIFEST: &str = r#"{"name":"akari",
     "nodes":[{"id":"face","kind":"part","texture":"face","mesh":{"auto":"quad"}}]}"#;
 
 #[test]
-fn a_manifest_and_its_images_build_the_model_a_store_import_builds() {
-    // The same manifest twice: once from attachments, once from a store.
+fn a_manifest_and_its_images_build_the_model_they_describe() {
     let ed = editor();
     let s = new_session(&ed, 1);
     let (reply, _) = send(
@@ -567,33 +565,38 @@ fn a_manifest_and_its_images_build_the_model_a_store_import_builds() {
         ]),
     );
     ok(reply);
-    let attached = ed.with_model(s, |m| m.to_clm_bytes().unwrap()).unwrap();
 
-    let store = Arc::new(MemStorage::default());
-    store.write("m.json", MANIFEST.as_bytes()).unwrap();
-    store
-        .write("images/face.png", &png([200, 30, 30, 255]))
-        .unwrap();
-    let staged = Editor::with_storage(store);
-    let from_store = match ok(staged.handle(req(
-        1,
-        Command::SessionImport {
-            manifest_path: "m.json".into(),
-        },
-    ))) {
-        ResponseBody::Session { session } => session,
-        other => panic!("expected Session, got {other:?}"),
-    };
-    let stored = staged
-        .with_model(from_store, |m| m.to_clm_bytes().unwrap())
-        .unwrap();
-
-    assert_eq!(attached, stored, "one manifest, one model, either way");
-    // And the title came off the manifest, as it does from a store.
-    match ok(ed.handle(req(3, Command::Status { session: s }))) {
+    // The part the manifest names is there, drawing the image that came with
+    // it, and the title came off the manifest.
+    assert_eq!(node_count(&ed, 3, s), 2);
+    match ok(ed.handle(req(4, Command::TextureList { session: s }))) {
+        ResponseBody::Textures { textures } => assert_eq!(textures.len(), 1),
+        other => panic!("expected Textures, got {other:?}"),
+    }
+    match ok(ed.handle(req(5, Command::Status { session: s }))) {
         ResponseBody::Status { status } => assert_eq!(status.title, "akari"),
         other => panic!("expected Status, got {other:?}"),
     }
+    // A manifest import is an open too.
+    assert_clean_and_unundoable(&ed, 6, s);
+
+    // Two imports of one manifest are one model, whoever ran them.
+    let again = editor();
+    let t = new_session(&again, 1);
+    let (reply, _) = send(
+        &again,
+        2,
+        Command::ImportManifest { session: t },
+        with(vec![
+            ("manifest", MANIFEST.as_bytes().to_vec()),
+            ("texture:images/face.png", png([200, 30, 30, 255])),
+        ]),
+    );
+    ok(reply);
+    assert_eq!(
+        ed.with_model(s, |m| m.to_clm_bytes().unwrap()).unwrap(),
+        again.with_model(t, |m| m.to_clm_bytes().unwrap()).unwrap(),
+    );
 }
 
 #[test]

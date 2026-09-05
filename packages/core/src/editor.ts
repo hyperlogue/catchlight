@@ -35,9 +35,10 @@
  */
 
 import type { Command, SessionId, SessionInfo } from "./protocol.gen.js";
-import type { Backend, OkReply, Unsubscribe } from "./backend.js";
-import { asProtocolError, expectResult } from "./backend.js";
+import type { Attachment, Backend, OkReply, Unsubscribe } from "./backend.js";
+import { asProtocolError, expectResult, ProtocolError } from "./backend.js";
 import { Session } from "./session.js";
+import { joinKey, parentKey } from "./storage.js";
 import type { WasmGpu, WasmModule } from "./wasm.js";
 import { Viewport } from "./viewport.js";
 
@@ -118,49 +119,56 @@ export class Editor {
   }
 
   /**
-   * Opens the document the store holds at `key`.
+   * Opens the document the *editor's* store holds at `key`.
    *
-   * Whether the bytes have to be staged first is the backend's business, not
-   * this method's: in-tab it reads them out of the store and stages them,
-   * connected the key already names a file the editor can read.
+   * A file of the editor's, which the session can then save back over. Bytes
+   * this page holds are [`openFile`] instead.
    */
   async openDocument(key: string): Promise<Session> {
     return this.#adopt(await this.#backend.send({ cmd: "session_open", path: key }));
   }
 
   /**
-   * Opens bytes the page already holds — a dropped file, a picked one, a fetch
-   * — under a key derived from `name`.
+   * Opens bytes the page already holds — a dropped file, a picked one, a
+   * fetch — as a document named `name`.
    *
-   * The key is what the document is then addressed by, including by a later
-   * save, so it is sanitized down to what a storage key is read for: `/`
-   * separates segments and the tail after the last `.` picks a decoder.
+   * A fresh session and then the file imported into it, because the two mean
+   * different things: nothing named a file of the editor's, so the session
+   * gets none and a later save has to be told where to go.
    */
   async openFile(bytes: Uint8Array, name: string): Promise<Session> {
-    const key = fileKey(name);
-    await this.#backend.putBytes(key, bytes);
-    return this.#adopt(await this.#backend.send({ cmd: "session_open", path: key }));
+    const made = await this.#backend.send({ cmd: "session_new", name: fileKey(name) });
+    const session = expectResult(made.body, "session").session;
+    return this.#fill(session, { cmd: "import_file", session, parent: null }, [["model", bytes]]);
   }
 
   /**
-   * Opens a manifest and the textures it references.
+   * Opens a manifest and the textures it references, all of which this page
+   * reads itself.
    *
-   * The editor is asked what the manifest needs before it is imported, because
-   * an in-tab editor cannot go looking for a file: every key it will read has
-   * to be resolvable first, and only the manifest itself is named by the
-   * command. A connected editor already has its own store, so the staging and
-   * the discard that follows it are both no-ops there.
+   * What the manifest needs is a pure function of its JSON, so this asks the
+   * wasm module rather than the editor: there is no session yet, and nothing
+   * to ask one about. Each reference is resolved against the manifest's own
+   * key — which is what a reference in a manifest means — and attached under
+   * the name the import matches it by, spelled exactly as the manifest spells
+   * it.
    */
   async importManifest(key: string): Promise<Session> {
-    const asked = await this.#backend.send({ cmd: "manifest_requirements", manifest_path: key });
-    const required = expectResult(asked.body, "manifest_requirements").textures;
-    for (const texture of required) await this.#backend.stageKey(texture);
-    const reply = await this.#backend.send({ cmd: "session_import", manifest_path: key });
-    // The import decoded every one of them into a model that owns its copy, so
-    // holding the encoded bytes as well is the whole model twice. The backend
-    // discards the keys a command named for itself; these it never saw.
-    for (const texture of required) await this.#backend.discardKey(texture);
-    return this.#adopt(reply);
+    const manifest = await this.#read(key);
+    let required: string[];
+    try {
+      required = this.#wasm.manifestRequirements(new TextDecoder().decode(manifest));
+    } catch (cause) {
+      throw asProtocolError(cause, "manifest");
+    }
+    const attachments: Attachment[] = [["manifest", manifest]];
+    for (const reference of required) {
+      attachments.push([`texture:${reference}`, await this.#read(joinKey(parentKey(key), reference))]);
+    }
+
+    const made = await this.#backend.send({ cmd: "session_new", name: key });
+    const session = expectResult(made.body, "session").session;
+    return this.#fill(session, { cmd: "import_manifest", session }, attachments);
   }
 
   /**
@@ -184,7 +192,7 @@ export class Editor {
    * nothing — the host then says where it went rather than downloading it.
    */
   readDocument(key: string): Promise<Uint8Array | undefined> {
-    return this.#backend.readBytes(key);
+    return this.#backend.readDocument(key);
   }
 
   /**
@@ -307,10 +315,48 @@ export class Editor {
     this.#backend.close();
   }
 
+  /**
+   * One key out of this tab's store, or a refusal naming it.
+   *
+   * A connected editor holds no store here — its files are on its own machine
+   * — so this is what makes [`importManifest`] a tab-side operation and says
+   * so plainly rather than sending an import with nothing attached.
+   */
+  async #read(key: string): Promise<Uint8Array> {
+    const bytes = await this.#backend.readDocument(key);
+    if (bytes) return bytes;
+    throw new ProtocolError({
+      code: "io",
+      message: `${key} is not in this tab's store`,
+    });
+  }
+
   /** Turns a `session` reply into a session whose replica is already current. */
   async #adopt(reply: OkReply): Promise<Session> {
     const id = expectResult(reply.body, "session").session;
     return this.#sessions.get(id) ?? this.#adoptId(id, reply.rev ?? 0);
+  }
+
+  /**
+   * Runs the import that gives a just-made session its model, and adopts it at
+   * the revision that import produced.
+   *
+   * A session that stays empty is worse than none — it would sit in every
+   * list as a document nobody opened — so a refused import takes it with it.
+   */
+  async #fill(
+    session: SessionId,
+    command: Command,
+    attachments: readonly Attachment[],
+  ): Promise<Session> {
+    let reply;
+    try {
+      reply = await this.#backend.sendWith(command, attachments);
+    } catch (cause) {
+      await this.#backend.send({ cmd: "session_close", session }).catch(() => undefined);
+      throw asProtocolError(cause);
+    }
+    return this.#adoptId(session, reply.rev ?? 0);
   }
 
   async #adoptId(id: SessionId, rev: number): Promise<Session> {

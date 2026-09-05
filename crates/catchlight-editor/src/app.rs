@@ -23,16 +23,17 @@
 //!   See [`App::record_target`].
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
-use catchlight_core::formats::clm::TextureEncoding;
 use catchlight_core::{BindingKey, BindingTarget as CoreBindingTarget, Model, ModelNodeKind};
+use catchlight_editor_core::Manifest;
 use catchlight_editor_protocol::{
     BindingKeyEntry, BindingParams, BindingTarget, Command, NodeId, NodeKind, NodePatch, ParamId,
     ParamInfo, PhysicsKind, PhysicsTargets, Rename, Reply, Request, ResponseBody, SessionId,
     SlotAddr, TexId, TextureEncoding as WireTextureEncoding, TreeNode, WeldInfo,
 };
-use catchlight_editor_server::{slot_info, weld_info, Editor};
+use catchlight_editor_server::{slot_info, weld_info, Attachments, Editor};
 use eframe::egui;
 
 use crate::camera::EditorCamera;
@@ -179,7 +180,7 @@ enum DroppingEdit {
     Send(Box<Command>),
     Upload {
         part: NodeId,
-        encoding: TextureEncoding,
+        encoding: WireTextureEncoding,
         bytes: Vec<u8>,
     },
 }
@@ -364,21 +365,86 @@ impl App {
         }
     }
 
+    /// Send one command with the bytes it needs, reporting a refusal.
+    fn send_with(&mut self, command: Command, attachments: Attachments) -> Reply {
+        let (reply, _) = self
+            .editor
+            .handle_with(Request { id: 0, command }, attachments);
+        if let Reply::Err { message, .. } = &reply {
+            self.status = format!("error: {message}");
+        }
+        reply
+    }
+
+    /// Open a document this process already holds the bytes of.
+    fn open_bytes(&mut self, title: &str, bytes: Vec<u8>) {
+        match open_bytes(&self.editor, title, bytes) {
+            Ok(session) => self.adopt_session(session, title.to_string()),
+            Err(e) => self.status = format!("open: {e}"),
+        }
+    }
+
+    /// Build a session from a manifest and every image it names.
+    ///
+    /// The manifest and the textures travel with the command, so the editor
+    /// goes looking for nothing: this side reads each reference relative to
+    /// the manifest and attaches it under the name the import matches it by.
+    fn import_manifest(&mut self, path: &Path, title: String) {
+        let mut attachments = Attachments::none();
+        let json = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.status = format!("import: {e}");
+                return;
+            }
+        };
+        let manifest = match std::str::from_utf8(&json)
+            .map_err(|e| e.to_string())
+            .and_then(|text| Manifest::from_json(text).map_err(|e| e.to_string()))
+        {
+            Ok(manifest) => manifest,
+            Err(e) => {
+                self.status = format!("import: {e}");
+                return;
+            }
+        };
+        let base = path.parent().unwrap_or(Path::new(""));
+        for texture in &manifest.textures {
+            match std::fs::read(base.join(&texture.path)) {
+                Ok(bytes) => attachments.insert(format!("texture:{}", texture.path), bytes),
+                Err(e) => {
+                    self.status = format!("import: {}: {e}", texture.path);
+                    return;
+                }
+            }
+        }
+        attachments.insert("manifest", json);
+
+        let Reply::Ok {
+            body: ResponseBody::Session { session },
+            ..
+        } = self.send(Command::SessionNew {
+            name: Some(title.clone()),
+        })
+        else {
+            return;
+        };
+        if let Reply::Ok { .. } = self.send_with(Command::ImportManifest { session }, attachments) {
+            self.adopt_session(session, title);
+        } else {
+            self.send(Command::SessionClose { session });
+        }
+    }
+
     fn drain_io(&mut self) {
         for event in self.io_queue.drain() {
             match event {
-                IoEvent::Opened { title, bytes } => match self.editor.open_bytes(&title, &bytes) {
-                    Ok(session) => self.adopt_session(session, title),
-                    Err(e) => self.status = format!("open: {e}"),
-                },
+                IoEvent::Opened { title, bytes } => self.open_bytes(&title, bytes),
                 IoEvent::DemoLoaded { title, bytes } => {
                     // The demo fetch races user opens and the autosave
                     // restore; whatever the user opened wins.
                     if self.session.is_none() && self.pending_restore.is_none() {
-                        match self.editor.open_bytes(&title, &bytes) {
-                            Ok(session) => self.adopt_session(session, title),
-                            Err(e) => self.status = format!("open: {e}"),
-                        }
+                        self.open_bytes(&title, bytes);
                     }
                 }
                 IoEvent::PickedTexture { bytes, is_tga } => {
@@ -388,9 +454,9 @@ impl App {
                     match self.selected_part() {
                         Some(part) => {
                             let encoding = if is_tga {
-                                TextureEncoding::Tga
+                                WireTextureEncoding::Tga
                             } else {
-                                TextureEncoding::Png
+                                WireTextureEncoding::Png
                             };
                             self.guard_texture_drop(DroppingEdit::Upload {
                                 part,
@@ -1015,13 +1081,21 @@ impl App {
                 part,
                 encoding,
                 bytes,
-            } => match self
-                .editor
-                .add_texture_bytes(session, &part, encoding, bytes)
-            {
-                Ok(_) => self.status = "texture added".into(),
-                Err(e) => self.status = format!("texture: {e}"),
-            },
+            } => {
+                let mut attachments = Attachments::none();
+                attachments.insert("texture", bytes);
+                if let Reply::Ok { .. } = self.send_with(
+                    Command::TextureAdd {
+                        session,
+                        node: part,
+                        encoding,
+                        texture: None,
+                    },
+                    attachments,
+                ) {
+                    self.status = "texture added".into();
+                }
+            }
         }
     }
 
@@ -1667,10 +1741,7 @@ impl eframe::App for App {
                     ui.label("An autosave from a previous session exists.");
                     if ui.button("Restore").clicked() {
                         if let Some(bytes) = self.pending_restore.take() {
-                            match self.editor.open_bytes("autosave", &bytes) {
-                                Ok(session) => self.adopt_session(session, "autosave".into()),
-                                Err(e) => self.status = format!("restore: {e}"),
-                            }
+                            self.open_bytes("autosave", bytes);
                         }
                     }
                     if ui.button("Dismiss").clicked() {
@@ -1842,6 +1913,56 @@ impl eframe::App for App {
     }
 }
 
+/// A session holding `bytes`, the way this app opens one it already has: a
+/// fresh session named `title`, then the file imported into it.
+///
+/// Two commands rather than one because they mean different things. A
+/// `session_open` names a file of the *store's* and the session can save back
+/// over it; bytes a process is holding have no such file, so the session gets
+/// none and a bare save refuses rather than writing somewhere nobody named.
+pub(crate) fn open_bytes(
+    editor: &Editor,
+    title: &str,
+    bytes: Vec<u8>,
+) -> Result<SessionId, String> {
+    let reply = editor.handle(Request {
+        id: 0,
+        command: Command::SessionNew {
+            name: Some(title.to_string()),
+        },
+    });
+    let Reply::Ok {
+        body: ResponseBody::Session { session },
+        ..
+    } = reply
+    else {
+        return Err(format!("session_new answered {reply:?}"));
+    };
+    let mut attachments = Attachments::none();
+    attachments.insert("model", bytes);
+    let (reply, _) = editor.handle_with(
+        Request {
+            id: 0,
+            command: Command::ImportFile {
+                session,
+                parent: None,
+            },
+        },
+        attachments,
+    );
+    match reply {
+        Reply::Ok { .. } => Ok(session),
+        Reply::Err { message, .. } => {
+            editor.handle(Request {
+                id: 0,
+                command: Command::SessionClose { session },
+            });
+            Err(message)
+        }
+        Reply::Event(_) => Err("import_file answered an event".into()),
+    }
+}
+
 impl App {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         {
@@ -1851,12 +1972,7 @@ impl App {
                     .pick_file()
                 {
                     let title = file_title(&path);
-                    self.open_session(
-                        Command::SessionImport {
-                            manifest_path: path.display().to_string(),
-                        },
-                        title,
-                    );
+                    self.import_manifest(&path, title);
                 }
             }
             if ui.button("Open…").clicked() {
@@ -2815,22 +2931,30 @@ impl App {
                 .add_enabled(enabled, egui::Button::new("＋ add…"))
                 .on_disabled_hover_text("select a part to give the texture to");
             if add.clicked() {
-                if let (Some(node), Some(path)) = (
+                if let (Some(part), Some(path)) = (
                     selected_part.clone(),
                     rfd::FileDialog::new()
                         .add_filter("image", &["png", "tga"])
                         .pick_file(),
                 ) {
-                    self.guard_texture_drop(DroppingEdit::Send(Box::new(Command::TextureAdd {
-                        session,
-                        node,
-                        // The desktop app names a filesystem path rather than
-                        // attaching bytes, so the editor reads the encoding off
-                        // the key's tail and this field goes unread.
-                        path: Some(path.display().to_string()),
-                        encoding: WireTextureEncoding::default(),
-                        texture: None,
-                    })));
+                    // The bytes go with the command, so this side reads the
+                    // file and says what it is.
+                    let encoding = if path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("tga"))
+                    {
+                        WireTextureEncoding::Tga
+                    } else {
+                        WireTextureEncoding::Png
+                    };
+                    match std::fs::read(&path) {
+                        Ok(bytes) => self.guard_texture_drop(DroppingEdit::Upload {
+                            part,
+                            encoding,
+                            bytes,
+                        }),
+                        Err(e) => self.status = format!("texture: {e}"),
+                    }
                 }
             }
         });

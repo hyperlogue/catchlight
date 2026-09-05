@@ -21,7 +21,7 @@ use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId, SessionInfo,
     TextureEncoding,
 };
-use catchlight_editor_server::{bind_http, Editor, HttpOptions, StagingStorage, Storage};
+use catchlight_editor_server::{bind_http, Editor, HttpOptions, Storage};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Message, WebSocket};
 
@@ -34,10 +34,8 @@ const FOREIGN_ORIGIN: &str = "http://evil.test";
 
 struct Server {
     addr: SocketAddr,
-    /// The very staging map the uploads land in, so a test can ask what the
-    /// server is still holding after a command read it.
-    staging: Arc<StagingStorage>,
-    /// What a save writes through to.
+    /// The server's own store: what `session_open` reads and what a save
+    /// writes.
     store: Arc<Mem>,
 }
 
@@ -45,20 +43,17 @@ fn start() -> Server {
     start_with(|_| {})
 }
 
-/// The fixture with one knob turned — an upload ceiling low enough to hit, or
-/// a keepalive interval a test can afford to wait for.
+/// The fixture with one knob turned — a body ceiling low enough to hit, or a
+/// keepalive interval a test can afford to wait for.
 fn start_with(tune: impl FnOnce(&mut HttpOptions)) -> Server {
-    // Nothing here is allowed to touch the filesystem, so the staging layer
-    // stands on a store in memory: an upload is the only way bytes get in, and
-    // a save lands where a test can read it back.
+    // Nothing here touches the filesystem: the store is a map, so a test can
+    // put a file in it and read a save back out.
     let store = Arc::new(Mem::default());
-    let staging = Arc::new(StagingStorage::new(store.clone()));
-    let editor = Arc::new(Editor::with_storage(staging.clone()));
+    let editor = Arc::new(Editor::with_storage(store.clone()));
     let mut options = HttpOptions {
         allowed_origins: vec![ALLOWED_ORIGIN.to_string()],
         token: Some(TOKEN.to_string()),
         max_upload_bytes: 8 * 1024 * 1024,
-        staging: Some(staging.clone()),
         ..HttpOptions::default()
     };
     tune(&mut options);
@@ -67,11 +62,7 @@ fn start_with(tune: impl FnOnce(&mut HttpOptions)) -> Server {
     std::thread::spawn(move || {
         let _ = server.serve();
     });
-    Server {
-        addr,
-        staging,
-        store,
-    }
+    Server { addr, store }
 }
 
 /// A byte store in memory. These tests write no files.
@@ -334,15 +325,9 @@ fn session_info(socket: &mut Socket, id: u64, session: SessionId) -> SessionInfo
 }
 
 /// Stage `bytes` under `key`, the way a tab hands up a file it read.
-fn upload(server: &Server, key: &str, bytes: &[u8]) {
-    let put = http(
-        server.addr,
-        "PUT",
-        &format!("/files/{key}"),
-        &[("Authorization", &bearer())],
-        bytes,
-    );
-    assert_eq!(put.status, 204, "PUT /files/{key}");
+/// Put a file in the server's store, the way something on its machine would.
+fn store_file(server: &Server, key: &str, bytes: &[u8]) {
+    server.store.write(key, bytes).expect("the store takes it");
 }
 
 /// An empty model's `.clm` bytes, built in-process so no fixture is needed.
@@ -724,12 +709,11 @@ fn the_structure_endpoint_pairs_its_bytes_with_the_revision_they_are() {
     assert_eq!(missing.status, 404);
 }
 
+/// A `path` names a file of the server's, and only that.
 #[test]
-fn an_upload_is_what_session_open_reads() {
+fn session_open_reads_the_store_and_nothing_else() {
     let server = start();
-    let bytes = clm_bytes();
-
-    upload(&server, "model.clm", &bytes);
+    store_file(&server, "model.clm", &clm_bytes());
 
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
     send(
@@ -746,174 +730,140 @@ fn an_upload_is_what_session_open_reads() {
         other => panic!("expected Session, got {other:?}"),
     }
 
-    // Nothing was staged under this key, and there is no filesystem behind
-    // the staging layer, so the open fails rather than reading somewhere else.
+    // No key a client could have put there: a key the store does not hold is
+    // an error, not a lookup somewhere else.
     send(
         &mut socket,
         Request {
             id: 2,
             command: Command::SessionOpen {
-                path: "never-uploaded.clm".into(),
+                path: "not-in-the-store.clm".into(),
             },
         },
     );
     assert!(matches!(reply_to(&mut socket, 2), Reply::Err { .. }));
 }
 
+/// A session opened from the store keeps that file and saves back over it.
 #[test]
-fn an_open_releases_the_upload_it_read_and_claims_no_file() {
+fn a_session_opened_from_the_store_saves_back_to_it() {
     let server = start();
-    upload(&server, "model.clm", &clm_bytes());
+    store_file(&server, "model.clm", &clm_bytes());
 
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
     let session = open_session(&mut socket, 1, "model.clm");
 
-    // The model owns its own copy, so the server holds no second one. Without
-    // this every `.clm` a tab opened stayed in memory for the process life.
-    assert!(
-        server.staging.staged_keys().is_empty(),
-        "still staged: {:?}",
-        server.staging.staged_keys()
-    );
-    // And an upload is not a file: the key named bytes in flight, not
-    // something on the far side of the store.
     let info = session_info(&mut socket, 2, session);
-    assert_eq!(info.file, None);
-    // The title still comes from the key, which is what a person recognizes.
+    assert_eq!(info.file.as_deref(), Some("model.clm"));
+    // The title comes from the key, which is what a person recognizes.
     assert_eq!(info.title, "model");
-}
 
-#[test]
-fn a_session_opened_from_an_upload_has_nowhere_to_save_until_it_is_told() {
-    let server = start();
-    upload(&server, "model.clm", &clm_bytes());
-
-    let mut socket = connect(server.addr, TOKEN, None).unwrap();
-    let session = open_session(&mut socket, 1, "model.clm");
-
-    // A bare save would otherwise write `model.clm` into the server's working
-    // directory — a file the tab never asked for and cannot see.
     send(
         &mut socket,
         Request {
-            id: 2,
+            id: 3,
             command: Command::Save {
                 session,
                 path: None,
             },
         },
     );
-    match reply_to(&mut socket, 2) {
+    match body_of(reply_to(&mut socket, 3)) {
+        ResponseBody::Saved { path } => assert_eq!(path, "model.clm"),
+        other => panic!("expected Saved, got {other:?}"),
+    }
+    let written = server.store.read("model.clm").expect("a save landed");
+    catchlight_core::Model::from_clm_bytes(&written).expect("the saved bytes load as a model");
+}
+
+/// Bytes a client holds are a fresh session and an import, and that session
+/// has no file — so a bare save refuses rather than writing into the server's
+/// working directory.
+#[test]
+fn a_session_imported_from_bytes_has_nowhere_to_save_until_it_is_told() {
+    let server = start();
+    let mut socket = connect(server.addr, TOKEN, None).unwrap();
+    let (session, _) = new_session(&mut socket, 1);
+
+    let response = post_multipart(
+        server.addr,
+        &Request {
+            id: 2,
+            command: Command::ImportFile {
+                session,
+                parent: None,
+            },
+        },
+        &[("model", &clm_bytes())],
+    );
+    posted(&response);
+    assert_eq!(session_info(&mut socket, 3, session).file, None);
+
+    send(
+        &mut socket,
+        Request {
+            id: 4,
+            command: Command::Save {
+                session,
+                path: None,
+            },
+        },
+    );
+    match reply_to(&mut socket, 4) {
         Reply::Err { code, .. } => assert_eq!(code, ErrorCode::NoSavePath),
         other => panic!("expected Err, got {other:?}"),
     }
 
-    // Named, it saves through to the backing store and keeps the key.
+    // Named, it saves through to the store and keeps the key.
     send(
         &mut socket,
         Request {
-            id: 3,
+            id: 5,
             command: Command::Save {
                 session,
                 path: Some("saved/model.clm".into()),
             },
         },
     );
-    match body_of(reply_to(&mut socket, 3)) {
+    match body_of(reply_to(&mut socket, 5)) {
         ResponseBody::Saved { path } => assert_eq!(path, "saved/model.clm"),
         other => panic!("expected Saved, got {other:?}"),
     }
     let written = server.store.read("saved/model.clm").expect("a save landed");
     catchlight_core::Model::from_clm_bytes(&written).expect("the saved bytes load as a model");
     assert_eq!(
-        session_info(&mut socket, 4, session).file.as_deref(),
+        session_info(&mut socket, 6, session).file.as_deref(),
         Some("saved/model.clm")
     );
 }
 
+/// A texture the editor cannot decode is refused, and nothing is left behind
+/// anywhere for a retry to trip over: the bytes came with the command.
 #[test]
-fn a_failed_open_leaves_its_bytes_staged_to_retry() {
-    let server = start();
-    upload(&server, "broken.clm", b"not a model file");
-
-    let mut socket = connect(server.addr, TOKEN, None).unwrap();
-    send(
-        &mut socket,
-        Request {
-            id: 1,
-            command: Command::SessionOpen {
-                path: "broken.clm".into(),
-            },
-        },
-    );
-    assert!(matches!(reply_to(&mut socket, 1), Reply::Err { .. }));
-
-    // The upload is the caller's only copy: dropping it on a failure would
-    // make a retry a re-upload.
-    assert_eq!(server.staging.staged_keys(), vec!["broken.clm".to_string()]);
-}
-
-#[test]
-fn a_texture_add_releases_the_image_it_read() {
+fn an_image_that_does_not_decode_is_refused() {
     let server = start();
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
     let (session, _) = new_session(&mut socket, 1);
-    let root = root_of(&mut socket, 2, session);
-    send(
-        &mut socket,
-        Request {
-            id: 3,
-            command: Command::NodeAdd {
-                session,
-                parent: root,
-                kind: NodeKindArg::Part,
-                name: Some("Face".into()),
-                node: None,
-            },
-        },
-    );
-    let part = match body_of(reply_to(&mut socket, 3)) {
-        ResponseBody::Node { node, .. } => node,
-        other => panic!("expected Node, got {other:?}"),
-    };
+    let part = a_part(&mut socket, session, 2);
 
-    upload(&server, "face.png", &one_pixel_png());
-    send(
-        &mut socket,
-        Request {
+    let response = post_multipart(
+        server.addr,
+        &Request {
             id: 4,
             command: Command::TextureAdd {
                 session,
-                node: part.clone(),
-                path: Some("face.png".into()),
-                encoding: TextureEncoding::default(),
-                texture: None,
-            },
-        },
-    );
-    assert!(matches!(
-        body_of(reply_to(&mut socket, 4)),
-        ResponseBody::Texture { .. }
-    ));
-    assert!(server.staging.staged_keys().is_empty());
-
-    // A texture that failed to decode keeps its upload for the retry.
-    upload(&server, "torn.png", b"PNG-ish but not");
-    send(
-        &mut socket,
-        Request {
-            id: 5,
-            command: Command::TextureAdd {
-                session,
                 node: part,
-                path: Some("torn.png".into()),
                 encoding: TextureEncoding::default(),
                 texture: None,
             },
         },
+        &[("texture", b"PNG-ish but not")],
     );
-    assert!(matches!(reply_to(&mut socket, 5), Reply::Err { .. }));
-    assert_eq!(server.staging.staged_keys(), vec!["torn.png".to_string()]);
+    assert_eq!(response.status, 200);
+    match serde_json::from_slice::<Reply>(&response.body).expect("one reply") {
+        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::Image),
+        other => panic!("expected Err, got {other:?}"),
+    }
 }
 
 #[test]
@@ -940,34 +890,22 @@ fn a_texture_comes_back_as_the_payload_the_model_holds() {
         other => panic!("expected Node, got {other:?}"),
     };
 
-    // The texture arrives the way a tab sends one: an upload, then a command
-    // naming the key it was staged under.
+    // The texture arrives the way a tab sends one: attached to the command.
     let png = one_pixel_png();
-    assert_eq!(
-        http(
-            server.addr,
-            "PUT",
-            "/files/face.png",
-            &[("Authorization", &bearer())],
-            &png
-        )
-        .status,
-        204
-    );
-    send(
-        &mut socket,
-        Request {
+    let response = post_multipart(
+        server.addr,
+        &Request {
             id: 4,
             command: Command::TextureAdd {
                 session,
                 node: part,
-                path: Some("face.png".into()),
                 encoding: TextureEncoding::default(),
                 texture: None,
             },
         },
+        &[("texture", &png)],
     );
-    let texture = match body_of(reply_to(&mut socket, 4)) {
+    let texture = match body_of(posted(&response)) {
         ResponseBody::Texture { texture, .. } => texture,
         other => panic!("expected Texture, got {other:?}"),
     };
@@ -1128,14 +1066,15 @@ fn a_preflight_is_answered_for_an_allowlisted_origin_only() {
 }
 
 #[test]
-fn an_upload_far_over_the_ceiling_is_refused_unread() {
+fn a_body_far_over_the_ceiling_is_refused_unread() {
     let server = start();
     let response = http(
         server.addr,
-        "PUT",
-        "/files/too-big.clm",
+        "POST",
+        "/request",
         &[
             ("Authorization", &bearer()),
+            ("Content-Type", "multipart/form-data; boundary=b"),
             // The body is never sent, and at 200 MB it is far past what the
             // server will drain anyway: the length alone decides, and the
             // answer waits on no bytes.
@@ -1150,7 +1089,7 @@ fn an_upload_far_over_the_ceiling_is_refused_unread() {
 /// 413 goes out. Answering with bytes still unread closes the socket on the
 /// sender, and a client reports that reset instead of the status it was sent.
 #[test]
-fn an_upload_over_the_ceiling_is_drained_so_its_413_arrives() {
+fn a_body_over_the_ceiling_is_drained_so_its_413_arrives() {
     let server = start_with(|options| options.max_upload_bytes = 1024);
     // Far past what the socket buffers between here and there will hold, so
     // this write finishes only if the server is genuinely reading the body it
@@ -1159,9 +1098,12 @@ fn an_upload_over_the_ceiling_is_drained_so_its_413_arrives() {
 
     let response = http(
         server.addr,
-        "PUT",
-        "/files/too-big.clm",
-        &[("Authorization", &bearer())],
+        "POST",
+        "/request",
+        &[
+            ("Authorization", &bearer()),
+            ("Content-Type", "multipart/form-data; boundary=b"),
+        ],
         &body,
     );
     assert_eq!(response.status, 413);
@@ -1169,20 +1111,21 @@ fn an_upload_over_the_ceiling_is_drained_so_its_413_arrives() {
     assert_eq!(String::from_utf8_lossy(&response.body), "body too large");
 }
 
-/// An upload without a token is refused against its headers alone. The body
-/// is never sent, so an answer that waits for one never arrives; the length
-/// here is well under the ceiling, which leaves the token as the only thing
-/// that can decide.
+/// A body without a token is refused against its headers alone. The body is
+/// never sent, so an answer that waits for one never arrives; the length here
+/// is well under the ceiling, which leaves the token as the only thing that
+/// can decide.
 #[test]
-fn an_unauthorized_upload_is_answered_before_its_body() {
+fn an_unauthorized_body_is_answered_before_it_is_read() {
     let server = start();
     let started = Instant::now();
     let response = http(
         server.addr,
-        "PUT",
-        "/files/not-yours.clm",
+        "POST",
+        "/request",
         &[
             ("Authorization", "Bearer not-the-token"),
+            ("Content-Type", "multipart/form-data; boundary=b"),
             ("Content-Length", "4000000"),
         ],
         b"",
@@ -1193,8 +1136,6 @@ fn an_unauthorized_upload_is_answered_before_its_body() {
         started.elapsed() < Duration::from_secs(5),
         "the 401 waited on a body that was never sent"
     );
-    // And nothing was staged under a key the caller had no right to name.
-    assert!(server.staging.staged_keys().is_empty());
 }
 
 /// A tab that is only watching sends nothing for minutes, so the server keeps
@@ -1304,7 +1245,6 @@ fn a_multipart_post_carries_a_textures_bytes_into_the_command() {
             command: Command::TextureAdd {
                 session,
                 node: part,
-                path: None,
                 encoding: TextureEncoding::Png,
                 texture: None,
             },
@@ -1315,8 +1255,6 @@ fn a_multipart_post_carries_a_textures_bytes_into_the_command() {
         body_of(posted(&response)),
         ResponseBody::Texture { .. }
     ));
-    // Nothing was staged on the way through: the bytes went into the command.
-    assert!(server.staging.staged_keys().is_empty());
 }
 
 /// The reply rides in a header so the body can be the bytes themselves.
@@ -1406,7 +1344,6 @@ fn a_part_name_the_command_does_not_take_is_a_refusal_not_a_status() {
             command: Command::TextureAdd {
                 session,
                 node: part,
-                path: None,
                 encoding: TextureEncoding::Png,
                 texture: None,
             },
@@ -1510,7 +1447,6 @@ fn a_multipart_body_over_the_upload_ceiling_is_refused_and_drained() {
             command: Command::TextureAdd {
                 session,
                 node: part,
-                path: None,
                 encoding: TextureEncoding::Png,
                 texture: None,
             },
@@ -1550,16 +1486,15 @@ fn a_byte_bearing_command_over_the_websocket_is_refused() {
     }
 }
 
-/// The transitional form names a staged key rather than attaching bytes, so it
-/// is not byte-bearing and the socket still takes it.
+/// Every command that carries bytes is refused on the socket, `texture_add`
+/// included: there is no form of it that does not.
 #[test]
-fn a_texture_add_naming_a_key_still_goes_over_the_websocket() {
+fn a_texture_add_over_the_websocket_is_refused() {
     let server = start();
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
     let (session, _) = new_session(&mut socket, 1);
     let part = a_part(&mut socket, session, 2);
 
-    upload(&server, "face.png", &one_pixel_png());
     send(
         &mut socket,
         Request {
@@ -1567,14 +1502,13 @@ fn a_texture_add_naming_a_key_still_goes_over_the_websocket() {
             command: Command::TextureAdd {
                 session,
                 node: part,
-                path: Some("face.png".into()),
                 encoding: TextureEncoding::default(),
                 texture: None,
             },
         },
     );
-    assert!(matches!(
-        body_of(reply_to(&mut socket, 4)),
-        ResponseBody::Texture { .. }
-    ));
+    match reply_to(&mut socket, 4) {
+        Reply::Err { code, .. } => assert_eq!(code, ErrorCode::BulkOverHttp),
+        other => panic!("expected Err, got {other:?}"),
+    }
 }

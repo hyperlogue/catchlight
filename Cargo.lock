@@ -1649,6 +1649,7 @@ name = "catchlight-editor-wasm"
 version = "0.1.0"
 dependencies = [
  "catchlight-core",
+ "catchlight-editor-core",
  "catchlight-editor-protocol",
  "catchlight-editor-server",
  "catchlight-wgpu",

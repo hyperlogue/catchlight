@@ -64,7 +64,7 @@ import type {
   TexInfo,
   TreeNode,
 } from "./protocol.gen.js";
-import type { Backend, Request, Unsubscribe } from "./backend.js";
+import type { Attachment, Backend, Request, Unsubscribe } from "./backend.js";
 import { asProtocolError, expectResult, ProtocolError, readReply } from "./backend.js";
 import type { WasmReplica } from "./wasm.js";
 
@@ -169,6 +169,23 @@ export class Session {
    */
   async send(command: SessionDocumentCommand): Promise<ResponseBody> {
     const reply = await this.#backend.send(this.#address(command));
+    if (reply.rev !== undefined) await this.#reached(reply.rev);
+    this.#advance();
+    return reply.body;
+  }
+
+  /**
+   * [`send`] for a document command that carries bytes — an image, a `.clm`,
+   * a manifest and its textures.
+   *
+   * The same contract: the attachments go beside the command, and the promise
+   * resolves once the replica is at the revision the reply named.
+   */
+  async sendWith(
+    command: SessionDocumentCommand,
+    attachments: readonly Attachment[],
+  ): Promise<ResponseBody> {
+    const reply = await this.#backend.sendWith(this.#address(command), attachments);
     if (reply.rev !== undefined) await this.#reached(reply.rev);
     this.#advance();
     return reply.body;

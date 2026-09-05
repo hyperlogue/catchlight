@@ -874,6 +874,7 @@ mod tests {
 
     use super::*;
     use crate::CatchlightEditor;
+    use catchlight_editor_server::Attachments;
     use serde_json::{json, Value};
 
     /// The root every `Model::new` starts with, which `node_add` parents to.
@@ -908,14 +909,28 @@ mod tests {
     /// A part with one texture on it, and the texture's Id.
     fn add_part_with_texture(editor: &CatchlightEditor, session: SessionId) -> String {
         let part = add_node(editor, session, ROOT, "part", "face");
-        editor.put_bytes("face.png", one_pixel_png());
-        let reply = call(
-            editor,
-            json!({"id": 3, "cmd": "texture_add", "session": session.0,
-                   "node": part, "path": "face.png"}),
-        );
+        let reply = with_texture(editor, 3, session, &part);
         assert_eq!(reply["reply"], "ok", "reply was {reply}");
         reply["body"]["texture"].as_str().unwrap().to_string()
+    }
+
+    /// `texture_add` with a one-pixel PNG attached — the one way an image
+    /// reaches a model.
+    fn with_texture(
+        editor: &CatchlightEditor,
+        id: u64,
+        session: SessionId,
+        node: &str,
+    ) -> serde_json::Value {
+        let mut attachments = Attachments::none();
+        attachments.insert("texture", one_pixel_png());
+        let (reply, _) = editor.dispatch_with(
+            &json!({"id": id, "cmd": "texture_add", "session": session.0,
+                    "node": node, "encoding": "png"})
+            .to_string(),
+            attachments,
+        );
+        serde_json::from_str(&reply).unwrap()
     }
 
     /// The structure push a server would send for this session.
@@ -1216,13 +1231,7 @@ mod tests {
     /// bounds walk counts it as drawn. Returns the node Id.
     fn add_drawn_part(editor: &CatchlightEditor, session: SessionId, name: &str) -> String {
         let part = add_node(editor, session, ROOT, "part", name);
-        let key = format!("{name}.png");
-        editor.put_bytes(&key, one_pixel_png());
-        let reply = call(
-            editor,
-            json!({"id": 20, "cmd": "texture_add", "session": session.0,
-                   "node": part, "path": key}),
-        );
+        let reply = with_texture(editor, 20, session, &part);
         assert_eq!(reply["reply"], "ok", "reply was {reply}");
         part
     }

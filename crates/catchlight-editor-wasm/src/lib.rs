@@ -22,20 +22,19 @@
 //!   to be drained afterwards. It is the same [`Editor::handle_with`] every
 //!   other transport funnels into; this crate only marshals.
 //!
-//! - **Staging is where the browser's asynchrony stops.** [`Storage`] is
-//!   synchronous because [`Editor::handle`] is, and everything a browser reads
-//!   bytes from — a file picker, OPFS, `fetch` — is not. So JS resolves its
-//!   own promises first, [`put_bytes`] the result under a key, and only then
-//!   sends the command naming that key. Nothing on the command path awaits,
-//!   and the async lives in the TypeScript layer where the platform APIs are.
+//! - **The browser's asynchrony stops in TypeScript.** Everything a browser
+//!   reads bytes from — a file picker, OPFS, `fetch` — is asynchronous, and
+//!   [`Editor::handle_with`] is not. So JS awaits its own promises first and
+//!   then calls in with the bytes in hand; nothing on the command path awaits.
 //!   This crate holds exactly two futures, and neither is a command:
 //!   `Gpu::acquire`, once per tab, and `Viewport::readback`, which only the
 //!   browser smoke test calls.
 //!
-//! - **Staged bytes are not a cache.** [`StagedStorage`] holds what was put
-//!   there and nothing else; it never falls back to a network or a disk. A key
-//!   that was not staged is a plain `NotFound`, which is the honest answer —
-//!   the layer that knows how to fetch it is above this one.
+//! - **The tab's store is outward only.** [`WrittenBytes`] is where a `save`
+//!   or an `export_manifest` leaves what it wrote, until [`take_bytes`] drains
+//!   it into the browser's own storage or into a download. Nothing goes *in*
+//!   through it — a command that needs bytes is handed them — so it is not a
+//!   cache and a key nothing wrote is a plain `NotFound`.
 //!
 //! - **The tab holds a replica, and Rust never calls JavaScript.** What the
 //!   page draws and reads per frame is a [`ReplicaState`] of one session, fed
@@ -48,7 +47,7 @@
 //!
 //! [`handle`]: CatchlightEditor::handle
 //! [`drain_events`]: CatchlightEditor::drain_events
-//! [`put_bytes`]: CatchlightEditor::put_bytes
+//! [`take_bytes`]: CatchlightEditor::take_bytes
 //! [`Event`]: catchlight_editor_protocol::Event
 //! [`Request`]: catchlight_editor_protocol::Request
 //! [`Reply`]: catchlight_editor_protocol::Reply
@@ -57,6 +56,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use catchlight_editor_core::Manifest;
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
@@ -78,16 +78,43 @@ pub use viewport::Viewport;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-/// Bytes JavaScript has already resolved, keyed by the same string the
-/// protocol's `path` fields carry.
+/// Every texture a manifest names, as it spells the reference.
+///
+/// A pure function of the JSON, with no session and no editor: the tab reads
+/// a manifest it is about to import, resolves each reference against the
+/// manifest's own location, and attaches the bytes under `texture:<ref>`. It
+/// is here rather than in TypeScript so one reader decides what a manifest
+/// says — the same [`Manifest`] the import itself parses.
+///
+/// The references come back verbatim, because that is the string the import
+/// matches an attachment against. A manifest that does not parse is an error
+/// carrying the reason.
+pub fn manifest_requirements(json: &str) -> Result<Vec<String>, String> {
+    let manifest = Manifest::from_json(json).map_err(|e| e.to_string())?;
+    Ok(manifest.textures.into_iter().map(|t| t.path).collect())
+}
+
+/// [`manifest_requirements`] on the JS surface.
+///
+/// ```js
+/// const refs = manifestRequirements(await file.text()); // string[]
+/// ```
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = manifestRequirements)]
+pub fn manifest_requirements_js(json: &str) -> Result<Vec<String>, JsValue> {
+    manifest_requirements(json).map_err(|e| JsValue::from_str(&e))
+}
+
+/// The tab's own store: where a `save` or an `export_manifest` puts what it
+/// wrote, until TypeScript drains it out into the browser's storage.
+///
+/// **Outward only.** A command that *reads* a key never reaches here — bytes
+/// come in as attachments on the command that uses them — so a read is a plain
+/// `NotFound` naming the key, and there is nothing a caller could put in.
 #[derive(Debug, Default)]
-struct StagedStorage(Mutex<HashMap<String, Vec<u8>>>);
+struct WrittenBytes(Mutex<HashMap<String, Vec<u8>>>);
 
-impl StagedStorage {
-    fn put(&self, key: &str, bytes: Vec<u8>) {
-        lock(&self.0).insert(key.to_string(), bytes);
-    }
-
+impl WrittenBytes {
     fn take(&self, key: &str) -> Option<Vec<u8>> {
         lock(&self.0).remove(key)
     }
@@ -99,12 +126,12 @@ impl StagedStorage {
     }
 }
 
-impl Storage for StagedStorage {
+impl Storage for WrittenBytes {
     fn read(&self, key: &str) -> io::Result<Vec<u8>> {
         lock(&self.0).get(key).cloned().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("{key:?} was not staged; put its bytes before naming it"),
+                format!("{key:?} is not in this tab's store"),
             )
         })
     }
@@ -113,33 +140,21 @@ impl Storage for StagedStorage {
         lock(&self.0).insert(key.to_string(), bytes.to_vec());
         Ok(())
     }
-
-    /// Nothing is released here, and the `false` is load-bearing.
-    ///
-    /// A staged key in the tab is not a transient upload: it is a real key in
-    /// the store above, staged from it, and a session opened from one is saved
-    /// back under it — so `false` is what keeps that `file` on the session.
-    /// The TypeScript layer drains the staging map itself once its command's
-    /// reply is good (see `consumesKey` in `packages/core/src/in-tab.ts`),
-    /// which is where the knowledge of which keys are the store's lives.
-    fn release(&self, _key: &str) -> bool {
-        false
-    }
 }
 
-/// A poisoned staging map means a panic already happened somewhere else; the
-/// bytes themselves are still whatever they were, so keep going rather than
+/// A poisoned map means a panic already happened somewhere else; the bytes
+/// themselves are still whatever they were, so keep going rather than
 /// cascading a second panic out through the wasm boundary.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The editor, its sessions, the bytes staged for them, and the events it has
+/// The editor, its sessions, the bytes it has written, and the events it has
 /// emitted since the page last looked.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct CatchlightEditor {
     editor: Editor,
-    staged: Arc<StagedStorage>,
+    written: Arc<WrittenBytes>,
     /// Serialized [`Event`]s in emission order, waiting to be pulled.
     ///
     /// [`Event`]: catchlight_editor_protocol::Event
@@ -154,9 +169,9 @@ impl Default for CatchlightEditor {
 
 impl CatchlightEditor {
     fn new_inner() -> Self {
-        let staged = Arc::new(StagedStorage::default());
+        let written = Arc::new(WrittenBytes::default());
         let events: Arc<Mutex<Vec<String>>> = Arc::default();
-        let editor = Editor::with_storage(staged.clone());
+        let editor = Editor::with_storage(written.clone());
         let sink = events.clone();
         // The observer holds the queue and nothing else — never the editor,
         // which owns it, and never anything from JavaScript. The handle is
@@ -169,7 +184,7 @@ impl CatchlightEditor {
         }));
         Self {
             editor,
-            staged,
+            written,
             events,
         }
     }
@@ -256,10 +271,14 @@ impl CatchlightEditor {
     /// entry that is not a `[string, Uint8Array]` pair throws, because that is
     /// a bug in the caller rather than something the editor refused.
     #[cfg(target_arch = "wasm32")]
-    #[wasm_bindgen(js_name = handleWith)]
+    #[wasm_bindgen(
+        js_name = handleWith,
+        unchecked_return_type = "{ reply: string; payload?: Uint8Array }"
+    )]
     pub fn handle_with(
         &self,
         request_json: &str,
+        #[wasm_bindgen(unchecked_param_type = "Array<[string, Uint8Array]>")]
         attachments: js_sys::Array,
     ) -> Result<js_sys::Object, JsValue> {
         let mut taken = Attachments::none();
@@ -294,26 +313,19 @@ impl CatchlightEditor {
         Ok(out)
     }
 
-    /// Stages bytes under `key`, for a command that is about to name it.
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = putBytes))]
-    pub fn put_bytes(&self, key: &str, bytes: Vec<u8>) {
-        self.staged.put(key, bytes);
-    }
-
-    /// Removes and returns what is staged under `key` — how a save's bytes
-    /// leave for a download or an upload. Taking rather than copying is
-    /// deliberate: a model's textures are the bulk of it, and a staging map
-    /// that is never drained is a leak the size of the document.
+    /// Removes and returns what a command wrote under `key` — how a save's
+    /// bytes leave for the browser's own storage or a download. Taking rather
+    /// than copying is deliberate: a model's textures are the bulk of it, and
+    /// a map that is never drained is a leak the size of the document.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = takeBytes))]
     pub fn take_bytes(&self, key: &str) -> Option<Vec<u8>> {
-        self.staged.take(key)
+        self.written.take(key)
     }
 
-    /// Every staged key, sorted. For diagnostics; nothing should need it to
-    /// decide what to do next.
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = stagedKeys))]
-    pub fn staged_keys(&self) -> Vec<String> {
-        self.staged.keys()
+    /// Every key a command has written and nothing has drained, sorted.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = writtenKeys))]
+    pub fn written_keys(&self) -> Vec<String> {
+        self.written.keys()
     }
 
     /// Every [`Event`] emitted since the last drain, each serialized, in the
@@ -369,33 +381,39 @@ mod tests {
         assert_eq!(reply["code"], "bad_request");
     }
 
+    /// The store is outward only: a save leaves its bytes there, TypeScript
+    /// takes them, and they come back into a document as an attachment.
     #[test]
-    fn staged_bytes_are_what_a_path_command_reads() {
+    fn a_save_leaves_bytes_the_tab_can_take_and_import_again() {
         let editor = CatchlightEditor::new();
         let session = call(&editor, json!({"id": 1, "cmd": "session_new"}))["body"]["session"]
             .as_u64()
             .unwrap();
 
-        // Save stages the document's bytes under the key it was given...
         let saved = call(
             &editor,
             json!({"id": 2, "cmd": "save", "session": session, "path": "akari.clm"}),
         );
         assert_eq!(saved["body"]["path"], "akari.clm");
-        assert_eq!(editor.staged_keys(), vec!["akari.clm".to_string()]);
+        assert_eq!(editor.written_keys(), vec!["akari.clm".to_string()]);
 
-        // ...and taking them drains the staging map, so nothing is held twice.
-        let bytes = editor.take_bytes("akari.clm").expect("save staged bytes");
+        // Taking drains the map, so nothing is held twice.
+        let bytes = editor.take_bytes("akari.clm").expect("save wrote bytes");
         assert!(!bytes.is_empty());
-        assert!(editor.staged_keys().is_empty());
+        assert!(editor.written_keys().is_empty());
 
-        // Put them back and a fresh session opens from them.
-        editor.put_bytes("akari.clm", bytes);
-        let opened = call(
-            &editor,
-            json!({"id": 3, "cmd": "session_open", "path": "akari.clm"}),
+        // And back in they go, attached to the command that reads them.
+        let fresh = call(&editor, json!({"id": 3, "cmd": "session_new"}))["body"]["session"]
+            .as_u64()
+            .unwrap();
+        let mut attachments = Attachments::none();
+        attachments.insert("model", bytes);
+        let (reply, _) = editor.dispatch_with(
+            &json!({"id": 4, "cmd": "import_file", "session": fresh}).to_string(),
+            attachments,
         );
-        assert!(opened["body"]["session"].is_number(), "reply was {opened}");
+        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["reply"], "ok", "reply was {reply}");
     }
 
     /// The Rust half of `handleWith`: bytes in beside the command, bytes out
@@ -435,7 +453,7 @@ mod tests {
         assert!(reply["body"]["texture"].is_string(), "reply was {reply}");
         assert!(payload.is_none(), "texture_add answers with no bytes");
         // And nothing was parked under a key on the way through.
-        assert!(editor.staged_keys().is_empty());
+        assert!(editor.written_keys().is_empty());
     }
 
     /// A command that carries bytes and is handed none is refused, so the
@@ -463,19 +481,32 @@ mod tests {
     }
 
     #[test]
-    fn an_unstaged_key_says_so_rather_than_reading_nothing() {
+    fn a_key_nothing_wrote_says_so_rather_than_reading_nothing() {
         let editor = CatchlightEditor::new();
         let reply = call(
             &editor,
-            json!({"id": 9, "cmd": "session_open", "path": "never-staged.clm"}),
+            json!({"id": 9, "cmd": "session_open", "path": "never-written.clm"}),
         );
         assert_eq!(reply["id"], 9);
         assert!(
             reply["message"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("never-staged.clm"),
+                .contains("never-written.clm"),
             "reply was {reply}"
         );
+    }
+
+    /// The pure reader the tab uses to know what a manifest needs, before it
+    /// has a session to import into.
+    #[test]
+    fn a_manifests_references_come_back_verbatim() {
+        let refs = manifest_requirements(
+            r#"{"textures":[{"id":"face","path":"images/face.png"}],
+                "nodes":[{"id":"face","kind":"part","texture":"face"}]}"#,
+        )
+        .expect("a manifest reads");
+        assert_eq!(refs, vec!["images/face.png".to_string()]);
+        assert!(manifest_requirements("not json").is_err());
     }
 }

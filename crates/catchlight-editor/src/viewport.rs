@@ -385,7 +385,7 @@ mod tests {
         ))
         .unwrap();
         let editor = catchlight_editor_server::Editor::new();
-        let session = editor.open_bytes("welded_seam", &bytes).unwrap();
+        let session = crate::app::open_bytes(&editor, "welded_seam", bytes).unwrap();
         let rs = render_state();
         let mut viewport = ViewportRenderer::new(&rs, 512, 512);
         // welded_seam spans 300x240 world units, so the GUI's default 2000-unit
@@ -461,7 +461,7 @@ mod tests {
         ))
         .unwrap();
         let editor = catchlight_editor_server::Editor::new();
-        let session = editor.open_bytes("welded_seam", &bytes).unwrap();
+        let session = crate::app::open_bytes(&editor, "welded_seam", bytes).unwrap();
         let rs = render_state();
         let mut viewport = ViewportRenderer::new(&rs, 256, 256);
         let camera = EditorCamera {

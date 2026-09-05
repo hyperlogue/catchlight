@@ -17,7 +17,7 @@ use catchlight_editor_protocol::{
     Command, ErrorCode, NodeId, NodeKind, NodeKindArg, ParamId, PhysicsKind, PhysicsTargets, Reply,
     Request, ResponseBody, SessionId, TexId, TextureEncoding,
 };
-use catchlight_editor_server::{Editor, Storage};
+use catchlight_editor_server::{Attachments, Editor, Storage};
 
 /// A store that is only a map, so a texture needs no filesystem.
 #[derive(Debug, Default)]
@@ -52,9 +52,8 @@ const PIXEL_PNG: &[u8] = &[
 ];
 
 fn editor() -> (Editor, SessionId) {
-    let store = MemStorage::default();
-    store.write("hair.png", PIXEL_PNG).unwrap();
-    let ed = Editor::with_storage(Arc::new(store));
+    // The store holds nothing: an image arrives with the command that uses it.
+    let ed = Editor::with_storage(Arc::new(MemStorage::default()));
     let session = match body(&ed, 1, Command::SessionNew { name: None }) {
         ResponseBody::Session { session } => session,
         other => panic!("{other:?}"),
@@ -63,7 +62,13 @@ fn editor() -> (Editor, SessionId) {
 }
 
 fn reply(ed: &Editor, id: u64, command: Command) -> Reply {
-    ed.handle(Request { id, command })
+    // Every command here that carries bytes carries the one image, so
+    // attaching it unconditionally is what the caller would have written.
+    let mut attachments = Attachments::none();
+    if matches!(command, Command::TextureAdd { .. }) {
+        attachments.insert("texture", PIXEL_PNG.to_vec());
+    }
+    ed.handle_with(Request { id, command }, attachments).0
 }
 
 fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
@@ -129,7 +134,6 @@ fn an_add_creates_under_the_id_it_was_given() {
             Command::TextureAdd {
                 session,
                 node: hair.clone(),
-                path: Some("hair.png".into()),
                 encoding: TextureEncoding::default(),
                 texture: Some(albedo.clone()),
             }
@@ -210,7 +214,6 @@ fn an_id_the_model_already_carries_is_refused_under_its_own_code() {
     let texture = || Command::TextureAdd {
         session,
         node: hair.clone(),
-        path: Some("hair.png".into()),
         encoding: TextureEncoding::default(),
         texture: Some(albedo.clone()),
     };

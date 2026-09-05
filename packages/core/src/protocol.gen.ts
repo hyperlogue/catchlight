@@ -37,14 +37,6 @@ export type Command =
     path: string,
   }
   | {
-    "cmd": "session_import",
-    manifest_path: string,
-  }
-  | {
-    "cmd": "manifest_requirements",
-    manifest_path: string,
-  }
-  | {
     "cmd": "session_list"
   }
   | {
@@ -214,14 +206,6 @@ export type Command =
     "cmd": "texture_add",
     session: SessionId,
     node: NodeId,
-    /**
-     * A storage key to read the image from instead of the attachment —
-     * the transitional form, and the one place an encoding is still
-     * sniffed off a key's tail. Exactly one of this and the attachment,
-     * else [`ErrorCode::BadRequest`]. Goes away once every client sends
-     * the attachment.
-     */
-    path?: string | null,
     /**
      * How to read the attached bytes. The field, never a sniff.
      */
@@ -1076,10 +1060,6 @@ export type ResponseBody =
     "result": "emptied",
     node: NodeId,
     slots: Array<SlotId>,
-  }
-  | {
-    "result": "manifest_requirements",
-    textures: Array<string>,
   };
 
 export type Event =
@@ -1313,7 +1293,6 @@ export type PreviewInfo = {
 export type DocumentCommandTag =
   | "session_new"
   | "session_open"
-  | "session_import"
   | "session_close"
   | "save"
   | "node_add"
@@ -1412,7 +1391,6 @@ export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag
  * A replica cannot answer one, so these always go over the wire.
  */
 export type ServerQueryCommandTag =
-  | "manifest_requirements"
   | "session_list"
   | "export_manifest"
   | "status"

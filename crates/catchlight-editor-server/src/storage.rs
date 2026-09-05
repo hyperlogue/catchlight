@@ -10,8 +10,8 @@
 //! rather than a native surface and a browser surface that drift apart.
 //!
 //! Keys are `/`-separated by convention so [`parent_key`] and [`join_key`] can
-//! resolve a manifest's texture references relative to the manifest. Nothing
-//! parses a key beyond that: a backend is free to treat it as flat.
+//! resolve one document's references relative to it. Nothing parses a key
+//! beyond that: a backend is free to treat it as flat.
 //!
 //! **A relative key resolves against the store, not against the process.**
 //! [`FileStorage`] carries a root directory fixed at construction — the
@@ -27,29 +27,20 @@
 //! from temp-then-rename; a backend that cannot must say so in its own docs,
 //! because an interrupted save otherwise destroys the only copy.
 //!
-//! **An upload is not a file on disk.** A browser has no filesystem, so the
-//! bytes a tab wants opened arrive over HTTP rather than sitting somewhere
-//! [`FileStorage`] could read — yet the command that opens them still names
-//! one `path` key. [`StagingStorage`] is that seam: `put` parks bytes under
-//! the key the command will name, `read` finds them there before it asks the
-//! backing store, and `write` always goes to the backing store, clearing the
-//! staged copy so a save is visible to the next read.
-//!
-//! **Staging is released by the read that consumed it, and a released key was
-//! never a file.** [`Storage::release`] is how a command that read a key *into
-//! a document* says so. A staging map nothing empties holds a second whole
-//! copy — textures and all — of every document the server was handed, for the
-//! life of the process. The answer is also the fact the caller needs: a key
-//! that released was a transient upload, not a file, so the session opened
-//! from it has nowhere to save back to and a bare `save` refuses rather than
-//! writing into the server's working directory. Only a command that succeeded
-//! releases; a failed one leaves its bytes staged so the caller may retry.
+//! **The store holds the server's files, and nothing else passes through it.**
+//! Open, save, export: three commands, each naming a file that is the
+//! server's to read or write. Bytes a *client* holds never become a key —
+//! there is no upload, no staging map, and so no key that names something the
+//! server never wrote. A tab that wants its own bytes opened sends
+//! [`Command::SessionNew`](catchlight_editor_protocol::Command::SessionNew)
+//! and then
+//! [`Command::ImportFile`](catchlight_editor_protocol::Command::ImportFile)
+//! with the file attached, and the session it gets has no file to save back
+//! to because there is none.
 
-use std::collections::HashMap;
 use std::io;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 /// A byte store addressed by opaque keys.
 pub trait Storage: Send + Sync + std::fmt::Debug {
@@ -58,17 +49,6 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
 
     /// Replaces the value at `key`, atomically (see the module docs).
     fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
-
-    /// The bytes at `key` were read into a document; if they were transient,
-    /// drop them and say so.
-    ///
-    /// `true` means the key named an upload this store was holding for exactly
-    /// that read and is holding no longer — which is also how a caller learns
-    /// the key was never a file. A store whose keys are durable keeps them and
-    /// returns `false`, which is the default.
-    fn release(&self, _key: &str) -> bool {
-        false
-    }
 }
 
 /// The key a relative reference inside `key`'s document resolves against —
@@ -187,78 +167,6 @@ impl Storage for FileStorage {
     }
 }
 
-/// A [`Storage`] with an in-memory staging area in front of it.
-///
-/// `put` holds bytes under the key a later command will name; `take` and
-/// [`release`](Storage::release) remove them again. Reads check the staging
-/// map first, so
-/// `session_open { path: "model.clm" }` resolves against an upload the server
-/// never wrote anywhere. Writes never land in the map — a save is a save, so
-/// it goes to `backing` and drops whatever was staged under that key, leaving
-/// the saved bytes as the only answer a read can give.
-///
-/// Staging is not a cache: it holds what was put there and nothing else, and
-/// never reaches for a key it was not given.
-#[derive(Debug)]
-pub struct StagingStorage {
-    staged: Mutex<HashMap<String, Vec<u8>>>,
-    backing: Arc<dyn Storage>,
-}
-
-impl StagingStorage {
-    /// Stage in front of `backing`.
-    pub fn new(backing: Arc<dyn Storage>) -> Self {
-        Self {
-            staged: Mutex::new(HashMap::new()),
-            backing,
-        }
-    }
-
-    /// Park `bytes` under `key`, replacing anything staged there.
-    pub fn put(&self, key: &str, bytes: Vec<u8>) {
-        lock(&self.staged).insert(key.to_string(), bytes);
-    }
-
-    /// Remove and return what was staged under `key`.
-    pub fn take(&self, key: &str) -> Option<Vec<u8>> {
-        lock(&self.staged).remove(key)
-    }
-
-    /// The staged keys, sorted. For diagnostics only — nothing addresses
-    /// anything by this list.
-    pub fn staged_keys(&self) -> Vec<String> {
-        let mut keys: Vec<String> = lock(&self.staged).keys().cloned().collect();
-        keys.sort();
-        keys
-    }
-}
-
-impl Storage for StagingStorage {
-    fn read(&self, key: &str) -> io::Result<Vec<u8>> {
-        if let Some(bytes) = lock(&self.staged).get(key) {
-            return Ok(bytes.clone());
-        }
-        self.backing.read(key)
-    }
-
-    fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
-        self.backing.write(key, bytes)?;
-        lock(&self.staged).remove(key);
-        Ok(())
-    }
-
-    fn release(&self, key: &str) -> bool {
-        lock(&self.staged).remove(key).is_some()
-    }
-}
-
-/// A poisoned staging map means a panic already happened elsewhere; the bytes
-/// are still whatever they were, so keep going rather than cascading a second
-/// panic through a connection thread.
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,61 +195,6 @@ mod tests {
         let err = NoStorage.read("models/akari.clm").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);
         assert!(err.to_string().contains("models/akari.clm"));
-    }
-
-    #[test]
-    fn staged_bytes_answer_a_read_the_backing_store_would_refuse() {
-        let staging = StagingStorage::new(Arc::new(NoStorage));
-        staging.put("model.clm", b"staged".to_vec());
-        assert_eq!(staging.read("model.clm").unwrap(), b"staged");
-        assert_eq!(staging.staged_keys(), vec!["model.clm".to_string()]);
-        assert_eq!(staging.take("model.clm").unwrap(), b"staged");
-        assert!(staging.read("model.clm").is_err());
-    }
-
-    #[test]
-    fn a_save_lands_in_the_backing_store_and_clears_the_staged_copy() {
-        #[derive(Debug, Default)]
-        struct Mem(Mutex<HashMap<String, Vec<u8>>>);
-        impl Storage for Mem {
-            fn read(&self, key: &str) -> io::Result<Vec<u8>> {
-                lock(&self.0)
-                    .get(key)
-                    .cloned()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, key.to_string()))
-            }
-            fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
-                lock(&self.0).insert(key.to_string(), bytes.to_vec());
-                Ok(())
-            }
-        }
-
-        let backing = Arc::new(Mem::default());
-        let staging = StagingStorage::new(backing.clone());
-        staging.put("model.clm", b"uploaded".to_vec());
-        staging.write("model.clm", b"saved").unwrap();
-        assert_eq!(backing.read("model.clm").unwrap(), b"saved");
-        assert!(staging.staged_keys().is_empty());
-        assert_eq!(staging.read("model.clm").unwrap(), b"saved");
-    }
-
-    #[test]
-    fn release_drops_an_upload_and_says_it_was_one() {
-        let staging = StagingStorage::new(Arc::new(NoStorage));
-        staging.put("model.clm", b"uploaded".to_vec());
-        assert!(staging.release("model.clm"));
-        assert!(staging.staged_keys().is_empty());
-        // A key the store never staged is not this store's to drop, and the
-        // `false` is what tells a caller the key may name a real file.
-        assert!(!staging.release("model.clm"));
-        assert!(!staging.release("on-disk.clm"));
-        assert!(!NoStorage.release("model.clm"));
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn file_storage_keeps_the_keys_it_is_asked_to_release() {
-        assert!(!FileStorage::default().release("models/akari.clm"));
     }
 
     #[cfg(not(target_arch = "wasm32"))]

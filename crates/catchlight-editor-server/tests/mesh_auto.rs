@@ -18,7 +18,7 @@ use catchlight_editor_protocol::{
     AutoMesh, Command, ErrorCode, NodeId, NodeKindArg, Reply, Request, ResponseBody, SessionId,
     TextureEncoding,
 };
-use catchlight_editor_server::{Editor, Storage};
+use catchlight_editor_server::{Attachments, Editor, Storage};
 
 /// A store that is only a map, so a texture needs no filesystem.
 #[derive(Debug, Default)]
@@ -75,6 +75,14 @@ fn empty_png() -> Vec<u8> {
     bytes.into_inner()
 }
 
+/// The fixture's two images, by the name the tests call them.
+fn image_named(name: &str) -> Vec<u8> {
+    match name {
+        "empty.png" => empty_png(),
+        _ => blob_png(),
+    }
+}
+
 struct Fixture {
     editor: Editor,
     session: SessionId,
@@ -83,10 +91,9 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let store = MemStorage::default();
-        store.write("blob.png", &blob_png()).unwrap();
-        store.write("empty.png", &empty_png()).unwrap();
-        let editor = Editor::with_storage(Arc::new(store));
+        // The store holds nothing: images arrive with the command that uses
+        // them.
+        let editor = Editor::with_storage(Arc::new(MemStorage::default()));
         let mut f = Self {
             editor,
             session: SessionId(0),
@@ -105,6 +112,27 @@ impl Fixture {
             id: self.next,
             command,
         })
+    }
+
+    /// One command with an image attached — the one way a texture gets in.
+    fn body_with(&mut self, command: Command, name: &str, bytes: &[u8]) -> ResponseBody {
+        self.next += 1;
+        let mut attachments = Attachments::none();
+        attachments.insert(name, bytes.to_vec());
+        match self
+            .editor
+            .handle_with(
+                Request {
+                    id: self.next,
+                    command,
+                },
+                attachments,
+            )
+            .0
+        {
+            Reply::Ok { body, .. } => body,
+            other => panic!("expected Ok, got {other:?}"),
+        }
     }
 
     fn body(&mut self, command: Command) -> ResponseBody {
@@ -132,13 +160,16 @@ impl Fixture {
     fn part(&mut self, key: &str) -> NodeId {
         let node = self.node(NodeKindArg::Part);
         let session = self.session;
-        self.body(Command::TextureAdd {
-            session,
-            node: node.clone(),
-            path: Some(key.to_string()),
-            encoding: TextureEncoding::default(),
-            texture: None,
-        });
+        self.body_with(
+            Command::TextureAdd {
+                session,
+                node: node.clone(),
+                encoding: TextureEncoding::default(),
+                texture: None,
+            },
+            "texture",
+            &image_named(key),
+        );
         node
     }
 

@@ -41,63 +41,46 @@ describe("in-tab", () => {
     expect(reply.rev).toBe(1);
   });
 
-  test("stages the key a command names, out of the store, and then drops it", async () => {
-    const editor = new FakeEditor();
-    const storage = new MemoryStorage();
-    await storage.write("project/akari.clm", new TextEncoder().encode("a model"));
-    const backend = new InTabBackend(editor, storage);
-
-    await backend.send({ cmd: "session_open", path: "project/akari.clm" });
-
-    // The fake refuses an unstaged key, so reaching a `session` reply is the
-    // proof that the bytes were there first — and staging is empty afterwards,
-    // because the model the open built owns its own copy.
-    expect(editor.requests.map((r) => r.cmd)).toEqual(["session_open"]);
-    expect(editor.stagedKeys()).toEqual([]);
-
-    // And the key is still openable: the second one stages out of the store
-    // again rather than finding a hole where the bytes used to be.
-    await backend.send({ cmd: "session_open", path: "project/akari.clm" });
-    expect(editor.docs.size).toBe(2);
-  });
-
-  test("a command that failed keeps its bytes staged", async () => {
+  test("bytes go with the command that uses them, under the name it declares", async () => {
     const editor = new FakeEditor();
     const backend = new InTabBackend(editor, new MemoryStorage());
-    editor.refuse.set("session_open", { code: "io", message: "not a model" });
-    await backend.putBytes("akari.clm", new TextEncoder().encode("a model"));
+    await backend.send({ cmd: "session_new", name: null });
+    const bytes = new TextEncoder().encode("a model");
 
-    await expect(backend.send({ cmd: "session_open", path: "akari.clm" })).rejects.toBeInstanceOf(
-      ProtocolError,
-    );
+    const reply = await backend.sendWith({ cmd: "import_file", session: 1, parent: null }, [
+      ["model", bytes],
+    ]);
 
-    // Nothing read them, and the caller may retry without producing them twice.
-    expect(editor.stagedKeys()).toEqual(["akari.clm"]);
+    expect(reply.body).toMatchObject({ result: "session" });
+    expect(editor.attached.at(-1)).toEqual({ model: bytes });
+    // Nothing was parked under a key on the way through.
+    expect(editor.writtenKeys()).toEqual([]);
   });
 
-  test("a key the store does not have fails before any command", async () => {
+  test("a byte-bearing command sent through `send` never reaches the editor", async () => {
+    const editor = new FakeEditor();
+    const backend = new InTabBackend(editor, new MemoryStorage());
+    await backend.send({ cmd: "session_new", name: null });
+    const before = editor.requests.length;
+
+    await expect(
+      backend.send({ cmd: "import_file", session: 1, parent: null }),
+    ).rejects.toBeInstanceOf(ProtocolError);
+
+    // Refused here, where the mistake is, rather than a round trip away.
+    expect(editor.requests).toHaveLength(before);
+  });
+
+  test("a key the editor's store does not have is its own refusal", async () => {
     const editor = new FakeEditor();
     const backend = new InTabBackend(editor, new MemoryStorage());
 
     await expect(backend.send({ cmd: "session_open", path: "missing.clm" })).rejects.toBeInstanceOf(
-      NotFoundError,
+      ProtocolError,
     );
-    expect(editor.requests).toHaveLength(0);
   });
 
-  test("bytes the caller staged are not looked up in the store", async () => {
-    const editor = new FakeEditor();
-    const backend = new InTabBackend(editor, new MemoryStorage());
-
-    await backend.putBytes("dropped.clm", new TextEncoder().encode("a model"));
-    const reply = await backend.send({ cmd: "session_open", path: "dropped.clm" });
-
-    // An empty store and a document all the same: a file the page holds never
-    // has to be written down first.
-    expect(reply.body).toMatchObject({ result: "session" });
-  });
-
-  test("saving drains staging into the store rather than copying it", async () => {
+  test("saving drains what the editor wrote into the store", async () => {
     const editor = new FakeEditor();
     const storage = new MemoryStorage();
     const backend = new InTabBackend(editor, storage);
@@ -107,8 +90,8 @@ describe("in-tab", () => {
 
     expect(reply.body).toEqual({ result: "saved", path: "out/akari.clm" });
     expect(await storage.list()).toEqual(["out/akari.clm"]);
-    // Drained: a staging map that is never emptied holds every texture twice.
-    expect(editor.stagedKeys()).toEqual([]);
+    // Drained: a map that is never emptied holds every texture twice.
+    expect(editor.writtenKeys()).toEqual([]);
   });
 
   test("an export drains the files it wrote beside the one it named", async () => {
@@ -120,7 +103,7 @@ describe("in-tab", () => {
     await backend.send({ cmd: "export_manifest", session: 1, path: "out/model.json" });
 
     expect(await storage.list()).toEqual(["out/model.json", "tex0.png"]);
-    expect(editor.stagedKeys()).toEqual([]);
+    expect(editor.writtenKeys()).toEqual([]);
   });
 
   test("a save that staged no bytes is an error, not a silent no-op", async () => {
@@ -322,28 +305,64 @@ describe("connected", () => {
     expect(replica.rev()).toBe(3);
   });
 
-  test("putting bytes writes to the editor's store, with the bearer", async () => {
+  test("a byte-bearing command is one multipart post, with the bearer", async () => {
     const { backend, http } = await connect({
-      "/files/project%2Fakari.clm": () => httpResponse({ ok: true }),
+      "/request": () =>
+        httpResponse({ reply: "ok", id: 1, rev: 4, body: { result: "session", session: 1 } }),
     });
 
-    await backend.putBytes("project/akari.clm", new TextEncoder().encode("a model"));
+    const reply = await backend.sendWith({ cmd: "import_file", session: 1, parent: null }, [
+      ["model", new TextEncoder().encode("a model")],
+    ]);
 
-    const put = http.calls.find((call) => call.url.includes("/files/"));
-    expect(put?.url).toBe("http://editor.local/files/project%2Fakari.clm");
-    expect(put?.init?.method).toBe("PUT");
-    expect(put?.init?.headers?.Authorization).toBe("Bearer abc123");
+    expect(reply.body).toEqual({ result: "session", session: 1 });
+    expect(reply.rev).toBe(4);
+    const post = http.calls.find((call) => call.url.endsWith("/request"));
+    expect(post?.init?.method).toBe("POST");
+    expect(post?.init?.headers?.Authorization).toBe("Bearer abc123");
+    const form = post?.init?.body as FormData;
+    expect(form.get("request")).toContain('"cmd":"import_file"');
+    expect(form.get("model")).toBeInstanceOf(Blob);
   });
 
-  test("staging a key is nothing: the editor already reads its own store", async () => {
-    const { backend, http } = await connect();
-    await backend.stageKey("project/akari.clm");
-    expect(http.calls.filter((call) => call.url.includes("/files/"))).toHaveLength(0);
+  test("a reply that carries bytes hands them back beside it", async () => {
+    const png = new Uint8Array([137, 80, 78, 71]);
+    const { backend } = await connect({
+      "/request": () =>
+        httpResponse(png, {
+          headers: {
+            "X-Catchlight-Reply": JSON.stringify({
+              reply: "ok",
+              id: 1,
+              rev: 2,
+              body: { result: "preview", preview: { width: 8, height: 8 } },
+            }),
+          },
+        }),
+    });
+
+    const reply = await backend.sendWith(
+      { cmd: "preview", session: 1, pose: [], size: [8, 8], camera: null },
+      [],
+    );
+
+    expect(reply.body).toEqual({ result: "preview", preview: { width: 8, height: 8 } });
+    expect(reply.payload).toEqual(png);
   });
 
-  test("reading a key back is nothing either: the file is already where it was asked to go", async () => {
-    const { backend, http } = await connect();
-    expect(await backend.readBytes("project/akari.clm")).toBeUndefined();
-    expect(http.calls.filter((call) => call.url.includes("/files/"))).toHaveLength(0);
+  test("a byte-bearing command never goes near the socket", async () => {
+    const { backend, socket } = await connect();
+    const before = socket.sent.length;
+
+    await expect(
+      backend.send({ cmd: "import_file", session: 1, parent: null }),
+    ).rejects.toBeInstanceOf(ProtocolError);
+
+    expect(socket.sent).toHaveLength(before);
+  });
+
+  test("reading a key back is nothing: the file is already where it was asked to go", async () => {
+    const { backend } = await connect();
+    expect(await backend.readDocument("project/akari.clm")).toBeUndefined();
   });
 });

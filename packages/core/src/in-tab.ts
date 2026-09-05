@@ -7,29 +7,17 @@
  * above it can be written against "the document is right here" — and so the
  * whole thing can move into a Worker without touching a caller.
  *
- * **Two things it does that a caller must not have to think about.**
+ * **Bytes go in with the command and come out of the tab's store.** A command
+ * that needs bytes is handed them ([`sendWith`]), so nothing is parked under a
+ * key first and the browser's asynchrony stops in the caller, which awaits its
+ * own file read and then calls in synchronously.
  *
- * A command that names a storage key gets that key staged first. The editor
- * reads keys synchronously and the browser produces bytes asynchronously, so
- * the staging map is where the asynchrony stops; putting the read here means
- * `openDocument` is one command and not a three-step ritual anybody could get
- * out of order. A key that is staged already is left alone, which is what lets
- * a caller stage bytes it holds ([`Backend.putBytes`]) and then open them
- * under a key the store has never heard of.
- *
- * A command that writes bytes gets them drained into the store. Draining
- * rather than copying is the point: a staging map that is never emptied holds
- * a second copy of every texture in the model. `save` names its one key in the
- * reply; `export_manifest` writes a manifest and a file per texture, so what
- * it staged is whatever appeared while it ran.
- *
- * The mirror of that holds for the keys a command *reads*: staging is where
- * the asynchrony stops, not a cache. A `session_open` decodes the `.clm` into
- * a model that owns its own copy, so leaving the bytes staged keeps a second
- * whole document — textures and all — alive for the life of the tab. So a
- * command that read a key into a document discards it once the reply is good;
- * a query that merely read one (`manifest_requirements`) does not, because the
- * command it is asked ahead of is about to want the same bytes.
+ * The other direction is the one thing this class still drains. A `save` or an
+ * `export_manifest` leaves what it wrote in the editor's own map, and this
+ * moves it into the tab's [`Storage`] — draining rather than copying, because
+ * a map nothing empties holds a second copy of every texture in the model.
+ * `save` names its one key in the reply; `export_manifest` writes a manifest
+ * and a file per texture, so what it left is whatever appeared while it ran.
  *
  * **Events are dispatched before `send` resolves.** They come out of the same
  * synchronous `handle` call, and a caller waiting for the revision its reply
@@ -39,8 +27,21 @@
  */
 
 import type { Command, Event } from "./protocol.gen.js";
-import type { Backend, OkReply, Request, Unsubscribe } from "./backend.js";
-import { asProtocolError, FeedQueue, ProtocolError, readReply } from "./backend.js";
+import type {
+  Attachment,
+  Backend,
+  OkReply,
+  OkReplyWithPayload,
+  Request,
+  Unsubscribe,
+} from "./backend.js";
+import {
+  asProtocolError,
+  FeedQueue,
+  ProtocolError,
+  readReply,
+  refuseIfItCarriesBytes,
+} from "./backend.js";
 import type { Storage } from "./storage.js";
 import type { WasmEditor, WasmReplica } from "./wasm.js";
 
@@ -63,16 +64,21 @@ export class InTabBackend implements Backend {
   }
 
   async send(command: Command): Promise<OkReply> {
-    const key = readsKey(command);
-    if (key !== undefined) await this.stageKey(key);
+    refuseIfItCarriesBytes(command);
+    return this.sendWith(command, []);
+  }
 
+  async sendWith(
+    command: Command,
+    attachments: readonly Attachment[],
+  ): Promise<OkReplyWithPayload> {
     const editor = this.#live();
-    const staged = writesBytes(command) ? new Set(editor.stagedKeys()) : undefined;
+    const written = writesBytes(command) ? new Set(editor.writtenKeys()) : undefined;
     const request: Request = { id: this.#nextId++, ...command };
 
-    let text: string;
+    let answer: { reply: string; payload?: Uint8Array };
     try {
-      text = editor.handle(JSON.stringify(request));
+      answer = editor.handleWith(JSON.stringify(request), [...attachments]);
     } catch (cause) {
       throw asProtocolError(cause, "bad_reply");
     }
@@ -82,36 +88,20 @@ export class InTabBackend implements Backend {
     // this starts to be in flight already.
     this.#dispatch(editor);
 
-    const reply = readReply(text, command.cmd);
-    if (staged) await this.#drainBytes(editor, staged, reply);
-    // After the reply is read, so a command that failed keeps its bytes: the
-    // caller is entitled to retry it without staging them a second time.
-    if (key !== undefined && consumesKey(command)) editor.takeBytes(key);
-    return reply;
-  }
-
-  putBytes(key: string, bytes: Uint8Array): Promise<void> {
-    this.#live().putBytes(key, bytes);
-    return Promise.resolve();
-  }
-
-  async stageKey(key: string): Promise<void> {
-    if (this.#live().stagedKeys().includes(key)) return;
-    const bytes = await this.#storage.read(key);
-    this.#live().putBytes(key, bytes);
-  }
-
-  /** Drops what is staged under `key`. Nothing staged is not an error. */
-  discardKey(key: string): Promise<void> {
-    this.#live().takeBytes(key);
-    return Promise.resolve();
+    const reply = readReply(answer.reply, command.cmd);
+    if (written) await this.#drainBytes(editor, written, reply);
+    return answer.payload === undefined ? reply : { ...reply, payload: answer.payload };
   }
 
   /**
-   * Reads `key` out of the store — never out of staging, which `send` drains
-   * into the store before it resolves, so what is there is what was written.
+   * The bytes the tab's store holds at `key`, or `undefined` when it has
+   * none.
+   *
+   * Read out of the store rather than out of the editor: [`sendWith`] moves
+   * what a command wrote into the store before it resolves, so what is there
+   * is what was written.
    */
-  readBytes(key: string): Promise<Uint8Array | undefined> {
+  readDocument(key: string): Promise<Uint8Array | undefined> {
     this.#live();
     return this.#storage.read(key);
   }
@@ -170,14 +160,15 @@ export class InTabBackend implements Backend {
   }
 
   /**
-   * Moves what the command staged into the store, emptying staging as it goes.
+   * Moves what the command wrote into the store, emptying the editor's map as
+   * it goes.
    *
    * A `saved` reply names its key outright — it may have overwritten a key
-   * that was already staged, which no before/after difference would show — and
+   * that was already there, which no before/after difference would show — and
    * anything else that appeared came from the same command.
    */
   async #drainBytes(editor: WasmEditor, before: Set<string>, reply: OkReply): Promise<void> {
-    const keys = editor.stagedKeys().filter((key) => !before.has(key));
+    const keys = editor.writtenKeys().filter((key) => !before.has(key));
     const saved = reply.body.result === "saved" ? reply.body.path : undefined;
     if (saved !== undefined && !keys.includes(saved)) keys.push(saved);
 
@@ -197,40 +188,7 @@ export class InTabBackend implements Backend {
   }
 }
 
-/** The storage key a command reads, if it names one directly. */
-function readsKey(command: Command): string | undefined {
-  switch (command.cmd) {
-    case "session_open":
-      return command.path;
-    // `texture_add` names a key or attaches its bytes; only the first stages.
-    case "texture_add":
-      return command.path ?? undefined;
-    case "session_import":
-    case "manifest_requirements":
-      return command.manifest_path;
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Whether a command reads its key *into* the document, so that what is staged
- * under it is a second copy the moment the command returns.
- *
- * `manifest_requirements` reads a manifest and answers a question about it,
- * which is why it is not here: `importManifest` asks it and then imports the
- * same path, and discarding in between would be a trip back to storage for
- * bytes that were already in hand.
- */
-function consumesKey(command: Command): boolean {
-  return (
-    command.cmd === "session_open" ||
-    command.cmd === "session_import" ||
-    command.cmd === "texture_add"
-  );
-}
-
-/** Whether a command puts bytes into the editor's store rather than reading them. */
+/** Whether a command leaves bytes in the editor's store for the tab to drain. */
 function writesBytes(command: Command): boolean {
   return command.cmd === "save" || command.cmd === "export_manifest";
 }

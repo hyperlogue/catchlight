@@ -1,7 +1,10 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Regression: posing a param on a session's puppet must move it exactly like
 //! the viewport does (set the value by Id, then tick).
 
-use catchlight_editor_server::Editor;
+use catchlight_editor_protocol::{Command, Reply, Request, ResponseBody, SessionId};
+use catchlight_editor_server::{Attachments, Editor};
 
 #[test]
 fn posing_a_param_changes_the_ticked_state() {
@@ -13,7 +16,7 @@ fn posing_a_param_changes_the_ticked_state() {
     ))
     .expect("welded_seam.clm");
     let ed = Editor::new();
-    let session = ed.open_bytes("welded_seam", &bytes).expect("open");
+    let session = open_bytes(&ed, "welded_seam", bytes);
 
     let moved = ed
         .with_puppet(session, |model, puppet| {
@@ -58,4 +61,39 @@ fn state_signature(puppet: &catchlight_core::Puppet) -> Vec<[i64; 2]> {
         }
     }
     sig
+}
+
+/// A session holding `bytes`: a fresh one, then the file imported into it.
+///
+/// The one way bytes a caller holds become a document — there is no side door
+/// that takes them, so a test opens a model exactly as a client does.
+fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
+    let reply = editor.handle(Request {
+        id: 0,
+        command: Command::SessionNew {
+            name: Some(title.to_string()),
+        },
+    });
+    let session = match reply {
+        Reply::Ok {
+            body: ResponseBody::Session { session },
+            ..
+        } => session,
+        other => panic!("expected a session, got {other:?}"),
+    };
+    let mut attachments = Attachments::none();
+    attachments.insert("model", bytes);
+    match editor.handle_with(
+        Request {
+            id: 0,
+            command: Command::ImportFile {
+                session,
+                parent: None,
+            },
+        },
+        attachments,
+    ) {
+        (Reply::Ok { .. }, _) => session,
+        (other, _) => panic!("import_file: {other:?}"),
+    }
 }

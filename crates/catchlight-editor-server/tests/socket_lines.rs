@@ -175,7 +175,6 @@ fn a_files_map_names_the_clients_own_image() {
         Command::TextureAdd {
             session,
             node,
-            path: None,
             encoding: TextureEncoding::Png,
             texture: None,
         },
@@ -196,7 +195,6 @@ fn a_file_that_cannot_be_read_is_answered_against_the_request() {
         Command::TextureAdd {
             session,
             node,
-            path: None,
             encoding: TextureEncoding::Png,
             texture: None,
         },
@@ -273,7 +271,6 @@ fn a_files_entry_that_is_not_a_path_is_a_bad_request() {
         Command::TextureAdd {
             session,
             node,
-            path: None,
             encoding: TextureEncoding::Png,
             texture: None,
         },

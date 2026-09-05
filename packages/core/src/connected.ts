@@ -10,7 +10,10 @@
  * **Bulk goes over HTTP, never the socket.** A structure is megabytes and a
  * texture more; a frame that large blocks every command behind it, and a
  * `fetch` gets range requests, caching and a progress bar for free. So the
- * socket is small JSON only, and [`feed`] is three plain GETs.
+ * socket is small JSON only: [`feed`] is three plain GETs, and a command that
+ * carries bytes is one `POST /request` as `multipart/form-data` — which the
+ * server refuses on the socket anyway. Its promise keeps the same contract a
+ * socket send does, resolving once the reply is in hand.
  *
  * **The revision a feed applies is the one the response header names.** The
  * editor may have moved on between the event and the GET, and the bytes are
@@ -35,8 +38,21 @@
  */
 
 import type { Command, Event, Reply } from "./protocol.gen.js";
-import type { Backend, OkReply, Request, Unsubscribe } from "./backend.js";
-import { asProtocolError, FeedQueue, ProtocolError, takeReply } from "./backend.js";
+import type {
+  Attachment,
+  Backend,
+  OkReply,
+  OkReplyWithPayload,
+  Request,
+  Unsubscribe,
+} from "./backend.js";
+import {
+  asProtocolError,
+  FeedQueue,
+  ProtocolError,
+  refuseIfItCarriesBytes,
+  takeReply,
+} from "./backend.js";
 import type { TextureRequest, WasmReplica } from "./wasm.js";
 
 /** The `fetch` surface this backend calls. The platform's own satisfies it. */
@@ -45,7 +61,8 @@ export type FetchLike = (url: string, init?: FetchInit) => Promise<HttpResponse>
 export interface FetchInit {
   method?: string;
   headers?: Record<string, string>;
-  body?: Uint8Array;
+  /** A `FormData` for a multipart post; raw bytes for everything else. */
+  body?: Uint8Array | FormData;
 }
 
 export interface HttpResponse {
@@ -142,6 +159,13 @@ export class ConnectedBackend implements Backend {
   }
 
   send(command: Command): Promise<OkReply> {
+    // A rejection rather than a throw: every other failure on this method is
+    // one, and a caller should not need two ways to catch the same call.
+    try {
+      refuseIfItCarriesBytes(command);
+    } catch (cause) {
+      return Promise.reject(asProtocolError(cause, "bad_request"));
+    }
     if (this.#closed) {
       return Promise.reject(
         new ProtocolError({ code: "closed", message: "the editor connection is closed" }),
@@ -159,29 +183,49 @@ export class ConnectedBackend implements Backend {
     });
   }
 
-  /** Puts bytes into the editor's own store, under `key`. */
-  async putBytes(key: string, bytes: Uint8Array): Promise<void> {
-    await this.#http(`/files/${encodeURIComponent(key)}`, "io", {
-      method: "PUT",
-      body: bytes,
-    });
-  }
-
   /**
-   * Nothing: a connected editor reads its own store, which is where a key
-   * already points. The staging in-tab callers need has no counterpart here.
+   * One `POST /request` as `multipart/form-data`: a part named `request`
+   * holding the command, one part per attachment named for the attachment.
+   *
+   * The socket refuses a byte-bearing command, and this is where it goes
+   * instead. A reply that carries bytes comes back as the response body under
+   * its own content type, with the reply itself in `X-Catchlight-Reply`.
    */
-  stageKey(_key: string): Promise<void> {
-    return Promise.resolve();
-  }
+  async sendWith(
+    command: Command,
+    attachments: readonly Attachment[],
+  ): Promise<OkReplyWithPayload> {
+    if (this.#closed) {
+      throw new ProtocolError({ code: "closed", message: "the editor connection is closed" });
+    }
+    const request: Request = { id: this.#nextId++, ...command };
+    const form = new FormData();
+    form.append("request", JSON.stringify(request));
+    for (const [name, bytes] of attachments) {
+      // A Blob rather than a string: a `.clm` is not text, and `FormData`
+      // would otherwise encode it as one.
+      form.append(name, new Blob([bytes as BlobPart]));
+    }
 
-  /**
-   * Nothing, for the same reason: there is no staging map to empty, and the
-   * key names a file in the editor's store that a caller did not ask to
-   * delete.
-   */
-  discardKey(_key: string): Promise<void> {
-    return Promise.resolve();
+    const response = await this.#http("/request", "io", { method: "POST", body: form });
+    const inHeader = response.headers.get("X-Catchlight-Reply");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const text = inHeader ?? new TextDecoder().decode(bytes);
+
+    let parsed: Reply;
+    try {
+      parsed = JSON.parse(text) as Reply;
+    } catch (cause) {
+      throw new ProtocolError({
+        code: "bad_reply",
+        message: `could not read the reply to ${command.cmd}: ${String(cause)}`,
+      });
+    }
+    const reply = takeReply(parsed, command.cmd);
+    // A document command's promise means the same thing whichever route it
+    // took: the caller may read the model the reply describes.
+    if (inHeader === null) return reply;
+    return { ...reply, payload: bytes };
   }
 
   /**
@@ -189,7 +233,7 @@ export class ConnectedBackend implements Backend {
    * person is sitting at, and there is no route that reads a key back — nor a
    * reason for one while the file is already where it was asked to go.
    */
-  readBytes(_key: string): Promise<Uint8Array | undefined> {
+  readDocument(_key: string): Promise<Uint8Array | undefined> {
     return Promise.resolve(undefined);
   }
 

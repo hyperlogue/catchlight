@@ -21,6 +21,7 @@
  */
 
 import type { NodeId, ParamId, TexId } from "./protocol.gen.js";
+import type { Attachment } from "./backend.js";
 
 /**
  * What wasm-bindgen puts on every class it exports.
@@ -47,15 +48,25 @@ export interface WasmEditor extends WasmOwned {
   /** One JSON `Request` in, one JSON `Reply` out — the wire protocol verbatim. */
   handle(requestJson: string): string;
   /**
+   * The same, with the bytes the command declares and the bytes its reply
+   * carries. The one way an image or a document reaches the editor.
+   */
+  handleWith(
+    requestJson: string,
+    attachments: Attachment[],
+  ): { reply: string; payload?: Uint8Array };
+  /**
    * The JSON `Event`s emitted since the last drain, in order. A pull, not a
    * callback: Rust never calls back into JS, so a backend drains after every
    * `handle` and dispatches what it got.
    */
   drainEvents(): string[];
-  /** Byte staging: what a `path` key resolves to inside the editor. */
-  putBytes(key: string, bytes: Uint8Array): void;
+  /**
+   * The tab's store, outward only: what a `save` or an `export_manifest`
+   * wrote, until a backend drains it into the browser's own storage.
+   */
   takeBytes(key: string): Uint8Array | undefined;
-  stagedKeys(): string[];
+  writtenKeys(): string[];
 }
 
 /**
@@ -213,6 +224,12 @@ export interface WasmViewport extends WasmOwned {
  */
 export interface WasmModule {
   CatchlightEditor: new () => WasmEditor;
+  /**
+   * Every texture reference a manifest names, verbatim. A pure function of
+   * the JSON — no session, no editor — so a tab can read what it has to
+   * attach before there is anything to attach it to.
+   */
+  manifestRequirements(json: string): string[];
   Gpu: { acquire(canvas: HTMLCanvasElement): Promise<WasmGpu> };
   Replica: new () => WasmReplica;
   Viewport: new (gpu: WasmGpu, replica: WasmReplica, canvas: HTMLCanvasElement) => WasmViewport;
