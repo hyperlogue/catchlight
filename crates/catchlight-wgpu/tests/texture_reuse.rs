@@ -2,7 +2,7 @@
 
 //! What a browser replica costs per commit.
 //!
-//! An editor server owns the document and pushes only its `Structure` after
+//! An editor server owns the model and pushes only its `Structure` after
 //! every change; the client rebuilds its whole `Model` from those bytes over
 //! the texture payloads it already holds. That is a new model *state* on every
 //! keystroke-sized edit, so the render cache's whole-cache rebuild runs each

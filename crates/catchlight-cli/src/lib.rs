@@ -4,7 +4,7 @@
 //! addon, list its requirements, diff two files, and read or write the vendor
 //! `extension`s a file carries. Every one of them works on
 //! the file's **structure section**: decode the container, edit the CBOR
-//! document, write it back. Texture bytes are moved around as opaque blobs and
+//! structure, write it back. Texture bytes are moved around as opaque blobs and
 //! are never decoded, so patching one field of a model carrying a hundred
 //! megabytes of PNG costs a read and a write and nothing else. That is the
 //! whole point of Ids being author-facing strings stored in the file: a
@@ -26,7 +26,7 @@
 //! **This crate never depends on `catchlight-editor-protocol`,
 //! `catchlight-editor-server`, or any client of that server —
 //! `catchlight-editor`, `catchlight-editor-cli`, `catchlight-editor-wasm`.**
-//! Below that line sit the document, the reader that trusts nothing, `check`,
+//! Below that line sit the structure, the reader that trusts nothing, `check`,
 //! the puppet and the renderer: tier-1 on Windows and wasm-safe. Above it is
 //! session machinery — revisions, undo, observers, per-session Id minting,
 //! transports, tokens — none of which changes what a valid model is. The rule
@@ -48,7 +48,7 @@
 //!   (`patching_a_file_whose_textures_are_not_images`): anything that decoded
 //!   would fail there.
 //! - **Nothing changed means the same bytes.** Decoding and re-encoding a
-//!   document is byte-identical (`ciborium` writes fields in declaration
+//!   structure is byte-identical (`ciborium` writes fields in declaration
 //!   order, the container lays sections out in order), so setting a field to
 //!   the value it already has rewrites the file unchanged. Callers rest on
 //!   that: it is how `diff` on a round-tripped file is empty, and it is what
@@ -56,12 +56,12 @@
 //! - **A write is atomic and never leaves an unopenable file.** Output goes
 //!   to a temporary file beside the destination and is renamed over it, and
 //!   `patch` rebuilds a [`Model`](catchlight_core::Model) from the edited
-//!   document *before* writing — so a patch that would break a load-time
+//!   structure *before* writing — so a patch that would break a load-time
 //!   invariant is refused with that reader's own error rather than saved.
 //!   Rebuilding a Model decodes no textures; it is the cheap half of a load.
 //! - **A file is read as one shape or the other, never guessed.** A complete
 //!   model has exactly one node with no parent; an addon fragment has none.
-//!   [`file::load`] decides from the document itself and then uses the
+//!   [`file::load`] decides from the structure itself and then uses the
 //!   matching reader, which is the file-level form of the rule
 //!   `crates/catchlight-core/src/model/file.rs` states. `merge` is the one
 //!   command that does not choose: its addon argument is always read with the
@@ -115,7 +115,7 @@ pub enum Error {
         #[source]
         source: ModelError,
     },
-    /// The document is a complete model on the wire (one node with no parent)
+    /// The file is a complete model on the wire (one node with no parent)
     /// but the complete-model reader refused it.
     #[error("{} is a complete model that does not load: {source}", .path.display())]
     NotAModel {
@@ -123,7 +123,7 @@ pub enum Error {
         #[source]
         source: ModelError,
     },
-    /// The document is a fragment on the wire (no node without a parent) but
+    /// The file is a fragment on the wire (no node without a parent) but
     /// the fragment reader refused it.
     #[error("{} is an addon fragment that does not load: {source}", .path.display())]
     NotAFragment {
@@ -162,7 +162,7 @@ pub enum Error {
         expected: String,
         value: String,
     },
-    /// The edited document no longer loads. The patch is not written.
+    /// The edited structure no longer loads. The patch is not written.
     #[error("that patch would make {} unloadable: {source}", .path.display())]
     PatchBreaksFile {
         path: PathBuf,

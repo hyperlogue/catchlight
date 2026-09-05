@@ -11,9 +11,9 @@ import { EditorProvider, NodeTree, SelectionProvider, useSelection } from "./ind
 import { fire, harness, mount, run, settle, stubLayout } from "./test/harness.js";
 
 describe("the node tree", () => {
-  test("renders the document's tree, nested", async () => {
+  test("renders the model's tree, nested", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
 
     const view = await mount(
@@ -38,7 +38,7 @@ describe("the node tree", () => {
 
   test("clicking a node selects it and publishes the selection", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
 
     let selected: string | undefined = "unset";
@@ -83,7 +83,7 @@ describe("the node tree", () => {
 
   test("a node added by anyone appears without the panel being told", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     const view = await mount(
       <EditorProvider editor={editor}>
@@ -104,7 +104,7 @@ describe("the node tree", () => {
 describe("editing a row", () => {
   test("the checkbox authors the node's enabled flag", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
 
     const view = await mount(
@@ -132,7 +132,7 @@ describe("editing a row", () => {
 
   test("a double-clicked label renames on Enter", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
 
     const view = await mount(
@@ -165,7 +165,7 @@ describe("editing a row", () => {
 
   test("Escape closes the field and authors nothing", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
 
     const view = await mount(
@@ -206,7 +206,7 @@ describe("dragging a row onto another", () => {
   /** Two parts under the root, and the panel showing them. */
   async function twoParts() {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "brow" }));
     const view = await mount(
@@ -303,7 +303,7 @@ describe("dragging a row onto another", () => {
 describe("the tree's toolbar", () => {
   async function panel() {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let selected: string | undefined = "unset";
     const problems: unknown[] = [];
 
@@ -346,7 +346,7 @@ describe("the tree's toolbar", () => {
       expect.objectContaining({ cmd: "node_add", parent: "root", kind: "group", name: null }),
     ]);
     expect(selection()).toBe("root/group-1");
-    // And the panel now shows it, because the document moved.
+    // And the panel now shows it, because the model moved.
     expect(view.container.querySelector("[data-node='root/group-1']")).not.toBeNull();
     await view.unmount();
   });

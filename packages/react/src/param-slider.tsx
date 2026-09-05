@@ -3,7 +3,7 @@
  * positions.
  *
  * **A pose is not an edit.** Moving this changes what the puppet is showing
- * and nothing in the document: no revision, no undo entry, nothing to save. So
+ * and nothing in the model: no revision, no undo entry, nothing to save. So
  * the value cannot come from the revision the way a tree does — it comes from
  * the replica's pose, which announces itself on the repaint channel. Reading a
  * number there per repaint costs a map lookup, and React re-renders only when

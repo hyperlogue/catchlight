@@ -23,7 +23,7 @@ import type { ComponentProps, FormEvent, ReactNode } from "react";
 import { useEditor } from "./editor-context.js";
 
 export interface SaveOutcome {
-  /** The key the document landed under. */
+  /** The key the model landed under. */
   key: string;
   /** Whether the bytes were handed to the browser as a download. */
   downloaded: boolean;
@@ -31,7 +31,7 @@ export interface SaveOutcome {
 
 export interface FileSaver {
   /**
-   * Saves under `name`, or where the document was opened from when there is
+   * Saves under `name`, or where the model was opened from when there is
    * none, and downloads the result when this tab can read it back.
    */
   save(name?: string): Promise<SaveOutcome>;
@@ -41,8 +41,8 @@ export function useFileSave(session: Session): FileSaver {
   const editor = useEditor();
   const save = useCallback(
     async (name?: string): Promise<SaveOutcome> => {
-      const key = await editor.saveDocument(session, name === undefined ? undefined : saveKey(name));
-      const bytes = await editor.readDocument(key);
+      const key = await editor.saveSession(session, name === undefined ? undefined : saveKey(name));
+      const bytes = await editor.readFile(key);
       if (bytes) downloadBytes(bytes, downloadName(key));
       return { key, downloaded: bytes !== undefined };
     },

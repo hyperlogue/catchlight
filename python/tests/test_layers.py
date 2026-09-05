@@ -70,8 +70,8 @@ def test_defaults_are_left_out_and_read_back_in(tmp_path: Path) -> None:
     plain = Layer(name="Hair", file="hair.png")
     where = write_layers(Placement(root=tmp_path, layers=(plain,)), tmp_path / "l.json")
 
-    document = json.loads(where.read_text())
-    assert document["layers"] == [{"name": "Hair", "z": 0.0, "file": "hair.png"}]
+    placement = json.loads(where.read_text())
+    assert placement["layers"] == [{"name": "Hair", "z": 0.0, "file": "hair.png"}]
     assert read_layers(where).layers == (plain,)
 
 

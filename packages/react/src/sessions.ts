@@ -1,5 +1,5 @@
 /**
- * Every document the editor has open, kept current.
+ * Every model the editor has open, kept current.
  *
  * The list is not a replica read: a session another tab or an agent on the
  * socket opened is not in this tab's memory at all, so this is one round trip,

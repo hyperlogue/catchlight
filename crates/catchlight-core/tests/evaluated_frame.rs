@@ -29,9 +29,9 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument,
-    ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
-    ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmTransform, ClmWeld,
+    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile,
+    ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind,
+    ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmStructure, ClmTransform, ClmWeld,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
@@ -66,7 +66,7 @@ struct Fixture {
     file: FixtureFile,
     model: Model,
     puppet: Puppet,
-    /// Baked index of each document node, in document order.
+    /// Baked index of each node, in tree order.
     nodes: Vec<NodeIdx>,
 }
 
@@ -405,7 +405,7 @@ fn every_fixture_evaluates_the_frame_it_always_has() -> Result<(), Box<dyn std::
 // Authoring a fixture
 // ---------------------------------------------------------------------------
 //
-// The fixtures author the `.clm` document directly and mint the Ids an import
+// The fixtures author the `.clm` structure directly and mint the Ids an import
 // would: `root` / `node-<i>` by position, `param-<i>` per source param, or
 // `param-<i>.x` / `param-<i>.y` for one the pose schedule drives on two axes.
 // That second shape is why [`Slot`] exists — a model has only scalar params,
@@ -421,7 +421,7 @@ struct Slot {
     defaults: [f32; 2],
 }
 
-/// A fixture: the document a [`Model`] is read from, and the slots that pose it.
+/// A fixture: the structure a [`Model`] is read from, and the slots that pose it.
 struct FixtureFile {
     file: ClmFile,
     slots: Vec<Slot>,
@@ -651,12 +651,12 @@ fn file(
 
     FixtureFile {
         file: ClmFile {
-            doc: ClmDocument {
+            doc: ClmStructure {
                 nodes,
                 params,
                 bindings,
                 welds,
-                ..ClmDocument::default()
+                ..ClmStructure::default()
             },
             extensions: Vec::new(),
             textures: Vec::new(),

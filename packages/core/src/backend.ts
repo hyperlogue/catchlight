@@ -1,15 +1,15 @@
 /**
- * The one seam under everything: where the editor that owns the document is.
+ * The one seam under everything: where the editor that owns the model is.
  *
  * A `Backend` is either the wasm editor running in this tab or a local editor
  * process reached over HTTP and a WebSocket. Both answer the same commands,
  * emit the same events, and feed the same kind of replica; nothing above this
  * file may branch on which one it has.
  *
- * **The tab holds a replica, not the document.** A command goes to the
+ * **The tab holds a replica, not the model.** A command goes to the
  * backend; what comes back is a body and the revision the session is at
  * *after* it. The replica moves only through [`Backend.feed`], which is driven
- * by the `document_changed` event — one path, so a reply and an event can
+ * by the `model_changed` event — one path, so a reply and an event can
  * never race to apply two versions of the same state.
  *
  * **`send` resolves after its events are dispatched.** An in-tab editor
@@ -127,13 +127,13 @@ export interface Backend {
    *
    * The outward half of the in-tab store, and the only direction it has: a
    * command that *needs* bytes is handed them. In-tab a save lands in the
-   * browser's own storage, and a document that stays there is one nobody can
+   * browser's own storage, and a model that stays there is one nobody can
    * take to another machine, so the bytes come back and become a download.
    * Connected, the save already landed on the machine the person is sitting
    * at and there is nothing to hand out. A missing key in-tab is an error,
    * not `undefined`: a save that reported a key wrote it.
    */
-  readDocument(key: string): Promise<Uint8Array | undefined>;
+  readFile(key: string): Promise<Uint8Array | undefined>;
 
   /**
    * Brings `replica` to at least `rev`, resolving with the revision it holds

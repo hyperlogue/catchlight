@@ -1,6 +1,6 @@
 //! The reflection: inochi2d's JSON read into the value types catchlight
 //! stores. Everything here is about the *source* convention, and nothing here
-//! knows what document the values end up in.
+//! knows what structure the values end up in.
 //!
 //! `.inx` is authored **Y-down with lower `zsort` in front** and catchlight is
 //! **Y-up with higher `z_order` in front**, so this module is the one place
@@ -59,7 +59,7 @@ pub(crate) fn flatten(
     node_index: &mut HashMap<u32, u32>,
 ) {
     // Children are pushed in reverse so the top of the stack is always the
-    // next node in document order.
+    // next node in tree order.
     let mut stack: Vec<(&serde_json::Value, Option<u32>)> = vec![(root, root_parent)];
     while let Some((value, parent)) = stack.pop() {
         let idx = flat.len() as u32;
@@ -508,7 +508,7 @@ pub(crate) fn interp(s: Option<&str>) -> InterpolateMode {
     }
 }
 
-/// inochi2d's axis-point defaults, resolved once so the document holds final
+/// inochi2d's axis-point defaults, resolved once so the structure holds final
 /// key positions: an absent axis defaults to `[0, 1]` on x and to `[0, 1]` /
 /// `[0]` on y (vec2 / scalar), and a degenerate empty axis collapses to a
 /// single stop so the param can still drive.

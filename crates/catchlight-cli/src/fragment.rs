@@ -36,7 +36,7 @@
 
 use std::path::Path;
 
-use catchlight_core::formats::clm::{ClmDocument, ClmFile, ClmNodeKind};
+use catchlight_core::formats::clm::{ClmFile, ClmNodeKind, ClmStructure};
 use catchlight_core::id::NodeId;
 use catchlight_core::{Required, Requirement};
 
@@ -103,7 +103,7 @@ pub fn extract(path: &Path, ids: &[String], out: &Path) -> Result<Extracted, Err
 }
 
 /// Every id names a node the file carries, and none of them is parentless.
-fn resolve_roots(doc: &ClmDocument, path: &Path, ids: &[String]) -> Result<Vec<NodeId>, Error> {
+fn resolve_roots(doc: &ClmStructure, path: &Path, ids: &[String]) -> Result<Vec<NodeId>, Error> {
     let mut roots = Vec::with_capacity(ids.len());
     for id in ids {
         let parsed = NodeId::new(id).map_err(|source| Error::BadId {
@@ -150,7 +150,7 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
     Ok(scan(&file::read(path)?))
 }
 
-/// Every Id the document names but does not carry, found by walking the wire's
+/// Every Id the structure names but does not carry, found by walking the wire's
 /// own reference fields.
 ///
 /// This is [`Model::requirements`](catchlight_core::Model::requirements) with the

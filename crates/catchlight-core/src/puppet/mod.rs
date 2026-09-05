@@ -1210,7 +1210,7 @@ impl Puppet {
     ///
     /// Drivers claim at full authority: a lone driver fully determines its
     /// target, and two drivers aimed at one param average rather than
-    /// resolving by their position in the arena, which is document order and
+    /// resolving by their position in the arena, which is tree order and
     /// carries no meaning here.
     fn write_physics_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
         self.physics_update_scratch.clear();

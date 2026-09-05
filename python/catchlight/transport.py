@@ -15,7 +15,7 @@ Invariants this module enforces:
   wire, and returns the reply carrying that id.
 
 - **A request is never sent twice.** The editor answers a request exactly once
-  and a document command applied twice is a document nobody asked for, so a
+  and an edit applied twice is a model nobody asked for, so a
   failure once a request is on the wire raises rather than retries. The only
   reconnect is *before* a request, on a connection old enough to be suspect.
 
@@ -36,7 +36,7 @@ Invariants this module enforces:
 
 - **Neither door hears an event.** The editor pushes events over the WebSocket
   the browser tab holds, and this package holds none: a blocking caller learns
-  its document moved from the `rev` on its own reply.
+  its model moved from the `rev` on its own reply.
 
 - **Over HTTP a status is the listener and a reply is the editor.** A status
   that is not a success describes this door only — no token, a body over the
@@ -140,7 +140,7 @@ class Transport(Protocol):
 
 @runtime_checkable
 class ByteTransport(Transport, Protocol):
-    """A transport that can hand back a document or a texture as bytes.
+    """A transport that can hand back a model or a texture as bytes.
 
     A client checks for this to decide whether a save is a save or a fetch:
     the socket's editor writes the very filesystem the script is on, and an
@@ -149,7 +149,7 @@ class ByteTransport(Transport, Protocol):
     """
 
     def get_clm(self, session: int) -> bytes:
-        """The session's complete document, as `.clm` bytes."""
+        """The session's complete model, as `.clm` bytes."""
         ...
 
     def get_texture(self, session: int, texture: str) -> bytes:

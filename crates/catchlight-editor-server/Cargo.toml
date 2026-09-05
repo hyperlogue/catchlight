@@ -17,7 +17,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # The headless preview renderer is native-only; the wasm build keeps just the
-# document/session core (the browser GUI renders on its own device).
+# model/session core (the browser GUI renders on its own device).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 catchlight-wgpu = { workspace = true }
 glam = { workspace = true }

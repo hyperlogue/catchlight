@@ -65,7 +65,7 @@ type _EveryModeListed = Unlisted<Interpolate, (typeof INTERPOLATE_MODES)[number]
   : never;
 
 /**
- * Every binding on one node, redone whenever the document moves.
+ * Every binding on one node, redone whenever the model moves.
  *
  * `[]` for the two cases a panel draws the same way: nothing is selected, and
  * the selected node is gone.

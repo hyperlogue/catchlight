@@ -31,7 +31,7 @@ def test_the_launch_reports_the_address_and_token_the_server_printed(
     assert served.token is not None and len(served.token) == 64
 
 
-def test_a_client_over_the_door_answers_a_query_and_a_document_command(
+def test_a_client_over_the_door_answers_a_query_and_an_edit(
     over_http: Client,
 ) -> None:
     body = over_http.send(SessionList())
@@ -64,7 +64,7 @@ def test_the_bytes_the_door_hands_out_are_the_bytes_a_save_writes(
     served: LaunchedServer, over_http: Client, tmp_path: Path
 ) -> None:
     """`save_to` over the door is a fetch and over the socket it is a save; the
-    same document has to come out of both."""
+    same model has to come out of both."""
     session = over_http.new()
     part = over_http.add_part(session, name="Body")
     over_http.add_texture(session, part, write_png(tmp_path / "body.png"))

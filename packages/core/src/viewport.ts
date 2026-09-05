@@ -197,7 +197,7 @@ export class Viewport {
     this.#unsubscribe = undefined;
     // Before the free, because the function it holds would reach a freed
     // renderer — and only if it is still this viewport's. A host that swaps
-    // the document on one canvas builds the next viewport before an attach
+    // the model on one canvas builds the next viewport before an attach
     // that lost its race gets here, and that one must not take the live
     // viewport's hook away with it.
     const element = this.#canvas as unknown as Record<string, unknown>;
@@ -271,7 +271,7 @@ export function devicePixelSize(
 }
 
 /**
- * Whether the page is on screen. Absent `document` — a non-browser host, or a
+ * Whether the page is on screen. Absent `model` — a non-browser host, or a
  * unit test — counts as visible: the visibility rule may only ever stop a
  * viewport that is provably hidden.
  */

@@ -1,5 +1,5 @@
 /**
- * The two parts that talk to the editor rather than to a document: what is
+ * The two parts that talk to the editor rather than to a model: what is
  * open, and opening a file the page holds.
  */
 
@@ -12,7 +12,7 @@ import { act } from "react";
 import { EditorProvider, FileOpen, SessionList, useSessions } from "./index.js";
 import { fire, harness, mount, run, settle } from "./test/harness.js";
 
-describe("the open documents", () => {
+describe("the open models", () => {
   test("the list follows what the editor has open, whoever opened it", async () => {
     const { editor } = await harness();
 
@@ -26,7 +26,7 @@ describe("the open documents", () => {
 
     // Not through this component, and not through any of its props: the editor
     // said the set changed, which is the only thing it is watching.
-    await run(() => editor.newDocument("akari"));
+    await run(() => editor.newSession("akari"));
     await settle();
 
     const items = [...view.container.querySelectorAll("[data-catchlight-session]")];
@@ -37,7 +37,7 @@ describe("the open documents", () => {
 
   test("picking one hands the host the whole record", async () => {
     const { editor } = await harness();
-    await editor.newDocument("akari");
+    await editor.newSession("akari");
     const picked: SessionInfo[] = [];
 
     const view = await mount(
@@ -62,8 +62,8 @@ describe("the open documents", () => {
 
   test("a close control appears only with a handler, and the current row is marked", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument("akari");
-    await editor.newDocument("beni");
+    const session = await editor.newSession("akari");
+    await editor.newSession("beni");
     const closed: SessionInfo[] = [];
 
     const view = await mount(
@@ -84,7 +84,7 @@ describe("the open documents", () => {
     );
     const controls = view.container.querySelectorAll<HTMLButtonElement>("[data-catchlight-session-close]");
     expect(controls).toHaveLength(2);
-    // The select button stays first in its row, and the close names its document.
+    // The select button stays first in its row, and the close names its model.
     expect(controls[1]?.getAttribute("aria-label")).toBe("Close beni");
     await act(async () => {
       controls[1]?.click();
@@ -117,7 +117,7 @@ describe("the open documents", () => {
 });
 
 describe("opening a file", () => {
-  test("the bytes are read here and the document comes back open", async () => {
+  test("the bytes are read here and the model comes back open", async () => {
     const { editor, wasm } = await harness();
     const opened: Session[] = [];
 

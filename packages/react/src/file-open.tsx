@@ -1,5 +1,5 @@
 /**
- * A file the page holds, opened as a document.
+ * A file the page holds, opened as a model.
  *
  * The bytes are read here because only the page can read them: a picked file
  * is asynchronous and the editor reads keys synchronously, so `openFile` is

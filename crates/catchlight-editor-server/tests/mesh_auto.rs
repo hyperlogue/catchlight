@@ -386,7 +386,7 @@ fn a_part_that_already_has_a_mesh_keeps_its_mapping() {
     assert_eq!(f.mesh(&part).verts, fresh.verts);
 }
 
-/// A trace is a document edit like any other: one revision, one undo entry,
+/// A trace is an edit like any other: one revision, one undo entry,
 /// and the mesh it replaced comes back.
 #[test]
 fn a_trace_is_one_undoable_edit() {
@@ -487,7 +487,7 @@ fn every_refusal_has_its_own_code() {
         );
     }
 
-    // None of the refusals moved the document: the part still draws what it
+    // None of the refusals moved the model: the part still draws what it
     // drew and carries no mesh it did not have.
     assert!(f.mesh(&part).verts.is_empty());
 }

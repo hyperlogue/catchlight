@@ -1,5 +1,5 @@
 /**
- * Where document bytes live in the browser.
+ * Where model bytes live in the browser.
  *
  * A store is not a transport, and the split is deliberate: a backend carries
  * small JSON messages and answers in milliseconds, a store carries a rig whose
@@ -27,7 +27,7 @@ export interface Storage {
 }
 
 /**
- * The key a relative reference inside `key`'s document resolves against —
+ * The key a relative reference inside `key`'s model resolves against —
  * everything before the last `/`, or `""` when the key has no separator.
  */
 export function parentKey(key: string): string {
@@ -51,7 +51,7 @@ export class NotFoundError extends Error {
   }
 }
 
-/** A store held in this tab and nowhere else. The default for a scratch document. */
+/** A store held in this tab and nowhere else. The default for a scratch model. */
 export class MemoryStorage implements Storage {
   #entries = new Map<string, Uint8Array>();
 
@@ -78,7 +78,7 @@ export class MemoryStorage implements Storage {
 /**
  * The origin private file system: the browser's own disk, per origin.
  *
- * What a self-contained web editor keeps documents in — no picker, no upload,
+ * What a self-contained web editor keeps models in — no picker, no upload,
  * survives a reload, and the only quota that applies is the origin's. A key's
  * `/` segments become directories, which is what makes a manifest and its
  * textures land next to each other the way the editor resolves them.

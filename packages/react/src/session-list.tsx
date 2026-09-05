@@ -1,5 +1,5 @@
 /**
- * Every document the editor has open, including the ones this tab did not
+ * Every model the editor has open, including the ones this tab did not
  * open.
  *
  * That is the whole point of showing it: an agent driving the same editor over

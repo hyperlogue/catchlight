@@ -3,7 +3,7 @@
  *
  * Layer 4, and the only layer with an opinion about how the editor *looks*.
  * What it is allowed to contain is exactly this: layout, and the wiring one
- * screen needs to hold together — which document is the current one, and what
+ * screen needs to hold together — which model is the current one, and what
  * a failed call says. Every behaviour is a part or a hook from
  * `@catchlight/react`; nothing here reads a replica, builds a command, or
  * touches the GPU.
@@ -12,7 +12,7 @@
  * an object with a replica behind it, and `useSessions` reports `SessionInfo`
  * — a description. Turning one into the other is `attachSession`, which is a
  * round trip, so the choice cannot be derived during render. The first
- * document the editor lists wins until something is opened or picked, which
+ * model the editor lists wins until something is opened or picked, which
  * is what makes a page that was handed a model on the command line come up
  * showing it.
  *
@@ -29,18 +29,18 @@
  * cells share lives in the component that contains both.
  *
  * **The stage is never unmounted.** The grid's cells are rendered whether or
- * not a document is open; with none, the panels are empty and the canvas
+ * not a model is open; with none, the panels are empty and the canvas
  * draws nothing under a hint. So one canvas element lives for the whole
  * screen. Nothing forces that — a device on either tier draws whatever canvas
  * a viewport was handed — it is simply cheaper: a remount would tear down a
  * surface and its stencil and composite targets and build them again on the
- * next document, and every layout of the grid would have to be written to keep
+ * next model, and every layout of the grid would have to be written to keep
  * the element in place anyway. The presence provider sits above the cells for
  * the same reason, and tolerates having no session.
  *
- * **Closing the current document moves the screen off it first.** The panels
+ * **Closing the current model moves the screen off it first.** The panels
  * under it read its replica, and the close frees that replica — so the next
- * document is attached and made current (or the session is dropped, when it
+ * model is attached and made current (or the session is dropped, when it
  * was the last), the commit that does so re-attaches the viewport on the same
  * canvas, and only an effect after that commit sends the close. The closed
  * id is remembered so the automatic pick below does not take it back off a
@@ -125,16 +125,16 @@ function Shell(): ReactNode {
   );
 
   const create = useCallback((): void => {
-    void editor.newDocument().then(opened, failed);
+    void editor.newSession().then(opened, failed);
   }, [editor, opened, failed]);
 
-  /** The document to close once the screen has moved off it. */
+  /** The model to close once the screen has moved off it. */
   const [closing, setClosing] = useState<SessionId | undefined>(undefined);
 
   const close = useCallback(
     (info: SessionInfo): void => {
       if (session?.id !== info.session) {
-        void editor.closeDocument(info.session).then(() => setProblem(undefined), failed);
+        void editor.closeSession(info.session).then(() => setProblem(undefined), failed);
         return;
       }
       const next = sessions.find(
@@ -158,13 +158,13 @@ function Shell(): ReactNode {
     [editor, session, sessions, failed],
   );
 
-  // After the commit that moved the screen off the closing document: nothing
+  // After the commit that moved the screen off the closing model: nothing
   // under the stage reads its replica any more, and the viewport was disposed
   // and re-attached on the same canvas rather than replaced.
   useEffect(() => {
     if (closing === undefined) return;
     setClosing(undefined);
-    void editor.closeDocument(closing).then(() => setProblem(undefined), failed);
+    void editor.closeSession(closing).then(() => setProblem(undefined), failed);
   }, [closing, editor, failed]);
 
   // Whatever the editor already had open: a model named on a server's command
@@ -246,7 +246,7 @@ function Shell(): ReactNode {
       </header>
       <PresenceProvider session={session}>
         <nav data-catchlight-panel="left">
-          <Documents onSelect={choose} onClose={close} current={session?.id} />
+          <Models onSelect={choose} onClose={close} current={session?.id} />
           {session ? (
             <Section
               title="Nodes"
@@ -294,7 +294,7 @@ function Shell(): ReactNode {
           </>
         ) : (
           <footer data-catchlight-status="" role="status">
-            <span data-catchlight-status-item="">no document</span>
+            <span data-catchlight-status-item="">no model</span>
             <Environment />
             <Problem problem={problem} />
           </footer>
@@ -364,7 +364,7 @@ function Bindings({
     return <p data-catchlight-empty="">Select a node to see what drives it.</p>;
   }
   if (params.length === 0) {
-    return <p data-catchlight-empty="">This document has no params yet.</p>;
+    return <p data-catchlight-empty="">This model has no params yet.</p>;
   }
 
   return (
@@ -387,10 +387,10 @@ function Bindings({
 }
 
 /**
- * Save and Save As, for the document that is open.
+ * Save and Save As, for the model that is open.
  *
  * Its own component because the hook wants a session, and the toolbar exists
- * before there is one. A document that was never saved has no path to save
+ * before there is one. A model that was never saved has no path to save
  * to, so a plain Save on it goes under its title — which is what a person who
  * pressed New and then Save expects to find in their downloads.
  */
@@ -414,7 +414,7 @@ function SaveTools({
       <button type="button" data-catchlight-save="" onClick={handleSave}>
         Save
       </button>
-      {/* Keyed so the name input starts over with each document. */}
+      {/* Keyed so the name input starts over with each model. */}
       <FileSave.Root
         key={session.id}
         session={session}
@@ -435,8 +435,8 @@ function ResetPose({ session }: { session: Session }): ReactNode {
   );
 }
 
-/** Every document the editor has open, this tab's and everyone else's. */
-function Documents({
+/** Every model the editor has open, this tab's and everyone else's. */
+function Models({
   onSelect,
   onClose,
   current,
@@ -446,7 +446,7 @@ function Documents({
   current: SessionId | undefined;
 }): ReactNode {
   return (
-    <Section title="Documents">
+    <Section title="Models">
       <SessionList.Root onSelect={onSelect} onClose={onClose} current={current} />
     </Section>
   );
@@ -455,7 +455,7 @@ function Documents({
 /**
  * The canvas and the one gesture layered over it.
  *
- * Mounted with or without a document: the canvas element has to be the same
+ * Mounted with or without a model: the canvas element has to be the same
  * one for the life of the screen (see the header), so with no session it is
  * drawn on by nothing and the hint sits over it. The drag is here rather than
  * in `Shell` because it needs the selection, which the provider above the
@@ -463,7 +463,7 @@ function Documents({
  *
  * `onError` is the shell's, like every other part's: an attach that fails —
  * a browser with neither graphics tier is the one that matters — has nowhere
- * else to be read, and the stage under it looks exactly like a document that
+ * else to be read, and the stage under it looks exactly like a model that
  * draws nothing.
  */
 function Stage({
@@ -494,7 +494,7 @@ function Stage({
       />
       {session ? null : (
         <p data-catchlight-stage-hint="">
-          No document open. Pick a .clm above, or choose one on the left.
+          No model open. Pick a .clm above, or choose one on the left.
         </p>
       )}
     </div>
@@ -502,9 +502,9 @@ function Stage({
 }
 
 /**
- * Publishes the pose of the open document through the provider. A component
+ * Publishes the pose of the open model through the provider. A component
  * rather than a hook call in `Stage`, because the stage also exists with no
- * document and the publisher wants one.
+ * model and the publisher wants one.
  */
 function PosePublisher({ session }: { session: Session }): ReactNode {
   usePosePublisher(session);
@@ -555,7 +555,7 @@ function zoomLabel(zoom: number | undefined): string {
 }
 
 /**
- * Where the document is, and which graphics tier is drawing it.
+ * Where the model is, and which graphics tier is drawing it.
  *
  * Two facts a person cannot get by looking at the picture, and both change
  * what a bug report means: an in-tab editor and a connected one fail

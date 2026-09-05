@@ -19,7 +19,7 @@ export function useRevision(session: Session): number {
 }
 
 /**
- * `read(session)`, redone whenever the document moves.
+ * `read(session)`, redone whenever the model moves.
  *
  * Memoized on the session and its revision — deliberately not on `read`, so an
  * inline arrow does not re-read the tree on every render. The newest `read` is

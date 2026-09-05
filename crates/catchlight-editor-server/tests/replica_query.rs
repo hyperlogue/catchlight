@@ -285,7 +285,7 @@ fn replica_commands(session: SessionId, node: NodeId) -> Vec<Command> {
 }
 
 /// One command of every other kind, so "a replica refuses it" is checked
-/// against Document, Presence, Scratch and ServerQuery alike.
+/// against Edit, Presence, Scratch and ServerQuery alike.
 fn other_commands(session: SessionId, node: NodeId) -> Vec<Command> {
     vec![
         Command::SessionList,

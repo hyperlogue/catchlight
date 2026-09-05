@@ -65,7 +65,7 @@ fn state_signature(puppet: &catchlight_core::Puppet) -> Vec<[i64; 2]> {
 
 /// A session holding `bytes`: a fresh one, then the file imported into it.
 ///
-/// The one way bytes a caller holds become a document — there is no side door
+/// The one way bytes a caller holds become a session's model — no side door
 /// that takes them, so a test opens a model exactly as a client does.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
     let reply = editor.handle(Request {

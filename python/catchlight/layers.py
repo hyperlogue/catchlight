@@ -67,7 +67,7 @@ __all__ = [
     "write_layers",
 ]
 
-# The one version of the placement document this module reads and writes.
+# The one version of the placement file this module reads and writes.
 LAYERS_VERSION = 1
 
 # The key the version travels under, which is also what tells a placement from
@@ -134,18 +134,18 @@ def read_layers(path: str | os.PathLike[str]) -> Placement:
     """
     source = Path(os.fspath(path))
     try:
-        document = json.loads(source.read_bytes())
+        placement = json.loads(source.read_bytes())
     except json.JSONDecodeError as bad:
         raise LayersError(f"{source.name} is not JSON: {bad}") from bad
-    if not isinstance(document, Mapping):
+    if not isinstance(placement, Mapping):
         raise LayersError(f"{source.name} is not a placement object")
 
-    version = document.get(_VERSION_KEY)
+    version = placement.get(_VERSION_KEY)
     if version != LAYERS_VERSION:
         raise LayersError(
             f"{source.name} carries {_VERSION_KEY} {version!r}, not {LAYERS_VERSION}"
         )
-    raw = document.get("layers")
+    raw = placement.get("layers")
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         raise LayersError(f"{source.name} has no layers list")
 
@@ -177,11 +177,11 @@ def write_layers(placement: Placement, path: str | os.PathLike[str]) -> Path:
     a question the file's own location already settles.
     """
     target = Path(os.fspath(path))
-    document = {
+    placement = {
         _VERSION_KEY: LAYERS_VERSION,
         "layers": [layer.to_wire() for layer in placement.layers],
     }
-    target.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    target.write_text(json.dumps(placement, indent=2) + "\n", encoding="utf-8")
     return target
 
 

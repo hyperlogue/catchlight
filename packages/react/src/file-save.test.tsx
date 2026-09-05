@@ -15,7 +15,7 @@ import { fire, harness, mount, settle } from "./test/harness.js";
 describe("saving as", () => {
   test("sends the key typed and downloads the bytes the store holds", async () => {
     const { editor, wasm } = await harness();
-    const session = await editor.newDocument("akari");
+    const session = await editor.newSession("akari");
     const download = stubDownload();
     const outcomes: SaveOutcome[] = [];
 
@@ -39,7 +39,7 @@ describe("saving as", () => {
     });
     expect(outcomes).toEqual([{ key: "copy.clm", downloaded: true }]);
 
-    // And the download is the store's copy of the document, under that name.
+    // And the download is the store's copy of the model, under that name.
     expect(download.names).toEqual(["copy.clm"]);
     const blob = download.blobs[0];
     if (!blob) throw new Error("nothing was downloaded");
@@ -56,7 +56,7 @@ describe("saving as", () => {
     backend.replies.set("session_new", { body: { result: "session", session: 1 }, rev: 1 });
     backend.replies.set("save", { body: { result: "saved", path: "out/akari.clm" }, rev: 1 });
     const editor = await Editor.create(fakeWasm().module, backend);
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const download = stubDownload();
     let api: FileSaver | undefined;
 

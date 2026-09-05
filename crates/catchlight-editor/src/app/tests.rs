@@ -1,6 +1,6 @@
 //! Headless tests of the app's command paths, driven against an in-process
 //! [`Editor`] — no window, no event loop. What they pin is which command a
-//! gesture or a panel action sends, and what the document looks like
+//! gesture or a panel action sends, and what the model looks like
 //! afterwards; the drawing is `viewport::tests`' job.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -297,7 +297,7 @@ fn edit_working_mesh(app: &mut App) {
         .move_vertex(0, [p[0] + 1.0, p[1]])
         .expect("move a vertex");
     mesh.replace_working(working);
-    assert!(!mesh.matches_document(), "the working mesh has moved");
+    assert!(!mesh.matches_model(), "the working mesh has moved");
 }
 
 fn add_param(app: &mut App, session: SessionId, name: &str) -> ParamId {
@@ -634,12 +634,12 @@ fn a_mesh_edit_empties_the_slots_and_the_gate_holds_until_they_are_refilled() {
     );
     assert!(app.status.contains("cannot save"), "{}", app.status);
 
-    // The mode stayed open on the slot tool, on the document's own mesh.
+    // The mode stayed open on the slot tool, on the model's own mesh.
     let mesh = app
         .mesh_edit
         .as_ref()
         .expect("the mode stays open to repair");
-    assert!(mesh.matches_document());
+    assert!(mesh.matches_model());
     assert_eq!(mesh.emptied.len(), blocked.len());
 
     // Refill each slot with a vertex of the new mesh — what clicking one does.
@@ -653,7 +653,7 @@ fn a_mesh_edit_empties_the_slots_and_the_gate_holds_until_they_are_refilled() {
     assert!(!app.blocked_from_saving());
 
     // Leaving the mode must not re-mesh the part: the working mesh is the
-    // document's again, and applying it would empty every slot just refilled.
+    // model's again, and applying it would empty every slot just refilled.
     app.apply_mesh_edit();
     assert!(
         app.commit_block().is_empty(),
@@ -866,7 +866,7 @@ fn an_edit_that_would_delete_a_texture_waits_to_be_confirmed() {
         editor
             .with_model(session, |m| m.node(&part).is_some())
             .unwrap(),
-        "and nothing has happened to the document yet"
+        "and nothing has happened to the model yet"
     );
 
     let held = app.texture_drop.take().expect("a held edit");
@@ -943,6 +943,6 @@ fn a_held_texture_drop_does_not_survive_a_session_change() {
         editor
             .with_model(session, |m| m.node(&part).is_some())
             .unwrap(),
-        "and the old session's document is untouched"
+        "and the old session's model is untouched"
     );
 }

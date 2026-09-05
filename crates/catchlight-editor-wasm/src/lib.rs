@@ -38,7 +38,7 @@
 //!
 //! - **The tab holds a replica, and Rust never calls JavaScript.** What the
 //!   page draws and reads per frame is a [`ReplicaState`] of one session, fed
-//!   only by the two paths that type documents; commands are still the
+//!   only by the two paths that feed it a model; commands are still the
 //!   protocol. Nothing here takes a JS callback: an answer is a return value,
 //!   and an [`Event`] the editor emitted waits in a queue until
 //!   [`drain_events`] pulls it. A push would have to cross the boundary from
@@ -316,7 +316,7 @@ impl CatchlightEditor {
     /// Removes and returns what a command wrote under `key` — how a save's
     /// bytes leave for the browser's own storage or a download. Taking rather
     /// than copying is deliberate: a model's textures are the bulk of it, and
-    /// a map that is never drained is a leak the size of the document.
+    /// a map that is never drained is a leak the size of the model.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = takeBytes))]
     pub fn take_bytes(&self, key: &str) -> Option<Vec<u8>> {
         self.written.take(key)
@@ -382,7 +382,7 @@ mod tests {
     }
 
     /// The store is outward only: a save leaves its bytes there, TypeScript
-    /// takes them, and they come back into a document as an attachment.
+    /// takes them, and they come back into a model as an attachment.
     #[test]
     fn a_save_leaves_bytes_the_tab_can_take_and_import_again() {
         let editor = CatchlightEditor::new();

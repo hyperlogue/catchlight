@@ -739,7 +739,7 @@ fn command_wire_tags(wires: &[Wire]) -> Result<Vec<String>> {
 fn render_kind_enum() -> String {
     let mut out = String::from(
         "\nclass CommandKind(StrEnum):\n\
-         \x20   \"\"\"What applying a command does to the document it addresses.\n\n\
+         \x20   \"\"\"What applying a command does to the model it addresses.\n\n\
          \x20   This is what a client routes by: one send method per kind, so picking\n\
          \x20   the wrong one is a type error rather than a missing repaint.\n\
          \x20   \"\"\"\n\n",
@@ -850,7 +850,7 @@ fn command_kind(tag: &str) -> Result<&'static str> {
         .map(|_| ())
         .with_context(|| format!("no alias for {kind:?}"))?;
     Ok(match kind {
-        proto::CommandKind::Document => "DOCUMENT",
+        proto::CommandKind::Edit => "EDIT",
         proto::CommandKind::Presence => "PRESENCE",
         proto::CommandKind::Scratch => "SCRATCH",
         proto::CommandKind::ReplicaQuery => "REPLICA_QUERY",
@@ -953,7 +953,7 @@ fn render_parse(name: &str, tag: &str) -> String {
 
 fn render_command_kinds(variants: &[Variant]) -> Result<String> {
     let mut out = String::from(
-        "\n\n# What each command does to the document, keyed by its `cmd` tag. Written\n\
+        "\n\n# What each command does to the model, keyed by its `cmd` tag. Written\n\
          # down once in Rust, in `COMMAND_KINDS`; a command missing from it fails the\n\
          # build rather than reaching a client unclassified.\n\
          COMMAND_KINDS: dict[str, CommandKind] = {\n",
@@ -1081,7 +1081,7 @@ turns back into a `Reply`, or with an unsolicited `Event`.
 
 Ids are plain strings — the same ones the model file stores — and a `SessionId`
 is an int the editor allocates. Every command carries `CMD`, the tag it travels
-under, and `KIND`, what applying it does to the document; a client routes by the
+under, and `KIND`, what applying it does to the model; a client routes by the
 second. Nothing here is a transport: this module opens no socket and holds no
 state.
 

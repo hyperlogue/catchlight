@@ -2,7 +2,7 @@
 //!
 //! These models are authored by hand rather than imported, so they exist only
 //! as code here plus the encoded `.clm` checked into the repo. A generator
-//! authors the `.clm` *document* and `generate` reads it into a [`Model`] on
+//! authors the `.clm` *structure* and `generate` reads it into a [`Model`] on
 //! the way to the file, so a fixture is refused here for exactly what a `.clm`
 //! off disk is refused for. Nodes are numbered by [`push`] and params and
 //! textures by their position, so a fixture's Ids are the ones an import
@@ -26,16 +26,16 @@ use std::path::{Path, PathBuf};
 
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmDocument, ClmFile,
-    ClmIndices, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot,
-    ClmSlotPair, ClmTexture, ClmTransform, ClmWeld, TextureAlpha, TextureEncoding,
+    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile, ClmIndices, ClmMesh,
+    ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmStructure,
+    ClmTexture, ClmTransform, ClmWeld, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::{Model, NodeId, ParamId, SlotId, TexId};
 
-/// Builds a fixture's structure document and its texture table.
-type Build = fn() -> (ClmDocument, Vec<ClmTexture>);
+/// Builds a fixture's structure and its texture table.
+type Build = fn() -> (ClmStructure, Vec<ClmTexture>);
 
 /// Every fixture this command can (re)build, by output stem.
 const FIXTURES: &[(&str, Build)] = &[
@@ -106,7 +106,7 @@ fn tid(i: usize) -> TexId {
 /// Append `node` under the node at position `parent`, give it the Id its own
 /// position mints, and hand that position back for its children to name.
 ///
-/// Appending in parent-before-child order is what makes the document
+/// Appending in parent-before-child order is what makes the structure
 /// topological, which is what the `.clm` reader requires.
 fn push(nodes: &mut Vec<ClmNode>, parent: Option<usize>, mut node: ClmNode) -> usize {
     let i = nodes.len();
@@ -178,7 +178,7 @@ const GRID_QUAD_GAP: f32 = 160.0;
 /// So `sweep` alone moves vertices, opacity, z and a physics anchor — the
 /// four things `catchlight-cli poses` records — and the joint grid is what
 /// tells a per-param sweep apart from a pair.
-fn two_param_grid() -> (ClmDocument, Vec<ClmTexture>) {
+fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
     let driven = push(
@@ -254,7 +254,7 @@ fn two_param_grid() -> (ClmDocument, Vec<ClmTexture>) {
         }),
     };
 
-    let doc = ClmDocument {
+    let doc = ClmStructure {
         nodes,
         params,
         bindings: vec![
@@ -269,7 +269,7 @@ fn two_param_grid() -> (ClmDocument, Vec<ClmTexture>) {
             // Opacity folds multiplicatively, so its identity is 1, not 0.
             sweep_binding(nid(driven), ClmBindingValues::Opacity, 1.0, SWEEP_OPACITY),
         ],
-        ..ClmDocument::default()
+        ..ClmStructure::default()
     };
     (
         doc,
@@ -361,7 +361,7 @@ const CHECKER_QUADS: [(&str, f32, f32); 2] = [
 /// averaged in linear encode to sRGB ~187, averaged as gamma-encoded bytes
 /// they would come out ~128 — far enough apart that the baseline pins which
 /// one happened.
-fn mip_checker() -> (ClmDocument, Vec<ClmTexture>) {
+fn mip_checker() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
     for (name, half, x) in CHECKER_QUADS {
@@ -379,9 +379,9 @@ fn mip_checker() -> (ClmDocument, Vec<ClmTexture>) {
         );
     }
 
-    let doc = ClmDocument {
+    let doc = ClmStructure {
         nodes,
-        ..ClmDocument::default()
+        ..ClmStructure::default()
     };
     (doc, textures(vec![checker_texture(CHECKER_TEXELS)]))
 }
@@ -490,7 +490,7 @@ const NESTED_INNER_OPACITY: f32 = 0.7;
 /// cell holds an opaque quad under a half-alpha one, so the blit is exercised
 /// over three source alphas at once (opaque, blended, translucent-only) —
 /// which is what the screen-tint term, scaled by the sampled alpha, needs.
-fn composite_blit_uniforms() -> (ClmDocument, Vec<ClmTexture>) {
+fn composite_blit_uniforms() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
     push(
@@ -547,9 +547,9 @@ fn composite_blit_uniforms() -> (ClmDocument, Vec<ClmTexture>) {
         cell_quad("front", 2, CELL_FRONT_OFFSET),
     );
 
-    let doc = ClmDocument {
+    let doc = ClmStructure {
         nodes,
-        ..ClmDocument::default()
+        ..ClmStructure::default()
     };
     (
         doc,
@@ -631,7 +631,7 @@ const SEAM_WEIGHTS: [f32; COLS] = [1.0, 0.5, 0.0];
 /// 1.0 / 0.5 / 0.0 left to right, so a single render at pull = 1 shows all
 /// three regimes at once: the lower part stretching up to follow the upper,
 /// both meeting midway, and the upper's corner staying pinned to the lower.
-fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
+fn welded_seam() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
     let upper = push(
@@ -683,7 +683,7 @@ fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
         }),
     };
 
-    let doc = ClmDocument {
+    let doc = ClmStructure {
         nodes,
         params: vec![pull],
         bindings: vec![deform],
@@ -700,7 +700,7 @@ fn welded_seam() -> (ClmDocument, Vec<ClmTexture>) {
                 })
                 .collect(),
         }],
-        ..ClmDocument::default()
+        ..ClmStructure::default()
     };
     (
         doc,
@@ -868,7 +868,7 @@ fn blank_node() -> ClmNode {
 mod tests {
     use super::*;
 
-    /// Decode `tests/models/<name>.clm` back to the document its generator
+    /// Decode `tests/models/<name>.clm` back to the structure its generator
     /// authors.
     fn committed(name: &str) -> ClmFile {
         let path = workspace_root()
@@ -888,7 +888,7 @@ mod tests {
     /// the one the baseline pins. Structure only, never byte-equality against
     /// a fresh encode, which any harmless encoder or PNG change would break:
     /// the committed file is read into a Model and written back out as a
-    /// document, and *that* is compared with the document the generator
+    /// structure, and *that* is compared with the structure the generator
     /// authors. The texture table is excluded for the same reason — its
     /// bytes are a PNG encoder's output. See
     /// `committed_mip_checker_texture_is_a_one_texel_checkerboard` for the
@@ -906,7 +906,7 @@ mod tests {
         }
     }
 
-    /// The document comparison above covers structure but not the texture
+    /// The structure comparison above covers the model but not the texture
     /// table, and the whole point of this fixture is the texture: minifying a
     /// 1-texel checkerboard is what makes a broken mip chain visible. Decode
     /// it and check the frequency survived.
@@ -931,7 +931,7 @@ mod tests {
     }
 
     /// Spells out the properties the weld regression renders actually depend
-    /// on, so losing one names itself instead of surfacing as a whole-document
+    /// on, so losing one names itself instead of surfacing as a whole-structure
     /// mismatch in the test above.
     #[test]
     fn committed_welded_seam_keeps_its_weld_structure() {

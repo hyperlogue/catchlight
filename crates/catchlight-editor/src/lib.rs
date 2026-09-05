@@ -1,7 +1,7 @@
 //! `catchlight-editor` — the desktop puppet editor GUI (egui).
 //!
 //! It embeds the editor server in-process and exposes its Unix socket, so a
-//! CLI / agent can co-drive the same sessions. Document bytes reach it through
+//! CLI / agent can co-drive the same sessions. Model bytes reach it through
 //! the OS file dialogs and the server's own storage keys.
 //!
 //! **Desktop only.** The browser editor is `catchlight-editor-wasm` plus the

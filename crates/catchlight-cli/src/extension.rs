@@ -7,7 +7,7 @@
 //! author one.
 //!
 //! A value is one of two things. **JSON** — string-keyed maps, arrays,
-//! strings, numbers, bools, null — lives inline in the structure document.
+//! strings, numbers, bools, null — lives inline in the structure.
 //! **Bytes** live in the file's own `Extensions` section, and the structure
 //! carries only a `{size, hash}` marker. That split is not about size: an
 //! editor pushes its structure to a browser tab after every edit, and a

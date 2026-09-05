@@ -28,7 +28,7 @@ function open(id = 1): { backend: ScriptedBackend; replica: FakeReplica; session
   return { backend, replica, session: new Session(backend, id, replica) };
 }
 
-describe("a document command and its revision", () => {
+describe("an edit and its revision", () => {
   test("resolves only once the replica reached the revision the reply named", async () => {
     const { backend, replica, session } = open();
     backend.replies.set("node_add", { body: { result: "node", node: "root/group-7" }, rev: 5 });
@@ -330,7 +330,7 @@ describe("reads", () => {
 });
 
 describe("closing", () => {
-  test("frees the replica and stops following the document", async () => {
+  test("frees the replica and stops following the model", async () => {
     const { backend, replica, session } = open();
     session.close();
     backend.changed(1, 7);
@@ -389,12 +389,12 @@ describe("one method per kind of command", () => {
     // cannot answer it.
     void (() => session.query({ cmd: "status" }));
 
-    // @ts-expect-error — `node_set` changes the document, so it cannot go out
+    // @ts-expect-error — `node_set` changes the model, so it cannot go out
     // as presence: the panels would never learn the edit happened.
     void (() => session.sendPresence({ cmd: "node_set", node: "hair" }));
 
     // @ts-expect-error — the session fills this in; a caller that could pass
-    // it could address the wrong document.
+    // it could address the wrong model.
     void (() => session.queryServer({ cmd: "status", session: 2 }));
 
     // @ts-expect-error — `session_new` names no session, so it belongs on the

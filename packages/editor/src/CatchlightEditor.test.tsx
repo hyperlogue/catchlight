@@ -3,7 +3,7 @@
  *
  * There is no logic here to test — every behaviour belongs to a part or a hook
  * in `@catchlight/react`, which has its own suites. What can only break at this
- * layer is the wiring: which document the panels are showing, whether a part
+ * layer is the wiring: which model the panels are showing, whether a part
  * that needs the selection is under the provider that supplies it, and whether
  * the toolbar reaches the editor at all. So this mounts the whole thing over
  * the fake wasm module and reads the DOM.
@@ -28,7 +28,7 @@ import { createRoot } from "react-dom/client";
 import { CatchlightEditor } from "./CatchlightEditor.js";
 
 describe("the assembled editor", () => {
-  test("comes up empty and then shows the document the editor lists", async () => {
+  test("comes up empty and then shows the model the editor lists", async () => {
     const stop = stubObservers();
     const editor = await fakeEditor();
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
@@ -40,8 +40,8 @@ describe("the assembled editor", () => {
     expect(view.querySelector("[data-catchlight-stage][data-empty]")).not.toBeNull();
 
     // Not opened through this component: the editor said the set changed, and
-    // the first document it lists is the one the panels take.
-    await run(() => editor.newDocument("akari"));
+    // the first model it lists is the one the panels take.
+    await run(() => editor.newSession("akari"));
     await settle();
 
     expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
@@ -58,7 +58,7 @@ describe("the assembled editor", () => {
   test("a node is selected in the tree and a param is a named slider", async () => {
     const stop = stubObservers();
     const editor = await fakeEditor();
-    const session = await editor.newDocument("akari");
+    const session = await editor.newSession("akari");
     await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "body" });
     await session.send({
       cmd: "param_add",
@@ -101,10 +101,10 @@ describe("the assembled editor", () => {
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
-    // Nothing to frame without a document, the same rule the Save button is on.
+    // Nothing to frame without a model, the same rule the Save button is on.
     expect(fit(view).disabled).toBe(true);
 
-    const session = await run(() => editor.newDocument("akari"));
+    const session = await run(() => editor.newSession("akari"));
     await settle();
     expect(fit(view).disabled).toBe(false);
 
@@ -129,7 +129,7 @@ describe("the assembled editor", () => {
     stop();
   });
 
-  test("New opens a document, Save As downloads it, and closing the last one empties the screen", async () => {
+  test("New opens a model, Save As downloads it, and closing the last one empties the screen", async () => {
     const stop = stubObservers();
     const download = stubDownload();
     const { editor, wasm } = await fakeStack();
@@ -173,11 +173,11 @@ describe("the assembled editor", () => {
     stop();
   });
 
-  test("closing the current document switches to another; closing another leaves it", async () => {
+  test("closing the current model switches to another; closing another leaves it", async () => {
     const stop = stubObservers();
     const { editor } = await fakeStack();
-    const first = await editor.newDocument("akari");
-    await editor.newDocument("beni");
+    const first = await editor.newSession("akari");
+    await editor.newSession("beni");
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
@@ -195,7 +195,7 @@ describe("the assembled editor", () => {
     // The closed one's replica is gone, and the screen never read it again.
     expect((first.replica as FakeReplica).freed).toBe(true);
 
-    await run(() => editor.newDocument("chika"));
+    await run(() => editor.newSession("chika"));
     await settle();
     const rows = view.querySelectorAll<HTMLElement>("[data-catchlight-session]");
     expect(rows).toHaveLength(2);
@@ -213,7 +213,7 @@ describe("the assembled editor", () => {
     stop();
   });
 
-  test("one canvas element outlives every document: empty, open, close all, open again", async () => {
+  test("one canvas element outlives every model: empty, open, close all, open again", async () => {
     const stop = stubObservers();
     const { editor, gpu, viewports } = await fakeStack();
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
@@ -225,7 +225,7 @@ describe("the assembled editor", () => {
     expect(view.querySelector("[data-catchlight-stage][data-empty]")).not.toBeNull();
     expect(viewports).toHaveLength(0);
 
-    await run(() => editor.newDocument("akari"));
+    await run(() => editor.newSession("akari"));
     await settle();
     expect(view.querySelector("canvas")).toBe(canvas);
     expect(view.querySelector("[data-catchlight-stage][data-empty]")).toBeNull();
@@ -243,7 +243,7 @@ describe("the assembled editor", () => {
     expect(view.querySelector("canvas")).toBe(canvas);
     expect(viewports.filter((viewport) => viewport.freed === 0)).toHaveLength(1);
     // One device for the editor, acquired once from that one element,
-    // whatever came and went above it: the canvas outlived two documents and
+    // whatever came and went above it: the canvas outlived two models and
     // the device outlived both. On the fallback tier that element is also the
     // only one the device can present into, which is why the stage keeps it.
     expect(gpu.acquiredFrom).toEqual([canvas]);
@@ -263,7 +263,7 @@ describe("the assembled editor", () => {
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
     await settle();
 
-    await run(() => editor.newDocument("akari"));
+    await run(() => editor.newSession("akari"));
     await settle();
     await settle();
 
@@ -278,7 +278,7 @@ describe("the assembled editor", () => {
     const stop = stubObservers();
     const { editor } = await fakeStack();
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
-    const session = await run(() => editor.newDocument("akari"));
+    const session = await run(() => editor.newSession("akari"));
     await settle();
 
     // No fit yet, so nothing to be relative to.

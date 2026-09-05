@@ -34,7 +34,7 @@ from catchlight.protocol_gen import (
 from support import write_png
 
 
-def test_a_document_command_returns_its_body_and_moves_the_revision(client: Client) -> None:
+def test_an_edit_returns_its_body_and_moves_the_revision(client: Client) -> None:
     session = client.new()
     opened_at = client.revision(session)
     assert opened_at is not None

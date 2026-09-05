@@ -11,9 +11,9 @@ import { EditorProvider, useNodeInfo, useParams, useRevision, useTree } from "./
 import { harness, mount, run } from "./test/harness.js";
 
 describe("reading the replica", () => {
-  test("a document command moves the revision the panel is subscribed to", async () => {
+  test("an edit moves the revision the panel is subscribed to", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let renders = 0;
 
     function Rev() {
@@ -36,9 +36,9 @@ describe("reading the replica", () => {
     await view.unmount();
   });
 
-  test("a read is redone when the document moves, and not otherwise", async () => {
+  test("a read is redone when the model moves, and not otherwise", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     let reads = 0;
 
     function Panel() {
@@ -72,9 +72,9 @@ describe("reading the replica", () => {
     await view.unmount();
   });
 
-  test("a node's fields are re-read when the document moves, and when the node changes", async () => {
+  test("a node's fields are re-read when the model moves, and when the node changes", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const first = await run(() =>
       session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }),
     );
@@ -124,7 +124,7 @@ describe("reading the replica", () => {
 
   test("a pose is not an edit, so it moves no revision", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
     const body = await session.send({
       cmd: "param_add",
       name: "eye_open",

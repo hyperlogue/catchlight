@@ -1,5 +1,5 @@
 //! Per-node inspector. Reads a cloned [`InspectorData`] snapshot (built by the
-//! app from the document under the session lock) and emits [`InspectorAction`]s.
+//! app from the model under the session lock) and emits [`InspectorAction`]s.
 //!
 //! Continuous controls follow the gesture discipline: while dragging they emit
 //! `Preview` (applied to the puppet's working state only); the app commits one

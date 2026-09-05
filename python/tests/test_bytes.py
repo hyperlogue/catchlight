@@ -22,7 +22,7 @@ from catchlight import (
     ProtocolError,
 )
 from catchlight.protocol_gen import ResponseBodyTextures, ResponseBodyTree, TextureList
-from support import minimal_document, png_size, write_manifest, write_png
+from support import minimal_structure, png_size, write_manifest, write_png
 
 
 @pytest.fixture(params=["socket", "http"])
@@ -97,7 +97,7 @@ def test_a_second_import_into_the_same_session_is_refused(
     assert raised.value.code is ErrorCode.NOT_EMPTY
 
 
-def test_a_json_document_and_its_images_import_over_either_door(
+def test_a_json_structure_and_its_images_import_over_either_door(
     either: Client, tmp_path: Path
 ) -> None:
     """A client that authored a structure sends it with its images, and never
@@ -105,7 +105,7 @@ def test_a_json_document_and_its_images_import_over_either_door(
     into = either.new()
     either.import_json(
         into,
-        minimal_document(),
+        minimal_structure(),
         {"tex-0": write_png(tmp_path / "face.png")},
     )
 
@@ -117,35 +117,35 @@ def test_a_json_document_and_its_images_import_over_either_door(
 def test_a_json_import_that_leaves_out_a_texture_is_refused(
     either: Client, tmp_path: Path
 ) -> None:
-    """The document names a texture nobody attached, so the model never
+    """The structure names a texture nobody attached, so the model never
     builds — and the refusal says which one."""
     with pytest.raises(ProtocolError) as raised:
-        either.import_json(either.new(), minimal_document(), {})
+        either.import_json(either.new(), minimal_structure(), {})
     assert "tex-0" in str(raised.value)
 
 
-def test_a_json_document_installs_under_a_parent(
+def test_a_json_structure_installs_under_a_parent(
     either: Client, tmp_path: Path
 ) -> None:
     """`parent` present is the install path, the same one a file takes."""
     into = either.new()
     either.import_json(
         into,
-        minimal_document(),
+        minimal_structure(),
         {"tex-0": write_png(tmp_path / "face.png")},
     )
     # A second copy, renamed so nothing collides, under the root.
-    document = minimal_document(texture="tex-1")
-    document["nodes"][0]["id"] = "copy-root"
-    document["nodes"][1]["id"] = "copy-node-1"
-    document["nodes"][1]["parent"] = "copy-root"
-    document["nodes"][1]["name"] = "Copy"
-    # The root now names a parent the document does not carry, which is what
+    structure = minimal_structure(texture="tex-1")
+    structure["nodes"][0]["id"] = "copy-root"
+    structure["nodes"][1]["id"] = "copy-node-1"
+    structure["nodes"][1]["parent"] = "copy-root"
+    structure["nodes"][1]["name"] = "Copy"
+    # The root now names a parent the structure does not carry, which is what
     # makes it a fragment; the command's `parent` overrides it anyway.
-    document["nodes"] = document["nodes"][1:]
+    structure["nodes"] = structure["nodes"][1:]
     either.import_json(
         into,
-        document,
+        structure,
         {"tex-1": write_png(tmp_path / "other.png")},
         parent="root",
     )

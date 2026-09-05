@@ -218,7 +218,7 @@ pub fn command_tags(decls: &[Decl]) -> Result<Vec<String>> {
 /// Holds the tags one emitter found against `COMMAND_KINDS`, both directions.
 ///
 /// This is the whole reason `COMMAND_KINDS` exists. Neither TypeScript nor
-/// Python can see that `scratch_deform` leaves the document alone and
+/// Python can see that `scratch_deform` leaves the model alone and
 /// `node_set` does not, or that `node_tree` is answerable from a local replica
 /// and `status` is not, so a client that took one `Command` would have to
 /// remember which of its calls are quiet and which can be served without a
@@ -347,14 +347,14 @@ pub struct Kind {
 /// [`check_classified`] closes, one level up. Both emitters fail on it.
 pub const KINDS: &[Kind] = &[
     Kind {
-        kind: proto::CommandKind::Document,
-        name: "DocumentCommand",
+        kind: proto::CommandKind::Edit,
+        name: "EditCommand",
         doc: &[
-            "A command that changes the document, or which documents exist.",
+            "A command that changes a session's model, or which sessions exist.",
             "",
             "The session's revision moves, so every view of it re-reads. These are the",
             "commands that cost an undo entry and a React render, and the only ones",
-            "that must reach the editor that owns the document.",
+            "that must reach the editor that owns the model.",
         ],
     },
     Kind {
@@ -364,7 +364,7 @@ pub const KINDS: &[Kind] = &[
             "A command that publishes shared view state: pose, camera, selection.",
             "",
             "It goes to the editor because other clients read it back, and it changes no",
-            "document: no revision, no undo entry, invisible to a panel.",
+            "model: no revision, no undo entry, invisible to a panel.",
         ],
     },
     Kind {

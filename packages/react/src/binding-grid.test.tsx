@@ -10,14 +10,14 @@
 import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
-import type { NodeId, ParamInfo, Request, Session, SessionDocumentCommand } from "@catchlight/core";
+import type { NodeId, ParamInfo, Request, Session, SessionEditCommand } from "@catchlight/core";
 import { act } from "react";
 
 import { BindingGrid, EditorProvider } from "./index.js";
 import { fire, harness, mount, run } from "./test/harness.js";
 
 /** One param, keyed at both ends and in the middle. */
-const yaw = (): SessionDocumentCommand => ({
+const yaw = (): SessionEditCommand => ({
   cmd: "param_add",
   name: "head:yaw",
   min: -1,
@@ -36,7 +36,7 @@ function last(requests: Request[]): Request {
   return request;
 }
 
-/** A document with one part and one param keyed in three places. */
+/** A model with one part and one param keyed in three places. */
 interface Scene {
   editor: Awaited<ReturnType<typeof harness>>["editor"];
   wasm: Awaited<ReturnType<typeof harness>>["wasm"];
@@ -47,7 +47,7 @@ interface Scene {
 
 async function scene(): Promise<Scene> {
   const { editor, wasm } = await harness();
-  const session = await editor.newDocument();
+  const session = await editor.newSession();
   await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
   await run(() => session.send(yaw()));
   const param = session.params()[0] as ParamInfo;

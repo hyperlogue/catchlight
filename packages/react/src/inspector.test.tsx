@@ -22,7 +22,7 @@ stubLegacyEventApi();
 describe("the inspector", () => {
   test("with nothing selected it is the empty state", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     const view = await mount(<Panel session={session} node={undefined} />);
     await settle();
@@ -34,7 +34,7 @@ describe("the inspector", () => {
 
   test("a selection that outlived its node is the empty state too", async () => {
     const { editor } = await harness();
-    const session = await editor.newDocument();
+    const session = await editor.newSession();
 
     const view = await mount(<Panel session={session} node="root/gone-9" />);
     await settle();
@@ -211,7 +211,7 @@ describe("the inspector", () => {
     const x = field(view.container, "translate", "x");
     await type(x, "7");
 
-    // Something else moved the document: another panel, an agent on the socket.
+    // Something else moved the model: another panel, an agent on the socket.
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "group", name: "hat" }));
     await settle();
 
@@ -239,10 +239,10 @@ function Pick({ node }: { node: string | undefined }) {
   return null;
 }
 
-/** A document holding one node of `kind`, with the panel mounted on it. */
+/** A model holding one node of `kind`, with the panel mounted on it. */
 async function inspecting(kind: "group" | "part" | "composite" | "mesh_group") {
   const { editor, wasm } = await harness();
-  const session = await editor.newDocument();
+  const session = await editor.newSession();
   const body = await run(() =>
     session.send({ cmd: "node_add", parent: "root", kind, name: "hair" }),
   );

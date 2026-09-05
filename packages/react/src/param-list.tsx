@@ -2,7 +2,7 @@
  * Every param the model carries, one row each — and the two controls that
  * change what is in the list.
  *
- * The list is a replica read, so it moves when the document does — a param
+ * The list is a replica read, so it moves when the model does — a param
  * added by an agent on the socket appears here without this component knowing
  * anything happened. The render prop is the composition seam: a host that
  * wants a name, a value readout and a binding count writes the row, and still
@@ -15,7 +15,7 @@
  * editor places all three.
  *
  * **A field commits on blur or Enter, never per keystroke.** Every one of
- * these is a document command with a revision and an undo entry behind it, and
+ * these is an edit with a revision and an undo entry behind it, and
  * typing "0.25" one character at a time is not four edits. The inputs are
  * uncontrolled and keyed on the values they were built from, so a change from
  * anywhere — this form, another panel, an agent — redraws them.

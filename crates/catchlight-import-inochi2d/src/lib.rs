@@ -8,7 +8,7 @@
 //! Three parts. [`inx`] is the container reader: `TRNSRTS\0` framing, the JSON
 //! payload, the texture table (PNG, TGA, or BC7 DDS decoded to PNG) and the
 //! opaque vendor sections. `reflect.rs` turns inochi2d's JSON into the values
-//! catchlight stores. `to_clm.rs` assembles them into a `.clm` document and
+//! catchlight stores. `to_clm.rs` assembles them into a `.clm` structure and
 //! mints its Ids, and [`import_inx_model`] reads that back through
 //! [`Model::from_clm_file`](catchlight_core::Model::from_clm_file) — so an
 //! import that succeeds has been through the same reader a `.clm` off disk

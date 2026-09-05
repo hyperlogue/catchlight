@@ -215,15 +215,15 @@ pub const MAX_PARAM_GRID_CELLS: u64 = 65_536;
 /// turned into a [`Model`](crate::Model): the counts and products a hostile
 /// file could make enormous are all here, and each is checked against the
 /// limit before it is used to size anything.
-pub fn charge_clm_structure(
+pub fn charge_clm_file(
     file: &crate::formats::clm::ClmFile,
     budget: &mut LoadBudget,
 ) -> Result<(), LoadLimitError> {
     charge_texture_payloads(file.textures.iter().map(|t| t.data.len() as u64), budget)?;
-    charge_clm_document(&file.doc, budget)
+    charge_clm_structure(&file.doc, budget)
 }
 
-/// The texture half of [`charge_clm_structure`], over payload sizes alone —
+/// The texture half of [`charge_clm_file`], over payload sizes alone —
 /// so a replica applying a structure charges the payloads it sourced from its
 /// own store rather than ones it read out of a file.
 pub fn charge_texture_payloads(
@@ -238,10 +238,10 @@ pub fn charge_texture_payloads(
     budget.charge(LoadResource::Textures, count)
 }
 
-/// The document half of [`charge_clm_structure`]: everything a hostile file
+/// The structure half of [`charge_clm_file`]: everything a hostile file
 /// could make enormous that is not a texture payload.
-pub fn charge_clm_document(
-    doc: &crate::formats::clm::ClmDocument,
+pub fn charge_clm_structure(
+    doc: &crate::formats::clm::ClmStructure,
     budget: &mut LoadBudget,
 ) -> Result<(), LoadLimitError> {
     use crate::formats::clm::{ClmBindingValues, ClmMesh, ClmNodeKind};

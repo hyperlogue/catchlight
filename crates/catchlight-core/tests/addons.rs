@@ -246,7 +246,7 @@ fn random_model(rng: &mut Rng) -> Model {
 
 // ------------------------------------------------------------ canonical form
 
-/// A model as its `.clm` document with every order the round trip is allowed
+/// A model as its `.clm` file with every order the round trip is allowed
 /// to change taken out: sibling order (nodes carry their parent, so sorting
 /// them by Id erases it) and the order of the flat lists.
 fn canonical(m: &Model) -> ClmFile {
