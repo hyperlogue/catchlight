@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+    <rect width="1024" height="1024" fill="#fff"/>
+    <circle cx="512" cy="512" r="384" fill="url(#glow)"/>
+    <path transform="matrix(0.588742,-0.880715,0.9237,0.617476,-157.941508,443.755766)" d="M320.012,261.766C390.927,259.944 471.166,301.29 479.828,339.735C487.668,374.535 437.295,397.996 348.763,394.497C288.075,392.099 216.42,377.126 211.236,337.507C207.079,305.737 251.252,263.533 320.012,261.766Z" fill="#fff"/>
+    <defs>
+        <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(319,286,-286,319,481,471)">
+            <stop offset="0" stop-color="#9bd3fd"/>
+            <stop offset="0.62" stop-color="#72bffb"/>
+            <stop offset="1" stop-color="#68b7f7"/>
+        </radialGradient>
+    </defs>
+</svg>

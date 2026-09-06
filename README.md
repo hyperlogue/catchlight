@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" alt="" width="120" align="right">
+
 # Catchlight
 
 Catchlight is a software stack for 2.5D character animation. It simulates
