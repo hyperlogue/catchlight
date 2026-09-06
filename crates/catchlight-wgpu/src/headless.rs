@@ -170,15 +170,8 @@ impl RenderContext {
         render_lists: &[&RenderList],
         clear: Option<wgpu::Color>,
     ) -> Result<RenderStats, Box<dyn std::error::Error>> {
-        let mut encoder =
-            self.renderer
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("headless-render-encoder"),
-                });
-        let stats = self.renderer.render_lists_ext(
+        let done = self.renderer.frame().render_ext(
             render_lists,
-            &mut encoder,
             &self.view,
             &self.stencil,
             &mut self.composites,
@@ -188,9 +181,8 @@ impl RenderContext {
             self.height,
             clear,
         )?;
-        self.renderer
-            .queue
-            .submit(std::iter::once(encoder.finish()));
+        let stats = done.stats();
+        done.submit();
         Ok(stats)
     }
 

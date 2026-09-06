@@ -43,8 +43,8 @@
 //! ```
 //!
 //! `render_rgba` resizes when the size changes and reads the target back; a
-//! caller drawing to a window uses `WgpuRenderer::render_lists_ext` against
-//! its own surface view instead and never reads back. Several puppets of the
+//! caller drawing to a window takes `WgpuRenderer::frame` and renders against
+//! its own surface view instead, never reading back. Several puppets of the
 //! one model share the cache: tick each, `refresh` each, `collect` each, and
 //! hand the lists to `RenderContext::render_many` for one submit.
 //!

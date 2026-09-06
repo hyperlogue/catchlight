@@ -34,11 +34,20 @@
 //! first's before either drew.
 //!
 //! **A renderer draws once per frame, so z orders within a model.** Every
-//! puppet of a model goes into one `render_lists_ext`; a second call on the
-//! same renderer inside one submit would reset the frame cursors under the
-//! draws already recorded. Models are therefore ordered by their backmost
-//! puppet and drawn one group at a time: two models whose puppets interleave
-//! in z do not interleave on screen.
+//! puppet of a model goes into one render call; a second call on the same
+//! renderer inside one submit would reset the frame cursors under the draws
+//! already recorded. Models are therefore ordered by their backmost puppet
+//! and drawn one group at a time: two models whose puppets interleave in z do
+//! not interleave on screen.
+//!
+//! **bevy owns the submit, so bevy owns the camera slots.** The render graph
+//! makes the encoder and submits it, so the pass takes `render_into` and the
+//! borrowed-encoder path rather than a `WgpuRenderer::frame` of its own —
+//! this crate is the only caller of it. `render_into` cannot see a submission
+//! boundary, so each `ModelGpu` carries a `Submission` token that hands out
+//! this frame's camera slots and `prepare_puppets` replaces every frame. A
+//! token that outlived its frame would run the 64-slot ring out about a
+//! second in, which is what the loud `CameraViewsExhausted` names.
 //!
 //! **One wgpu across the whole workspace.** `catchlight-bevy` hands bevy's
 //! render world a `Device`, `Queue` and `Arc<Pipelines>` built by

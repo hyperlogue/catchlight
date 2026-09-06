@@ -290,6 +290,56 @@ fn two_puppets_of_one_model_share_one_cache_and_both_reach_the_target() {
     );
 }
 
+/// bevy's graph makes the encoder and the submit, so the pass draws through
+/// `render_into` and takes its camera slot from a `Submission` token. The
+/// token has to be renewed every frame: one that stayed spans frames it can
+/// no longer see the boundaries of, and at one slot per camera per frame it
+/// would run the 64-slot ring out about a second in — the freeze this path
+/// used to have. So what the count says after any frame is this frame's
+/// views, never the sum.
+#[test]
+fn the_camera_slots_a_frame_takes_do_not_accumulate_across_frames() {
+    let mut app = render_app();
+    let target = offscreen_target(&mut app);
+    app.world_mut().spawn((
+        Camera2d,
+        RenderTarget::Image(target.into()),
+        CatchlightCamera,
+    ));
+
+    let model = app
+        .world_mut()
+        .resource_mut::<Assets<CatchlightModel>>()
+        .add(CatchlightModel::new(fixture("welded_seam")));
+    let puppet = app
+        .world_mut()
+        .spawn((
+            CatchlightPuppet::new(model),
+            Transform::from_scale(Vec3::splat(0.25)),
+        ))
+        .id();
+
+    // Frame 1 prepares, frame 2 collects, frame 3 draws.
+    for _ in 0..3 {
+        app.update();
+    }
+    let entity = render_entity(&app, puppet);
+
+    for frame in 0..4 {
+        app.update();
+        let state = app
+            .sub_app(bevy::render::RenderApp)
+            .world()
+            .resource::<CatchlightRenderState>();
+        assert_eq!(
+            state.camera_views_issued(entity),
+            Some(1),
+            "frame {frame}: one camera drew one view, so this frame's token \
+             must have issued exactly one slot",
+        );
+    }
+}
+
 #[test]
 fn a_despawned_puppet_releases_its_cache() {
     let mut app = render_app();

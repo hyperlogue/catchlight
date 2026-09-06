@@ -151,8 +151,9 @@ that enforces them, not here. Add new ones there.
   puppets
 - `crates/catchlight-wgpu/src/collect.rs` — z order, composites, and slots
   rather than Ids
-- `crates/catchlight-wgpu/src/renderer.rs` — buffer writes, submits, a frame
-  is many lists and a deform set per puppet, camera slots, masking blends,
+- `crates/catchlight-wgpu/src/renderer.rs` — buffer writes, who owns the
+  frame and its submit, a frame is many lists and a deform set per puppet,
+  camera slots and the borrowed-encoder path's token, masking blends,
   resource sharing, WebGL fallbacks
 - `crates/catchlight-wgpu/src/lib.rs` — on `create_headless_context`, the
   backend and adapter choice; on `create_orthographic_camera_at`, that the

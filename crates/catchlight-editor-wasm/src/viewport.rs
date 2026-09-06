@@ -794,17 +794,12 @@ impl Inner {
         );
         self.composites.ensure_size(rendered.0, rendered.1);
 
-        let mut encoder =
-            render
-                .renderer
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("catchlight viewport"),
-                });
+        // The device the capture below copies with: the frame holds the
+        // renderer for as long as it owns the encoder.
+        let device = render.renderer.device.clone();
         render.renderer.update_camera(view_proj);
-        let result = render.renderer.render_list(
-            &self.list,
-            &mut encoder,
+        let recorded = render.renderer.frame().render(
+            &[&self.list],
             target_view,
             &self.stencil,
             &mut self.composites,
@@ -812,29 +807,38 @@ impl Inner {
             rendered.1,
             Some(CLEAR),
         );
+        let mut done = match recorded {
+            Ok(done) => done,
+            Err(e) => {
+                // The texture was acquired, so it is presented either way:
+                // a surface holding a frame nobody presents stalls the
+                // swapchain, and the tab stops drawing entirely.
+                frame.present();
+                return Err(e.to_string());
+            }
+        };
         // The borrowed surface, written in the same submission as the frame
         // that fills it, so what is presented is this frame and not the last.
         if let Target::Extra(extra) = &self.target {
             extra
                 .stage
                 .blit
-                .draw(&mut encoder, &view, &extra.bind, rendered.0, rendered.1);
+                .draw(done.encoder(), &view, &extra.bind, rendered.0, rendered.1);
         }
         // Recorded into the same encoder as the pass above, so what is read
         // back is this frame and not the one before it.
         let capture = match copy {
             Copy::Yes => Some(Capture::record(
-                &render.renderer.device,
-                &mut encoder,
+                &device,
+                done.encoder(),
                 &frame.texture,
                 width,
                 height,
             )),
             Copy::No => None,
         };
-        render.renderer.queue.submit(Some(encoder.finish()));
+        done.submit();
         frame.present();
-        result.map_err(|e| e.to_string())?;
 
         // The present above put an extra's picture on the tier's canvas. Take
         // it now, in this same task: the main view is about to draw over it,

@@ -1,5 +1,5 @@
 //! Headless preview: pose an already-built puppet and render it to a PNG,
-//! reusing catchlight's production `render_list_ext` path. Nothing is built
+//! reusing catchlight's production render path. Nothing is built
 //! here except the render cache the GPU needs.
 //!
 //! The wgpu plumbing — target, stencil, the two pools, camera, submit,

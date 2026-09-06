@@ -7,7 +7,7 @@ use bevy::render::view::ViewTarget;
 use catchlight_core::Model;
 use catchlight_wgpu::{
     CompositePool, DeformSet, FrameStats, FramebufferSnapshotPool, Pipelines, PrepareOptions,
-    RenderCache, RenderList, StencilTarget, WgpuRenderer,
+    RenderCache, RenderList, StencilTarget, Submission, WgpuRenderer,
 };
 
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
@@ -67,7 +67,7 @@ impl CatchlightRenderState {
 
     /// What the render node last recorded for the renderer one render-world
     /// entity draws through: the tallies `catchlight-wgpu` keeps for the most
-    /// recent `render_lists_ext` call. Zeroed until it has drawn once.
+    /// recent render call. Zeroed until it has drawn once.
     ///
     /// A renderer is shared by every puppet of one model, so this is the
     /// whole frame's tally for that model, not this entity's share of it.
@@ -81,6 +81,21 @@ impl CatchlightRenderState {
             .find(|(key, _)| key.entity == render_entity)
             .map(|(_, puppet)| puppet)?;
         Some(inner.gpus.get(&puppet.model)?.renderer.frame_stats())
+    }
+
+    /// Camera views the current frame's [`Submission`] has issued for the
+    /// renderer one render-world entity draws through. Test-facing, as
+    /// [`Self::frame_stats`]: it is how a test sees that the token is renewed
+    /// every frame rather than accumulating slots across them.
+    #[doc(hidden)]
+    pub fn camera_views_issued(&self, render_entity: Entity) -> Option<u32> {
+        let inner = self.inner.lock().ok()?;
+        let puppet = inner
+            .puppets
+            .iter()
+            .find(|(key, _)| key.entity == render_entity)
+            .map(|(_, puppet)| puppet)?;
+        Some(inner.gpus.get(&puppet.model)?.submission.views_issued())
     }
 
     /// How many render caches are resident: one per **model** per view
@@ -153,6 +168,12 @@ pub(crate) struct PuppetKey {
 /// What a puppet owns is in [`PuppetGpu`].
 pub(crate) struct ModelGpu {
     pub renderer: WgpuRenderer,
+    /// This frame's camera slots. bevy's render graph makes the encoder and
+    /// the submit, so the renderer cannot see the boundary and the pass
+    /// draws through `render_into` with this token. `prepare_puppets`
+    /// replaces it every frame, which is what keeps a frame's views from
+    /// counting against the frames before it.
+    pub submission: Submission,
     pub cache: RenderCache,
     /// The model the cache was prepared from. Holding it keeps the `Arc` alive
     /// for as long as [`ModelKey`] names its address.
@@ -302,8 +323,10 @@ pub(crate) fn prepare_puppets(
                             continue;
                         }
                     };
+                    let submission = renderer.submission();
                     entry.insert(ModelGpu {
                         renderer,
+                        submission,
                         cache,
                         model: ex.model.clone(),
                         options,
@@ -405,6 +428,11 @@ pub(crate) fn prepare_puppets(
     // timing for the overlay therefore trails by one frame.
     for gpu in gpus.values_mut() {
         gpu.renderer.end_gpu_frame();
+        // A fresh token per frame. The render node spends one camera slot
+        // per view out of it; carrying last frame's token forward would
+        // stack this frame's views on top of that one's and run the ring out
+        // in about a second.
+        gpu.submission = gpu.renderer.submission();
     }
 }
 

@@ -478,15 +478,12 @@ impl ApplicationHandler for App {
                         .composites
                         .get_or_insert_with(|| catchlight_wgpu::CompositePool::new(w, h));
 
-                    let mut encoder =
-                        renderer
-                            .device
-                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                label: Some("load-model frame"),
-                            });
-                    if let Err(e) = renderer.render_list(
-                        &render_list,
-                        &mut encoder,
+                    // The device and queue the control panel paints with:
+                    // the frame below holds the renderer for as long as it
+                    // owns the encoder they paint into.
+                    let (device, queue) = (renderer.device.clone(), renderer.queue.clone());
+                    match renderer.frame().render(
+                        &[&render_list],
                         &view,
                         stencil,
                         composites,
@@ -494,25 +491,27 @@ impl ApplicationHandler for App {
                         h,
                         clear_color,
                     ) {
-                        eprintln!("Render error: {}", e);
+                        Ok(mut done) => {
+                            if let (Some(control), Some(output)) =
+                                (self.control.as_mut(), control_output)
+                            {
+                                let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                                    size_in_pixels: [w, h],
+                                    pixels_per_point: output.pixels_per_point,
+                                };
+                                control.paint(
+                                    &device,
+                                    &queue,
+                                    done.encoder(),
+                                    &view,
+                                    &screen_descriptor,
+                                    output,
+                                );
+                            }
+                            done.submit();
+                        }
+                        Err(e) => eprintln!("Render error: {}", e),
                     }
-
-                    if let (Some(control), Some(output)) = (self.control.as_mut(), control_output) {
-                        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                            size_in_pixels: [w, h],
-                            pixels_per_point: output.pixels_per_point,
-                        };
-                        control.paint(
-                            &renderer.device,
-                            &renderer.queue,
-                            &mut encoder,
-                            &view,
-                            &screen_descriptor,
-                            output,
-                        );
-                    }
-
-                    renderer.queue.submit(std::iter::once(encoder.finish()));
 
                     frame.present();
                     window.request_redraw();

@@ -249,7 +249,7 @@ fn one_frame_of_many_puppets_takes_one_write_per_frame_buffer() {
 
     assert_eq!(stats.drawn_parts, 8);
     // The whole point of one frame call rather than eight: one cursor, one
-    // flush. Eight `render_list_ext` calls in this submit would each rewrite
+    // flush. Eight one-list frames in this submit would each rewrite
     // offset 0 and the last would win for all of them.
     assert_eq!(frame.instance_buffer_writes, 1, "{frame:?}");
     assert_eq!(frame.part_uniform_buffer_writes, 1, "{frame:?}");

@@ -6,7 +6,7 @@ use bevy::render::{
 };
 
 use crate::extract::{ExtractedCatchlightCamera, ExtractedPuppet};
-use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelKey};
+use crate::prepare::{CatchlightRenderInner, CatchlightRenderState, ModelGpu, ModelKey};
 
 /// Render system that draws every visible `ExtractedPuppet` onto the camera's
 /// color attachment. Runs in the Core2d render schedule after the built-in main
@@ -42,7 +42,7 @@ pub(crate) fn catchlight_2d_pass(
     // Size the shared per-format resources to *this* view's target
     // rather than the first window — a render-to-texture or
     // second-window camera has its own dimensions. The stencil is
-    // resized below; render_lists_ext sizes the composite / snapshot
+    // resized below; the render call sizes the composite / snapshot
     // pools itself from (w, h).
     let (w, h) = camera
         .physical_target_size
@@ -82,7 +82,7 @@ pub(crate) fn catchlight_2d_pass(
     let color_view = target.main_texture_view();
     // bevy creates ViewTarget main textures with
     // `CameraMainTextureUsages::default()` = RENDER_ATTACHMENT |
-    // TEXTURE_BINDING | COPY_SRC, so `render_lists_ext` can snapshot
+    // TEXTURE_BINDING | COPY_SRC, so the render call can snapshot
     // the framebuffer for the dst-in-shader blend modes
     // (Overlay / ColorBurn / LinearBurn).
     let color_texture: &wgpu::Texture = target.main_texture();
@@ -108,10 +108,10 @@ pub(crate) fn catchlight_2d_pass(
     order.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
 
     // One frame call per renderer, and a renderer holds one model. Every
-    // puppet of a model therefore draws in one `render_lists_ext`: the
-    // frame's instance and part-uniform cursors are monotonic across the
-    // whole call, and a second call on the same renderer inside this submit
-    // would reset them and rewrite offsets the first call's draws read.
+    // puppet of a model therefore draws in one `render_into`: the frame's
+    // instance and part-uniform cursors are monotonic across the whole call,
+    // and a second call on the same renderer inside this submit would reset
+    // them and rewrite offsets the first call's draws read.
     //
     // So z decides the order **within** a model, and models are ordered by
     // their backmost puppet. Two models whose puppets interleave in z
@@ -143,11 +143,18 @@ pub(crate) fn catchlight_2d_pass(
             continue;
         }
 
-        // Per-renderer camera write: each view records its own
-        // dynamic offset, so two marked cameras in one submit don't
-        // alias on a shared offset-0 write.
+        // Per-renderer camera write, out of this frame's token: each view
+        // takes its own slot, so two marked cameras in one submit don't
+        // alias on a shared offset-0 write. `prepare_puppets` renewed the
+        // token this frame; the graph submits after this system.
         gpu.renderer.update_camera(view_proj);
-        if let Err(e) = gpu.renderer.render_lists_ext(
+        let ModelGpu {
+            renderer,
+            submission,
+            ..
+        } = gpu;
+        if let Err(e) = renderer.render_into(
+            submission,
             &lists,
             encoder,
             color_view,
@@ -159,7 +166,7 @@ pub(crate) fn catchlight_2d_pass(
             h,
             None,
         ) {
-            tracing::error!("catchlight render_list error: {e}");
+            tracing::error!("catchlight render error: {e}");
         }
     }
 

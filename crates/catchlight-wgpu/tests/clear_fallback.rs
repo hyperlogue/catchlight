@@ -40,22 +40,11 @@ fn empty_render_list_still_clears_the_target() {
 
         // Frame 1: green garbage standing in for "the previous frame".
         let mut paint = |renderer: &mut WgpuRenderer, list: &RenderList, color: wgpu::Color| {
-            let mut encoder = renderer
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             renderer
-                .render_list(
-                    list,
-                    &mut encoder,
-                    &view,
-                    &stencil,
-                    &mut composites,
-                    W,
-                    H,
-                    Some(color),
-                )
-                .expect("render");
-            renderer.queue.submit(std::iter::once(encoder.finish()));
+                .frame()
+                .render(&[list], &view, &stencil, &mut composites, W, H, Some(color))
+                .expect("render")
+                .submit();
         };
         let empty = RenderList::default();
         paint(

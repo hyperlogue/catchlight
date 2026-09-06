@@ -126,11 +126,11 @@ impl HarnessInner {
         Ok((pixels, slot.spec.width, slot.spec.height))
     }
 
-    /// Draw every puppet of a multi-puppet config into one frame, the way an
-    /// app with several puppets on screen does: one encoder and one color
-    /// target, and one caller-owned `StencilTarget` / `CompositePool` /
-    /// `FramebufferSnapshotPool` passed to every `render_list_ext` call.
-    /// Only the first call clears; the rest load what the previous ones drew.
+    /// Draw every puppet of a multi-puppet config onto one color target, the
+    /// way an app with several puppets on screen does: a frame per model
+    /// renderer, in order, over one caller-owned `StencilTarget` /
+    /// `CompositePool` / `FramebufferSnapshotPool`. Only the first clears;
+    /// the rest load what the ones before them drew.
     ///
     /// The frame resources are built here rather than borrowed from a
     /// puppet's own `RenderContext` precisely because they are shared: the
@@ -170,11 +170,6 @@ impl HarnessInner {
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let camera = camera_matrix(width, height, &config.camera);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("multi-puppet-frame-encoder"),
-            });
 
         for (i, puppet) in config.frame_puppets.iter().enumerate() {
             let world = glam::Mat4::from_translation(glam::Vec3::new(puppet.x, puppet.y, 0.0));
@@ -182,11 +177,14 @@ impl HarnessInner {
             let slot = self.ensure_slot(&key, &puppet.model_stem)?;
             let render_list = prepare_puppet(&mut slot.ctx, &mut slot.cached, &[], world)?;
             slot.ctx.renderer.update_camera(camera);
+            // A renderer owns its own frame and its own submit, so a puppet
+            // per model renderer is a submit per model. Queue order is what
+            // stacks them onto the one target, in the order written here.
             slot.ctx
                 .renderer
-                .render_list_ext(
-                    &render_list,
-                    &mut encoder,
+                .frame()
+                .render_ext(
+                    &[&render_list],
                     &view,
                     &stencil,
                     &mut composites,
@@ -196,9 +194,9 @@ impl HarnessInner {
                     height,
                     (i == 0).then_some(CLEAR_COLOR),
                 )
-                .map_err(|error| anyhow!("render {} puppet {i}: {error}", config.name))?;
+                .map_err(|error| anyhow!("render {} puppet {i}: {error}", config.name))?
+                .submit();
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
 
         let pixels = pollster::block_on(read_texture_to_rgba(
             &self.device,

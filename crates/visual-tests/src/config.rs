@@ -266,9 +266,9 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
                 camera_preset: "default",
                 frame_puppets: &[],
             },
-            // Three puppets in one frame, sharing one caller-owned
-            // StencilTarget and CompositePool across three `render_list_ext`
-            // calls — the arrangement an app with several puppets on screen
+            // Three puppets onto one target, sharing one caller-owned
+            // StencilTarget and CompositePool across three frames — the
+            // arrangement an app with several puppets on screen
             // uses, and the one where a mask left in the stencil buffer or a
             // recycled composite slot would bleed from one puppet into the
             // next. `composite_masks` appears twice (its masks and its

@@ -1,4 +1,5 @@
-//! Draws a `RenderList` into a caller-supplied command encoder.
+//! Draws a `RenderList` into a frame the renderer owns, or into a
+//! caller-supplied command encoder.
 //!
 //! `renderer.rs` is one ~5.7k-line file on purpose. Every
 //! `queue.write_buffer` and every buffer allocation is visible in one place,
@@ -12,24 +13,28 @@
 //!   frame. Per-part instance and uniform data is staged in CPU-side buffers
 //!   and flushed as a single `write_buffer` at frame end
 //!   (`flush_instance_writes`, `flush_part_uniform_writes`, both called from
-//!   `render_lists_ext`).
+//!   `record_frame`).
 //! - **Cursor allocation, never a bare offset 0.** Take instance slots with
 //!   `reserve_instances(count)` and uniform slots with `write_part_uniform(..)`;
 //!   both hand out offsets from a monotonic per-frame cursor. A helper that
 //!   writes offset 0 itself reintroduces the aliasing above.
-//! - **A frame is `render_lists_ext`, not one list.** The cursors above are
+//! - **The renderer owns the frame and its submit.** [`WgpuRenderer::frame`]
+//!   makes the encoder, [`Frame::render`] / [`Frame::render_ext`] records the
+//!   frame into it and hands back a [`Recorded`], and [`Recorded::submit`] is
+//!   the only exit that submits — so one frame is one submit, and a
+//!   `Recorded` dropped instead draws nothing and warns. A caller with more
+//!   to record puts it in [`Recorded::encoder`] first. The exception is
+//!   [`WgpuRenderer::render_into`], the borrowed-encoder path for a host that
+//!   owns the submit itself; the only other `queue.submit` in here is
+//!   `generate_mips`, at texture-upload time.
+//! - **A frame is one render call, not one list.** The cursors above are
 //!   monotonic *per frame*, and a frame may carry several puppets of one
-//!   model. `render_lists_ext` sizes the frame over every list, records them
-//!   back to back, and flushes once; `render_list_ext` is the one-list case
-//!   of it. Two `render_list_ext` calls inside one submit would each reset
-//!   the cursors and rewrite offset 0 — the aliasing above, on every draw the
-//!   first call recorded. The lists draw in the order given, each puppet
-//!   atomic, and only the first may consume the frame's `clear_color`.
-//! - **One submit per frame.** `render_list` / `render_list_ext` /
-//!   `render_lists_ext` record into the *caller's* encoder and submit
-//!   nothing; the caller's submit is the frame's only one. The only
-//!   `queue.submit` inside the renderer is `generate_mips`, at texture-upload
-//!   time.
+//!   model. [`Frame::render_ext`] sizes the frame over every list, records
+//!   them back to back, and flushes once. Two render calls inside one submit
+//!   would each reset the cursors and rewrite offset 0 — the aliasing above,
+//!   on every draw the first call recorded. The lists draw in the order
+//!   given, each puppet atomic, and only the first may consume the frame's
+//!   `clear_color`.
 //! - **Never grow a GPU buffer mid-frame.** `begin_frame_instances` and
 //!   `begin_frame_uniforms` size the frame up front, before any pass is
 //!   recorded. A realloc after that strands already-recorded passes on the
@@ -41,15 +46,21 @@
 //!   every texture and every vertex buffer and differ only in these bytes.
 //!   Sets are recycled by index, and a set whose bytes may still hold a
 //!   previous tenant's pose is zeroed before its first upload.
-//! - **The camera ring advances and wraps.** `reserve_camera` writes each
-//!   `render_list`'s view-proj into the next slot of a `CAMERA_RING_SLOTS`-deep
-//!   ring and binds it as a dynamic offset. Distinct slots are what keep views
-//!   recorded into *one* submission from aliasing under `write_buffer`
-//!   batching. Across submissions a slot is free to be reused: the later
-//!   submission's write is ordered after the earlier one's draws on the queue
-//!   timeline. So the ring only ever advances — there is nothing to reset and
-//!   no submission boundary to announce. A single submission carrying more
-//!   than `CAMERA_RING_SLOTS` views would alias its last views onto its first.
+//! - **An owned frame is camera slot 0; the ring belongs to the borrowed
+//!   path.** Distinct camera slots are what keep views recorded into *one*
+//!   submission from aliasing under `write_buffer` batching; across
+//!   submissions a slot is free to be reused, since the later submission's
+//!   write is ordered after the earlier one's draws on the queue timeline. A
+//!   [`Frame`] *is* one submission, so it always writes slot 0.
+//!   [`WgpuRenderer::render_into`] cannot see a submission boundary, so it
+//!   takes the slots from the caller's [`Submission`] token, one per view,
+//!   out of a `CAMERA_RING_SLOTS`-deep ring. **One token per submit is the
+//!   host's promise.** A token kept past its submit runs the ring out and
+//!   the next view is refused loudly ([`RendererError::CameraViewsExhausted`])
+//!   rather than aliasing onto a slot an earlier command buffer still reads;
+//!   two tokens in one submit alias silently, because neither can see the
+//!   other. That residual is why `catchlight-bevy`, whose render graph owns
+//!   the submit, is the only caller of this path.
 //! - **Masking blends need matching color and alpha factors.** A mode whose
 //!   color component masks via `DstAlpha` or `Zero` (`ClipToLower`,
 //!   `SliceFromLower`, and likewise `Multiply` / `ColorDodge`) must use the
@@ -58,13 +69,13 @@
 //!   visible once a deform shrinks the mask. Pinned by
 //!   `masking_blend_modes_have_matching_color_and_alpha_factors`.
 //! - **Multi-puppet resource sharing.** `StencilTarget`, `CompositePool` and
-//!   `FramebufferSnapshotPool` are caller-owned and passed into
-//!   `render_lists_ext`, so several puppets in one frame share them. A
-//!   renderer is shared by every puppet of **one** model and no more: mesh
-//!   and texture slots are a cache's, and a second cache on one renderer
-//!   would overwrite them. Two models are two `(renderer, cache)` pairs over
-//!   shared `Pipelines` and per-format pools, one encoder and one submit —
-//!   see `crates/catchlight-bevy/src/prepare.rs` and
+//!   `FramebufferSnapshotPool` are caller-owned and passed into the render
+//!   call, so several puppets in one frame share them. A renderer is shared
+//!   by every puppet of **one** model and no more: mesh and texture slots
+//!   are a cache's, and a second cache on one renderer would overwrite them.
+//!   Two models are two `(renderer, cache)` pairs over shared `Pipelines`
+//!   and per-format pools, each drawing its own frame in turn onto the one
+//!   target — see `crates/catchlight-bevy/src/prepare.rs` and
 //!   `crates/visual-tests/src/harness.rs`, which serializes every render
 //!   through one mutex for the same reason.
 //! - **The stencil path has a WebGL fallback.** When `Pipelines::has_stencil`
@@ -86,7 +97,7 @@
 use catchlight_core::{BlendMode, DecodedTexture};
 use smallvec::SmallVec;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
@@ -133,6 +144,15 @@ pub enum RendererError {
         actual: usize,
     },
 
+    #[error(
+        "this submission has already issued its {limit} camera views; \
+         one submission token belongs to one submit"
+    )]
+    CameraViewsExhausted { limit: u32 },
+
+    #[error("this submission token was made by a different renderer")]
+    ForeignSubmission,
+
     #[error("preparing a model's textures: {0}")]
     TexturePrep(String),
 }
@@ -156,7 +176,7 @@ pub struct RenderStats {
     /// `encoder.begin_render_pass` calls this frame, including
     /// mask-write, blit, and no-draw clear passes. The dominant
     /// driver-CPU cost on tiled / browser backends; the metric the
-    /// pass-batching work in `render_list` targets.
+    /// pass-batching work in the render path targets.
     pub render_passes: u32,
     /// `draw` / `draw_indexed` calls this frame across all passes.
     pub total_draw_calls: u32,
@@ -173,18 +193,19 @@ pub struct RenderStats {
 }
 
 /// Resource-lifecycle counters for the current frame, reset at every
-/// `render_list` entry and readable afterwards via
+/// frame entry and readable afterwards via
 /// [`WgpuRenderer::frame_stats`]. Plain integers bumped unconditionally —
 /// no allocation, no timing — so tests can pin the buffer invariants that
 /// pixels cannot see: one queue write per buffer per frame, no growth
 /// after the frame is sized, and one write per reserved slot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FrameStats {
-    /// `queue.submit` calls the renderer itself issued since the frame
-    /// started. The frame path records into the caller's encoder and
-    /// submits nothing, so this reads 0 after `render_list`: the caller's
-    /// submit is the frame's only one. Non-zero only when an upload that
-    /// submits (texture mip generation) ran inside the frame.
+    /// `queue.submit` calls the renderer made this frame **besides the
+    /// frame's own**. [`Recorded::submit`] is not counted — it is the one
+    /// submit every frame has, and a stat that counted it would carry no
+    /// information. So this reads 0 for an ordinary frame and goes non-zero
+    /// only when an upload that submits (texture mip generation) ran inside
+    /// it.
     pub queue_submits: u32,
     /// `queue.write_buffer` calls made this frame, all buffers.
     pub queue_writes: u32,
@@ -197,7 +218,7 @@ pub struct FrameStats {
     /// 1, for the same reason as `instance_buffer_writes`.
     pub part_uniform_buffer_writes: u32,
     /// `queue.write_buffer` calls targeting `camera_buffer` — one per
-    /// `render_list`, into that view's own ring slot.
+    /// frame, into that view's own camera slot.
     pub camera_buffer_writes: u32,
     /// `queue.write_buffer` calls targeting the deform atlas. Deforms
     /// upload from [`WgpuRenderer::upload_deforms`], outside the frame, so
@@ -405,7 +426,7 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
         },
         // Overlay / ColorBurn / LinearBurn can't be expressed as a single
         // fixed-function wgpu BlendState — the math reads the destination.
-        // The dispatcher in `render_list` routes these through
+        // The dispatcher in `record_list` routes these through
         // `blit_composite_dst_in_shader`, which renders the src into a
         // composite slot, snapshots the framebuffer, then runs a
         // shader-math blit pipeline that emits the final pixel via
@@ -426,7 +447,7 @@ fn blend_mode_to_wgpu(mode: BlendMode) -> wgpu::BlendState {
 
 /// True for blend modes whose math reads the destination color and
 /// can't be expressed as a single wgpu fixed-function BlendState.
-/// `render_list` routes these through the composite +
+/// `record_list` routes these through the composite +
 /// framebuffer-snapshot path; every other mode renders directly to the
 /// main color attachment with hardware blending.
 fn is_dst_in_shader(mode: BlendMode) -> bool {
@@ -1252,7 +1273,7 @@ impl SnapshotTexture {
 
 /// Pool of viewport-sized framebuffer snapshots, reused across the four
 /// dst-in-shader blit modes within one frame. Same growth/reset
-/// discipline as `CompositePool`: cursor reset at `render_list` entry,
+/// discipline as `CompositePool`: cursor reset at frame entry,
 /// slots grow on first miss and are then reused for the rest of the
 /// program's lifetime. Allocates nothing when no dst-in-shader part
 /// shows up — the cursor stays at 0 and `acquire` is never called, so
@@ -1326,7 +1347,7 @@ struct CompositeTarget<'a> {
 }
 
 /// Pool of viewport-sized offscreen textures reused across composites.
-/// One pool per render world; `reset()` at the start of every `render_list`
+/// One pool per render world; `reset()` at the start of every frame
 /// call. Slots are allocated lazily (grown on demand).
 pub struct CompositePool {
     slots: Vec<CompositeTexture>,
@@ -1362,7 +1383,7 @@ impl CompositePool {
         }
     }
 
-    /// Reset the allocation cursor. Call once per `render_list` so each
+    /// Reset the allocation cursor. Call once per frame so each
     /// frame's composites re-use slots 0, 1, 2…
     pub fn reset(&mut self) {
         self.cursor = 0;
@@ -1534,15 +1555,54 @@ pub struct Pipelines {
 }
 
 /// Slots in the per-renderer camera ring. Bounds how many distinct
-/// view-proj matrices one renderer can have live in a single submit
-/// (i.e. the number of `CatchlightCamera` views a puppet draws into per
-/// frame). Reservations wrap rather than fail, so a submission carrying
-/// more views than this aliases its last onto its first.
+/// view-proj matrices one [`Submission`] can carry (i.e. the number of
+/// `CatchlightCamera` views a puppet draws into per host-owned submit).
+/// The view past the last is refused rather than wrapping onto a slot an
+/// already-recorded command buffer still reads. A [`Frame`] is one submit
+/// of its own and never leaves slot 0.
 #[doc(hidden)]
 pub const CAMERA_RING_SLOTS: u32 = 64;
 
+/// Byte offset of a camera ring slot. Callers bound `slot` below
+/// [`CAMERA_RING_SLOTS`] before asking — the ring does not wrap.
 fn camera_slot_offset(slot: u32, stride: u64) -> u64 {
-    u64::from(slot % CAMERA_RING_SLOTS) * stride
+    debug_assert!(
+        slot < CAMERA_RING_SLOTS,
+        "camera slot {slot} is past the ring"
+    );
+    u64::from(slot) * stride
+}
+
+/// One host-owned submit's worth of camera views, handed out by
+/// [`WgpuRenderer::submission`] and spent by [`WgpuRenderer::render_into`].
+///
+/// Only a host that owns the submit itself needs one — everyone else takes
+/// a [`Frame`], which is its own submit. The token exists because the
+/// borrowed-encoder path cannot see a submission boundary: it counts the
+/// views it has issued so each takes its own camera slot, and refuses the
+/// one past the ring instead of aliasing onto a slot the submit still
+/// reads. Make a fresh one per submit; keeping one alive across submits
+/// runs the ring out.
+///
+/// Not `Clone`: two tokens over one submit would each start at slot 0 and
+/// alias, which is the failure this type exists to make impossible to
+/// reach by accident.
+#[derive(Debug)]
+pub struct Submission {
+    /// Which renderer's ring these slots come from. A token spent on
+    /// another renderer is refused: its count means nothing there.
+    renderer: u64,
+    views: u32,
+}
+
+impl Submission {
+    /// Camera views this token has issued. Test-facing, as
+    /// [`WgpuRenderer::camera_dynamic_offset`]: it is how a host's test
+    /// sees that it renews its token every submit.
+    #[doc(hidden)]
+    pub fn views_issued(&self) -> u32 {
+        self.views
+    }
 }
 
 /// Dense `Vec<Option<V>>` keyed by a small integer id. MeshId and
@@ -1684,10 +1744,16 @@ impl DeformSetState {
     }
 }
 
+/// Hands every renderer an identity, so a [`Submission`] can name the ring
+/// it counts against. Nothing outside this file reads it.
+static NEXT_RENDERER_ID: AtomicU64 = AtomicU64::new(0);
+
 pub struct WgpuRenderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub shared: std::sync::Arc<Pipelines>,
+    /// This renderer's own id, stamped into every [`Submission`] it mints.
+    id: u64,
     part_uniform_buffer: wgpu::Buffer,
     part_uniform_bind_group: wgpu::BindGroup,
     mesh_buffers: DenseMap<MeshBuffer>,
@@ -1695,7 +1761,7 @@ pub struct WgpuRenderer {
     instance_buffer: wgpu::Buffer,
     instance_buffer_capacity: usize,
     // Bytes consumed from instance_buffer within the current frame.
-    // Reset at the start of each render_list() call. Distinct offsets
+    // Reset at the start of each frame. Distinct offsets
     // matter because wgpu::queue.write_buffer batches at submit-start —
     // multiple writes to the same offset inside one frame would alias
     // and every pass would read the last write.
@@ -1713,30 +1779,29 @@ pub struct WgpuRenderer {
     deform_buffer_len: u64,
     deform_upload_mirror: Vec<u8>,
     // Bytes written by the most recent `upload_deforms`, folded into the
-    // next `render_list`'s RenderStats (the upload runs before render_list,
-    // which resets current_stats, so it can't accumulate directly).
+    // next frame's RenderStats (the upload runs before the frame, which
+    // resets current_stats, so it can't accumulate directly).
     pending_deform_bytes: u64,
     // Per-frame pass / draw tallies. Atomics, not plain counters on
     // current_stats: the blit helpers borrow `&self`, so they can't
     // mutate current_stats — a relaxed fetch_add lets every pass/draw
     // site count uniformly regardless of &self vs &mut self. Reset at
-    // render_list entry, folded into current_stats at exit.
+    // frame entry, folded into current_stats at exit.
     frame_render_passes: AtomicU32,
     frame_draw_calls: AtomicU32,
-    // Per-view camera uniform ring. Each `render_list` writes the retained
-    // view-proj into the next slot and binds that dynamic offset for all its
+    // Per-view camera uniform ring. A render call writes the retained
+    // view-proj into one slot and binds that dynamic offset for all its
     // passes. Distinct slots keep views recorded into one submission from
     // aliasing under queue.write_buffer batching; across submissions a slot
     // is free to be reused, since queue order puts the later write after the
-    // earlier draws. The counter only advances and wraps — there is no
-    // boundary to announce.
+    // earlier draws. An owned `Frame` is one submission, so it takes slot 0;
+    // the ring is spent by `render_into`, out of the caller's `Submission`.
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
-    camera_slots_used: u32,
     camera_offset: u32,
     current_stats: RenderStats,
     // Per-frame resource-lifecycle counters, reset alongside
-    // `current_stats` at render_list entry. See `FrameStats`.
+    // `current_stats` at frame entry. See `FrameStats`.
     frame_stats: FrameStats,
     // Set once `begin_frame_uniforms` has closed the frame's sizing
     // phase. Any buffer recreation after that strands already-recorded
@@ -1768,7 +1833,7 @@ pub struct WgpuRenderer {
     // over the untouched span between them. Pooled across frames.
     deform_write_ranges: Vec<(u64, u64)>,
     /// The deform set whose passes are being recorded, and its byte base in
-    /// the atlas. Frame-scoped: `render_lists_ext` points them at each list
+    /// the atlas. Frame-scoped: `record_frame` points them at each list
     /// before recording it, and every deform slice and deformed-bounds
     /// lookup reads them rather than taking a parameter through a dozen
     /// draw helpers.
@@ -1776,7 +1841,7 @@ pub struct WgpuRenderer {
     deform_recording_base: u64,
     /// CPU copy of the last `update_camera` view-proj, kept so per-part
     /// bounds can project to clip space. Multi-view renderers call
-    /// `update_camera` per view before `render_list`, so this is the
+    /// `update_camera` per view before each render call, so this is the
     /// matrix that frame's passes bind.
     camera_view_proj: glam::Mat4,
     // Per-batch scratch reused across frames (taken out for the duration
@@ -2025,7 +2090,7 @@ impl WgpuRenderer {
             }],
             label: Some("camera_bind_group"),
         });
-        // Slot 0 holds identity so a render_list before any update_camera
+        // Slot 0 holds identity so a frame before any update_camera
         // doesn't read uninitialised memory.
         queue.write_buffer(
             &camera_buffer,
@@ -2050,6 +2115,7 @@ impl WgpuRenderer {
             device,
             queue,
             shared,
+            id: NEXT_RENDERER_ID.fetch_add(1, Ordering::Relaxed),
             part_uniform_buffer,
             part_uniform_bind_group,
             mesh_buffers: DenseMap::new(),
@@ -2074,7 +2140,6 @@ impl WgpuRenderer {
             frame_draw_calls: AtomicU32::new(0),
             camera_buffer,
             camera_bind_group,
-            camera_slots_used: 0,
             camera_offset: 0,
             current_stats: RenderStats::default(),
             frame_stats: FrameStats::default(),
@@ -2096,7 +2161,7 @@ impl WgpuRenderer {
     }
 
     /// Resource-lifecycle counters for the frame in progress. Reset at
-    /// each `render_list` entry, so read it after the call returns.
+    /// each frame entry, so read it after the render call returns.
     pub fn frame_stats(&self) -> FrameStats {
         self.frame_stats
     }
@@ -2481,8 +2546,8 @@ impl WgpuRenderer {
         offset as u32
     }
 
-    /// Set the camera view-projection retained for subsequent `render_list`
-    /// calls. The render call reserves and uploads a distinct uniform slot.
+    /// Set the camera view-projection retained for the next render call.
+    /// That call uploads it into a camera slot of its own.
     pub fn update_camera(&mut self, view_proj: glam::Mat4) {
         self.camera_view_proj = view_proj;
     }
@@ -2495,8 +2560,10 @@ impl WgpuRenderer {
         self.camera_offset
     }
 
-    fn reserve_camera(&mut self) {
-        let offset = camera_slot_offset(self.camera_slots_used, self.shared.camera_stride);
+    /// Write the retained view-proj into `slot` and bind that slot for the
+    /// frame about to be recorded.
+    fn write_camera(&mut self, slot: u32) {
+        let offset = camera_slot_offset(slot, self.shared.camera_stride);
         let camera_uniform = CameraUniform {
             view_proj: self.camera_view_proj.to_cols_array_2d(),
         };
@@ -2507,7 +2574,6 @@ impl WgpuRenderer {
             bytemuck::cast_slice(&[camera_uniform]),
         );
         self.camera_offset = offset as u32;
-        self.camera_slots_used = (self.camera_slots_used + 1) % CAMERA_RING_SLOTS;
     }
 
     /// Framebuffer-pixel AABB of one part's rendered geometry: its
@@ -2721,7 +2787,7 @@ impl WgpuRenderer {
         }
         // Accumulated, not assigned: N puppets of one model each upload
         // before the frame that draws them all, and the frame's stats want
-        // the sum. `render_lists_ext` zeroes it once it has folded it in.
+        // the sum. `record_frame` zeroes it once it has folded it in.
         self.pending_deform_bytes += written;
 
         ranges.clear();
@@ -3446,7 +3512,7 @@ impl WgpuRenderer {
 
     // Invariant: `valid` only holds indices whose mesh / texture were
     // verified resident by prepare_masked_part_draws; part_bind_group
-    // is populated by render_list.
+    // is populated by record_list.
     //
     // Record a masked batch's content draws into the caller's open
     // pass: pipeline / texture / mesh state switch on change, bind
@@ -3499,7 +3565,7 @@ impl WgpuRenderer {
             if *bound_texture != Some(key) {
                 let part_bg = self
                     .part_bind_group(part.albedo)
-                    .expect("part bind group must exist — render_list ensures it");
+                    .expect("part bind group must exist — record_list ensures it");
                 render_pass.set_bind_group(1, part_bg, &[]);
                 *bound_texture = Some(key);
                 texture_binds += 1;
@@ -3712,7 +3778,7 @@ impl WgpuRenderer {
             if *bound_texture != Some(key) {
                 let bind_group = self
                     .part_bind_group(d.albedo)
-                    .expect("part bind group must exist — render_list ensures it");
+                    .expect("part bind group must exist — record_list ensures it");
                 render_pass.set_bind_group(1, bind_group, &[]);
                 *bound_texture = Some(key);
                 texture_binds += 1;
@@ -4038,7 +4104,7 @@ impl WgpuRenderer {
     }
 
     /// Fold the per-frame atomic tallies and the byte/slot counts into
-    /// `current_stats`. Called once at each `render_list` exit.
+    /// `current_stats`. Called once at each frame exit.
     fn finalize_frame_stats(&mut self, composites: &CompositePool) {
         self.current_stats.render_passes = self.frame_render_passes.load(Ordering::Relaxed);
         self.current_stats.total_draw_calls = self.frame_draw_calls.load(Ordering::Relaxed);
@@ -4461,49 +4527,51 @@ impl WgpuRenderer {
         render_pass.draw(0..3, 0..1);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_list(
-        &mut self,
-        render_list: &crate::collect::RenderList,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        stencil: &StencilTarget,
-        composites: &mut CompositePool,
-        width: u32,
-        height: u32,
-        clear_color: Option<wgpu::Color>,
-    ) -> RendererResult<RenderStats> {
-        self.render_list_ext(
-            render_list,
+    /// Open a frame: a command encoder of the renderer's own, to be filled
+    /// by [`Frame::render`] / [`Frame::render_ext`] and submitted by
+    /// [`Recorded::submit`].
+    ///
+    /// One frame is one submit, which is what lets the frame keep its view
+    /// in camera slot 0 and its buffer cursors monotonic from the first draw
+    /// to the last. A host whose own render graph owns the submit takes
+    /// [`Self::submission`] and [`Self::render_into`] instead.
+    pub fn frame(&mut self) -> Frame<'_> {
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("catchlight frame"),
+            });
+        Frame {
+            renderer: self,
             encoder,
-            view,
-            stencil,
-            composites,
-            None,
-            None,
-            width,
-            height,
-            clear_color,
-        )
+        }
     }
 
-    /// Like `render_list` but accepts the underlying main-color texture
-    /// and a `FramebufferSnapshotPool` so the dst-in-shader blend modes
-    /// `Overlay`, `ColorBurn` and `LinearBurn` can snapshot
-    /// the current framebuffer per blit. Root drawables snapshot the
-    /// main framebuffer; composite children snapshot their composite's
-    /// offscreen target. When either is `None` the
-    /// dst-in-shader modes fall back to the Normal-OVER approximation
-    /// that `blend_mode_to_wgpu` returns for them — output is
-    /// approximate but rendering doesn't error.
+    /// A token for one submit the **caller** will make, spent by
+    /// [`Self::render_into`]. Make a fresh one per submit; see
+    /// [`Submission`].
+    pub fn submission(&self) -> Submission {
+        Submission {
+            renderer: self.id,
+            views: 0,
+        }
+    }
+
+    /// Record a frame into a **caller-owned** encoder, taking a camera slot
+    /// from `submission`.
     ///
-    /// `target_color_texture` must be the texture whose view was passed
-    /// as `view` and must carry `wgpu::TextureUsages::COPY_SRC`. The
-    /// snapshot texture in the pool carries `COPY_DST | TEXTURE_BINDING`.
-    #[allow(clippy::too_many_arguments, clippy::expect_used)]
-    pub fn render_list_ext(
+    /// The borrowed-encoder path, for a host whose render graph makes the
+    /// encoder and the submit — `catchlight-bevy` and nothing else. Everyone
+    /// else takes [`Self::frame`], which owns both and needs no token.
+    ///
+    /// Errors without recording anything when `submission` came from another
+    /// renderer, or when it has already issued [`CAMERA_RING_SLOTS`] views —
+    /// the loud end of a token kept past its submit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_into(
         &mut self,
-        render_list: &crate::collect::RenderList,
+        submission: &mut Submission,
+        lists: &[&crate::collect::RenderList],
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         stencil: &StencilTarget,
@@ -4514,8 +4582,19 @@ impl WgpuRenderer {
         height: u32,
         clear_color: Option<wgpu::Color>,
     ) -> RendererResult<RenderStats> {
-        self.render_lists_ext(
-            std::slice::from_ref(&render_list),
+        if submission.renderer != self.id {
+            return Err(RendererError::ForeignSubmission);
+        }
+        if submission.views >= CAMERA_RING_SLOTS {
+            return Err(RendererError::CameraViewsExhausted {
+                limit: CAMERA_RING_SLOTS,
+            });
+        }
+        let slot = submission.views;
+        submission.views += 1;
+        self.record_frame(
+            slot,
+            lists,
             encoder,
             view,
             stencil,
@@ -4528,24 +4607,35 @@ impl WgpuRenderer {
         )
     }
 
-    /// Draw several puppets of **one** model into one frame.
+    /// Draw several puppets of **one** model into one frame, binding the
+    /// retained view-proj at camera slot `camera_slot`.
     ///
-    /// This is the multi-puppet form of [`Self::render_list_ext`] and the
-    /// reason a renderer and its [`crate::RenderCache`] can be shared: the
-    /// lists are recorded back to back into one encoder, sharing the frame's
-    /// instance and part-uniform buffers under one monotonic cursor and one
-    /// camera slot, and each list draws from the [`DeformSet`] it carries.
-    /// Calling [`Self::render_list_ext`] twice inside one submit would
-    /// instead have the second call rewrite the first's instance and uniform
-    /// slots — `write_buffer` batches at submit start, so the later write
-    /// wins for every draw already recorded.
+    /// The one implementation both paths share, and the reason a renderer
+    /// and its [`crate::RenderCache`] can be shared: the lists are recorded
+    /// back to back into one encoder, sharing the frame's instance and
+    /// part-uniform buffers under one monotonic cursor and one camera slot,
+    /// and each list draws from the [`DeformSet`] it carries. A second call
+    /// inside one submit would instead rewrite the first's instance and
+    /// uniform slots — `write_buffer` batches at submit start, so the later
+    /// write wins for every draw already recorded.
     ///
     /// `lists` draw in the order given, each puppet atomic: within a list z
     /// order decides, across lists the caller's order does. `clear_color`
     /// belongs to the frame, so only the first list may consume it.
+    ///
+    /// `target_color_texture` and `snapshots` let the dst-in-shader blend
+    /// modes `Overlay`, `ColorBurn` and `LinearBurn` snapshot the current
+    /// framebuffer per blit: root drawables snapshot the main framebuffer,
+    /// composite children their composite's offscreen target. When either is
+    /// `None` those modes fall back to the Normal-OVER approximation
+    /// `blend_mode_to_wgpu` returns for them — approximate output, not an
+    /// error. `target_color_texture` must be the texture whose view was
+    /// passed as `view` and must carry `wgpu::TextureUsages::COPY_SRC`; the
+    /// snapshot texture in the pool carries `COPY_DST | TEXTURE_BINDING`.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
-    pub fn render_lists_ext(
+    fn record_frame(
         &mut self,
+        camera_slot: u32,
         lists: &[&crate::collect::RenderList],
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
@@ -4571,7 +4661,7 @@ impl WgpuRenderer {
         // reset has to precede it.
         self.frame_stats = FrameStats::default();
         self.frame_sizing_closed = false;
-        self.reserve_camera();
+        self.write_camera(camera_slot);
         self.current_stats = RenderStats::default();
         self.frame_render_passes.store(0, Ordering::Relaxed);
         self.frame_draw_calls.store(0, Ordering::Relaxed);
@@ -4602,15 +4692,15 @@ impl WgpuRenderer {
         let dst_in_shader_active =
             dst_in_shader_present && target_color_texture.is_some() && snapshots.is_some();
         if dst_in_shader_present && !dst_in_shader_active {
-            // Once per process: legacy `render_list` callers hit this on
-            // every frame (the reference model carries ColorBurn parts), and a per-frame
-            // warn would drown the log.
+            // Once per process: a caller on the plain render path hits this
+            // on every frame (the reference model carries ColorBurn parts),
+            // and a per-frame warn would drown the log.
             static FALLBACK_WARNED: std::sync::Once = std::sync::Once::new();
             FALLBACK_WARNED.call_once(|| {
                 tracing::warn!(
-                    "render_list: dst-in-shader blend mode present but caller did \
-                     not supply target_color_texture + snapshot pool; falling back \
-                     to Normal-OVER approximation",
+                    "dst-in-shader blend mode present but the caller supplied no \
+                     target_color_texture + snapshot pool; falling back to the \
+                     Normal-OVER approximation",
                 );
             });
         }
@@ -4701,7 +4791,7 @@ impl WgpuRenderer {
     /// Record one puppet's list into an already-sized frame. Everything that
     /// belongs to the frame rather than to the puppet — the camera slot, the
     /// instance and uniform sizing, the GPU timer scope, the stats — is
-    /// [`Self::render_lists_ext`]'s, so this may run several times per frame.
+    /// [`Self::record_frame`]'s, so this may run several times per frame.
     #[allow(clippy::too_many_arguments, clippy::expect_used)]
     fn record_list(
         &mut self,
@@ -5090,6 +5180,9 @@ impl WgpuRenderer {
     /// must run while the encoder is still open and **before** the encoder
     /// is submitted. Pair with `end_gpu_frame` once that submit lands.
     /// No-op when timestamp queries aren't supported.
+    ///
+    /// For the borrowed-encoder path, whose host owns the encoder.
+    /// [`Recorded::submit`] does this itself.
     pub fn resolve_gpu_queries(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if let Some(profiler) = self.gpu_profiler.as_mut() {
             profiler.resolve_queries(encoder);
@@ -5603,6 +5696,154 @@ impl WgpuRenderer {
     }
 }
 
+/// A frame the renderer owns end to end: it made the encoder, and it will
+/// make the submit.
+///
+/// Recording is the one thing a `Frame` does, and it does it once:
+/// [`Self::render`] / [`Self::render_ext`] take `self` by value and hand back
+/// a [`Recorded`]. A frame that errs is consumed with nothing submitted.
+pub struct Frame<'r> {
+    renderer: &'r mut WgpuRenderer,
+    encoder: wgpu::CommandEncoder,
+}
+
+impl<'r> Frame<'r> {
+    /// Draw `lists` — every puppet of the one model this renderer holds —
+    /// into `view`. See [`Self::render_ext`] for the dst-in-shader blend
+    /// modes, which need the target texture and a snapshot pool.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        self,
+        lists: &[&crate::collect::RenderList],
+        view: &wgpu::TextureView,
+        stencil: &StencilTarget,
+        composites: &mut CompositePool,
+        width: u32,
+        height: u32,
+        clear_color: Option<wgpu::Color>,
+    ) -> RendererResult<Recorded<'r>> {
+        self.render_ext(
+            lists,
+            view,
+            stencil,
+            composites,
+            None,
+            None,
+            width,
+            height,
+            clear_color,
+        )
+    }
+
+    /// [`Self::render`] plus what the dst-in-shader blend modes need: the
+    /// target colour texture and a snapshot pool, for `Overlay`, `ColorBurn`
+    /// and `LinearBurn`. Without them those modes fall back to a
+    /// Normal-OVER approximation rather than erroring.
+    ///
+    /// An owned frame is one submit, so its view is always camera slot 0.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_ext(
+        mut self,
+        lists: &[&crate::collect::RenderList],
+        view: &wgpu::TextureView,
+        stencil: &StencilTarget,
+        composites: &mut CompositePool,
+        target_color_texture: Option<&wgpu::Texture>,
+        snapshots: Option<&mut FramebufferSnapshotPool>,
+        width: u32,
+        height: u32,
+        clear_color: Option<wgpu::Color>,
+    ) -> RendererResult<Recorded<'r>> {
+        let stats = self.renderer.record_frame(
+            0,
+            lists,
+            &mut self.encoder,
+            view,
+            stencil,
+            composites,
+            target_color_texture,
+            snapshots,
+            width,
+            height,
+            clear_color,
+        )?;
+        Ok(Recorded {
+            renderer: self.renderer,
+            encoder: Some(self.encoder),
+            stats,
+        })
+    }
+}
+
+/// A recorded frame, waiting for its submit.
+///
+/// There is no second render call on it: the frame's buffer cursors were
+/// spent recording it, and a second call would reset them under the draws
+/// already recorded. What a caller may still add is its own work —
+/// a readback copy, a UI pass, a blit — through [`Self::encoder`], before
+/// [`Self::submit`] closes the frame.
+pub struct Recorded<'r> {
+    renderer: &'r mut WgpuRenderer,
+    /// Taken by [`Self::submit`], which is how `Drop` tells a dropped frame
+    /// from a submitted one.
+    encoder: Option<wgpu::CommandEncoder>,
+    stats: RenderStats,
+}
+
+impl Recorded<'_> {
+    /// The frame's encoder, for the passes the caller records alongside it.
+    /// They land in the same submit, so what they read is this frame.
+    pub fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        // `submit` is the only thing that takes the encoder and it consumes
+        // the frame, so a live `Recorded` always has one; the fallback only
+        // satisfies the type.
+        self.encoder.get_or_insert_with(|| {
+            self.renderer
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("catchlight frame"),
+                })
+        })
+    }
+
+    /// What this frame drew.
+    pub fn stats(&self) -> RenderStats {
+        self.stats
+    }
+
+    /// Submit the frame. The one exit that reaches the queue.
+    ///
+    /// Timer queries opened while recording are resolved into this same
+    /// encoder first: the caller never sees it, so this is the only place
+    /// they can be resolved before the submit that carries them.
+    pub fn submit(mut self) -> wgpu::SubmissionIndex {
+        let mut encoder = self.encoder.take();
+        if let Some(encoder) = encoder.as_mut() {
+            self.renderer.resolve_gpu_queries(encoder);
+        }
+        self.renderer
+            .queue
+            .submit(encoder.map(wgpu::CommandEncoder::finish))
+    }
+}
+
+impl Drop for Recorded<'_> {
+    fn drop(&mut self) {
+        if self.encoder.is_some() {
+            // Once per process, as the dst-in-shader fallback below: a
+            // caller that drops one frame drops every frame, and a per-frame
+            // warn would drown the log.
+            static DROPPED_WARNED: std::sync::Once = std::sync::Once::new();
+            DROPPED_WARNED.call_once(|| {
+                tracing::warn!(
+                    "a recorded catchlight frame was dropped without submit(); \
+                     nothing it drew reached the queue",
+                );
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -5634,19 +5875,24 @@ mod tests {
         }));
     }
 
+    /// The ring does not wrap: `render_into` refuses the view past the last
+    /// slot instead. So every offset a caller can reach names its own slot,
+    /// and the last one ends exactly at the buffer the constructor sized.
     #[test]
-    fn camera_slot_reservation_wraps_around() {
+    fn camera_slot_offsets_stay_inside_the_ring() {
         let stride = 256;
         assert_eq!(camera_slot_offset(0, stride), 0);
+        let offsets: Vec<u64> = (0..CAMERA_RING_SLOTS)
+            .map(|slot| camera_slot_offset(slot, stride))
+            .collect();
+        for pair in offsets.windows(2) {
+            assert_eq!(pair[1] - pair[0], stride, "slots must be one stride apart");
+        }
         assert_eq!(
-            camera_slot_offset(CAMERA_RING_SLOTS - 1, stride),
-            u64::from(CAMERA_RING_SLOTS - 1) * stride
+            offsets[CAMERA_RING_SLOTS as usize - 1] + stride,
+            stride * u64::from(CAMERA_RING_SLOTS),
+            "the last slot must end at the end of the camera buffer",
         );
-        // One past the last slot is the first slot again, not an error: only
-        // reuse inside one submission aliases, and a submission that deep
-        // does not exist.
-        assert_eq!(camera_slot_offset(CAMERA_RING_SLOTS, stride), 0);
-        assert_eq!(camera_slot_offset(CAMERA_RING_SLOTS + 1, stride), stride);
     }
 
     /// Root-composite flattening draws children straight to the parent

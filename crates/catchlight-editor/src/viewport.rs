@@ -220,16 +220,10 @@ impl ViewportRenderer {
             camera.center,
         ));
 
-        let mut encoder =
-            self.renderer
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("viewport-encoder"),
-                });
         self.renderer
-            .render_list_ext(
-                &render_list,
-                &mut encoder,
+            .frame()
+            .render_ext(
+                &[&render_list],
                 &self.view,
                 &self.stencil,
                 &mut self.composites,
@@ -244,10 +238,8 @@ impl ViewportRenderer {
                     a: 1.0,
                 }),
             )
-            .map_err(|e| anyhow!("render: {e}"))?;
-        self.renderer
-            .queue
-            .submit(std::iter::once(encoder.finish()));
+            .map_err(|e| anyhow!("render: {e}"))?
+            .submit();
         Ok(self.texture_id)
     }
 

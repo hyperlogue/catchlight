@@ -6,7 +6,7 @@
 //! fixed-function blend (`OneMinusDst` / `OneMinusSrcAlpha`), included here
 //! only as the fixed-function counter-case.
 //! Each test builds a synthetic single-Part model on a known
-//! background, runs it through `render_list_ext`, and checks a center
+//! background, runs it through `Frame::render_ext`, and checks a center
 //! pixel against the math computed in linear color space (matching the
 //! shader, which samples sRGB textures as linear).
 //!
@@ -62,7 +62,7 @@ async fn render_blend(blend: BlendMode, bg_rgba_u8: [u8; 4], src_rgba_u8: [u8; 4
     render_model(make_model(blend, src_rgba_u8), bg_rgba_u8).await
 }
 
-/// Render any model through `render_list_ext` (snapshot pool wired)
+/// Render any model through `Frame::render_ext` (snapshot pool wired)
 /// onto a solid background and read back the pixels.
 async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
@@ -97,10 +97,6 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
     let mut composites = catchlight_wgpu::CompositePool::new(W, H);
     let mut snapshots = FramebufferSnapshotPool::new(W, H);
 
-    let mut encoder = renderer
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
     // wgpu/WebGPU clear color values are interpreted as **linear-space**
     // floats: when the attachment is sRGB the value is sRGB-encoded on
     // store. So the bg_rgba_u8 byte triple — which is the desired sRGB
@@ -114,9 +110,9 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
         a: bg_rgba_u8[3] as f64 / 255.0,
     };
     renderer
-        .render_list_ext(
-            &render_list,
-            &mut encoder,
+        .frame()
+        .render_ext(
+            &[&render_list],
             &view,
             &stencil,
             &mut composites,
@@ -126,8 +122,8 @@ async fn render_model(model: Model, bg_rgba_u8: [u8; 4]) -> Vec<u8> {
             H,
             Some(clear),
         )
-        .expect("render");
-    renderer.queue.submit(std::iter::once(encoder.finish()));
+        .expect("render")
+        .submit();
 
     catchlight_wgpu::read_texture_to_rgba(&renderer.device, &renderer.queue, &texture, W, H)
         .await
@@ -387,13 +383,10 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
             H,
         );
         let mut composites = catchlight_wgpu::CompositePool::new(W, H);
-        let mut encoder = renderer
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         renderer
-            .render_list(
-                &render_list,
-                &mut encoder,
+            .frame()
+            .render(
+                &[&render_list],
                 &view,
                 &stencil,
                 &mut composites,
@@ -406,8 +399,8 @@ fn overlay_with_normal_fallback_differs_from_overlay_with_snapshot() {
                     a: bg[3] as f64 / 255.0,
                 }),
             )
-            .unwrap();
-        renderer.queue.submit(std::iter::once(encoder.finish()));
+            .unwrap()
+            .submit();
         let buf = catchlight_wgpu::read_texture_to_rgba(
             &renderer.device,
             &renderer.queue,
