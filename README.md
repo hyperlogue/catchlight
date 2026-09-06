@@ -1,4 +1,6 @@
-<img src="assets/logo.svg" alt="" width="120" align="right">
+<p align="center">
+  <img src="assets/logo.svg" alt="" width="140">
+</p>
 
 # Catchlight
 
