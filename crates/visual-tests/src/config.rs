@@ -308,17 +308,27 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
             },
             // Mid-swing. `turn` steps the head 120 model pixels aside on an
             // already-settled chain, and what the baseline pins is the frame
-            // 11 ticks later: the chain's three bends are still inside the
+            // 7 ticks later: the chain's three bends are still inside the
             // range its keyforms were authored over, and the strand reads as
             // one curve rather than the hook it folds into a few frames on.
             // Nothing but a transient can pin this — settled, the chain hangs
             // straight at `turn` 1 exactly as it does at 0.
+            //
+            // It was frame 11 while a step in the anchor was a teleport. The
+            // solver now reads 120 px in one frame as 7200 px/s of anchor and
+            // flings the chain right round, twice past the keyed range by
+            // then. Frame 7 (-0.30, -0.07, -0.04 half turns) is the first one
+            // that is back inside the keys, bent all the same way round, and
+            // wholly inside the frame this model's camera promises — frames 3
+            // and 4 come back inside the keys first but hang the strand out
+            // over the right edge, and 5 and 6 are back so near straight that
+            // the shape stops saying anything the settled pose does not.
             Curated {
                 label: "swing",
                 params: &[("turn", 1.0, 0.0)],
                 camera_preset: "default",
                 frame_puppets: &[],
-                ticks_after_pose: 11,
+                ticks_after_pose: 7,
             },
         ],
         "composite_masks" => vec![

@@ -25,6 +25,25 @@
 //! own clock, so neither the frame rate nor the substep count changes the
 //! material a model describes.
 //!
+//! **The anchor and the node's down cross a frame; they do not jump at its
+//! first substep.** Both arrive once a frame and describe the whole of it, so
+//! [`ParticleChainData::tick`] walks each from what the last tick stored to
+//! what this one was handed. Pinning every substep to the new anchor makes a
+//! 30 Hz frame one lurch and seven still steps where 240 Hz slides: swept
+//! ±10 px at 1 Hz, the tip ran 8.2 px from the 240 Hz curve, and 0.22 px once
+//! the anchor travelled. What is left is the substep's own truncation, since
+//! a rate that is not a whole number of `CHAIN_MAX_STEP`s takes a finer step:
+//! 144 Hz and 288 Hz, which share one, agree to 0.01 px.
+//!
+//! **A chain is damped in its anchor's frame, not the world's.** A character
+//! walking across the screen carries the whole strand along, and that is not
+//! motion a hair's own drag resists — damping the absolute velocity streams
+//! the hair backwards for as long as the walk lasts, and the bend spring's
+//! damping, being a damping on the bend *rate*, bleeds a carried chain the
+//! same way. So every link takes the anchor's velocity over the substep off
+//! its own, damps what is left, and puts it back. Under a still anchor there
+//! is nothing to take off and the chain integrates the bits it always did.
+//!
 //! **A link's bend spring pulls toward the art, not toward gravity.** A
 //! link's `stiffness` is the frequency in Hz of a spring on the bend at the
 //! joint above it, and the bend it pulls to zero is the one `link_bends`
@@ -739,13 +758,24 @@ impl ParticleChainData {
     /// gravity's direction only while the node is upright. Every later link
     /// measures its bend against the link above it instead, so a chain drawn
     /// straight is bend 0 all the way down whatever the node is doing.
+    ///
+    /// **The anchor and the down travel across the substeps.** Both arrive
+    /// once a frame but describe a whole frame's worth of motion, so substep
+    /// `k` of `n` pins the root to `lerp(previous, now, k / n)` and points
+    /// bend 0 the same way; the module doc carries what pinning every substep
+    /// to `now` costs. A caller that chops a frame itself has to chop the
+    /// anchor path with it.
+    ///
+    /// A tick that advances no time is a reposition rather than a move: the
+    /// anchor and down are stored and nothing is interpolated toward them.
     pub fn tick(&mut self, anchor_world: Vec2, down_world: Vec2, dt: f32) {
-        self.down = unit_down(down_world);
+        let down = unit_down(down_world);
         if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
-            let down = self.down;
             self.settle_to_rest(anchor_world, down);
         }
+        let (was_anchor, was_down) = (self.anchor, self.down);
         self.anchor = anchor_world;
+        self.down = down;
         // NaN survives `clamp` and fails `<= 0.0`, and `NaN as u32` saturates
         // to 0, so an unguarded NaN dt would run zero steps and silently
         // freeze the chain instead of stepping it.
@@ -761,8 +791,22 @@ impl ParticleChainData {
             .clamp(1.0, PHYSICS_MAX_SUBSTEPS as f32) as u32;
         let h = clamped / steps as f32;
         let mut moved = false;
-        for _ in 0..steps {
-            moved |= self.step(h);
+        let mut from = was_anchor;
+        for k in 1..=steps {
+            // The last substep lands on the caller's own numbers rather than
+            // on a `lerp` of them, so a chain whose anchor never moves is
+            // stepped at exactly the anchor it was handed.
+            let (to, rest) = if k == steps {
+                (anchor_world, down)
+            } else {
+                let t = k as f32 / steps as f32;
+                (
+                    was_anchor.lerp(anchor_world, t),
+                    unit_down_or(was_down.lerp(down, t), down),
+                )
+            };
+            moved |= self.step(to, to - from, rest, h);
+            from = to;
         }
         self.moved_last_tick = moved;
     }
@@ -884,13 +928,17 @@ impl ParticleChainData {
     /// One position-based step of size `h`, reporting whether it moved any
     /// particle.
     ///
+    /// The root is pinned to `anchor`, which travelled `anchor_moved` over
+    /// this step, and `down` is where bend 0 of the first link points for it;
+    /// [`Self::tick`] walks all three across a frame's substeps.
+    ///
     /// Prediction, constraint and velocity fuse into a single root-to-tip
     /// pass: a particle's free integration does not depend on its neighbour,
     /// and by the time the rod above it is solved that neighbour is already
     /// final, so the pass yields exactly what integrate-all-then-constrain-all
     /// would. The result lands in scratch and is committed only if all of it
     /// is finite, so one bad step cannot poison the chain permanently.
-    fn step(&mut self, h: f32) -> bool {
+    fn step(&mut self, anchor: Vec2, anchor_moved: Vec2, down: Vec2, h: f32) -> bool {
         let n = self.links.len();
         // `tick` re-hangs a chain whose two vectors disagree, so this never
         // fires; it is here so the indexing below cannot panic on its own.
@@ -900,14 +948,18 @@ impl ParticleChainData {
         let mut next: smallvec::SmallVec<[ChainParticle; 16]> =
             smallvec::SmallVec::with_capacity(n + 1);
         next.push(ChainParticle {
-            pos: self.anchor,
-            vel: Vec2::ZERO,
+            pos: anchor,
+            vel: if h > 0.0 && h.is_finite() {
+                anchor_moved / h
+            } else {
+                Vec2::ZERO
+            },
         });
 
         // Where bend 0 points for the link being solved. The first link
         // answers to the node's own down; every later one answers to the link
         // above it, which this pass has already put in its final place.
-        let mut rest = self.down;
+        let mut rest = down;
         for i in 1..=n {
             let link = self.links[i - 1];
             let above = next[i - 1].pos;
@@ -945,9 +997,19 @@ impl ParticleChainData {
             // particle carrying motion the rod just cancelled. Damping is a
             // fraction shed per second, so it is raised to this link's own
             // elapsed time.
+            //
+            // Both dampings act on the velocity the particle has *in the
+            // anchor's frame*: the anchor's own velocity over this substep,
+            // on this link's clock like everything else, comes off before
+            // they run and goes back on after. See the module doc — a strand
+            // a walk carries across the screen is not moving as far as its
+            // own drag is concerned. A still anchor subtracts zero, which is
+            // what makes this bit for bit what the link always integrated.
             let vel = if moving {
-                let vel = (projected - old) / h_i * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h_i);
-                damp_bend(vel, projected - above, link.stiffness, h_i)
+                let carried = anchor_moved / h_i;
+                let own = (projected - old) / h_i - carried;
+                let own = own * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h_i);
+                carried + damp_bend(own, projected - above, link.stiffness, h_i)
             } else {
                 Vec2::ZERO
             };
@@ -1032,10 +1094,17 @@ fn is_projection_noise(moved: Vec2, old: Vec2, length: f32) -> bool {
 /// nobody tells about a node hangs along, and what every chain did before a
 /// link had a bend spring to point anywhere else.
 fn unit_down(v: Vec2) -> Vec2 {
+    unit_down_or(v, Vec2::new(0.0, 1.0))
+}
+
+/// The same, for a down mid-way between two the caller gave: a node that
+/// turned exactly half a turn in one frame passes through a zero vector at
+/// the middle substep, and there the half-way down is the frame's own.
+fn unit_down_or(v: Vec2, fallback: Vec2) -> Vec2 {
     if v.is_finite() && v.length_squared() > 1e-12 {
         v.normalize()
     } else {
-        Vec2::new(0.0, 1.0)
+        fallback
     }
 }
 
@@ -1729,10 +1798,17 @@ mod tests {
         whole.settle_to_rest(Vec2::ZERO, DOWN);
         let mut split = whole.clone();
 
+        // The anchor path is chopped along with the frame: `tick` slides the
+        // root from where it was to where it has been put, so a caller
+        // handing over quarter-frames has to hand over the quarter-way
+        // anchors that go with them. Handing all four the destination would
+        // be telling the solver the anchor jumped in the first quarter, which
+        // is a different move and rightly integrates differently.
         let anchor = Vec2::new(40.0, 0.0);
         whole.tick(anchor, DOWN, dt);
-        for _ in 0..steps {
-            split.tick(anchor, DOWN, dt / steps as f32);
+        for k in 1..=steps {
+            let part = Vec2::ZERO.lerp(anchor, k as f32 / steps as f32);
+            split.tick(part, DOWN, dt / steps as f32);
         }
 
         // The substep is the same size either way, so this is exact; the
@@ -1748,28 +1824,135 @@ mod tests {
         }
     }
 
+    /// One second of the same anchor path, sampled at two rates, lands the
+    /// tip in one place.
+    ///
+    /// **The path is a ramp and not a step, because a step is not one path.**
+    /// An anchor 40 px away on the very next tick says it travelled 40 px in
+    /// that frame, which is 2400 px/s at 60 Hz and 9600 px/s at 240 — three
+    /// different pieces of physics wearing one number, and the chain is right
+    /// to whip differently for each. Sliding the anchor over a quarter second
+    /// instead asks both rates the same question, and they answer it to
+    /// within 0.29 px where the step is 6.6 px apart.
     #[test]
     fn the_chain_lands_in_one_place_at_two_frame_rates() {
-        let mut sixty = chain(0.4);
-        sixty.settle_to_rest(Vec2::ZERO, DOWN);
-        let mut one_forty_four = sixty.clone();
+        // Where the anchor is `t` seconds in: 40 px to the side over the
+        // first quarter second, held there after.
+        let path = |t: f32| Vec2::new(40.0 * (t / 0.25).min(1.0), 0.0);
+        let ran = |rate: u32| {
+            let mut c = chain(0.4);
+            c.settle_to_rest(path(0.0), DOWN);
+            for f in 0..rate {
+                c.tick(path((f + 1) as f32 / rate as f32), DOWN, 1.0 / rate as f32);
+            }
+            c.particles[c.particles.len() - 1].pos
+        };
 
-        let anchor = Vec2::new(40.0, 0.0);
-        for _ in 0..60 {
-            sixty.tick(anchor, DOWN, 1.0 / 60.0);
-        }
-        for _ in 0..144 {
-            one_forty_four.tick(anchor, DOWN, 1.0 / 144.0);
-        }
-
-        let total: f32 = sixty.links.iter().map(|l| l.length).sum();
-        let tip = sixty.particles.len() - 1;
-        let gap = sixty.particles[tip]
-            .pos
-            .distance(one_forty_four.particles[tip].pos);
+        let sixty = ran(60);
+        let one_forty_four = ran(144);
+        let total: f32 = chain(0.4).links.iter().map(|l| l.length).sum();
+        let gap = sixty.distance(one_forty_four);
+        // Under twice the 0.289 px measured; the difference is the substep
+        // size, 1/240 against 1/288, and not the rate that chose it.
         assert!(
-            gap < 0.02 * total,
+            gap < 0.5,
             "one second at two frame rates ended {gap} px apart on a {total} px chain",
+        );
+        // And it is a swing being compared, not a chain standing still.
+        assert!(
+            sixty.x > 20.0,
+            "the tip followed the anchor across, ended at {sixty:?}",
+        );
+    }
+
+    /// Three 50 px links on 2 Hz springs under an anchor sliding ±10 px at
+    /// 1 Hz, for six seconds. Tip position every half second, which 30, 60,
+    /// 120, 144, 240 and 288 Hz all land on exactly.
+    ///
+    /// Near resonance on purpose: the links' own frequency is
+    /// `sqrt(g/L) / 2pi` ≈ 0.7 Hz against a 1 Hz sweep, so the chain answers
+    /// with everything it has and any difference in how the anchor is fed to
+    /// it shows up amplified rather than buried.
+    fn swept_tip(rate: u32) -> Vec<Vec2> {
+        // `ParticleChainData::new`'s own gravity, the way a chain nobody has
+        // authored a number onto gets it.
+        let mut c = ParticleChainData::new(vec![
+            ChainLink {
+                length: 50.0,
+                gravity_scale: 1.0,
+                damping: 0.5,
+                time_scale: 1.0,
+                stiffness: 2.0,
+            };
+            3
+        ]);
+        let sweep = |t: f32| Vec2::new(10.0 * (std::f32::consts::TAU * t).sin(), 0.0);
+        c.settle_to_rest(sweep(0.0), DOWN);
+        let tip = c.particles.len() - 1;
+        let mut samples = Vec::with_capacity(12);
+        for f in 0..6 * rate {
+            c.tick(sweep((f + 1) as f32 / rate as f32), DOWN, 1.0 / rate as f32);
+            if (f + 1) % (rate / 2) == 0 {
+                samples.push(c.particles[tip].pos);
+            }
+        }
+        samples
+    }
+
+    /// The widest the tip of [`swept_tip`] ever gets from itself at two rates.
+    fn swept_gap(a: u32, b: u32) -> f32 {
+        let (left, right) = (swept_tip(a), swept_tip(b));
+        assert_eq!(left.len(), right.len(), "both rates sample 12 times");
+        left.iter()
+            .zip(&right)
+            .map(|(p, q)| p.distance(*q))
+            .fold(0.0f32, f32::max)
+    }
+
+    /// **A display's refresh rate is not a material.** The same authored
+    /// strand under the same swept anchor has to draw the same curve at 30 Hz
+    /// as at 240.
+    ///
+    /// It did not: pinning every substep to the frame's final anchor made a
+    /// 30 Hz frame one anchor lurch followed by seven still substeps, and the
+    /// tip ran 8.2 px from the 240 Hz curve (4.0 px at 60 Hz, 1.7 px at
+    /// 120 Hz). Sliding the anchor across the substeps leaves the numbers
+    /// below, which are the chord of the sine the frame cuts across — a
+    /// thirtieth of a second of a 1 Hz sweep — and nothing else. The measured
+    /// gap at 144 Hz against 240 is 2.36 px, and 2.36 px is also what 288 Hz
+    /// measures there, which is the whole of it.
+    ///
+    /// **Rates are compared to one that takes the same substep.** A frame is
+    /// chopped into whole [`CHAIN_MAX_STEP`]s, so 144 Hz steps 1/288 where
+    /// 240 Hz steps 1/240, and the solver's own truncation between two step
+    /// sizes is the larger effect on a chain this close to resonance: 2.5 px,
+    /// which 288 Hz measures against 240 Hz just the same at one substep per
+    /// frame. That is `CHAIN_MAX_STEP`'s accuracy and not the anchor's, so
+    /// the tight bound here is asked of rates that share a substep, and
+    /// 144 Hz is asked against 288 Hz.
+    #[test]
+    fn a_swept_anchor_draws_one_curve_at_every_frame_rate() {
+        // Under twice the worst measured (0.22 px at 30 Hz, 0.05 at 60,
+        // 0.01 at 120, 0.008 for 144 against 288), and a twentieth of what
+        // the jump it replaced measured at 30 Hz.
+        const TOL: f32 = 0.4;
+        for (rate, reference) in [(30u32, 240u32), (60, 240), (120, 240), (144, 288)] {
+            let gap = swept_gap(rate, reference);
+            assert!(
+                gap < TOL,
+                "{rate} Hz drew {gap:.4} px from the {reference} Hz curve, tolerance {TOL}",
+            );
+        }
+
+        // The one cross-substep pair, held to what the step size alone is
+        // worth: 288 Hz differs from 240 Hz by the same amount at one substep
+        // per frame, so none of it is the anchor.
+        let mixed = swept_gap(144, 240);
+        let step_size_alone = swept_gap(288, 240);
+        assert!(
+            mixed < 4.5 && (mixed - step_size_alone).abs() < TOL,
+            "144 Hz is {mixed:.4} px from 240 Hz where the substep size alone is worth \
+             {step_size_alone:.4} px",
         );
     }
 
