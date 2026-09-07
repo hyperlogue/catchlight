@@ -1666,7 +1666,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "catchlight-import-inochi2d"
+name = "catchlight-import-inx"
 version = "0.1.0"
 dependencies = [
  "catchlight-core",
@@ -6295,7 +6295,7 @@ dependencies = [
  "anyhow",
  "catchlight-core",
  "catchlight-editor-protocol",
- "catchlight-import-inochi2d",
+ "catchlight-import-inx",
  "image",
  "serde_json",
  "syn 2.0.118",

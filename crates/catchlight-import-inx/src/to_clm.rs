@@ -758,9 +758,9 @@ fn convert_animation_lane(
             value: k.value.unwrap_or(0.0),
         })
         .collect();
-    // A lane is read in frame order; the reference sorts on load
-    // rather than trusting the file, and a
-    // `.clm` a player can read has to be sorted before it is written.
+    // A lane is read in frame order; the reference sorts on load rather
+    // than trusting the file, and a `.clm` a player can read has to be
+    // sorted before it is written.
     keyframes.sort_by_key(|k| k.frame);
     Some(ClmLane {
         param: param.clone(),

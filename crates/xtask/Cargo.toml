@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 catchlight-core = { path = "../catchlight-core" }
-catchlight-import-inochi2d = { path = "../catchlight-import-inochi2d" }
+catchlight-import-inx = { path = "../catchlight-import-inx" }
 # `xtask generate typescript` reads the wire types through `ts-rs`, so it is the
 # one place in the workspace that turns the `ts` feature on. Cargo unifies
 # features across a build, so `cargo test --workspace` compiles the protocol

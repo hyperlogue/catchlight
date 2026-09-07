@@ -132,9 +132,8 @@ fn parse_texture<R: Read>(
     let tex_encoding = read_u8(data)?;
 
     // The reference treats a zero-length slot as an empty placeholder
-    // rather than a texture
-    // and ignores the type byte. Substitute a 1x1 transparent texture so
-    // slot indices stay aligned.
+    // rather than a texture and ignores the type byte. Substitute a 1x1
+    // transparent texture so slot indices stay aligned.
     if tex_length == 0 {
         budget.check_texture_dimensions(1, 1)?;
         return placeholder_texture();

@@ -43,7 +43,7 @@ sure all potential changes can be verified in a tight feedback loop.
 | Crate | What it is |
 | --- | --- |
 | `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, slots and welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
-| `catchlight-import-inochi2d` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
+| `catchlight-import-inx` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
 | `catchlight-cli` | The command line over a `.clm`: the file ops (patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files, read or write a vendor `extension`; no image is decoded) plus inspection — `render` draws the model headless and prints its render list, `isolate` draws named parts alone as straight-alpha art, `poses` dumps every key pose as CBOR. Never depends on the editor server, its protocol, or a client of either. |
 | `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model, one per model serving every puppet of it; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws a frame of them. |
 | `catchlight-bevy` | Bevy integration: components, systems, and a render-graph node. |
@@ -83,7 +83,7 @@ test suite is local-only for now:
 cargo deny check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
-cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgpu -p catchlight-import-inochi2d -p catchlight-editor-server -p catchlight-editor-wasm
+cargo build --target wasm32-unknown-unknown -p catchlight-core -p catchlight-wgpu -p catchlight-import-inx -p catchlight-editor-server -p catchlight-editor-wasm
 cargo test -p xtask -- --skip fixtures::
 cargo xtask build-wasm --debug && bun install --frozen-lockfile && bun run typecheck && bun test && bun run --filter catchlight-site build
 cargo build -p catchlight-editor-server -p catchlight-editor-cli && bun run --filter catchlight-site e2e
@@ -105,7 +105,7 @@ bundle and deploys `apps/site` to GitHub Pages on every push to `main`.
   fixtures.
 - **Five tests are `#[ignore]`d.** Four need the private reference model at
   `example_models/reference/` — three in
-  `crates/catchlight-import-inochi2d/src/to_clm.rs`, one in
+  `crates/catchlight-import-inx/src/to_clm.rs`, one in
   `crates/catchlight-wgpu/tests/deform_wiring.rs`; drop a model at that path and
   remove the attributes to run them. The fifth is a timing measurement in
   `crates/catchlight-core/src/model/mod.rs`.
@@ -138,7 +138,7 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-core/src/formats/clm.rs` — the `.clm` file: keyed by
   Id, byte-stable, what it refuses, and why an extension's bytes live in their
   own section behind a hash
-- `crates/catchlight-import-inochi2d/src/lib.rs` — the single reflection, Ids
+- `crates/catchlight-import-inx/src/lib.rs` — the single reflection, Ids
   minted from position, the reader is total
 - `crates/catchlight-cli/src/lib.rs` — the one dependency rule and what it
   buys, and what "no image is decoded" rests on; `poses.rs` — the pose dump's

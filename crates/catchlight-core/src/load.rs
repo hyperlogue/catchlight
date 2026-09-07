@@ -3,7 +3,7 @@
 //! **The load path is `.clm` bytes -> [`Model`], and there is no other.**
 //! `.clm` is catchlight's own format and the only one this crate reads: an
 //! inochi2d `.inx` / `.inp` is converted once, by `cargo xtask import`
-//! (`catchlight-import-inochi2d`), and the `.clm` is what ships. Nothing here
+//! (`catchlight-import-inx`), and the `.clm` is what ships. Nothing here
 //! knows that format exists.
 //!
 //! The file is only ever read into a Model — that is where the format's Ids,
