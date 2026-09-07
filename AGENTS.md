@@ -225,8 +225,8 @@ that enforces them, not here. Add new ones there.
 - `packages/editor/src/index.ts` — layout only, theming is CSS variables under
   `@layer`
 - `crates/xtask/src/fixtures.rs` — hand-authored model fixtures
-- `crates/xtask/src/ts.rs` — one generated module, nothing falling off the list,
-  no command reaching TypeScript unclassified
+- `crates/xtask/src/generate/mod.rs` — one generated module per language,
+  nothing falling off the list, no command reaching a client unclassified
 - `crates/visual-tests/src/lib.rs` — visual regression, updating baselines
 - `crates/catchlight-core/tests/evaluated_frame.rs` — the frame baseline, and
   where its numbers came from
