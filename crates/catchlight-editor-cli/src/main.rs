@@ -1848,21 +1848,17 @@ fn print_body(body: &ResponseBody) {
                 }
             }
         }
-        ResponseBody::ChainFit {
+        ResponseBody::SpineFit {
             node,
             params,
-            bound,
-            replaced,
+            warnings,
         } => {
-            println!("chain {node} on {bound}");
+            println!("spine {node}");
             for (link, param) in params.iter().enumerate() {
                 println!("  link {} <- {param}", link + 1);
             }
-            if !replaced.is_empty() {
-                println!("replaced the deform binding under:");
-                for param in replaced {
-                    println!("  {param}");
-                }
+            for warning in warnings {
+                println!("warning: {warning}");
             }
         }
     }

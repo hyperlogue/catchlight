@@ -1,33 +1,41 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! The particle chain as a node the puppet ticks.
+//! The particle chain a spine carries, as the puppet ticks it.
 //!
 //! `physics_trajectory` pins the solver's curve and `clm_roundtrip` pins the
 //! file; what is left is the wiring between them — that a chain hangs off the
-//! node's anchor, that its bends reach the params it names, that a rebake
-//! carries the swing, and that settling puts it back. Every model here is
-//! built through `Model`'s own API rather than through a `.clm`, so a failure
-//! is the runtime's and not the reader's.
+//! spine's anchor, that its bends reach the params the spine names, that a
+//! rebake carries the swing, and that settling puts it back. Every model here
+//! is built through `Model`'s own API rather than through a `.clm`, so a
+//! failure is the runtime's and not the reader's.
 
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh, ClmPhysics};
 use catchlight_core::id::SeededHex;
 use catchlight_core::model::ModelPhysics;
 use catchlight_core::model::{
-    BindingKey, BindingTarget, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelParticleChain,
-    ScalarTarget,
+    BindingKey, BindingTarget, ModelChain, ModelNode, ModelNodeKind, ModelParam, ModelPart,
+    ModelSpine, ScalarTarget,
 };
-use catchlight_core::physics::{ChainLink, PendulumKind, PhysicsParamMapMode};
+use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::{Mat4, Model, Name, NodeId, NodeIdx, ParamId, Puppet, Vec2};
 
 const DT: f32 = 1.0 / 60.0;
 
-fn link(length: f32) -> ChainLink {
-    ChainLink {
-        length,
-        gravity_scale: 1.0,
-        damping: 0.5,
-        time_scale: 1.0,
-        stiffness: 0.0,
-    }
+/// The joints of a straight strand of `links` equal links, `each` long,
+/// hanging down the node's own -Y.
+fn straight(links: usize, each: f32) -> Vec<[f32; 2]> {
+    (1..=links).map(|i| [0.0, -each * i as f32]).collect()
+}
+
+/// The joints of a straight strand of `links` links, root to tip: 60 px, then
+/// 50, then 40, hanging down the node's own -Y.
+fn joints(links: usize) -> Vec<[f32; 2]> {
+    let mut y = 0.0f32;
+    (0..links)
+        .map(|i| {
+            y -= 60.0 - 10.0 * i as f32;
+            [0.0, y]
+        })
+        .collect()
 }
 
 fn quad() -> ClmMesh {
@@ -76,16 +84,17 @@ impl Fixture {
             })
             .collect();
         let root = model.root().expect("a fresh model has a root").clone();
-        let mut chain_data =
-            ModelParticleChain::new((0..links).map(|i| link(60.0 - 10.0 * i as f32)).collect());
+        let mut spine = ModelSpine::new(joints(links));
+        let mut chain_data = ModelChain::new(links);
         chain_data.gravity = 981.0;
+        spine.set_chain(Some(chain_data));
         let chain = model
             .add_node(
                 &root,
-                ModelNode::new("hair", ModelNodeKind::ParticleChain(chain_data)),
+                ModelNode::new("hair", ModelNodeKind::Spine(spine)),
                 &mut hex,
             )
-            .expect("add the chain");
+            .expect("add the spine");
         Self {
             model,
             hex,
@@ -98,8 +107,8 @@ impl Fixture {
     fn wire_outputs(&mut self) {
         let outputs = self.params.iter().cloned().map(Some).collect();
         self.model
-            .set_chain_outputs(&self.chain, outputs)
-            .expect("aim the chain");
+            .set_spine_targets(&self.chain, outputs)
+            .expect("aim the spine");
     }
 
     fn puppet(&self) -> Puppet {
@@ -116,18 +125,26 @@ impl Fixture {
 fn tip(puppet: &Puppet, idx: NodeIdx) -> Vec2 {
     let node = puppet.get(idx).expect("the node");
     match &node.kind {
-        catchlight_core::NodeKind::ParticleChain(c) => {
-            c.particles.last().expect("a chain has particles").pos
+        catchlight_core::NodeKind::Spine(sp) => {
+            sp.chain
+                .as_ref()
+                .expect("the spine carries a chain")
+                .particles
+                .last()
+                .expect("a chain has particles")
+                .pos
         }
-        other => panic!("not a chain: {other:?}"),
+        other => panic!("not a spine: {other:?}"),
     }
 }
 
 fn anchor(puppet: &Puppet, idx: NodeIdx) -> Vec2 {
     let node = puppet.get(idx).expect("the node");
     match &node.kind {
-        catchlight_core::NodeKind::ParticleChain(c) => c.anchor,
-        other => panic!("not a chain: {other:?}"),
+        catchlight_core::NodeKind::Spine(sp) => {
+            sp.chain.as_ref().expect("the spine carries a chain").anchor
+        }
+        other => panic!("not a spine: {other:?}"),
     }
 }
 
@@ -161,12 +178,14 @@ fn a_chain_follows_a_posed_group_the_same_frame() {
     let group = model
         .add_node(&root, ModelNode::new("arm", ModelNodeKind::Group), &mut hex)
         .expect("add group");
-    let mut chain_data = ModelParticleChain::new(vec![link(50.0), link(40.0)]);
+    let mut spine_data = ModelSpine::new(vec![[0.0, -50.0], [0.0, -90.0]]);
+    let mut chain_data = ModelChain::new(2);
     chain_data.gravity = 981.0;
+    spine_data.set_chain(Some(chain_data));
     let chain = model
         .add_node(
             &group,
-            ModelNode::new("hair", ModelNodeKind::ParticleChain(chain_data)),
+            ModelNode::new("hair", ModelNodeKind::Spine(spine_data)),
             &mut hex,
         )
         .expect("add chain");
@@ -261,12 +280,14 @@ fn a_chain_anchored_on_a_driver_follows_it_one_frame_late() {
     model
         .set_binding_key(&key, [2, 0], 300.0)
         .expect("the driver's output slides the group");
-    let mut chain_data = ModelParticleChain::new(vec![link(50.0), link(40.0)]);
+    let mut spine_data = ModelSpine::new(vec![[0.0, -50.0], [0.0, -90.0]]);
+    let mut chain_data = ModelChain::new(2);
     chain_data.gravity = 981.0;
+    spine_data.set_chain(Some(chain_data));
     let chain = model
         .add_node(
             &group,
-            ModelNode::new("hair", ModelNodeKind::ParticleChain(chain_data)),
+            ModelNode::new("hair", ModelNodeKind::Spine(spine_data)),
             &mut hex,
         )
         .expect("add chain");
@@ -337,7 +358,7 @@ fn a_rebake_carries_the_particles_unless_the_links_changed() {
     // An edit that reshapes the chain has no rod to put the old point back
     // on, so the fresh bake stands and the next tick re-hangs it.
     f.model
-        .set_chain_links(&f.chain, vec![link(60.0), link(50.0)])
+        .set_spine_joints(&f.chain, vec![[0.0, -60.0], [0.0, -110.0]])
         .expect("reshape");
     puppet.sync(&f.model);
     let idx = f.idx(&puppet);
@@ -524,27 +545,28 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
                     .expect("add param")
             })
             .collect();
-        let mut data = ModelParticleChain::new(
+        let mut spine = ModelSpine::new(straight(links, 60.0));
+        let mut data = ModelChain::new(links);
+        data.gravity = 981.0;
+        data.set_links(
             (0..links)
-                .map(|_| ChainLink {
-                    length: 60.0,
+                .map(|_| catchlight_core::LinkFeel {
                     gravity_scale,
                     damping: 0.5,
-                    time_scale: 1.0,
                     stiffness,
                 })
                 .collect(),
         );
-        data.gravity = 981.0;
+        spine.set_chain(Some(data));
         let node = model
             .add_node(
                 &head,
-                ModelNode::new(name, ModelNodeKind::ParticleChain(data)),
+                ModelNode::new(name, ModelNodeKind::Spine(spine)),
                 &mut hex,
             )
             .expect("add chain");
         model
-            .set_chain_outputs(&node, params.iter().cloned().map(Some).collect())
+            .set_spine_targets(&node, params.iter().cloned().map(Some).collect())
             .expect("aim the chain");
         chains.push((node, params));
     }
@@ -618,12 +640,15 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
 fn chain_bends(puppet: &Puppet, idx: NodeIdx) -> Vec<f32> {
     let node = puppet.get(idx).expect("the node");
     match &node.kind {
-        catchlight_core::NodeKind::ParticleChain(c) => {
+        catchlight_core::NodeKind::Spine(sp) => {
             let mut out = Vec::new();
-            c.link_bends(Mat4::IDENTITY, &mut out);
+            sp.chain
+                .as_ref()
+                .expect("the spine carries a chain")
+                .link_bends(Mat4::IDENTITY, &mut out);
             out
         }
-        other => panic!("not a chain: {other:?}"),
+        other => panic!("not a spine: {other:?}"),
     }
 }
 
@@ -658,27 +683,28 @@ fn posed_chain(rotation: f32, links: usize) -> (Model, NodeId, Vec<ParamId>) {
                 .expect("add param")
         })
         .collect();
-    let mut data = ModelParticleChain::new(
+    let mut spine = ModelSpine::new(straight(links, 60.0));
+    let mut data = ModelChain::new(links);
+    data.gravity = 981.0;
+    data.set_links(
         (0..links)
-            .map(|_| ChainLink {
-                length: 60.0,
+            .map(|_| catchlight_core::LinkFeel {
                 gravity_scale: 0.0,
                 damping: 0.5,
-                time_scale: 1.0,
                 stiffness: 10.0,
             })
             .collect(),
     );
-    data.gravity = 981.0;
+    spine.set_chain(Some(data));
     let chain = model
         .add_node(
             &head,
-            ModelNode::new("hair", ModelNodeKind::ParticleChain(data)),
+            ModelNode::new("hair", ModelNodeKind::Spine(spine)),
             &mut hex,
         )
         .expect("add chain");
     model
-        .set_chain_outputs(&chain, params.iter().cloned().map(Some).collect())
+        .set_spine_targets(&chain, params.iter().cloned().map(Some).collect())
         .expect("aim the chain");
     (model, chain, params)
 }
@@ -734,17 +760,19 @@ fn a_chain_settled_under_a_posed_bend_stays_put() {
     let (mut model, chain, params) = posed_chain(0.0, 2);
     // Real weight on both links, so the rest pose is a compromise between the
     // spring's target and gravity rather than either one of them.
-    let weighted: Vec<ChainLink> = (0..2)
-        .map(|_| ChainLink {
-            length: 60.0,
-            gravity_scale: 1.0,
-            damping: 0.5,
-            time_scale: 1.0,
-            stiffness: 4.0,
-        })
-        .collect();
+    let mut weighted = ModelChain::new(2);
+    weighted.gravity = 981.0;
+    weighted.set_links(
+        (0..2)
+            .map(|_| catchlight_core::LinkFeel {
+                gravity_scale: 1.0,
+                damping: 0.5,
+                stiffness: 4.0,
+            })
+            .collect(),
+    );
     model
-        .set_chain_links(&chain, weighted)
+        .set_spine_chain(&chain, Some(weighted))
         .expect("retune the links");
 
     let mut puppet = Puppet::new(&model);
@@ -808,14 +836,16 @@ fn a_chains_weight_is_how_much_of_the_param_it_decides() {
         f.wire_outputs();
         f.model
             .update_node(&f.chain, |n| {
-                let ModelNodeKind::ParticleChain(chain) = &mut n.kind else {
-                    panic!("not a chain");
+                let ModelNodeKind::Spine(spine) = &mut n.kind else {
+                    panic!("not a spine");
                 };
+                let mut chain = spine.chain().cloned().expect("a chain");
                 chain.weight = weight;
+                spine.set_chain(Some(chain));
                 Ok::<(), ()>(())
             })
             .expect("set the weight")
-            .expect("the node is a chain");
+            .expect("the node is a spine");
 
         let mut puppet = f.puppet();
         puppet.settle_physics(&f.model);

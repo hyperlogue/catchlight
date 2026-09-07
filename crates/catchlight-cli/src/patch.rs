@@ -314,15 +314,12 @@ const PHYSICS_FIELDS: &[&str] = &[
     "output_scale.y",
     "pendulum",
 ];
-/// A chain's own scalars. Its `links` are a list of structs and its
-/// `outputs` a list of Ids, neither of which this command's `field=value`
-/// shape can address — the same reason `key_positions` is missing below.
-const CHAIN_FIELDS: &[&str] = &["gravity", "local_only", "weight"];
-/// A spine has no scalar of its own: its `joints` are a list of points and its
-/// `targets` a list of Ids, and neither fits a `field=value`. The kind is
-/// listed here so an unknown field on a spine is reported against an empty set
-/// rather than falling through as some other kind's.
-const SPINE_FIELDS: &[&str] = &[];
+/// A spine's own scalars — the three the chain it may carry holds. Its
+/// `joints` are a list of points, its `targets` a list of Ids and its links a
+/// list of structs, and none of those fits this command's `field=value`
+/// shape, for the same reason `key_positions` is missing below. A spine
+/// carrying no chain accepts none of them.
+const SPINE_FIELDS: &[&str] = &["chain.gravity", "chain.local_only", "chain.weight"];
 /// The fields a param has. `key_positions` is a list, not a scalar, so it is
 /// not patchable here.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
@@ -343,7 +340,6 @@ fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
         ClmNodeKind::Composite(_) => COMPOSITE_FIELDS,
         ClmNodeKind::MeshGroup(_) => MESH_GROUP_FIELDS,
         ClmNodeKind::SimplePhysics(_) => PHYSICS_FIELDS,
-        ClmNodeKind::ParticleChain(_) => CHAIN_FIELDS,
         ClmNodeKind::Spine(_) => SPINE_FIELDS,
     }
 }
@@ -355,7 +351,6 @@ fn kind_name(kind: &ClmNodeKind) -> &'static str {
         ClmNodeKind::Composite(_) => "composite",
         ClmNodeKind::MeshGroup(_) => "mesh group",
         ClmNodeKind::SimplePhysics(_) => "simple physics",
-        ClmNodeKind::ParticleChain(_) => "particle chain",
         ClmNodeKind::Spine(_) => "spine",
     }
 }
@@ -431,13 +426,14 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             "output_scale.y" => Slot::F32(&mut s.output_scale[1]),
             _ => return None,
         },
-        ClmNodeKind::ParticleChain(c) => match field {
-            "local_only" => Slot::Bool(&mut c.local_only),
-            "gravity" => Slot::F32(&mut c.gravity),
-            "weight" => Slot::F32(&mut c.weight),
+        // A spine's own fields are its chain's, and a spine carrying none has
+        // nothing to patch.
+        ClmNodeKind::Spine(sp) => match (sp.chain.as_mut(), field) {
+            (Some(c), "chain.local_only") => Slot::Bool(&mut c.local_only),
+            (Some(c), "chain.gravity") => Slot::F32(&mut c.gravity),
+            (Some(c), "chain.weight") => Slot::F32(&mut c.weight),
             _ => return None,
         },
-        ClmNodeKind::Spine(_) => return None,
     })
 }
 

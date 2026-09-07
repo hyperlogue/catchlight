@@ -504,61 +504,10 @@ export type Command =
     node?: NodeId | null,
   }
   | {
-    "cmd": "chain_add",
-    session: SessionId,
-    parent: NodeId,
-    name: string | null,
-    /**
-     * Root to tip. Each link's absent fields are the editor's own
-     * defaults; see [`ChainLinkArg`].
-     */
-    links: Array<ChainLinkArg>,
-    local_only: boolean | null,
-    gravity: number | null,
-    /**
-     * How much the chain's solve decides the params it writes, against
-     * what the caller posed: finite and at or above zero, 1 the whole
-     * say and 0 none of it. Absent is the editor's own default, 1.
-     */
-    weight: number | null,
-    /**
-     * One param per link, in link order, `None` where a link drives
-     * nothing. Absent binds none; present, it must be exactly as long as
-     * `links`.
-     */
-    outputs: Array<ParamId | null> | null,
-    /**
-     * The Id to create it under. Absent generates one; an Id the model
-     * already carries is [`ErrorCode::DuplicateId`].
-     */
-    node?: NodeId | null,
-  }
-  | {
-    "cmd": "chain_set",
-    session: SessionId,
-    node: NodeId,
-    /**
-     * The whole chain, root to tip. Outputs follow the new length: a
-     * link past the new end loses its param, a new link arrives driving
-     * nothing.
-     */
-    links: Array<ChainLinkArg> | null,
-    local_only: boolean | null,
-    gravity: number | null,
-    /**
-     * [`Command::ChainAdd`]'s, and refused the same way.
-     */
-    weight: number | null,
-    /**
-     * One param per link, exactly as long as the chain is after `links`
-     * is applied.
-     */
-    outputs: Array<ParamId | null> | null,
-  }
-  | {
     "cmd": "spine_add",
     session: SessionId,
     parent: NodeId,
+    name: string | null,
     /**
      * The far end of each link, in the node's own space, root to tip.
      * `joints[0]` ends the link that starts at the node itself.
@@ -569,6 +518,11 @@ export type Command =
      * Absent binds none; present, it must be exactly as long as `joints`.
      */
     targets: Array<ParamId | null> | null,
+    /**
+     * The particle chain to hang on it. Absent is a spine that only
+     * reads its params.
+     */
+    chain: ChainArg | null,
     /**
      * The Id to create it under. Absent generates one; an Id the model
      * already carries is [`ErrorCode::DuplicateId`].
@@ -589,13 +543,20 @@ export type Command =
      * is applied.
      */
     targets: Array<ParamId | null> | null,
+    /**
+     * The chain, in three states: absent leaves it as it is, `null`
+     * takes it off, a value replaces it. The merge-patch idiom
+     * [`NodePatch::texture`] already uses, and the only shape that can
+     * say "remove" and "leave alone" in one optional field.
+     */
+    chain?: ChainArg | null,
   }
   | {
-    "cmd": "chain_fit",
+    "cmd": "spine_fit",
     session: SessionId,
     /**
      * The part whose rest mesh is measured. The fit reads its vertices
-     * and nothing else — no pose, no key form, no binding.
+     * and nothing else — no pose, no binding.
      */
     part: NodeId,
     /**
@@ -609,20 +570,15 @@ export type Command =
      */
     axis: [number, number] | null,
     /**
-     * The meshed node the deform bindings are written on. Absent is
-     * `part` itself.
-     */
-    on: NodeId | null,
-    /**
-     * An existing particle chain to re-fit instead of making one. Its
-     * output params are kept and its links resized.
-     */
-    chain: NodeId | null,
-    /**
-     * The Id to create the chain under, when one is being created.
-     * Ignored when `chain` names one that already exists.
+     * The Id to create the spine under, when one is being created.
      */
     node?: NodeId | null,
+    name: string | null,
+    /**
+     * The chain to hang on it. Absent leaves an existing spine's chain
+     * alone and gives a fresh one none.
+     */
+    chain: ChainArg | null,
   }
   | {
     "cmd": "undo",
@@ -711,7 +667,6 @@ export type NodeKind =
   | "composite"
   | "mesh_group"
   | "physics"
-  | "particle_chain"
   | "spine";
 
 /**
@@ -897,8 +852,7 @@ export type PhysicsTargets = {
 };
 
 /**
- * One link of a particle chain, as a command names it and a reply reports
- * it.
+ * One link's feel in a [`ChainArg`].
  *
  * **Every field is optional, and none of the defaults are written here.**
  * They live in `catchlight-core` beside the solver that reads them, the way
@@ -906,15 +860,15 @@ export type PhysicsTargets = {
  * from what a chain actually does; absent means "what the editor would have
  * used". `{}` is a link at every default.
  *
+ * No length and no clock: a link spans two of the spine's joints, so its
+ * length is the drawing's, and a constant time scale is exactly a rescaling
+ * of the three knobs that are here.
+ *
  * A reply fills every one of them in, so a client can read a chain out of
- * [`NodeInfo::chain`], change one number, and send the list straight back
- * through [`Command::ChainSet`].
+ * [`SpineInfo::chain`], change one number, and send the list straight back
+ * through [`Command::SpineSet`].
  */
-export type ChainLinkArg = {
-  /**
-   * Fixed length in model pixels.
-   */
-  length?: number | null,
+export type LinkFeelArg = {
   /**
    * Multiplier on the chain's gravity for this link's particle.
    */
@@ -924,14 +878,37 @@ export type ChainLinkArg = {
    */
   damping?: number | null,
   /**
-   * Multiplier on this link's clock; 1 is real time.
-   */
-  time_scale?: number | null,
-  /**
-   * Frequency in Hz of the spring pulling this link's bend back to zero;
-   * 0 is no spring.
+   * Frequency in Hz of the spring on this link's bend; 0 is no spring.
    */
   stiffness?: number | null,
+};
+
+/**
+ * The particle chain a spine carries, as a command names it.
+ *
+ * Absent fields are the core's own defaults, and `links` absent is one
+ * default feel per joint — so `{}` is "simulate this spine, and feel like
+ * hair". A list of another length than the spine's joints is fitted to it by
+ * repeating its last entry, because a rigger who tuned a strand and then
+ * added a joint wants the new one to feel like the strand.
+ */
+export type ChainArg = {
+  /**
+   * Integrate in the parent's frame rather than the world's.
+   */
+  local_only?: boolean | null,
+  /**
+   * A multiple of the model's own gravity; 1 hangs under one g.
+   */
+  gravity?: number | null,
+  /**
+   * How much of the params the solve decides, against what was posed.
+   */
+  weight?: number | null,
+  /**
+   * One per joint, root to tip.
+   */
+  links?: Array<LinkFeelArg> | null,
 };
 
 /**
@@ -1346,25 +1323,16 @@ export type ResponseBody =
     slots: Array<SlotId>,
   }
   | {
-    "result": "chain_fit",
+    "result": "spine_fit",
     /**
-     * The particle chain, whether this call made it or re-fitted one.
+     * The spine, whether this call made it or re-fitted one.
      */
     node: NodeId,
     /**
-     * The param driving each link, in link order.
+     * The param each link's bend is read from, in link order.
      */
     params: Array<ParamId>,
-    /**
-     * The node the deform bindings were written on — `part` unless the
-     * command named another.
-     */
-    bound: NodeId,
-    /**
-     * The params whose deform binding on `bound` already existed and was
-     * rewritten, in link order.
-     */
-    replaced?: Array<ParamId>,
+    warnings?: Array<string>,
   }
   | {
     "result": "extensions",
@@ -1436,10 +1404,10 @@ export type TreeNode = {
  * reply has nothing to undo, so it never carries the `null` a patch spells
  * "draw none" with.
  *
- * The two driver kinds carry their settings nested, in [`NodeInfo::physics`]
- * and [`NodeInfo::chain`], because a driver's fields belong to no
- * [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::ChainSet`] are what
- * write them. The round-trip rule is the same one: each nested field carries
+ * A pendulum and a spine carry their settings nested, in
+ * [`NodeInfo::physics`] and [`NodeInfo::spine`], because those fields belong
+ * to no [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::SpineSet`] are
+ * what write them. The round-trip rule is the same one: each nested field carries
  * the name its own command sets it under, so an inspector reads a value here
  * and sends it straight back.
  */
@@ -1498,10 +1466,6 @@ export type NodeInfo = {
    */
   physics?: PhysicsInfo | null,
   /**
-   * A particle chain's settings, absent on every other kind.
-   */
-  chain?: ChainInfo | null,
-  /**
    * A spine's settings, absent on every other kind.
    */
   spine?: SpineInfo | null,
@@ -1529,23 +1493,6 @@ export type PhysicsInfo = {
 };
 
 /**
- * A particle chain in full, under the names [`Command::ChainSet`] sets them
- * by.
- *
- * `links` and `outputs` are always the same length: a chain reads out as one
- * bend per link, and a link driving nothing is a `null` in `outputs`. Every
- * field of every link is filled in, so the whole list travels back through
- * [`Command::ChainSet`] unchanged.
- */
-export type ChainInfo = {
-  local_only: boolean,
-  gravity: number,
-  weight: number,
-  links: Array<ChainLinkArg>,
-  outputs: Array<ParamId | null>,
-};
-
-/**
  * A spine in full, under the names [`Command::SpineSet`] sets them by.
  *
  * `joints` and `targets` are always the same length: a spine reads one bend
@@ -1555,6 +1502,12 @@ export type ChainInfo = {
 export type SpineInfo = {
   joints: Array<[number, number]>,
   targets: Array<ParamId | null>,
+  /**
+   * The particle chain the spine carries, absent for a spine that only
+   * reads its params. Every field filled in, so the whole thing travels
+   * back through [`Command::SpineSet`] unchanged.
+   */
+  chain?: ChainArg | null,
 };
 
 export type TexInfo = {
@@ -1722,11 +1675,9 @@ export type EditCommandTag =
   | "weld_set"
   | "weld_delete"
   | "physics_add"
-  | "chain_add"
-  | "chain_set"
   | "spine_add"
   | "spine_set"
-  | "chain_fit"
+  | "spine_fit"
   | "undo"
   | "redo"
   | "import_file"

@@ -81,21 +81,8 @@ impl Model {
                         format!("physics node {:?} drives no target param", n.name.as_str()),
                     ));
                 }
-                // Only an entirely unhooked chain: a chain that drives some of
-                // its links and not others is an ordinary rig, not a mistake.
-                ModelNodeKind::ParticleChain(chain)
-                    if chain.outputs().iter().all(Option::is_none) =>
-                {
-                    out.push(warn(
-                        id,
-                        format!(
-                            "particle chain {:?} drives no output param",
-                            n.name.as_str()
-                        ),
-                    ));
-                }
-                // Same rule for a spine: an entirely rigid one is a spine that
-                // does nothing, while a partly rigid one is an ordinary rig.
+                // Only an entirely rigid spine: one that reads some of its
+                // links and not others is an ordinary rig, not a mistake.
                 ModelNodeKind::Spine(spine) if spine.targets().iter().all(Option::is_none) => {
                     out.push(warn(
                         id,
@@ -271,13 +258,11 @@ mod tests {
         (m, upper, lower)
     }
 
-    /// A chain that drives nothing at all is a rig the author has not
+    /// A spine that reads nothing at all is a rig the author has not
     /// finished; one link short of finished is not, so the lint has to tell
     /// the two apart.
     #[test]
-    fn check_flags_a_chain_that_drives_nothing() {
-        use crate::physics::ChainLink;
-
+    fn check_flags_a_spine_that_reads_nothing() {
         let mut hex = SeededHex::new(6);
         let mut m = Model::new();
         let root = m.root().unwrap().clone();
@@ -287,14 +272,14 @@ mod tests {
                 &mut hex,
             )
             .unwrap();
-        let chain = m
+        let spine = m
             .add_node(
                 &root,
                 ModelNode::new(
                     "hair",
-                    ModelNodeKind::ParticleChain(ModelParticleChain::new(vec![
-                        ChainLink::default(),
-                        ChainLink::default(),
+                    ModelNodeKind::Spine(crate::model::ModelSpine::new(vec![
+                        [0.0, -50.0],
+                        [0.0, -100.0],
                     ])),
                 ),
                 &mut hex,
@@ -304,19 +289,19 @@ mod tests {
         let unhooked: Vec<CheckWarning> = m
             .check()
             .into_iter()
-            .filter(|w| w.message.contains("drives no output param"))
+            .filter(|w| w.message.contains("reads no bend param"))
             .collect();
-        assert_eq!(unhooked.len(), 1, "the chain names no param at all");
-        assert_eq!(unhooked[0].node.as_ref(), Some(&chain));
+        assert_eq!(unhooked.len(), 1, "the spine names no param at all");
+        assert_eq!(unhooked[0].node.as_ref(), Some(&spine));
 
         // One link hooked up is a rig, not a mistake.
-        m.set_chain_outputs(&chain, vec![Some(param), None])
+        m.set_spine_targets(&spine, vec![Some(param), None])
             .unwrap();
         assert!(
             !m.check()
                 .iter()
-                .any(|w| w.message.contains("drives no output param")),
-            "a partly-driven chain is not flagged"
+                .any(|w| w.message.contains("reads no bend param")),
+            "a partly-read spine is not flagged"
         );
     }
 

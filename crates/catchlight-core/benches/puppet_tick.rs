@@ -35,9 +35,8 @@ use std::time::Instant;
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::id::SeededHex;
 use catchlight_core::{
-    BindingKey, BindingTarget, ChainLink, InterpolateMode, Model, ModelNode, ModelNodeKind,
-    ModelParam, ModelPart, ModelParticleChain, ModelSpine, Name, NodeId, ParamId, Puppet,
-    ScalarTarget,
+    BindingKey, BindingTarget, InterpolateMode, LinkFeel, Model, ModelChain, ModelNode,
+    ModelNodeKind, ModelParam, ModelPart, ModelSpine, Name, NodeId, ParamId, Puppet, ScalarTarget,
 };
 
 /// Seconds a tick advances: one frame at 60 Hz.
@@ -84,13 +83,15 @@ struct Scenario {
     /// Build each strand's chain. Without one the bench poses the bend params
     /// itself, so the fold runs over the same values with no solver behind it.
     chains: bool,
-    /// Aim the chain's links at the bend params. A chain that claims nothing
-    /// still solves every tick, so this is the switch that isolates the
-    /// integrator from the claim bookkeeping around it.
+    /// Aim the spine's links at the bend params — which is both the chain
+    /// writing them and the spine reading them, since they are the same
+    /// params. A chain that claims nothing still solves every tick, so this
+    /// is the switch that isolates the integrator from the claim bookkeeping
+    /// around it.
     outputs: bool,
-    /// Hang the strip off a spine reading the same bend params, instead of
-    /// binding per-link deform grids to them. Mutually exclusive with `parts`,
-    /// which is what authors those grids.
+    /// Hang the strip off the spine, so the spine's own composition moves the
+    /// art. Mutually exclusive with `parts`, which is the historical path that
+    /// binds per-link deform grids instead.
     spines: bool,
 }
 
@@ -100,20 +101,20 @@ const SCENARIOS: &[Scenario] = &[
         strands: 100,
         links: 5,
         stiffness: 0.0,
-        parts: true,
+        parts: false,
         chains: true,
         outputs: true,
-        spines: false,
+        spines: true,
     },
     Scenario {
         name: "chains_sprung_100x5",
         strands: 100,
         links: 5,
         stiffness: 4.0,
-        parts: true,
+        parts: false,
         chains: true,
         outputs: true,
-        spines: false,
+        spines: true,
     },
     Scenario {
         name: "bindings_only",
@@ -192,7 +193,7 @@ const SCENARIOS: &[Scenario] = &[
         stiffness: 0.0,
         parts: false,
         chains: false,
-        outputs: false,
+        outputs: true,
         spines: true,
     },
 ];
@@ -390,48 +391,43 @@ impl Built {
                 }
             }
 
-            if s.spines {
-                let mut node = ModelNode::new(
-                    format!("spine {i}"),
-                    ModelNodeKind::Spine(ModelSpine::new(
-                        (0..s.links)
-                            .map(|l| [0.0, TOP - link_len * (l + 1) as f32])
-                            .collect(),
-                    )),
+            // A spine, optionally carrying a chain, optionally over art.
+            if s.spines || s.chains {
+                // The joints are in the spine's own space, and the spine sits
+                // on the strip's top edge.
+                let mut spine = ModelSpine::new(
+                    (0..s.links)
+                        .map(|l| [0.0, -link_len * (l + 1) as f32])
+                        .collect(),
                 );
-                node.transform.translation = [i as f32 * SPACING, 0.0, 0.0];
-                let id = model.add_node(&head, node, &mut hex).unwrap();
-                model
-                    .set_spine_targets(&id, strand.iter().cloned().map(Some).collect())
-                    .unwrap();
-                let mut art = ModelNode::new(
-                    format!("strand {i}"),
-                    ModelNodeKind::Part(ModelPart::new(mesh.clone())),
-                );
-                art.transform.translation = [0.0, 0.0, 0.0];
-                let part = model.add_node(&id, art, &mut hex).unwrap();
-                first_part.get_or_insert(part);
-            }
-
-            if s.chains {
-                let chain = ModelParticleChain::new(vec![
-                    ChainLink {
-                        length: link_len,
-                        gravity_scale: 1.0,
-                        damping: DAMPING,
-                        time_scale: 1.0,
-                        stiffness: s.stiffness,
-                    };
-                    s.links
-                ]);
-                let mut node =
-                    ModelNode::new(format!("chain {i}"), ModelNodeKind::ParticleChain(chain));
+                if s.chains {
+                    let mut chain = ModelChain::new(s.links);
+                    chain.set_links(vec![
+                        LinkFeel {
+                            gravity_scale: 1.0,
+                            damping: DAMPING,
+                            stiffness: s.stiffness,
+                        };
+                        s.links
+                    ]);
+                    spine.set_chain(Some(chain));
+                }
+                let mut node = ModelNode::new(format!("spine {i}"), ModelNodeKind::Spine(spine));
                 node.transform.translation = [i as f32 * SPACING, TOP, 0.0];
                 let id = model.add_node(&head, node, &mut hex).unwrap();
                 if s.outputs {
                     model
-                        .set_chain_outputs(&id, strand.into_iter().map(Some).collect())
+                        .set_spine_targets(&id, strand.iter().cloned().map(Some).collect())
                         .unwrap();
+                }
+                if s.spines {
+                    let mut art = ModelNode::new(
+                        format!("strand {i}"),
+                        ModelNodeKind::Part(ModelPart::new(mesh.clone())),
+                    );
+                    art.transform.translation = [0.0, -TOP, 0.0];
+                    let part = model.add_node(&id, art, &mut hex).unwrap();
+                    first_part.get_or_insert(part);
                 }
             }
         }

@@ -192,13 +192,13 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
             default_zoom: 0.25,
             texture_halvings: 0,
         },
-        // One strip of art hung off a three-link particle chain, with a
-        // `turn` param that moves the chain's anchor (`cargo xtask
-        // gen-fixture strand_chain`). The only model here with a chain: it
-        // pins the whole path from a solved chain through its per-link bend
-        // params to the cubic deform keyforms those params drive. `zoom` 1.25
-        // frames the strand's full swing to the right of centre without
-        // clipping it.
+        // One strip of art hung off a three-link spine carrying a particle
+        // chain, with a `turn` param that moves the spine's anchor (`cargo
+        // xtask gen-fixture strand_chain`). The only model here with a chain:
+        // it pins the whole path from a solved chain through its per-link
+        // bend params to the spine that composes them into vertices. There
+        // are no deform bindings in it at all. `zoom` 1.25 frames the
+        // strand's full swing to the right of centre without clipping it.
         ModelSpec {
             stem: "strand_chain".into(),
             path: repro.join("strand_chain.clm"),
@@ -308,21 +308,18 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
             },
             // Mid-swing. `turn` steps the head 120 model pixels aside on an
             // already-settled chain, and what the baseline pins is the frame
-            // 7 ticks later: the chain's three bends are still inside the
-            // range its keyforms were authored over, and the strand reads as
-            // one curve rather than the hook it folds into a few frames on.
-            // Nothing but a transient can pin this — settled, the chain hangs
-            // straight at `turn` 1 exactly as it does at 0.
+            // 7 ticks later: the strand reads as one smooth curve rather than
+            // the hook it folds into a few frames on, and it sits wholly
+            // inside the frame this model's camera promises. Nothing but a
+            // transient can pin this — settled, a chain stands on its drawing
+            // at `turn` 1 exactly as it does at 0, which is why the `rest`
+            // baseline is the undeformed art.
             //
             // It was frame 11 while a step in the anchor was a teleport. The
             // solver now reads 120 px in one frame as 7200 px/s of anchor and
-            // flings the chain right round, twice past the keyed range by
-            // then. Frame 7 (-0.30, -0.07, -0.04 half turns) is the first one
-            // that is back inside the keys, bent all the same way round, and
-            // wholly inside the frame this model's camera promises — frames 3
-            // and 4 come back inside the keys first but hang the strand out
-            // over the right edge, and 5 and 6 are back so near straight that
-            // the shape stops saying anything the settled pose does not.
+            // flings the chain right round. Frames 3 to 6 are either hanging
+            // out over the right edge or back so near straight that the shape
+            // stops saying anything the settled pose does not.
             Curated {
                 label: "swing",
                 params: &[("turn", 1.0, 0.0)],

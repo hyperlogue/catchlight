@@ -11,8 +11,8 @@
 //! hinge link `i` turns about is the node's origin for link 0 and
 //! `joints[i - 1]` after that. Positive bend swings the tip toward the spine's
 //! +X: the turn is `bend * pi` counterclockwise in the model's Y-up frame,
-//! which is the convention `catchlight_editor_core::strand::chain_keyforms`
-//! bakes and `ParticleChainData::link_bends` reports.
+//! which is the convention `ParticleChainData::link_bends` reports its bends
+//! in, so the chain a spine carries writes the params the spine reads.
 //!
 //! **The rotations compose, root to tip, once per spine per frame.** `T_0` is
 //! the identity; the hinge of link `j` is carried to where the links above it
@@ -80,7 +80,8 @@ pub(crate) struct SpinePins {
 }
 
 /// The runtime half of a spine: the polyline as drawn, this frame's bends,
-/// and the assignment the bake derived.
+/// the assignment the bake derived, and the particle chain the spine may
+/// carry.
 ///
 /// `bends` is written from the params every frame the fold runs, so nothing
 /// here needs resetting; `joints` and `pins` are rest data a rebake replaces.
@@ -91,18 +92,46 @@ pub struct SpineData {
     pub joints: Vec<Vec2>,
     /// This frame's bend per link, in half turns. As long as `joints`.
     pub bends: Vec<f32>,
+    /// The simulation hung on these joints, if the author asked for one. Its
+    /// links carry the joints' own lengths and drawn directions, so the chain
+    /// at rest *is* the drawing.
+    pub chain: Option<crate::physics::ParticleChainData>,
     pub(crate) pins: SpinePins,
 }
 
 impl SpineData {
-    /// A spine over `joints`, unbent.
+    /// A spine over `joints`, unbent and carrying nothing.
     pub fn new(joints: Vec<Vec2>) -> Self {
         let bends = vec![0.0; joints.len()];
         Self {
             joints,
             bends,
+            chain: None,
             pins: SpinePins::default(),
         }
+    }
+
+    /// The rod length and drawn direction of each link, in the physics
+    /// (Y-down) frame: link `i` runs from the joint above it — the node's own
+    /// origin for the first — to `joints[i]`.
+    ///
+    /// This is the whole of the geometry a chain needs, which is why a chain
+    /// stores none of its own: the drawing is the shape it hangs in.
+    pub fn link_geometry(&self) -> impl Iterator<Item = (f32, Vec2)> + '_ {
+        let mut above = Vec2::ZERO;
+        self.joints.iter().map(move |&joint| {
+            let v = joint - above;
+            above = joint;
+            // Model space is Y-up and the solver is Y-down.
+            let flipped = Vec2::new(v.x, -v.y);
+            let length = flipped.length();
+            let drawn = if length > 1e-12 {
+                flipped / length
+            } else {
+                Vec2::new(0.0, 1.0)
+            };
+            (length, drawn)
+        })
     }
 }
 

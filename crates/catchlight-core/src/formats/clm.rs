@@ -93,7 +93,10 @@
 //! file carrying a newer kind outright; what it never does is misread that
 //! node as some kind it does know, or load the model with the node silently
 //! dropped. Refusing to open beats opening wrong, so the version stays where
-//! it is and the failure stays honest.
+//! it is and the failure stays honest. **The same rule runs backwards**: a
+//! file carrying the retired `ParticleChain` kind is refused outright by this
+//! reader, which is the honest answer now that a chain is something a
+//! [`ClmSpine`] carries rather than a node of its own.
 
 use std::collections::BTreeMap;
 
@@ -521,7 +524,6 @@ pub enum ClmNodeKind {
     Composite(ClmComposite),
     MeshGroup(ClmMeshGroup),
     SimplePhysics(ClmSimplePhysics),
-    ParticleChain(ClmParticleChain),
     Spine(ClmSpine),
 }
 
@@ -594,28 +596,21 @@ pub struct ClmSimplePhysics {
     pub output_scale: [f32; 2],
 }
 
-/// One segment of a [`ClmParticleChain`], mirroring
-/// [`crate::physics::ChainLink`] rather than reusing it: the file's shape is
-/// the file's to keep stable, exactly as [`ClmSimplePhysics`] mirrors the
-/// driver it describes.
+/// One link's feel in a [`ClmChain`], mirroring [`crate::model::LinkFeel`]
+/// rather than reusing it: the file's shape is the file's to keep stable,
+/// exactly as [`ClmSimplePhysics`] mirrors the driver it describes.
+///
+/// No length and no clock: the length is the distance between the joints the
+/// link spans, and a constant time scale is exactly a rescaling of the three
+/// knobs that are here.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ClmChainLink {
-    /// Rod length in model pixels. Finite and above zero.
-    pub length: f32,
+pub struct ClmLinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
     /// Fraction of velocity shed per second, within 0..=1.
     pub damping: f32,
-    /// Multiplier on the link's own clock. Finite and above zero.
-    pub time_scale: f32,
-    /// Bend spring frequency in Hz. Finite and at or above zero.
-    ///
-    /// Added after the format shipped, so it defaults: a link map without the
-    /// key is a link with no spring, which is what every file written before
-    /// the spring existed describes. An unsprung link writes no key either,
-    /// so a file that predates the spring is still byte for byte what this
-    /// writer would write for it.
-    #[serde(default, skip_serializing_if = "is_unsprung")]
+    /// Bend spring frequency in Hz. Finite and at or above zero; zero is no
+    /// spring at all.
     pub stiffness: f32,
 }
 
@@ -630,41 +625,27 @@ fn is_full_weight(weight: &f32) -> bool {
     *weight == 1.0
 }
 
-/// Whether a link carries no bend spring, and so needs no `stiffness` key.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_unsprung(stiffness: &f32) -> bool {
-    *stiffness == 0.0
-}
-
-/// A chain of rigid links hanging from the node, writing one param per link.
+/// The simulation a [`ClmSpine`] may carry: a strand of particles hung at the
+/// spine's root, one per joint, whose bends are written into the spine's
+/// params.
 ///
-/// Only the authored half: where the particles are is runtime state a puppet
-/// owns, and a file that stored it would be storing a frame.
+/// Only the authored half. The geometry is the spine's joints — the shape the
+/// chain hangs at rest in — so what a chain adds is a feel per link and three
+/// numbers about the whole strand. Where the particles are is runtime state a
+/// puppet owns, and a file that stored it would be storing a frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClmParticleChain {
+pub struct ClmChain {
     pub local_only: bool,
     /// Authored, unscaled — the global g-scale fold is a build step, as it is
     /// for [`ClmSimplePhysics::gravity`].
     pub gravity: f32,
     /// How much the chain's own solve decides the params it writes, against
     /// what the caller posed. Finite and at or above zero.
-    ///
-    /// Added after the format shipped, so it defaults: a chain map without
-    /// the key is a chain that decides its params outright, which is what
-    /// every file written before the weight existed describes. A chain at
-    /// full authority writes no key either, so such a file is still byte for
-    /// byte what this writer would write for it.
     #[serde(default = "full_weight", skip_serializing_if = "is_full_weight")]
     pub weight: f32,
-    /// At least one. Every knob on a link is per second, so a file describes a
-    /// material rather than a frame rate.
-    pub links: Vec<ClmChainLink>,
-    /// The param each link's bend is written into, in link order; `None` where
-    /// a link drives nothing. Absent means "no link drives anything" — the
-    /// reader fills it to the length of `links`, which is the one length it
-    /// may ever have.
-    #[serde(default)]
-    pub outputs: Vec<Option<ParamId>>,
+    /// One per joint of the spine, in link order. Every knob is per second, so
+    /// a file describes a material rather than a frame rate.
+    pub links: Vec<ClmLinkFeel>,
 }
 
 /// A chain of joints drawn on the art, turning the geometry beneath the node.
@@ -684,6 +665,14 @@ pub struct ClmSpine {
     /// the length of `joints`, which is the one length it may ever have.
     #[serde(default)]
     pub targets: Vec<Option<ParamId>>,
+    /// The particle chain the spine carries, or absent for a spine that only
+    /// reads its params.
+    ///
+    /// Added after the spine shipped, so it is skipped when absent: a spine
+    /// nothing simulates writes no key, and a file that predates the chain is
+    /// still byte for byte what this writer would write for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<ClmChain>,
 }
 
 /// A drawable's clipping rule: whose shape clips it, and whether what that

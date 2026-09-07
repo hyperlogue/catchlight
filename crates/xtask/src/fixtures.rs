@@ -26,15 +26,15 @@ use std::path::{Path, PathBuf};
 
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChainLink, ClmComposite, ClmFile,
-    ClmIndices, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmParticleChain,
-    ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmStructure, ClmTexture, ClmTransform, ClmWeld,
-    TextureAlpha, TextureEncoding,
+    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChain, ClmComposite, ClmFile, ClmIndices,
+    ClmLinkFeel, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot,
+    ClmSlotPair, ClmSpine, ClmStructure, ClmTexture, ClmTransform, ClmWeld, TextureAlpha,
+    TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::{Model, NodeId, ParamId, SlotId, TexId};
-use catchlight_editor_core::{chain_keyforms, fit_strand, BEND_KEYS, BEND_RANGE};
+use catchlight_editor_core::fit_strand;
 
 /// Builds a fixture's structure and its texture table.
 type Build = fn() -> (ClmStructure, Vec<ClmTexture>);
@@ -824,18 +824,19 @@ const TURN_SHIFT_X: f32 = 120.0;
 const TURN: usize = STRAND_LINKS as usize;
 
 /// The particle-chain regression model: one strip of art hung off a
-/// three-link chain, with a `turn` param that moves the chain's anchor.
+/// three-link spine that carries a chain, with a `turn` param that moves the
+/// spine's anchor.
 ///
 /// Nothing else in the fixture set carries a chain, so without this the whole
 /// path from a solved chain to moved vertices is unpinned: the chain writes a
-/// bend per link into `bend 1`..`bend 3`, each of those drives a seven-key
-/// cubic deform binding on the strip, and the keyforms in those cells are the
-/// ones [`chain_keyforms`] generates for the fit [`fit_strand`] measures. The
-/// bend params are the chain's outputs and are never posed by hand — a config
-/// moves the head with `turn` and the chain writes the rest.
+/// bend per link into `bend 1`..`bend 3`, and the spine composes those bends
+/// into the strip's vertices. **No deform bindings**: a spine turns the art
+/// itself, so there is nothing to key. The bend params are the chain's
+/// outputs and are never posed by hand — a config moves the head with `turn`
+/// and the chain writes the rest.
 ///
-/// A settled chain hangs straight whatever `turn` is, so a baseline of this
-/// model is only interesting mid-swing; `Config::ticks_after_pose` in
+/// A settled chain stands on its drawing whatever `turn` is, so a baseline of
+/// this model is only interesting mid-swing; `Config::ticks_after_pose` in
 /// `visual-tests` is what captures that.
 fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
     let mesh = strand_mesh();
@@ -844,25 +845,16 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
 
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
-    // The chain's anchor is this group's world position, so `turn` moving the
+    // The spine's anchor is this group's world position, so `turn` moving the
     // group is what starts a swing.
     let head = push(&mut nodes, Some(root), group_node("Head"));
-    let strand = push(
+    // The spine sits at the strand's root and the art hangs under it, which is
+    // the shape `spine_fit` authors.
+    let spine = push(
         &mut nodes,
         Some(head),
         ClmNode {
-            name: "Strand".into(),
-            ..part_node(strand_part(&mesh))
-        },
-    );
-    push(
-        &mut nodes,
-        Some(head),
-        ClmNode {
-            name: "Strand chain".into(),
-            // `fit.root` is in vertex space, so a sibling of the part reaches
-            // it at `part.translation + (root - origin)`; the part sits on its
-            // parent's origin, and the mesh's own origin is zero.
+            name: "Strand spine".into(),
             transform: ClmTransform {
                 translation: [
                     fit.root[0] - mesh.origin[0],
@@ -871,26 +863,50 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
                 ],
                 ..identity_transform()
             },
-            kind: ClmNodeKind::ParticleChain(ClmParticleChain {
-                local_only: false,
-                gravity: STRAND_GRAVITY,
-                // The chain decides the bends it writes, so the file carries
-                // no `weight` key and the fixture's bytes do not move.
-                weight: 1.0,
-                links: fit
-                    .lengths
-                    .iter()
-                    .map(|&length| ClmChainLink {
-                        length,
-                        gravity_scale: 1.0,
-                        damping: STRAND_DAMPING,
-                        time_scale: 1.0,
-                        stiffness: 0.0,
+            kind: ClmNodeKind::Spine(ClmSpine {
+                // The joints run down the fit's axis, one per link, in the
+                // spine's own space.
+                joints: (0..fit.lengths.len())
+                    .map(|i| {
+                        let s: f32 = fit.lengths[..=i].iter().sum();
+                        [fit.axis[0] * s, fit.axis[1] * s]
                     })
                     .collect(),
-                outputs: (0..fit.lengths.len()).map(|i| Some(pid(i))).collect(),
+                targets: (0..fit.lengths.len()).map(|i| Some(pid(i))).collect(),
+                chain: Some(ClmChain {
+                    local_only: false,
+                    gravity: STRAND_GRAVITY,
+                    // The chain decides the bends it writes, so the file
+                    // carries no `weight` key.
+                    weight: 1.0,
+                    links: (0..fit.lengths.len())
+                        .map(|_| ClmLinkFeel {
+                            gravity_scale: 1.0,
+                            damping: STRAND_DAMPING,
+                            stiffness: 0.0,
+                        })
+                        .collect(),
+                }),
             }),
             ..blank_node()
+        },
+    );
+    // The art is the spine's child, at the spine's own origin offset back to
+    // where the strip was drawn.
+    push(
+        &mut nodes,
+        Some(spine),
+        ClmNode {
+            name: "Strand".into(),
+            transform: ClmTransform {
+                translation: [
+                    mesh.origin[0] - fit.root[0],
+                    mesh.origin[1] - fit.root[1],
+                    0.0,
+                ],
+                ..identity_transform()
+            },
+            ..part_node(strand_part(&mesh))
         },
     );
 
@@ -906,28 +922,9 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
         key_positions: vec![0.0, 0.5, 1.0],
     });
 
-    let mut bindings: Vec<ClmBinding> = (0..STRAND_LINKS as usize)
-        .map(|link| ClmBinding {
-            params: vec![pid(link)],
-            node: nid(strand),
-            // Cubic: a chain lands between keys nearly always, and the seven
-            // keyforms are samples of a rotation, which a linear blend across
-            // a sixth of a turn visibly shortens.
-            interpolate_mode: InterpolateMode::Cubic,
-            values: ClmBindingValues::Deform(ClmCells {
-                cells: BEND_KEYS
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &bend)| ClmCell {
-                        x: k as u32,
-                        y: 0,
-                        value: chain_keyforms(&mesh, &fit, link, bend),
-                    })
-                    .collect(),
-            }),
-        })
-        .collect();
-    bindings.push(ClmBinding {
+    // One binding only: the `turn` that slides the head. A spine needs no
+    // deform cells of its own.
+    let bindings = vec![ClmBinding {
         params: vec![pid(TURN)],
         node: nid(head),
         interpolate_mode: InterpolateMode::Linear,
@@ -950,7 +947,7 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
                 },
             ],
         }),
-    });
+    }];
 
     let doc = ClmStructure {
         nodes,
@@ -961,20 +958,18 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
     (doc, textures(vec![strand_texture()]))
 }
 
-/// One link's bend param: the range and the key positions
-/// [`chain_keyforms`]'s own key list implies, so a bend the chain writes lands
-/// exactly on an authored cell whenever it equals one of [`BEND_KEYS`].
+/// One link's bend param: half turns outright, with a key at each end and
+/// nothing keyed in between, which is what `spine_fit` authors. A spine reads
+/// a param's value and not its position along a range, so the range is the
+/// bend's own units.
 fn bend_param(link: usize) -> ClmParam {
     ClmParam {
         id: pid(link),
         name: format!("bend {}", link + 1),
-        min: BEND_RANGE[0],
-        max: BEND_RANGE[1],
+        min: -1.0,
+        max: 1.0,
         default: 0.0,
-        key_positions: BEND_KEYS
-            .iter()
-            .map(|k| (k - BEND_RANGE[0]) / (BEND_RANGE[1] - BEND_RANGE[0]))
-            .collect(),
+        key_positions: vec![0.0, 1.0],
     }
 }
 

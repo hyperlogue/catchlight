@@ -48,8 +48,8 @@ One element of a model's tree. Every node has an Id, a name, a transform, a
 z order and a kind.
 
 **Kind**:
-What a node is — group, part, composite, mesh group, simple physics, particle
-chain or spine. Fixed when the node is created.
+What a node is — group, part, composite, mesh group, simple physics or spine.
+Fixed when the node is created.
 
 **Group**:
 A node with no geometry of its own; it exists to position its children.
@@ -75,12 +75,13 @@ A driver node holding a pendulum hung at its own position; the pendulum's
 swing is written into params.
 
 **Particle chain**:
-A driver node holding a strand of linked particles hung at its own position;
-the bend at each joint is written into a param.
+The simulation a spine may carry: a strand of particles hung at the spine's
+root, one per joint, whose bends are written into the spine's params.
 _Avoid_: chain (alone), hair physics, spring bone
 
 **Link**:
-One fixed-length segment of a particle chain, with its own feel.
+One fixed-length segment of a spine between two joints, with its own feel when
+the spine carries a particle chain.
 _Avoid_: segment, bone
 
 **Spine**:

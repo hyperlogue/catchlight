@@ -70,13 +70,12 @@
 //!   other — a revision, an undo entry, an event — because that is what makes
 //!   it survive a save.
 //!
-//! - **A fit and the bindings it authors share one frame.** See
-//!   [`chain_fit`]: a strand is measured on the part's rest mesh, in that
-//!   node's vertex space, and a deform binding's cells are offsets into the
-//!   bound node's mesh in *its* vertex space. So binding somewhere other than
-//!   the part is allowed exactly where the two spaces differ by a translation
-//!   — [`vertex_space_shift`] is that check — and refused otherwise, because
-//!   the alternative is offsets that move art rather than fail.
+//! - **A fit moves nothing the part draws.** See [`spine_fit`]: the spine
+//!   goes between the part and its parent, and the strand's root is carried
+//!   onto the spine by two translations of the same size in opposite
+//!   directions — one onto the spine, one off the part — so every rest vertex
+//!   draws exactly where it drew, however the part is rotated or scaled. A
+//!   fit authors no binding: the spine turns the art by composing its joints.
 //!
 //! - **A model-only read has one implementation.** See [`query`]: the reads
 //!   [`CommandKind::ReplicaQuery`] names are pure functions of the [`Model`],
@@ -122,12 +121,11 @@ use catchlight_core::formats::clm::{
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
 use catchlight_core::LoadBudget;
 
-use catchlight_core::physics::ChainLink;
 use catchlight_core::Vec2;
 use catchlight_core::{
-    BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Model,
-    ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
-    ModelParticleChain, ModelPhysics, ModelSpine, ModelTexture, ModelWeld, Puppet, Required,
+    BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Mat4, Model,
+    ModelChain, ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam,
+    ModelPart, ModelPhysics, ModelSpine, ModelTexture, ModelWeld, Puppet, Required, Vec3,
 };
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
@@ -135,9 +133,8 @@ use catchlight_core::Pose;
 // The wire's camera and the renderer's framing are the same shape and not the
 // same type; the conversion happens here, at the edge.
 use catchlight_editor_core::{
-    chain_keyforms, contour_automesh, fit_strand, grid_automesh, AlphaMask, ContourKnobs,
-    GridKnobs, Manifest, ManifestError, MeshError, ModelManifestExt as _, ModelMeshExt as _,
-    StrandFit, TextureData, UvMap, BEND_RANGE,
+    contour_automesh, fit_strand, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, Manifest,
+    ManifestError, MeshError, ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_wgpu::Framing;
@@ -287,8 +284,6 @@ impl EditorError {
                 // aimed at. That is what `bad_target` says, and it is the
                 // code a client already branches on for a physics field set
                 // on a node that is not a driver.
-                ModelError::NotParticleChain => ErrorCode::BadTarget,
-                ModelError::ChainOutputArity { .. } => ErrorCode::BadTarget,
                 ModelError::NotSpine => ErrorCode::BadTarget,
                 ModelError::SpineTargetArity { .. } => ErrorCode::BadTarget,
                 // The size cap has no code of its own: a client that hit it
@@ -1863,94 +1858,28 @@ impl Editor {
                     dropped: Vec::new(),
                 })
             }),
-            Command::ChainAdd {
-                session,
-                parent,
-                name,
-                links,
-                local_only,
-                gravity,
-                weight,
-                outputs,
-                node: id,
-            } => self.edit_session(session, |s| {
-                let mut chain = ModelParticleChain::new(chain_links(links)?);
-                if let Some(v) = local_only {
-                    chain.local_only = v;
-                }
-                if let Some(v) = gravity {
-                    chain.gravity = v;
-                }
-                if let Some(v) = chain_weight(weight)? {
-                    chain.weight = v;
-                }
-                let node = ModelNode::new(
-                    name.unwrap_or_else(|| "Chain".into()),
-                    ModelNodeKind::ParticleChain(chain),
-                );
-                let node = s.add_node(&parent, id, node)?;
-                if let Some(outputs) = outputs {
-                    s.model.set_chain_outputs(&node, outputs)?;
-                }
-                s.touch();
-                Ok(ResponseBody::Node {
-                    node,
-                    dropped: Vec::new(),
-                })
-            }),
-            Command::ChainSet {
-                session,
-                node,
-                links,
-                local_only,
-                gravity,
-                weight,
-                outputs,
-            } => self.edit_session(session, |s| {
-                // Links first, so a set that reshapes and re-aims in one
-                // command has its `outputs` measured against the length it
-                // just asked for rather than the one it replaced.
-                if let Some(links) = links {
-                    s.model.set_chain_links(&node, chain_links(links)?)?;
-                }
-                let weight = chain_weight(weight)?;
-                if local_only.is_some() || gravity.is_some() || weight.is_some() {
-                    s.model.update_node(&node, |n| {
-                        let ModelNodeKind::ParticleChain(chain) = &mut n.kind else {
-                            return Err(EditorError::BadTarget("not a particle chain".into()));
-                        };
-                        if let Some(v) = local_only {
-                            chain.local_only = v;
-                        }
-                        if let Some(v) = gravity {
-                            chain.gravity = v;
-                        }
-                        if let Some(v) = weight {
-                            chain.weight = v;
-                        }
-                        Ok(())
-                    })??;
-                }
-                if let Some(outputs) = outputs {
-                    s.model.set_chain_outputs(&node, outputs)?;
-                }
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
             Command::SpineAdd {
                 session,
                 parent,
+                name,
                 joints,
                 targets,
+                chain,
                 node: id,
             } => self.edit_session(session, |s| {
+                let joints = spine_joints(joints)?;
+                let count = joints.len();
                 let node = ModelNode::new(
-                    "Spine",
-                    ModelNodeKind::Spine(ModelSpine::new(spine_joints(joints)?)),
+                    name.unwrap_or_else(|| "Spine".into()),
+                    ModelNodeKind::Spine(ModelSpine::new(joints)),
                 );
                 let node = s.add_node(&parent, id, node)?;
                 if let Some(targets) = targets {
                     s.model.set_spine_targets(&node, targets)?;
+                }
+                if let Some(chain) = chain {
+                    s.model
+                        .set_spine_chain(&node, Some(chain_of(&chain, count)?))?;
                 }
                 s.touch();
                 Ok(ResponseBody::Node {
@@ -1963,29 +1892,35 @@ impl Editor {
                 node,
                 joints,
                 targets,
+                chain,
             } => self.edit_session(session, |s| {
-                // Joints first, for the reason `chain_set` applies links
-                // first: a set that reshapes and re-aims in one command has
-                // its `targets` measured against the length it just asked for.
+                // Joints first: a set that reshapes and re-aims in one command
+                // has its `targets` and its chain measured against the length
+                // it just asked for rather than the one it replaced.
                 if let Some(joints) = joints {
                     s.model.set_spine_joints(&node, spine_joints(joints)?)?;
                 }
                 if let Some(targets) = targets {
                     s.model.set_spine_targets(&node, targets)?;
                 }
+                if let Some(chain) = chain {
+                    let count = spine_joint_count(&s.model, &node)?;
+                    let chain = chain.map(|c| chain_of(&c, count)).transpose()?;
+                    s.model.set_spine_chain(&node, chain)?;
+                }
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
-            Command::ChainFit {
+            Command::SpineFit {
                 session,
                 part,
                 links,
                 axis,
-                on,
-                chain,
                 node: id,
+                name,
+                chain,
             } => self.edit_session(session, |s| {
-                chain_fit(s, &part, links, axis, on.as_ref(), chain.as_ref(), id)
+                spine_fit(s, &part, links, axis, id, name, chain.as_ref())
             }),
             Command::PresenceSet { session, presence } => {
                 // Deliberately not via with_session: presence must not bump rev,
@@ -2399,12 +2334,6 @@ fn physics_targets(
     Ok([check(targets.angle)?, check(targets.length)?])
 }
 
-/// The wire's links as the model holds them, refusing the empty chain.
-///
-/// A chain reads out as one bend per link, so a chain of no links drives
-/// nothing and has nothing to drive it — the refusal is the same
-/// [`ErrorCode::BadTarget`] a malformed mesh gets, an argument that parsed and
-/// does not describe a thing the model can hold.
 /// A chain's authority over its params, refused at the door rather than on
 /// the next load: a command that names a number the file format would not
 /// take back is answered now, with the field in the message.
@@ -2417,13 +2346,22 @@ fn chain_weight(weight: Option<f32>) -> Result<Option<f32>, EditorError> {
     }
 }
 
-fn chain_links(links: Vec<ChainLinkArg>) -> Result<Vec<ChainLink>, EditorError> {
-    if links.is_empty() {
-        return Err(EditorError::BadTarget(
-            "a chain needs at least one link".into(),
-        ));
+/// The wire's chain as the model holds it over `joints` joints, with the
+/// refusals every command that hangs one shares.
+fn chain_of(arg: &ChainArg, joints: usize) -> Result<ModelChain, EditorError> {
+    chain_weight(arg.weight)?;
+    Ok(arg.to_chain(joints))
+}
+
+/// How many joints a spine holds, or the refusal for a node that is not one.
+fn spine_joint_count(model: &Model, node: &NodeId) -> Result<usize, EditorError> {
+    match model.node(node).map(|n| &n.kind) {
+        Some(ModelNodeKind::Spine(sp)) => Ok(sp.joints().len()),
+        Some(_) => Err(EditorError::BadTarget(format!(
+            "node {node} is not a spine"
+        ))),
+        None => Err(EditorError::NoNode(node.clone())),
     }
-    Ok(links.iter().map(ChainLinkArg::to_link).collect())
 }
 
 /// The joints of a spine the turn pass can compose, or the refusal that says
@@ -2456,56 +2394,117 @@ fn spine_joints(joints: Vec<[f32; 2]>) -> Result<Vec<[f32; 2]>, EditorError> {
     Ok(joints)
 }
 
-/// The key positions a link's bend param carries: [`BEND_KEYS`] normalised
-/// into the 0..1 a param stores its keys in, across [`BEND_RANGE`].
-fn bend_key_positions() -> Vec<f32> {
-    let span = BEND_RANGE[1] - BEND_RANGE[0];
-    catchlight_editor_core::BEND_KEYS
-        .iter()
-        .map(|k| (k - BEND_RANGE[0]) / span)
+/// A node's world matrix at rest, walking the model's own transforms up the
+/// tree. `lock_to_root` is not honoured: a locked node's world rotation is the
+/// root's, and the one caller here only wants an orientation to warn about.
+fn rest_world(model: &Model, id: &NodeId) -> Mat4 {
+    let mut chain: Vec<Mat4> = Vec::new();
+    let mut at = Some(id.clone());
+    while let Some(current) = at {
+        let Some(node) = model.node(&current) else {
+            break;
+        };
+        chain.push(clm_transform_matrix(&node.transform));
+        at = node.parent().cloned();
+    }
+    chain.iter().rev().fold(Mat4::IDENTITY, |acc, m| acc * *m)
+}
+
+/// One authored transform as a matrix, through the core's own conversion so it
+/// is the same composition a bake would build.
+fn clm_transform_matrix(t: &catchlight_core::formats::clm::ClmTransform) -> Mat4 {
+    catchlight_core::Transform::from(t).to_matrix()
+}
+
+/// The node's own down in the physics frame — what `Arena::chain_orient`
+/// computes from a puppet's transforms, computed here from the model's, so a
+/// command can warn about a fit before anything is baked.
+fn rest_orient(model: &Model, id: &NodeId) -> Vec2 {
+    let world = rest_world(model, id);
+    let down = Vec2::new(-world.y_axis.x, -world.y_axis.y);
+    let down = if down.is_finite() && down.length_squared() > 1e-12 {
+        down.normalize()
+    } else {
+        Vec2::new(0.0, -1.0)
+    };
+    Vec2::new(down.x, -down.y)
+}
+
+/// What a chain cannot do with the drawing it was given: one line per link
+/// that has no spring to hold it off gravity and is not drawn along gravity.
+///
+/// The physics is honest about this rather than quietly correcting it, so the
+/// fit is where a rigger hears about it.
+fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
+    let Some(ModelNodeKind::Spine(spine)) = model.node(node).map(|n| &n.kind) else {
+        return Vec::new();
+    };
+    let Some(chain) = spine.chain() else {
+        return Vec::new();
+    };
+    let g_scale = model.physics().pixels_per_meter * model.physics().gravity;
+    let gravity = chain.gravity * g_scale;
+    let orient = rest_orient(model, node);
+    let data = catchlight_core::SpineData::new(
+        spine
+            .joints()
+            .iter()
+            .map(|j| Vec2::new(j[0], j[1]))
+            .collect(),
+    );
+    data.link_geometry()
+        .zip(chain.links())
+        .enumerate()
+        .filter_map(|(i, ((length, drawn), feel))| {
+            let link = catchlight_core::physics::ChainLink {
+                length,
+                drawn,
+                gravity_scale: feel.gravity_scale,
+                damping: feel.damping,
+                stiffness: feel.stiffness,
+                spring_offset: 0.0,
+            };
+            (!catchlight_core::physics::link_can_rest_as_drawn(&link, gravity, orient)).then(|| {
+                format!(
+                    "link {} has no stiffness and is drawn off gravity, so it cannot rest as drawn",
+                    i + 1
+                )
+            })
+        })
         .collect()
 }
 
-/// Rig a strand of art to a particle chain in one edit: the bend params, the
-/// chain node, and the deform bindings that bend the art.
+/// Rig a strand of art to a spine: the spine between the part and its parent,
+/// the params its links read, and the chain that may drive them.
 ///
-/// **The editor measures, for the reason the editor traces.** Fitting a strand
-/// is reading the part's rest mesh and deciding where each joint falls; a
-/// client doing it itself would have to hold the mesh, agree on the hang axis
-/// and agree on the sign of a bend — three chances to disagree with what the
-/// solver then does. What comes back out is ordinary, though: params a
-/// [`Command::ParamSet`] retunes, deform bindings a rigger opens and edits by
-/// hand, and a chain [`Command::ChainSet`] reshapes.
+/// **The part keeps the world placement it had.** The spine is inserted at the
+/// identity transform under the part's own parent and the part is reparented
+/// under it untouched, so nothing about where the art sits can change — not
+/// for a rotated part, not for a scaled one. The joints are then expressed in
+/// the spine's own space, which is why the fit's vertex-space polyline goes
+/// through the part's transform on the way in.
 ///
-/// **The fit is measured on `part` and the bindings are written on `bound`,
-/// and one rule ties the two frames together.** A deform binding's cells are
-/// offsets into the bound node's own mesh, in that node's vertex space, so a
-/// keyform measured in the part's space only applies to another node when the
-/// two spaces differ by a translation. That is what [`vertex_space_shift`]
-/// checks and, where it holds, what it corrects for; where it does not, the
-/// command is refused naming the node that broke it, because the alternative
-/// is offsets that quietly move art rather than fail. `bound` defaults to
-/// `part`, where the shift is zero by construction and no node's transform is
-/// looked at at all — so a rotated part still fits itself.
-///
-/// **A cell at every key position the param carries.** For a param this call
-/// just made that is [`BEND_KEYS`] normalised; for one it inherited from the
-/// chain it was handed, it is whatever keys that param has, each read back as
-/// the bend value its position names. Either way the binding's grid is the
-/// param's own key positions, so no cell is authored outside the grid and none
-/// inside it is left derived.
-fn chain_fit(
+/// **A re-fit reuses the spine the part already hangs from.** Nesting a second
+/// one would compose two turns where the rigger asked for one, so a part whose
+/// parent is a spine has that spine re-measured: its chain keeps every knob,
+/// its link list is refitted by repeating the last feel, and its params are
+/// kept wherever the count still matches.
+fn spine_fit(
     s: &mut Session,
     part: &NodeId,
     links: u32,
     axis: Option<[f32; 2]>,
-    on: Option<&NodeId>,
-    chain: Option<&NodeId>,
     id: Option<NodeId>,
+    name: Option<String>,
+    chain: Option<&ChainArg>,
 ) -> Result<ResponseBody, EditorError> {
-    // Everything read off the part before the model is touched: the fit, and
-    // the three facts that place and name the chain node.
-    let (fit, part_name, part_translation, part_origin, parent) = {
+    if links == 0 {
+        return Err(EditorError::BadTarget(
+            "a spine needs at least one link".into(),
+        ));
+    }
+    // Everything read off the part before the model is touched.
+    let (fit, part_name, part_local, origin, parent) = {
         let node = s
             .model
             .node(part)
@@ -2514,71 +2513,85 @@ fn chain_fit(
             .mesh()
             .ok_or_else(|| EditorError::BadTarget(format!("node {part} holds no mesh to fit")))?;
         let fit = fit_strand(mesh, links, axis)
-            .map_err(|e| EditorError::BadTarget(format!("cannot fit a chain to {part}: {e}")))?;
+            .map_err(|e| EditorError::BadTarget(format!("cannot fit a spine to {part}: {e}")))?;
         let parent = node.parent().cloned().ok_or_else(|| {
             EditorError::BadTarget(format!(
-                "node {part} is the model's root, so a chain has nowhere to hang beside it"
+                "node {part} is the model's root, so a spine has nowhere to go above it"
             ))
         })?;
         (
             fit,
             node.name.to_string(),
-            node.transform.translation,
+            clm_transform_matrix(&node.transform),
             mesh.origin,
             parent,
         )
     };
 
-    // The node the bindings go on, and the fit as that node's own mesh sees
-    // it.
-    let bound = on.cloned().unwrap_or_else(|| part.clone());
-    let bound_mesh = match s.model.node(&bound) {
-        Some(node) => node
-            .mesh()
-            .ok_or_else(|| {
-                EditorError::BadTarget(format!("node {bound} holds no mesh to bind a deform on"))
-            })?
-            .clone(),
-        None => return Err(EditorError::NoNode(bound)),
-    };
-    let shift = vertex_space_shift(&s.model, part, &bound)?;
-    let bound_fit = StrandFit {
-        root: [fit.root[0] + shift[0], fit.root[1] + shift[1]],
-        axis: fit.axis,
-        lengths: fit.lengths.clone(),
-    };
+    // A re-fit when the part already hangs from one; a fresh spine otherwise.
+    let existing = matches!(
+        s.model.node(&parent).map(|n| &n.kind),
+        Some(ModelNodeKind::Spine(_))
+    )
+    .then(|| parent.clone());
 
-    // What the chain being re-fitted already holds. An absent `chain` is a
-    // chain about to be made, which holds nothing.
-    let (held_outputs, held_links) = match chain {
-        Some(c) => match s.model.node(c).map(|n| &n.kind) {
-            Some(ModelNodeKind::ParticleChain(ch)) => (ch.outputs().to_vec(), ch.links().to_vec()),
-            Some(_) => {
-                return Err(EditorError::BadTarget(format!(
-                    "node {c} is not a particle chain"
-                )))
-            }
-            None => return Err(EditorError::NoNode(c.clone())),
-        },
-        None => (Vec::new(), Vec::new()),
-    };
-
-    // One param per link, reusing what the chain already drove. A link that
-    // drove nothing, and every link past the old end, gets a fresh one.
+    // Where the strand's root sits in the frame the spine will live in, and
+    // the joints as offsets from it.
+    //
+    // The spine's own origin has to land on the strand's root, so the fit
+    // moves the spine there and takes the same vector back off the part. The
+    // two cancel — the spine carries only a translation — so every vertex
+    // draws exactly where it drew, which is what
+    // `a_fit_leaves_the_parts_world_placement_alone` measures.
+    let root_offset = part_local.transform_point3(Vec3::new(
+        fit.root[0] - origin[0],
+        fit.root[1] - origin[1],
+        0.0,
+    ));
     let count = links as usize;
+    let mut travelled = 0.0f32;
+    let joints: Vec<[f32; 2]> = (0..count)
+        .map(|i| {
+            travelled += fit.lengths[i];
+            // The linear part only: an offset from the root is a vector, and
+            // the root's own place is what `root_offset` carries.
+            let v = part_local.transform_vector3(Vec3::new(
+                fit.axis[0] * travelled,
+                fit.axis[1] * travelled,
+                0.0,
+            ));
+            [v.x, v.y]
+        })
+        .collect();
+    let joints = spine_joints(joints)?;
+
+    // The params the spine being re-fitted already reads.
+    let held_targets = match &existing {
+        Some(spine) => match s.model.node(spine).map(|n| &n.kind) {
+            Some(ModelNodeKind::Spine(sp)) => sp.targets().to_vec(),
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+
+    // One param per link, reusing what the spine already read. A link that
+    // read nothing, and every link past the old end, gets a fresh one. The
+    // range is half turns outright — a spine reads a param's value and not
+    // its position along a range — with a key at each end and nothing keyed
+    // in between, because a spine carries no cells to key.
     let mut params = Vec::with_capacity(count);
     for i in 0..count {
-        match held_outputs.get(i).and_then(Option::as_ref) {
+        match held_targets.get(i).and_then(Option::as_ref) {
             Some(held) if s.model.param(held).is_some() => params.push(held.clone()),
             _ => {
                 let param = s.add_param(
                     None,
                     ModelParam {
                         name: Name::truncated(format!("{part_name} bend {}", i + 1)),
-                        min: BEND_RANGE[0],
-                        max: BEND_RANGE[1],
+                        min: -1.0,
+                        max: 1.0,
                         default: 0.0,
-                        key_positions: bend_key_positions(),
+                        key_positions: vec![0.0, 1.0],
                     },
                 )?;
                 params.push(param);
@@ -2586,143 +2599,48 @@ fn chain_fit(
         }
     }
 
-    // Each link's length comes from the fit; every other knob on the link
-    // survives a re-fit, because the feel of a strand is what a rigger tuned
-    // by hand and the fit only ever knew where the strand runs.
-    let fitted: Vec<ChainLink> = (0..count)
-        .map(|i| ChainLink {
-            length: fit.lengths[i],
-            ..held_links.get(i).copied().unwrap_or_default()
-        })
-        .collect();
-
-    // The chain sits at the root of the strand: a vertex draws at
-    // `translation + (v - origin)`, so the root reaches `root - origin` from
-    // the part's own translation.
-    let translation = [
-        part_translation[0] + fit.root[0] - part_origin[0],
-        part_translation[1] + fit.root[1] - part_origin[1],
-        part_translation[2],
-    ];
-    let node = match chain {
-        Some(c) => {
-            s.model.set_chain_links(c, fitted)?;
-            s.model.update_node(c, |n| {
-                n.transform.translation = translation;
-            })?;
-            c.clone()
+    let node = match existing {
+        Some(spine) => {
+            s.model.set_spine_joints(&spine, joints)?;
+            spine
         }
         None => {
-            let mut node = ModelNode::new(
-                format!("{part_name} chain"),
-                ModelNodeKind::ParticleChain(ModelParticleChain::new(fitted)),
+            let node = ModelNode::new(
+                name.unwrap_or_else(|| format!("{part_name} spine")),
+                ModelNodeKind::Spine(ModelSpine::new(joints)),
             );
-            node.transform.translation = translation;
-            s.add_node(&parent, id, node)?
+            let spine = s.add_node(&parent, id, node)?;
+            s.model.reparent(part, &spine)?;
+            spine
         }
     };
+    // Move the spine onto the strand's root and take the same vector off the
+    // part, in that order. Both are pure translations of the same size, so the
+    // composition is unchanged and nothing the part draws moves.
+    s.model.update_node(&node, |n| {
+        n.transform.translation[0] += root_offset.x;
+        n.transform.translation[1] += root_offset.y;
+    })?;
+    s.model.update_node(part, |n| {
+        n.transform.translation[0] -= root_offset.x;
+        n.transform.translation[1] -= root_offset.y;
+    })?;
     s.model
-        .set_chain_outputs(&node, params.iter().cloned().map(Some).collect())?;
-
-    // One deform binding per link, replacing whatever stood under that param
-    // on this node.
-    let mut replaced = Vec::new();
-    for (link, param) in params.iter().enumerate() {
-        let key = BindingKey::new(param.clone(), bound.clone(), CoreBindingTarget::Deform);
-        if s.model.binding(&key).is_some() {
-            replaced.push(param.clone());
-            s.model.delete_binding(&key)?;
-        }
-        let positions = s
-            .model
-            .param(param)
-            .map(|p| (p.min, p.max, p.key_positions.clone()))
-            .ok_or_else(|| EditorError::NoParam(param.clone()))?;
-        let (min, max, positions) = positions;
-        // Made before the cells, so a param carrying no key position at all
-        // still leaves a binding behind for the interpolation to land on.
-        s.model.add_binding(&key)?;
-        for (cell, position) in positions.iter().enumerate() {
-            let bend = min + position * (max - min);
-            let offsets = chain_keyforms(&bound_mesh, &bound_fit, link, bend);
-            s.model
-                .set_deform_vertices(&key, [cell as u32, 0], offsets)?;
-        }
+        .set_spine_targets(&node, params.iter().cloned().map(Some).collect())?;
+    // A named chain replaces what stood there; an absent one leaves a re-fit's
+    // chain alone, and `set_spine_joints` has already refitted its link list.
+    if let Some(arg) = chain {
         s.model
-            .set_binding_interpolate(&key, Interpolate::Cubic.into())?;
+            .set_spine_chain(&node, Some(chain_of(arg, count)?))?;
     }
 
+    let warnings = chain_warnings(&s.model, &node);
     s.touch();
-    Ok(ResponseBody::ChainFit {
+    Ok(ResponseBody::SpineFit {
         node,
         params,
-        bound,
-        replaced,
+        warnings,
     })
-}
-
-/// The vector that takes a point in `from`'s vertex space to the same point in
-/// `to`'s, refusing when the two spaces differ by more than that.
-///
-/// Rest geometry only, which is the whole reason this is answerable: a mesh
-/// group deforming between the two nodes moves them at pose time and leaves
-/// their rest vertices where they were. What it cannot survive is a rotation
-/// or a scale, which turns a translation between the frames into a transform
-/// no single vector expresses — so any of those, anywhere from the root down
-/// to either node, is a refusal naming the node that carries it. The walk
-/// stops at a node locked to the root, because that is where its ancestors
-/// stop reaching it.
-///
-/// Conservative on purpose: a rotation shared by both nodes would cancel, and
-/// is refused anyway rather than reasoned about. `from == to` never looks at a
-/// transform at all.
-fn vertex_space_shift(model: &Model, from: &NodeId, to: &NodeId) -> Result<[f32; 2], EditorError> {
-    if from == to {
-        return Ok([0.0, 0.0]);
-    }
-    let (a, origin_a) = (rest_translation(model, from)?, mesh_origin(model, from)?);
-    let (b, origin_b) = (rest_translation(model, to)?, mesh_origin(model, to)?);
-    Ok([
-        a[0] - b[0] + origin_b[0] - origin_a[0],
-        a[1] - b[1] + origin_b[1] - origin_a[1],
-    ])
-}
-
-/// Where a node's frame sits relative to the root at rest, as a translation —
-/// or a refusal, if anything on the way up is not one.
-fn rest_translation(model: &Model, id: &NodeId) -> Result<[f32; 2], EditorError> {
-    let mut at = Some(id.clone());
-    let mut out = [0.0f32, 0.0];
-    while let Some(current) = at {
-        let node = model
-            .node(&current)
-            .ok_or_else(|| EditorError::NoNode(current.clone()))?;
-        if node.transform.rotation != [0.0; 3] || node.transform.scale != [1.0, 1.0] {
-            return Err(EditorError::BadTarget(format!(
-                "node {current} carries a rotation or a scale, so the frames of {id} and its \
-                 chain differ by more than a translation; fit and bind on the same node"
-            )));
-        }
-        out[0] += node.transform.translation[0];
-        out[1] += node.transform.translation[1];
-        at = if node.lock_to_root {
-            None
-        } else {
-            node.parent().cloned()
-        };
-    }
-    Ok(out)
-}
-
-/// A meshed node's mesh origin.
-fn mesh_origin(model: &Model, id: &NodeId) -> Result<[f32; 2], EditorError> {
-    match model.node(id) {
-        Some(node) => node
-            .mesh()
-            .map(|mesh| mesh.origin)
-            .ok_or_else(|| EditorError::BadTarget(format!("node {id} holds no mesh"))),
-        None => Err(EditorError::NoNode(id.clone())),
-    }
 }
 
 /// The wire's mesh as the model stores one.

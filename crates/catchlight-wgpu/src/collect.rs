@@ -354,7 +354,6 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
             NodeKind::MeshGroup(_)
             | NodeKind::Group
             | NodeKind::SimplePhysics(_)
-            | NodeKind::ParticleChain(_)
             | NodeKind::Spine(_) => {}
         }
     }
@@ -553,7 +552,6 @@ impl Collector {
                 NodeKind::MeshGroup(_)
                 | NodeKind::Group
                 | NodeKind::SimplePhysics(_)
-                | NodeKind::ParticleChain(_)
                 | NodeKind::Spine(_) => {}
             }
         });

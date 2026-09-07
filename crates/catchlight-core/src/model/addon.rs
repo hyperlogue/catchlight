@@ -305,13 +305,6 @@ impl Model {
                     }
                 }
             }
-            if let ModelNodeKind::ParticleChain(chain) = &node.kind {
-                for t in chain.outputs().iter().flatten() {
-                    if !self.params.contains_key(t) {
-                        need(Required::Param(t.clone()), "chain output", &id);
-                    }
-                }
-            }
             if let ModelNodeKind::Spine(spine) = &node.kind {
                 for t in spine.targets().iter().flatten() {
                     if !self.params.contains_key(t) {

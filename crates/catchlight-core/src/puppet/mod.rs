@@ -347,10 +347,10 @@ pub struct Puppet {
     /// Parallel to `arena.physics_node_ids`.
     physics_targets: Vec<[Option<u32>; 2]>,
     physics_update_scratch: Vec<([Option<u32>; 2], NodeIdx, Vec2)>,
-    /// Parallel to `arena.chain_node_ids`: one param slot per link.
-    chain_targets: Vec<Vec<Option<u32>>>,
-    /// Parallel to `arena.spine_node_ids`: one param slot per link, read
-    /// rather than written — a spine is not a driver and claims nothing.
+    /// Parallel to `arena.spine_node_ids`: one param slot per link. One list
+    /// serves both directions — the spine reads its bends from these params
+    /// and the chain it may carry writes them — because they are the same
+    /// bends.
     spine_targets: Vec<Vec<Option<u32>>>,
     /// This frame's chain claims, `(source, slot, bend, weight)`. Flat rather
     /// than grouped by chain because the only two readers want it flat: the
@@ -408,7 +408,6 @@ impl Puppet {
             physics_enabled: true,
             physics_targets: Vec::new(),
             physics_update_scratch: Vec::new(),
-            chain_targets: Vec::new(),
             spine_targets: Vec::new(),
             chain_update_scratch: Vec::new(),
             chain_bends_scratch: Vec::new(),
@@ -493,7 +492,7 @@ impl Puppet {
             .filter_map(|&idx| {
                 let id = self.id_of_node.get(idx.0 as usize)?.clone();
                 match &self.arena.get(idx)?.kind {
-                    NodeKind::ParticleChain(c) => Some((id, (**c).clone())),
+                    NodeKind::Spine(sp) => sp.chain.as_ref().map(|c| (id, c.clone())),
                     _ => None,
                 }
             })
@@ -543,8 +542,10 @@ impl Puppet {
             let Some(&idx) = self.node_of_id.get(&id) else {
                 continue;
             };
-            let Some(NodeKind::ParticleChain(chain)) = self.arena.get_mut(idx).map(|n| &mut n.kind)
-            else {
+            let Some(NodeKind::Spine(spine)) = self.arena.get_mut(idx).map(|n| &mut n.kind) else {
+                continue;
+            };
+            let Some(chain) = &mut spine.chain else {
                 continue;
             };
             // Only a chain of the same shape can take the old particles: they
@@ -573,7 +574,6 @@ impl Puppet {
             slot_of_param,
             bindings,
             physics_targets,
-            chain_targets,
             spine_targets,
         } = baked;
         self.arena = arena;
@@ -587,7 +587,6 @@ impl Puppet {
         self.slot_of_param = slot_of_param;
         self.bindings = bindings;
         self.physics_targets = physics_targets;
-        self.chain_targets = chain_targets;
         self.spine_targets = spine_targets;
         self.param_values_overflow.clear();
         self.param_contributions.clear();
@@ -1337,6 +1336,14 @@ impl Puppet {
         true
     }
 
+    /// The param slots the links of chain `c` write and its spine reads: the
+    /// spine's row of `spine_targets`, reached through the index the bake
+    /// left in `arena.chain_spine`. `c` indexes `arena.chain_node_ids`.
+    fn chain_slot_row(&self, c: usize) -> Option<&[Option<u32>]> {
+        let spine = *self.arena.chain_spine.get(c)?;
+        self.spine_targets.get(spine).map(|row| row.as_slice())
+    }
+
     /// The bend each of a chain's links is posed at, in half turns, written
     /// into `out` (cleared first). `c` indexes `arena.chain_node_ids`.
     ///
@@ -1349,7 +1356,7 @@ impl Puppet {
     /// A link no param drives is posed at 0, which is the strand as drawn.
     fn chain_posed_bends(&self, c: usize, out: &mut Vec<f32>) {
         out.clear();
-        let Some(targets) = self.chain_targets.get(c) else {
+        let Some(targets) = self.chain_slot_row(c) else {
             return;
         };
         out.extend(
@@ -1382,14 +1389,17 @@ impl Puppet {
             }
             None => Vec::new(),
         };
-        let Some(NodeKind::ParticleChain(chain)) = self.arena.get_mut(node).map(|n| &mut n.kind)
-        else {
+        let Some(NodeKind::Spine(spine)) = self.arena.get_mut(node).map(|n| &mut n.kind) else {
+            self.chain_posed_scratch = posed;
+            return false;
+        };
+        let Some(chain) = &mut spine.chain else {
             self.chain_posed_scratch = posed;
             return false;
         };
         if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
-            let (anchor, down) = (chain.anchor, chain.down);
-            chain.settle_to_rest(anchor, down, &posed);
+            let (anchor, orient) = (chain.anchor, chain.orient);
+            chain.settle_to_rest(anchor, orient, &posed);
         }
         for particle in chain.particles.iter_mut().skip(1) {
             particle.pos += offset;
@@ -1427,12 +1437,14 @@ impl Puppet {
             let Some(anchor) = self.arena.physics_anchor(transforms, id) else {
                 continue;
             };
-            let Some(down) = self.arena.chain_down(transforms, id) else {
+            let Some(orient) = self.arena.chain_orient(transforms, id) else {
                 continue;
             };
             self.chain_posed_bends(i, &mut posed);
-            if let Some(NodeKind::ParticleChain(c)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
-                c.tick(anchor, down, &posed, dt);
+            if let Some(NodeKind::Spine(sp)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
+                if let Some(c) = &mut sp.chain {
+                    c.tick(anchor, orient, &posed, dt);
+                }
             }
         }
         self.chain_posed_scratch = posed;
@@ -1484,13 +1496,16 @@ impl Puppet {
         let mut bends = std::mem::take(&mut self.chain_bends_scratch);
         for c in 0..self.arena.chain_node_ids.len() {
             let id = self.arena.chain_node_ids[c];
-            let Some(targets) = self.chain_targets.get(c) else {
+            // Copied out rather than borrowed: the claim push below needs the
+            // puppet back.
+            let targets: smallvec::SmallVec<[Option<u32>; 8]> = match self.chain_slot_row(c) {
+                Some(row) if row.iter().any(Option::is_some) => row.iter().copied().collect(),
+                _ => continue,
+            };
+            let Some(NodeKind::Spine(spine)) = self.arena.get(id).map(|n| &n.kind) else {
                 continue;
             };
-            if targets.iter().all(Option::is_none) {
-                continue;
-            }
-            let Some(NodeKind::ParticleChain(chain)) = self.arena.get(id).map(|n| &n.kind) else {
+            let Some(chain) = &spine.chain else {
                 continue;
             };
             // Same two branches as a pendulum's, and for the same reason: a
@@ -1659,23 +1674,22 @@ impl Puppet {
                 let Some(anchor) = self.arena.physics_anchor(&transforms, id) else {
                     continue;
                 };
-                let Some(down) = self.arena.chain_down(&transforms, id) else {
+                let Some(orient) = self.arena.chain_orient(&transforms, id) else {
                     continue;
                 };
                 self.chain_posed_bends(i, &mut posed);
-                if let Some(NodeKind::ParticleChain(c)) =
-                    self.arena.get_mut(id).map(|n| &mut n.kind)
-                {
+                if let Some(NodeKind::Spine(sp)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
+                    let Some(c) = &mut sp.chain else { continue };
                     // A turned node is as much a move as a shifted one: it
-                    // points the first link's bend zero somewhere else, so
-                    // the rest pose this pass computes is a different one.
+                    // carries the drawn shape somewhere else, so the rest pose
+                    // this pass computes is a different one.
                     if !c.anchor_initialized
                         || (c.anchor - anchor).length_squared() > SETTLE_EPS_SQ
-                        || (c.down - down).length_squared() > SETTLE_EPS_SQ
+                        || (c.orient - orient).length_squared() > SETTLE_EPS_SQ
                     {
                         moved = true;
                     }
-                    c.settle_to_rest(anchor, down, &posed);
+                    c.settle_to_rest(anchor, orient, &posed);
                 }
             }
             self.write_driver_param_outputs(&transforms);
@@ -1814,7 +1828,8 @@ impl Puppet {
         }) || self.arena.chain_node_ids.iter().any(|&id| {
             matches!(
                 self.arena.get(id).map(|n| &n.kind),
-                Some(NodeKind::ParticleChain(c)) if !c.is_at_rest(SETTLE_EPS_SQ)
+                Some(NodeKind::Spine(sp))
+                    if sp.chain.as_ref().is_some_and(|c| !c.is_at_rest(SETTLE_EPS_SQ))
             )
         })
     }

@@ -328,31 +328,6 @@ fn node_fields(n: &ClmNode) -> Fields {
             f.insert("output_scale.x".into(), p.output_scale[0].to_string());
             f.insert("output_scale.y".into(), p.output_scale[1].to_string());
         }
-        ClmNodeKind::ParticleChain(c) => {
-            f.insert("kind".into(), "ParticleChain".into());
-            f.insert("local_only".into(), c.local_only.to_string());
-            f.insert("gravity".into(), c.gravity.to_string());
-            f.insert("weight".into(), c.weight.to_string());
-            // One row per link, so a diff names the link that changed rather
-            // than reporting that the list is different.
-            for (i, link) in c.links.iter().enumerate() {
-                f.insert(format!("links.{i}.length"), link.length.to_string());
-                f.insert(
-                    format!("links.{i}.gravity_scale"),
-                    link.gravity_scale.to_string(),
-                );
-                f.insert(format!("links.{i}.damping"), link.damping.to_string());
-                f.insert(format!("links.{i}.time_scale"), link.time_scale.to_string());
-                f.insert(format!("links.{i}.stiffness"), link.stiffness.to_string());
-            }
-            for (i, slot) in c.outputs.iter().enumerate() {
-                f.insert(
-                    format!("outputs.{i}"),
-                    slot.as_ref()
-                        .map_or_else(|| "(none)".to_string(), |t| format!("{:?}", t.as_str())),
-                );
-            }
-        }
         ClmNodeKind::Spine(sp) => {
             f.insert("kind".into(), "Spine".into());
             // One row per joint and per target, for the reason a chain's links
@@ -367,6 +342,24 @@ fn node_fields(n: &ClmNode) -> Fields {
                     slot.as_ref()
                         .map_or_else(|| "(none)".to_string(), |t| format!("{:?}", t.as_str())),
                 );
+            }
+            // The chain the spine carries, one row per scalar and per link, so
+            // a diff names the link whose feel changed.
+            if let Some(c) = &sp.chain {
+                f.insert("chain.local_only".into(), c.local_only.to_string());
+                f.insert("chain.gravity".into(), c.gravity.to_string());
+                f.insert("chain.weight".into(), c.weight.to_string());
+                for (i, link) in c.links.iter().enumerate() {
+                    f.insert(
+                        format!("chain.links.{i}.gravity_scale"),
+                        link.gravity_scale.to_string(),
+                    );
+                    f.insert(format!("chain.links.{i}.damping"), link.damping.to_string());
+                    f.insert(
+                        format!("chain.links.{i}.stiffness"),
+                        link.stiffness.to_string(),
+                    );
+                }
             }
         }
     }

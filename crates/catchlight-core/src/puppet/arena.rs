@@ -117,13 +117,16 @@ pub(crate) struct Arena {
     pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
     pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
     pub(crate) physics_node_ids: Vec<NodeIdx>,
-    /// Particle-chain drivers, in the same arena order `physics_node_ids`
-    /// keeps its own in. A separate list because the two step differently and
-    /// read out differently, and because `Baked::chain_targets` is parallel to
-    /// this one the way `physics_targets` is parallel to that one.
+    /// The spines that carry a particle chain, in the same arena order
+    /// `physics_node_ids` keeps its own in. A separate list from
+    /// `spine_node_ids` because most spines carry nothing and the solver pass
+    /// should not walk them; the two are otherwise the same nodes.
     pub(crate) chain_node_ids: Vec<NodeIdx>,
-    /// Spine nodes, in arena order. `Baked::spine_targets` is parallel to it
-    /// the way `chain_targets` is parallel to `chain_node_ids`.
+    /// Parallel to `chain_node_ids`: each chain's index into `spine_node_ids`,
+    /// so the solver reaches its spine's row of `Baked::spine_targets` without
+    /// a lookup — the hot loops never search.
+    pub(crate) chain_spine: Vec<usize>,
+    /// Spine nodes, in arena order. `Baked::spine_targets` is parallel to it.
     pub(crate) spine_node_ids: Vec<NodeIdx>,
     // Frame-persistent scratch for the spine pass, the same pair
     // `propagate_mesh_group_deforms` keeps: the offsets computed under a read
@@ -186,6 +189,7 @@ impl Arena {
             weld_cur_b_scratch: Vec::new(),
             physics_node_ids: Vec::new(),
             chain_node_ids: Vec::new(),
+            chain_spine: Vec::new(),
             spine_node_ids: Vec::new(),
             spine_scratch: Vec::new(),
             spine_cur_deform_scratch: Vec::new(),
@@ -242,6 +246,7 @@ impl Arena {
         self.deform_node_ids.clear();
         self.physics_node_ids.clear();
         self.chain_node_ids.clear();
+        self.chain_spine.clear();
         self.spine_node_ids.clear();
         self.mesh_group_node_ids.clear();
         for (slot, node) in self.nodes.iter().enumerate() {
@@ -255,8 +260,9 @@ impl Arena {
             if matches!(&node.kind, crate::NodeKind::SimplePhysics(_)) {
                 self.physics_node_ids.push(id);
             }
-            if matches!(&node.kind, crate::NodeKind::ParticleChain(_)) {
+            if matches!(&node.kind, crate::NodeKind::Spine(sp) if sp.chain.is_some()) {
                 self.chain_node_ids.push(id);
+                self.chain_spine.push(self.spine_node_ids.len());
             }
             if matches!(&node.kind, crate::NodeKind::Spine(_)) {
                 self.spine_node_ids.push(id);
@@ -369,11 +375,16 @@ impl Arena {
         }
     }
 
-    /// Derive every spine's per-vertex assignment from the rest pose, the way
-    /// [`Self::rebuild_all_mesh_group_pins`] derives a group's pins: reset the
-    /// dynamic state so the transforms are the ones the art was drawn at, then
-    /// walk each spine's meshed descendants.
-    pub(crate) fn rebuild_all_spine_pins(&mut self) {
+    /// Derive every spine's rest state: the per-vertex assignment, the way
+    /// [`Self::rebuild_all_mesh_group_pins`] derives a group's pins, and the
+    /// spring offsets of the chain it carries.
+    ///
+    /// Both need the same thing and can only be had here: the transforms the
+    /// art was drawn at. The assignment needs each descendant's rest place,
+    /// and the spring fit needs the node's rest **rotation**, because the
+    /// balance that makes the drawing an equilibrium is not the same balance
+    /// at a different tilt.
+    pub(crate) fn rebuild_spine_rest_state(&mut self) {
         self.reset_dynamic_state();
         self.reset_deforms();
         if self.spine_node_ids.is_empty() {
@@ -384,13 +395,27 @@ impl Arena {
         let baked: Vec<_> = self
             .spine_node_ids
             .iter()
-            .map(|&id| (id, crate::spine::bake_spine_pins(self, &transforms, id)))
+            .map(|&id| {
+                (
+                    id,
+                    crate::spine::bake_spine_pins(self, &transforms, id),
+                    self.chain_orient(&transforms, id),
+                )
+            })
             .collect();
-        for (id, pins) in baked {
-            if let Some(crate::NodeKind::Spine(spine)) =
+        for (id, pins, orient) in baked {
+            let Some(crate::NodeKind::Spine(spine)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
-            {
-                spine.pins = pins;
+            else {
+                continue;
+            };
+            spine.pins = pins;
+            if let (Some(chain), Some(orient)) = (&mut spine.chain, orient) {
+                let gravity = chain.gravity;
+                for link in chain.links.iter_mut() {
+                    link.spring_offset =
+                        crate::physics::fitted_spring_offset(link, gravity, orient);
+                }
             }
         }
     }
@@ -450,7 +475,7 @@ impl Arena {
         );
         let is_mesh_group = matches!(&node.kind, crate::NodeKind::MeshGroup(_));
         let is_physics = matches!(&node.kind, crate::NodeKind::SimplePhysics(_));
-        let is_chain = matches!(&node.kind, crate::NodeKind::ParticleChain(_));
+        let is_chain = matches!(&node.kind, crate::NodeKind::Spine(sp) if sp.chain.is_some());
         let is_spine = matches!(&node.kind, crate::NodeKind::Spine(_));
         self.base_local_matrix.push(node.base_transform.to_matrix());
         self.node_transform_dirty.push(false);
@@ -467,6 +492,7 @@ impl Arena {
         }
         if is_chain {
             self.chain_node_ids.push(id);
+            self.chain_spine.push(self.spine_node_ids.len());
         }
         if is_spine {
             self.spine_node_ids.push(id);
@@ -592,7 +618,7 @@ impl Arena {
         let node = self.nodes.get(id.0 as usize)?;
         let local_only = match &node.kind {
             crate::NodeKind::SimplePhysics(p) => p.local_only,
-            crate::NodeKind::ParticleChain(c) => c.local_only,
+            crate::NodeKind::Spine(sp) => sp.chain.as_ref()?.local_only,
             _ => return None,
         };
         let anchor = if local_only {
@@ -604,27 +630,28 @@ impl Arena {
         Some(crate::Vec2::new(anchor.x, -anchor.y))
     }
 
-    /// Where bend 0 of a particle chain's first link points, as a unit vector
-    /// in the driver's own **Y-down** frame: the node's local down, taken
-    /// through the same world transform and the same Y flip as
-    /// [`Self::physics_anchor`], so the spring and `link_bends` agree about
-    /// which way "not bent" is.
+    /// The node's own rotation, as its local down taken through the world
+    /// transform and the same Y flip [`Self::physics_anchor`] applies — a unit
+    /// vector, because one is what names a rotation of the plane.
+    ///
+    /// The chain carries its drawn shape by this, so the spring and
+    /// `link_bends` agree about where the art is; the node's own down is what
+    /// a rotation of `(0, 1)` gives, which is why one vector is enough.
     ///
     /// The `local_only` branch integrates in the parent's frame, where the
-    /// node's own rotation has not been applied, so down there is gravity's
-    /// own direction.
-    ///
-    /// `None` when `id` is not a particle chain.
-    pub(crate) fn chain_down(
+    /// node's own rotation has not been applied, so the shape is carried by
+    /// nothing.
+    pub(crate) fn chain_orient(
         &self,
         transforms: &GlobalTransforms,
         id: NodeIdx,
     ) -> Option<crate::Vec2> {
         let node = self.nodes.get(id.0 as usize)?;
-        let crate::NodeKind::ParticleChain(c) = &node.kind else {
+        let crate::NodeKind::Spine(sp) = &node.kind else {
             return None;
         };
-        if c.local_only {
+        let chain = sp.chain.as_ref()?;
+        if chain.local_only {
             return Some(crate::Vec2::new(0.0, 1.0));
         }
         // The node's local -Y in world (model space is Y-up), then flipped

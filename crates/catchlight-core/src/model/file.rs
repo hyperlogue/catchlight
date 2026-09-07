@@ -70,9 +70,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::formats::clm::{
-    self as clm, ClmBinding, ClmChainLink, ClmComposite, ClmExtension, ClmExtensionBlob,
-    ClmExtensionMarker, ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart,
-    ClmParticleChain, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure, ClmTexture,
+    self as clm, ClmBinding, ClmChain, ClmComposite, ClmExtension, ClmExtensionBlob,
+    ClmExtensionMarker, ClmFile, ClmLinkFeel, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind,
+    ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure, ClmTexture,
     ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
@@ -160,27 +160,25 @@ pub enum ClmLoadError {
     DuplicateWeld { a: String, b: String },
     #[error("param {param:?} has a range that is not finite and increasing")]
     ParamRange { param: String },
-    #[error("particle chain {node:?} carries no links; a chain is at least one link")]
-    ChainNoLinks { node: String },
-    #[error("particle chain {node:?} has a gravity that is not finite and above zero")]
+    #[error(
+        "spine {node:?} carries a chain of {links} links for {joints} joints; a chain is one \
+             link per joint"
+    )]
+    ChainLinkCount {
+        node: String,
+        links: usize,
+        joints: usize,
+    },
+    #[error("spine {node:?} carries a chain whose gravity is not finite and above zero")]
     ChainGravity { node: String },
-    #[error("particle chain {node:?} has a weight that is not finite and at or above zero")]
+    #[error("spine {node:?} carries a chain whose weight is not finite and at or above zero")]
     ChainWeight { node: String },
-    #[error("particle chain {node:?} link {link}: {field} {reason}")]
+    #[error("spine {node:?} chain link {link}: {field} {reason}")]
     ChainLinkField {
         node: String,
         link: usize,
         field: &'static str,
         reason: &'static str,
-    },
-    #[error(
-        "particle chain {node:?} names {outputs} outputs for {links} links; a chain writes one \
-         param per link"
-    )]
-    ChainOutputCount {
-        node: String,
-        outputs: usize,
-        links: usize,
     },
     #[error("spine {node:?} carries no joints; a spine is at least one link")]
     SpineNoJoints { node: String },
@@ -1079,28 +1077,22 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
             length_damping: ph.length_damping,
             output_scale: ph.output_scale,
         }),
-        ModelNodeKind::ParticleChain(chain) => ClmNodeKind::ParticleChain(ClmParticleChain {
-            local_only: chain.local_only,
-            gravity: chain.gravity,
-            weight: chain.weight,
-            links: chain
-                .links()
-                .iter()
-                .map(|link| ClmChainLink {
-                    length: link.length,
-                    gravity_scale: link.gravity_scale,
-                    damping: link.damping,
-                    time_scale: link.time_scale,
-                    stiffness: link.stiffness,
-                })
-                .collect(),
-            // Written in full, never elided: the model's outputs are always as
-            // long as its links, so the shortest encoding would be the one
-            // shape a reader has to reconstruct.
-            outputs: chain.outputs().to_vec(),
-        }),
         ModelNodeKind::Spine(spine) => ClmNodeKind::Spine(ClmSpine {
             joints: spine.joints().to_vec(),
+            chain: spine.chain().map(|c| ClmChain {
+                local_only: c.local_only,
+                gravity: c.gravity,
+                weight: c.weight,
+                links: c
+                    .links()
+                    .iter()
+                    .map(|l| ClmLinkFeel {
+                        gravity_scale: l.gravity_scale,
+                        damping: l.damping,
+                        stiffness: l.stiffness,
+                    })
+                    .collect(),
+            }),
             // Written in full for the reason a chain's outputs are: the
             // model's targets are always as long as its joints, so the
             // shortest encoding would be the one shape a reader has to
@@ -1195,9 +1187,6 @@ fn model_kind(
             physics.output_scale = ph.output_scale;
             ModelNodeKind::SimplePhysics(physics)
         }
-        ClmNodeKind::ParticleChain(c) => {
-            ModelNodeKind::ParticleChain(model_chain(id, c, params, shape)?)
-        }
         ClmNodeKind::Spine(sp) => ModelNodeKind::Spine(model_spine(id, sp, params, shape)?),
     })
 }
@@ -1265,105 +1254,70 @@ fn model_spine(
         }
         spine.targets = sp.targets.clone();
     }
-    Ok(spine)
-}
-
-/// A chain the solver can actually step, or a refusal naming the field.
-///
-/// Every number here is one the solver divides by, damps with, or hangs a rod
-/// on, so a file that gets one wrong does not produce a strange-looking chain
-/// — it produces `NaN` that spreads through the particles and out into the
-/// params the chain drives. Refusing at the door is the only place the bad
-/// value is still attributable to a field of a node.
-fn model_chain(
-    id: &NodeId,
-    c: &ClmParticleChain,
-    params: &HashMap<ParamId, ModelParam>,
-    shape: Shape,
-) -> Result<ModelParticleChain, ModelError> {
-    if c.links.is_empty() {
-        return Err(ClmLoadError::ChainNoLinks {
-            node: id.to_string(),
-        }
-        .into());
-    }
-    let bad = |link: usize, field: &'static str, reason: &'static str| -> ModelError {
-        ClmLoadError::ChainLinkField {
-            node: id.to_string(),
-            link,
-            field,
-            reason,
-        }
-        .into()
-    };
-    for (i, link) in c.links.iter().enumerate() {
-        if !link.length.is_finite() || link.length <= 0.0 {
-            return Err(bad(i, "length", "is not finite and above zero"));
-        }
-        if !link.gravity_scale.is_finite() {
-            return Err(bad(i, "gravity_scale", "is not finite"));
-        }
-        if !link.damping.is_finite() || !(0.0..=1.0).contains(&link.damping) {
-            return Err(bad(i, "damping", "is outside 0..=1"));
-        }
-        if !link.time_scale.is_finite() || link.time_scale <= 0.0 {
-            return Err(bad(i, "time_scale", "is not finite and above zero"));
-        }
-        if !link.stiffness.is_finite() || link.stiffness < 0.0 {
-            return Err(bad(i, "stiffness", "is not finite and at or above zero"));
-        }
-    }
-    if !c.gravity.is_finite() || c.gravity <= 0.0 {
-        return Err(ClmLoadError::ChainGravity {
-            node: id.to_string(),
-        }
-        .into());
-    }
-    if !c.weight.is_finite() || c.weight < 0.0 {
-        return Err(ClmLoadError::ChainWeight {
-            node: id.to_string(),
-        }
-        .into());
-    }
-    let mut chain = ModelParticleChain::new(
-        c.links
-            .iter()
-            .map(|link| crate::physics::ChainLink {
-                length: link.length,
-                gravity_scale: link.gravity_scale,
-                damping: link.damping,
-                time_scale: link.time_scale,
-                stiffness: link.stiffness,
-            })
-            .collect(),
-    );
-    // `#[serde(default)]` gives an empty Vec, which is also what a file that
-    // hooks up no link writes; both mean the same thing, and the length the
-    // model holds is not the file's to leave off.
-    if !c.outputs.is_empty() {
-        if c.outputs.len() != c.links.len() {
-            return Err(ClmLoadError::ChainOutputCount {
+    if let Some(c) = &sp.chain {
+        // Every number here is one the solver divides by, damps with, or hangs
+        // a rod on, so a file that gets one wrong does not produce a
+        // strange-looking chain — it produces `NaN` that spreads through the
+        // particles and out into the params the spine reads. Refusing at the
+        // door is the only place the bad value is still attributable to a
+        // field of a node.
+        if c.links.len() != sp.joints.len() {
+            return Err(ClmLoadError::ChainLinkCount {
                 node: id.to_string(),
-                outputs: c.outputs.len(),
                 links: c.links.len(),
+                joints: sp.joints.len(),
             }
             .into());
         }
-        for target in c.outputs.iter().flatten() {
-            if !params.contains_key(target) && !shape.allows_dangling() {
-                return Err(ClmLoadError::DanglingParam {
-                    owner: format!("particle chain {id}"),
-                    id: target.to_string(),
-                }
-                .into());
+        if !c.gravity.is_finite() || c.gravity <= 0.0 {
+            return Err(ClmLoadError::ChainGravity {
+                node: id.to_string(),
+            }
+            .into());
+        }
+        if !c.weight.is_finite() || c.weight < 0.0 {
+            return Err(ClmLoadError::ChainWeight {
+                node: id.to_string(),
+            }
+            .into());
+        }
+        let bad = |link: usize, field: &'static str, reason: &'static str| -> ModelError {
+            ClmLoadError::ChainLinkField {
+                node: id.to_string(),
+                link,
+                field,
+                reason,
+            }
+            .into()
+        };
+        for (i, link) in c.links.iter().enumerate() {
+            if !link.gravity_scale.is_finite() {
+                return Err(bad(i, "gravity_scale", "is not finite"));
+            }
+            if !link.damping.is_finite() || !(0.0..=1.0).contains(&link.damping) {
+                return Err(bad(i, "damping", "is outside 0..=1"));
+            }
+            if !link.stiffness.is_finite() || link.stiffness < 0.0 {
+                return Err(bad(i, "stiffness", "is not finite and at or above zero"));
             }
         }
-        chain.outputs = c.outputs.clone();
+        let mut chain = ModelChain::new(c.links.len());
+        chain.local_only = c.local_only;
+        chain.gravity = c.gravity;
+        chain.weight = c.weight;
+        chain.set_links(
+            c.links
+                .iter()
+                .map(|l| LinkFeel {
+                    gravity_scale: l.gravity_scale,
+                    damping: l.damping,
+                    stiffness: l.stiffness,
+                })
+                .collect(),
+        );
+        spine.set_chain(Some(chain));
     }
-    chain.local_only = c.local_only;
-    chain.gravity = c.gravity;
-    chain.weight = c.weight;
-    Ok(chain)
+    Ok(spine)
 }
 
 fn model_masks(
@@ -2203,149 +2157,6 @@ mod tests {
         }
     }
 
-    /// A chain the file describes badly: every number the solver would divide
-    /// by, damp with, or hang a rod on gets its own refusal, and each names
-    /// the node and the field so the report is actionable.
-    #[test]
-    fn a_malformed_particle_chain_is_a_structured_error() {
-        fn chain_file(build: impl FnOnce(&mut ClmParticleChain)) -> (ClmFile, String) {
-            let mut file = sample().to_clm_file().unwrap();
-            let param = file.doc.params[0].id.clone();
-            let mut chain = ClmParticleChain {
-                local_only: false,
-                gravity: 9.8,
-                weight: 1.0,
-                links: vec![
-                    ClmChainLink {
-                        length: 60.0,
-                        gravity_scale: 1.0,
-                        damping: 0.5,
-                        time_scale: 1.0,
-                        stiffness: 0.0,
-                    },
-                    ClmChainLink {
-                        length: 50.0,
-                        gravity_scale: 1.0,
-                        damping: 0.5,
-                        time_scale: 1.0,
-                        stiffness: 0.0,
-                    },
-                ],
-                outputs: vec![Some(param), None],
-            };
-            build(&mut chain);
-            let root = file.doc.nodes[0].id.clone();
-            let id = NodeId::new("root/chain-00000001").unwrap();
-            file.doc.nodes.push(ClmNode {
-                id: id.clone(),
-                parent: Some(root),
-                name: "hair".into(),
-                enabled: true,
-                z_order: 0.0,
-                transform: ClmTransform::default(),
-                lock_to_root: false,
-                kind: ClmNodeKind::ParticleChain(chain),
-            });
-            (file, id.to_string())
-        }
-
-        // The well-formed one loads, so every failure below is the one edit.
-        let (ok, _) = chain_file(|_| {});
-        assert!(Model::from_clm_file(&ok).is_ok(), "the base case loads");
-
-        let (file, node) = chain_file(|c| c.links.clear());
-        assert_eq!(load_err(&file), ClmLoadError::ChainNoLinks { node });
-
-        let (file, node) = chain_file(|c| c.gravity = 0.0);
-        assert_eq!(load_err(&file), ClmLoadError::ChainGravity { node });
-
-        let (file, node) = chain_file(|c| c.gravity = f32::NAN);
-        assert_eq!(load_err(&file), ClmLoadError::ChainGravity { node });
-
-        // A weight is authority and not a scale, so zero is a chain that
-        // asserts nothing rather than a broken one; only the negative and the
-        // non-numeric are refused.
-        let (ok, _) = chain_file(|c| c.weight = 0.0);
-        assert!(
-            Model::from_clm_file(&ok).is_ok(),
-            "weight 0 is a chain that \
-             simulates and claims nothing"
-        );
-
-        let (file, node) = chain_file(|c| c.weight = -1.0);
-        assert_eq!(load_err(&file), ClmLoadError::ChainWeight { node });
-
-        let (file, node) = chain_file(|c| c.weight = f32::NAN);
-        assert_eq!(load_err(&file), ClmLoadError::ChainWeight { node });
-
-        /// One way to break a link, and the refusal it has to produce.
-        type BreakLink = (fn(&mut ClmParticleChain), &'static str, &'static str);
-        let cases: [BreakLink; 8] = [
-            (
-                |c| c.links[1].length = 0.0,
-                "length",
-                "is not finite and above zero",
-            ),
-            (
-                |c| c.links[1].length = f32::INFINITY,
-                "length",
-                "is not finite and above zero",
-            ),
-            (
-                |c| c.links[1].gravity_scale = f32::NAN,
-                "gravity_scale",
-                "is not finite",
-            ),
-            (|c| c.links[1].damping = 1.5, "damping", "is outside 0..=1"),
-            (|c| c.links[1].damping = -0.1, "damping", "is outside 0..=1"),
-            (
-                |c| c.links[1].time_scale = 0.0,
-                "time_scale",
-                "is not finite and above zero",
-            ),
-            (
-                |c| c.links[1].stiffness = -1.0,
-                "stiffness",
-                "is not finite and at or above zero",
-            ),
-            (
-                |c| c.links[1].stiffness = f32::NAN,
-                "stiffness",
-                "is not finite and at or above zero",
-            ),
-        ];
-        for (break_it, field, reason) in cases {
-            let (file, node) = chain_file(break_it);
-            assert_eq!(
-                load_err(&file),
-                ClmLoadError::ChainLinkField {
-                    node,
-                    link: 1,
-                    field,
-                    reason,
-                },
-                "{field} {reason}"
-            );
-        }
-
-        let (file, node) = chain_file(|c| c.outputs.pop().map(|_| ()).unwrap_or_default());
-        assert_eq!(
-            load_err(&file),
-            ClmLoadError::ChainOutputCount {
-                node,
-                outputs: 1,
-                links: 2,
-            }
-        );
-
-        let (file, _) = chain_file(|c| c.outputs[0] = Some(ParamId::new("gone").unwrap()));
-        assert!(matches!(
-            load_err(&file),
-            ClmLoadError::DanglingParam { owner, id }
-                if owner.starts_with("particle chain") && id == "gone"
-        ));
-    }
-
     /// A spine the file describes badly: no joints, a coordinate that is not
     /// a number, a joint repeating the point above it, and a target list of
     /// the wrong length. Each names the node and the joint.
@@ -2357,6 +2168,7 @@ mod tests {
             let mut spine = ClmSpine {
                 joints: vec![[0.0, -50.0], [0.0, -100.0]],
                 targets: vec![Some(param), None],
+                chain: None,
             };
             build(&mut spine);
             let root = file.doc.nodes[0].id.clone();
@@ -2423,6 +2235,85 @@ mod tests {
             ClmLoadError::DanglingParam { ref owner, ref id }
                 if owner.starts_with("spine") && id == "gone"
         ));
+
+        // And the chain it may carry: one feel per joint, and every knob in
+        // the range the solver can step.
+        let chain = |links: usize| ClmChain {
+            local_only: false,
+            gravity: 1.0,
+            weight: 1.0,
+            links: vec![
+                ClmLinkFeel {
+                    gravity_scale: 1.0,
+                    damping: 0.5,
+                    stiffness: 0.0,
+                };
+                links
+            ],
+        };
+        let (ok, _) = spine_file(|sp| sp.chain = Some(chain(2)));
+        assert!(
+            Model::from_clm_file(&ok).is_ok(),
+            "a well-formed chain loads"
+        );
+
+        let (file, node) = spine_file(|sp| sp.chain = Some(chain(1)));
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::ChainLinkCount {
+                node,
+                links: 1,
+                joints: 2,
+            }
+        );
+
+        let (file, node) = spine_file(|sp| {
+            let mut c = chain(2);
+            c.gravity = 0.0;
+            sp.chain = Some(c);
+        });
+        assert_eq!(load_err(&file), ClmLoadError::ChainGravity { node });
+
+        let (file, node) = spine_file(|sp| {
+            let mut c = chain(2);
+            c.weight = f32::NAN;
+            sp.chain = Some(c);
+        });
+        assert_eq!(load_err(&file), ClmLoadError::ChainWeight { node });
+
+        /// One way to break a link's feel, and the refusal it has to produce.
+        type BreakFeel = (fn(&mut ClmChain), &'static str, &'static str);
+        let cases: [BreakFeel; 4] = [
+            (
+                |c| c.links[1].gravity_scale = f32::NAN,
+                "gravity_scale",
+                "is not finite",
+            ),
+            (|c| c.links[1].damping = 1.5, "damping", "is outside 0..=1"),
+            (|c| c.links[1].damping = -0.1, "damping", "is outside 0..=1"),
+            (
+                |c| c.links[1].stiffness = -1.0,
+                "stiffness",
+                "is not finite and at or above zero",
+            ),
+        ];
+        for (break_it, field, reason) in cases {
+            let (file, node) = spine_file(|sp| {
+                let mut c = chain(2);
+                break_it(&mut c);
+                sp.chain = Some(c);
+            });
+            assert_eq!(
+                load_err(&file),
+                ClmLoadError::ChainLinkField {
+                    node,
+                    link: 1,
+                    field,
+                    reason,
+                },
+                "breaking {field}",
+            );
+        }
     }
 
     /// A file with no `targets` key at all is a spine every link of which is
@@ -2445,6 +2336,7 @@ mod tests {
                 joints: vec![[0.0, -40.0], [0.0, -80.0], [10.0, -120.0]],
                 // What `#[serde(default)]` hands the reader for an absent key.
                 targets: Vec::new(),
+                chain: None,
             }),
         });
 
@@ -2462,88 +2354,23 @@ mod tests {
         assert_eq!(spine.joints(), [[0.0, -40.0], [0.0, -80.0], [10.0, -120.0]]);
     }
 
-    /// A file with no `outputs` key at all is a chain that drives nothing —
-    /// and the model still holds one slot per link, because that length is not
-    /// the file's to leave off.
-    #[test]
-    fn a_chain_with_no_outputs_key_loads_one_slot_per_link() {
-        let mut file = sample().to_clm_file().unwrap();
-        let root = file.doc.nodes[0].id.clone();
-        let id = NodeId::new("root/chain-00000002").unwrap();
-        file.doc.nodes.push(ClmNode {
-            id: id.clone(),
-            parent: Some(root),
-            name: "hair".into(),
-            enabled: true,
-            z_order: 0.0,
-            transform: ClmTransform::default(),
-            lock_to_root: false,
-            kind: ClmNodeKind::ParticleChain(ClmParticleChain {
-                local_only: false,
-                gravity: 9.8,
-                weight: 1.0,
-                links: vec![
-                    ClmChainLink {
-                        length: 60.0,
-                        gravity_scale: 1.0,
-                        damping: 0.5,
-                        time_scale: 1.0,
-                        stiffness: 0.0,
-                    },
-                    ClmChainLink {
-                        length: 50.0,
-                        gravity_scale: 1.0,
-                        damping: 0.5,
-                        time_scale: 1.0,
-                        stiffness: 0.0,
-                    },
-                    ClmChainLink {
-                        length: 40.0,
-                        gravity_scale: 1.0,
-                        damping: 0.5,
-                        time_scale: 1.0,
-                        stiffness: 0.0,
-                    },
-                ],
-                // What `#[serde(default)]` hands the reader for an absent key.
-                outputs: Vec::new(),
-            }),
-        });
-
-        let model = Model::from_clm_file(&file).unwrap();
-        let ModelNodeKind::ParticleChain(chain) = &model.node(&id).unwrap().kind else {
-            panic!("the chain came back as another kind");
-        };
-        assert_eq!(chain.outputs(), [None, None, None]);
-        // And the model's own writer fills the key in from then on.
-        let round_tripped = Model::from_clm_bytes(&model.to_clm_bytes().unwrap()).unwrap();
-        let ModelNodeKind::ParticleChain(chain) = &round_tripped.node(&id).unwrap().kind else {
-            panic!("the chain came back as another kind");
-        };
-        assert_eq!(chain.outputs(), [None, None, None]);
-    }
-
-    /// A link written before the bend spring existed has no `stiffness` key,
-    /// and reads back as the unsprung link it describes. The key is additive
-    /// under the format's CBOR-map rule, which is why no version bump goes
-    /// with it; `clm_roundtrip` is where a written one makes the trip back.
+    /// A chain map written before a chain could hold back has no `weight`
+    /// key, and reads back as the full-authority chain it describes. The key
+    /// is additive under the format's CBOR-map rule, which is why no version
+    /// bump goes with it.
     #[test]
     fn a_chain_map_without_weight_reads_as_full_authority() {
-        /// A chain map as it was written before a chain could hold back: the
-        /// same keys, in the same order, and nothing else.
+        /// A chain map without the key: the same fields, in the same order.
         #[derive(serde::Serialize)]
         struct ChainBeforeTheWeight {
             local_only: bool,
             gravity: f32,
-            links: Vec<ClmChainLink>,
-            outputs: Vec<Option<ParamId>>,
+            links: Vec<ClmLinkFeel>,
         }
 
-        let links = vec![ClmChainLink {
-            length: 60.0,
+        let links = vec![ClmLinkFeel {
             gravity_scale: 1.0,
             damping: 0.5,
-            time_scale: 1.0,
             stiffness: 0.0,
         }];
         let mut bytes = Vec::new();
@@ -2552,56 +2379,18 @@ mod tests {
                 local_only: false,
                 gravity: 9.8,
                 links: links.clone(),
-                outputs: vec![None],
             },
             &mut bytes,
         )
         .unwrap();
-        let chain: ClmParticleChain = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let chain: ClmChain = ciborium::from_reader(bytes.as_slice()).unwrap();
         assert_eq!(
             chain,
-            ClmParticleChain {
+            ClmChain {
                 local_only: false,
                 gravity: 9.8,
                 weight: 1.0,
                 links,
-                outputs: vec![None],
-            },
-        );
-    }
-
-    #[test]
-    fn a_link_map_without_stiffness_reads_as_unsprung() {
-        /// A link map as it was written before there was a spring: the same
-        /// four keys, in the same order, and nothing else.
-        #[derive(serde::Serialize)]
-        struct LinkBeforeTheSpring {
-            length: f32,
-            gravity_scale: f32,
-            damping: f32,
-            time_scale: f32,
-        }
-
-        let mut bytes = Vec::new();
-        ciborium::into_writer(
-            &LinkBeforeTheSpring {
-                length: 60.0,
-                gravity_scale: 1.0,
-                damping: 0.5,
-                time_scale: 1.0,
-            },
-            &mut bytes,
-        )
-        .unwrap();
-        let link: ClmChainLink = ciborium::from_reader(bytes.as_slice()).unwrap();
-        assert_eq!(
-            link,
-            ClmChainLink {
-                length: 60.0,
-                gravity_scale: 1.0,
-                damping: 0.5,
-                time_scale: 1.0,
-                stiffness: 0.0,
             },
         );
     }

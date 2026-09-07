@@ -42,7 +42,7 @@ sure all potential changes can be verified in a tight feedback loop.
 
 | Crate | What it is |
 | --- | --- |
-| `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, slots and welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
+| `catchlight-core` | The model and the runtime: `Model` and its Ids, params/bindings, deform stacks, mesh groups, spines and the chains they carry, slots and welds, physics, addons, animations, `Puppet`, and the `.clm` format. No GPU, wasm-safe. |
 | `catchlight-import-inx` | One-time import of inochi2d `.inx` / `.inp` into a `Model`. Depends on core, never the reverse; wasm-safe. |
 | `catchlight-cli` | The command line over a `.clm`: the file ops (patch a field, swap a texture, extract or merge an addon, list its requirements, diff two files, read or write a vendor `extension`; no image is decoded) plus inspection — `render` draws the model headless and prints its render list, `isolate` draws named parts alone as straight-alpha art, `poses` dumps every key pose as CBOR. Never depends on the editor server, its protocol, or a client of either. |
 | `catchlight-wgpu` | The wgpu rendering backend. `render_cache` holds the GPU copy of a model, one per model serving every puppet of it; `collect` flattens a posed puppet into a `RenderList`; `renderer` draws a frame of them. |
@@ -131,11 +131,13 @@ that enforces them, not here. Add new ones there.
   hot loops never look up
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translate_children`
 - `crates/catchlight-core/src/spine.rs` — bend 0 is the art, how the joint
-  rotations compose, where the pass runs and what its descent halts at, and
-  that the per-vertex assignment comes from rest geometry
+  rotations compose, where the pass runs and what its descent halts at, that
+  the per-vertex assignment comes from rest geometry, and the chain it may
+  carry
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down
-  frame, the chain's position-based form, what a link bend's sign means, what
-  a link's bend spring pulls toward, an anchor that crosses a frame rather
+  frame, the chain's position-based form, what a link bend's sign means, why the
+  drawing is the equilibrium and the spring is fitted to make it one, an
+  anchor that crosses a frame rather
   than jumping at its first substep, and what a link's damping is measured
   against
 - `crates/catchlight-core/src/interpolate.rs` — how a binding's grid is read
@@ -175,9 +177,8 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
   undo budget, an observer never runs under a lock, bytes never enter except
   inside the command that uses them, each session draws its own
-  Ids, the editor traces a part's alpha, a fit and the bindings it authors
-  share one frame, an extension is carried and never
-  interpreted; `query.rs` — one
+  Ids, the editor traces a part's alpha, a fit moves nothing the part
+  draws, an extension is carried and never interpreted; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the HTTP
   transport, why loopback is not a permission, the token before the body,
   bytes cross on `POST /request` and nowhere else, a byte extension is fetched

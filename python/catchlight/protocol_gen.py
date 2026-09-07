@@ -1461,79 +1461,6 @@ class PhysicsAdd:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ChainAdd:
-    """Add a particle chain node.
-
-    The chain is `links` links long and drives one param per link, in link
-    order; [`Command::ChainFit`] is the one call that makes the params and
-    the art's bindings as well. Empty `links` is refused — a chain of no
-    links has no bend to read out.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "chain_add"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    parent: NodeId
-    name: str | None = None
-    # Root to tip. Each link's absent fields are the editor's own
-    # defaults; see [`ChainLinkArg`].
-    links: list[ChainLinkArg]
-    local_only: bool | None = None
-    gravity: float | None = None
-    # How much the chain's solve decides the params it writes, against
-    # what the caller posed: finite and at or above zero, 1 the whole
-    # say and 0 none of it. Absent is the editor's own default, 1.
-    weight: float | None = None
-    # One param per link, in link order, `None` where a link drives
-    # nothing. Absent binds none; present, it must be exactly as long as
-    # `links`.
-    outputs: list[ParamId | None] | None = None
-    # The Id to create it under. Absent generates one; an Id the model
-    # already carries is [`ErrorCode::DuplicateId`].
-    node: NodeId | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class ChainSet:
-    """Change fields on a particle chain node; absent = unchanged.
-
-    `links` and `outputs` in one command apply in that order, so `outputs`
-    is measured against the length `links` just set rather than the one it
-    replaced.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "chain_set"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    node: NodeId
-    # The whole chain, root to tip. Outputs follow the new length: a
-    # link past the new end loses its param, a new link arrives driving
-    # nothing.
-    links: list[ChainLinkArg] | None = None
-    local_only: bool | None = None
-    gravity: float | None = None
-    # [`Command::ChainAdd`]'s, and refused the same way.
-    weight: float | None = None
-    # One param per link, exactly as long as the chain is after `links`
-    # is applied.
-    outputs: list[ParamId | None] | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class SpineAdd:
     """Add a spine node.
 
@@ -1550,12 +1477,16 @@ class SpineAdd:
 
     session: SessionId
     parent: NodeId
+    name: str | None = None
     # The far end of each link, in the node's own space, root to tip.
     # `joints[0]` ends the link that starts at the node itself.
     joints: list[tuple[float, float]]
     # One param per link, in link order, `None` where a link is rigid.
     # Absent binds none; present, it must be exactly as long as `joints`.
     targets: list[ParamId | None] | None = None
+    # The particle chain to hang on it. Absent is a spine that only
+    # reads its params.
+    chain: ChainArg | None = None
     # The Id to create it under. Absent generates one; an Id the model
     # already carries is [`ErrorCode::DuplicateId`].
     node: NodeId | None = None
@@ -1587,6 +1518,11 @@ class SpineSet:
     # One param per link, exactly as long as the spine is after `joints`
     # is applied.
     targets: list[ParamId | None] | None = None
+    # The chain, in three states: absent leaves it as it is, `null`
+    # takes it off, a value replaces it. The merge-patch idiom
+    # [`NodePatch::texture`] already uses, and the only shape that can
+    # say "remove" and "leave alone" in one optional field.
+    chain: ChainArg | Clear | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1594,29 +1530,32 @@ class SpineSet:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ChainFit:
-    """Rig a strand of art to a particle chain in one edit: the params, the
-    chain, and the deform bindings that bend the art.
+class SpineFit:
+    """Rig a strand of art to a spine in one edit: the spine, the params it
+    reads, and the chain that may drive them.
 
     The editor measures the strand, because measuring it is reading the
-    part's rest mesh and deciding where each link's joint falls — the same
-    reason [`Command::MeshAuto`] traces here rather than in a client. What
-    it authors is ordinary: params a [`Command::ParamSet`] can retune,
-    deform bindings a rigger can open and edit by hand, and a chain
-    [`Command::ChainSet`] can reshape.
+    part's rest mesh and deciding where each joint falls — the same reason
+    [`Command::MeshAuto`] traces here rather than in a client. What it
+    authors is ordinary: a spine [`Command::SpineSet`] can reshape and
+    params a [`Command::ParamSet`] can retune. It authors **no bindings**:
+    a spine turns the art by composing its joints, so there is nothing to
+    key.
 
-    Re-runnable: naming `chain` fits the same strand again, keeping that
-    chain's params and replacing the bindings below them.
+    **The spine goes between the part and its parent**, and the part keeps
+    the world placement it had. Re-fitting a part whose parent is already a
+    spine re-measures that spine instead of nesting another, keeps every
+    chain knob, and keeps the params where the count still matches.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "chain_fit"
+    TAG: ClassVar[str] = "spine_fit"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
     # The part whose rest mesh is measured. The fit reads its vertices
-    # and nothing else — no pose, no key form, no binding.
+    # and nothing else — no pose, no binding.
     part: NodeId
     # How many links to divide the art into. Zero is refused.
     links: int
@@ -1624,15 +1563,12 @@ class ChainFit:
     # straight down; the vector is normalised, and one too short to
     # normalise is refused.
     axis: tuple[float, float] | None = None
-    # The meshed node the deform bindings are written on. Absent is
-    # `part` itself.
-    on: NodeId | None = None
-    # An existing particle chain to re-fit instead of making one. Its
-    # output params are kept and its links resized.
-    chain: NodeId | None = None
-    # The Id to create the chain under, when one is being created.
-    # Ignored when `chain` names one that already exists.
+    # The Id to create the spine under, when one is being created.
     node: NodeId | None = None
+    name: str | None = None
+    # The chain to hang on it. Absent leaves an existing spine's chain
+    # alone and gives a fresh one none.
+    chain: ChainArg | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1996,11 +1932,9 @@ Command = (
     | WeldSet
     | WeldDelete
     | PhysicsAdd
-    | ChainAdd
-    | ChainSet
     | SpineAdd
     | SpineSet
-    | ChainFit
+    | SpineFit
     | Undo
     | Redo
     | PresenceSet
@@ -2077,11 +2011,9 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "weld_set": WeldSet,
     "weld_delete": WeldDelete,
     "physics_add": PhysicsAdd,
-    "chain_add": ChainAdd,
-    "chain_set": ChainSet,
     "spine_add": SpineAdd,
     "spine_set": SpineSet,
-    "chain_fit": ChainFit,
+    "spine_fit": SpineFit,
     "undo": Undo,
     "redo": Redo,
     "presence_set": PresenceSet,
@@ -2171,11 +2103,9 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "weld_set": CommandKind.EDIT,
     "weld_delete": CommandKind.EDIT,
     "physics_add": CommandKind.EDIT,
-    "chain_add": CommandKind.EDIT,
-    "chain_set": CommandKind.EDIT,
     "spine_add": CommandKind.EDIT,
     "spine_set": CommandKind.EDIT,
-    "chain_fit": CommandKind.EDIT,
+    "spine_fit": CommandKind.EDIT,
     "undo": CommandKind.EDIT,
     "redo": CommandKind.EDIT,
     "presence_set": CommandKind.PRESENCE,
@@ -2296,11 +2226,9 @@ EditCommand = (
     | WeldSet
     | WeldDelete
     | PhysicsAdd
-    | ChainAdd
-    | ChainSet
     | SpineAdd
     | SpineSet
-    | ChainFit
+    | SpineFit
     | Undo
     | Redo
     | ImportFile
@@ -2377,7 +2305,6 @@ class NodeKind(StrEnum):
     COMPOSITE = "composite"
     MESH_GROUP = "mesh_group"
     PHYSICS = "physics"
-    PARTICLE_CHAIN = "particle_chain"
     SPINE = "spine"
 
 
@@ -2560,9 +2487,8 @@ class PhysicsTargets:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ChainLinkArg:
-    """One link of a particle chain, as a command names it and a reply reports
-    it.
+class LinkFeelArg:
+    """One link's feel in a [`ChainArg`].
 
     **Every field is optional, and none of the defaults are written here.**
     They live in `catchlight-core` beside the solver that reads them, the way
@@ -2570,22 +2496,42 @@ class ChainLinkArg:
     from what a chain actually does; absent means "what the editor would have
     used". `{}` is a link at every default.
 
+    No length and no clock: a link spans two of the spine's joints, so its
+    length is the drawing's, and a constant time scale is exactly a rescaling
+    of the three knobs that are here.
+
     A reply fills every one of them in, so a client can read a chain out of
-    [`NodeInfo::chain`], change one number, and send the list straight back
-    through [`Command::ChainSet`].
+    [`SpineInfo::chain`], change one number, and send the list straight back
+    through [`Command::SpineSet`].
     """
 
-    # Fixed length in model pixels.
-    length: float | None = None
     # Multiplier on the chain's gravity for this link's particle.
     gravity_scale: float | None = None
     # Fraction of velocity shed per second, `0..=1`.
     damping: float | None = None
-    # Multiplier on this link's clock; 1 is real time.
-    time_scale: float | None = None
-    # Frequency in Hz of the spring pulling this link's bend back to zero;
-    # 0 is no spring.
+    # Frequency in Hz of the spring on this link's bend; 0 is no spring.
     stiffness: float | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ChainArg:
+    """The particle chain a spine carries, as a command names it.
+
+    Absent fields are the core's own defaults, and `links` absent is one
+    default feel per joint — so `{}` is "simulate this spine, and feel like
+    hair". A list of another length than the spine's joints is fitted to it by
+    repeating its last entry, because a rigger who tuned a strand and then
+    added a joint wants the new one to feel like the strand.
+    """
+
+    # Integrate in the parent's frame rather than the world's.
+    local_only: bool | None = None
+    # A multiple of the model's own gravity; 1 hangs under one g.
+    gravity: float | None = None
+    # How much of the params the solve decides, against what was posed.
+    weight: float | None = None
+    # One per joint, root to tip.
+    links: list[LinkFeelArg] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3406,28 +3352,23 @@ class ResponseBodyEmptied:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ResponseBodyChainFit:
-    """What a [`Command::ChainFit`] authored.
+class ResponseBodySpineFit:
+    """What a [`Command::SpineFit`] authored.
 
-    `replaced` is the [`Emptied`](Self::Emptied) half of this reply: a
-    re-fit rewrites the deform binding under each param, and a rigger who
-    had hand-edited one has just lost that edit. Naming them is what lets
-    a client say so, rather than leaving the loss to be discovered.
+    `warnings` is the fit telling the rigger what the physics cannot do:
+    a limp weighted link drawn off gravity settles along gravity and not
+    along the art, and saying so beats a strand that quietly falls out of
+    its pose. Empty when the drawing is one the chain can hold.
     """
 
     TAG_FIELD: ClassVar[str] = "result"
-    TAG: ClassVar[str] = "chain_fit"
+    TAG: ClassVar[str] = "spine_fit"
 
-    # The particle chain, whether this call made it or re-fitted one.
+    # The spine, whether this call made it or re-fitted one.
     node: NodeId
-    # The param driving each link, in link order.
+    # The param each link's bend is read from, in link order.
     params: list[ParamId]
-    # The node the deform bindings were written on — `part` unless the
-    # command named another.
-    bound: NodeId
-    # The params whose deform binding on `bound` already existed and was
-    # rewritten, in link order.
-    replaced: list[ParamId] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -3436,8 +3377,6 @@ class ResponseBodyChainFit:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodyExtensions:
-    """Every extension the model carries, in key order."""
-
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "extensions"
 
@@ -3487,7 +3426,7 @@ ResponseBody = (
     | ResponseBodyWelds
     | ResponseBodyUnfilledSlots
     | ResponseBodyEmptied
-    | ResponseBodyChainFit
+    | ResponseBodySpineFit
     | ResponseBodyExtensions
     | ResponseBodyExtension
 )
@@ -3514,7 +3453,7 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "welds": ResponseBodyWelds,
     "unfilled_slots": ResponseBodyUnfilledSlots,
     "emptied": ResponseBodyEmptied,
-    "chain_fit": ResponseBodyChainFit,
+    "spine_fit": ResponseBodySpineFit,
     "extensions": ResponseBodyExtensions,
     "extension": ResponseBodyExtension,
 }
@@ -3632,10 +3571,10 @@ class NodeInfo:
     reply has nothing to undo, so it never carries the `null` a patch spells
     "draw none" with.
 
-    The two driver kinds carry their settings nested, in [`NodeInfo::physics`]
-    and [`NodeInfo::chain`], because a driver's fields belong to no
-    [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::ChainSet`] are what
-    write them. The round-trip rule is the same one: each nested field carries
+    A pendulum and a spine carry their settings nested, in
+    [`NodeInfo::physics`] and [`NodeInfo::spine`], because those fields belong
+    to no [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::SpineSet`] are
+    what write them. The round-trip rule is the same one: each nested field carries
     the name its own command sets it under, so an inspector reads a value here
     and sends it straight back.
     """
@@ -3675,8 +3614,6 @@ class NodeInfo:
     mg_translate_children: bool | None = None
     # A SimplePhysics driver's settings, absent on every other kind.
     physics: PhysicsInfo | None = None
-    # A particle chain's settings, absent on every other kind.
-    chain: ChainInfo | None = None
     # A spine's settings, absent on every other kind.
     spine: SpineInfo | None = None
 
@@ -3702,24 +3639,6 @@ class PhysicsInfo:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ChainInfo:
-    """A particle chain in full, under the names [`Command::ChainSet`] sets them
-    by.
-
-    `links` and `outputs` are always the same length: a chain reads out as one
-    bend per link, and a link driving nothing is a `null` in `outputs`. Every
-    field of every link is filled in, so the whole list travels back through
-    [`Command::ChainSet`] unchanged.
-    """
-
-    local_only: bool
-    gravity: float
-    weight: float
-    links: list[ChainLinkArg]
-    outputs: list[ParamId | None]
-
-
-@dataclass(frozen=True, kw_only=True)
 class SpineInfo:
     """A spine in full, under the names [`Command::SpineSet`] sets them by.
 
@@ -3730,6 +3649,10 @@ class SpineInfo:
 
     joints: list[tuple[float, float]]
     targets: list[ParamId | None]
+    # The particle chain the spine carries, absent for a spine that only
+    # reads its params. Every field filled in, so the whole thing travels
+    # back through [`Command::SpineSet`] unchanged.
+    chain: ChainArg | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3895,11 +3818,9 @@ __all__ = [
     "WeldSet",
     "WeldDelete",
     "PhysicsAdd",
-    "ChainAdd",
-    "ChainSet",
     "SpineAdd",
     "SpineSet",
-    "ChainFit",
+    "SpineFit",
     "Undo",
     "Redo",
     "PresenceSet",
@@ -3937,7 +3858,8 @@ __all__ = [
     "BindingTarget",
     "NodePatch",
     "PhysicsTargets",
-    "ChainLinkArg",
+    "LinkFeelArg",
+    "ChainArg",
     "AutoMeshContour",
     "AutoMeshGrid",
     "AutoMesh",
@@ -3998,7 +3920,7 @@ __all__ = [
     "ResponseBodyWelds",
     "ResponseBodyUnfilledSlots",
     "ResponseBodyEmptied",
-    "ResponseBodyChainFit",
+    "ResponseBodySpineFit",
     "ResponseBodyExtensions",
     "ResponseBodyExtension",
     "ResponseBody",
@@ -4014,7 +3936,6 @@ __all__ = [
     "TreeNode",
     "NodeInfo",
     "PhysicsInfo",
-    "ChainInfo",
     "SpineInfo",
     "TexInfo",
     "ParamInfo",

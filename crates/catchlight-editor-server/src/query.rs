@@ -192,9 +192,9 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
 /// ignored. So what comes back is exactly what a `node_set` on this node
 /// would keep.
 ///
-/// A driver's own settings are nested rather than flattened, in
-/// [`NodeInfo::physics`] and [`NodeInfo::chain`], because no `node_set` writes
-/// them: the round-trip they answer is to `physics_set` and `chain_set`, whose
+/// A pendulum's and a spine's own settings are nested rather than flattened,
+/// in [`NodeInfo::physics`] and [`NodeInfo::spine`], because no `node_set`
+/// writes them: the round-trip they answer is to `physics_set` and `spine_set`, whose
 /// field names they carry.
 fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
     // The colour a drawable carries. A group, mesh group or physics node is
@@ -278,20 +278,11 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             }
             _ => None,
         },
-        chain: match &node.kind {
-            ModelNodeKind::ParticleChain(chain) => Some(ChainInfo {
-                local_only: chain.local_only,
-                gravity: chain.gravity,
-                weight: chain.weight,
-                links: chain.links().iter().map(ChainLinkArg::of).collect(),
-                outputs: chain.outputs().to_vec(),
-            }),
-            _ => None,
-        },
         spine: match &node.kind {
             ModelNodeKind::Spine(spine) => Some(SpineInfo {
                 joints: spine.joints().to_vec(),
                 targets: spine.targets().to_vec(),
+                chain: spine.chain().map(ChainArg::of),
             }),
             _ => None,
         },

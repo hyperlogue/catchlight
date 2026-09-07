@@ -174,7 +174,6 @@ pub enum NodeKind {
     Composite(Box<CompositeData>),
     MeshGroup(Box<MeshGroupData>),
     SimplePhysics(Box<crate::physics::SimplePhysicsData>),
-    ParticleChain(Box<crate::physics::ParticleChainData>),
     Spine(Box<crate::spine::SpineData>),
 }
 
@@ -291,6 +290,19 @@ impl Default for Transform {
             translation: Vec3::ZERO,
             rotation: Vec3::ZERO,
             scale: Vec2::ONE,
+        }
+    }
+}
+
+impl From<&crate::formats::clm::ClmTransform> for Transform {
+    /// The authored transform as the runtime holds it. One conversion, so a
+    /// caller that needs a node's matrix outside a bake — the editor, sizing
+    /// up a fit — composes exactly what the bake would have.
+    fn from(t: &crate::formats::clm::ClmTransform) -> Self {
+        Self {
+            translation: Vec3::from(t.translation),
+            rotation: Vec3::from(t.rotation),
+            scale: Vec2::new(t.scale[0], t.scale[1]),
         }
     }
 }

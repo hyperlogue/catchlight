@@ -38,10 +38,10 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChainLink, ClmComposite,
-    ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
-    ClmNodeKind, ClmParam, ClmPart, ClmParticleChain, ClmSimplePhysics, ClmSlot, ClmSlotPair,
-    ClmSpine, ClmStructure, ClmTransform, ClmWeld,
+    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChain, ClmComposite, ClmFile,
+    ClmIndices, ClmKeyframe, ClmLane, ClmLinkFeel, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
+    ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure,
+    ClmTransform, ClmWeld,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
@@ -123,9 +123,9 @@ impl Fixture {
                         .place_driver(self.nodes[i], Vec2::new(40.0, 40.0)),
                     "node {i} is a driver"
                 ),
-                ClmNodeKind::ParticleChain(_) => assert!(
+                ClmNodeKind::Spine(ref sp) if sp.chain.is_some() => assert!(
                     self.puppet.kick_chain(self.nodes[i], Vec2::new(40.0, 0.0)),
-                    "node {i} is a chain"
+                    "node {i} carries a chain"
                 ),
                 _ => {}
             }
@@ -134,10 +134,8 @@ impl Fixture {
 
     fn has_drivers(&self) -> bool {
         self.file.file.doc.nodes.iter().any(|n| {
-            matches!(
-                n.kind,
-                ClmNodeKind::SimplePhysics(_) | ClmNodeKind::ParticleChain(_)
-            )
+            matches!(n.kind, ClmNodeKind::SimplePhysics(_))
+                || matches!(n.kind, ClmNodeKind::Spine(ref sp) if sp.chain.is_some())
         })
     }
 
@@ -980,67 +978,45 @@ fn chained_physics_fixture() -> FixtureFile {
     file(nodes, params, Vec::new())
 }
 
-/// A three-link chain driving three params, each of which deforms the one
-/// part in the model.
+/// A spine carrying a chain over a strip of art.
 ///
-/// This is the only fixture whose driver writes more than two numbers, and the
-/// only one where a driver's output is a *vector* the length of something the
-/// author shaped. The deform cells are arbitrary — what they pin is that a
-/// bend reaches a vertex at all, and that the three links reach three
-/// different ones.
+/// The only fixture whose driver writes more than two numbers, and the only
+/// one where a driver's output is a *vector* the length of something the
+/// author shaped. It is also the only one where a param moves vertices with no
+/// binding at all: the chain writes the bends and the spine composes them.
 fn particle_chain_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
         at(
             Some(0),
-            "Strand",
-            [0.0, 0.0],
-            ClmNodeKind::Part(part(quad(6.0, 40.0))),
-        ),
-        at(
-            Some(0),
             "Chain",
             [0.0, 30.0],
-            ClmNodeKind::ParticleChain(ClmParticleChain {
-                local_only: false,
-                gravity: 1.0,
-                weight: 1.0,
-                links: [60.0, 50.0, 40.0]
-                    .into_iter()
-                    .map(|length| ClmChainLink {
-                        length,
-                        gravity_scale: 1.0,
-                        damping: 0.3,
-                        time_scale: 1.0,
-                        stiffness: 0.0,
-                    })
-                    .collect(),
-                outputs: (0..3).map(|i| Some(one(i)[0].clone())).collect(),
+            ClmNodeKind::Spine(ClmSpine {
+                joints: vec![[0.0, -60.0], [0.0, -110.0], [0.0, -150.0]],
+                targets: (0..3).map(|i| Some(one(i)[0].clone())).collect(),
+                chain: Some(ClmChain {
+                    local_only: false,
+                    gravity: 1.0,
+                    weight: 1.0,
+                    links: (0..3)
+                        .map(|_| ClmLinkFeel {
+                            gravity_scale: 1.0,
+                            damping: 0.3,
+                            stiffness: 0.0,
+                        })
+                        .collect(),
+                }),
             }),
         ),
-    ];
-    // One deform per link, each pulling a different pair of the quad's
-    // corners, so a bend that lands on the wrong link shows up as a different
-    // frame rather than as the same one.
-    let shapes = [
-        vec![5.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        vec![0.0, 0.0, 0.0, 0.0, 3.0, -2.0, -3.0, -2.0],
-        vec![-2.0, 1.0, 2.0, 1.0, 2.0, -1.0, -2.0, -1.0],
+        at(
+            Some(1),
+            "Strand",
+            [0.0, 0.0],
+            ClmNodeKind::Part(part(quad(6.0, 80.0))),
+        ),
     ];
     let params = (0..3)
-        .map(|i| {
-            FixtureParam::scalar("Bend", -0.5, 0.5, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
-                binding(
-                    1,
-                    InterpolateMode::Linear,
-                    one(i),
-                    ClmBindingValues::Deform(cells(vec![
-                        (0, 0, shapes[i].iter().map(|v| -v).collect()),
-                        (2, 0, shapes[i].clone()),
-                    ])),
-                ),
-            ])
-        })
+        .map(|_| FixtureParam::scalar("Bend", -1.0, 1.0, 0.0, vec![0.0, 1.0]))
         .collect();
     file(nodes, params, Vec::new())
 }
@@ -1048,12 +1024,12 @@ fn particle_chain_fixture() -> FixtureFile {
 /// A spine turning a strip that reaches past both its links and above its
 /// root.
 ///
-/// The only fixture where a param moves vertices without a binding of any
-/// kind: a spine reads the value straight off and composes the turns itself.
-/// The art runs from 10 px above the spine's root to 10 px past its tip, so
-/// one pose pins all three cases at once — the vertices above the root that
-/// must not move, the ones inside each link's ramp, and the ones past the tip
-/// that take the last link's turn in full.
+/// A param moves vertices without a binding of any kind: a spine reads the
+/// value straight off and composes the turns itself. The art runs from 10 px
+/// above the spine's root to 10 px past its tip, so one pose pins all three
+/// cases at once — the vertices above the root that must not move, the ones
+/// inside each link's ramp, and the ones past the tip that take the last
+/// link's turn in full.
 fn spine_fixture() -> FixtureFile {
     let nodes = vec![
         node(None, "Root", ClmNodeKind::Group),
@@ -1064,6 +1040,7 @@ fn spine_fixture() -> FixtureFile {
             ClmNodeKind::Spine(ClmSpine {
                 joints: vec![[0.0, -35.0], [0.0, -70.0]],
                 targets: (0..2).map(|i| Some(one(i)[0].clone())).collect(),
+                chain: None,
             }),
         ),
         at(

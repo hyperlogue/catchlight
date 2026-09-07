@@ -49,7 +49,6 @@ def test_a_spine_reopens_as_what_was_authored(client: Client, tmp_path: Path) ->
 
     info = _info(client, reopened, node)
     assert info.kind == "spine"
-    assert info.chain is None, "a spine is not a particle chain"
     assert info.physics is None, "a spine is not a pendulum"
     spine = info.spine
     assert spine is not None

@@ -210,93 +210,9 @@ fn a_five_hundred_node_model_round_trips() {
     );
 }
 
-/// A model carrying a particle chain: the links, the outputs and the two
-/// scalars all have to come back, and the file has to be the one the writer
-/// would write.
-#[test]
-fn a_particle_chain_round_trips_byte_for_byte() {
-    use catchlight_core::model::ModelParticleChain;
-    use catchlight_core::physics::ChainLink;
-
-    let mut hex = SeededHex::new(23);
-    let mut model = Model::new();
-    let params: Vec<ParamId> = ["a", "b", "c"]
-        .iter()
-        .map(|name| {
-            model
-                .add_param(
-                    ModelParam::new(Name::truncated(*name), -1.0, 1.0, 0.0),
-                    &mut hex,
-                )
-                .unwrap()
-        })
-        .collect();
-    let root = model.root().unwrap().clone();
-    let mut chain = ModelParticleChain::new(vec![
-        ChainLink {
-            length: 60.0,
-            gravity_scale: 1.0,
-            damping: 0.5,
-            time_scale: 1.0,
-            stiffness: 0.0,
-        },
-        ChainLink {
-            length: 50.0,
-            gravity_scale: 0.8,
-            damping: 0.25,
-            time_scale: 1.5,
-            stiffness: 2.5,
-        },
-        ChainLink {
-            length: 40.0,
-            gravity_scale: 0.6,
-            damping: 0.0,
-            time_scale: 0.5,
-            stiffness: 0.0,
-        },
-    ]);
-    chain.local_only = true;
-    chain.gravity = 12.5;
-    chain.weight = 0.25;
-    let node = model
-        .add_node(
-            &root,
-            ModelNode::new("hair", ModelNodeKind::ParticleChain(chain)),
-            &mut hex,
-        )
-        .unwrap();
-    // A middle link driving nothing, so the None survives the trip too.
-    model
-        .set_chain_outputs(
-            &node,
-            vec![Some(params[0].clone()), None, Some(params[2].clone())],
-        )
-        .unwrap();
-
-    let bytes = model.to_clm_bytes().unwrap();
-    let reopened = Model::from_clm_bytes(&bytes).unwrap();
-    assert_eq!(reopened.to_clm_bytes().unwrap(), bytes, "writing is stable");
-    assert_eq!(identity(&reopened), identity(&model));
-
-    let ModelNodeKind::ParticleChain(back) = &reopened.node(&node).unwrap().kind else {
-        panic!("the chain came back as another kind");
-    };
-    assert!(back.local_only);
-    assert_eq!(back.gravity, 12.5);
-    assert_eq!(back.weight, 0.25);
-    assert_eq!(back.links().len(), 3);
-    assert_eq!(back.links()[1].time_scale, 1.5);
-    assert_eq!(back.links()[1].stiffness, 2.5);
-    assert_eq!(back.links()[0].stiffness, 0.0, "an unsprung link stays one");
-    assert_eq!(back.links()[2].damping, 0.0);
-    assert_eq!(
-        back.outputs(),
-        [Some(params[0].clone()), None, Some(params[2].clone())]
-    );
-}
-
-/// A model carrying a spine: the joints and the targets come back, `None` for
-/// a rigid link included, and the file is the one the writer would write.
+/// A model carrying a spine and the chain it hangs: the joints, the targets
+/// and every knob come back, `None` for a rigid link included, and the file is
+/// the one the writer would write.
 #[test]
 fn a_spine_round_trips_byte_for_byte() {
     use catchlight_core::model::ModelSpine;
@@ -333,6 +249,28 @@ fn a_spine_round_trips_byte_for_byte() {
             vec![Some(params[0].clone()), None, Some(params[2].clone())],
         )
         .unwrap();
+    let mut chain = catchlight_core::ModelChain::new(3);
+    chain.local_only = true;
+    chain.gravity = 12.5;
+    chain.weight = 0.25;
+    chain.set_links(vec![
+        catchlight_core::LinkFeel {
+            gravity_scale: 1.0,
+            damping: 0.5,
+            stiffness: 0.0,
+        },
+        catchlight_core::LinkFeel {
+            gravity_scale: 0.8,
+            damping: 0.25,
+            stiffness: 2.5,
+        },
+        catchlight_core::LinkFeel {
+            gravity_scale: 0.6,
+            damping: 0.0,
+            stiffness: 0.0,
+        },
+    ]);
+    model.set_spine_chain(&node, Some(chain)).unwrap();
 
     let bytes = model.to_clm_bytes().unwrap();
     let reopened = Model::from_clm_bytes(&bytes).unwrap();
@@ -347,4 +285,16 @@ fn a_spine_round_trips_byte_for_byte() {
         back.targets(),
         [Some(params[0].clone()), None, Some(params[2].clone())]
     );
+    let chain = back.chain().expect("the spine carries a chain");
+    assert!(chain.local_only);
+    assert_eq!(chain.gravity, 12.5);
+    assert_eq!(chain.weight, 0.25);
+    assert_eq!(chain.links().len(), 3);
+    assert_eq!(chain.links()[1].stiffness, 2.5);
+    assert_eq!(
+        chain.links()[0].stiffness,
+        0.0,
+        "an unsprung link stays one"
+    );
+    assert_eq!(chain.links()[2].damping, 0.0);
 }

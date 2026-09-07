@@ -71,21 +71,14 @@ pub(crate) enum InspectorKind {
         length_damping: f32,
         output_scale: [f32; 2],
     },
-    /// Read-only: this editor is frozen, and a chain is authored in the web
-    /// editor. The row is here so a chain in the tree inspects as itself
-    /// rather than as nothing.
-    ParticleChain {
-        local_only: bool,
-        gravity: f32,
-        links: usize,
-        driven: usize,
-    },
-    /// Read-only for the same reason the chain row is: a spine is authored in
-    /// the web editor, and this row is here so one in the tree inspects as
-    /// itself rather than as nothing.
+    /// Read-only: this editor is frozen, and a spine is authored in the web
+    /// one. The row is here so a spine in the tree inspects as itself rather
+    /// than as nothing.
     Spine {
         links: usize,
         driven: usize,
+        /// The chain it carries: gravity, weight and locality.
+        chain: Option<(f32, f32, bool)>,
     },
 }
 
@@ -308,22 +301,23 @@ pub(crate) fn inspector_ui(
                 &mut out,
             );
         }
-        InspectorKind::ParticleChain {
-            local_only,
-            gravity,
+        InspectorKind::Spine {
             links,
             driven,
+            chain,
         } => {
-            ui.separator();
-            ui.label("ParticleChain");
-            ui.label(format!("{links} links, {driven} driving a param"));
-            ui.label(format!("gravity {gravity}"));
-            ui.label(if *local_only { "local only" } else { "world" });
-        }
-        InspectorKind::Spine { links, driven } => {
             ui.separator();
             ui.label("Spine");
             ui.label(format!("{links} links, {driven} reading a param"));
+            match chain {
+                Some((gravity, weight, local_only)) => {
+                    ui.label(format!("chain: gravity {gravity}, weight {weight}"));
+                    ui.label(if *local_only { "local only" } else { "world" });
+                }
+                None => {
+                    ui.label("no chain");
+                }
+            }
         }
     }
     out

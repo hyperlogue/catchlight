@@ -21,12 +21,14 @@
 //! between calls — and on a real display it always does. Storing velocity
 //! keeps a varying frame time rate independent. Every knob on a link is
 //! per second for the same reason `angle_damping` is: `damping` sheds a
-//! fraction of velocity per second and `time_scale` multiplies the link's
-//! own clock, so neither the frame rate nor the substep count changes the
-//! material a model describes.
+//! fraction of velocity per second, so neither the frame rate nor the substep
+//! count changes the material a model describes. There is no per-link clock,
+//! because a constant time scale `s` is exactly `gravity_scale * s^2`,
+//! `stiffness * s` and `damping = 1 - (1 - d)^s` — a knob that says nothing
+//! the other three do not.
 //!
-//! **The anchor and the node's down cross a frame; they do not jump at its
-//! first substep.** Both arrive once a frame and describe the whole of it, so
+//! **The anchor and the node's orientation cross a frame; they do not jump at
+//! its first substep.** Both arrive once a frame and describe the whole of it, so
 //! [`ParticleChainData::tick`] walks each from what the last tick stored to
 //! what this one was handed. Pinning every substep to the new anchor makes a
 //! 30 Hz frame one lurch and seven still steps where 240 Hz slides: swept
@@ -44,20 +46,32 @@
 //! its own, damps what is left, and puts it back. Under a still anchor there
 //! is nothing to take off and the chain integrates the bits it always did.
 //!
-//! **A link's bend spring pulls toward the pose, not toward gravity.** A
-//! link's `stiffness` is the frequency in Hz of a spring on the bend at the
-//! joint above it, and what it pulls the joint to is the bend that link's own
-//! param is posed at, measured the way `link_bends` reports it: from the
-//! node's own down for the first link, so a stiff strand follows the head as
-//! it tilts while a limp one hangs, and from the link above for every later
-//! one, so a strand drawn straight and posed at zero is at rest straight.
-//! There is no rest-bend knob because the pose is one — an animation that
-//! bends a joint to a quarter turn moves the spring's target there, and
-//! physics supplies the lag and the settle around it. `0` Hz is no spring at
-//! all, which is every model written before there was one. The spring
-//! saturates rather than exploding: a step too coarse to
-//! resolve it moves the joint to rest in that step instead of past it, so no
-//! stiffness at any `time_scale` can blow the chain up.
+//! **The drawing is the equilibrium, and the spring is fitted to make it
+//! one.** A chain has no geometry of its own: its rod lengths and the
+//! direction each rod is drawn in come from the spine's joints, so the shape
+//! the art was drawn in is the shape the strand hangs in. That is a claim
+//! about a *loaded* pose — a weighted link drawn off gravity is already
+//! pulling — so [`fitted_spring_offset`] runs the torque balance backwards at
+//! bake and puts the spring's unloaded target where the loaded balance lands
+//! on the drawing. A link's `stiffness` is still the frequency in Hz of a
+//! spring on the bend at the joint above it, and `link_bends` still reports
+//! that bend as a deviation from the drawing, so **a chain lying on its
+//! drawing reads zero on every link whatever the drawing is**.
+//!
+//! **A limp weighted link is the one shape that cannot be fitted.** With no
+//! spring there is no target to move: gravity alone decides, and it decides
+//! along gravity. Such a link drawn off gravity settles somewhere the drawing
+//! is not, and [`link_can_rest_as_drawn`] is what an editor asks so it can say
+//! so rather than letting the strand quietly fall out of its pose.
+//!
+//! **The pose moves the target on top of the fit.** A link's own param poses
+//! its bend, and that is where the spring pulls: an animation that bends a
+//! joint to a quarter turn moves the target there, and physics supplies the
+//! lag and the settle around it. There is no rest-bend knob because the
+//! drawing is one and the pose is the other. `0` Hz is no spring at all. The
+//! spring saturates rather than exploding: a step too coarse to resolve it
+//! moves the joint to rest in that step instead of past it, so no stiffness
+//! can blow the chain up.
 //!
 //! **Every bend spring damps itself.** A strand of equal links is a resonant
 //! cascade — each link driven by the one above it at its own frequency, one
@@ -610,35 +624,135 @@ impl SimplePhysicsData {
 }
 
 /// One segment of a [`ParticleChainData`]: a rigid rod from the particle
-/// above it down to its own particle, plus the knobs that particle answers to.
+/// above it down to its own particle, the direction that rod is drawn in, and
+/// the knobs that particle answers to.
+///
+/// The runtime half. What an author writes down is a
+/// [`crate::model::LinkFeel`] on a spine's chain; the length and the drawn
+/// direction come from the spine's joints, and `spring_offset` is fitted at
+/// bake. Nothing here is stored in a file.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChainLink {
-    /// Fixed length in model pixels.
+    /// Fixed length in model pixels — the distance between the two joints the
+    /// rod spans.
     pub length: f32,
+    /// The unit direction this link is **drawn** in, in the node's own frame
+    /// and the physics (Y-down) one. The chain lying along it is the chain at
+    /// bend zero, which is what [`ParticleChainData::link_bends`] measures
+    /// deviation from.
+    pub drawn: Vec2,
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
     /// Fraction of velocity shed per **second** (0..=1), like `angle_damping`.
     pub damping: f32,
-    /// Multiplier on this link's clock; 1 is real time. > 1 reacts faster,
-    /// < 1 floatier. Zero or negative reads as a stopped clock: the particle
-    /// still follows the rod above it but integrates nothing of its own.
-    pub time_scale: f32,
-    /// Natural frequency in **Hz** of the spring pulling this link's bend
-    /// back to zero — how stiff the strand is at this joint. Zero is no
-    /// spring at all, and the link hangs on gravity alone.
+    /// Natural frequency in **Hz** of the spring on this link's bend — how
+    /// stiff the strand is at this joint. Zero is no spring at all, and the
+    /// link hangs on gravity alone.
     pub stiffness: f32,
+    /// Where the spring's unloaded target sits, in radians from the drawn
+    /// direction, so that the loaded equilibrium *is* the drawn direction.
+    ///
+    /// Fitted by [`fitted_spring_offset`] at bake against the node's rest
+    /// orientation, because the drawing is the equilibrium under gravity and
+    /// not the shape a weightless strand would hold. Zero for a link with no
+    /// spring, no weight, or one drawn along gravity — every case where the
+    /// spring has nothing to pull against.
+    pub spring_offset: f32,
 }
 
 impl Default for ChainLink {
     fn default() -> Self {
         Self {
             length: 100.0,
+            drawn: Vec2::new(0.0, 1.0),
             gravity_scale: 1.0,
             damping: 0.5,
-            time_scale: 1.0,
             stiffness: 0.0,
+            spring_offset: 0.0,
         }
     }
+}
+
+/// The angle a link's spring target sits at, measured from the link's drawn
+/// direction, so that the link's equilibrium under gravity is that drawn
+/// direction.
+///
+/// **The drawing is the equilibrium, so the spring's target is not the
+/// drawing.** A weighted sprung link drawn off gravity is already loaded where
+/// it stands: gravity is pulling it away from wherever its spring is anchored,
+/// and the drawing is where the two balance. Aiming the spring at the drawing
+/// would make the strand sag off it the moment it was simulated.
+///
+/// [`rest_pose_dir`] solves the balance forward, `k*theta = g*sin(theta_g -
+/// theta)` for `theta` measured from the spring's target. Run it backwards
+/// with `theta_g - theta` pinned to `gamma`, the angle from the drawn
+/// direction to gravity, and the sine's argument stops depending on the
+/// unknown:
+///
+/// ```text
+///   theta = g * sin(gamma) / (w0^2 * L)
+/// ```
+///
+/// which is the whole answer in closed form, no bisection. The target is then
+/// the drawn direction turned back by that angle. A negative `gravity_scale`
+/// is gravity the other way and flips the sine's sign, which is exactly what
+/// keeping `g` signed does.
+///
+/// `orient` is the node's own down in the physics frame — the rotation the
+/// drawn shape is carried by — because gravity is world-fixed and the balance
+/// is not the same one at a different tilt. Zero whenever there is no spring,
+/// no weight, or no lever arm: a link the fit has nothing to say about.
+pub fn fitted_spring_offset(link: &ChainLink, gravity: f32, orient: Vec2) -> f32 {
+    let g = gravity * link.gravity_scale;
+    if link.stiffness.is_nan() || link.stiffness <= 0.0 || !g.is_finite() || g == 0.0 {
+        return 0.0;
+    }
+    if !link.length.is_finite() || link.length <= 0.0 {
+        return 0.0;
+    }
+    let w0 = std::f32::consts::TAU * link.stiffness;
+    let k = w0 * w0 * link.length;
+    if !k.is_finite() || k == 0.0 {
+        return 0.0;
+    }
+    // The drawn direction where the node's rest rotation puts it, and the
+    // angle from there to gravity.
+    let drawn = rotate_by(
+        unit_down(link.drawn),
+        signed_angle(GRAVITY_DIR, unit_down(orient)),
+    );
+    let gamma = signed_angle(drawn, GRAVITY_DIR);
+    let offset = g * gamma.sin() / k;
+    if offset.is_finite() {
+        offset
+    } else {
+        0.0
+    }
+}
+
+/// Whether a link can settle where it is drawn, once
+/// [`fitted_spring_offset`] has done what it can.
+///
+/// A limp weighted link has no spring to fit: gravity alone decides where it
+/// hangs, and that is along gravity whatever the drawing says. One drawn off
+/// gravity therefore cannot rest as drawn, and an author wants telling rather
+/// than a strand that quietly falls out of its pose on the first tick.
+///
+/// `orient` is [`fitted_spring_offset`]'s. Weightless links rest wherever they
+/// are put, so they are never a complaint.
+pub fn link_can_rest_as_drawn(link: &ChainLink, gravity: f32, orient: Vec2) -> bool {
+    let g = gravity * link.gravity_scale;
+    if !g.is_finite() || g == 0.0 {
+        return true;
+    }
+    if !link.stiffness.is_nan() && link.stiffness > 0.0 {
+        return true;
+    }
+    let drawn = rotate_by(
+        unit_down(link.drawn),
+        signed_angle(GRAVITY_DIR, unit_down(orient)),
+    );
+    signed_angle(drawn, GRAVITY_DIR).abs() <= 1e-3
 }
 
 /// A point mass on a chain. Both halves of the state are stored; see the
@@ -677,12 +791,17 @@ pub struct ParticleChainData {
     /// is enough to reshape it.
     pub particles: Vec<ChainParticle>,
     pub anchor: Vec2,
-    /// Where bend 0 of the **first** link points, as a unit vector in the
-    /// physics (Y-down) frame: the node's own down, which the caller hands
-    /// over every tick because only the puppet knows the node's world
-    /// rotation. `(0, 1)` — gravity's direction — until one is supplied, so
-    /// a chain built and stepped by hand behaves as it always did.
-    pub down: Vec2,
+    /// The node's own down as a unit vector in the physics (Y-down) frame —
+    /// which is to say the node's world **rotation**, since a rotation of the
+    /// plane is what one unit vector names. The caller hands it over every
+    /// tick because only the puppet knows it.
+    ///
+    /// The drawn shape is carried by this rotation: the first link's bend
+    /// reads zero along `rotate(drawn[0])`, and every later link's along the
+    /// link above it turned by the angle the drawing has between them. `(0,
+    /// 1)` — no rotation — until one is supplied, so a chain built and
+    /// stepped by hand hangs where it was drawn.
+    pub orient: Vec2,
     /// `false` until `tick()` first sees the world-space anchor and hangs the
     /// chain under it, for the same reason `SimplePhysicsData` defers its
     /// snap: construction has only the node-local transform.
@@ -711,7 +830,7 @@ impl ParticleChainData {
             particles: Vec::with_capacity(links.len() + 1),
             links,
             anchor: Vec2::ZERO,
-            down: Vec2::new(0.0, 1.0),
+            orient: GRAVITY_DIR,
             anchor_initialized: false,
             moved_last_tick: true,
         };
@@ -727,6 +846,9 @@ impl Default for ParticleChainData {
         Self::new(vec![ChainLink::default(); 3])
     }
 }
+
+/// The direction gravity pulls in the physics frame, which is Y-down.
+const GRAVITY_DIR: Vec2 = Vec2::new(0.0, 1.0);
 
 /// Longest step the chain solver will take. Unlike the RK4 drivers there is
 /// no stiffness to derive it from — a rod constraint has no frequency — so
@@ -763,18 +885,20 @@ impl ParticleChainData {
     /// integer count, so there is no drifting remainder and no ragged final
     /// step whose damping would land differently from its neighbours'.
     ///
-    /// `down_world` is the unit vector, in the physics (Y-down) frame, that
-    /// bend 0 of the first link points along — the node's own down, which is
-    /// gravity's direction only while the node is upright. Every later link
-    /// measures its bend against the link above it instead, so a chain drawn
-    /// straight is bend 0 all the way down whatever the node is doing.
+    /// `orient_world` is the node's own down as a unit vector in the physics
+    /// (Y-down) frame — the rotation the drawn shape is carried by. Bend 0 of
+    /// the first link points along that rotation applied to the link's drawn
+    /// direction; every later link measures against the link above it turned
+    /// by the angle the drawing has at that joint, so a chain lying on its
+    /// drawing is bend 0 all the way down whatever the node is doing and
+    /// whatever shape it was drawn in.
     ///
-    /// **The anchor and the down travel across the substeps.** Both arrive
-    /// once a frame but describe a whole frame's worth of motion, so substep
-    /// `k` of `n` pins the root to `lerp(previous, now, k / n)` and points
-    /// bend 0 the same way; the module doc carries what pinning every substep
-    /// to `now` costs. A caller that chops a frame itself has to chop the
-    /// anchor path with it.
+    /// **The anchor and the orientation travel across the substeps.** Both
+    /// arrive once a frame but describe a whole frame's worth of motion, so
+    /// substep `k` of `n` pins the root to `lerp(previous, now, k / n)` and
+    /// turns the drawn shape the same way; the module doc carries what
+    /// pinning every substep to `now` costs. A caller that chops a frame
+    /// itself has to chop the anchor path with it.
     ///
     /// A tick that advances no time is a reposition rather than a move: the
     /// anchor and down are stored and nothing is interpolated toward them.
@@ -783,14 +907,14 @@ impl ParticleChainData {
     /// and is where that link's spring pulls; see [`posed_rest`]. One entry
     /// per link, 0 for a link no param drives, and a shorter slice reads as 0
     /// for the links it does not reach.
-    pub fn tick(&mut self, anchor_world: Vec2, down_world: Vec2, posed: &[f32], dt: f32) {
-        let down = unit_down(down_world);
+    pub fn tick(&mut self, anchor_world: Vec2, orient_world: Vec2, posed: &[f32], dt: f32) {
+        let orient = unit_down(orient_world);
         if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
-            self.settle_to_rest(anchor_world, down, posed);
+            self.settle_to_rest(anchor_world, orient, posed);
         }
-        let (was_anchor, was_down) = (self.anchor, self.down);
+        let (was_anchor, was_orient) = (self.anchor, self.orient);
         self.anchor = anchor_world;
-        self.down = down;
+        self.orient = orient;
         // NaN survives `clamp` and fails `<= 0.0`, and `NaN as u32` saturates
         // to 0, so an unguarded NaN dt would run zero steps and silently
         // freeze the chain instead of stepping it.
@@ -811,24 +935,24 @@ impl ParticleChainData {
             // The last substep lands on the caller's own numbers rather than
             // on a `lerp` of them, so a chain whose anchor never moves is
             // stepped at exactly the anchor it was handed.
-            let (to, rest) = if k == steps {
-                (anchor_world, down)
+            let (to, turned) = if k == steps {
+                (anchor_world, orient)
             } else {
                 let t = k as f32 / steps as f32;
                 (
                     was_anchor.lerp(anchor_world, t),
-                    unit_down_or(was_down.lerp(down, t), down),
+                    unit_down_or(was_orient.lerp(orient, t), orient),
                 )
             };
-            moved |= self.step(to, to - from, rest, posed, h);
+            moved |= self.step(to, to - from, turned, posed, h);
             from = to;
         }
         self.moved_last_tick = moved;
     }
 
     /// Hang the chain from `anchor_world` with no motion, and resize
-    /// `particles` to match `links`. `down_world` is [`Self::tick`]'s, and is
-    /// stored the same way.
+    /// `particles` to match `links`. `orient_world` is [`Self::tick`]'s, and
+    /// is stored the same way.
     ///
     /// This is the solver's analytic equilibrium, link by link. A springless
     /// link hangs along gravity, which is the whole of what this used to do:
@@ -840,9 +964,9 @@ impl ParticleChainData {
     /// `posed` is [`Self::tick`]'s, and the pose is part of the shape this
     /// computes: the spring balances gravity around the bend the param poses,
     /// not around zero.
-    pub fn settle_to_rest(&mut self, anchor_world: Vec2, down_world: Vec2, posed: &[f32]) {
+    pub fn settle_to_rest(&mut self, anchor_world: Vec2, orient_world: Vec2, posed: &[f32]) {
         self.anchor = anchor_world;
-        self.down = unit_down(down_world);
+        self.orient = unit_down(orient_world);
         self.particles.clear();
         self.particles.reserve(self.links.len() + 1);
         let mut pos = anchor_world;
@@ -850,16 +974,18 @@ impl ParticleChainData {
             pos,
             vel: Vec2::ZERO,
         });
-        let mut rest = self.down;
+        let turn = signed_angle(GRAVITY_DIR, self.orient);
+        let mut previous: Option<Vec2> = None;
         for (i, link) in self.links.iter().enumerate() {
-            let target = posed_rest(rest, posed.get(i).copied().unwrap_or(0.0));
+            let rest = zero_bend_dir(&self.links, i, previous, turn);
+            let target = spring_target(rest, link.spring_offset, posed.get(i).copied());
             let dir = rest_pose_dir(link, target, self.gravity);
             pos += dir * link.length;
             self.particles.push(ChainParticle {
                 pos,
                 vel: Vec2::ZERO,
             });
-            rest = dir;
+            previous = Some(dir);
         }
         self.anchor_initialized = true;
         self.moved_last_tick = false;
@@ -913,9 +1039,11 @@ impl ParticleChainData {
     /// translation column is ignored, and the caller hands over a matrix
     /// already conjugated by the Y flip.
     ///
-    /// The first link's bend is measured from straight down; every later one
-    /// is measured from the link above it, wrapped into a half turn either
-    /// way. **Positive = the link's tip displaced toward +X of the node.**
+    /// **A chain lying on its drawing reads zero on every link, whatever the
+    /// drawing.** The first link's bend is measured from its own drawn
+    /// direction; every later one from the link above it turned by the angle
+    /// the drawing has at that joint, wrapped into a half turn either way.
+    /// **Positive = the link's tip displaced toward +X of the node.**
     pub fn link_bends(&self, world_inverse: Mat4, out: &mut Vec<f32>) {
         out.clear();
         let rods = self.links.len().min(self.particles.len().saturating_sub(1));
@@ -935,10 +1063,20 @@ impl ParticleChainData {
             // `param_value`'s angle, which reports a pendulum's swing in a
             // Y-up parameter frame; this one stays in the node's own frame.
             let theta = f32::atan2(dir.x, dir.y);
-            let bend = if i == 0 {
-                theta
+            // The bearing bend zero sits at: the link's own drawn direction
+            // for the first link, and for the rest the solved link above it
+            // carried by the turn the drawing makes here. A straight drawing
+            // contributes exactly zero to both, which is what keeps an
+            // unbent-shape chain reading what it always did.
+            let reference = if i == 0 {
+                bearing(self.links[0].drawn)
             } else {
-                wrap_to_half_turn(theta - previous)
+                previous + (bearing(self.links[i].drawn) - bearing(self.links[i - 1].drawn))
+            };
+            let bend = if i == 0 {
+                fold_half_turn(theta - reference)
+            } else {
+                wrap_to_half_turn(theta - reference)
             };
             previous = theta;
             out.push(bend / std::f32::consts::PI);
@@ -949,7 +1087,8 @@ impl ParticleChainData {
     /// particle.
     ///
     /// The root is pinned to `anchor`, which travelled `anchor_moved` over
-    /// this step, and `down` is where bend 0 of the first link points for it;
+    /// this step, and `orient` is the node's rotation for it — where bend 0
+    /// of the first link points, once the drawn shape is carried by it;
     /// [`Self::tick`] walks all three across a frame's substeps. `posed` is
     /// [`Self::tick`]'s, and is the same for every substep of a frame.
     ///
@@ -963,7 +1102,7 @@ impl ParticleChainData {
         &mut self,
         anchor: Vec2,
         anchor_moved: Vec2,
-        down: Vec2,
+        orient: Vec2,
         posed: &[f32],
         h: f32,
     ) -> bool {
@@ -984,31 +1123,33 @@ impl ParticleChainData {
             },
         });
 
-        // Where bend 0 points for the link being solved. The first link
-        // answers to the node's own down; every later one answers to the link
-        // above it, which this pass has already put in its final place.
-        let mut rest = down;
+        // Where bend 0 points for the link being solved: the drawn direction
+        // carried by the node's rotation for the first link, and for every
+        // later one the link above it — which this pass has already put in
+        // its final place — turned by the angle the drawing makes here.
+        let turn = signed_angle(GRAVITY_DIR, orient);
+        let mut previous: Option<Vec2> = None;
+        let moving = h.is_finite() && h > 0.0;
         for i in 1..=n {
             let link = self.links[i - 1];
             let above = next[i - 1].pos;
             let old = self.particles[i].pos;
-            let h_i = h * link.time_scale;
-            let moving = h_i.is_finite() && h_i > 0.0;
+            let rest = zero_bend_dir(&self.links, i - 1, previous, turn);
 
             let free = if moving {
                 let mut v =
-                    self.particles[i].vel + Vec2::new(0.0, self.gravity * link.gravity_scale) * h_i;
+                    self.particles[i].vel + Vec2::new(0.0, self.gravity * link.gravity_scale) * h;
                 // The bend spring rides alongside gravity, on this link's own
                 // clock like everything else. Skipped whole when it has
                 // nothing to say, so an unsprung link integrates the same
                 // bits it did before there was a spring at all.
-                let target = posed_rest(rest, posed.get(i - 1).copied().unwrap_or(0.0));
+                let target = spring_target(rest, link.spring_offset, posed.get(i - 1).copied());
                 if let Some(acc) =
-                    bend_spring_acceleration(target, old - above, link.length, link.stiffness, h_i)
+                    bend_spring_acceleration(target, old - above, link.length, link.stiffness, h)
                 {
-                    v += acc * h_i;
+                    v += acc * h;
                 }
-                old + v * h_i
+                old + v * h
             } else {
                 old
             };
@@ -1035,10 +1176,10 @@ impl ParticleChainData {
             // own drag is concerned. A still anchor subtracts zero, which is
             // what makes this bit for bit what the link always integrated.
             let vel = if moving {
-                let carried = anchor_moved / h_i;
-                let own = (projected - old) / h_i - carried;
-                let own = own * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h_i);
-                carried + damp_bend(own, projected - above, link.stiffness, h_i)
+                let carried = anchor_moved / h;
+                let own = (projected - old) / h - carried;
+                let own = own * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h);
+                carried + damp_bend(own, projected - above, link.stiffness, h)
             } else {
                 Vec2::ZERO
             };
@@ -1055,7 +1196,7 @@ impl ParticleChainData {
             // measures its own bend against.
             let solved = pos - above;
             if solved.length_squared() > 1e-12 {
-                rest = solved.normalize();
+                previous = Some(solved.normalize());
             }
 
             next.push(ChainParticle { pos, vel });
@@ -1110,9 +1251,8 @@ impl ParticleChainData {
 /// axis never stops at all and the frame loop never sleeps: the thing this
 /// exists to prevent.
 ///
-/// The same trade freezes motion the floor cannot resolve at all — a link
-/// whose `time_scale` is under about a tenth, alone with gravity and no
-/// anchor moving. Below the floor `f32` cannot represent the move either way.
+/// The same trade freezes motion the floor cannot resolve at all. Below the
+/// floor `f32` cannot represent the move either way.
 fn is_projection_noise(moved: Vec2, old: Vec2, length: f32) -> bool {
     let floor = 4.0 * f32::EPSILON * old.length().max(length);
     moved.length_squared() <= floor * floor
@@ -1137,27 +1277,76 @@ fn unit_down_or(v: Vec2, fallback: Vec2) -> Vec2 {
     }
 }
 
-/// Where a link's bend spring pulls: its `rest` — the direction its bend
-/// reads zero along — turned by the bend its own param is posed at.
+/// The direction one link's bend reads zero along: the drawn shape carried by
+/// the node's rotation and by the links above it as the solver left them.
+///
+/// The first link answers to its own drawn direction turned by `turn`, the
+/// node's rotation. Every later one answers to `previous` — the link above as
+/// this pass solved it — turned by the angle the *drawing* makes at this
+/// joint. So a chain standing on its drawing reads zero everywhere, and a
+/// straight drawing turns nothing at all, which is what leaves an
+/// unbent-shape chain integrating the bits it always did.
+fn zero_bend_dir(links: &[ChainLink], i: usize, previous: Option<Vec2>, turn: f32) -> Vec2 {
+    let Some(link) = links.get(i) else {
+        return GRAVITY_DIR;
+    };
+    match previous {
+        None => rotate_by(unit_down(link.drawn), turn),
+        Some(above) => {
+            let drawn_turn = match links.get(i.wrapping_sub(1)) {
+                Some(up) => signed_angle(unit_down(up.drawn), unit_down(link.drawn)),
+                None => 0.0,
+            };
+            rotate_by(above, drawn_turn)
+        }
+    }
+}
+
+/// Where a link's bend spring pulls: the direction its bend reads zero along,
+/// turned by the fitted offset that makes the drawing its equilibrium and then
+/// by the bend its own param is posed at.
 ///
 /// **The pose is the spring's target, and physics is what happens around
 /// it.** An animation that poses a joint at a quarter turn is saying the
 /// strand is drawn bent there, so a stiff link holds it there and a limp one
-/// sags away from it, exactly as both do about a strand drawn straight.
+/// sags away from it, exactly as both do about a strand at bend zero.
 ///
 /// `posed` is in half turns, the convention
 /// [`ParticleChainData::link_bends`] reports and the one a bend param
 /// carries: positive is the link's tip toward the node's +X. That reads
 /// `theta = atan2(dir.x, dir.y)` off the rod, and [`rotate_by`] by `a` takes
 /// `theta` to `theta - a`, so the turn that *raises* the reported bend by
-/// `posed` is by `-posed * pi`. Zero returns `rest` itself rather than a
-/// rotation by zero, so a chain nothing poses integrates the bits it always
-/// did.
-fn posed_rest(rest: Vec2, posed: f32) -> Vec2 {
-    if !posed.is_finite() || posed == 0.0 {
+/// `posed` is by `-posed * pi`. [`ChainLink::spring_offset`] is already in
+/// that sign, having been measured from the drawn direction the same way.
+/// Both zero returns `rest` itself rather than a rotation by zero, so a chain
+/// nothing poses and nothing fitted integrates the bits it always did.
+fn spring_target(rest: Vec2, offset: f32, posed: Option<f32>) -> Vec2 {
+    let posed = posed.filter(|p| p.is_finite()).unwrap_or(0.0);
+    let offset = if offset.is_finite() { offset } else { 0.0 };
+    if offset == 0.0 && posed == 0.0 {
         return rest;
     }
-    rotate_by(rest, -posed * std::f32::consts::PI)
+    rotate_by(rest, -offset - posed * std::f32::consts::PI)
+}
+
+/// A direction as an angle from straight down, positive toward +X — the
+/// convention [`ParticleChainData::link_bends`] reports its bends in.
+fn bearing(v: Vec2) -> f32 {
+    f32::atan2(v.x, v.y)
+}
+
+/// Fold an angle into `(-pi, pi]`, exactly: a value already inside comes back
+/// bit for bit, which [`wrap_to_half_turn`] does not promise and which the
+/// committed trajectory baseline depends on for the first link's bend.
+fn fold_half_turn(angle: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    if angle > PI {
+        angle - TAU
+    } else if angle <= -PI {
+        angle + TAU
+    } else {
+        angle
+    }
 }
 
 /// The angle from `from` to `to`, in `(-pi, pi]`, positive the way
@@ -1173,8 +1362,7 @@ fn rotate_by(v: Vec2, angle: f32) -> Vec2 {
 }
 
 /// The direction one link takes at rest: `rest` is where its spring pulls —
-/// [`posed_rest`] of where its bend reads zero, which is the node's down for
-/// the first link and the link above for every other — and `gravity` is the
+/// [`spring_target`] of where its bend reads zero — and `gravity` is the
 /// chain's, before this link's own scale.
 ///
 /// **Springless links keep what they always did.** A weighted one hangs along
@@ -1271,8 +1459,8 @@ fn rest_pose_dir(link: &ChainLink, rest: Vec2, gravity: f32) -> Vec2 {
 /// h^2` in angle, so once `w0^2 * h^2` passes 1 it would carry the joint
 /// through rest and out the far side, further every step. `w0^2` is clamped
 /// to `1 / h^2` there instead: the joint lands on rest in that step. That is
-/// what keeps any stiffness finite at any `time_scale`, at the price of
-/// stiffnesses the step is too coarse to tell apart.
+/// what keeps any stiffness finite at any step, at the price of stiffnesses
+/// the step is too coarse to tell apart.
 fn bend_spring_acceleration(
     rest: Vec2,
     rod: Vec2,
@@ -1944,8 +2132,8 @@ mod tests {
                 length: 50.0,
                 gravity_scale: 1.0,
                 damping: 0.5,
-                time_scale: 1.0,
                 stiffness: 2.0,
+                ..Default::default()
             };
             3
         ]);
@@ -2073,8 +2261,8 @@ mod tests {
             length: 60.0,
             gravity_scale: 0.0,
             damping: 0.0,
-            time_scale: 1.0,
             stiffness: 1.0,
+            ..Default::default()
         }]);
         c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
         // A small bend, so the small-angle period the frequency names is the
@@ -2119,8 +2307,8 @@ mod tests {
             length: 60.0,
             gravity_scale: 0.0,
             damping: 0.6,
-            time_scale: 1.0,
             stiffness: 1.0,
+            ..Default::default()
         }]);
         c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
         c.particles[1].pos = rotate_by(Vec2::new(0.0, c.links[0].length), 0.4);
@@ -2148,8 +2336,8 @@ mod tests {
                 length: 60.0,
                 gravity_scale: 1.0,
                 damping: 0.5,
-                time_scale: 4.0,
                 stiffness: 1e6,
+                ..Default::default()
             };
             3
         ]);
@@ -2190,8 +2378,8 @@ mod tests {
                 length: 60.0,
                 gravity_scale: 1.0,
                 damping: 0.5,
-                time_scale: 1.0,
                 stiffness: 8.0,
+                ..Default::default()
             };
             4
         ]);
@@ -2241,8 +2429,8 @@ mod tests {
                     length: 60.0,
                     gravity_scale: 1.0,
                     damping,
-                    time_scale: 1.0,
                     stiffness,
+                    ..Default::default()
                 };
                 links
             ]);
@@ -2301,8 +2489,8 @@ mod tests {
                 length: 60.0,
                 gravity_scale: 1.0,
                 damping: 0.5,
-                time_scale: 1.0,
                 stiffness: 4.0,
+                ..Default::default()
             };
             3
         ]);
@@ -2343,5 +2531,166 @@ mod tests {
             c.is_at_rest(1e-6),
             "and the chain reads as at rest, so a viewport over it may idle",
         );
+    }
+}
+
+#[cfg(test)]
+mod drawn_shape_tests {
+    use super::*;
+
+    const DT: f32 = 1.0 / 60.0;
+
+    /// A guide bending away from gravity: three 60 px links at 0, 30 and 60
+    /// degrees from straight down, every one weighted and sprung.
+    fn curved(stiffness: f32) -> ParticleChainData {
+        let angles = [
+            0.0,
+            std::f32::consts::FRAC_PI_6,
+            std::f32::consts::FRAC_PI_3,
+        ];
+        let mut chain = ParticleChainData::new(
+            angles
+                .iter()
+                .map(|&a| ChainLink {
+                    length: 60.0,
+                    drawn: rotate_by(GRAVITY_DIR, a),
+                    damping: 0.3,
+                    stiffness,
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        chain.gravity = 980.0;
+        for link in chain.links.iter_mut() {
+            link.spring_offset = fitted_spring_offset(link, 980.0, GRAVITY_DIR);
+        }
+        chain
+    }
+
+    fn bends(chain: &ParticleChainData) -> Vec<f32> {
+        let mut out = Vec::new();
+        chain.link_bends(Mat4::IDENTITY, &mut out);
+        out
+    }
+
+    /// The drawing is the equilibrium: a sprung weighted chain on a curved
+    /// guide, settled at the orientation it was fitted at, stands on its
+    /// drawn shape and so reads bend zero on every link.
+    ///
+    /// Without the fit the springs would pull toward the drawing and gravity
+    /// would drag the strand off it, which is the sag this whole mechanism
+    /// exists to remove.
+    #[test]
+    fn a_curved_guide_settles_on_its_drawing() {
+        let mut chain = curved(3.0);
+        chain.settle_to_rest(Vec2::ZERO, GRAVITY_DIR, &[]);
+        for (i, bend) in bends(&chain).into_iter().enumerate() {
+            assert!(
+                bend.abs() < 1e-4,
+                "link {i} settled at bend {bend} rather than on its drawing"
+            );
+        }
+    }
+
+    /// And that pose is a fixed point of the solver, not just of the analytic
+    /// settle: two seconds of ticking leaves it where it stood.
+    #[test]
+    fn the_settled_drawing_is_a_fixed_point_of_the_tick() {
+        let mut chain = curved(3.0);
+        chain.settle_to_rest(Vec2::ZERO, GRAVITY_DIR, &[]);
+        for frame in 0..120 {
+            chain.tick(Vec2::ZERO, GRAVITY_DIR, &[], DT);
+            for (i, bend) in bends(&chain).into_iter().enumerate() {
+                assert!(
+                    bend.abs() < 1e-4,
+                    "frame {frame}, link {i} drifted to bend {bend}"
+                );
+            }
+        }
+        assert!(
+            chain.is_at_rest(1e-6),
+            "a chain standing on its drawing is not moving"
+        );
+    }
+
+    /// A limp weighted link has no spring to fit, so gravity alone decides
+    /// where it hangs and that is along gravity. Drawn off gravity it cannot
+    /// rest as drawn — no hidden correction, and the fit says so rather than
+    /// pretending.
+    #[test]
+    fn a_limp_link_drawn_off_gravity_cannot_rest_as_drawn() {
+        let mut chain = curved(0.0);
+        assert!(
+            chain.links.iter().all(|l| l.spring_offset == 0.0),
+            "a link with no spring has no target to fit"
+        );
+        assert!(
+            link_can_rest_as_drawn(&chain.links[0], 980.0, GRAVITY_DIR),
+            "the first link is drawn along gravity, so it rests as drawn"
+        );
+        for i in 1..3 {
+            assert!(
+                !link_can_rest_as_drawn(&chain.links[i], 980.0, GRAVITY_DIR),
+                "link {i} is drawn off gravity with no spring"
+            );
+        }
+        chain.settle_to_rest(Vec2::ZERO, GRAVITY_DIR, &[]);
+        let bends = bends(&chain);
+        assert!(
+            bends[1].abs() > 0.1,
+            "a limp link drawn off gravity hangs off its drawing, and reads it: {bends:?}"
+        );
+    }
+
+    /// A weightless link is the other half of the same rule: nothing decides
+    /// where it goes, so it keeps the shape it was drawn in whatever the
+    /// spring says.
+    #[test]
+    fn a_weightless_link_keeps_its_drawing() {
+        let mut chain = curved(0.0);
+        for link in chain.links.iter_mut() {
+            link.gravity_scale = 0.0;
+        }
+        assert!(chain
+            .links
+            .iter()
+            .all(|l| link_can_rest_as_drawn(l, 980.0, GRAVITY_DIR)));
+        chain.settle_to_rest(Vec2::ZERO, GRAVITY_DIR, &[]);
+        for (i, bend) in bends(&chain).into_iter().enumerate() {
+            assert!(bend.abs() < 1e-4, "link {i} moved off its drawing: {bend}");
+        }
+    }
+
+    /// The fit is against the node's rest orientation, so a chain drawn
+    /// straight down under a tilted node settles along the tilt rather than
+    /// along gravity: the drawing is what it holds, wherever the node points.
+    #[test]
+    fn the_fit_follows_the_nodes_rest_orientation() {
+        let tilt = rotate_by(GRAVITY_DIR, 0.4);
+        let mut chain = ParticleChainData::new(vec![
+            ChainLink {
+                length: 60.0,
+                stiffness: 3.0,
+                damping: 0.3,
+                ..Default::default()
+            };
+            2
+        ]);
+        chain.gravity = 980.0;
+        for link in chain.links.iter_mut() {
+            link.spring_offset = fitted_spring_offset(link, 980.0, tilt);
+        }
+        chain.settle_to_rest(Vec2::ZERO, tilt, &[]);
+        // `link_bends` reads rods in the node's own frame, so the caller's
+        // matrix has to undo the tilt exactly as the puppet's does.
+        let into_node = Mat4::from_rotation_z(-signed_angle(GRAVITY_DIR, tilt));
+        let mut out = Vec::new();
+        chain.link_bends(into_node, &mut out);
+        for (i, bend) in out.into_iter().enumerate() {
+            assert!(bend.abs() < 1e-4, "link {i} settled at bend {bend}");
+        }
+        // And it really is tilted: the tip is off gravity's own line.
+        let tip = chain.particles.last().expect("particles").pos;
+        assert!(tip.x.abs() > 10.0, "the strand hangs at {tip:?}");
     }
 }
