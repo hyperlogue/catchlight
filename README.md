@@ -15,6 +15,9 @@ Catchlight is heavily inspired by
 catchlight's model format and rendering semantics, and the project began as an
 attempt to show inochi2d models on WebGPU.
 
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists which modules the
+derivation reaches, and retains the upstream licences.
+
 ## License
 
 Licensed under either of
