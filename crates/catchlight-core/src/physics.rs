@@ -12,6 +12,18 @@
 //! going in and `Puppet::write_physics_param_outputs` conjugates
 //! `world_inverse` by the same flip coming out. Gravity points toward +Y
 //! in that frame.
+//!
+//! **The particle chain is position-based, not Verlet.**
+//! [`ParticleChainData`] stores each particle's velocity explicitly and
+//! re-derives it from the move the rod constraint actually made. A Verlet
+//! chain encodes velocity as `pos - prev_pos`, which is a velocity only for
+//! the `dt` that produced it, so it mis-scales the moment `dt` changes
+//! between calls — and on a real display it always does. Storing velocity
+//! keeps a varying frame time rate independent. Every knob on a link is
+//! per second for the same reason `angle_damping` is: `damping` sheds a
+//! fraction of velocity per second and `time_scale` multiplies the link's
+//! own clock, so neither the frame rate nor the substep count changes the
+//! material a model describes.
 
 use crate::{Mat4, Vec2};
 
@@ -547,6 +559,298 @@ impl SimplePhysicsData {
     }
 }
 
+/// One segment of a [`ParticleChainData`]: a rigid rod from the particle
+/// above it down to its own particle, plus the knobs that particle answers to.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ChainLink {
+    /// Fixed length in model pixels.
+    pub length: f32,
+    /// Multiplier on the chain's gravity for this link's particle.
+    pub gravity_scale: f32,
+    /// Fraction of velocity shed per **second** (0..=1), like `angle_damping`.
+    pub damping: f32,
+    /// Multiplier on this link's clock; 1 is real time. > 1 reacts faster,
+    /// < 1 floatier. Zero or negative reads as a stopped clock: the particle
+    /// still follows the rod above it but integrates nothing of its own.
+    pub time_scale: f32,
+}
+
+impl Default for ChainLink {
+    fn default() -> Self {
+        Self {
+            length: 100.0,
+            gravity_scale: 1.0,
+            damping: 0.5,
+            time_scale: 1.0,
+        }
+    }
+}
+
+/// A point mass on a chain. Both halves of the state are stored; see the
+/// module doc on why the velocity is not left implicit in a previous position.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ChainParticle {
+    pub pos: Vec2,
+    pub vel: Vec2,
+}
+
+/// A chain of rigid links hanging from a moving anchor, solved with
+/// position-based dynamics: free-integrate every particle, then walk the
+/// rods root to tip putting each particle back on its circle, then read the
+/// velocity back off the move that survived. It is [`VerletPendulum`]'s
+/// primitive generalized to N links, minus the implicit velocity.
+///
+/// [`Self::link_bends`] reads the chain out as one number per link, and the
+/// sign convention is the whole point of it: **positive bend = the link's tip
+/// displaced toward +X of the node, straight down = 0, in units of half
+/// turns.**
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParticleChainData {
+    pub local_only: bool,
+    /// Pre-folded like `SimplePhysicsData::gravity` (pixels/s², toward +Y in
+    /// the physics frame).
+    pub gravity: f32,
+    pub links: Vec<ChainLink>,
+    /// `links.len() + 1` particles; `particles[0]` is the anchor. Any tick
+    /// that finds the two out of step re-hangs the chain, so editing `links`
+    /// is enough to reshape it.
+    pub particles: Vec<ChainParticle>,
+    pub anchor: Vec2,
+    /// `false` until `tick()` first sees the world-space anchor and hangs the
+    /// chain under it, for the same reason `SimplePhysicsData` defers its
+    /// snap: construction has only the node-local transform.
+    pub anchor_initialized: bool,
+}
+
+impl ParticleChainData {
+    pub fn new(links: Vec<ChainLink>) -> Self {
+        let mut chain = Self {
+            local_only: false,
+            gravity: 9.8 * 100.0,
+            particles: Vec::with_capacity(links.len() + 1),
+            links,
+            anchor: Vec2::ZERO,
+            anchor_initialized: false,
+        };
+        chain
+            .particles
+            .resize(chain.links.len() + 1, ChainParticle::default());
+        chain
+    }
+}
+
+impl Default for ParticleChainData {
+    fn default() -> Self {
+        Self::new(vec![ChainLink::default(); 3])
+    }
+}
+
+/// Longest step the chain solver will take. Unlike the RK4 drivers there is
+/// no stiffness to derive it from — a rod constraint has no frequency — so
+/// the chain takes a fixed, fine step and lets `tick` chop a frame into as
+/// many as it needs.
+pub const CHAIN_MAX_STEP: f32 = 1.0 / 240.0;
+
+impl ParticleChainData {
+    /// Advance the chain by `dt` with its root pinned to `anchor_world`.
+    /// The outer `dt` is clamped and split exactly the way
+    /// [`SimplePhysicsData::tick`] splits its own: uniform steps from an
+    /// integer count, so there is no drifting remainder and no ragged final
+    /// step whose damping would land differently from its neighbours'.
+    pub fn tick(&mut self, anchor_world: Vec2, dt: f32) {
+        if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
+            self.settle_to_rest(anchor_world);
+        }
+        self.anchor = anchor_world;
+        // NaN survives `clamp` and fails `<= 0.0`, and `NaN as u32` saturates
+        // to 0, so an unguarded NaN dt would run zero steps and silently
+        // freeze the chain instead of stepping it.
+        if !dt.is_finite() {
+            return;
+        }
+        let clamped = dt.clamp(0.0, PHYSICS_MAX_DT);
+        if clamped <= 0.0 {
+            return;
+        }
+        let steps = (clamped / CHAIN_MAX_STEP)
+            .ceil()
+            .clamp(1.0, PHYSICS_MAX_SUBSTEPS as f32) as u32;
+        let h = clamped / steps as f32;
+        for _ in 0..steps {
+            self.step(h);
+        }
+    }
+
+    /// Hang the chain straight down from `anchor_world` with no motion, and
+    /// resize `particles` to match `links`. This is the chain's analytic
+    /// equilibrium: gravity is parallel to every rod there, so the solver
+    /// leaves it exactly alone.
+    pub fn settle_to_rest(&mut self, anchor_world: Vec2) {
+        self.anchor = anchor_world;
+        self.particles.clear();
+        self.particles.reserve(self.links.len() + 1);
+        let mut pos = anchor_world;
+        self.particles.push(ChainParticle {
+            pos,
+            vel: Vec2::ZERO,
+        });
+        for link in &self.links {
+            pos += Vec2::new(0.0, link.length);
+            self.particles.push(ChainParticle {
+                pos,
+                vel: Vec2::ZERO,
+            });
+        }
+        self.anchor_initialized = true;
+    }
+
+    /// Whether the chain is standing where [`Self::settle_to_rest`] would put
+    /// it: every particle hanging under the anchor and every velocity zero.
+    ///
+    /// `eps_sq` bounds the squared displacement from rest *and* each squared
+    /// velocity, so one number covers two quantities in two different units —
+    /// deliberately, and for the same reason
+    /// [`SimplePhysicsData::is_at_rest`] does it: the caller's epsilon is the
+    /// crate's one notion of "settled".
+    ///
+    /// A chain that has never seen a world anchor is *not* at rest: its first
+    /// tick hangs it under the anchor, which is a move.
+    pub fn is_at_rest(&self, eps_sq: f32) -> bool {
+        if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
+            return false;
+        }
+        let mut pos = self.anchor;
+        for (i, particle) in self.particles.iter().enumerate() {
+            if i > 0 {
+                pos += Vec2::new(0.0, self.links[i - 1].length);
+            }
+            if (particle.pos - pos).length_squared() > eps_sq
+                || particle.vel.length_squared() > eps_sq
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The bend at the joint above each link, in half turns, written into
+    /// `out` (cleared first). One value per link, so a chain reads out as a
+    /// vector the same shape as the thing that authored it.
+    ///
+    /// `world_inverse` rotates each rod out of world space and into the
+    /// node's frame exactly as [`SimplePhysicsData::param_value`] does: the
+    /// translation column is ignored, and the caller hands over a matrix
+    /// already conjugated by the Y flip.
+    ///
+    /// The first link's bend is measured from straight down; every later one
+    /// is measured from the link above it, wrapped into a half turn either
+    /// way. **Positive = the link's tip displaced toward +X of the node.**
+    pub fn link_bends(&self, world_inverse: Mat4, out: &mut Vec<f32>) {
+        out.clear();
+        let rods = self.links.len().min(self.particles.len().saturating_sub(1));
+        let mut previous = 0.0f32;
+        for i in 0..rods {
+            let d_world = self.particles[i + 1].pos - self.particles[i].pos;
+            let d_local = world_inverse
+                .transform_vector3(d_world.extend(0.0))
+                .truncate();
+            let dir = if d_local.length_squared() > 1e-12 {
+                d_local.normalize()
+            } else {
+                Vec2::new(0.0, 1.0)
+            };
+            // Y-down: (0, 1) is straight down and reads 0, (1, 0) points at
+            // +X and reads +pi/2. Note the sign is the opposite of
+            // `param_value`'s angle, which reports a pendulum's swing in a
+            // Y-up parameter frame; this one stays in the node's own frame.
+            let theta = f32::atan2(dir.x, dir.y);
+            let bend = if i == 0 {
+                theta
+            } else {
+                wrap_to_half_turn(theta - previous)
+            };
+            previous = theta;
+            out.push(bend / std::f32::consts::PI);
+        }
+    }
+
+    /// One position-based step of size `h`.
+    ///
+    /// Prediction, constraint and velocity fuse into a single root-to-tip
+    /// pass: a particle's free integration does not depend on its neighbour,
+    /// and by the time the rod above it is solved that neighbour is already
+    /// final, so the pass yields exactly what integrate-all-then-constrain-all
+    /// would. The result lands in scratch and is committed only if all of it
+    /// is finite, so one bad step cannot poison the chain permanently.
+    fn step(&mut self, h: f32) {
+        let n = self.links.len();
+        // `tick` re-hangs a chain whose two vectors disagree, so this never
+        // fires; it is here so the indexing below cannot panic on its own.
+        if self.particles.len() != n + 1 {
+            return;
+        }
+        let mut next: smallvec::SmallVec<[ChainParticle; 16]> =
+            smallvec::SmallVec::with_capacity(n + 1);
+        next.push(ChainParticle {
+            pos: self.anchor,
+            vel: Vec2::ZERO,
+        });
+
+        for i in 1..=n {
+            let link = self.links[i - 1];
+            let above = next[i - 1].pos;
+            let old = self.particles[i].pos;
+            let h_i = h * link.time_scale;
+            let moving = h_i.is_finite() && h_i > 0.0;
+
+            let free = if moving {
+                let v =
+                    self.particles[i].vel + Vec2::new(0.0, self.gravity * link.gravity_scale) * h_i;
+                old + v * h_i
+            } else {
+                old
+            };
+
+            let offset = free - above;
+            let pos = if offset.length_squared() > 1e-12 {
+                above + offset.normalize() * link.length
+            } else {
+                above + Vec2::new(0.0, link.length)
+            };
+
+            // Read velocity off the move that survived the constraint, not
+            // the one prediction asked for: the rod's correction is a real
+            // impulse, and reusing the predicted velocity would leave the
+            // particle carrying motion the rod just cancelled. Damping is a
+            // fraction shed per second, so it is raised to this link's own
+            // elapsed time.
+            let vel = if moving {
+                (pos - old) / h_i * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h_i)
+            } else {
+                Vec2::ZERO
+            };
+
+            next.push(ChainParticle { pos, vel });
+        }
+
+        if next.iter().all(|p| p.pos.is_finite() && p.vel.is_finite()) {
+            self.particles.copy_from_slice(&next);
+        }
+    }
+}
+
+/// Fold an angle into `(-pi, pi]` so a joint that crosses the back of the
+/// chain reports the short way round rather than a full turn.
+fn wrap_to_half_turn(angle: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let folded = angle.rem_euclid(TAU);
+    if folded > PI {
+        folded - TAU
+    } else {
+        folded
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,5 +1263,180 @@ mod tests {
         );
         // A soft model fits a 60 fps frame in one step.
         assert!(soft.max_substep() > 1.0 / 60.0);
+    }
+
+    /// Three links of unequal length, so a bug that only holds for a uniform
+    /// chain shows up.
+    fn chain(damping: f32) -> ParticleChainData {
+        ParticleChainData::new(
+            [60.0f32, 50.0, 40.0]
+                .map(|length| ChainLink {
+                    length,
+                    damping,
+                    ..Default::default()
+                })
+                .to_vec(),
+        )
+    }
+
+    #[test]
+    fn a_hanging_chain_stays_hanging() {
+        let mut c = chain(0.5);
+        for _ in 0..300 {
+            c.tick(Vec2::ZERO, 1.0 / 60.0);
+        }
+        let mut rest = Vec2::ZERO;
+        for i in 0..c.particles.len() {
+            if i > 0 {
+                rest += Vec2::new(0.0, c.links[i - 1].length);
+            }
+            assert!(
+                c.particles[i].pos.distance(rest) < 1e-3,
+                "particle {i} drifted off rest: {:?} want {:?}",
+                c.particles[i].pos,
+                rest,
+            );
+        }
+        assert!(c.is_at_rest(1e-6), "a hanging chain reads as at rest");
+    }
+
+    #[test]
+    fn a_sideways_kick_reaches_the_tip_after_the_root() {
+        let mut c = chain(0.5);
+        c.tick(Vec2::ZERO, 1.0 / 60.0);
+        let tip = c.particles.len() - 1;
+        let kicked = Vec2::new(40.0, 0.0);
+
+        let (mut root_peak, mut root_at) = (0.0f32, 0usize);
+        let (mut tip_peak, mut tip_at) = (0.0f32, 0usize);
+        for f in 0..600 {
+            c.tick(kicked, 1.0 / 60.0);
+            let root = c.particles[1].vel.x.abs();
+            if root > root_peak {
+                root_peak = root;
+                root_at = f;
+            }
+            let end = c.particles[tip].vel.x.abs();
+            if end > tip_peak {
+                tip_peak = end;
+                tip_at = f;
+            }
+        }
+
+        assert!(
+            tip_at > root_at,
+            "the kick reached the tip at frame {tip_at}, no later than the first link at {root_at}",
+        );
+        for i in 0..c.particles.len() {
+            assert!(
+                c.particles[i].pos.x > 0.0,
+                "particle {i} never followed the anchor: {:?}",
+                c.particles[i].pos,
+            );
+        }
+    }
+
+    #[test]
+    fn every_link_holds_its_length_while_swinging() {
+        let mut c = chain(0.1);
+        for f in 0..300 {
+            let t = f as f32 / 60.0;
+            c.tick(Vec2::new(60.0 * (t * 3.0).sin(), 0.0), 1.0 / 60.0);
+            for i in 0..c.links.len() {
+                let rod = c.particles[i + 1].pos.distance(c.particles[i].pos);
+                assert!(
+                    (rod - c.links[i].length).abs() < 1e-3,
+                    "frame {f} link {i} stretched to {rod}, want {}",
+                    c.links[i].length,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_tick_equals_the_substeps_it_would_have_taken() {
+        let dt = 1.0 / 60.0;
+        let steps = (dt / CHAIN_MAX_STEP).ceil() as u32;
+        assert_eq!(steps, 4, "the split this test hand-runs");
+
+        let mut whole = chain(0.4);
+        whole.settle_to_rest(Vec2::ZERO);
+        let mut split = whole.clone();
+
+        let anchor = Vec2::new(40.0, 0.0);
+        whole.tick(anchor, dt);
+        for _ in 0..steps {
+            split.tick(anchor, dt / steps as f32);
+        }
+
+        // The substep is the same size either way, so this is exact; the
+        // tolerance only guards against a compiler reassociating the split.
+        for i in 0..whole.particles.len() {
+            assert!(
+                whole.particles[i].pos.distance(split.particles[i].pos) < 1e-6
+                    && whole.particles[i].vel.distance(split.particles[i].vel) < 1e-6,
+                "particle {i}: {:?} vs {:?}",
+                whole.particles[i],
+                split.particles[i],
+            );
+        }
+    }
+
+    #[test]
+    fn the_chain_lands_in_one_place_at_two_frame_rates() {
+        let mut sixty = chain(0.4);
+        sixty.settle_to_rest(Vec2::ZERO);
+        let mut one_forty_four = sixty.clone();
+
+        let anchor = Vec2::new(40.0, 0.0);
+        for _ in 0..60 {
+            sixty.tick(anchor, 1.0 / 60.0);
+        }
+        for _ in 0..144 {
+            one_forty_four.tick(anchor, 1.0 / 144.0);
+        }
+
+        let total: f32 = sixty.links.iter().map(|l| l.length).sum();
+        let tip = sixty.particles.len() - 1;
+        let gap = sixty.particles[tip]
+            .pos
+            .distance(one_forty_four.particles[tip].pos);
+        assert!(
+            gap < 0.02 * total,
+            "one second at two frame rates ended {gap} px apart on a {total} px chain",
+        );
+    }
+
+    #[test]
+    fn link_bends_reads_zero_hanging_and_a_quarter_turn_at_a_bent_joint() {
+        let mut c = chain(0.5);
+        c.settle_to_rest(Vec2::ZERO);
+        let mut bends = Vec::new();
+
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert_eq!(bends.len(), 3, "one bend per link");
+        for (i, bend) in bends.iter().enumerate() {
+            assert!(bend.abs() < 1e-6, "hanging link {i} bends {bend}");
+        }
+
+        // Joint 1 turned 45 degrees toward +X, joint 2 left straight: link 2
+        // is parallel to link 1, so only the middle bend is non-zero.
+        let diagonal = Vec2::splat(std::f32::consts::FRAC_1_SQRT_2);
+        c.particles[1].pos = Vec2::new(0.0, c.links[0].length);
+        c.particles[2].pos = c.particles[1].pos + diagonal * c.links[1].length;
+        c.particles[3].pos = c.particles[2].pos + diagonal * c.links[2].length;
+
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(bends[0].abs() < 1e-6, "link 0 still hangs: {}", bends[0]);
+        assert!(
+            (bends[1] - 0.25).abs() < 1e-5,
+            "joint 1 bends a quarter turn toward +X: {}",
+            bends[1],
+        );
+        assert!(
+            bends[2].abs() < 1e-6,
+            "link 2 is parallel to link 1: {}",
+            bends[2],
+        );
     }
 }

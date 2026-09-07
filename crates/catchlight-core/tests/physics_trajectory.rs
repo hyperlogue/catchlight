@@ -14,14 +14,19 @@
 //! origin and every sampled number is the driver's: the model exists to carry
 //! the authored pendulum and the two params it writes.
 //!
+//! The particle chain has no node kind yet, so its scenario drives
+//! `ParticleChainData` directly and records the bend of each link rather than
+//! a param. Samples are therefore not all two wide, which is why the
+//! baseline's rows are plain arrays rather than pairs.
+//!
 //! Regenerate after an intentional physics change:
 //!   UPDATE_PHYSICS_BASELINE=1 cargo test -p catchlight-core --test physics_trajectory
 
 use catchlight_core::formats::clm::ClmPhysics;
 use catchlight_core::id::SeededHex;
 use catchlight_core::model::{ModelNode, ModelNodeKind, ModelParam, ModelPhysics};
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
-use catchlight_core::{Model, Name, ParamId, Puppet, Vec2};
+use catchlight_core::physics::{ChainLink, ParticleChainData, PendulumKind, PhysicsParamMapMode};
+use catchlight_core::{Mat4, Model, Name, ParamId, Puppet, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -31,6 +36,11 @@ const SAMPLE_EVERY: usize = 5;
 // Per-sample absolute tolerance on the mapped param output. Cross-arch f32
 // jitter over 300 RK4 frames stays well under this; a real change to the
 // integrator, mapping, or output scaling shifts the curve by far more.
+//
+// The chain scenario is a triple pendulum and so genuinely chaotic: a 1-ulp
+// change to its starting anchor grows to ~1.3e-4 by the last sample, an order
+// of magnitude inside this tolerance but not two. Should it ever go flaky on
+// a new target, shorten that scenario rather than loosen this.
 const TOL: f32 = 2e-3;
 
 /// The authored pendulum plus where its bob starts. The bob is a *runtime*
@@ -156,6 +166,37 @@ fn spring_stiff() -> Scenario {
     }
 }
 
+/// A three-link chain hung from the origin, then yanked 40 px sideways and
+/// held there: the anchor step excites every joint at once and the transient
+/// is the whole curve back to rest. Driven on the solver directly, since the
+/// chain has no node kind to hang off a puppet yet — so unlike the scenarios
+/// above this one fingerprints the integrator alone.
+fn chain_perturbed() -> Vec<Vec<f32>> {
+    let mut chain = ParticleChainData::new(
+        [60.0f32, 50.0, 40.0]
+            .map(|length| ChainLink {
+                length,
+                ..Default::default()
+            })
+            .to_vec(),
+    );
+    // Named folded, the way the drivers above name theirs.
+    chain.gravity = 980.0;
+    chain.settle_to_rest(Vec2::ZERO);
+
+    let anchor = Vec2::new(40.0, 0.0);
+    let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
+    let mut bends = Vec::new();
+    for f in 0..FRAMES {
+        chain.tick(anchor, DT);
+        if f % SAMPLE_EVERY == 0 {
+            chain.link_bends(Mat4::IDENTITY, &mut bends);
+            samples.push(bends.clone());
+        }
+    }
+    samples
+}
+
 /// The placement the trajectories above are built on, on its own: a driver
 /// left alone hangs straight down under its anchor on its first tick, and one
 /// that was placed swings from where it was put instead. Without this the
@@ -184,17 +225,23 @@ fn a_placed_pendulum_swings_and_an_untouched_one_hangs() {
     );
 }
 
-fn current_trajectories() -> BTreeMap<String, Vec<[f32; 2]>> {
+/// Every scenario's samples in one map. Rows are variable width because the
+/// chain reports one bend per link where a driver reports two params; a
+/// two-wide row serializes identically either way, so widening the value type
+/// left the committed baseline's existing entries byte for byte unchanged.
+fn current_trajectories() -> BTreeMap<String, Vec<Vec<f32>>> {
     let mut m = BTreeMap::new();
-    m.insert(
-        "rigid_perturbed".to_string(),
-        run_scenario(rigid_perturbed()),
-    );
-    m.insert(
-        "spring_stretched".to_string(),
-        run_scenario(spring_stretched()),
-    );
-    m.insert("spring_stiff".to_string(), run_scenario(spring_stiff()));
+    for (name, samples) in [
+        ("rigid_perturbed", run_scenario(rigid_perturbed())),
+        ("spring_stretched", run_scenario(spring_stretched())),
+        ("spring_stiff", run_scenario(spring_stiff())),
+    ] {
+        m.insert(
+            name.to_string(),
+            samples.into_iter().map(|s| s.to_vec()).collect(),
+        );
+    }
+    m.insert("chain_perturbed".to_string(), chain_perturbed());
     m
 }
 
@@ -223,7 +270,7 @@ fn physics_driver_trajectory_matches_baseline() -> Result<(), Box<dyn std::error
             path.display()
         )
     })?;
-    let expected: BTreeMap<String, Vec<[f32; 2]>> = serde_json::from_str(&raw)?;
+    let expected: BTreeMap<String, Vec<Vec<f32>>> = serde_json::from_str(&raw)?;
 
     for (name, cur) in &current {
         let Some(exp) = expected.get(name) else {
@@ -238,22 +285,26 @@ fn physics_driver_trajectory_matches_baseline() -> Result<(), Box<dyn std::error
         );
 
         let mut worst = 0.0f32;
-        let mut worst_at = (0usize, 'x');
+        let mut worst_at = (0usize, 0usize);
         for (i, (c, e)) in cur.iter().zip(exp).enumerate() {
-            let dx = (c[0] - e[0]).abs();
-            let dy = (c[1] - e[1]).abs();
-            if dx > worst {
-                worst = dx;
-                worst_at = (i, 'x');
-            }
-            if dy > worst {
-                worst = dy;
-                worst_at = (i, 'y');
+            assert_eq!(
+                c.len(),
+                e.len(),
+                "{name}: sample {i} changed width ({} vs {})",
+                c.len(),
+                e.len()
+            );
+            for (k, (cv, ev)) in c.iter().zip(e).enumerate() {
+                let d = (cv - ev).abs();
+                if d > worst {
+                    worst = d;
+                    worst_at = (i, k);
+                }
             }
         }
         assert!(
             worst <= TOL,
-            "{name}: trajectory drifted from baseline; worst |Δ|={worst:.6} at sample {} ({}) > tol {TOL}. \
+            "{name}: trajectory drifted from baseline; worst |Δ|={worst:.6} at sample {} channel {} > tol {TOL}. \
              If intentional, regenerate with UPDATE_PHYSICS_BASELINE=1.",
             worst_at.0,
             worst_at.1,
