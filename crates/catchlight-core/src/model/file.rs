@@ -164,6 +164,8 @@ pub enum ClmLoadError {
     ChainNoLinks { node: String },
     #[error("particle chain {node:?} has a gravity that is not finite and above zero")]
     ChainGravity { node: String },
+    #[error("particle chain {node:?} has a weight that is not finite and at or above zero")]
+    ChainWeight { node: String },
     #[error("particle chain {node:?} link {link}: {field} {reason}")]
     ChainLinkField {
         node: String,
@@ -1062,6 +1064,7 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
         ModelNodeKind::ParticleChain(chain) => ClmNodeKind::ParticleChain(ClmParticleChain {
             local_only: chain.local_only,
             gravity: chain.gravity,
+            weight: chain.weight,
             links: chain
                 .links()
                 .iter()
@@ -1223,6 +1226,12 @@ fn model_chain(
         }
         .into());
     }
+    if !c.weight.is_finite() || c.weight < 0.0 {
+        return Err(ClmLoadError::ChainWeight {
+            node: id.to_string(),
+        }
+        .into());
+    }
     let mut chain = ModelParticleChain::new(
         c.links
             .iter()
@@ -1260,6 +1269,7 @@ fn model_chain(
     }
     chain.local_only = c.local_only;
     chain.gravity = c.gravity;
+    chain.weight = c.weight;
     Ok(chain)
 }
 
@@ -2111,6 +2121,7 @@ mod tests {
             let mut chain = ClmParticleChain {
                 local_only: false,
                 gravity: 9.8,
+                weight: 1.0,
                 links: vec![
                     ClmChainLink {
                         length: 60.0,
@@ -2157,6 +2168,22 @@ mod tests {
 
         let (file, node) = chain_file(|c| c.gravity = f32::NAN);
         assert_eq!(load_err(&file), ClmLoadError::ChainGravity { node });
+
+        // A weight is authority and not a scale, so zero is a chain that
+        // asserts nothing rather than a broken one; only the negative and the
+        // non-numeric are refused.
+        let (ok, _) = chain_file(|c| c.weight = 0.0);
+        assert!(
+            Model::from_clm_file(&ok).is_ok(),
+            "weight 0 is a chain that \
+             simulates and claims nothing"
+        );
+
+        let (file, node) = chain_file(|c| c.weight = -1.0);
+        assert_eq!(load_err(&file), ClmLoadError::ChainWeight { node });
+
+        let (file, node) = chain_file(|c| c.weight = f32::NAN);
+        assert_eq!(load_err(&file), ClmLoadError::ChainWeight { node });
 
         /// One way to break a link, and the refusal it has to produce.
         type BreakLink = (fn(&mut ClmParticleChain), &'static str, &'static str);
@@ -2245,6 +2272,7 @@ mod tests {
             kind: ClmNodeKind::ParticleChain(ClmParticleChain {
                 local_only: false,
                 gravity: 9.8,
+                weight: 1.0,
                 links: vec![
                     ClmChainLink {
                         length: 60.0,
@@ -2290,6 +2318,49 @@ mod tests {
     /// and reads back as the unsprung link it describes. The key is additive
     /// under the format's CBOR-map rule, which is why no version bump goes
     /// with it; `clm_roundtrip` is where a written one makes the trip back.
+    #[test]
+    fn a_chain_map_without_weight_reads_as_full_authority() {
+        /// A chain map as it was written before a chain could hold back: the
+        /// same keys, in the same order, and nothing else.
+        #[derive(serde::Serialize)]
+        struct ChainBeforeTheWeight {
+            local_only: bool,
+            gravity: f32,
+            links: Vec<ClmChainLink>,
+            outputs: Vec<Option<ParamId>>,
+        }
+
+        let links = vec![ClmChainLink {
+            length: 60.0,
+            gravity_scale: 1.0,
+            damping: 0.5,
+            time_scale: 1.0,
+            stiffness: 0.0,
+        }];
+        let mut bytes = Vec::new();
+        ciborium::into_writer(
+            &ChainBeforeTheWeight {
+                local_only: false,
+                gravity: 9.8,
+                links: links.clone(),
+                outputs: vec![None],
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        let chain: ClmParticleChain = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(
+            chain,
+            ClmParticleChain {
+                local_only: false,
+                gravity: 9.8,
+                weight: 1.0,
+                links,
+                outputs: vec![None],
+            },
+        );
+    }
+
     #[test]
     fn a_link_map_without_stiffness_reads_as_unsprung() {
         /// A link map as it was written before there was a spring: the same

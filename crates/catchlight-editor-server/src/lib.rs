@@ -1868,6 +1868,7 @@ impl Editor {
                 links,
                 local_only,
                 gravity,
+                weight,
                 outputs,
                 node: id,
             } => self.edit_session(session, |s| {
@@ -1877,6 +1878,9 @@ impl Editor {
                 }
                 if let Some(v) = gravity {
                     chain.gravity = v;
+                }
+                if let Some(v) = chain_weight(weight)? {
+                    chain.weight = v;
                 }
                 let node = ModelNode::new(
                     name.unwrap_or_else(|| "Chain".into()),
@@ -1898,6 +1902,7 @@ impl Editor {
                 links,
                 local_only,
                 gravity,
+                weight,
                 outputs,
             } => self.edit_session(session, |s| {
                 // Links first, so a set that reshapes and re-aims in one
@@ -1906,7 +1911,8 @@ impl Editor {
                 if let Some(links) = links {
                     s.model.set_chain_links(&node, chain_links(links)?)?;
                 }
-                if local_only.is_some() || gravity.is_some() {
+                let weight = chain_weight(weight)?;
+                if local_only.is_some() || gravity.is_some() || weight.is_some() {
                     s.model.update_node(&node, |n| {
                         let ModelNodeKind::ParticleChain(chain) = &mut n.kind else {
                             return Err(EditorError::BadTarget("not a particle chain".into()));
@@ -1916,6 +1922,9 @@ impl Editor {
                         }
                         if let Some(v) = gravity {
                             chain.gravity = v;
+                        }
+                        if let Some(v) = weight {
+                            chain.weight = v;
                         }
                         Ok(())
                     })??;
@@ -2355,6 +2364,18 @@ fn physics_targets(
 /// nothing and has nothing to drive it — the refusal is the same
 /// [`ErrorCode::BadTarget`] a malformed mesh gets, an argument that parsed and
 /// does not describe a thing the model can hold.
+/// A chain's authority over its params, refused at the door rather than on
+/// the next load: a command that names a number the file format would not
+/// take back is answered now, with the field in the message.
+fn chain_weight(weight: Option<f32>) -> Result<Option<f32>, EditorError> {
+    match weight {
+        Some(w) if !w.is_finite() || w < 0.0 => Err(EditorError::BadTarget(
+            "weight is not finite and at or above zero".into(),
+        )),
+        other => Ok(other),
+    }
+}
+
 fn chain_links(links: Vec<ChainLinkArg>) -> Result<Vec<ChainLink>, EditorError> {
     if links.is_empty() {
         return Err(EditorError::BadTarget(

@@ -314,10 +314,10 @@ const PHYSICS_FIELDS: &[&str] = &[
     "output_scale.y",
     "pendulum",
 ];
-/// A chain's own two scalars. Its `links` are a list of structs and its
+/// A chain's own scalars. Its `links` are a list of structs and its
 /// `outputs` a list of Ids, neither of which this command's `field=value`
 /// shape can address — the same reason `key_positions` is missing below.
-const CHAIN_FIELDS: &[&str] = &["gravity", "local_only"];
+const CHAIN_FIELDS: &[&str] = &["gravity", "local_only", "weight"];
 /// The fields a param has. `key_positions` is a list, not a scalar, so it is
 /// not patchable here.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
@@ -427,6 +427,7 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
         ClmNodeKind::ParticleChain(c) => match field {
             "local_only" => Slot::Bool(&mut c.local_only),
             "gravity" => Slot::F32(&mut c.gravity),
+            "weight" => Slot::F32(&mut c.weight),
             _ => return None,
         },
     })

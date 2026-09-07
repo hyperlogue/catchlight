@@ -282,6 +282,7 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             ModelNodeKind::ParticleChain(chain) => Some(ChainInfo {
                 local_only: chain.local_only,
                 gravity: chain.gravity,
+                weight: chain.weight,
                 links: chain.links().iter().map(ChainLinkArg::of).collect(),
                 outputs: chain.outputs().to_vec(),
             }),

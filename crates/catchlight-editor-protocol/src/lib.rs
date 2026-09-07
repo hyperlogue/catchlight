@@ -690,6 +690,11 @@ pub enum Command {
         local_only: Option<bool>,
         #[serde(default)]
         gravity: Option<f32>,
+        /// How much the chain's solve decides the params it writes, against
+        /// what the caller posed: finite and at or above zero, 1 the whole
+        /// say and 0 none of it. Absent is the editor's own default, 1.
+        #[serde(default)]
+        weight: Option<f32>,
         /// One param per link, in link order, `None` where a link drives
         /// nothing. Absent binds none; present, it must be exactly as long as
         /// `links`.
@@ -717,6 +722,9 @@ pub enum Command {
         local_only: Option<bool>,
         #[serde(default)]
         gravity: Option<f32>,
+        /// [`Command::ChainAdd`]'s, and refused the same way.
+        #[serde(default)]
+        weight: Option<f32>,
         /// One param per link, exactly as long as the chain is after `links`
         /// is applied.
         #[serde(default)]
@@ -2800,6 +2808,7 @@ pub struct PhysicsInfo {
 pub struct ChainInfo {
     pub local_only: bool,
     pub gravity: f32,
+    pub weight: f32,
     pub links: Vec<ChainLinkArg>,
     pub outputs: Vec<Option<ParamId>>,
 }

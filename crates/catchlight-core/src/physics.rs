@@ -44,15 +44,18 @@
 //! its own, damps what is left, and puts it back. Under a still anchor there
 //! is nothing to take off and the chain integrates the bits it always did.
 //!
-//! **A link's bend spring pulls toward the art, not toward gravity.** A
+//! **A link's bend spring pulls toward the pose, not toward gravity.** A
 //! link's `stiffness` is the frequency in Hz of a spring on the bend at the
-//! joint above it, and the bend it pulls to zero is the one `link_bends`
-//! reports: for the first link, the node's own down, so a stiff strand
-//! follows the head as it tilts while a limp one hangs; for every later link,
-//! the direction of the link above it, so a strand drawn straight is at rest
-//! straight. There is no rest-bend knob — bend 0 is the art as drawn — and
-//! `0` Hz is no spring at all, which is every model written before there was
-//! one. The spring saturates rather than exploding: a step too coarse to
+//! joint above it, and what it pulls the joint to is the bend that link's own
+//! param is posed at, measured the way `link_bends` reports it: from the
+//! node's own down for the first link, so a stiff strand follows the head as
+//! it tilts while a limp one hangs, and from the link above for every later
+//! one, so a strand drawn straight and posed at zero is at rest straight.
+//! There is no rest-bend knob because the pose is one — an animation that
+//! bends a joint to a quarter turn moves the spring's target there, and
+//! physics supplies the lag and the settle around it. `0` Hz is no spring at
+//! all, which is every model written before there was one. The spring
+//! saturates rather than exploding: a step too coarse to
 //! resolve it moves the joint to rest in that step instead of past it, so no
 //! stiffness at any `time_scale` can blow the chain up.
 //!
@@ -662,6 +665,12 @@ pub struct ParticleChainData {
     /// Pre-folded like `SimplePhysicsData::gravity` (pixels/s², toward +Y in
     /// the physics frame).
     pub gravity: f32,
+    /// How much authority the chain has over the params it drives, at or
+    /// above zero. The solver never reads it — `Puppet` claims each bend at
+    /// this weight and the fold blends it against the pose, so `1` is the
+    /// chain deciding its params outright, `0.5` half way, and `0` a chain
+    /// that still simulates and asserts nothing.
+    pub weight: f32,
     pub links: Vec<ChainLink>,
     /// `links.len() + 1` particles; `particles[0]` is the anchor. Any tick
     /// that finds the two out of step re-hangs the chain, so editing `links`
@@ -698,6 +707,7 @@ impl ParticleChainData {
         let mut chain = Self {
             local_only: false,
             gravity: 9.8 * 100.0,
+            weight: 1.0,
             particles: Vec::with_capacity(links.len() + 1),
             links,
             anchor: Vec2::ZERO,
@@ -768,10 +778,15 @@ impl ParticleChainData {
     ///
     /// A tick that advances no time is a reposition rather than a move: the
     /// anchor and down are stored and nothing is interpolated toward them.
-    pub fn tick(&mut self, anchor_world: Vec2, down_world: Vec2, dt: f32) {
+    ///
+    /// `posed` is the bend each link's own param is posed at, in half turns,
+    /// and is where that link's spring pulls; see [`posed_rest`]. One entry
+    /// per link, 0 for a link no param drives, and a shorter slice reads as 0
+    /// for the links it does not reach.
+    pub fn tick(&mut self, anchor_world: Vec2, down_world: Vec2, posed: &[f32], dt: f32) {
         let down = unit_down(down_world);
         if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
-            self.settle_to_rest(anchor_world, down);
+            self.settle_to_rest(anchor_world, down, posed);
         }
         let (was_anchor, was_down) = (self.anchor, self.down);
         self.anchor = anchor_world;
@@ -805,7 +820,7 @@ impl ParticleChainData {
                     unit_down_or(was_down.lerp(down, t), down),
                 )
             };
-            moved |= self.step(to, to - from, rest, h);
+            moved |= self.step(to, to - from, rest, posed, h);
             from = to;
         }
         self.moved_last_tick = moved;
@@ -821,7 +836,11 @@ impl ParticleChainData {
     /// exactly alone. A sprung one balances the two torques it feels — see
     /// [`rest_pose_dir`] for the equation and why it is exact rather than
     /// approximate.
-    pub fn settle_to_rest(&mut self, anchor_world: Vec2, down_world: Vec2) {
+    ///
+    /// `posed` is [`Self::tick`]'s, and the pose is part of the shape this
+    /// computes: the spring balances gravity around the bend the param poses,
+    /// not around zero.
+    pub fn settle_to_rest(&mut self, anchor_world: Vec2, down_world: Vec2, posed: &[f32]) {
         self.anchor = anchor_world;
         self.down = unit_down(down_world);
         self.particles.clear();
@@ -832,8 +851,9 @@ impl ParticleChainData {
             vel: Vec2::ZERO,
         });
         let mut rest = self.down;
-        for link in &self.links {
-            let dir = rest_pose_dir(link, rest, self.gravity);
+        for (i, link) in self.links.iter().enumerate() {
+            let target = posed_rest(rest, posed.get(i).copied().unwrap_or(0.0));
+            let dir = rest_pose_dir(link, target, self.gravity);
             pos += dir * link.length;
             self.particles.push(ChainParticle {
                 pos,
@@ -930,7 +950,8 @@ impl ParticleChainData {
     ///
     /// The root is pinned to `anchor`, which travelled `anchor_moved` over
     /// this step, and `down` is where bend 0 of the first link points for it;
-    /// [`Self::tick`] walks all three across a frame's substeps.
+    /// [`Self::tick`] walks all three across a frame's substeps. `posed` is
+    /// [`Self::tick`]'s, and is the same for every substep of a frame.
     ///
     /// Prediction, constraint and velocity fuse into a single root-to-tip
     /// pass: a particle's free integration does not depend on its neighbour,
@@ -938,7 +959,14 @@ impl ParticleChainData {
     /// final, so the pass yields exactly what integrate-all-then-constrain-all
     /// would. The result lands in scratch and is committed only if all of it
     /// is finite, so one bad step cannot poison the chain permanently.
-    fn step(&mut self, anchor: Vec2, anchor_moved: Vec2, down: Vec2, h: f32) -> bool {
+    fn step(
+        &mut self,
+        anchor: Vec2,
+        anchor_moved: Vec2,
+        down: Vec2,
+        posed: &[f32],
+        h: f32,
+    ) -> bool {
         let n = self.links.len();
         // `tick` re-hangs a chain whose two vectors disagree, so this never
         // fires; it is here so the indexing below cannot panic on its own.
@@ -974,8 +1002,9 @@ impl ParticleChainData {
                 // clock like everything else. Skipped whole when it has
                 // nothing to say, so an unsprung link integrates the same
                 // bits it did before there was a spring at all.
+                let target = posed_rest(rest, posed.get(i - 1).copied().unwrap_or(0.0));
                 if let Some(acc) =
-                    bend_spring_acceleration(rest, old - above, link.length, link.stiffness, h_i)
+                    bend_spring_acceleration(target, old - above, link.length, link.stiffness, h_i)
                 {
                     v += acc * h_i;
                 }
@@ -1108,6 +1137,29 @@ fn unit_down_or(v: Vec2, fallback: Vec2) -> Vec2 {
     }
 }
 
+/// Where a link's bend spring pulls: its `rest` — the direction its bend
+/// reads zero along — turned by the bend its own param is posed at.
+///
+/// **The pose is the spring's target, and physics is what happens around
+/// it.** An animation that poses a joint at a quarter turn is saying the
+/// strand is drawn bent there, so a stiff link holds it there and a limp one
+/// sags away from it, exactly as both do about a strand drawn straight.
+///
+/// `posed` is in half turns, the convention
+/// [`ParticleChainData::link_bends`] reports and the one a bend param
+/// carries: positive is the link's tip toward the node's +X. That reads
+/// `theta = atan2(dir.x, dir.y)` off the rod, and [`rotate_by`] by `a` takes
+/// `theta` to `theta - a`, so the turn that *raises* the reported bend by
+/// `posed` is by `-posed * pi`. Zero returns `rest` itself rather than a
+/// rotation by zero, so a chain nothing poses integrates the bits it always
+/// did.
+fn posed_rest(rest: Vec2, posed: f32) -> Vec2 {
+    if !posed.is_finite() || posed == 0.0 {
+        return rest;
+    }
+    rotate_by(rest, -posed * std::f32::consts::PI)
+}
+
 /// The angle from `from` to `to`, in `(-pi, pi]`, positive the way
 /// [`rotate_by`] turns.
 fn signed_angle(from: Vec2, to: Vec2) -> f32 {
@@ -1120,9 +1172,10 @@ fn rotate_by(v: Vec2, angle: f32) -> Vec2 {
     Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
 }
 
-/// The direction one link takes at rest: `rest` is where its bend reads zero
-/// (the node's down for the first link, the link above for the rest), and
-/// `gravity` is the chain's, before this link's own scale.
+/// The direction one link takes at rest: `rest` is where its spring pulls —
+/// [`posed_rest`] of where its bend reads zero, which is the node's down for
+/// the first link and the link above for every other — and `gravity` is the
+/// chain's, before this link's own scale.
 ///
 /// **Springless links keep what they always did.** A weighted one hangs along
 /// gravity, whatever the node is doing; one with no weight either has nothing
@@ -1718,7 +1771,7 @@ mod tests {
     fn a_hanging_chain_stays_hanging() {
         let mut c = chain(0.5);
         for _ in 0..300 {
-            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+            c.tick(Vec2::ZERO, DOWN, &[], 1.0 / 60.0);
         }
         let mut rest = Vec2::ZERO;
         for i in 0..c.particles.len() {
@@ -1738,14 +1791,14 @@ mod tests {
     #[test]
     fn a_sideways_kick_reaches_the_tip_after_the_root() {
         let mut c = chain(0.5);
-        c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+        c.tick(Vec2::ZERO, DOWN, &[], 1.0 / 60.0);
         let tip = c.particles.len() - 1;
         let kicked = Vec2::new(40.0, 0.0);
 
         let (mut root_peak, mut root_at) = (0.0f32, 0usize);
         let (mut tip_peak, mut tip_at) = (0.0f32, 0usize);
         for f in 0..600 {
-            c.tick(kicked, DOWN, 1.0 / 60.0);
+            c.tick(kicked, DOWN, &[], 1.0 / 60.0);
             let root = c.particles[1].vel.x.abs();
             if root > root_peak {
                 root_peak = root;
@@ -1776,7 +1829,12 @@ mod tests {
         let mut c = chain(0.1);
         for f in 0..300 {
             let t = f as f32 / 60.0;
-            c.tick(Vec2::new(60.0 * (t * 3.0).sin(), 0.0), DOWN, 1.0 / 60.0);
+            c.tick(
+                Vec2::new(60.0 * (t * 3.0).sin(), 0.0),
+                DOWN,
+                &[],
+                1.0 / 60.0,
+            );
             for i in 0..c.links.len() {
                 let rod = c.particles[i + 1].pos.distance(c.particles[i].pos);
                 assert!(
@@ -1795,7 +1853,7 @@ mod tests {
         assert_eq!(steps, 4, "the split this test hand-runs");
 
         let mut whole = chain(0.4);
-        whole.settle_to_rest(Vec2::ZERO, DOWN);
+        whole.settle_to_rest(Vec2::ZERO, DOWN, &[]);
         let mut split = whole.clone();
 
         // The anchor path is chopped along with the frame: `tick` slides the
@@ -1805,10 +1863,10 @@ mod tests {
         // be telling the solver the anchor jumped in the first quarter, which
         // is a different move and rightly integrates differently.
         let anchor = Vec2::new(40.0, 0.0);
-        whole.tick(anchor, DOWN, dt);
+        whole.tick(anchor, DOWN, &[], dt);
         for k in 1..=steps {
             let part = Vec2::ZERO.lerp(anchor, k as f32 / steps as f32);
-            split.tick(part, DOWN, dt / steps as f32);
+            split.tick(part, DOWN, &[], dt / steps as f32);
         }
 
         // The substep is the same size either way, so this is exact; the
@@ -1841,9 +1899,14 @@ mod tests {
         let path = |t: f32| Vec2::new(40.0 * (t / 0.25).min(1.0), 0.0);
         let ran = |rate: u32| {
             let mut c = chain(0.4);
-            c.settle_to_rest(path(0.0), DOWN);
+            c.settle_to_rest(path(0.0), DOWN, &[]);
             for f in 0..rate {
-                c.tick(path((f + 1) as f32 / rate as f32), DOWN, 1.0 / rate as f32);
+                c.tick(
+                    path((f + 1) as f32 / rate as f32),
+                    DOWN,
+                    &[],
+                    1.0 / rate as f32,
+                );
             }
             c.particles[c.particles.len() - 1].pos
         };
@@ -1887,11 +1950,16 @@ mod tests {
             3
         ]);
         let sweep = |t: f32| Vec2::new(10.0 * (std::f32::consts::TAU * t).sin(), 0.0);
-        c.settle_to_rest(sweep(0.0), DOWN);
+        c.settle_to_rest(sweep(0.0), DOWN, &[]);
         let tip = c.particles.len() - 1;
         let mut samples = Vec::with_capacity(12);
         for f in 0..6 * rate {
-            c.tick(sweep((f + 1) as f32 / rate as f32), DOWN, 1.0 / rate as f32);
+            c.tick(
+                sweep((f + 1) as f32 / rate as f32),
+                DOWN,
+                &[],
+                1.0 / rate as f32,
+            );
             if (f + 1) % (rate / 2) == 0 {
                 samples.push(c.particles[tip].pos);
             }
@@ -1959,7 +2027,7 @@ mod tests {
     #[test]
     fn link_bends_reads_zero_hanging_and_a_quarter_turn_at_a_bent_joint() {
         let mut c = chain(0.5);
-        c.settle_to_rest(Vec2::ZERO, DOWN);
+        c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
         let mut bends = Vec::new();
 
         c.link_bends(Mat4::IDENTITY, &mut bends);
@@ -2008,7 +2076,7 @@ mod tests {
             time_scale: 1.0,
             stiffness: 1.0,
         }]);
-        c.settle_to_rest(Vec2::ZERO, DOWN);
+        c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
         // A small bend, so the small-angle period the frequency names is the
         // one being measured.
         c.particles[1].pos = rotate_by(Vec2::new(0.0, c.links[0].length), 0.05);
@@ -2017,7 +2085,7 @@ mod tests {
         let mut crossings: Vec<f32> = Vec::new();
         let mut previous = 0.05f32;
         for f in 0..600 {
-            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+            c.tick(Vec2::ZERO, DOWN, &[], 1.0 / 60.0);
             c.link_bends(Mat4::IDENTITY, &mut bends);
             let bend = bends[0];
             if (bend > 0.0) != (previous > 0.0) {
@@ -2054,13 +2122,13 @@ mod tests {
             time_scale: 1.0,
             stiffness: 1.0,
         }]);
-        c.settle_to_rest(Vec2::ZERO, DOWN);
+        c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
         c.particles[1].pos = rotate_by(Vec2::new(0.0, c.links[0].length), 0.4);
 
         // Forty seconds: the spring here is barely damped at all, and the
         // point is that it does stop, not how soon.
         for _ in 0..2400 {
-            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+            c.tick(Vec2::ZERO, DOWN, &[], 1.0 / 60.0);
         }
         assert!(
             c.is_at_rest(1e-6),
@@ -2086,13 +2154,13 @@ mod tests {
             3
         ]);
         c.gravity = 980.0;
-        c.settle_to_rest(Vec2::ZERO, DOWN);
+        c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
         c.particles[1].pos = rotate_by(Vec2::new(0.0, 60.0), 0.6);
         c.particles[2].pos = c.particles[1].pos + Vec2::new(60.0, 0.0);
         c.particles[3].pos = c.particles[2].pos + Vec2::new(0.0, -60.0);
 
         for f in 0..1200 {
-            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+            c.tick(Vec2::ZERO, DOWN, &[], 1.0 / 60.0);
             for (i, p) in c.particles.iter().enumerate() {
                 assert!(
                     p.pos.is_finite() && p.vel.is_finite(),
@@ -2128,14 +2196,14 @@ mod tests {
             4
         ]);
         c.gravity = 980.0;
-        c.settle_to_rest(Vec2::ZERO, tilted);
+        c.settle_to_rest(Vec2::ZERO, tilted, &[]);
         for particle in c.particles.iter_mut().skip(1) {
             particle.pos += Vec2::new(5.0, -2.0);
         }
 
         let mut quiet_at = None;
         for f in 0..600 {
-            c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+            c.tick(Vec2::ZERO, tilted, &[], 1.0 / 60.0);
             for (i, particle) in c.particles.iter().enumerate() {
                 assert!(
                     particle.pos.is_finite() && particle.vel.is_finite(),
@@ -2179,13 +2247,13 @@ mod tests {
                 links
             ]);
             c.gravity = 980.0;
-            c.settle_to_rest(Vec2::ZERO, tilted);
+            c.settle_to_rest(Vec2::ZERO, tilted, &[]);
             for particle in c.particles.iter_mut().skip(1) {
                 particle.pos += Vec2::new(5.0, -2.0);
             }
             assert!(
                 !c.is_at_rest(1e-6) || {
-                    c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+                    c.tick(Vec2::ZERO, tilted, &[], 1.0 / 60.0);
                     !c.is_at_rest(1e-6)
                 },
                 "{links}x{stiffness}Hz: a displaced chain is about to move",
@@ -2194,11 +2262,11 @@ mod tests {
             // Two minutes, which is far longer than any of these take; the
             // point is that they stop at all, not how soon.
             for _ in 0..7200 {
-                c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+                c.tick(Vec2::ZERO, tilted, &[], 1.0 / 60.0);
             }
             let before: Vec<Vec2> = c.particles.iter().map(|p| p.pos).collect();
             for _ in 0..120 {
-                c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+                c.tick(Vec2::ZERO, tilted, &[], 1.0 / 60.0);
             }
             for (i, was) in before.iter().enumerate() {
                 assert_eq!(
@@ -2239,7 +2307,7 @@ mod tests {
             3
         ]);
         c.gravity = 980.0;
-        c.settle_to_rest(Vec2::ZERO, tilted);
+        c.settle_to_rest(Vec2::ZERO, tilted, &[]);
         let settled: Vec<Vec2> = c.particles.iter().map(|p| p.pos).collect();
 
         // The pose is a real compromise between the two pulls and not either
@@ -2252,7 +2320,7 @@ mod tests {
 
         let mut worst = 0.0f32;
         for _ in 0..200 {
-            c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+            c.tick(Vec2::ZERO, tilted, &[], 1.0 / 60.0);
             for (i, was) in settled.iter().enumerate() {
                 worst = worst.max(c.particles[i].pos.distance(*was));
             }

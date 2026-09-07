@@ -1003,6 +1003,7 @@ fn particle_chain_fixture() -> FixtureFile {
             ClmNodeKind::ParticleChain(ClmParticleChain {
                 local_only: false,
                 gravity: 1.0,
+                weight: 1.0,
                 links: [60.0, 50.0, 40.0]
                     .into_iter()
                     .map(|length| ClmChainLink {

@@ -874,6 +874,9 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
             kind: ClmNodeKind::ParticleChain(ClmParticleChain {
                 local_only: false,
                 gravity: STRAND_GRAVITY,
+                // The chain decides the bends it writes, so the file carries
+                // no `weight` key and the fixture's bytes do not move.
+                weight: 1.0,
                 links: fit
                     .lengths
                     .iter()

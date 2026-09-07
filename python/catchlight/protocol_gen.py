@@ -1483,6 +1483,10 @@ class ChainAdd:
     links: list[ChainLinkArg]
     local_only: bool | None = None
     gravity: float | None = None
+    # How much the chain's solve decides the params it writes, against
+    # what the caller posed: finite and at or above zero, 1 the whole
+    # say and 0 none of it. Absent is the editor's own default, 1.
+    weight: float | None = None
     # One param per link, in link order, `None` where a link drives
     # nothing. Absent binds none; present, it must be exactly as long as
     # `links`.
@@ -1518,6 +1522,8 @@ class ChainSet:
     links: list[ChainLinkArg] | None = None
     local_only: bool | None = None
     gravity: float | None = None
+    # [`Command::ChainAdd`]'s, and refused the same way.
+    weight: float | None = None
     # One param per link, exactly as long as the chain is after `links`
     # is applied.
     outputs: list[ParamId | None] | None = None
@@ -3637,6 +3643,7 @@ class ChainInfo:
 
     local_only: bool
     gravity: float
+    weight: float
     links: list[ChainLinkArg]
     outputs: list[ParamId | None]
 

@@ -325,12 +325,14 @@ pub struct Puppet {
     physics_update_scratch: Vec<([Option<u32>; 2], NodeIdx, Vec2)>,
     /// Parallel to `arena.chain_node_ids`: one param slot per link.
     chain_targets: Vec<Vec<Option<u32>>>,
-    /// This frame's chain claims, `(source, slot, bend)`. Flat rather than
-    /// grouped by chain because the only two readers want it flat: the
+    /// This frame's chain claims, `(source, slot, bend, weight)`. Flat rather
+    /// than grouped by chain because the only two readers want it flat: the
     /// contribution loop and the retirement scan.
-    chain_update_scratch: Vec<(NodeIdx, u32, f32)>,
+    chain_update_scratch: Vec<(NodeIdx, u32, f32, f32)>,
     /// Held so reading a chain out costs no allocation per frame.
     chain_bends_scratch: Vec<f32>,
+    /// The same, for the posed bend a chain's springs pull toward.
+    chain_posed_scratch: Vec<f32>,
     /// `Some(G)` means the cached physics transforms and the node-level anchor
     /// inputs hold the anchor pose a fresh pre-pass at
     /// `param_generation == G` would produce.
@@ -376,6 +378,7 @@ impl Puppet {
             chain_targets: Vec::new(),
             chain_update_scratch: Vec::new(),
             chain_bends_scratch: Vec::new(),
+            chain_posed_scratch: Vec::new(),
             last_anchor_pose_generation: None,
             animations: Vec::new(),
             play_state: None,
@@ -1053,18 +1056,25 @@ impl Puppet {
         }
     }
 
+    /// What a slot was posed at before any driver claimed it: the value the
+    /// caller set, or the param's own default.
+    fn param_base(&self, slot: u32) -> Option<f32> {
+        let p = self.params.get(slot as usize)?;
+        Some(
+            self.param_values
+                .get(slot as usize)
+                .copied()
+                .flatten()
+                .unwrap_or(p.default),
+        )
+    }
+
     /// The value the fold uses for a slot: what was posed (or the default),
     /// with driver claims folded in.
     fn resolved(&self, slot: u32) -> f32 {
-        let Some(p) = self.params.get(slot as usize) else {
+        let Some(base) = self.param_base(slot) else {
             return 0.0;
         };
-        let base = self
-            .param_values
-            .get(slot as usize)
-            .copied()
-            .flatten()
-            .unwrap_or(p.default);
         if self
             .param_contributed
             .get(slot as usize)
@@ -1256,6 +1266,28 @@ impl Puppet {
         true
     }
 
+    /// The bend each of a chain's links is posed at, in half turns, written
+    /// into `out` (cleared first). `c` indexes `arena.chain_node_ids`.
+    ///
+    /// **The pose, not the resolved value.** A link's spring pulls toward what
+    /// the caller posed or the param defaults to, before any driver claim is
+    /// folded in — including the chain's own from last frame. Reading the
+    /// resolved value here would feed the chain its own output and let a
+    /// stiff strand walk its target away one frame at a time.
+    ///
+    /// A link no param drives is posed at 0, which is the strand as drawn.
+    fn chain_posed_bends(&self, c: usize, out: &mut Vec<f32>) {
+        out.clear();
+        let Some(targets) = self.chain_targets.get(c) else {
+            return;
+        };
+        out.extend(
+            targets
+                .iter()
+                .map(|slot| slot.and_then(|slot| self.param_base(slot)).unwrap_or(0.0)),
+        );
+    }
+
     /// Displace every particle of a chain by `offset` and stop it there, so
     /// the ticks that follow are a swing rather than a fixed point — the
     /// chain's [`Self::place_driver`].
@@ -1271,13 +1303,22 @@ impl Puppet {
     ///
     /// `false` when `node` is not a particle chain.
     pub fn kick_chain(&mut self, node: NodeIdx, offset: Vec2) -> bool {
+        let posed = match self.arena.chain_node_ids.iter().position(|&id| id == node) {
+            Some(c) => {
+                let mut posed = std::mem::take(&mut self.chain_posed_scratch);
+                self.chain_posed_bends(c, &mut posed);
+                posed
+            }
+            None => Vec::new(),
+        };
         let Some(NodeKind::ParticleChain(chain)) = self.arena.get_mut(node).map(|n| &mut n.kind)
         else {
+            self.chain_posed_scratch = posed;
             return false;
         };
         if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
             let (anchor, down) = (chain.anchor, chain.down);
-            chain.settle_to_rest(anchor, down);
+            chain.settle_to_rest(anchor, down, &posed);
         }
         for particle in chain.particles.iter_mut().skip(1) {
             particle.pos += offset;
@@ -1287,6 +1328,7 @@ impl Puppet {
         // is about to move: a kick is a move, and `is_at_rest` has to say so
         // before the next tick has run.
         chain.moved_last_tick = offset != Vec2::ZERO;
+        self.chain_posed_scratch = posed;
         true
     }
 
@@ -1308,6 +1350,7 @@ impl Puppet {
                 p.tick(anchor, dt);
             }
         }
+        let mut posed = std::mem::take(&mut self.chain_posed_scratch);
         for i in 0..self.arena.chain_node_ids.len() {
             let id = self.arena.chain_node_ids[i];
             let Some(anchor) = self.arena.physics_anchor(transforms, id) else {
@@ -1316,10 +1359,12 @@ impl Puppet {
             let Some(down) = self.arena.chain_down(transforms, id) else {
                 continue;
             };
+            self.chain_posed_bends(i, &mut posed);
             if let Some(NodeKind::ParticleChain(c)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
-                c.tick(anchor, down, dt);
+                c.tick(anchor, down, &posed, dt);
             }
         }
+        self.chain_posed_scratch = posed;
         self.write_driver_param_outputs(transforms)
     }
 
@@ -1327,10 +1372,11 @@ impl Puppet {
     /// a pendulum through its map mode, a chain one bend per link. Returns
     /// whether any resolved value moved.
     ///
-    /// Drivers claim at full authority: a lone driver fully determines its
-    /// target, and two drivers aimed at one param average rather than
-    /// resolving by their position in the arena, which is tree order and
-    /// carries no meaning here.
+    /// A pendulum claims at full authority; a chain claims at its own
+    /// `weight`, which is the one knob that says how much of the param the
+    /// solve decides and how much the pose keeps. Either way two drivers
+    /// aimed at one param average rather than resolving by their position in
+    /// the arena, which is tree order and carries no meaning here.
     fn write_driver_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
         self.physics_update_scratch.clear();
         for i in 0..self.arena.physics_node_ids.len() {
@@ -1388,11 +1434,12 @@ impl Puppet {
             };
             let flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
             chain.link_bends(flip * world_inverse * flip, &mut bends);
+            let weight = chain.weight;
             for (i, slot) in targets.iter().enumerate() {
                 let (Some(slot), Some(&bend)) = (*slot, bends.get(i)) else {
                     continue;
                 };
-                self.chain_update_scratch.push((id, slot, bend));
+                self.chain_update_scratch.push((id, slot, bend, weight));
             }
         }
         self.chain_bends_scratch = bends;
@@ -1411,8 +1458,8 @@ impl Puppet {
             }
         }
         for i in 0..self.chain_update_scratch.len() {
-            let (source, slot, bend) = self.chain_update_scratch[i];
-            if self.contribute(slot, source, bend, 1.0) {
+            let (source, slot, bend, weight) = self.chain_update_scratch[i];
+            if self.contribute(slot, source, bend, weight) {
                 changed = true;
             }
         }
@@ -1442,7 +1489,7 @@ impl Puppet {
                 || self
                     .chain_update_scratch
                     .iter()
-                    .any(|&(source, slot, _)| source == e.source && slot == e.slot);
+                    .any(|&(source, slot, ..)| source == e.source && slot == e.slot);
             if from_driver && !live {
                 retired.push(e.slot);
                 return false;
@@ -1491,6 +1538,7 @@ impl Puppet {
         }
         self.arena.ensure_physics_ancestor_mask();
         let mut transforms = std::mem::take(&mut self.arena.physics_transforms);
+        let mut posed = std::mem::take(&mut self.chain_posed_scratch);
         let mut settled = false;
 
         for _ in 0..=n {
@@ -1524,6 +1572,7 @@ impl Puppet {
                 let Some(down) = self.arena.chain_down(&transforms, id) else {
                     continue;
                 };
+                self.chain_posed_bends(i, &mut posed);
                 if let Some(NodeKind::ParticleChain(c)) =
                     self.arena.get_mut(id).map(|n| &mut n.kind)
                 {
@@ -1536,7 +1585,7 @@ impl Puppet {
                     {
                         moved = true;
                     }
-                    c.settle_to_rest(anchor, down);
+                    c.settle_to_rest(anchor, down, &posed);
                 }
             }
             self.write_driver_param_outputs(&transforms);
@@ -1547,6 +1596,7 @@ impl Puppet {
             }
         }
         self.arena.physics_transforms = transforms;
+        self.chain_posed_scratch = posed;
 
         if !settled {
             tracing::warn!(

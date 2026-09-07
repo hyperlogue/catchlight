@@ -618,6 +618,17 @@ pub struct ClmChainLink {
     pub stiffness: f32,
 }
 
+/// What a chain's authority over its params is when a file does not say.
+fn full_weight() -> f32 {
+    1.0
+}
+
+/// Whether a chain decides its params outright, and so needs no `weight` key.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_full_weight(weight: &f32) -> bool {
+    *weight == 1.0
+}
+
 /// Whether a link carries no bend spring, and so needs no `stiffness` key.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_unsprung(stiffness: &f32) -> bool {
@@ -634,6 +645,16 @@ pub struct ClmParticleChain {
     /// Authored, unscaled — the global g-scale fold is a build step, as it is
     /// for [`ClmSimplePhysics::gravity`].
     pub gravity: f32,
+    /// How much the chain's own solve decides the params it writes, against
+    /// what the caller posed. Finite and at or above zero.
+    ///
+    /// Added after the format shipped, so it defaults: a chain map without
+    /// the key is a chain that decides its params outright, which is what
+    /// every file written before the weight existed describes. A chain at
+    /// full authority writes no key either, so such a file is still byte for
+    /// byte what this writer would write for it.
+    #[serde(default = "full_weight", skip_serializing_if = "is_full_weight")]
+    pub weight: f32,
     /// At least one. Every knob on a link is per second, so a file describes a
     /// material rather than a frame rate.
     pub links: Vec<ClmChainLink>,

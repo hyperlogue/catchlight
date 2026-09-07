@@ -143,12 +143,14 @@ def test_a_chain_added_by_hand_drives_the_params_it_names(
         [ChainLinkArg(length=40.0), ChainLinkArg(length=30.0)],
         name="Ponytail",
         gravity=4.5,
+        weight=0.5,
         outputs=[sway, None],
     )
 
     held = built.info(node).chain
     assert held is not None
     assert held.gravity == pytest.approx(4.5)
+    assert held.weight == pytest.approx(0.5)
     assert [link.length for link in held.links] == [40.0, 30.0]
     assert held.outputs == [sway, None]
 
@@ -158,6 +160,8 @@ def test_a_chain_added_by_hand_drives_the_params_it_names(
     assert plain == "root/tail"
     defaults = built.info(plain).chain
     assert defaults is not None
+    # An omitted weight is a chain that decides the params it names.
+    assert defaults.weight == pytest.approx(1.0)
     assert len(defaults.links) == 2
     assert defaults.outputs == [None, None]
     assert all(link.length is not None for link in defaults.links)

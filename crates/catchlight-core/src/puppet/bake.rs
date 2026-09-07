@@ -423,6 +423,7 @@ fn build_chain(chain: &ModelParticleChain, g_scale: f32) -> ParticleChainData {
     // The model stores authored, unscaled gravity; the solver wants it
     // pre-folded with the model-level pixelsPerMeter x gravity.
     data.gravity = chain.gravity * g_scale;
+    data.weight = chain.weight;
     data
 }
 

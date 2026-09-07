@@ -257,6 +257,7 @@ fn a_particle_chain_round_trips_byte_for_byte() {
     ]);
     chain.local_only = true;
     chain.gravity = 12.5;
+    chain.weight = 0.25;
     let node = model
         .add_node(
             &root,
@@ -282,6 +283,7 @@ fn a_particle_chain_round_trips_byte_for_byte() {
     };
     assert!(back.local_only);
     assert_eq!(back.gravity, 12.5);
+    assert_eq!(back.weight, 0.25);
     assert_eq!(back.links().len(), 3);
     assert_eq!(back.links()[1].time_scale, 1.5);
     assert_eq!(back.links()[1].stiffness, 2.5);

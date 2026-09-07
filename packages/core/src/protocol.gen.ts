@@ -516,6 +516,12 @@ export type Command =
     local_only: boolean | null,
     gravity: number | null,
     /**
+     * How much the chain's solve decides the params it writes, against
+     * what the caller posed: finite and at or above zero, 1 the whole
+     * say and 0 none of it. Absent is the editor's own default, 1.
+     */
+    weight: number | null,
+    /**
      * One param per link, in link order, `None` where a link drives
      * nothing. Absent binds none; present, it must be exactly as long as
      * `links`.
@@ -539,6 +545,10 @@ export type Command =
     links: Array<ChainLinkArg> | null,
     local_only: boolean | null,
     gravity: number | null,
+    /**
+     * [`Command::ChainAdd`]'s, and refused the same way.
+     */
+    weight: number | null,
     /**
      * One param per link, exactly as long as the chain is after `links`
      * is applied.
@@ -1490,6 +1500,7 @@ export type PhysicsInfo = {
 export type ChainInfo = {
   local_only: boolean,
   gravity: number,
+  weight: number,
   links: Array<ChainLinkArg>,
   outputs: Array<ParamId | null>,
 };

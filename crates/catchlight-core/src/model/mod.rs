@@ -727,6 +727,11 @@ pub struct ModelParticleChain {
     /// [`ModelPhysics::gravity`]: the bake folds `pixels_per_meter * gravity`
     /// from the model-level physics into it, so 1.0 hangs under one g.
     pub gravity: f32,
+    /// The chain's authority over the params it drives, at or above zero:
+    /// `1` decides them, `0` leaves them where they were posed while the
+    /// strand goes on simulating, and anything between blends. See
+    /// `ParticleChainData::weight`, which is where it lands at bake.
+    pub weight: f32,
     links: Vec<ChainLink>,
     outputs: Vec<Option<ParamId>>,
 }
@@ -738,6 +743,7 @@ impl ModelParticleChain {
         Self {
             local_only: false,
             gravity: 1.0,
+            weight: 1.0,
             links,
             outputs,
         }

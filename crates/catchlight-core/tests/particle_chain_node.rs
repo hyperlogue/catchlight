@@ -16,7 +16,7 @@ use catchlight_core::model::{
     ScalarTarget,
 };
 use catchlight_core::physics::{ChainLink, PendulumKind, PhysicsParamMapMode};
-use catchlight_core::{Model, Name, NodeId, NodeIdx, ParamId, Puppet, Vec2};
+use catchlight_core::{Mat4, Model, Name, NodeId, NodeIdx, ParamId, Puppet, Vec2};
 
 const DT: f32 = 1.0 / 60.0;
 
@@ -608,5 +608,251 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
             !puppet.tick(&model, DT).physics,
             "and stays quiet after settling at frame {quiet_at}",
         );
+    }
+}
+
+/// The bend the chain itself reports, one per link — what it claims its
+/// params should read, before the weight decides how much of that lands.
+/// Every chain here hangs under an untransformed root, so the node's frame is
+/// the world's.
+fn chain_bends(puppet: &Puppet, idx: NodeIdx) -> Vec<f32> {
+    let node = puppet.get(idx).expect("the node");
+    match &node.kind {
+        catchlight_core::NodeKind::ParticleChain(c) => {
+            let mut out = Vec::new();
+            c.link_bends(Mat4::IDENTITY, &mut out);
+            out
+        }
+        other => panic!("not a chain: {other:?}"),
+    }
+}
+
+/// A model whose chain hangs under a group turned by `rotation` radians, with
+/// weightless 10 Hz links so the bend spring is the only thing holding the
+/// strand — no gravity to balance against, so the pose is the whole answer.
+fn posed_chain(rotation: f32, links: usize) -> (Model, NodeId, Vec<ParamId>) {
+    let mut hex = SeededHex::new(29);
+    let mut model = Model::new();
+    model.set_physics(ClmPhysics {
+        pixels_per_meter: 1.0,
+        gravity: 1.0,
+    });
+    let root = model.root().expect("root").clone();
+    let mut group = ModelNode::new("head", ModelNodeKind::Group);
+    group.transform.rotation = [0.0, 0.0, rotation];
+    let head = model.add_node(&root, group, &mut hex).expect("add group");
+
+    let params: Vec<ParamId> = (0..links)
+        .map(|i| {
+            model
+                .add_param(
+                    ModelParam {
+                        name: Name::truncated(format!("bend{i}")),
+                        min: -1.0,
+                        max: 1.0,
+                        default: 0.0,
+                        key_positions: vec![0.0, 0.5, 1.0],
+                    },
+                    &mut hex,
+                )
+                .expect("add param")
+        })
+        .collect();
+    let mut data = ModelParticleChain::new(
+        (0..links)
+            .map(|_| ChainLink {
+                length: 60.0,
+                gravity_scale: 0.0,
+                damping: 0.5,
+                time_scale: 1.0,
+                stiffness: 10.0,
+            })
+            .collect(),
+    );
+    data.gravity = 981.0;
+    let chain = model
+        .add_node(
+            &head,
+            ModelNode::new("hair", ModelNodeKind::ParticleChain(data)),
+            &mut hex,
+        )
+        .expect("add chain");
+    model
+        .set_chain_outputs(&chain, params.iter().cloned().map(Some).collect())
+        .expect("aim the chain");
+    (model, chain, params)
+}
+
+/// **A link's spring holds the bend its own param poses, and `link_bends`
+/// reads that same number back.** The round trip is the whole sign
+/// convention in one assertion: pose +1/6 of a half turn, and a strand stiff
+/// enough to hold it stands at +1/6, tip toward the node's +X.
+///
+/// Weightless links, so nothing but the spring decides where they sit. The
+/// param reads the chain's own claim here, because a chain at weight 1
+/// decides its params outright — so this compares the solver's answer with
+/// the pose that asked for it, not the pose with itself.
+///
+/// Under a node turned 30 degrees the answer is the same +1/6: a bend is
+/// measured in the node's own frame, so a posed bend turns with the head
+/// rather than against it.
+#[test]
+fn a_stiff_link_holds_the_bend_its_param_poses() {
+    for rotation in [0.0, std::f32::consts::FRAC_PI_6] {
+        let (model, chain, params) = posed_chain(rotation, 1);
+        let mut puppet = Puppet::new(&model);
+        puppet.set_param_value(&params[0], 1.0 / 6.0);
+        puppet.settle_physics(&model);
+        puppet.tick(&model, DT);
+
+        let bend = puppet.param_value(&params[0]).expect("the bend");
+        assert!(
+            (bend - 1.0 / 6.0).abs() < 1e-4,
+            "a stiff link posed at +1/6 stands at +1/6 under a node turned \
+             {rotation} rad, got {bend}",
+        );
+        // And the strand really is bent, rather than the pose passing
+        // through an unmoved chain: 60 px at 30 degrees off the node's down.
+        let idx = puppet.node_idx(&chain).expect("the chain baked");
+        let out = tip(&puppet, idx) - anchor(&puppet, idx);
+        assert!(
+            out.length() > 59.0 && out.normalize().y < 0.9,
+            "the link swung off the node's down: {out:?}",
+        );
+    }
+}
+
+/// A posed bend is part of the shape `settle_physics` computes, so a chain
+/// settled under one is a fixed point of the tick that follows: no motion to
+/// report and a bend that does not creep.
+///
+/// The weighted case is the one that could have creeped — the spring pulls to
+/// the pose, gravity pulls down, and the pose the settle walks has to be the
+/// same balance the step would have found.
+#[test]
+fn a_chain_settled_under_a_posed_bend_stays_put() {
+    let (mut model, chain, params) = posed_chain(0.0, 2);
+    // Real weight on both links, so the rest pose is a compromise between the
+    // spring's target and gravity rather than either one of them.
+    let weighted: Vec<ChainLink> = (0..2)
+        .map(|_| ChainLink {
+            length: 60.0,
+            gravity_scale: 1.0,
+            damping: 0.5,
+            time_scale: 1.0,
+            stiffness: 4.0,
+        })
+        .collect();
+    model
+        .set_chain_links(&chain, weighted)
+        .expect("retune the links");
+
+    let mut puppet = Puppet::new(&model);
+    puppet.set_param_value(&params[0], 0.25);
+    puppet.set_param_value(&params[1], -0.125);
+    puppet.settle_physics(&model);
+
+    let idx = puppet.node_idx(&chain).expect("the chain baked");
+    let settled = chain_bends(&puppet, idx);
+    for f in 0..120 {
+        assert!(
+            !puppet.tick(&model, DT).physics,
+            "frame {f}: a settled chain under a posed bend is standing still",
+        );
+    }
+    let after = chain_bends(&puppet, idx);
+    for (i, (a, b)) in settled.iter().zip(&after).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-4,
+            "link {i} crept from {a} to {b} over two seconds",
+        );
+    }
+    // The strand really is holding a pose and not hanging: with a 4 Hz
+    // spring against gravity the first joint sits well off the node's down.
+    assert!(
+        settled[0] > 0.05,
+        "the spring holds the strand toward its posed bend: {settled:?}",
+    );
+}
+
+/// Each link answers to its own param: posed +1/6 and -1/6, the strand bends
+/// one way and then back, and each bend reads its own pose rather than the
+/// sum of the two.
+#[test]
+fn every_link_holds_its_own_posed_bend() {
+    let (model, _chain, params) = posed_chain(0.0, 2);
+    let mut puppet = Puppet::new(&model);
+    puppet.set_param_value(&params[0], 1.0 / 6.0);
+    puppet.set_param_value(&params[1], -1.0 / 6.0);
+    puppet.settle_physics(&model);
+    puppet.tick(&model, DT);
+
+    for (i, want) in [1.0 / 6.0f32, -1.0 / 6.0].into_iter().enumerate() {
+        let got = puppet.param_value(&params[i]).expect("the bend");
+        assert!(
+            (got - want).abs() < 1e-4,
+            "link {i} posed at {want} stands at {want}, got {got}",
+        );
+    }
+}
+
+/// **`weight` is how much of its param a chain decides.** At 1 the solve is
+/// the value; at 0.5 the param lands half way between the pose and the
+/// solve; at 0 the chain asserts nothing at all and the param keeps the pose
+/// — while the strand goes on swinging, which is what makes 0 a different
+/// thing from switching physics off.
+#[test]
+fn a_chains_weight_is_how_much_of_the_param_it_decides() {
+    for weight in [1.0f32, 0.5, 0.0] {
+        let mut f = Fixture::new(3);
+        f.wire_outputs();
+        f.model
+            .update_node(&f.chain, |n| {
+                let ModelNodeKind::ParticleChain(chain) = &mut n.kind else {
+                    panic!("not a chain");
+                };
+                chain.weight = weight;
+                Ok::<(), ()>(())
+            })
+            .expect("set the weight")
+            .expect("the node is a chain");
+
+        let mut puppet = f.puppet();
+        puppet.settle_physics(&f.model);
+        let idx = f.idx(&puppet);
+        assert!(puppet.kick_chain(idx, Vec2::new(30.0, 0.0)), "kicked");
+        let motion = puppet.tick(&f.model, DT);
+
+        // The pose is every param's default, zero, so the fold is
+        // `0 + weight * (bend - 0)`.
+        let bends = chain_bends(&puppet, idx);
+        for (i, param) in f.params.iter().enumerate() {
+            let got = puppet.param_value(param).expect("the bend");
+            let want = weight * bends[i];
+            assert!(
+                (got - want).abs() < 1e-6,
+                "at weight {weight} link {i} reads {got}, want {want} \
+                 ({} of the chain's own {})",
+                weight,
+                bends[i],
+            );
+        }
+        if weight == 0.0 {
+            for param in &f.params {
+                assert_eq!(
+                    puppet.param_value(param),
+                    Some(0.0),
+                    "a chain at weight 0 leaves its params where they were posed",
+                );
+            }
+            assert!(
+                bends.iter().any(|b| b.abs() > 1e-3),
+                "and the strand is still bent from the kick: {bends:?}",
+            );
+            assert!(
+                motion.physics,
+                "a chain at weight 0 goes on simulating; it just says nothing",
+            );
+        }
     }
 }

@@ -186,7 +186,7 @@ fn chain_perturbed() -> Vec<Vec<f32>> {
     );
     // Named folded, the way the drivers above name theirs.
     chain.gravity = 980.0;
-    chain.settle_to_rest(Vec2::ZERO, DOWN);
+    chain.settle_to_rest(Vec2::ZERO, DOWN, &[]);
     yank(chain)
 }
 
@@ -209,7 +209,7 @@ fn chain_stiff() -> Vec<Vec<f32>> {
             .to_vec(),
     );
     chain.gravity = 980.0;
-    chain.settle_to_rest(Vec2::ZERO, DOWN);
+    chain.settle_to_rest(Vec2::ZERO, DOWN, &[]);
     yank(chain)
 }
 
@@ -220,7 +220,7 @@ fn yank(mut chain: ParticleChainData) -> Vec<Vec<f32>> {
     let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
     let mut bends = Vec::new();
     for f in 0..FRAMES {
-        chain.tick(anchor, DOWN, DT);
+        chain.tick(anchor, DOWN, &[], DT);
         if f % SAMPLE_EVERY == 0 {
             chain.link_bends(Mat4::IDENTITY, &mut bends);
             samples.push(bends.clone());

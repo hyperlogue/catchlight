@@ -332,6 +332,7 @@ fn node_fields(n: &ClmNode) -> Fields {
             f.insert("kind".into(), "ParticleChain".into());
             f.insert("local_only".into(), c.local_only.to_string());
             f.insert("gravity".into(), c.gravity.to_string());
+            f.insert("weight".into(), c.weight.to_string());
             // One row per link, so a diff names the link that changed rather
             // than reporting that the list is different.
             for (i, link) in c.links.iter().enumerate() {

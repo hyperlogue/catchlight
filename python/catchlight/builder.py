@@ -185,6 +185,7 @@ class Builder:
         name: str | None = None,
         local_only: bool | None = None,
         gravity: float | None = None,
+        weight: float | None = None,
         outputs: Sequence[ParamId | None] | None = None,
         node: NodeId | None = None,
     ) -> NodeId:
@@ -195,7 +196,9 @@ class Builder:
         is written into, in link order, and has to be exactly as long as the
         chain — `None` where a link drives nothing. Absent, the chain drives
         nothing yet; [`Builder.fit_chain`] is what makes the params and the
-        bindings as well.
+        bindings as well. `weight` is how much of each of those params the
+        chain's own solve decides, against what the caller posed: 1 all of
+        it, 0 none of it while the strand still simulates.
         """
         made = self.client.send(
             ChainAdd(
@@ -205,6 +208,7 @@ class Builder:
                 links=_links(links),
                 local_only=local_only,
                 gravity=gravity,
+                weight=weight,
                 outputs=None if outputs is None else list(outputs),
                 node=node,
             )

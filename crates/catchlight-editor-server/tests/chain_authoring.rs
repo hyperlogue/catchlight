@@ -199,6 +199,7 @@ fn a_chain_reads_back_as_what_was_added() {
             ],
             local_only: Some(true),
             gravity: Some(4.5),
+            weight: Some(0.5),
             outputs: Some(vec![Some(swing.clone()), None]),
             node: Some(node("root/tail")),
         },
@@ -218,6 +219,7 @@ fn a_chain_reads_back_as_what_was_added() {
         ChainInfo {
             local_only: true,
             gravity: 4.5,
+            weight: 0.5,
             links: vec![
                 ChainLinkArg {
                     length: Some(40.0),
@@ -246,6 +248,7 @@ fn a_chain_reads_back_as_what_was_added() {
             links: Some(chain.links.clone()),
             local_only: Some(chain.local_only),
             gravity: Some(chain.gravity),
+            weight: Some(chain.weight),
             outputs: Some(chain.outputs.clone()),
         },
     );
@@ -273,6 +276,7 @@ fn an_omitted_knob_is_the_cores_own_default() {
             links: vec![ChainLinkArg::default()],
             local_only: None,
             gravity: None,
+            weight: None,
             outputs: None,
             node: None,
         },
@@ -283,6 +287,7 @@ fn an_omitted_knob_is_the_cores_own_default() {
     let chain = info(&ed, session, &added).chain.unwrap();
     assert_eq!(chain.gravity, fresh.gravity);
     assert_eq!(chain.local_only, fresh.local_only);
+    assert_eq!(chain.weight, fresh.weight);
     assert_eq!(chain.links, vec![ChainLinkArg::of(&ChainLink::default())]);
 
     // A fitted chain starts from the same place; the fit sets lengths only.
@@ -306,11 +311,95 @@ fn an_omitted_knob_is_the_cores_own_default() {
     let chain = info(&ed, session, &fitted).chain.unwrap();
     assert_eq!(chain.gravity, fresh.gravity);
     assert_eq!(chain.local_only, fresh.local_only);
+    assert_eq!(chain.weight, fresh.weight);
     for link in &chain.links {
         assert_eq!(link.damping, Some(ChainLink::default().damping));
         assert_eq!(link.time_scale, Some(ChainLink::default().time_scale));
         assert_eq!(link.gravity_scale, Some(ChainLink::default().gravity_scale));
         assert_eq!(link.stiffness, Some(ChainLink::default().stiffness));
+    }
+}
+
+/// A weight the file format would refuse is refused at the door instead, so
+/// a script hears about it now rather than on the next load — and the refusal
+/// names the field, because a command carrying several numbers is not a
+/// useful thing to be told is bad.
+///
+/// Zero is not one of them: a chain at zero simulates and claims nothing,
+/// which is a rig, not a mistake.
+#[test]
+fn a_weight_that_is_not_a_weight_is_refused_by_name() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let made = match body(
+        &ed,
+        2,
+        Command::ChainAdd {
+            session,
+            parent: node("root"),
+            name: None,
+            links: vec![ChainLinkArg::default()],
+            local_only: None,
+            gravity: None,
+            weight: Some(0.0),
+            outputs: None,
+            node: None,
+        },
+    ) {
+        ResponseBody::Node { node, .. } => node,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(info(&ed, session, &made).chain.unwrap().weight, 0.0);
+
+    for (i, bad) in [-1.0f32, f32::NAN, f32::INFINITY].into_iter().enumerate() {
+        let id = 10 + i as u64;
+        let Reply::Err {
+            code: refused,
+            message,
+            ..
+        } = reply(
+            &ed,
+            id,
+            Command::ChainSet {
+                session,
+                node: made.clone(),
+                links: None,
+                local_only: None,
+                gravity: None,
+                weight: Some(bad),
+                outputs: None,
+            },
+        )
+        else {
+            panic!("a chain took a weight of {bad}");
+        };
+        assert_eq!(refused, ErrorCode::BadTarget);
+        assert!(
+            message.contains("weight"),
+            "the refusal names the field it is about: {message}",
+        );
+        // And the refusal changed nothing.
+        assert_eq!(info(&ed, session, &made).chain.unwrap().weight, 0.0);
+
+        assert_eq!(
+            code(
+                &ed,
+                100 + id,
+                Command::ChainAdd {
+                    session,
+                    parent: node("root"),
+                    name: None,
+                    links: vec![ChainLinkArg::default()],
+                    local_only: None,
+                    gravity: None,
+                    weight: Some(bad),
+                    outputs: None,
+                    node: None,
+                },
+            ),
+            ErrorCode::BadTarget,
+            "an add is refused the same way a set is",
+        );
     }
 }
 
@@ -330,6 +419,7 @@ fn an_empty_chain_is_refused() {
                 links: Vec::new(),
                 local_only: None,
                 gravity: None,
+                weight: None,
                 outputs: None,
                 node: None,
             },
@@ -357,6 +447,7 @@ fn outputs_that_do_not_match_the_links_are_refused() {
             links: vec![ChainLinkArg::default(), ChainLinkArg::default()],
             local_only: None,
             gravity: None,
+            weight: None,
             outputs: None,
             node: None,
         },
@@ -375,6 +466,7 @@ fn outputs_that_do_not_match_the_links_are_refused() {
                 links: None,
                 local_only: None,
                 gravity: None,
+                weight: None,
                 outputs: Some(vec![None, None, None]),
             },
         ),
@@ -396,6 +488,7 @@ fn outputs_that_do_not_match_the_links_are_refused() {
             ]),
             local_only: None,
             gravity: None,
+            weight: None,
             outputs: Some(vec![None, None, None]),
         },
     );
@@ -415,6 +508,7 @@ fn outputs_that_do_not_match_the_links_are_refused() {
                 links: None,
                 local_only: Some(true),
                 gravity: None,
+                weight: None,
                 outputs: None,
             },
         ),
@@ -718,6 +812,8 @@ fn a_refit_keeps_the_feel_a_rigger_tuned() {
             links: Some(links),
             local_only: None,
             gravity: None,
+            // A node knob, so the fit has no business touching it either.
+            weight: Some(0.5),
             outputs: None,
         },
     );
@@ -754,6 +850,11 @@ fn a_refit_keeps_the_feel_a_rigger_tuned() {
         held.links[3].stiffness,
         Some(ChainLink::default().stiffness),
         "the link the re-fit added is a default one",
+    );
+    assert!(
+        close(held.weight, 0.5),
+        "and the chain kept the authority the rigger gave it: {}",
+        held.weight,
     );
 }
 
