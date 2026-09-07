@@ -20,8 +20,10 @@ use crate::deform::DeformStack;
 use crate::formats::clm::{ClmIndices, ClmMesh};
 use crate::id::{NodeId, ParamId};
 use crate::interpolate::InterpolateMode;
-use crate::model::{BindingKey, BindingTarget, DenseGrid, Model, ModelNodeKind, ModelPhysics};
-use crate::physics::SimplePhysicsData;
+use crate::model::{
+    BindingKey, BindingTarget, DenseGrid, Model, ModelNodeKind, ModelParticleChain, ModelPhysics,
+};
+use crate::physics::{ParticleChainData, SimplePhysicsData};
 
 use super::arena::Arena;
 
@@ -82,6 +84,10 @@ pub(super) struct Baked {
     /// Parallel to `arena.physics_node_ids`: the param slots each driver
     /// writes, in the order its map mode produces them.
     pub(super) physics_targets: Vec<[Option<u32>; 2]>,
+    /// Parallel to `arena.chain_node_ids`: the param slot each of a chain's
+    /// links writes, in link order. As long as the chain's links, so a bend
+    /// and its slot share an index; `None` where a link drives nothing.
+    pub(super) chain_targets: Vec<Vec<Option<u32>>>,
 }
 
 pub(super) fn bake(model: &Model) -> Baked {
@@ -103,6 +109,7 @@ pub(super) fn bake(model: &Model) -> Baked {
             slot_of_param: HashMap::new(),
             bindings: Vec::new(),
             physics_targets: Vec::new(),
+            chain_targets: Vec::new(),
         };
     };
     if let Some(root) = model.node(&root_id) {
@@ -225,6 +232,22 @@ pub(super) fn bake(model: &Model) -> Baked {
         })
         .collect();
 
+    let chain_targets = arena
+        .chain_node_ids
+        .iter()
+        .map(|&idx| {
+            let id = &id_of_node[idx.0 as usize];
+            match model.node(id).map(|n| &n.kind) {
+                Some(ModelNodeKind::ParticleChain(chain)) => chain
+                    .outputs()
+                    .iter()
+                    .map(|p| p.as_ref().and_then(|p| slot_of_param.get(p).copied()))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        })
+        .collect();
+
     Baked {
         arena,
         node_of_id,
@@ -233,6 +256,7 @@ pub(super) fn bake(model: &Model) -> Baked {
         slot_of_param,
         bindings,
         physics_targets,
+        chain_targets,
     }
 }
 
@@ -343,6 +367,9 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
         ModelNodeKind::SimplePhysics(ph) => {
             NodeKind::SimplePhysics(Box::new(build_physics(ph, &transform, g_scale)))
         }
+        ModelNodeKind::ParticleChain(chain) => {
+            NodeKind::ParticleChain(Box::new(build_chain(chain, g_scale)))
+        }
     };
     Node {
         name: node.name.as_str().to_string(),
@@ -380,6 +407,23 @@ fn build_physics(ph: &ModelPhysics, transform: &Transform, g_scale: f32) -> Simp
         anchor,
         anchor_initialized: false,
     }
+}
+
+/// The authored chain plus room for its particles. Like a driver's target
+/// params, a chain's outputs are not on the chain: they are resolved to param
+/// slots in [`Baked::chain_targets`], parallel to `Arena::chain_node_ids`.
+///
+/// The particles are left un-hung — `anchor_initialized` false — because a
+/// bake has only the node-local transform, and the chain wants the world
+/// anchor its first tick sees. That is the same deferral `build_physics`
+/// makes, and `ParticleChainData::tick` is what resolves it.
+fn build_chain(chain: &ModelParticleChain, g_scale: f32) -> ParticleChainData {
+    let mut data = ParticleChainData::new(chain.links().to_vec());
+    data.local_only = chain.local_only;
+    // The model stores authored, unscaled gravity; the solver wants it
+    // pre-folded with the model-level pixelsPerMeter x gravity.
+    data.gravity = chain.gravity * g_scale;
+    data
 }
 
 fn build_mesh(m: &ClmMesh) -> Mesh {

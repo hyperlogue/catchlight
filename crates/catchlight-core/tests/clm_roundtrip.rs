@@ -209,3 +209,81 @@ fn a_five_hundred_node_model_round_trips() {
         "and writing is stable"
     );
 }
+
+/// A model carrying a particle chain: the links, the outputs and the two
+/// scalars all have to come back, and the file has to be the one the writer
+/// would write.
+#[test]
+fn a_particle_chain_round_trips_byte_for_byte() {
+    use catchlight_core::model::ModelParticleChain;
+    use catchlight_core::physics::ChainLink;
+
+    let mut hex = SeededHex::new(23);
+    let mut model = Model::new();
+    let params: Vec<ParamId> = ["a", "b", "c"]
+        .iter()
+        .map(|name| {
+            model
+                .add_param(
+                    ModelParam::new(Name::truncated(*name), -1.0, 1.0, 0.0),
+                    &mut hex,
+                )
+                .unwrap()
+        })
+        .collect();
+    let root = model.root().unwrap().clone();
+    let mut chain = ModelParticleChain::new(vec![
+        ChainLink {
+            length: 60.0,
+            gravity_scale: 1.0,
+            damping: 0.5,
+            time_scale: 1.0,
+        },
+        ChainLink {
+            length: 50.0,
+            gravity_scale: 0.8,
+            damping: 0.25,
+            time_scale: 1.5,
+        },
+        ChainLink {
+            length: 40.0,
+            gravity_scale: 0.6,
+            damping: 0.0,
+            time_scale: 0.5,
+        },
+    ]);
+    chain.local_only = true;
+    chain.gravity = 12.5;
+    let node = model
+        .add_node(
+            &root,
+            ModelNode::new("hair", ModelNodeKind::ParticleChain(chain)),
+            &mut hex,
+        )
+        .unwrap();
+    // A middle link driving nothing, so the None survives the trip too.
+    model
+        .set_chain_outputs(
+            &node,
+            vec![Some(params[0].clone()), None, Some(params[2].clone())],
+        )
+        .unwrap();
+
+    let bytes = model.to_clm_bytes().unwrap();
+    let reopened = Model::from_clm_bytes(&bytes).unwrap();
+    assert_eq!(reopened.to_clm_bytes().unwrap(), bytes, "writing is stable");
+    assert_eq!(identity(&reopened), identity(&model));
+
+    let ModelNodeKind::ParticleChain(back) = &reopened.node(&node).unwrap().kind else {
+        panic!("the chain came back as another kind");
+    };
+    assert!(back.local_only);
+    assert_eq!(back.gravity, 12.5);
+    assert_eq!(back.links().len(), 3);
+    assert_eq!(back.links()[1].time_scale, 1.5);
+    assert_eq!(back.links()[2].damping, 0.0);
+    assert_eq!(
+        back.outputs(),
+        [Some(params[0].clone()), None, Some(params[2].clone())]
+    );
+}

@@ -81,6 +81,19 @@ impl Model {
                         format!("physics node {:?} drives no target param", n.name.as_str()),
                     ));
                 }
+                // Only an entirely unhooked chain: a chain that drives some of
+                // its links and not others is an ordinary rig, not a mistake.
+                ModelNodeKind::ParticleChain(chain)
+                    if chain.outputs().iter().all(Option::is_none) =>
+                {
+                    out.push(warn(
+                        id,
+                        format!(
+                            "particle chain {:?} drives no output param",
+                            n.name.as_str()
+                        ),
+                    ));
+                }
                 _ => {}
             }
         }
@@ -248,6 +261,55 @@ mod tests {
         )])
         .unwrap();
         (m, upper, lower)
+    }
+
+    /// A chain that drives nothing at all is a rig the author has not
+    /// finished; one link short of finished is not, so the lint has to tell
+    /// the two apart.
+    #[test]
+    fn check_flags_a_chain_that_drives_nothing() {
+        use crate::physics::ChainLink;
+
+        let mut hex = SeededHex::new(6);
+        let mut m = Model::new();
+        let root = m.root().unwrap().clone();
+        let param = m
+            .add_param(
+                ModelParam::new(Name::truncated("bend"), -1.0, 1.0, 0.0),
+                &mut hex,
+            )
+            .unwrap();
+        let chain = m
+            .add_node(
+                &root,
+                ModelNode::new(
+                    "hair",
+                    ModelNodeKind::ParticleChain(ModelParticleChain::new(vec![
+                        ChainLink::default(),
+                        ChainLink::default(),
+                    ])),
+                ),
+                &mut hex,
+            )
+            .unwrap();
+
+        let unhooked: Vec<CheckWarning> = m
+            .check()
+            .into_iter()
+            .filter(|w| w.message.contains("drives no output param"))
+            .collect();
+        assert_eq!(unhooked.len(), 1, "the chain names no param at all");
+        assert_eq!(unhooked[0].node.as_ref(), Some(&chain));
+
+        // One link hooked up is a rig, not a mistake.
+        m.set_chain_outputs(&chain, vec![Some(param), None])
+            .unwrap();
+        assert!(
+            !m.check()
+                .iter()
+                .any(|w| w.message.contains("drives no output param")),
+            "a partly-driven chain is not flagged"
+        );
     }
 
     fn quad() -> ClmMesh {

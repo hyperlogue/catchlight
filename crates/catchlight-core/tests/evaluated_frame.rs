@@ -38,9 +38,10 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile,
-    ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind,
-    ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmStructure, ClmTransform, ClmWeld,
+    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChainLink, ClmComposite,
+    ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
+    ClmNodeKind, ClmParam, ClmPart, ClmParticleChain, ClmSimplePhysics, ClmSlot, ClmSlotPair,
+    ClmStructure, ClmTransform, ClmWeld,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
@@ -111,27 +112,33 @@ impl Fixture {
         self.puppet.tick(&self.model, DT);
     }
 
-    /// Displace every driver's pendulum so the run that follows is a swing
-    /// rather than a fixed point.
+    /// Displace every driver so the run that follows is a swing rather than a
+    /// fixed point: a pendulum's bob is moved outright, a chain's particles
+    /// are bent off the anchor they hang from.
     fn kick_drivers(&mut self) {
         for (i, node) in self.file.file.doc.nodes.iter().enumerate() {
-            if matches!(node.kind, ClmNodeKind::SimplePhysics(_)) {
-                assert!(
+            match node.kind {
+                ClmNodeKind::SimplePhysics(_) => assert!(
                     self.puppet
                         .place_driver(self.nodes[i], Vec2::new(40.0, 40.0)),
                     "node {i} is a driver"
-                );
+                ),
+                ClmNodeKind::ParticleChain(_) => assert!(
+                    self.puppet.kick_chain(self.nodes[i], Vec2::new(40.0, 0.0)),
+                    "node {i} is a chain"
+                ),
+                _ => {}
             }
         }
     }
 
     fn has_drivers(&self) -> bool {
-        self.file
-            .file
-            .doc
-            .nodes
-            .iter()
-            .any(|n| matches!(n.kind, ClmNodeKind::SimplePhysics(_)))
+        self.file.file.doc.nodes.iter().any(|n| {
+            matches!(
+                n.kind,
+                ClmNodeKind::SimplePhysics(_) | ClmNodeKind::ParticleChain(_)
+            )
+        })
     }
 
     /// The evaluated frame, flattened for the baseline.
@@ -298,6 +305,7 @@ fn current() -> Baseline {
     }
     capture("welds", weld_fixture(), &mut out);
     capture("chained physics", chained_physics_fixture(), &mut out);
+    capture("particle chain", particle_chain_fixture(), &mut out);
     capture(
         "tc over local driver",
         tc_over_local_driver_fixture(),
@@ -968,6 +976,69 @@ fn chained_physics_fixture() -> FixtureFile {
             ClmBindingValues::TransformTY(cells(vec![(1, 0, 12.0)])),
         )]),
     ];
+    file(nodes, params, Vec::new())
+}
+
+/// A three-link chain driving three params, each of which deforms the one
+/// part in the model.
+///
+/// This is the only fixture whose driver writes more than two numbers, and the
+/// only one where a driver's output is a *vector* the length of something the
+/// author shaped. The deform cells are arbitrary — what they pin is that a
+/// bend reaches a vertex at all, and that the three links reach three
+/// different ones.
+fn particle_chain_fixture() -> FixtureFile {
+    let nodes = vec![
+        node(None, "Root", ClmNodeKind::Group),
+        at(
+            Some(0),
+            "Strand",
+            [0.0, 0.0],
+            ClmNodeKind::Part(part(quad(6.0, 40.0))),
+        ),
+        at(
+            Some(0),
+            "Chain",
+            [0.0, 30.0],
+            ClmNodeKind::ParticleChain(ClmParticleChain {
+                local_only: false,
+                gravity: 1.0,
+                links: [60.0, 50.0, 40.0]
+                    .into_iter()
+                    .map(|length| ClmChainLink {
+                        length,
+                        gravity_scale: 1.0,
+                        damping: 0.3,
+                        time_scale: 1.0,
+                    })
+                    .collect(),
+                outputs: (0..3).map(|i| Some(one(i)[0].clone())).collect(),
+            }),
+        ),
+    ];
+    // One deform per link, each pulling a different pair of the quad's
+    // corners, so a bend that lands on the wrong link shows up as a different
+    // frame rather than as the same one.
+    let shapes = [
+        vec![5.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        vec![0.0, 0.0, 0.0, 0.0, 3.0, -2.0, -3.0, -2.0],
+        vec![-2.0, 1.0, 2.0, 1.0, 2.0, -1.0, -2.0, -1.0],
+    ];
+    let params = (0..3)
+        .map(|i| {
+            FixtureParam::scalar("Bend", -0.5, 0.5, 0.0, vec![0.0, 0.5, 1.0]).driving(vec![
+                binding(
+                    1,
+                    InterpolateMode::Linear,
+                    one(i),
+                    ClmBindingValues::Deform(cells(vec![
+                        (0, 0, shapes[i].iter().map(|v| -v).collect()),
+                        (2, 0, shapes[i].clone()),
+                    ])),
+                ),
+            ])
+        })
+        .collect();
     file(nodes, params, Vec::new())
 }
 

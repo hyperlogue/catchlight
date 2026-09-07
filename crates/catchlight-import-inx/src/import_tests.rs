@@ -229,6 +229,17 @@ fn a_mask_whose_source_is_never_drawn_is_dropped() {
     };
     assert_eq!(part.masks.len(), 1, "only the composite is drawn");
     assert_eq!(part.masks[0].source, node(4), "which is `face`");
+    // The particle chain is catchlight's own kind: the source format has no
+    // node that maps to one, so the importer never mints one — a chain in an
+    // imported model could only have come from a bug here.
+    assert!(
+        !file
+            .doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, ClmNodeKind::ParticleChain(_))),
+        "the importer never produces a particle chain"
+    );
     reread(&file);
 }
 

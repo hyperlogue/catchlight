@@ -305,6 +305,13 @@ impl Model {
                     }
                 }
             }
+            if let ModelNodeKind::ParticleChain(chain) = &node.kind {
+                for t in chain.outputs().iter().flatten() {
+                    if !self.params.contains_key(t) {
+                        need(Required::Param(t.clone()), "chain output", &id);
+                    }
+                }
+            }
             for mask in node.masks().unwrap_or_default() {
                 if !self.nodes.contains_key(mask.source()) {
                     need(Required::Part(mask.source().clone()), "mask source", &id);

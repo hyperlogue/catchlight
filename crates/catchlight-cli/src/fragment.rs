@@ -155,9 +155,10 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
 ///
 /// This is [`Model::requirements`](catchlight_core::Model::requirements) with the
 /// file's tables in place of a
-/// Model's, and it walks exactly the same seven fields: `nodes[].parent`,
+/// Model's, and it walks exactly the same eight fields: `nodes[].parent`,
 /// `nodes[].kind.*.masks[].source`,
-/// `nodes[].kind.SimplePhysics.target_params`, `bindings[].node`,
+/// `nodes[].kind.SimplePhysics.target_params`,
+/// `nodes[].kind.ParticleChain.outputs`, `bindings[].node`,
 /// `bindings[].params`, `welds[].{a,b}` and `animations[].lanes[].param`.
 /// `nodes[].kind.Part.albedo` is not among them: an addon carries the textures
 /// its own parts draw, so a texture is not something a base can supply.
@@ -192,6 +193,18 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
                         need(
                             Required::Param(target.clone()),
                             "physics target",
+                            owner.clone(),
+                        );
+                    }
+                }
+                &[]
+            }
+            ClmNodeKind::ParticleChain(c) => {
+                for target in c.outputs.iter().flatten() {
+                    if !has_param(target) {
+                        need(
+                            Required::Param(target.clone()),
+                            "chain output",
                             owner.clone(),
                         );
                     }

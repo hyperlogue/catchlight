@@ -314,6 +314,10 @@ const PHYSICS_FIELDS: &[&str] = &[
     "output_scale.y",
     "pendulum",
 ];
+/// A chain's own two scalars. Its `links` are a list of structs and its
+/// `outputs` a list of Ids, neither of which this command's `field=value`
+/// shape can address — the same reason `key_positions` is missing below.
+const CHAIN_FIELDS: &[&str] = &["gravity", "local_only"];
 /// The fields a param has. `key_positions` is a list, not a scalar, so it is
 /// not patchable here.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
@@ -334,6 +338,7 @@ fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
         ClmNodeKind::Composite(_) => COMPOSITE_FIELDS,
         ClmNodeKind::MeshGroup(_) => MESH_GROUP_FIELDS,
         ClmNodeKind::SimplePhysics(_) => PHYSICS_FIELDS,
+        ClmNodeKind::ParticleChain(_) => CHAIN_FIELDS,
     }
 }
 
@@ -344,6 +349,7 @@ fn kind_name(kind: &ClmNodeKind) -> &'static str {
         ClmNodeKind::Composite(_) => "composite",
         ClmNodeKind::MeshGroup(_) => "mesh group",
         ClmNodeKind::SimplePhysics(_) => "simple physics",
+        ClmNodeKind::ParticleChain(_) => "particle chain",
     }
 }
 
@@ -416,6 +422,11 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             "length_damping" => Slot::F32(&mut s.length_damping),
             "output_scale.x" => Slot::F32(&mut s.output_scale[0]),
             "output_scale.y" => Slot::F32(&mut s.output_scale[1]),
+            _ => return None,
+        },
+        ClmNodeKind::ParticleChain(c) => match field {
+            "local_only" => Slot::Bool(&mut c.local_only),
+            "gravity" => Slot::F32(&mut c.gravity),
             _ => return None,
         },
     })

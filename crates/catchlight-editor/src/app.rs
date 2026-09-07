@@ -3411,6 +3411,12 @@ fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
             length_damping: ph.length_damping,
             output_scale: ph.output_scale,
         },
+        ModelNodeKind::ParticleChain(chain) => InspectorKind::ParticleChain {
+            local_only: chain.local_only,
+            gravity: chain.gravity,
+            links: chain.links().len(),
+            driven: chain.outputs().iter().flatten().count(),
+        },
     };
     Some(InspectorData {
         id,

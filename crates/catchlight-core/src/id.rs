@@ -266,6 +266,8 @@ pub enum NodeIdKind {
     MeshGroup,
     /// A driver node holding a pendulum.
     SimplePhysics,
+    /// A driver node holding a particle chain.
+    Chain,
 }
 
 impl NodeIdKind {
@@ -277,6 +279,7 @@ impl NodeIdKind {
             Self::Composite => "composite",
             Self::MeshGroup => "mesh-group",
             Self::SimplePhysics => "physics",
+            Self::Chain => "chain",
         }
     }
 }
@@ -686,6 +689,7 @@ mod tests {
             (NodeIdKind::Composite, "composite"),
             (NodeIdKind::MeshGroup, "mesh-group"),
             (NodeIdKind::SimplePhysics, "physics"),
+            (NodeIdKind::Chain, "chain"),
         ] {
             let id = NodeId::generate(&parent, kind, &mut hex);
             let s = id.as_str();

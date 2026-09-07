@@ -137,8 +137,8 @@ that enforces them, not here. Add new ones there.
   premultiply, alpha crop, the UV crop it hands back
 - `crates/catchlight-core/src/load.rs` — `.clm` is the only load path
 - `crates/catchlight-core/src/formats/clm.rs` — the `.clm` file: keyed by
-  Id, byte-stable, what it refuses, and why an extension's bytes live in their
-  own section behind a hash
+  Id, byte-stable, what it refuses, why an extension's bytes live in their
+  own section behind a hash, and why a new node kind needs no version bump
 - `crates/catchlight-import-inx/src/lib.rs` — the single reflection, Ids
   minted from position, the reader is total
 - `crates/catchlight-cli/src/lib.rs` — the one dependency rule and what it

@@ -2178,6 +2178,7 @@ class NodeKind(StrEnum):
     COMPOSITE = "composite"
     MESH_GROUP = "mesh_group"
     PHYSICS = "physics"
+    PARTICLE_CHAIN = "particle_chain"
 
 
 class MaskMode(StrEnum):

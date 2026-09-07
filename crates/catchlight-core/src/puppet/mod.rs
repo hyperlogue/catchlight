@@ -37,7 +37,8 @@
 //!   models sitting at the same generation are otherwise indistinguishable.
 //! - **A rebake carries the pose, the drivers and the scratch transforms, by
 //!   Id.** Param values, driver contributions, every `SimplePhysics` runtime
-//!   field and every [`ScratchTransform`] are saved
+//!   field, a particle chain's particles when the edit left its link count
+//!   alone, and every [`ScratchTransform`] are saved
 //!   against `ParamId` / `NodeId`, the arena is rebuilt, and they are put back
 //!   where those Ids now live. Anything keyed by slot — every generation memo
 //!   — is dropped, because the slots moved. A param or node the edit removed
@@ -63,8 +64,9 @@
 //!   preview has to outlive it.
 //! - **A tick reports self-driven motion only.** [`Puppet::tick`] returns
 //!   [`Motion`]: a driver away from the rest pose `settle_physics` places
-//!   (`SimplePhysicsData::is_at_rest` at `SETTLE_EPS_SQ`, the same epsilon
-//!   `settle_physics` converges on), or an animation lane that wrote a param.
+//!   (`SimplePhysicsData::is_at_rest` / `ParticleChainData::is_at_rest` at
+//!   `SETTLE_EPS_SQ`, the same epsilon `settle_physics` converges on), or an
+//!   animation lane that wrote a param.
 //!   A pose, scratch or model change is deliberately not motion — the caller
 //!   made it and already knows to redraw. `Motion` is not `#[must_use]`: most
 //!   callers tick for the frame, not for the answer.
@@ -104,7 +106,7 @@ use crate::id::{NodeId, ParamId};
 use crate::interpolate::{bracket, frac};
 use crate::model::{BindingTarget, Model, Pose, ScalarTarget};
 use crate::node::NodeTree;
-use crate::physics::SimplePhysicsData;
+use crate::physics::{ParticleChainData, SimplePhysicsData};
 
 use bake::{Baked, BakedBinding, BakedParam};
 
@@ -237,8 +239,9 @@ pub struct ScratchTransform {
 /// edit is not motion: the caller made it and already knows to redraw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Motion {
-    /// A `SimplePhysics` driver is away from its rest pose, so the next tick
-    /// will move it even if nothing else changes.
+    /// A driver — a `SimplePhysics` pendulum or a particle chain — is away
+    /// from its rest pose, so the next tick will move it even if nothing else
+    /// changes.
     pub physics: bool,
     /// A playing animation wrote a param this tick.
     pub animation: bool,
@@ -318,6 +321,14 @@ pub struct Puppet {
     /// Parallel to `arena.physics_node_ids`.
     physics_targets: Vec<[Option<u32>; 2]>,
     physics_update_scratch: Vec<([Option<u32>; 2], NodeIdx, Vec2)>,
+    /// Parallel to `arena.chain_node_ids`: one param slot per link.
+    chain_targets: Vec<Vec<Option<u32>>>,
+    /// This frame's chain claims, `(source, slot, bend)`. Flat rather than
+    /// grouped by chain because the only two readers want it flat: the
+    /// contribution loop and the retirement scan.
+    chain_update_scratch: Vec<(NodeIdx, u32, f32)>,
+    /// Held so reading a chain out costs no allocation per frame.
+    chain_bends_scratch: Vec<f32>,
     /// `Some(G)` means the cached physics transforms and the node-level anchor
     /// inputs hold the anchor pose a fresh pre-pass at
     /// `param_generation == G` would produce.
@@ -360,6 +371,9 @@ impl Puppet {
             physics_enabled: true,
             physics_targets: Vec::new(),
             physics_update_scratch: Vec::new(),
+            chain_targets: Vec::new(),
+            chain_update_scratch: Vec::new(),
+            chain_bends_scratch: Vec::new(),
             last_anchor_pose_generation: None,
             animations: Vec::new(),
             play_state: None,
@@ -431,6 +445,18 @@ impl Puppet {
                 }
             })
             .collect();
+        let chains: Vec<(NodeId, ParticleChainData)> = self
+            .arena
+            .chain_node_ids
+            .iter()
+            .filter_map(|&idx| {
+                let id = self.id_of_node.get(idx.0 as usize)?.clone();
+                match &self.arena.get(idx)?.kind {
+                    NodeKind::ParticleChain(c) => Some((id, (**c).clone())),
+                    _ => None,
+                }
+            })
+            .collect();
         let scratch: Vec<(NodeId, ScratchTransform)> = self
             .scratch_transforms
             .iter()
@@ -472,6 +498,27 @@ impl Puppet {
                 p.anchor_initialized = saved.anchor_initialized;
             }
         }
+        for (id, saved) in chains {
+            let Some(&idx) = self.node_of_id.get(&id) else {
+                continue;
+            };
+            let Some(NodeKind::ParticleChain(chain)) = self.arena.get_mut(idx).map(|n| &mut n.kind)
+            else {
+                continue;
+            };
+            // Only a chain of the same shape can take the old particles: they
+            // are positions on rods of particular lengths, and a chain whose
+            // links the edit changed has no rod to put the old point back on.
+            // That one leaves the fresh bake alone and re-hangs on its next
+            // tick, which is a visible snap — and the honest one, since the
+            // author just changed the chain the hair was hanging from.
+            if saved.particles.len() != chain.links.len() + 1 {
+                continue;
+            }
+            chain.particles = saved.particles;
+            chain.anchor = saved.anchor;
+            chain.anchor_initialized = saved.anchor_initialized;
+        }
     }
 
     /// Replace everything derived from the model. Every slot-keyed memo is
@@ -485,6 +532,7 @@ impl Puppet {
             slot_of_param,
             bindings,
             physics_targets,
+            chain_targets,
         } = baked;
         self.arena = arena;
         self.node_of_id = node_of_id;
@@ -496,6 +544,7 @@ impl Puppet {
         self.slot_of_param = slot_of_param;
         self.bindings = bindings;
         self.physics_targets = physics_targets;
+        self.chain_targets = chain_targets;
         self.param_values_overflow.clear();
         self.param_contributions.clear();
         // Keyed by slot, and the slots have moved. `sync` re-keys the entries
@@ -1151,6 +1200,18 @@ impl Puppet {
         !self.arena.physics_node_ids.is_empty()
     }
 
+    pub fn has_particle_chains(&self) -> bool {
+        !self.arena.chain_node_ids.is_empty()
+    }
+
+    /// Whether the puppet carries any driver at all — a pendulum or a
+    /// particle chain. This, not either half, is what gates the anchor
+    /// pre-pass and the settle: both kinds hang from an anchor the pre-pass
+    /// poses, so a model whose only driver is a chain needs it just as much.
+    pub fn has_drivers(&self) -> bool {
+        self.has_simple_physics() || self.has_particle_chains()
+    }
+
     /// When false, a tick skips physics entirely: drivers never overwrite
     /// their target params, so the same pose always yields the same frame.
     /// The editor freezes physics this way — its dt=0 preview cannot
@@ -1193,8 +1254,43 @@ impl Puppet {
         true
     }
 
+    /// Displace every particle of a chain by `offset` and stop it there, so
+    /// the ticks that follow are a swing rather than a fixed point — the
+    /// chain's [`Self::place_driver`].
+    ///
+    /// `offset` is in the frame the drivers integrate in: model units, **Y
+    /// down**. The anchor particle does not move, because it is pinned to the
+    /// node; that is what makes this a bend rather than a translation, and it
+    /// is what the rods then pull back.
+    ///
+    /// A chain that has not hung yet is hung at its stored anchor first, so
+    /// the kick lands on a real shape rather than on the origin a fresh bake
+    /// leaves. Velocities are zeroed: this is a displacement, not a throw.
+    ///
+    /// `false` when `node` is not a particle chain.
+    pub fn kick_chain(&mut self, node: NodeIdx, offset: Vec2) -> bool {
+        let Some(NodeKind::ParticleChain(chain)) = self.arena.get_mut(node).map(|n| &mut n.kind)
+        else {
+            return false;
+        };
+        if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
+            let anchor = chain.anchor;
+            chain.settle_to_rest(anchor);
+        }
+        for particle in chain.particles.iter_mut().skip(1) {
+            particle.pos += offset;
+            particle.vel = Vec2::ZERO;
+        }
+        true
+    }
+
     /// Advance every driver by `dt` seconds against `transforms`, then write
     /// each one's state into its target params.
+    ///
+    /// Pendulums first, then chains, then one pass that writes both. The two
+    /// kinds never read each other's state — only the anchor pose, which this
+    /// frame's pre-pass already built — so the split is bookkeeping, not an
+    /// order that means anything.
     fn tick_physics(&mut self, transforms: &GlobalTransforms, dt: f32) -> bool {
         let _span = tracing::trace_span!("tick_physics").entered();
         for i in 0..self.arena.physics_node_ids.len() {
@@ -1206,17 +1302,27 @@ impl Puppet {
                 p.tick(anchor, dt);
             }
         }
-        self.write_physics_param_outputs(transforms)
+        for i in 0..self.arena.chain_node_ids.len() {
+            let id = self.arena.chain_node_ids[i];
+            let Some(anchor) = self.arena.physics_anchor(transforms, id) else {
+                continue;
+            };
+            if let Some(NodeKind::ParticleChain(c)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
+                c.tick(anchor, dt);
+            }
+        }
+        self.write_driver_param_outputs(transforms)
     }
 
-    /// Map every driver's state through its map mode and claim its target
-    /// params with the result. Returns whether any resolved value moved.
+    /// Map every driver's state into params and claim them with the result:
+    /// a pendulum through its map mode, a chain one bend per link. Returns
+    /// whether any resolved value moved.
     ///
     /// Drivers claim at full authority: a lone driver fully determines its
     /// target, and two drivers aimed at one param average rather than
     /// resolving by their position in the arena, which is tree order and
     /// carries no meaning here.
-    fn write_physics_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
+    fn write_driver_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
         self.physics_update_scratch.clear();
         for i in 0..self.arena.physics_node_ids.len() {
             let id = self.arena.physics_node_ids[i];
@@ -1246,6 +1352,41 @@ impl Puppet {
             let value = p.param_value(flip * world_inverse * flip);
             self.physics_update_scratch.push((targets, id, value));
         }
+        self.chain_update_scratch.clear();
+        // Moved out so `link_bends` can fill it while the arena is borrowed;
+        // it goes straight back, so the allocation is the puppet's for life.
+        let mut bends = std::mem::take(&mut self.chain_bends_scratch);
+        for c in 0..self.arena.chain_node_ids.len() {
+            let id = self.arena.chain_node_ids[c];
+            let Some(targets) = self.chain_targets.get(c) else {
+                continue;
+            };
+            if targets.iter().all(Option::is_none) {
+                continue;
+            }
+            let Some(NodeKind::ParticleChain(chain)) = self.arena.get(id).map(|n| &n.kind) else {
+                continue;
+            };
+            // Same two branches as a pendulum's, and for the same reason: a
+            // `local_only` chain already integrated in the parent's frame.
+            let world_inverse = if chain.local_only {
+                Some(Mat4::IDENTITY)
+            } else {
+                checked_affine_inverse(transforms.get(id))
+            };
+            let Some(world_inverse) = world_inverse else {
+                continue;
+            };
+            let flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
+            chain.link_bends(flip * world_inverse * flip, &mut bends);
+            for (i, slot) in targets.iter().enumerate() {
+                let (Some(slot), Some(&bend)) = (*slot, bends.get(i)) else {
+                    continue;
+                };
+                self.chain_update_scratch.push((id, slot, bend));
+            }
+        }
+        self.chain_bends_scratch = bends;
         let mut changed = self.retire_stale_driver_contributions();
         for i in 0..self.physics_update_scratch.len() {
             let (targets, source, value) = self.physics_update_scratch[i];
@@ -1258,6 +1399,12 @@ impl Puppet {
                 if self.contribute(slot, source, v, 1.0) {
                     changed = true;
                 }
+            }
+        }
+        for i in 0..self.chain_update_scratch.len() {
+            let (source, slot, bend) = self.chain_update_scratch[i];
+            if self.contribute(slot, source, bend, 1.0) {
+                changed = true;
             }
         }
         changed
@@ -1275,13 +1422,18 @@ impl Puppet {
         let before = entries.len();
         let mut retired: smallvec::SmallVec<[u32; 4]> = smallvec::SmallVec::new();
         entries.retain(|e| {
-            let from_driver = self.arena.physics_node_ids.contains(&e.source);
+            let from_driver = self.arena.physics_node_ids.contains(&e.source)
+                || self.arena.chain_node_ids.contains(&e.source);
             let live = self
                 .physics_update_scratch
                 .iter()
                 .any(|(targets, source, _)| {
                     *source == e.source && targets.iter().flatten().any(|&s| s == e.slot)
-                });
+                })
+                || self
+                    .chain_update_scratch
+                    .iter()
+                    .any(|&(source, slot, _)| source == e.source && slot == e.slot);
             if from_driver && !live {
                 retired.push(e.slot);
                 return false;
@@ -1318,7 +1470,10 @@ impl Puppet {
     pub fn settle_physics(&mut self, model: &Model) {
         let _span = tracing::trace_span!("settle_physics").entered();
         self.sync(model);
-        let n = self.arena.physics_node_ids.len();
+        // Every driver of either kind gets a pass, plus the one that observes
+        // the fixed point: a chain's anchor can hang off a pendulum's output
+        // and vice versa, so the two kinds count into the same budget.
+        let n = self.arena.physics_node_ids.len() + self.arena.chain_node_ids.len();
         // Settling writes driver outputs, and a frozen puppet never ticks
         // physics again to refresh or retire them — they would sit on the
         // pose forever, which is the override `set_physics_enabled` removes.
@@ -1337,7 +1492,7 @@ impl Puppet {
                 .compute_physics_ancestor_transforms(&mut transforms);
 
             let mut moved = false;
-            for i in 0..n {
+            for i in 0..self.arena.physics_node_ids.len() {
                 let id = self.arena.physics_node_ids[i];
                 let Some(anchor) = self.arena.physics_anchor(&transforms, id) else {
                     continue;
@@ -1352,7 +1507,22 @@ impl Puppet {
                     p.settle_to_rest(anchor);
                 }
             }
-            self.write_physics_param_outputs(&transforms);
+            for i in 0..self.arena.chain_node_ids.len() {
+                let id = self.arena.chain_node_ids[i];
+                let Some(anchor) = self.arena.physics_anchor(&transforms, id) else {
+                    continue;
+                };
+                if let Some(NodeKind::ParticleChain(c)) =
+                    self.arena.get_mut(id).map(|n| &mut n.kind)
+                {
+                    if !c.anchor_initialized || (c.anchor - anchor).length_squared() > SETTLE_EPS_SQ
+                    {
+                        moved = true;
+                    }
+                    c.settle_to_rest(anchor);
+                }
+            }
+            self.write_driver_param_outputs(&transforms);
 
             if !moved {
                 settled = true;
@@ -1394,7 +1564,7 @@ impl Puppet {
             physics: false,
         };
 
-        let has_physics = self.physics_enabled && self.has_simple_physics();
+        let has_physics = self.physics_enabled && self.has_drivers();
         let mut pre_pass_ran = false;
         let mut anchor_generation = 0;
         if has_physics {
@@ -1475,6 +1645,11 @@ impl Puppet {
             matches!(
                 self.arena.get(id).map(|n| &n.kind),
                 Some(NodeKind::SimplePhysics(p)) if !p.is_at_rest(SETTLE_EPS_SQ)
+            )
+        }) || self.arena.chain_node_ids.iter().any(|&id| {
+            matches!(
+                self.arena.get(id).map(|n| &n.kind),
+                Some(NodeKind::ParticleChain(c)) if !c.is_at_rest(SETTLE_EPS_SQ)
             )
         })
     }

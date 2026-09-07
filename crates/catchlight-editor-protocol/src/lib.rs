@@ -1448,6 +1448,7 @@ pub enum NodeKind {
     Composite,
     MeshGroup,
     Physics,
+    ParticleChain,
 }
 
 impl NodeKind {
@@ -1459,6 +1460,7 @@ impl NodeKind {
             Self::Composite => "composite",
             Self::MeshGroup => "mesh_group",
             Self::Physics => "physics",
+            Self::ParticleChain => "particle_chain",
         }
     }
 
@@ -1471,6 +1473,7 @@ impl NodeKind {
             K::Composite(_) => Self::Composite,
             K::MeshGroup(_) => Self::MeshGroup,
             K::SimplePhysics(_) => Self::Physics,
+            K::ParticleChain(_) => Self::ParticleChain,
         }
     }
 }

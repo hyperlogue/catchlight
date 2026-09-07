@@ -14,9 +14,10 @@
 //! origin and every sampled number is the driver's: the model exists to carry
 //! the authored pendulum and the two params it writes.
 //!
-//! The particle chain has no node kind yet, so its scenario drives
-//! `ParticleChainData` directly and records the bend of each link rather than
-//! a param. Samples are therefore not all two wide, which is why the
+//! The chain's scenario drives `ParticleChainData` directly and records the
+//! bend of each link rather than a param, so that what it pins is the solver
+//! and not the node plumbing around it — `particle_chain_node` is where the
+//! node is tested. Samples are therefore not all two wide, which is why the
 //! baseline's rows are plain arrays rather than pairs.
 //!
 //! Regenerate after an intentional physics change:

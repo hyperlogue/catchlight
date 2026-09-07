@@ -117,6 +117,11 @@ pub(crate) struct Arena {
     pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
     pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
     pub(crate) physics_node_ids: Vec<NodeIdx>,
+    /// Particle-chain drivers, in the same arena order `physics_node_ids`
+    /// keeps its own in. A separate list because the two step differently and
+    /// read out differently, and because `Baked::chain_targets` is parallel to
+    /// this one the way `physics_targets` is parallel to that one.
+    pub(crate) chain_node_ids: Vec<NodeIdx>,
     pub(crate) mesh_group_node_ids: Vec<NodeIdx>,
     // Puppet-local (root=IDENTITY) transform scratch used when sampling
     // SimplePhysics anchors. Decouples the physics integrator from any
@@ -140,10 +145,10 @@ pub(crate) struct Arena {
     /// pre-pass, so a shift that has just appeared reaches the anchors even if
     /// the pose then stands still.
     tc_shift_changed: bool,
-    /// Slots that are a SimplePhysics node or an ancestor of one — the
-    /// only slots the physics pre-pass transform walk needs to fill (see
-    /// `compute_physics_ancestor_transforms`). Invalidated on
-    /// `insert_child`.
+    /// Slots that are a driver node — SimplePhysics or particle chain — or
+    /// an ancestor of one: the only slots the physics pre-pass transform walk
+    /// needs to fill (see `compute_physics_ancestor_transforms`). Invalidated
+    /// on `insert_child`.
     physics_ancestor_mask: Option<Vec<bool>>,
 }
 
@@ -170,6 +175,7 @@ impl Arena {
             weld_cur_a_scratch: Vec::new(),
             weld_cur_b_scratch: Vec::new(),
             physics_node_ids: Vec::new(),
+            chain_node_ids: Vec::new(),
             mesh_group_node_ids: Vec::new(),
             physics_transforms: GlobalTransforms::new(),
             tc_shift_deltas: vec![glam::Vec2::ZERO],
@@ -218,10 +224,11 @@ impl Arena {
         }
     }
 
-    /// Rebuild the three kind registries from the current node kinds.
+    /// Rebuild the four kind registries from the current node kinds.
     pub(crate) fn rebuild_kind_registries(&mut self) {
         self.deform_node_ids.clear();
         self.physics_node_ids.clear();
+        self.chain_node_ids.clear();
         self.mesh_group_node_ids.clear();
         for (slot, node) in self.nodes.iter().enumerate() {
             let id = NodeIdx::new(slot as u32);
@@ -233,6 +240,9 @@ impl Arena {
             }
             if matches!(&node.kind, crate::NodeKind::SimplePhysics(_)) {
                 self.physics_node_ids.push(id);
+            }
+            if matches!(&node.kind, crate::NodeKind::ParticleChain(_)) {
+                self.chain_node_ids.push(id);
             }
             if matches!(&node.kind, crate::NodeKind::MeshGroup(_)) {
                 self.mesh_group_node_ids.push(id);
@@ -389,6 +399,7 @@ impl Arena {
         );
         let is_mesh_group = matches!(&node.kind, crate::NodeKind::MeshGroup(_));
         let is_physics = matches!(&node.kind, crate::NodeKind::SimplePhysics(_));
+        let is_chain = matches!(&node.kind, crate::NodeKind::ParticleChain(_));
         self.base_local_matrix.push(node.base_transform.to_matrix());
         self.node_transform_dirty.push(false);
         self.tc_shift_deltas.push(glam::Vec2::ZERO);
@@ -401,6 +412,9 @@ impl Arena {
         }
         if is_physics {
             self.physics_node_ids.push(id);
+        }
+        if is_chain {
+            self.chain_node_ids.push(id);
         }
         // A new node changes the physics ancestor set and the mesh-group
         // pre-order.
@@ -502,10 +516,14 @@ impl Arena {
         }
     }
 
-    /// Anchor point for a physics driver in the driver's own **Y-down**
-    /// frame (gravity toward +Y). The
+    /// Anchor point for a driver — a pendulum or a particle chain — in the
+    /// driver's own **Y-down** frame (gravity toward +Y). The
     /// node world is Y-up, so the Y is flipped here; the driver's output
     /// conjugates `world_inverse` by the same flip to undo it.
+    ///
+    /// Both kinds hang from the same point and answer to the same
+    /// `local_only`, so one function serves both: the anchor is a property of
+    /// the node, not of what is dangling off it.
     ///
     /// The `local_only` branch uses `node.transform.translation`, including
     /// parameter-driven offsets from the anchor pre-pass rather than the
@@ -517,10 +535,12 @@ impl Arena {
         id: NodeIdx,
     ) -> Option<crate::Vec2> {
         let node = self.nodes.get(id.0 as usize)?;
-        let crate::NodeKind::SimplePhysics(p) = &node.kind else {
-            return None;
+        let local_only = match &node.kind {
+            crate::NodeKind::SimplePhysics(p) => p.local_only,
+            crate::NodeKind::ParticleChain(c) => c.local_only,
+            _ => return None,
         };
-        let anchor = if p.local_only {
+        let anchor = if local_only {
             crate::Vec2::new(node.transform.translation.x, node.transform.translation.y)
         } else {
             let world = transforms.get(id);
@@ -610,7 +630,7 @@ impl Arena {
             return;
         }
         let mut mask = vec![false; self.nodes.len()];
-        for &pid in &self.physics_node_ids {
+        for &pid in self.physics_node_ids.iter().chain(&self.chain_node_ids) {
             let mut cur = Some(pid);
             while let Some(id) = cur {
                 match mask.get_mut(id.0 as usize) {

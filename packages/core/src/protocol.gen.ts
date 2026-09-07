@@ -589,7 +589,8 @@ export type NodeKind =
   | "part"
   | "composite"
   | "mesh_group"
-  | "physics";
+  | "physics"
+  | "particle_chain";
 
 /**
  * What a mask source does to the drawable it is attached to.

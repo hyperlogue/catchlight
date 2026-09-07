@@ -174,6 +174,7 @@ pub enum NodeKind {
     Composite(Box<CompositeData>),
     MeshGroup(Box<MeshGroupData>),
     SimplePhysics(Box<crate::physics::SimplePhysicsData>),
+    ParticleChain(Box<crate::physics::ParticleChainData>),
 }
 
 const _: () = assert!(

@@ -328,6 +328,29 @@ fn node_fields(n: &ClmNode) -> Fields {
             f.insert("output_scale.x".into(), p.output_scale[0].to_string());
             f.insert("output_scale.y".into(), p.output_scale[1].to_string());
         }
+        ClmNodeKind::ParticleChain(c) => {
+            f.insert("kind".into(), "ParticleChain".into());
+            f.insert("local_only".into(), c.local_only.to_string());
+            f.insert("gravity".into(), c.gravity.to_string());
+            // One row per link, so a diff names the link that changed rather
+            // than reporting that the list is different.
+            for (i, link) in c.links.iter().enumerate() {
+                f.insert(format!("links.{i}.length"), link.length.to_string());
+                f.insert(
+                    format!("links.{i}.gravity_scale"),
+                    link.gravity_scale.to_string(),
+                );
+                f.insert(format!("links.{i}.damping"), link.damping.to_string());
+                f.insert(format!("links.{i}.time_scale"), link.time_scale.to_string());
+            }
+            for (i, slot) in c.outputs.iter().enumerate() {
+                f.insert(
+                    format!("outputs.{i}"),
+                    slot.as_ref()
+                        .map_or_else(|| "(none)".to_string(), |t| format!("{:?}", t.as_str())),
+                );
+            }
+        }
     }
     f
 }

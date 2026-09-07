@@ -71,6 +71,15 @@ pub(crate) enum InspectorKind {
         length_damping: f32,
         output_scale: [f32; 2],
     },
+    /// Read-only: this editor is frozen, and a chain is authored in the web
+    /// editor. The row is here so a chain in the tree inspects as itself
+    /// rather than as nothing.
+    ParticleChain {
+        local_only: bool,
+        gravity: f32,
+        links: usize,
+        driven: usize,
+    },
 }
 
 /// `(value-fields set, emitted-on)` — Preview while a drag is live, Commit once
@@ -291,6 +300,18 @@ pub(crate) fn inspector_ui(
                 ctx,
                 &mut out,
             );
+        }
+        InspectorKind::ParticleChain {
+            local_only,
+            gravity,
+            links,
+            driven,
+        } => {
+            ui.separator();
+            ui.label("ParticleChain");
+            ui.label(format!("{links} links, {driven} driving a param"));
+            ui.label(format!("gravity {gravity}"));
+            ui.label(if *local_only { "local only" } else { "world" });
         }
     }
     out

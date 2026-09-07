@@ -85,6 +85,15 @@
 //! CBOR maps keyed by field name give additive evolution: a future field
 //! returns as `#[serde(default)]` and old/new readers interoperate. **Never**
 //! add `deny_unknown_fields`; a breaking change bumps [`FORMAT_VERSION`].
+//!
+//! **A new node kind is additive and does not bump the version.** The kind
+//! enums are externally tagged, so a variant this build has never heard of is
+//! not an unknown *field* to skip — it is an unknown variant, and CBOR
+//! decoding of the whole file fails on it. An older reader therefore refuses a
+//! file carrying a newer kind outright; what it never does is misread that
+//! node as some kind it does know, or load the model with the node silently
+//! dropped. Refusing to open beats opening wrong, so the version stays where
+//! it is and the failure stays honest.
 
 use std::collections::BTreeMap;
 
@@ -512,6 +521,7 @@ pub enum ClmNodeKind {
     Composite(ClmComposite),
     MeshGroup(ClmMeshGroup),
     SimplePhysics(ClmSimplePhysics),
+    ParticleChain(ClmParticleChain),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -581,6 +591,43 @@ pub struct ClmSimplePhysics {
     pub angle_damping: f32,
     pub length_damping: f32,
     pub output_scale: [f32; 2],
+}
+
+/// One segment of a [`ClmParticleChain`], mirroring
+/// [`crate::physics::ChainLink`] rather than reusing it: the file's shape is
+/// the file's to keep stable, exactly as [`ClmSimplePhysics`] mirrors the
+/// driver it describes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClmChainLink {
+    /// Rod length in model pixels. Finite and above zero.
+    pub length: f32,
+    /// Multiplier on the chain's gravity for this link's particle.
+    pub gravity_scale: f32,
+    /// Fraction of velocity shed per second, within 0..=1.
+    pub damping: f32,
+    /// Multiplier on the link's own clock. Finite and above zero.
+    pub time_scale: f32,
+}
+
+/// A chain of rigid links hanging from the node, writing one param per link.
+///
+/// Only the authored half: where the particles are is runtime state a puppet
+/// owns, and a file that stored it would be storing a frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClmParticleChain {
+    pub local_only: bool,
+    /// Authored, unscaled — the global g-scale fold is a build step, as it is
+    /// for [`ClmSimplePhysics::gravity`].
+    pub gravity: f32,
+    /// At least one. Every knob on a link is per second, so a file describes a
+    /// material rather than a frame rate.
+    pub links: Vec<ClmChainLink>,
+    /// The param each link's bend is written into, in link order; `None` where
+    /// a link drives nothing. Absent means "no link drives anything" — the
+    /// reader fills it to the length of `links`, which is the one length it
+    /// may ever have.
+    #[serde(default)]
+    pub outputs: Vec<Option<ParamId>>,
 }
 
 /// A drawable's clipping rule: whose shape clips it, and whether what that

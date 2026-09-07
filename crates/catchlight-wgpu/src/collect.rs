@@ -351,7 +351,10 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                     mode: mask.mode,
                 });
             }
-            NodeKind::MeshGroup(_) | NodeKind::Group | NodeKind::SimplePhysics(_) => {}
+            NodeKind::MeshGroup(_)
+            | NodeKind::Group
+            | NodeKind::SimplePhysics(_)
+            | NodeKind::ParticleChain(_) => {}
         }
     }
     sources
@@ -546,7 +549,10 @@ impl Collector {
                         None => render_list.root_drawables.push(info),
                     }
                 }
-                NodeKind::MeshGroup(_) | NodeKind::Group | NodeKind::SimplePhysics(_) => {}
+                NodeKind::MeshGroup(_)
+                | NodeKind::Group
+                | NodeKind::SimplePhysics(_)
+                | NodeKind::ParticleChain(_) => {}
             }
         });
 
