@@ -1,7 +1,12 @@
 //! Vertex welding: after all other deformation, paired vertices of two Parts
 //! are pulled to a weighted meeting point so a seam (neck/torso,
-//! shoulder/arm) stays closed under param-driven deforms. The idea is
-//! inspired by nijilive's welding; the data model and solve are our own.
+//! shoulder/arm) stays closed under param-driven deforms.
+//!
+//! **A weld pairs two Parts directly, and one list serves every pose.** The
+//! correspondence lives in the [`WeldPair`]: there is no third entity both
+//! sides bind to, and no second list for another display state. Either would
+//! have to be resolved inside the sequential solve below, and a per-state list
+//! would make the model carry a copy of every seam per state.
 
 use glam::{Affine2, Mat2, Vec2};
 use smallvec::SmallVec;

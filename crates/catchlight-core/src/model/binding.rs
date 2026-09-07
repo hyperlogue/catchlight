@@ -7,6 +7,14 @@
 //! A binding belongs to the model, not to the param: it is addressed by its
 //! [`BindingKey`] — the param, the node and the property — so nothing has to
 //! walk a param's private list to find one.
+//!
+//! **A binding spans at most two params, and its grid is the only space it is
+//! read over.** [`BindingParams`] has two variants and stays that way: a third
+//! axis would make the grid a volume whose cells grow with the product of
+//! three key-position sets. Rigs needing more reach compose instead —
+//! independent bindings write independent deform sources that
+//! [`crate::deform::DeformStack`] sums onto the base mesh, so the product is
+//! never formed and never has to be taken apart again.
 
 use std::sync::OnceLock;
 
