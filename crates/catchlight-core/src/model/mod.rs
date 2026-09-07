@@ -723,7 +723,9 @@ impl ModelPhysics {
 #[derive(Debug, Clone)]
 pub struct ModelParticleChain {
     pub local_only: bool,
-    /// Authored, unscaled, like [`ModelPhysics::gravity`]: 9.8 is one g.
+    /// Authored as a multiple of the model's gravity, like
+    /// [`ModelPhysics::gravity`]: the bake folds `pixels_per_meter * gravity`
+    /// from the model-level physics into it, so 1.0 hangs under one g.
     pub gravity: f32,
     links: Vec<ChainLink>,
     outputs: Vec<Option<ParamId>>,
@@ -735,7 +737,7 @@ impl ModelParticleChain {
         let outputs = vec![None; links.len()];
         Self {
             local_only: false,
-            gravity: 9.8,
+            gravity: 1.0,
             links,
             outputs,
         }
