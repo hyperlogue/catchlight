@@ -359,6 +359,11 @@ fn node_fields(n: &ClmNode) -> Fields {
                         format!("chain.links.{i}.stiffness"),
                         link.stiffness.to_string(),
                     );
+                    f.insert(
+                        format!("chain.links.{i}.limit"),
+                        link.limit
+                            .map_or_else(|| "(none)".to_string(), |l| l.to_string()),
+                    );
                 }
             }
         }

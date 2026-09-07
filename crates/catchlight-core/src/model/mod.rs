@@ -724,6 +724,14 @@ pub struct LinkFeel {
     /// Bend spring frequency in Hz. Finite and at or above zero; zero is no
     /// spring, and the link hangs on gravity alone.
     pub stiffness: f32,
+    /// The furthest this link's bend may reach either way, in half turns,
+    /// within `(0, 1]`. `None` is a joint that turns as far as the forces
+    /// take it, which is every link written before there was a limit.
+    ///
+    /// A limit binds the pose as well as the physics: a param posed past it
+    /// moves the spring's target out there, and the link still stops at the
+    /// boundary.
+    pub limit: Option<f32>,
 }
 
 impl Default for LinkFeel {
@@ -732,6 +740,7 @@ impl Default for LinkFeel {
             gravity_scale: 1.0,
             damping: 0.5,
             stiffness: 0.0,
+            limit: None,
         }
     }
 }

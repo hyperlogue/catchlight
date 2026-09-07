@@ -2346,10 +2346,48 @@ fn chain_weight(weight: Option<f32>) -> Result<Option<f32>, EditorError> {
     }
 }
 
-/// The wire's chain as the model holds it over `joints` joints, with the
-/// refusals every command that hangs one shares.
+/// The wire's chain as the model holds it over `joints` joints, with every
+/// refusal the file reader would make on the next load made here instead.
+///
+/// Writing is total, so a knob the model accepts is a knob the file carries,
+/// and the reader is what would refuse it — on the next load, with the
+/// command that named it long gone. Every command that hangs a chain comes
+/// through here, so a script hears about a bad number now, with the field and
+/// the link named the way `ClmLoadError::ChainLinkField` names them.
 fn chain_of(arg: &ChainArg, joints: usize) -> Result<ModelChain, EditorError> {
     chain_weight(arg.weight)?;
+    if let Some(g) = arg.gravity {
+        if !g.is_finite() || g <= 0.0 {
+            return Err(EditorError::BadTarget(
+                "chain gravity is not finite and above zero".into(),
+            ));
+        }
+    }
+    for (i, feel) in arg.links.iter().flatten().enumerate() {
+        let bad = |field: &str, reason: &str| {
+            EditorError::BadTarget(format!("chain link {i}: {field} {reason}"))
+        };
+        if let Some(v) = feel.gravity_scale {
+            if !v.is_finite() {
+                return Err(bad("gravity_scale", "is not finite"));
+            }
+        }
+        if let Some(v) = feel.damping {
+            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+                return Err(bad("damping", "is outside 0..=1"));
+            }
+        }
+        if let Some(v) = feel.stiffness {
+            if !v.is_finite() || v < 0.0 {
+                return Err(bad("stiffness", "is not finite and at or above zero"));
+            }
+        }
+        if let Some(v) = feel.limit {
+            if !v.is_finite() || v <= 0.0 || v > 1.0 {
+                return Err(bad("limit", "is outside 0 exclusive to 1"));
+            }
+        }
+    }
     Ok(arg.to_chain(joints))
 }
 
@@ -2462,6 +2500,7 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
                 gravity_scale: feel.gravity_scale,
                 damping: feel.damping,
                 stiffness: feel.stiffness,
+                limit: feel.limit,
                 spring_offset: 0.0,
             };
             (!catchlight_core::physics::link_can_rest_as_drawn(&link, gravity, orient)).then(|| {

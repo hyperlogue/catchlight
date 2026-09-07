@@ -407,6 +407,7 @@ impl Built {
                             gravity_scale: 1.0,
                             damping: DAMPING,
                             stiffness: s.stiffness,
+                            limit: None,
                         };
                         s.links
                     ]);

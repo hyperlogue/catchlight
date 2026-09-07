@@ -452,6 +452,7 @@ fn build_chain(
             gravity_scale: feel.gravity_scale,
             damping: feel.damping,
             stiffness: feel.stiffness,
+            limit: feel.limit,
             spring_offset: 0.0,
         })
         .collect();

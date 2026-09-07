@@ -2511,6 +2511,11 @@ class LinkFeelArg:
     damping: float | None = None
     # Frequency in Hz of the spring on this link's bend; 0 is no spring.
     stiffness: float | None = None
+    # The furthest this link's bend may reach either way, in half turns,
+    # within `(0, 1]`. Absent is no limit at all — not "leave the one that
+    # is there", because `links` replaces the whole list and a feel absent
+    # from it is a feel the chain no longer has.
+    limit: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

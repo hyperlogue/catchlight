@@ -37,6 +37,19 @@
 //! a rate that is not a whole number of `CHAIN_MAX_STEP`s takes a finer step:
 //! 144 Hz and 288 Hz, which share one, agree to 0.01 px.
 //!
+//! **A bend limit is a wall the joint cannot pass, in either direction.** A
+//! link may carry one, in half turns around the same direction its bend is
+//! measured from — the drawing, carried by the node and by the links above —
+//! so a limit of a quarter is a joint free to turn 45 degrees each way and no
+//! further. The pose does not get past it either: a param posed beyond the
+//! limit moves the spring's target out there and the link still stops at the
+//! wall, which is what makes a limit a promise about the art rather than a
+//! hint to the solver. What the clamp takes from a link on its wall is the
+//! velocity still pushing outward, and only that: the part heading back
+//! inside is real motion, so a strand blown onto its limit falls off it the
+//! moment the wind stops, while one that kept its outward push would buzz
+//! against the wall for as long as the wind lasted.
+//!
 //! **A chain is damped in its anchor's frame, not the world's.** A character
 //! walking across the screen carries the whole strand along, and that is not
 //! motion a hair's own drag resists — damping the absolute velocity streams
@@ -649,6 +662,11 @@ pub struct ChainLink {
     /// stiff the strand is at this joint. Zero is no spring at all, and the
     /// link hangs on gravity alone.
     pub stiffness: f32,
+    /// The furthest this link's bend may reach either way, in half turns, or
+    /// `None` for a joint that turns as far as the forces take it. Within
+    /// `(0, 1]`, and measured around the same direction
+    /// [`ParticleChainData::link_bends`] reports a bend from.
+    pub limit: Option<f32>,
     /// Where the spring's unloaded target sits, in radians from the drawn
     /// direction, so that the loaded equilibrium *is* the drawn direction.
     ///
@@ -668,6 +686,7 @@ impl Default for ChainLink {
             gravity_scale: 1.0,
             damping: 0.5,
             stiffness: 0.0,
+            limit: None,
             spring_offset: 0.0,
         }
     }
@@ -980,6 +999,13 @@ impl ParticleChainData {
             let rest = zero_bend_dir(&self.links, i, previous, turn);
             let target = spring_target(rest, link.spring_offset, posed.get(i).copied());
             let dir = rest_pose_dir(link, target, self.gravity);
+            // The balance the bisection finds is where the link would stand
+            // if it could; a limited one stands on its boundary instead, and
+            // the rest pose has to say so or the first tick would move.
+            let dir = match clamp_to_limit(rest, dir, link.limit) {
+                Some((clamped, _)) => clamped,
+                None => dir,
+            };
             pos += dir * link.length;
             self.particles.push(ChainParticle {
                 pos,
@@ -1160,6 +1186,16 @@ impl ParticleChainData {
             } else {
                 above + Vec2::new(0.0, link.length)
             };
+            // A bend limit is a second constraint on the same rod, so it is
+            // solved where the rod is: the projection puts the particle on
+            // its circle, and this walks it along that circle to the
+            // boundary it left. `None` is every link with no limit, which is
+            // every link written before there was one.
+            let wall = clamp_to_limit(rest, projected - above, link.limit);
+            let projected = match wall {
+                Some((dir, _)) => above + dir * link.length,
+                None => projected,
+            };
 
             // Read velocity off the move that survived the constraint, not
             // the one prediction asked for: the rod's correction is a real
@@ -1179,7 +1215,14 @@ impl ParticleChainData {
                 let carried = anchor_moved / h;
                 let own = (projected - old) / h - carried;
                 let own = own * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h);
-                carried + damp_bend(own, projected - above, link.stiffness, h)
+                let vel = carried + damp_bend(own, projected - above, link.stiffness, h);
+                // Motion the wall forbids is spent, not stored; see
+                // `release_wall` for why a limit that only moved positions
+                // would leave the link buzzing on its boundary.
+                match wall {
+                    Some((dir, sign)) => release_wall(vel, dir, sign),
+                    None => vel,
+                }
             } else {
                 Vec2::ZERO
             };
@@ -1327,6 +1370,55 @@ fn spring_target(rest: Vec2, offset: f32, posed: Option<f32>) -> Vec2 {
         return rest;
     }
     rotate_by(rest, -offset - posed * std::f32::consts::PI)
+}
+
+/// `dir` held inside a link's bend limit: `Some((direction, sign))` naming
+/// the wall it now rests on, `None` for a link with no limit or one still
+/// inside its own.
+///
+/// The bend is measured exactly as [`ParticleChainData::link_bends`] measures
+/// it — the fold of the bearing difference from `rest` — so a link the solver
+/// puts on its limit is one a reader finds at its limit, to the bit. `rest`
+/// is a unit vector, so the direction that comes back is one too and the rod
+/// keeps its length exactly.
+///
+/// A limit that is not a number, or is not above zero, is no limit: the file
+/// and the editor both refuse those, and the solver's job on one that arrives
+/// anyway is to go on simulating rather than to pin the strand at zero.
+fn clamp_to_limit(rest: Vec2, dir: Vec2, limit: Option<f32>) -> Option<(Vec2, f32)> {
+    let limit = limit.filter(|l| l.is_finite() && *l > 0.0)?;
+    let cap = limit * std::f32::consts::PI;
+    let bend = fold_half_turn(bearing(dir) - bearing(rest));
+    if !bend.is_finite() || bend.abs() <= cap {
+        return None;
+    }
+    let sign = if bend > 0.0 { 1.0 } else { -1.0 };
+    Some((rotate_by(rest, -sign * cap), sign))
+}
+
+/// `vel` with whatever part of it is still pushing past the wall taken off.
+///
+/// **A link parked on its limit must not go on loading against it.** The
+/// clamp puts the particle back on the boundary every step, so a velocity
+/// left pointing outward is a push that never lands: the next step spends it
+/// on a move the clamp undoes, reads a fresh outward velocity off the
+/// difference, and the link buzzes on the wall instead of resting on it. What
+/// is kept is what the wall does not forbid — the tangential part heading
+/// back inside, so a strand blown onto its limit falls away from it the
+/// moment the wind stops, and the radial part, which the rod projection
+/// cancels on its own account anyway.
+///
+/// `dir` is the clamped rod and `sign` the wall it sits on. [`rotate_by`] by
+/// `a` lowers the bend by `a`, so the tip moves along `(dir.y, -dir.x)` as
+/// the bend grows, and that turned by the wall's sign is "further out".
+fn release_wall(vel: Vec2, dir: Vec2, sign: f32) -> Vec2 {
+    let out = Vec2::new(dir.y, -dir.x) * sign;
+    let pushing = vel.dot(out);
+    if pushing > 0.0 {
+        vel - out * pushing
+    } else {
+        vel
+    }
 }
 
 /// A direction as an angle from straight down, positive toward +X — the
@@ -2530,6 +2622,192 @@ mod tests {
         assert!(
             c.is_at_rest(1e-6),
             "and the chain reads as at rest, so a viewport over it may idle",
+        );
+    }
+
+    /// A limp link with a limit, under an anchor accelerating away from it:
+    /// the bend stops at the limit, at the number `link_bends` reports, and
+    /// stays there without buzzing while the acceleration keeps pulling.
+    ///
+    /// Then the anchor stops and the link falls back inside on its own,
+    /// which is the half a position-only clamp would get wrong: a velocity
+    /// left loading into the wall has to be spent, not stored, but the part
+    /// heading back inside is real motion and is kept.
+    ///
+    /// The anchor **accelerates** rather than merely moving: a link dragged
+    /// at a constant speed hangs straight down once the transient is over,
+    /// because nothing is pulling it off gravity any more. Four thousand
+    /// pixels per second squared against a gravity of 980 asks the link for
+    /// about 0.42 half turns, well past the quarter turn it is allowed.
+    ///
+    /// **A link pressed against its limit rests a step's sag inside it, not
+    /// on it.** The clamp is exact where it fires — a rod it moves lands on
+    /// the boundary to a millionth of a half turn — but the step that follows
+    /// free-falls before the constraint is asked again, and gravity's pull
+    /// over one substep leaves the projection a hair inside, where the clamp
+    /// has nothing to do. That gap is `g * h^2 / L`, about 2e-4 half turns
+    /// here and the same for any drive, since it is gravity and the substep
+    /// that set it and not how hard the anchor pulls. The hard promise is the
+    /// one asserted every frame: the bend never passes the limit.
+    #[test]
+    fn a_limited_link_stops_at_its_limit_and_comes_back_off_it() {
+        const LIMIT: f32 = 0.25;
+        const ACCEL: f32 = 4000.0;
+        let mut c = ParticleChainData::new(vec![ChainLink {
+            length: 60.0,
+            gravity_scale: 1.0,
+            damping: 0.1,
+            stiffness: 0.0,
+            limit: Some(LIMIT),
+            ..Default::default()
+        }]);
+        c.gravity = 980.0;
+        c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
+
+        let mut bends = Vec::new();
+        let anchor_at = |f: usize| {
+            let t = f as f32 / 60.0;
+            Vec2::new(0.5 * ACCEL * t * t, 0.0)
+        };
+        // The anchor runs toward +X, so the link trails toward -X and its
+        // bend is negative: it is the far wall this test drives into.
+        for f in 1..=90 {
+            c.tick(anchor_at(f), DOWN, &[], 1.0 / 60.0);
+            c.link_bends(Mat4::IDENTITY, &mut bends);
+            assert!(
+                bends[0] >= -LIMIT - 1e-4,
+                "frame {f}: the bend passed its limit at {}",
+                bends[0],
+            );
+        }
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(
+            (bends[0] + LIMIT).abs() < 3e-4,
+            "the link is standing on its limit, got {}",
+            bends[0],
+        );
+
+        // Sixty frames of the same pull: on the wall and still, rather than
+        // clamped and rebounding every frame. The rod is what has to hold
+        // still, since the anchor it hangs from is running away.
+        let rod = c.particles[1].pos - c.particles[0].pos;
+        for f in 91..=150 {
+            c.tick(anchor_at(f), DOWN, &[], 1.0 / 60.0);
+            c.link_bends(Mat4::IDENTITY, &mut bends);
+            assert!(
+                (bends[0] + LIMIT).abs() < 3e-4,
+                "frame {f}: the bend left its limit at {}",
+                bends[0],
+            );
+        }
+        let held = c.particles[1].pos - c.particles[0].pos;
+        // A hundredth of a pixel on a sixty pixel rod. It is not tighter
+        // because the rod is the difference of two coordinates ten thousand
+        // pixels out by now, where an f32 ulp is already a thousandth of a
+        // pixel; the bend asserted every frame above is the tight one.
+        assert!(
+            rod.distance(held) < 0.01,
+            "a link resting on its limit is not buzzing on it: {rod:?} then {held:?}",
+        );
+
+        // The anchor stops; gravity brings the link back inside, so what the
+        // wall took was the velocity heading out and not the one heading
+        // home.
+        let parked = anchor_at(150);
+        for _ in 0..120 {
+            c.tick(parked, DOWN, &[], 1.0 / 60.0);
+        }
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(
+            bends[0].abs() < LIMIT - 0.05,
+            "the link swung back off its limit once the anchor stopped, got {}",
+            bends[0],
+        );
+    }
+
+    /// A limit the motion never reaches is not a change to the motion: the
+    /// same chain limited and unlimited runs bit for bit the same, which is
+    /// what leaves every committed baseline where it is.
+    #[test]
+    fn a_limit_no_bend_reaches_changes_no_bits() {
+        let links = || {
+            [60.0f32, 50.0, 40.0]
+                .map(|length| ChainLink {
+                    length,
+                    damping: 0.3,
+                    stiffness: 2.0,
+                    ..Default::default()
+                })
+                .to_vec()
+        };
+        let mut loose = ParticleChainData::new(links());
+        let mut capped = ParticleChainData::new(
+            links()
+                .into_iter()
+                .map(|l| ChainLink {
+                    // Half a turn: far wider than a gentle sway ever goes.
+                    limit: Some(0.5),
+                    ..l
+                })
+                .collect(),
+        );
+        loose.gravity = 980.0;
+        capped.gravity = 980.0;
+        loose.settle_to_rest(Vec2::ZERO, DOWN, &[]);
+        capped.settle_to_rest(Vec2::ZERO, DOWN, &[]);
+
+        for f in 0..300 {
+            let t = f as f32 / 60.0;
+            let anchor = Vec2::new(8.0 * (t * 2.0).sin(), 0.0);
+            loose.tick(anchor, DOWN, &[], 1.0 / 60.0);
+            capped.tick(anchor, DOWN, &[], 1.0 / 60.0);
+            for (i, (a, b)) in loose.particles.iter().zip(&capped.particles).enumerate() {
+                assert_eq!(
+                    (a.pos, a.vel),
+                    (b.pos, b.vel),
+                    "frame {f} particle {i}: a limit nothing reaches moved a bit",
+                );
+            }
+        }
+    }
+
+    /// The analytic rest pose obeys the limit too. A limp link drawn across
+    /// gravity hangs straight down, which is a whole quarter turn from where
+    /// it was drawn; limited to an eighth, it rests on the eighth instead —
+    /// and stays there, so the first tick after a settle moves nothing.
+    #[test]
+    fn a_settled_limp_link_rests_on_its_limit() {
+        const LIMIT: f32 = 0.125;
+        let mut c = ParticleChainData::new(vec![ChainLink {
+            length: 60.0,
+            // Drawn straight out to +X, a quarter turn off gravity.
+            drawn: Vec2::new(1.0, 0.0),
+            gravity_scale: 1.0,
+            damping: 0.5,
+            stiffness: 0.0,
+            limit: Some(LIMIT),
+            ..Default::default()
+        }]);
+        c.gravity = 980.0;
+        c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
+
+        let mut bends = Vec::new();
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(
+            (bends[0] + LIMIT).abs() < 1e-4,
+            "a limp link drawn across gravity rests on its limit, got {}",
+            bends[0],
+        );
+        // Gravity pulls it further than the limit allows, so this is the
+        // clamp holding and not the balance landing there by itself.
+        for _ in 0..60 {
+            c.tick(Vec2::ZERO, DOWN, &[], 1.0 / 60.0);
+        }
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(
+            (bends[0] + LIMIT).abs() < 1e-4,
+            "and it holds there frame after frame, got {}",
+            bends[0],
         );
     }
 }

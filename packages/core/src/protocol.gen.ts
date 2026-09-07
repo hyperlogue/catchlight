@@ -881,6 +881,13 @@ export type LinkFeelArg = {
    * Frequency in Hz of the spring on this link's bend; 0 is no spring.
    */
   stiffness?: number | null,
+  /**
+   * The furthest this link's bend may reach either way, in half turns,
+   * within `(0, 1]`. Absent is no limit at all — not "leave the one that
+   * is there", because `links` replaces the whole list and a feel absent
+   * from it is a feel the chain no longer has.
+   */
+  limit?: number | null,
 };
 
 /**

@@ -884,6 +884,9 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
                             gravity_scale: 1.0,
                             damping: STRAND_DAMPING,
                             stiffness: 0.0,
+                            // No limit, so the file carries no `limit` key
+                            // and the fixture's bytes do not move.
+                            limit: None,
                         })
                         .collect(),
                 }),

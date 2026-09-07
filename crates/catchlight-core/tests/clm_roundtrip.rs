@@ -258,16 +258,19 @@ fn a_spine_round_trips_byte_for_byte() {
             gravity_scale: 1.0,
             damping: 0.5,
             stiffness: 0.0,
+            limit: None,
         },
         catchlight_core::LinkFeel {
             gravity_scale: 0.8,
             damping: 0.25,
             stiffness: 2.5,
+            limit: Some(0.375),
         },
         catchlight_core::LinkFeel {
             gravity_scale: 0.6,
             damping: 0.0,
             stiffness: 0.0,
+            limit: None,
         },
     ]);
     model.set_spine_chain(&node, Some(chain)).unwrap();
@@ -297,4 +300,10 @@ fn a_spine_round_trips_byte_for_byte() {
         "an unsprung link stays one"
     );
     assert_eq!(chain.links()[2].damping, 0.0);
+    assert_eq!(chain.links()[1].limit, Some(0.375), "the limit came back");
+    assert_eq!(
+        chain.links()[0].limit,
+        None,
+        "and a link with no limit still has none"
+    );
 }

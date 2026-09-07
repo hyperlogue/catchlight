@@ -1090,6 +1090,7 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
                         gravity_scale: l.gravity_scale,
                         damping: l.damping,
                         stiffness: l.stiffness,
+                        limit: l.limit,
                     })
                     .collect(),
             }),
@@ -1300,6 +1301,15 @@ fn model_spine(
             if !link.stiffness.is_finite() || link.stiffness < 0.0 {
                 return Err(bad(i, "stiffness", "is not finite and at or above zero"));
             }
+            // A limit is a bend, in the same half turns a bend param carries,
+            // so a whole turn is the widest one that means anything and zero
+            // would be a joint that cannot move at all — which is a spine
+            // without that link, not a limit.
+            if let Some(limit) = link.limit {
+                if !limit.is_finite() || limit <= 0.0 || limit > 1.0 {
+                    return Err(bad(i, "limit", "is outside 0 exclusive to 1"));
+                }
+            }
         }
         let mut chain = ModelChain::new(c.links.len());
         chain.local_only = c.local_only;
@@ -1312,6 +1322,7 @@ fn model_spine(
                     gravity_scale: l.gravity_scale,
                     damping: l.damping,
                     stiffness: l.stiffness,
+                    limit: l.limit,
                 })
                 .collect(),
         );
@@ -2247,6 +2258,7 @@ mod tests {
                     gravity_scale: 1.0,
                     damping: 0.5,
                     stiffness: 0.0,
+                    limit: None,
                 };
                 links
             ],
@@ -2283,7 +2295,7 @@ mod tests {
 
         /// One way to break a link's feel, and the refusal it has to produce.
         type BreakFeel = (fn(&mut ClmChain), &'static str, &'static str);
-        let cases: [BreakFeel; 4] = [
+        let cases: [BreakFeel; 7] = [
             (
                 |c| c.links[1].gravity_scale = f32::NAN,
                 "gravity_scale",
@@ -2295,6 +2307,24 @@ mod tests {
                 |c| c.links[1].stiffness = -1.0,
                 "stiffness",
                 "is not finite and at or above zero",
+            ),
+            // A limit is a bend in half turns: zero is a joint that cannot
+            // move, past one is more than a whole turn, and neither is a
+            // thing to ask for.
+            (
+                |c| c.links[1].limit = Some(0.0),
+                "limit",
+                "is outside 0 exclusive to 1",
+            ),
+            (
+                |c| c.links[1].limit = Some(1.5),
+                "limit",
+                "is outside 0 exclusive to 1",
+            ),
+            (
+                |c| c.links[1].limit = Some(f32::NAN),
+                "limit",
+                "is outside 0 exclusive to 1",
             ),
         ];
         for (break_it, field, reason) in cases {
@@ -2358,6 +2388,51 @@ mod tests {
     /// key, and reads back as the full-authority chain it describes. The key
     /// is additive under the format's CBOR-map rule, which is why no version
     /// bump goes with it.
+    /// A link with no limit writes no `limit` key, and a link map that has
+    /// none reads back as unlimited. Both halves matter: the first is what
+    /// keeps every file written before there were limits byte for byte what
+    /// this writer produces, and the second is what lets those files load.
+    #[test]
+    fn a_limitless_link_writes_no_limit_key() {
+        let feel = ClmLinkFeel {
+            gravity_scale: 1.0,
+            damping: 0.5,
+            stiffness: 0.0,
+            limit: None,
+        };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&feel, &mut bytes).unwrap();
+        let map: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let keys: Vec<String> = map
+            .as_map()
+            .expect("a feel is a map")
+            .iter()
+            .filter_map(|(k, _)| k.as_text().map(str::to_string))
+            .collect();
+        assert_eq!(
+            keys,
+            ["gravity_scale", "damping", "stiffness"],
+            "a link with no limit carries no key for one",
+        );
+        assert_eq!(
+            ciborium::from_reader::<ClmLinkFeel, _>(bytes.as_slice()).unwrap(),
+            feel,
+            "and reads back as the link it was",
+        );
+
+        // The other way round: a limit that is there is written and read.
+        let limited = ClmLinkFeel {
+            limit: Some(0.5),
+            ..feel
+        };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&limited, &mut bytes).unwrap();
+        assert_eq!(
+            ciborium::from_reader::<ClmLinkFeel, _>(bytes.as_slice()).unwrap(),
+            limited,
+        );
+    }
+
     #[test]
     fn a_chain_map_without_weight_reads_as_full_authority() {
         /// A chain map without the key: the same fields, in the same order.
@@ -2372,6 +2447,7 @@ mod tests {
             gravity_scale: 1.0,
             damping: 0.5,
             stiffness: 0.0,
+            limit: None,
         }];
         let mut bytes = Vec::new();
         ciborium::into_writer(

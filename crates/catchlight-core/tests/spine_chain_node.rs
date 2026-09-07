@@ -554,6 +554,7 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
                     gravity_scale,
                     damping: 0.5,
                     stiffness,
+                    limit: None,
                 })
                 .collect(),
         );
@@ -692,6 +693,7 @@ fn posed_chain(rotation: f32, links: usize) -> (Model, NodeId, Vec<ParamId>) {
                 gravity_scale: 0.0,
                 damping: 0.5,
                 stiffness: 10.0,
+                limit: None,
             })
             .collect(),
     );
@@ -768,6 +770,7 @@ fn a_chain_settled_under_a_posed_bend_stays_put() {
                 gravity_scale: 1.0,
                 damping: 0.5,
                 stiffness: 4.0,
+                limit: None,
             })
             .collect(),
     );
@@ -885,4 +888,62 @@ fn a_chains_weight_is_how_much_of_the_param_it_decides() {
             );
         }
     }
+}
+
+/// **A limit binds the param, not just the particles.** The bend a chain
+/// writes is the bend the solver holds, so a kick hard enough to fling a
+/// strand right over cannot push the param past the limit its link carries.
+///
+/// Every link is limited to an eighth of a turn here, and the kick is worth
+/// far more than that on the first link alone.
+#[test]
+fn a_limited_chain_never_writes_a_bend_past_its_limit() {
+    const LIMIT: f32 = 0.125;
+    let mut f = Fixture::new(3);
+    f.wire_outputs();
+    f.model
+        .update_node(&f.chain, |n| {
+            let ModelNodeKind::Spine(spine) = &mut n.kind else {
+                panic!("not a spine");
+            };
+            let mut chain = spine.chain().expect("a chain").clone();
+            chain.set_links(
+                chain
+                    .links()
+                    .iter()
+                    .map(|l| catchlight_core::LinkFeel {
+                        limit: Some(LIMIT),
+                        ..*l
+                    })
+                    .collect(),
+            );
+            spine.set_chain(Some(chain));
+            Ok::<(), ()>(())
+        })
+        .expect("limit the links")
+        .expect("a spine");
+
+    let mut puppet = f.puppet();
+    puppet.settle_physics(&f.model);
+    let idx = f.idx(&puppet);
+    assert!(puppet.kick_chain(idx, Vec2::new(120.0, -60.0)), "kicked");
+
+    let mut worst = 0.0f32;
+    for frame in 0..600 {
+        puppet.tick(&f.model, DT);
+        for (i, param) in f.params.iter().enumerate() {
+            let bend = puppet.param_value(param).expect("a bend");
+            worst = worst.max(bend.abs());
+            assert!(
+                bend.abs() <= LIMIT + 1e-3,
+                "frame {frame} link {i} wrote {bend}, past its limit of {LIMIT}",
+            );
+        }
+    }
+    // And the kick really did drive the links into their limits, so this is
+    // a clamp holding rather than a chain that never got there.
+    assert!(
+        worst > LIMIT - 1e-3,
+        "the kick reached the limit; the worst bend seen was {worst}",
+    );
 }

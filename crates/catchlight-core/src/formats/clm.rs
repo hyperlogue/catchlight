@@ -612,6 +612,14 @@ pub struct ClmLinkFeel {
     /// Bend spring frequency in Hz. Finite and at or above zero; zero is no
     /// spring at all.
     pub stiffness: f32,
+    /// The furthest this link's bend may reach either way, in half turns,
+    /// within `(0, 1]`. Absent is a joint with no limit on it.
+    ///
+    /// Added after the format shipped, so it is optional and elided when
+    /// there is none: a file written before there were limits is still byte
+    /// for byte what this writer would write for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<f32>,
 }
 
 /// What a chain's authority over its params is when a file does not say.

@@ -138,8 +138,8 @@ that enforces them, not here. Add new ones there.
   frame, the chain's position-based form, what a link bend's sign means, why the
   drawing is the equilibrium and the spring is fitted to make it one, an
   anchor that crosses a frame rather
-  than jumping at its first substep, and what a link's damping is measured
-  against
+  than jumping at its first substep, what a link's damping is measured
+  against, and what a bend limit clamps
 - `crates/catchlight-core/src/interpolate.rs` — how a binding's grid is read
 - `crates/catchlight-core/src/texture.rs` — the whole texture strategy: decode,
   premultiply, alpha crop, the UV crop it hands back

@@ -386,6 +386,143 @@ fn a_chains_bad_weight_is_refused_wherever_it_is_hung() {
     );
 }
 
+/// Every knob the file reader refuses is refused at the command that named
+/// it. Writing is total, so a number the model took would land in the file and
+/// be refused on the next load, with the command long gone; a script wants to
+/// hear about it now, and on every door a chain comes through.
+#[test]
+fn every_chain_knob_the_file_refuses_is_refused_at_the_door() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let with_feel = |feel: LinkFeelArg| ChainArg {
+        links: Some(vec![feel]),
+        ..ChainArg::default()
+    };
+    let bad: Vec<(&str, ChainArg)> = vec![
+        (
+            "gravity 0",
+            ChainArg {
+                gravity: Some(0.0),
+                ..ChainArg::default()
+            },
+        ),
+        (
+            "gravity NaN",
+            ChainArg {
+                gravity: Some(f32::NAN),
+                ..ChainArg::default()
+            },
+        ),
+        (
+            "weight -1",
+            ChainArg {
+                weight: Some(-1.0),
+                ..ChainArg::default()
+            },
+        ),
+        (
+            "gravity_scale NaN",
+            with_feel(LinkFeelArg {
+                gravity_scale: Some(f32::NAN),
+                ..Default::default()
+            }),
+        ),
+        (
+            "damping 1.5",
+            with_feel(LinkFeelArg {
+                damping: Some(1.5),
+                ..Default::default()
+            }),
+        ),
+        (
+            "damping -0.1",
+            with_feel(LinkFeelArg {
+                damping: Some(-0.1),
+                ..Default::default()
+            }),
+        ),
+        (
+            "stiffness -1",
+            with_feel(LinkFeelArg {
+                stiffness: Some(-1.0),
+                ..Default::default()
+            }),
+        ),
+        (
+            "stiffness NaN",
+            with_feel(LinkFeelArg {
+                stiffness: Some(f32::NAN),
+                ..Default::default()
+            }),
+        ),
+        (
+            "limit 0",
+            with_feel(LinkFeelArg {
+                limit: Some(0.0),
+                ..Default::default()
+            }),
+        ),
+    ];
+
+    for (i, (what, chain)) in bad.iter().enumerate() {
+        assert_eq!(
+            code(
+                &ed,
+                200 + i as u64,
+                Command::SpineAdd {
+                    session,
+                    parent: node("root"),
+                    name: None,
+                    joints: vec![[0.0, -10.0]],
+                    targets: None,
+                    chain: Some(chain.clone()),
+                    node: None,
+                },
+            ),
+            ErrorCode::BadTarget,
+            "{what} on spine_add",
+        );
+    }
+    assert!(
+        children(&ed, session).is_empty(),
+        "no refused add made a node"
+    );
+
+    // The same door on a set.
+    let made = match add(&ed, session, vec![[0.0, -10.0]], None, None) {
+        Reply::Ok {
+            body: ResponseBody::Node { node, .. },
+            ..
+        } => node,
+        other => panic!("{other:?}"),
+    };
+    for (i, (what, chain)) in bad.iter().enumerate() {
+        assert_eq!(
+            code(
+                &ed,
+                300 + i as u64,
+                Command::SpineSet {
+                    session,
+                    node: made.clone(),
+                    joints: None,
+                    targets: None,
+                    chain: Some(Some(chain.clone())),
+                },
+            ),
+            ErrorCode::BadTarget,
+            "{what} on spine_set",
+        );
+    }
+    assert!(
+        info(&ed, session, &made)
+            .spine
+            .expect("a spine")
+            .chain
+            .is_none(),
+        "no refused set hung a chain"
+    );
+}
+
 // -------------------------------------------------------------- spine_fit
 
 /// A tall strip: 20 wide, 100 tall, hanging from y = 60 down to y = -40, with
@@ -638,6 +775,7 @@ fn a_refit_reuses_the_spine_and_keeps_the_chains_knobs() {
             weight: Some(0.25),
             links: Some(vec![LinkFeelArg {
                 stiffness: Some(3.0),
+                limit: Some(0.25),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -658,6 +796,65 @@ fn a_refit_reuses_the_spine_and_keeps_the_chains_knobs() {
     assert_eq!(links.len(), 3);
     // The one feel the caller named was repeated onto the joints it did not.
     assert!(links.iter().all(|l| l.stiffness == Some(3.0)));
+    assert!(
+        links.iter().all(|l| l.limit == Some(0.25)),
+        "a bend limit reads back with the rest of the feel: {links:?}",
+    );
+}
+
+/// A limit is a bend in half turns, so zero would be a joint that cannot
+/// move and anything past one is more than a whole turn. The editor refuses
+/// both at the door rather than authoring a model the file would refuse on
+/// its next load.
+#[test]
+fn a_limit_outside_its_range_is_refused() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let part = node("root/hair");
+    strip_part(&ed, session, &part, [0.0; 3], 0.0, [1.0, 1.0]);
+
+    let fit = |id: u64, limit: f32| Command::SpineFit {
+        session,
+        part: part.clone(),
+        links: 2,
+        axis: None,
+        node: Some(node(&format!("root/s{id}"))),
+        name: None,
+        chain: Some(ChainArg {
+            links: Some(vec![LinkFeelArg {
+                limit: Some(limit),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+    };
+
+    for (i, bad) in [0.0f32, 1.5, f32::NAN, -0.25].into_iter().enumerate() {
+        let id = 80 + i as u64;
+        assert_eq!(
+            code(&ed, id, fit(id, bad)),
+            ErrorCode::BadTarget,
+            "a limit of {bad} is refused",
+        );
+    }
+
+    // The widest limit that means anything is fine, and so is a tiny one.
+    for (i, ok) in [1.0f32, 0.001].into_iter().enumerate() {
+        let id = 90 + i as u64;
+        let ResponseBody::SpineFit { node: made, .. } = body(&ed, id, fit(id, ok)) else {
+            panic!("a limit of {ok} was refused");
+        };
+        let chain = info(&ed, session, &made)
+            .spine
+            .expect("a spine")
+            .chain
+            .expect("a chain");
+        assert!(chain
+            .links
+            .expect("links")
+            .iter()
+            .all(|l| l.limit == Some(ok)));
+    }
 }
 
 /// A limp weighted link drawn off gravity cannot settle where it is drawn, and
