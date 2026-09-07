@@ -74,6 +74,15 @@ _Avoid_: deformer, warp, dynamic mesh group (every mesh group is)
 A driver node holding a pendulum hung at its own position; the pendulum's
 swing is written into params.
 
+**Particle chain**:
+A driver node holding a strand of linked particles hung at its own position;
+the bend at each joint is written into a param.
+_Avoid_: chain (alone), hair physics, spring bone
+
+**Link**:
+One fixed-length segment of a particle chain, with its own feel.
+_Avoid_: segment, bone
+
 **Meshed node**:
 A node that carries a mesh — a part or a mesh group.
 _Avoid_: drawable (that's what the renderer draws)
