@@ -135,10 +135,19 @@ struct Contribution {
 /// posed this before the tick" and "a driver wrote it during the tick", so
 /// inventing one would bury a semantic choice in call order. A caller that
 /// wants ordered compositing resolves it on its own side and poses the result.
-fn resolve_contributions(entries: &[Contribution], slot: u32, base: f32) -> f32 {
+///
+/// `claims` is one slot's row of [`Puppet::slot_claims`], so this reads the
+/// few entries that target the slot rather than filtering every claim in the
+/// puppet. Order-independent is the rule and not the arithmetic: the row is
+/// in the order the claims were made, which is the order the filter used to
+/// produce, so the sum lands on the same bits it always did.
+fn resolve_contributions(entries: &[Contribution], claims: &[u32], base: f32) -> f32 {
     let mut total = 0.0;
     let mut sum = 0.0;
-    for e in entries.iter().filter(|e| e.slot == slot) {
+    for &i in claims {
+        let Some(e) = entries.get(i as usize) else {
+            continue;
+        };
         total += e.weight;
         sum += e.value * e.weight;
     }
@@ -305,7 +314,22 @@ pub struct Puppet {
     /// One entry per (param, source), upserted by the source rather than
     /// cleared each frame, so a driver's output survives into the next frame's
     /// anchor pre-pass. That persistence is what couples chained physics.
+    ///
+    /// **Every entry is indexed by `slot_claims`, and nothing reaches this
+    /// list except through the pair.** An entry is pushed only once its
+    /// slot's row exists to record where it went, and the only thing that
+    /// removes entries — retirement — rebuilds the index from this list
+    /// afterwards. So a claim is never in one and not the other, and no
+    /// reader has to filter the whole list to find a slot's claims.
     param_contributions: Vec<Contribution>,
+    /// Parallel to `params`: where that slot's claims sit in
+    /// `param_contributions`, in the order they were made.
+    ///
+    /// The claims on one param are a handful — one driver, occasionally two —
+    /// where the puppet's claims all told are one per driver output, thousands
+    /// on a rig of a few hundred strands. Every read and every upsert is over
+    /// this row, so the cost of a claim is the row's length and not the rig's.
+    slot_claims: Vec<smallvec::SmallVec<[u32; 2]>>,
     /// Parallel to `params`: does any entry target that slot. Keeps the
     /// twice-a-frame fold to one bool load for the overwhelming majority of
     /// params, which have no contributor at all.
@@ -334,6 +358,11 @@ pub struct Puppet {
     chain_update_scratch: Vec<(NodeIdx, u32, f32, f32)>,
     /// Held so reading a chain out costs no allocation per frame.
     chain_bends_scratch: Vec<f32>,
+    /// Retirement's two sets, held for the same reason: which nodes are
+    /// drivers, and which `(slot, source)` claims this frame's drivers made.
+    /// Rebuilt at the top of every retirement pass and meaningless outside it.
+    retire_drivers_scratch: HashSet<NodeIdx>,
+    retire_live_scratch: HashSet<(u32, NodeIdx)>,
     /// The same, for the posed bend a chain's springs pull toward.
     chain_posed_scratch: Vec<f32>,
     /// `Some(G)` means the cached physics transforms and the node-level anchor
@@ -368,6 +397,7 @@ impl Puppet {
             param_values: Vec::new(),
             param_values_overflow: HashMap::new(),
             param_contributions: Vec::new(),
+            slot_claims: Vec::new(),
             param_contributed: Vec::new(),
             param_generation: 0,
             last_tick_folded_param_generation: None,
@@ -383,6 +413,8 @@ impl Puppet {
             chain_update_scratch: Vec::new(),
             chain_bends_scratch: Vec::new(),
             chain_posed_scratch: Vec::new(),
+            retire_drivers_scratch: HashSet::new(),
+            retire_live_scratch: HashSet::new(),
             last_anchor_pose_generation: None,
             animations: Vec::new(),
             play_state: None,
@@ -548,6 +580,7 @@ impl Puppet {
         self.node_of_id = node_of_id;
         self.id_of_node = id_of_node;
         self.param_values = vec![None; params.len()];
+        self.slot_claims = vec![smallvec::SmallVec::new(); params.len()];
         self.param_contributed = vec![false; params.len()];
         self.located = vec![Located::REST; params.len()];
         self.params = params;
@@ -916,7 +949,8 @@ impl Puppet {
             Some(slot) => slot,
             None => return base,
         };
-        if !self.param_contributions.iter().any(|e| e.slot == slot) {
+        let claims = self.slot_claims.get(slot as usize).map_or(&[][..], |c| c);
+        if claims.is_empty() {
             return base;
         }
         let default = self
@@ -926,7 +960,7 @@ impl Puppet {
             .unwrap_or(0.0);
         Some(resolve_contributions(
             &self.param_contributions,
-            slot,
+            claims,
             base.unwrap_or(default),
         ))
     }
@@ -1020,23 +1054,36 @@ impl Puppet {
     }
 
     fn contribute(&mut self, slot: u32, source: NodeIdx, value: f32, weight: f32) -> bool {
+        // A slot with no row is a slot this puppet does not have; there is
+        // nowhere to record the claim, and recording it only in the storage
+        // would put the two out of step.
+        let Some(claims) = self.slot_claims.get(slot as usize) else {
+            return false;
+        };
         let before = self.resolved(slot);
-        match self
-            .param_contributions
-            .iter_mut()
-            .find(|e| e.slot == slot && e.source == source)
-        {
-            Some(e) => {
-                e.value = value;
-                e.weight = weight;
+        let held = claims.iter().find(|&&i| {
+            self.param_contributions
+                .get(i as usize)
+                .is_some_and(|e| e.source == source)
+        });
+        match held.copied() {
+            Some(i) => {
+                if let Some(e) = self.param_contributions.get_mut(i as usize) {
+                    e.value = value;
+                    e.weight = weight;
+                }
             }
             None => {
+                let at = self.param_contributions.len() as u32;
                 self.param_contributions.push(Contribution {
                     slot,
                     source,
                     value,
                     weight,
                 });
+                if let Some(row) = self.slot_claims.get_mut(slot as usize) {
+                    row.push(at);
+                }
                 if let Some(flag) = self.param_contributed.get_mut(slot as usize) {
                     *flag = true;
                 }
@@ -1049,12 +1096,29 @@ impl Puppet {
         true
     }
 
+    /// Put `slot_claims` back in step with `param_contributions`, which is
+    /// what the one thing that removes entries owes the pair. Every other
+    /// writer keeps the two together as it goes.
+    fn rebuild_claim_index(&mut self) {
+        for row in self.slot_claims.iter_mut() {
+            row.clear();
+        }
+        for (i, e) in self.param_contributions.iter().enumerate() {
+            if let Some(row) = self.slot_claims.get_mut(e.slot as usize) {
+                row.push(i as u32);
+            }
+        }
+    }
+
     /// Drop every driver claim, restoring each param to what was posed.
     pub fn clear_param_contributions(&mut self) {
         if self.param_contributions.is_empty() {
             return;
         }
         for e in std::mem::take(&mut self.param_contributions) {
+            if let Some(row) = self.slot_claims.get_mut(e.slot as usize) {
+                row.clear();
+            }
             self.bump_param_generation_for_slot(e.slot);
         }
         for flag in self.param_contributed.iter_mut() {
@@ -1087,7 +1151,8 @@ impl Puppet {
             .copied()
             .unwrap_or(false)
         {
-            resolve_contributions(&self.param_contributions, slot, base)
+            let claims = self.slot_claims.get(slot as usize).map_or(&[][..], |c| c);
+            resolve_contributions(&self.param_contributions, claims, base)
         } else {
             base
         }
@@ -1479,36 +1544,55 @@ impl Puppet {
     /// resolution is a mean, so a frozen claim alongside a live one pulls the
     /// param to the midpoint of the two instead of tracking the driver that is
     /// still running.
+    ///
+    /// **The two questions each entry is asked are answered from sets built
+    /// once, not from scans run per entry.** Which nodes are drivers, and
+    /// which `(slot, source)` pairs this frame's drivers actually produced:
+    /// both are the same for every entry, so the pass costs one walk of the
+    /// drivers plus one walk of the claims rather than their product. The
+    /// sets are kept between frames so a settled rig allocates nothing.
     fn retire_stale_driver_contributions(&mut self) -> bool {
+        let mut drivers = std::mem::take(&mut self.retire_drivers_scratch);
+        let mut live = std::mem::take(&mut self.retire_live_scratch);
+        drivers.clear();
+        live.clear();
+        drivers.extend(self.arena.physics_node_ids.iter().copied());
+        drivers.extend(self.arena.chain_node_ids.iter().copied());
+        for (targets, source, _) in &self.physics_update_scratch {
+            for &slot in targets.iter().flatten() {
+                live.insert((slot, *source));
+            }
+        }
+        for &(source, slot, ..) in &self.chain_update_scratch {
+            live.insert((slot, source));
+        }
+
         let mut entries = std::mem::take(&mut self.param_contributions);
         let before = entries.len();
         let mut retired: smallvec::SmallVec<[u32; 4]> = smallvec::SmallVec::new();
         entries.retain(|e| {
-            let from_driver = self.arena.physics_node_ids.contains(&e.source)
-                || self.arena.chain_node_ids.contains(&e.source);
-            let live = self
-                .physics_update_scratch
-                .iter()
-                .any(|(targets, source, _)| {
-                    *source == e.source && targets.iter().flatten().any(|&s| s == e.slot)
-                })
-                || self
-                    .chain_update_scratch
-                    .iter()
-                    .any(|&(source, slot, ..)| source == e.source && slot == e.slot);
-            if from_driver && !live {
+            if drivers.contains(&e.source) && !live.contains(&(e.slot, e.source)) {
                 retired.push(e.slot);
                 return false;
             }
             true
         });
         self.param_contributions = entries;
+        self.retire_drivers_scratch = drivers;
+        self.retire_live_scratch = live;
         if before == self.param_contributions.len() {
             return false;
         }
+        // Removing shifts every entry after the first hole, so the index is
+        // rebuilt whole. This is the one path that removes anything, and it
+        // runs only when an edit retargets a driver.
+        self.rebuild_claim_index();
         for slot in retired {
             if let Some(flag) = self.param_contributed.get_mut(slot as usize) {
-                *flag = self.param_contributions.iter().any(|e| e.slot == slot);
+                *flag = self
+                    .slot_claims
+                    .get(slot as usize)
+                    .is_some_and(|row| !row.is_empty());
             }
             self.bump_param_generation_for_slot(slot);
         }
@@ -2219,6 +2303,230 @@ mod tests {
         assert!(
             !puppet.tick(&model, DT).any(),
             "settling ends the motion the displacement started",
+        );
+    }
+
+    // ---- driver claims ----------------------------------------------------
+
+    /// What `param_contributions` and `slot_claims` promise each other: every
+    /// claim is indexed exactly once, under the slot it is a claim on, and
+    /// `param_contributed` is the row's emptiness.
+    fn claim_index_agrees(puppet: &Puppet) {
+        let mut counted = 0;
+        for (slot, row) in puppet.slot_claims.iter().enumerate() {
+            for &i in row {
+                let e = puppet
+                    .param_contributions
+                    .get(i as usize)
+                    .expect("a row points at a claim that exists");
+                assert_eq!(
+                    e.slot as usize, slot,
+                    "slot {slot}'s row points at a claim on slot {}",
+                    e.slot,
+                );
+                counted += 1;
+            }
+            assert_eq!(
+                !row.is_empty(),
+                puppet.param_contributed[slot],
+                "slot {slot}'s fast-path flag disagrees with its row",
+            );
+        }
+        assert_eq!(
+            counted,
+            puppet.param_contributions.len(),
+            "every claim is indexed exactly once",
+        );
+    }
+
+    /// One param and two nodes to claim it with. The nodes are plain groups:
+    /// a claim is keyed by the node that made it and asks nothing else of it.
+    fn two_claimants() -> (Model, Puppet, ParamId, NodeIdx, NodeIdx) {
+        use crate::id::SeededHex;
+        use crate::model::{ModelNode, ModelNodeKind, ModelParam};
+        use crate::Name;
+
+        let mut hex = SeededHex::new(3);
+        let mut model = Model::new();
+        let param = model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("aim"),
+                    min: -10.0,
+                    max: 10.0,
+                    default: 0.0,
+                    key_positions: vec![0.0, 1.0],
+                },
+                &mut hex,
+            )
+            .expect("add param");
+        let root = model.root().expect("a fresh model has one root").clone();
+        let nodes: Vec<NodeId> = ["a", "b"]
+            .into_iter()
+            .map(|name| {
+                model
+                    .add_node(&root, ModelNode::new(name, ModelNodeKind::Group), &mut hex)
+                    .expect("add group")
+            })
+            .collect();
+        let puppet = Puppet::new(&model);
+        let a = puppet.node_idx(&nodes[0]).expect("a baked");
+        let b = puppet.node_idx(&nodes[1]).expect("b baked");
+        (model, puppet, param, a, b)
+    }
+
+    /// Two claims on one param are a weighted mean and not a last-writer-wins,
+    /// whichever order they arrive in — the rule the fold is built on, now
+    /// that a slot's claims are read off its own row rather than filtered out
+    /// of every claim in the puppet.
+    #[test]
+    fn two_claims_on_one_slot_average() {
+        let (_model, mut puppet, param, a, b) = two_claimants();
+        puppet.set_param_value(&param, 4.0);
+
+        assert!(puppet.contribute_param_value(&param, a, 0.0, 1.0));
+        assert_eq!(puppet.param_value(&param), Some(0.0), "one full claim wins");
+
+        assert!(puppet.contribute_param_value(&param, b, 1.0, 1.0));
+        assert_eq!(
+            puppet.param_value(&param),
+            Some(0.5),
+            "two full claims meet in the middle rather than the later winning",
+        );
+        claim_index_agrees(&puppet);
+
+        // Half authority leaves half the pose showing, and the two rows are
+        // still one slot's.
+        assert!(puppet.contribute_param_value(&param, b, 1.0, 0.0));
+        assert_eq!(puppet.param_value(&param), Some(0.0));
+        assert_eq!(puppet.param_contributions.len(), 2, "an upsert, not a push");
+        claim_index_agrees(&puppet);
+    }
+
+    /// A source that claims twice in one tick has one claim, not two: the
+    /// second lands on the first rather than beside it, so it never averages
+    /// against itself.
+    #[test]
+    fn a_claim_made_twice_counts_once() {
+        let (_model, mut puppet, param, a, _b) = two_claimants();
+
+        assert!(puppet.contribute_param_value(&param, a, 2.0, 1.0));
+        assert!(puppet.contribute_param_value(&param, a, 6.0, 1.0));
+        assert_eq!(
+            puppet.param_value(&param),
+            Some(6.0),
+            "the second claim replaced the first instead of averaging with it",
+        );
+        assert_eq!(puppet.param_contributions.len(), 1);
+        let slot = puppet.slot_of_param.get(&param).copied().expect("a slot");
+        assert_eq!(puppet.slot_claims[slot as usize].len(), 1);
+        claim_index_agrees(&puppet);
+
+        // A claim that changes nothing says so, and still leaves one entry.
+        assert!(!puppet.contribute_param_value(&param, a, 6.0, 1.0));
+        assert_eq!(puppet.param_contributions.len(), 1);
+        claim_index_agrees(&puppet);
+    }
+
+    /// Clearing the claims empties the index with them; a row left behind
+    /// would point at claims that are gone.
+    #[test]
+    fn clearing_the_claims_empties_the_index() {
+        let (_model, mut puppet, param, a, b) = two_claimants();
+        puppet.set_param_value(&param, 3.0);
+        puppet.contribute_param_value(&param, a, 0.0, 1.0);
+        puppet.contribute_param_value(&param, b, 1.0, 1.0);
+        claim_index_agrees(&puppet);
+
+        puppet.clear_param_contributions();
+        assert!(puppet.param_contributions.is_empty());
+        assert!(
+            puppet.slot_claims.iter().all(|row| row.is_empty()),
+            "a cleared claim leaves no row behind",
+        );
+        claim_index_agrees(&puppet);
+        assert_eq!(
+            puppet.param_value(&param),
+            Some(3.0),
+            "and the param is back to what was posed",
+        );
+    }
+
+    /// A driver that stops naming a param has its claim retired on the next
+    /// tick, and the param falls back to the pose. The stale claim would
+    /// otherwise keep full authority for ever — see
+    /// `retire_stale_driver_contributions`.
+    #[test]
+    fn a_retargeted_drivers_claim_retires_and_the_pose_comes_back() {
+        use crate::formats::clm::ClmPhysics;
+        use crate::id::SeededHex;
+        use crate::model::{ModelNode, ModelNodeKind, ModelParam, ModelPhysics};
+        use crate::physics::PendulumKind;
+        use crate::Name;
+
+        let mut model = Model::new();
+        model.set_physics(ClmPhysics {
+            pixels_per_meter: 1.0,
+            gravity: 1.0,
+        });
+        let mut hex = SeededHex::new(13);
+        let param = model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated("swing"),
+                    min: -10.0,
+                    max: 10.0,
+                    default: 0.0,
+                    key_positions: vec![0.0, 1.0],
+                },
+                &mut hex,
+            )
+            .expect("add param");
+        let root = model.root().expect("a fresh model has one root").clone();
+        let mut driver = ModelPhysics::new(PendulumKind::RigidPendulum);
+        driver.gravity = 981.0;
+        driver.length = 100.0;
+        driver.angle_damping = 0.5;
+        let node = model
+            .add_node(
+                &root,
+                ModelNode::new("driver", ModelNodeKind::SimplePhysics(driver)),
+                &mut hex,
+            )
+            .expect("add driver");
+        model
+            .set_physics_targets(&node, [Some(param.clone()), None])
+            .expect("aim the driver");
+
+        let mut puppet = Puppet::new(&model);
+        puppet.set_param_value(&param, 5.0);
+        let idx = puppet.node_idx(&node).expect("the driver baked");
+        assert!(puppet.place_driver(idx, Vec2::new(80.0, 60.0)), "displaced");
+        puppet.tick(&model, DT);
+        assert_eq!(puppet.param_contributions.len(), 1, "the driver claimed");
+        claim_index_agrees(&puppet);
+        assert_ne!(
+            puppet.param_value(&param),
+            Some(5.0),
+            "and the claim is what the param reads, not the pose",
+        );
+
+        // Aim it at nothing: the claim it left behind is stale the moment the
+        // next tick finds the driver producing none.
+        model
+            .set_physics_targets(&node, [None, None])
+            .expect("unaim the driver");
+        puppet.tick(&model, DT);
+        assert!(
+            puppet.param_contributions.is_empty(),
+            "the stale claim retired: {:?}",
+            puppet.param_contributions,
+        );
+        claim_index_agrees(&puppet);
+        assert_eq!(
+            puppet.param_value(&param),
+            Some(5.0),
+            "and the param is back to what was posed",
         );
     }
 
