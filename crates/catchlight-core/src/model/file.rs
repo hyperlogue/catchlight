@@ -72,7 +72,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::formats::clm::{
     self as clm, ClmBinding, ClmChainLink, ClmComposite, ClmExtension, ClmExtensionBlob,
     ClmExtensionMarker, ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart,
-    ClmParticleChain, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmStructure, ClmTexture,
+    ClmParticleChain, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure, ClmTexture,
     ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
@@ -181,6 +181,24 @@ pub enum ClmLoadError {
         node: String,
         outputs: usize,
         links: usize,
+    },
+    #[error("spine {node:?} carries no joints; a spine is at least one link")]
+    SpineNoJoints { node: String },
+    #[error("spine {node:?} joint {joint}: a coordinate is not finite")]
+    SpineJointField { node: String, joint: usize },
+    #[error(
+        "spine {node:?} joint {joint} repeats the point above it; a link needs a length to turn \
+         about"
+    )]
+    SpineJointCoincident { node: String, joint: usize },
+    #[error(
+        "spine {node:?} names {targets} targets for {joints} joints; a spine reads one param per \
+         link"
+    )]
+    SpineTargetCount {
+        node: String,
+        targets: usize,
+        joints: usize,
     },
     // The field is `mask_source` rather than `source` because thiserror reads
     // a field of that name as the error's cause.
@@ -1081,6 +1099,14 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
             // shape a reader has to reconstruct.
             outputs: chain.outputs().to_vec(),
         }),
+        ModelNodeKind::Spine(spine) => ClmNodeKind::Spine(ClmSpine {
+            joints: spine.joints().to_vec(),
+            // Written in full for the reason a chain's outputs are: the
+            // model's targets are always as long as its joints, so the
+            // shortest encoding would be the one shape a reader has to
+            // reconstruct.
+            targets: spine.targets().to_vec(),
+        }),
     }
 }
 
@@ -1172,7 +1198,74 @@ fn model_kind(
         ClmNodeKind::ParticleChain(c) => {
             ModelNodeKind::ParticleChain(model_chain(id, c, params, shape)?)
         }
+        ClmNodeKind::Spine(sp) => ModelNodeKind::Spine(model_spine(id, sp, params, shape)?),
     })
+}
+
+/// A spine the turn pass can actually compose, or a refusal naming the field.
+///
+/// A joint that repeats the point above it is a link with no direction, and
+/// the arc-length assignment would divide by its length; a non-finite
+/// coordinate spreads `NaN` into every vertex the spine touches. Both are
+/// refused at the door, where the bad value is still attributable to a joint
+/// of a node.
+fn model_spine(
+    id: &NodeId,
+    sp: &ClmSpine,
+    params: &HashMap<ParamId, ModelParam>,
+    shape: Shape,
+) -> Result<ModelSpine, ModelError> {
+    if sp.joints.is_empty() {
+        return Err(ClmLoadError::SpineNoJoints {
+            node: id.to_string(),
+        }
+        .into());
+    }
+    // The link above `joints[0]` starts at the node's own origin, so that is
+    // the point the first joint may not repeat.
+    let mut above = [0.0f32, 0.0];
+    for (i, joint) in sp.joints.iter().enumerate() {
+        if !joint[0].is_finite() || !joint[1].is_finite() {
+            return Err(ClmLoadError::SpineJointField {
+                node: id.to_string(),
+                joint: i,
+            }
+            .into());
+        }
+        if joint == &above {
+            return Err(ClmLoadError::SpineJointCoincident {
+                node: id.to_string(),
+                joint: i,
+            }
+            .into());
+        }
+        above = *joint;
+    }
+    let mut spine = ModelSpine::new(sp.joints.clone());
+    // `#[serde(default)]` gives an empty Vec, which is also what a file whose
+    // links are all rigid writes; both mean the same thing, and the length the
+    // model holds is not the file's to leave off.
+    if !sp.targets.is_empty() {
+        if sp.targets.len() != sp.joints.len() {
+            return Err(ClmLoadError::SpineTargetCount {
+                node: id.to_string(),
+                targets: sp.targets.len(),
+                joints: sp.joints.len(),
+            }
+            .into());
+        }
+        for target in sp.targets.iter().flatten() {
+            if !params.contains_key(target) && !shape.allows_dangling() {
+                return Err(ClmLoadError::DanglingParam {
+                    owner: format!("spine {id}"),
+                    id: target.to_string(),
+                }
+                .into());
+            }
+        }
+        spine.targets = sp.targets.clone();
+    }
+    Ok(spine)
 }
 
 /// A chain the solver can actually step, or a refusal naming the field.
@@ -2251,6 +2344,122 @@ mod tests {
             ClmLoadError::DanglingParam { owner, id }
                 if owner.starts_with("particle chain") && id == "gone"
         ));
+    }
+
+    /// A spine the file describes badly: no joints, a coordinate that is not
+    /// a number, a joint repeating the point above it, and a target list of
+    /// the wrong length. Each names the node and the joint.
+    #[test]
+    fn a_malformed_spine_is_a_structured_error() {
+        fn spine_file(build: impl FnOnce(&mut ClmSpine)) -> (ClmFile, String) {
+            let mut file = sample().to_clm_file().unwrap();
+            let param = file.doc.params[0].id.clone();
+            let mut spine = ClmSpine {
+                joints: vec![[0.0, -50.0], [0.0, -100.0]],
+                targets: vec![Some(param), None],
+            };
+            build(&mut spine);
+            let root = file.doc.nodes[0].id.clone();
+            let id = NodeId::new("root/spine-00000001").unwrap();
+            file.doc.nodes.push(ClmNode {
+                id: id.clone(),
+                parent: Some(root),
+                name: "tail".into(),
+                enabled: true,
+                z_order: 0.0,
+                transform: ClmTransform::default(),
+                lock_to_root: false,
+                kind: ClmNodeKind::Spine(spine),
+            });
+            (file, id.to_string())
+        }
+
+        // The well-formed one loads, so every failure below is the one edit.
+        let (ok, _) = spine_file(|_| {});
+        assert!(Model::from_clm_file(&ok).is_ok(), "the base case loads");
+
+        let (file, node) = spine_file(|sp| sp.joints.clear());
+        assert_eq!(load_err(&file), ClmLoadError::SpineNoJoints { node });
+
+        let (file, node) = spine_file(|sp| sp.joints[1][0] = f32::NAN);
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::SpineJointField { node, joint: 1 }
+        );
+
+        let (file, node) = spine_file(|sp| sp.joints[1][1] = f32::INFINITY);
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::SpineJointField { node, joint: 1 }
+        );
+
+        let (file, node) = spine_file(|sp| sp.joints[1] = sp.joints[0]);
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::SpineJointCoincident { node, joint: 1 }
+        );
+
+        // The first joint's point above it is the node's own origin, so a
+        // spine whose first link has no length is refused the same way.
+        let (file, node) = spine_file(|sp| sp.joints[0] = [0.0, 0.0]);
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::SpineJointCoincident { node, joint: 0 }
+        );
+
+        let (file, node) = spine_file(|sp| sp.targets.pop().map(|_| ()).unwrap_or_default());
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::SpineTargetCount {
+                node,
+                targets: 1,
+                joints: 2,
+            }
+        );
+
+        let (file, _) = spine_file(|sp| sp.targets[0] = Some(ParamId::new("gone").unwrap()));
+        assert!(matches!(
+            load_err(&file),
+            ClmLoadError::DanglingParam { ref owner, ref id }
+                if owner.starts_with("spine") && id == "gone"
+        ));
+    }
+
+    /// A file with no `targets` key at all is a spine every link of which is
+    /// rigid — and the model still holds one slot per link, for the reason a
+    /// chain holds one per link.
+    #[test]
+    fn a_spine_with_no_targets_key_loads_one_slot_per_link() {
+        let mut file = sample().to_clm_file().unwrap();
+        let root = file.doc.nodes[0].id.clone();
+        let id = NodeId::new("root/spine-00000002").unwrap();
+        file.doc.nodes.push(ClmNode {
+            id: id.clone(),
+            parent: Some(root),
+            name: "tail".into(),
+            enabled: true,
+            z_order: 0.0,
+            transform: ClmTransform::default(),
+            lock_to_root: false,
+            kind: ClmNodeKind::Spine(ClmSpine {
+                joints: vec![[0.0, -40.0], [0.0, -80.0], [10.0, -120.0]],
+                // What `#[serde(default)]` hands the reader for an absent key.
+                targets: Vec::new(),
+            }),
+        });
+
+        let model = Model::from_clm_file(&file).unwrap();
+        let ModelNodeKind::Spine(spine) = &model.node(&id).unwrap().kind else {
+            panic!("the spine came back as another kind");
+        };
+        assert_eq!(spine.targets(), [None, None, None]);
+        // And the model's own writer fills the key in from then on.
+        let round_tripped = Model::from_clm_bytes(&model.to_clm_bytes().unwrap()).unwrap();
+        let ModelNodeKind::Spine(spine) = &round_tripped.node(&id).unwrap().kind else {
+            panic!("the spine came back as another kind");
+        };
+        assert_eq!(spine.targets(), [None, None, None]);
+        assert_eq!(spine.joints(), [[0.0, -40.0], [0.0, -80.0], [10.0, -120.0]]);
     }
 
     /// A file with no `outputs` key at all is a chain that drives nothing —

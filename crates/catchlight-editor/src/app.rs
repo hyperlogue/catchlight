@@ -3417,6 +3417,10 @@ fn build_inspector_data(model: &Model, node: &NodeId) -> Option<InspectorData> {
             links: chain.links().len(),
             driven: chain.outputs().iter().flatten().count(),
         },
+        ModelNodeKind::Spine(spine) => InspectorKind::Spine {
+            links: spine.joints().len(),
+            driven: spine.targets().iter().flatten().count(),
+        },
     };
     Some(InspectorData {
         id,

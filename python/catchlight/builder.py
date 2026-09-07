@@ -73,6 +73,7 @@ from .protocol_gen import (
     ResponseBodyWarnings,
     ScalarTarget,
     SessionId,
+    SpineAdd,
 )
 
 __all__ = ["Builder", "BuilderError", "build_from_layers"]
@@ -215,6 +216,37 @@ class Builder:
         )
         if not isinstance(made, ResponseBodyNode):
             raise BuilderError(f"chain_add answered {made!r}")
+        return made.node
+
+    # -- spines
+
+    def spine(
+        self,
+        parent: NodeId,
+        joints: Sequence[tuple[float, float]] | Sequence[list[float]],
+        *,
+        targets: Sequence[ParamId | None] | None = None,
+        node: NodeId | None = None,
+    ) -> NodeId:
+        """Add a spine under `parent` and return its Id.
+
+        `joints` is the far end of each link in the node's own space, root to
+        tip, so the first one ends the link that starts at the node itself.
+        `targets` names the param each link's bend is read from, in link
+        order, and has to be exactly as long as `joints` — `None` where a link
+        is rigid. Absent, every link is rigid.
+        """
+        made = self.client.send(
+            SpineAdd(
+                session=self.session,
+                parent=parent,
+                joints=[[float(j[0]), float(j[1])] for j in joints],
+                targets=None if targets is None else list(targets),
+                node=node,
+            )
+        )
+        if not isinstance(made, ResponseBodyNode):
+            raise BuilderError(f"spine_add answered {made!r}")
         return made.node
 
     def fit_chain(

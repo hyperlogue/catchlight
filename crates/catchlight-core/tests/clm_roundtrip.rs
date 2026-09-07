@@ -294,3 +294,57 @@ fn a_particle_chain_round_trips_byte_for_byte() {
         [Some(params[0].clone()), None, Some(params[2].clone())]
     );
 }
+
+/// A model carrying a spine: the joints and the targets come back, `None` for
+/// a rigid link included, and the file is the one the writer would write.
+#[test]
+fn a_spine_round_trips_byte_for_byte() {
+    use catchlight_core::model::ModelSpine;
+
+    let mut hex = SeededHex::new(29);
+    let mut model = Model::new();
+    let params: Vec<ParamId> = ["a", "b", "c"]
+        .iter()
+        .map(|name| {
+            model
+                .add_param(
+                    ModelParam::new(Name::truncated(*name), -1.0, 1.0, 0.0),
+                    &mut hex,
+                )
+                .unwrap()
+        })
+        .collect();
+    let root = model.root().unwrap().clone();
+    let joints = vec![[0.0, -60.0], [8.0, -110.0], [-4.0, -150.0]];
+    let node = model
+        .add_node(
+            &root,
+            ModelNode::new(
+                "tail",
+                ModelNodeKind::Spine(ModelSpine::new(joints.clone())),
+            ),
+            &mut hex,
+        )
+        .unwrap();
+    // A middle link reading nothing, so the None survives the trip too.
+    model
+        .set_spine_targets(
+            &node,
+            vec![Some(params[0].clone()), None, Some(params[2].clone())],
+        )
+        .unwrap();
+
+    let bytes = model.to_clm_bytes().unwrap();
+    let reopened = Model::from_clm_bytes(&bytes).unwrap();
+    assert_eq!(reopened.to_clm_bytes().unwrap(), bytes, "writing is stable");
+    assert_eq!(identity(&reopened), identity(&model));
+
+    let ModelNodeKind::Spine(back) = &reopened.node(&node).unwrap().kind else {
+        panic!("the spine came back as another kind");
+    };
+    assert_eq!(back.joints(), joints.as_slice());
+    assert_eq!(
+        back.targets(),
+        [Some(params[0].clone()), None, Some(params[2].clone())]
+    );
+}

@@ -48,8 +48,8 @@ One element of a model's tree. Every node has an Id, a name, a transform, a
 z order and a kind.
 
 **Kind**:
-What a node is — group, part, composite, mesh group or simple physics. Fixed
-when the node is created.
+What a node is — group, part, composite, mesh group, simple physics, particle
+chain or spine. Fixed when the node is created.
 
 **Group**:
 A node with no geometry of its own; it exists to position its children.
@@ -82,6 +82,22 @@ _Avoid_: chain (alone), hair physics, spring bone
 **Link**:
 One fixed-length segment of a particle chain, with its own feel.
 _Avoid_: segment, bone
+
+**Spine**:
+A node holding a chain of joints drawn on the art, one bend param per joint;
+every descendant vertex turns with the joints above it. Never drawn.
+_Avoid_: bone, skeleton, deformer, guide
+
+**Joint**:
+One hinge of a spine, at the far end of a link. The bend a link turns by is
+read at the joint above it — the spine's own root for the first link — so a
+spine's joints and its bend params are the same count and offset by one.
+_Avoid_: pivot, bone
+
+**Bend**:
+A joint's turn away from the drawn shape, in half turns, positive toward the
+spine's +X. Zero is the art as drawn.
+_Avoid_: angle, rotation
 
 **Meshed node**:
 A node that carries a mesh — a part or a mesh group.

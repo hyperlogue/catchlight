@@ -88,6 +88,9 @@ pub(super) struct Baked {
     /// links writes, in link order. As long as the chain's links, so a bend
     /// and its slot share an index; `None` where a link drives nothing.
     pub(super) chain_targets: Vec<Vec<Option<u32>>>,
+    /// Parallel to `arena.spine_node_ids`: the param slot each of a spine's
+    /// links reads its bend from, in link order.
+    pub(super) spine_targets: Vec<Vec<Option<u32>>>,
 }
 
 pub(super) fn bake(model: &Model) -> Baked {
@@ -110,6 +113,7 @@ pub(super) fn bake(model: &Model) -> Baked {
             bindings: Vec::new(),
             physics_targets: Vec::new(),
             chain_targets: Vec::new(),
+            spine_targets: Vec::new(),
         };
     };
     if let Some(root) = model.node(&root_id) {
@@ -191,6 +195,7 @@ pub(super) fn bake(model: &Model) -> Baked {
         .collect();
 
     arena.rebuild_all_mesh_group_pins();
+    arena.rebuild_all_spine_pins();
 
     let mut params = Vec::with_capacity(model.param_ids().len());
     let mut slot_of_param = HashMap::with_capacity(model.param_ids().len());
@@ -248,6 +253,22 @@ pub(super) fn bake(model: &Model) -> Baked {
         })
         .collect();
 
+    let spine_targets = arena
+        .spine_node_ids
+        .iter()
+        .map(|&idx| {
+            let id = &id_of_node[idx.0 as usize];
+            match model.node(id).map(|n| &n.kind) {
+                Some(ModelNodeKind::Spine(spine)) => spine
+                    .targets()
+                    .iter()
+                    .map(|p| p.as_ref().and_then(|p| slot_of_param.get(p).copied()))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        })
+        .collect();
+
     Baked {
         arena,
         node_of_id,
@@ -257,6 +278,7 @@ pub(super) fn bake(model: &Model) -> Baked {
         bindings,
         physics_targets,
         chain_targets,
+        spine_targets,
     }
 }
 
@@ -370,6 +392,16 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
         ModelNodeKind::ParticleChain(chain) => {
             NodeKind::ParticleChain(Box::new(build_chain(chain, g_scale)))
         }
+        // The per-vertex assignment is left empty here: it needs the rest
+        // globals of every descendant, which only exist once the whole tree is
+        // in the arena. `Arena::rebuild_all_spine_pins` fills it.
+        ModelNodeKind::Spine(spine) => NodeKind::Spine(Box::new(crate::spine::SpineData::new(
+            spine
+                .joints()
+                .iter()
+                .map(|j| Vec2::new(j[0], j[1]))
+                .collect(),
+        ))),
     };
     Node {
         name: node.name.as_str().to_string(),

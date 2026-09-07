@@ -122,6 +122,16 @@ pub(crate) struct Arena {
     /// read out differently, and because `Baked::chain_targets` is parallel to
     /// this one the way `physics_targets` is parallel to that one.
     pub(crate) chain_node_ids: Vec<NodeIdx>,
+    /// Spine nodes, in arena order. `Baked::spine_targets` is parallel to it
+    /// the way `chain_targets` is parallel to `chain_node_ids`.
+    pub(crate) spine_node_ids: Vec<NodeIdx>,
+    // Frame-persistent scratch for the spine pass, the same pair
+    // `propagate_mesh_group_deforms` keeps: the offsets computed under a read
+    // borrow of the spine and written under a write borrow of the child, and
+    // the child's combined-minus-Node(spine) deform read without disturbing
+    // the stack memos.
+    pub(crate) spine_scratch: Vec<glam::Vec2>,
+    pub(crate) spine_cur_deform_scratch: Vec<glam::Vec2>,
     pub(crate) mesh_group_node_ids: Vec<NodeIdx>,
     // Puppet-local (root=IDENTITY) transform scratch used when sampling
     // SimplePhysics anchors. Decouples the physics integrator from any
@@ -176,6 +186,9 @@ impl Arena {
             weld_cur_b_scratch: Vec::new(),
             physics_node_ids: Vec::new(),
             chain_node_ids: Vec::new(),
+            spine_node_ids: Vec::new(),
+            spine_scratch: Vec::new(),
+            spine_cur_deform_scratch: Vec::new(),
             mesh_group_node_ids: Vec::new(),
             physics_transforms: GlobalTransforms::new(),
             tc_shift_deltas: vec![glam::Vec2::ZERO],
@@ -224,11 +237,12 @@ impl Arena {
         }
     }
 
-    /// Rebuild the four kind registries from the current node kinds.
+    /// Rebuild the five kind registries from the current node kinds.
     pub(crate) fn rebuild_kind_registries(&mut self) {
         self.deform_node_ids.clear();
         self.physics_node_ids.clear();
         self.chain_node_ids.clear();
+        self.spine_node_ids.clear();
         self.mesh_group_node_ids.clear();
         for (slot, node) in self.nodes.iter().enumerate() {
             let id = NodeIdx::new(slot as u32);
@@ -243,6 +257,9 @@ impl Arena {
             }
             if matches!(&node.kind, crate::NodeKind::ParticleChain(_)) {
                 self.chain_node_ids.push(id);
+            }
+            if matches!(&node.kind, crate::NodeKind::Spine(_)) {
+                self.spine_node_ids.push(id);
             }
             if matches!(&node.kind, crate::NodeKind::MeshGroup(_)) {
                 self.mesh_group_node_ids.push(id);
@@ -352,6 +369,40 @@ impl Arena {
         }
     }
 
+    /// Derive every spine's per-vertex assignment from the rest pose, the way
+    /// [`Self::rebuild_all_mesh_group_pins`] derives a group's pins: reset the
+    /// dynamic state so the transforms are the ones the art was drawn at, then
+    /// walk each spine's meshed descendants.
+    pub(crate) fn rebuild_all_spine_pins(&mut self) {
+        self.reset_dynamic_state();
+        self.reset_deforms();
+        if self.spine_node_ids.is_empty() {
+            return;
+        }
+        let mut transforms = GlobalTransforms::new();
+        self.compute_transforms(&mut transforms);
+        let baked: Vec<_> = self
+            .spine_node_ids
+            .iter()
+            .map(|&id| (id, crate::spine::bake_spine_pins(self, &transforms, id)))
+            .collect();
+        for (id, pins) in baked {
+            if let Some(crate::NodeKind::Spine(spine)) =
+                self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
+            {
+                spine.pins = pins;
+            }
+        }
+    }
+
+    /// Turn every spine's descendants by this frame's bends. Call after the
+    /// transforms are computed and before the mesh groups, so a group above a
+    /// spine warps art the spine has already bent.
+    pub(crate) fn propagate_spine_deforms(&mut self, transforms: &GlobalTransforms) {
+        let _span = tracing::trace_span!("propagate_spine_deforms").entered();
+        crate::spine::propagate_spine_deforms(self, transforms);
+    }
+
     /// Run the mesh groups in pre-order: each combines its stack, shifts its
     /// `translate_children` targets and brings the globals under them up to
     /// date in `transforms`, then pushes the combined deform to its meshed
@@ -400,6 +451,7 @@ impl Arena {
         let is_mesh_group = matches!(&node.kind, crate::NodeKind::MeshGroup(_));
         let is_physics = matches!(&node.kind, crate::NodeKind::SimplePhysics(_));
         let is_chain = matches!(&node.kind, crate::NodeKind::ParticleChain(_));
+        let is_spine = matches!(&node.kind, crate::NodeKind::Spine(_));
         self.base_local_matrix.push(node.base_transform.to_matrix());
         self.node_transform_dirty.push(false);
         self.tc_shift_deltas.push(glam::Vec2::ZERO);
@@ -415,6 +467,9 @@ impl Arena {
         }
         if is_chain {
             self.chain_node_ids.push(id);
+        }
+        if is_spine {
+            self.spine_node_ids.push(id);
         }
         // A new node changes the physics ancestor set and the mesh-group
         // pre-order.

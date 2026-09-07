@@ -353,6 +353,22 @@ fn node_fields(n: &ClmNode) -> Fields {
                 );
             }
         }
+        ClmNodeKind::Spine(sp) => {
+            f.insert("kind".into(), "Spine".into());
+            // One row per joint and per target, for the reason a chain's links
+            // get one each: a diff names the joint that moved.
+            for (i, joint) in sp.joints.iter().enumerate() {
+                f.insert(format!("joints.{i}.x"), joint[0].to_string());
+                f.insert(format!("joints.{i}.y"), joint[1].to_string());
+            }
+            for (i, slot) in sp.targets.iter().enumerate() {
+                f.insert(
+                    format!("targets.{i}"),
+                    slot.as_ref()
+                        .map_or_else(|| "(none)".to_string(), |t| format!("{:?}", t.as_str())),
+                );
+            }
+        }
     }
     f
 }

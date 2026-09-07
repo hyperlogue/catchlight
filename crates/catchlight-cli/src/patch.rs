@@ -318,6 +318,11 @@ const PHYSICS_FIELDS: &[&str] = &[
 /// `outputs` a list of Ids, neither of which this command's `field=value`
 /// shape can address — the same reason `key_positions` is missing below.
 const CHAIN_FIELDS: &[&str] = &["gravity", "local_only", "weight"];
+/// A spine has no scalar of its own: its `joints` are a list of points and its
+/// `targets` a list of Ids, and neither fits a `field=value`. The kind is
+/// listed here so an unknown field on a spine is reported against an empty set
+/// rather than falling through as some other kind's.
+const SPINE_FIELDS: &[&str] = &[];
 /// The fields a param has. `key_positions` is a list, not a scalar, so it is
 /// not patchable here.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
@@ -339,6 +344,7 @@ fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
         ClmNodeKind::MeshGroup(_) => MESH_GROUP_FIELDS,
         ClmNodeKind::SimplePhysics(_) => PHYSICS_FIELDS,
         ClmNodeKind::ParticleChain(_) => CHAIN_FIELDS,
+        ClmNodeKind::Spine(_) => SPINE_FIELDS,
     }
 }
 
@@ -350,6 +356,7 @@ fn kind_name(kind: &ClmNodeKind) -> &'static str {
         ClmNodeKind::MeshGroup(_) => "mesh group",
         ClmNodeKind::SimplePhysics(_) => "simple physics",
         ClmNodeKind::ParticleChain(_) => "particle chain",
+        ClmNodeKind::Spine(_) => "spine",
     }
 }
 
@@ -430,6 +437,7 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             "weight" => Slot::F32(&mut c.weight),
             _ => return None,
         },
+        ClmNodeKind::Spine(_) => return None,
     })
 }
 

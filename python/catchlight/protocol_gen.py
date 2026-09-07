@@ -1534,6 +1534,66 @@ class ChainSet:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SpineAdd:
+    """Add a spine node.
+
+    The spine is `joints` links long and reads one bend param per link, in
+    link order. Empty `joints` is refused — a spine of no links has nothing
+    to turn about — as is a joint that repeats the point above it, which is
+    a link with no length.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "spine_add"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    parent: NodeId
+    # The far end of each link, in the node's own space, root to tip.
+    # `joints[0]` ends the link that starts at the node itself.
+    joints: list[tuple[float, float]]
+    # One param per link, in link order, `None` where a link is rigid.
+    # Absent binds none; present, it must be exactly as long as `joints`.
+    targets: list[ParamId | None] | None = None
+    # The Id to create it under. Absent generates one; an Id the model
+    # already carries is [`ErrorCode::DuplicateId`].
+    node: NodeId | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SpineSet:
+    """Change fields on a spine node; absent = unchanged.
+
+    `joints` and `targets` in one command apply in that order, so `targets`
+    is measured against the length `joints` just set rather than the one it
+    replaced.
+    """
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "spine_set"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    node: NodeId
+    # The whole spine, root to tip. Targets follow the new length: a link
+    # past the new end loses its param, a new link arrives rigid.
+    joints: list[tuple[float, float]] | None = None
+    # One param per link, exactly as long as the spine is after `joints`
+    # is applied.
+    targets: list[ParamId | None] | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ChainFit:
     """Rig a strand of art to a particle chain in one edit: the params, the
     chain, and the deform bindings that bend the art.
@@ -1938,6 +1998,8 @@ Command = (
     | PhysicsAdd
     | ChainAdd
     | ChainSet
+    | SpineAdd
+    | SpineSet
     | ChainFit
     | Undo
     | Redo
@@ -2017,6 +2079,8 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "physics_add": PhysicsAdd,
     "chain_add": ChainAdd,
     "chain_set": ChainSet,
+    "spine_add": SpineAdd,
+    "spine_set": SpineSet,
     "chain_fit": ChainFit,
     "undo": Undo,
     "redo": Redo,
@@ -2109,6 +2173,8 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "physics_add": CommandKind.EDIT,
     "chain_add": CommandKind.EDIT,
     "chain_set": CommandKind.EDIT,
+    "spine_add": CommandKind.EDIT,
+    "spine_set": CommandKind.EDIT,
     "chain_fit": CommandKind.EDIT,
     "undo": CommandKind.EDIT,
     "redo": CommandKind.EDIT,
@@ -2232,6 +2298,8 @@ EditCommand = (
     | PhysicsAdd
     | ChainAdd
     | ChainSet
+    | SpineAdd
+    | SpineSet
     | ChainFit
     | Undo
     | Redo
@@ -2310,6 +2378,7 @@ class NodeKind(StrEnum):
     MESH_GROUP = "mesh_group"
     PHYSICS = "physics"
     PARTICLE_CHAIN = "particle_chain"
+    SPINE = "spine"
 
 
 class MaskMode(StrEnum):
@@ -3608,6 +3677,8 @@ class NodeInfo:
     physics: PhysicsInfo | None = None
     # A particle chain's settings, absent on every other kind.
     chain: ChainInfo | None = None
+    # A spine's settings, absent on every other kind.
+    spine: SpineInfo | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3646,6 +3717,19 @@ class ChainInfo:
     weight: float
     links: list[ChainLinkArg]
     outputs: list[ParamId | None]
+
+
+@dataclass(frozen=True, kw_only=True)
+class SpineInfo:
+    """A spine in full, under the names [`Command::SpineSet`] sets them by.
+
+    `joints` and `targets` are always the same length: a spine reads one bend
+    per link, and a rigid link is a `null` in `targets`. The whole pair travels
+    back through [`Command::SpineSet`] unchanged.
+    """
+
+    joints: list[tuple[float, float]]
+    targets: list[ParamId | None]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3813,6 +3897,8 @@ __all__ = [
     "PhysicsAdd",
     "ChainAdd",
     "ChainSet",
+    "SpineAdd",
+    "SpineSet",
     "ChainFit",
     "Undo",
     "Redo",
@@ -3929,6 +4015,7 @@ __all__ = [
     "NodeInfo",
     "PhysicsInfo",
     "ChainInfo",
+    "SpineInfo",
     "TexInfo",
     "ParamInfo",
     "BindingInfo",

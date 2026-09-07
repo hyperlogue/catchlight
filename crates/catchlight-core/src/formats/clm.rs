@@ -522,6 +522,7 @@ pub enum ClmNodeKind {
     MeshGroup(ClmMeshGroup),
     SimplePhysics(ClmSimplePhysics),
     ParticleChain(ClmParticleChain),
+    Spine(ClmSpine),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -664,6 +665,25 @@ pub struct ClmParticleChain {
     /// may ever have.
     #[serde(default)]
     pub outputs: Vec<Option<ParamId>>,
+}
+
+/// A chain of joints drawn on the art, turning the geometry beneath the node.
+///
+/// Only the authored half: the per-vertex assignment the runtime derives from
+/// this polyline is a cache a puppet builds, and a file that stored it would
+/// be storing a bake.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClmSpine {
+    /// The far end of each link, in the node's own space, so `joints[0]` ends
+    /// the link that starts at the node itself. At least one, every
+    /// coordinate finite, and no two consecutive points equal — a link with no
+    /// length has no direction to turn about.
+    pub joints: Vec<[f32; 2]>,
+    /// The param each link's bend is read from, in link order; `None` where a
+    /// link is rigid. Absent means "no link bends" — the reader fills it to
+    /// the length of `joints`, which is the one length it may ever have.
+    #[serde(default)]
+    pub targets: Vec<Option<ParamId>>,
 }
 
 /// A drawable's clipping rule: whose shape clips it, and whether what that

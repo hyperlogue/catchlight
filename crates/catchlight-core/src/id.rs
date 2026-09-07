@@ -268,6 +268,8 @@ pub enum NodeIdKind {
     SimplePhysics,
     /// A driver node holding a particle chain.
     Chain,
+    /// A node whose joints turn the geometry beneath it.
+    Spine,
 }
 
 impl NodeIdKind {
@@ -280,6 +282,7 @@ impl NodeIdKind {
             Self::MeshGroup => "mesh-group",
             Self::SimplePhysics => "physics",
             Self::Chain => "chain",
+            Self::Spine => "spine",
         }
     }
 }
@@ -690,6 +693,7 @@ mod tests {
             (NodeIdKind::MeshGroup, "mesh-group"),
             (NodeIdKind::SimplePhysics, "physics"),
             (NodeIdKind::Chain, "chain"),
+            (NodeIdKind::Spine, "spine"),
         ] {
             let id = NodeId::generate(&parent, kind, &mut hex);
             let s = id.as_str();

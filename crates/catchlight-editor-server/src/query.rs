@@ -288,6 +288,13 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             }),
             _ => None,
         },
+        spine: match &node.kind {
+            ModelNodeKind::Spine(spine) => Some(SpineInfo {
+                joints: spine.joints().to_vec(),
+                targets: spine.targets().to_vec(),
+            }),
+            _ => None,
+        },
     }
 }
 

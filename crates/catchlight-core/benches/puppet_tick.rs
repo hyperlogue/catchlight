@@ -13,6 +13,11 @@
 //! `retire_stale_driver_contributions`, which grow with the number of driver
 //! outputs, from the solver, which does not.
 //!
+//! `spine_100x5` is the same hundred strands turned by a spine instead: the
+//! same params posed the same way, composed at runtime rather than folded out
+//! of per-link deform grids. It is the row `bindings_only` is there to be
+//! compared against.
+//!
 //! Std only, no harness: `cargo bench -p catchlight-core`, optionally with a
 //! substring to select scenarios. Numbers belong in the issue that asked for
 //! them, not in a doc comment — a machine is not a baseline. The minimum is
@@ -31,7 +36,8 @@ use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::id::SeededHex;
 use catchlight_core::{
     BindingKey, BindingTarget, ChainLink, InterpolateMode, Model, ModelNode, ModelNodeKind,
-    ModelParam, ModelPart, ModelParticleChain, Name, NodeId, ParamId, Puppet, ScalarTarget,
+    ModelParam, ModelPart, ModelParticleChain, ModelSpine, Name, NodeId, ParamId, Puppet,
+    ScalarTarget,
 };
 
 /// Seconds a tick advances: one frame at 60 Hz.
@@ -82,6 +88,10 @@ struct Scenario {
     /// still solves every tick, so this is the switch that isolates the
     /// integrator from the claim bookkeeping around it.
     outputs: bool,
+    /// Hang the strip off a spine reading the same bend params, instead of
+    /// binding per-link deform grids to them. Mutually exclusive with `parts`,
+    /// which is what authors those grids.
+    spines: bool,
 }
 
 const SCENARIOS: &[Scenario] = &[
@@ -93,6 +103,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: true,
         chains: true,
         outputs: true,
+        spines: false,
     },
     Scenario {
         name: "chains_sprung_100x5",
@@ -102,6 +113,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: true,
         chains: true,
         outputs: true,
+        spines: false,
     },
     Scenario {
         name: "bindings_only",
@@ -111,6 +123,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: true,
         chains: false,
         outputs: false,
+        spines: false,
     },
     Scenario {
         name: "chains_unbound_10x5",
@@ -120,6 +133,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: false,
         chains: true,
         outputs: false,
+        spines: false,
     },
     Scenario {
         name: "chains_unbound_100x5",
@@ -129,6 +143,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: false,
         chains: true,
         outputs: false,
+        spines: false,
     },
     Scenario {
         name: "chains_unbound_400x5",
@@ -138,6 +153,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: false,
         chains: true,
         outputs: false,
+        spines: false,
     },
     Scenario {
         name: "chains_solver_only_10x5",
@@ -147,6 +163,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: false,
         chains: true,
         outputs: true,
+        spines: false,
     },
     Scenario {
         name: "chains_solver_only_100x5",
@@ -156,6 +173,7 @@ const SCENARIOS: &[Scenario] = &[
         parts: false,
         chains: true,
         outputs: true,
+        spines: false,
     },
     Scenario {
         name: "chains_solver_only_400x5",
@@ -165,6 +183,17 @@ const SCENARIOS: &[Scenario] = &[
         parts: false,
         chains: true,
         outputs: true,
+        spines: false,
+    },
+    Scenario {
+        name: "spine_100x5",
+        strands: 100,
+        links: 5,
+        stiffness: 0.0,
+        parts: false,
+        chains: false,
+        outputs: false,
+        spines: true,
     },
 ];
 
@@ -188,7 +217,7 @@ fn main() {
             s.name,
             s.strands,
             s.links,
-            if s.parts {
+            if s.parts || s.spines {
                 (ROWS * 2).to_string()
             } else {
                 "-".to_string()
@@ -359,6 +388,29 @@ impl Built {
                         .set_binding_interpolate(&key, InterpolateMode::Cubic)
                         .unwrap();
                 }
+            }
+
+            if s.spines {
+                let mut node = ModelNode::new(
+                    format!("spine {i}"),
+                    ModelNodeKind::Spine(ModelSpine::new(
+                        (0..s.links)
+                            .map(|l| [0.0, TOP - link_len * (l + 1) as f32])
+                            .collect(),
+                    )),
+                );
+                node.transform.translation = [i as f32 * SPACING, 0.0, 0.0];
+                let id = model.add_node(&head, node, &mut hex).unwrap();
+                model
+                    .set_spine_targets(&id, strand.iter().cloned().map(Some).collect())
+                    .unwrap();
+                let mut art = ModelNode::new(
+                    format!("strand {i}"),
+                    ModelNodeKind::Part(ModelPart::new(mesh.clone())),
+                );
+                art.transform.translation = [0.0, 0.0, 0.0];
+                let part = model.add_node(&id, art, &mut hex).unwrap();
+                first_part.get_or_insert(part);
             }
 
             if s.chains {

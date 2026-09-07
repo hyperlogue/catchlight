@@ -312,6 +312,13 @@ impl Model {
                     }
                 }
             }
+            if let ModelNodeKind::Spine(spine) = &node.kind {
+                for t in spine.targets().iter().flatten() {
+                    if !self.params.contains_key(t) {
+                        need(Required::Param(t.clone()), "spine target", &id);
+                    }
+                }
+            }
             for mask in node.masks().unwrap_or_default() {
                 if !self.nodes.contains_key(mask.source()) {
                     need(Required::Part(mask.source().clone()), "mask source", &id);

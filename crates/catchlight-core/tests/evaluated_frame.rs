@@ -5,8 +5,8 @@
 //! committed `.clm` fixtures do not reach: mesh groups in both
 //! `translate_children` states, two-param bindings in all
 //! four interpolation modes, two params deforming one node, welds, chained
-//! physics drivers, a `translate_children` group over a `local_only` driver,
-//! and a playing animation. For a grid of poses (plus, where a fixture has
+//! physics drivers, a `translate_children` group over a `local_only` driver, a
+//! spine composing two joint turns, and a playing animation. For a grid of poses (plus, where a fixture has
 //! drivers, a settle and a run of simulated frames) the whole evaluated frame
 //! — every node's global transform, z order, enabled flag, colour and
 //! combined deform — is compared against
@@ -41,7 +41,7 @@ use catchlight_core::formats::clm::{
     ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChainLink, ClmComposite,
     ClmFile, ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
     ClmNodeKind, ClmParam, ClmPart, ClmParticleChain, ClmSimplePhysics, ClmSlot, ClmSlotPair,
-    ClmStructure, ClmTransform, ClmWeld,
+    ClmSpine, ClmStructure, ClmTransform, ClmWeld,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
@@ -306,6 +306,7 @@ fn current() -> Baseline {
     capture("welds", weld_fixture(), &mut out);
     capture("chained physics", chained_physics_fixture(), &mut out);
     capture("particle chain", particle_chain_fixture(), &mut out);
+    capture("spine", spine_fixture(), &mut out);
     capture(
         "tc over local driver",
         tc_over_local_driver_fixture(),
@@ -1040,6 +1041,42 @@ fn particle_chain_fixture() -> FixtureFile {
                 ),
             ])
         })
+        .collect();
+    file(nodes, params, Vec::new())
+}
+
+/// A spine turning a strip that reaches past both its links and above its
+/// root.
+///
+/// The only fixture where a param moves vertices without a binding of any
+/// kind: a spine reads the value straight off and composes the turns itself.
+/// The art runs from 10 px above the spine's root to 10 px past its tip, so
+/// one pose pins all three cases at once — the vertices above the root that
+/// must not move, the ones inside each link's ramp, and the ones past the tip
+/// that take the last link's turn in full.
+fn spine_fixture() -> FixtureFile {
+    let nodes = vec![
+        node(None, "Root", ClmNodeKind::Group),
+        at(
+            Some(0),
+            "Spine",
+            [0.0, 30.0],
+            ClmNodeKind::Spine(ClmSpine {
+                joints: vec![[0.0, -35.0], [0.0, -70.0]],
+                targets: (0..2).map(|i| Some(one(i)[0].clone())).collect(),
+            }),
+        ),
+        at(
+            Some(1),
+            "Strand",
+            [0.0, -30.0],
+            ClmNodeKind::Part(part(quad(6.0, 40.0))),
+        ),
+    ];
+    // A quarter turn each way at the ends of the range, so the pose grid
+    // reaches bends that visibly compose rather than nearly-straight ones.
+    let params = (0..2)
+        .map(|_| FixtureParam::scalar("Bend", -0.5, 0.5, 0.0, vec![0.0, 0.5, 1.0]))
         .collect();
     file(nodes, params, Vec::new())
 }

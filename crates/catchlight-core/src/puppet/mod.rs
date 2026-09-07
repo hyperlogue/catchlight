@@ -325,6 +325,9 @@ pub struct Puppet {
     physics_update_scratch: Vec<([Option<u32>; 2], NodeIdx, Vec2)>,
     /// Parallel to `arena.chain_node_ids`: one param slot per link.
     chain_targets: Vec<Vec<Option<u32>>>,
+    /// Parallel to `arena.spine_node_ids`: one param slot per link, read
+    /// rather than written — a spine is not a driver and claims nothing.
+    spine_targets: Vec<Vec<Option<u32>>>,
     /// This frame's chain claims, `(source, slot, bend, weight)`. Flat rather
     /// than grouped by chain because the only two readers want it flat: the
     /// contribution loop and the retirement scan.
@@ -376,6 +379,7 @@ impl Puppet {
             physics_targets: Vec::new(),
             physics_update_scratch: Vec::new(),
             chain_targets: Vec::new(),
+            spine_targets: Vec::new(),
             chain_update_scratch: Vec::new(),
             chain_bends_scratch: Vec::new(),
             chain_posed_scratch: Vec::new(),
@@ -538,6 +542,7 @@ impl Puppet {
             bindings,
             physics_targets,
             chain_targets,
+            spine_targets,
         } = baked;
         self.arena = arena;
         self.node_of_id = node_of_id;
@@ -550,6 +555,7 @@ impl Puppet {
         self.bindings = bindings;
         self.physics_targets = physics_targets;
         self.chain_targets = chain_targets;
+        self.spine_targets = spine_targets;
         self.param_values_overflow.clear();
         self.param_contributions.clear();
         // Keyed by slot, and the slots have moved. `sync` re-keys the entries
@@ -1681,6 +1687,14 @@ impl Puppet {
             // Transforms BEFORE the propagation, so a mesh group and its
             // children sit where this frame's pose put them.
             self.arena.compute_transforms_with_root(&mut out, root);
+            // Spines before mesh groups: a group above a spine reads its
+            // children's current deform, so it warps art the spine has bent.
+            // Unconditional on having any spine, because `reset_frame` just
+            // dropped every spine source and only this rebuilds it.
+            if !self.arena.spine_node_ids.is_empty() {
+                self.apply_spine_bends();
+                self.arena.propagate_spine_deforms(&out);
+            }
             if has_mesh_group_work {
                 self.arena.propagate_mesh_group_deforms(&mut out, root);
                 self.last_tick_mesh_group_generation = Some(self.mesh_group_param_generation);
@@ -1719,6 +1733,33 @@ impl Puppet {
                 Some(NodeKind::ParticleChain(c)) if !c.is_at_rest(SETTLE_EPS_SQ)
             )
         })
+    }
+
+    /// Copy this frame's resolved param values onto every spine, one bend per
+    /// link, so `crate::spine` can turn the art without reaching for a param.
+    ///
+    /// A bend is the param's value read straight off — not its normalized
+    /// position along the range, which is what a binding's grid is read over.
+    /// A link with no target reads zero, which is the art as drawn.
+    fn apply_spine_bends(&mut self) {
+        let _span = tracing::trace_span!("apply_spine_bends").entered();
+        for i in 0..self.arena.spine_node_ids.len() {
+            let id = self.arena.spine_node_ids[i];
+            let Some(targets) = self.spine_targets.get(i) else {
+                continue;
+            };
+            let bends: smallvec::SmallVec<[f32; 8]> = targets
+                .iter()
+                .map(|slot| slot.map_or(0.0, |slot| self.resolved(slot)))
+                .collect();
+            if let Some(NodeKind::Spine(spine)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
+                spine.bends.clear();
+                spine.bends.extend_from_slice(&bends);
+                // A spine whose targets went missing still has joints to turn;
+                // the missing ones read as the art.
+                spine.bends.resize(spine.joints.len(), 0.0);
+            }
+        }
     }
 
     /// Restore the evaluated frame to the model's authored values and clear

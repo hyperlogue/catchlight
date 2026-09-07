@@ -80,6 +80,13 @@ pub(crate) enum InspectorKind {
         links: usize,
         driven: usize,
     },
+    /// Read-only for the same reason the chain row is: a spine is authored in
+    /// the web editor, and this row is here so one in the tree inspects as
+    /// itself rather than as nothing.
+    Spine {
+        links: usize,
+        driven: usize,
+    },
 }
 
 /// `(value-fields set, emitted-on)` — Preview while a drag is live, Commit once
@@ -312,6 +319,11 @@ pub(crate) fn inspector_ui(
             ui.label(format!("{links} links, {driven} driving a param"));
             ui.label(format!("gravity {gravity}"));
             ui.label(if *local_only { "local only" } else { "world" });
+        }
+        InspectorKind::Spine { links, driven } => {
+            ui.separator();
+            ui.label("Spine");
+            ui.label(format!("{links} links, {driven} reading a param"));
         }
     }
     out

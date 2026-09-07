@@ -127,7 +127,7 @@ use catchlight_core::Vec2;
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Model,
     ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
-    ModelParticleChain, ModelPhysics, ModelTexture, ModelWeld, Puppet, Required,
+    ModelParticleChain, ModelPhysics, ModelSpine, ModelTexture, ModelWeld, Puppet, Required,
 };
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
@@ -289,6 +289,8 @@ impl EditorError {
                 // on a node that is not a driver.
                 ModelError::NotParticleChain => ErrorCode::BadTarget,
                 ModelError::ChainOutputArity { .. } => ErrorCode::BadTarget,
+                ModelError::NotSpine => ErrorCode::BadTarget,
+                ModelError::SpineTargetArity { .. } => ErrorCode::BadTarget,
                 // The size cap has no code of its own: a client that hit it
                 // has nothing to branch on, only a value to shrink.
                 _ => ErrorCode::Edit,
@@ -1935,6 +1937,45 @@ impl Editor {
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
+            Command::SpineAdd {
+                session,
+                parent,
+                joints,
+                targets,
+                node: id,
+            } => self.edit_session(session, |s| {
+                let node = ModelNode::new(
+                    "Spine",
+                    ModelNodeKind::Spine(ModelSpine::new(spine_joints(joints)?)),
+                );
+                let node = s.add_node(&parent, id, node)?;
+                if let Some(targets) = targets {
+                    s.model.set_spine_targets(&node, targets)?;
+                }
+                s.touch();
+                Ok(ResponseBody::Node {
+                    node,
+                    dropped: Vec::new(),
+                })
+            }),
+            Command::SpineSet {
+                session,
+                node,
+                joints,
+                targets,
+            } => self.edit_session(session, |s| {
+                // Joints first, for the reason `chain_set` applies links
+                // first: a set that reshapes and re-aims in one command has
+                // its `targets` measured against the length it just asked for.
+                if let Some(joints) = joints {
+                    s.model.set_spine_joints(&node, spine_joints(joints)?)?;
+                }
+                if let Some(targets) = targets {
+                    s.model.set_spine_targets(&node, targets)?;
+                }
+                s.touch();
+                Ok(ResponseBody::Empty)
+            }),
             Command::ChainFit {
                 session,
                 part,
@@ -2383,6 +2424,36 @@ fn chain_links(links: Vec<ChainLinkArg>) -> Result<Vec<ChainLink>, EditorError> 
         ));
     }
     Ok(links.iter().map(ChainLinkArg::to_link).collect())
+}
+
+/// The joints of a spine the turn pass can compose, or the refusal that says
+/// which one is wrong.
+///
+/// The same three rules the `.clm` reader keeps, checked here so a command
+/// never authors a model the file would refuse: at least one joint, every
+/// coordinate finite, and no joint repeating the point above it — the node's
+/// own origin for the first one.
+fn spine_joints(joints: Vec<[f32; 2]>) -> Result<Vec<[f32; 2]>, EditorError> {
+    if joints.is_empty() {
+        return Err(EditorError::BadTarget(
+            "a spine needs at least one joint".into(),
+        ));
+    }
+    let mut above = [0.0f32, 0.0];
+    for (i, joint) in joints.iter().enumerate() {
+        if !joint[0].is_finite() || !joint[1].is_finite() {
+            return Err(EditorError::BadTarget(format!(
+                "spine joint {i} has a coordinate that is not finite"
+            )));
+        }
+        if joint == &above {
+            return Err(EditorError::BadTarget(format!(
+                "spine joint {i} repeats the point above it"
+            )));
+        }
+        above = *joint;
+    }
+    Ok(joints)
 }
 
 /// The key positions a link's bend param carries: [`BEND_KEYS`] normalised

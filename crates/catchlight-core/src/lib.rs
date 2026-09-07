@@ -12,6 +12,7 @@ pub mod model;
 pub mod node;
 pub mod physics;
 pub mod puppet;
+pub mod spine;
 pub mod texture;
 pub mod weld;
 
@@ -26,12 +27,13 @@ pub use model::{
     BindingParams, BindingTarget, CheckWarning, ExtensionValue, InstallError, Installed, Model,
     ModelBinding, ModelBindingValues, ModelComposite, ModelError, ModelMask, ModelMesh,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelParticleChain,
-    ModelPhysics, ModelTexture, ModelWeld, ModelWeldPair, Pose, Required, Requirement,
+    ModelPhysics, ModelSpine, ModelTexture, ModelWeld, ModelWeldPair, Pose, Required, Requirement,
     Requirements, ScalarTarget, Slot, SlotPair, DEFAULT_SLOT_WEIGHT,
 };
 pub use node::*;
 pub use physics::*;
 pub use puppet::*;
+pub use spine::SpineData;
 pub use texture::{
     prepare_textures, EncodedTexture, PreppedTexture, TextureError, TextureFormat,
     TexturePrepCache, UvCrop,

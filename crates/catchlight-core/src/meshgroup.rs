@@ -23,6 +23,14 @@
 //! would apply the deform twice. Same reasoning for `translate_children_targets`,
 //! which shifts only descendants without a mesh. A Composite with
 //! `propagate_mesh_group = false` halts both walks.
+//!
+//! **A Spine is a pass-through, on both walks.** It carries no mesh of its own
+//! and it does not hand a group's deform down — it only adds its own turn — so
+//! `descendant_meshed_nodes` walks straight past it to the meshed nodes below
+//! and `translate_children_targets` leaves it alone. That is what makes a
+//! group above a spine warp the art the spine bent (`crate::spine` runs
+//! first); shifting the spine node bodily *and* warping the same vertices
+//! would move them twice.
 
 use glam::swizzles::Vec4Swizzles;
 use glam::{Affine2, Mat2, Mat4, Vec2, Vec4};
@@ -283,6 +291,11 @@ fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec
             Some(NodeKind::MeshGroup(_)) => {
                 out.push(id);
             }
+            // A spine carries no mesh and does not pass a group's deform on,
+            // so the walk goes through it rather than stopping at it.
+            Some(NodeKind::Spine(_)) => {
+                stack.extend(tree.get_children(id));
+            }
             _ => {}
         }
     }
@@ -413,13 +426,20 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) ->
     let descends = |id: NodeIdx| match arena.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(_)) => true,
         Some(NodeKind::Composite(c)) => c.propagate_mesh_group,
+        // A spine's meshed descendants are reached by `descendant_meshed_nodes`
+        // and warped there, so the walk goes through it and the retain below
+        // drops the spine itself.
+        Some(NodeKind::Spine(_)) => true,
         _ => false,
     };
     let mut targets = tree.get_descendants_until(mg_id, |id| !descends(id));
     targets.retain(|&id| {
         !matches!(
             arena.get(id).map(|n| &n.kind),
-            Some(NodeKind::Part(_)) | Some(NodeKind::Composite(_)) | Some(NodeKind::MeshGroup(_))
+            Some(NodeKind::Part(_))
+                | Some(NodeKind::Composite(_))
+                | Some(NodeKind::MeshGroup(_))
+                | Some(NodeKind::Spine(_))
         )
     });
     targets

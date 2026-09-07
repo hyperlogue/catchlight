@@ -730,6 +730,44 @@ pub enum Command {
         #[serde(default)]
         outputs: Option<Vec<Option<ParamId>>>,
     },
+    /// Add a spine node.
+    ///
+    /// The spine is `joints` links long and reads one bend param per link, in
+    /// link order. Empty `joints` is refused — a spine of no links has nothing
+    /// to turn about — as is a joint that repeats the point above it, which is
+    /// a link with no length.
+    SpineAdd {
+        session: SessionId,
+        parent: NodeId,
+        /// The far end of each link, in the node's own space, root to tip.
+        /// `joints[0]` ends the link that starts at the node itself.
+        joints: Vec<[f32; 2]>,
+        /// One param per link, in link order, `None` where a link is rigid.
+        /// Absent binds none; present, it must be exactly as long as `joints`.
+        #[serde(default)]
+        targets: Option<Vec<Option<ParamId>>>,
+        /// The Id to create it under. Absent generates one; an Id the model
+        /// already carries is [`ErrorCode::DuplicateId`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<NodeId>,
+    },
+    /// Change fields on a spine node; absent = unchanged.
+    ///
+    /// `joints` and `targets` in one command apply in that order, so `targets`
+    /// is measured against the length `joints` just set rather than the one it
+    /// replaced.
+    SpineSet {
+        session: SessionId,
+        node: NodeId,
+        /// The whole spine, root to tip. Targets follow the new length: a link
+        /// past the new end loses its param, a new link arrives rigid.
+        #[serde(default)]
+        joints: Option<Vec<[f32; 2]>>,
+        /// One param per link, exactly as long as the spine is after `joints`
+        /// is applied.
+        #[serde(default)]
+        targets: Option<Vec<Option<ParamId>>>,
+    },
     /// Rig a strand of art to a particle chain in one edit: the params, the
     /// chain, and the deform bindings that bend the art.
     ///
@@ -1010,6 +1048,8 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("chain_add", CommandKind::Edit),
     ("chain_set", CommandKind::Edit),
     ("chain_fit", CommandKind::Edit),
+    ("spine_add", CommandKind::Edit),
+    ("spine_set", CommandKind::Edit),
     ("undo", CommandKind::Edit),
     ("redo", CommandKind::Edit),
     ("presence_set", CommandKind::Presence),
@@ -1194,6 +1234,8 @@ impl Command {
             Command::ChainAdd { .. } => "chain_add",
             Command::ChainSet { .. } => "chain_set",
             Command::ChainFit { .. } => "chain_fit",
+            Command::SpineAdd { .. } => "spine_add",
+            Command::SpineSet { .. } => "spine_set",
             Command::Undo { .. } => "undo",
             Command::Redo { .. } => "redo",
             Command::PresenceSet { .. } => "presence_set",
@@ -1327,6 +1369,8 @@ impl Command {
             | Command::ChainAdd { session, .. }
             | Command::ChainSet { session, .. }
             | Command::ChainFit { session, .. }
+            | Command::SpineAdd { session, .. }
+            | Command::SpineSet { session, .. }
             | Command::Undo { session }
             | Command::Redo { session }
             | Command::PresenceSet { session, .. }
@@ -1614,6 +1658,7 @@ pub enum NodeKind {
     MeshGroup,
     Physics,
     ParticleChain,
+    Spine,
 }
 
 impl NodeKind {
@@ -1626,6 +1671,7 @@ impl NodeKind {
             Self::MeshGroup => "mesh_group",
             Self::Physics => "physics",
             Self::ParticleChain => "particle_chain",
+            Self::Spine => "spine",
         }
     }
 
@@ -1639,6 +1685,7 @@ impl NodeKind {
             K::MeshGroup(_) => Self::MeshGroup,
             K::SimplePhysics(_) => Self::Physics,
             K::ParticleChain(_) => Self::ParticleChain,
+            K::Spine(_) => Self::Spine,
         }
     }
 }
@@ -2775,6 +2822,9 @@ pub struct NodeInfo {
     /// A particle chain's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain: Option<ChainInfo>,
+    /// A spine's settings, absent on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spine: Option<SpineInfo>,
 }
 
 /// A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
@@ -2811,6 +2861,18 @@ pub struct ChainInfo {
     pub weight: f32,
     pub links: Vec<ChainLinkArg>,
     pub outputs: Vec<Option<ParamId>>,
+}
+
+/// A spine in full, under the names [`Command::SpineSet`] sets them by.
+///
+/// `joints` and `targets` are always the same length: a spine reads one bend
+/// per link, and a rigid link is a `null` in `targets`. The whole pair travels
+/// back through [`Command::SpineSet`] unchanged.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SpineInfo {
+    pub joints: Vec<[f32; 2]>,
+    pub targets: Vec<Option<ParamId>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3166,6 +3228,7 @@ mod tests {
             mg_translate_children: None,
             physics: None,
             chain: None,
+            spine: None,
         };
         let line = serde_json::to_string(&info).unwrap();
         let patch: NodePatch = serde_json::from_str(&line).unwrap();
@@ -3230,6 +3293,7 @@ mod tests {
                 texture: None,
                 physics: None,
                 chain: None,
+                spine: None,
                 vertex_count: Some(0),
                 triangle_count: Some(0),
                 propagate_meshgroup: None,

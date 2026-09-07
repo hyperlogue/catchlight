@@ -556,6 +556,41 @@ export type Command =
     outputs: Array<ParamId | null> | null,
   }
   | {
+    "cmd": "spine_add",
+    session: SessionId,
+    parent: NodeId,
+    /**
+     * The far end of each link, in the node's own space, root to tip.
+     * `joints[0]` ends the link that starts at the node itself.
+     */
+    joints: Array<[number, number]>,
+    /**
+     * One param per link, in link order, `None` where a link is rigid.
+     * Absent binds none; present, it must be exactly as long as `joints`.
+     */
+    targets: Array<ParamId | null> | null,
+    /**
+     * The Id to create it under. Absent generates one; an Id the model
+     * already carries is [`ErrorCode::DuplicateId`].
+     */
+    node?: NodeId | null,
+  }
+  | {
+    "cmd": "spine_set",
+    session: SessionId,
+    node: NodeId,
+    /**
+     * The whole spine, root to tip. Targets follow the new length: a link
+     * past the new end loses its param, a new link arrives rigid.
+     */
+    joints: Array<[number, number]> | null,
+    /**
+     * One param per link, exactly as long as the spine is after `joints`
+     * is applied.
+     */
+    targets: Array<ParamId | null> | null,
+  }
+  | {
     "cmd": "chain_fit",
     session: SessionId,
     /**
@@ -676,7 +711,8 @@ export type NodeKind =
   | "composite"
   | "mesh_group"
   | "physics"
-  | "particle_chain";
+  | "particle_chain"
+  | "spine";
 
 /**
  * What a mask source does to the drawable it is attached to.
@@ -1465,6 +1501,10 @@ export type NodeInfo = {
    * A particle chain's settings, absent on every other kind.
    */
   chain?: ChainInfo | null,
+  /**
+   * A spine's settings, absent on every other kind.
+   */
+  spine?: SpineInfo | null,
 };
 
 /**
@@ -1503,6 +1543,18 @@ export type ChainInfo = {
   weight: number,
   links: Array<ChainLinkArg>,
   outputs: Array<ParamId | null>,
+};
+
+/**
+ * A spine in full, under the names [`Command::SpineSet`] sets them by.
+ *
+ * `joints` and `targets` are always the same length: a spine reads one bend
+ * per link, and a rigid link is a `null` in `targets`. The whole pair travels
+ * back through [`Command::SpineSet`] unchanged.
+ */
+export type SpineInfo = {
+  joints: Array<[number, number]>,
+  targets: Array<ParamId | null>,
 };
 
 export type TexInfo = {
@@ -1672,6 +1724,8 @@ export type EditCommandTag =
   | "physics_add"
   | "chain_add"
   | "chain_set"
+  | "spine_add"
+  | "spine_set"
   | "chain_fit"
   | "undo"
   | "redo"

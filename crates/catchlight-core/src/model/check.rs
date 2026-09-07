@@ -94,6 +94,14 @@ impl Model {
                         ),
                     ));
                 }
+                // Same rule for a spine: an entirely rigid one is a spine that
+                // does nothing, while a partly rigid one is an ordinary rig.
+                ModelNodeKind::Spine(spine) if spine.targets().iter().all(Option::is_none) => {
+                    out.push(warn(
+                        id,
+                        format!("spine {:?} reads no bend param", n.name.as_str()),
+                    ));
+                }
                 _ => {}
             }
         }

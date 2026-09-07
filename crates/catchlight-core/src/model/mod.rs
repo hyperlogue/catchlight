@@ -220,6 +220,10 @@ pub enum ModelError {
     NotParticleChain,
     #[error("a chain writes one param per link: {outputs} outputs for {links} links")]
     ChainOutputArity { outputs: usize, links: usize },
+    #[error("node is not a spine node")]
+    NotSpine,
+    #[error("a spine reads one param per link: {targets} targets for {joints} joints")]
+    SpineTargetArity { targets: usize, joints: usize },
     #[error("a colour binding cannot target a mesh group, which is never drawn")]
     ColorOnMeshGroup,
     #[error("a two-param binding needs two different params")]
@@ -481,6 +485,7 @@ pub enum ModelNodeKind {
     MeshGroup(ModelMeshGroup),
     SimplePhysics(ModelPhysics),
     ParticleChain(ModelParticleChain),
+    Spine(ModelSpine),
 }
 
 impl ModelNodeKind {
@@ -493,6 +498,7 @@ impl ModelNodeKind {
             Self::MeshGroup(_) => "mesh_group",
             Self::SimplePhysics(_) => "physics",
             Self::ParticleChain(_) => "particle_chain",
+            Self::Spine(_) => "spine",
         }
     }
 
@@ -505,6 +511,7 @@ impl ModelNodeKind {
             Self::MeshGroup(_) => NodeIdKind::MeshGroup,
             Self::SimplePhysics(_) => NodeIdKind::SimplePhysics,
             Self::ParticleChain(_) => NodeIdKind::Chain,
+            Self::Spine(_) => NodeIdKind::Spine,
         }
     }
 }
@@ -772,6 +779,61 @@ impl ModelParticleChain {
     fn set_links(&mut self, links: Vec<ChainLink>) {
         self.links = links;
         self.outputs.resize(self.links.len(), None);
+    }
+}
+
+/// A chain of joints drawn on the art, turning the geometry beneath the node.
+///
+/// The authored half of [`crate::spine::SpineData`]: the per-vertex
+/// assignment the runtime derives from this polyline belongs to the puppet,
+/// and it is rebuilt from rest geometry on every bake.
+///
+/// **`targets` is as long as `joints`, always.** A spine reads one bend per
+/// link, so the two vectors index each other; an entry is `None` where a link
+/// is rigid. Every method here that can change either length restores the
+/// pairing before it returns, so no caller ever sees them disagree.
+///
+/// **`joints[i]` is the far end of link `i`, and `targets[i]` is link `i`'s
+/// own bend** — the turn at the joint *above* it, which is the node's own
+/// origin for link 0 and `joints[i - 1]` after that. The two vectors are
+/// parallel by index and offset by one joint on the art, exactly as
+/// [`crate::physics::ParticleChainData::link_bends`] reports one bend per link
+/// measured at the joint above it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSpine {
+    joints: Vec<[f32; 2]>,
+    targets: Vec<Option<ParamId>>,
+}
+
+impl ModelSpine {
+    /// A spine over `joints`, reading no param yet.
+    pub fn new(joints: Vec<[f32; 2]>) -> Self {
+        let targets = vec![None; joints.len()];
+        Self { joints, targets }
+    }
+
+    /// The far end of each link, in the node's own space.
+    pub fn joints(&self) -> &[[f32; 2]] {
+        &self.joints
+    }
+
+    /// The param each link's bend is read from, in link order. `None` where a
+    /// link is rigid.
+    pub fn targets(&self) -> &[Option<ParamId>] {
+        &self.targets
+    }
+
+    /// Whether the spine reads `param`.
+    pub fn reads(&self, param: &ParamId) -> bool {
+        self.targets.iter().flatten().any(|p| p == param)
+    }
+
+    /// Reshape the spine. **Targets follow the joints**, for the reason
+    /// [`ModelParticleChain::set_links`] gives: an author may pull a joint off
+    /// a rigged spine without first unhooking its param.
+    fn set_joints(&mut self, joints: Vec<[f32; 2]>) {
+        self.joints = joints;
+        self.targets.resize(self.joints.len(), None);
     }
 }
 
@@ -1463,6 +1525,13 @@ impl Model {
                         }
                     }
                 }
+                ModelNodeKind::Spine(spine) => {
+                    for t in &mut spine.targets {
+                        if t.as_ref() == Some(old) {
+                            *t = Some(new.clone());
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1608,6 +1677,57 @@ impl Model {
         match self.nodes.get_mut(node).map(|n| &mut n.kind) {
             Some(ModelNodeKind::ParticleChain(chain)) => chain.set_links(links),
             Some(_) => return Err(ModelError::NotParticleChain),
+            None => return Err(ModelError::UnknownNode),
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Aim a spine's links at params — one param per link, in link order,
+    /// `None` where a link is rigid.
+    ///
+    /// `targets` must be exactly as long as the spine's joints. Use
+    /// [`Model::set_spine_joints`] to change the length; it carries the
+    /// targets across.
+    pub fn set_spine_targets(
+        &mut self,
+        node: &NodeId,
+        targets: Vec<Option<ParamId>>,
+    ) -> Result<(), ModelError> {
+        if targets
+            .iter()
+            .flatten()
+            .any(|p| !self.params.contains_key(p))
+        {
+            return Err(ModelError::UnknownParam);
+        }
+        match self.nodes.get_mut(node).map(|n| &mut n.kind) {
+            Some(ModelNodeKind::Spine(spine)) => {
+                if targets.len() != spine.joints.len() {
+                    return Err(ModelError::SpineTargetArity {
+                        targets: targets.len(),
+                        joints: spine.joints.len(),
+                    });
+                }
+                spine.targets = targets;
+            }
+            Some(_) => return Err(ModelError::NotSpine),
+            None => return Err(ModelError::UnknownNode),
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// Reshape a spine. The targets follow the new length: links past the new
+    /// end lose their param, new links arrive rigid.
+    pub fn set_spine_joints(
+        &mut self,
+        node: &NodeId,
+        joints: Vec<[f32; 2]>,
+    ) -> Result<(), ModelError> {
+        match self.nodes.get_mut(node).map(|n| &mut n.kind) {
+            Some(ModelNodeKind::Spine(spine)) => spine.set_joints(joints),
+            Some(_) => return Err(ModelError::NotSpine),
             None => return Err(ModelError::UnknownNode),
         }
         self.bump();
@@ -1978,6 +2098,14 @@ impl Model {
                 // param's — and goes back to driving nothing.
                 ModelNodeKind::ParticleChain(chain) => {
                     for t in &mut chain.outputs {
+                        if t.as_ref() == Some(id) {
+                            *t = None;
+                        }
+                    }
+                }
+                // Same reasoning: the slot is a link's, not the param's.
+                ModelNodeKind::Spine(spine) => {
+                    for t in &mut spine.targets {
                         if t.as_ref() == Some(id) {
                             *t = None;
                         }
@@ -2504,6 +2632,16 @@ impl Model {
                 return Err(ModelError::UnknownParam);
             }
         }
+        if let ModelNodeKind::Spine(spine) = &node.kind {
+            if spine
+                .targets
+                .iter()
+                .flatten()
+                .any(|p| !self.params.contains_key(p))
+            {
+                return Err(ModelError::UnknownParam);
+            }
+        }
         if let Some(masks) = node.masks() {
             for m in masks {
                 match self.nodes.get(&m.source).map(|n| &n.kind) {
@@ -2674,6 +2812,13 @@ mod tests {
                     crate::physics::ChainLink::default(),
                     crate::physics::ChainLink::default(),
                 ])),
+            )
+        }
+
+        fn spine(&mut self) -> NodeId {
+            self.node(
+                "spine",
+                ModelNodeKind::Spine(ModelSpine::new(vec![[0.0, -50.0], [0.0, -100.0]])),
             )
         }
     }
@@ -2909,6 +3054,103 @@ mod tests {
 
         f.model.delete_param(&param).unwrap();
         assert_eq!(chain_outputs(&f.model, &chain), vec![None, None]);
+    }
+
+    fn spine_targets(m: &Model, node: &NodeId) -> Vec<Option<ParamId>> {
+        match m.node(node).map(|n| &n.kind) {
+            Some(ModelNodeKind::Spine(sp)) => sp.targets().to_vec(),
+            other => panic!("not a spine: {other:?}"),
+        }
+    }
+
+    /// A spine reads one param per link, so a target list of another length is
+    /// refused rather than silently truncated — the same pairing a chain's
+    /// outputs keep.
+    #[test]
+    fn a_spines_targets_are_one_per_link() {
+        let mut r = fixture();
+        let spine = r.spine();
+        let param = r.param.clone();
+
+        assert!(matches!(
+            r.model.set_spine_targets(&spine, vec![Some(param.clone())]),
+            Err(ModelError::SpineTargetArity {
+                targets: 1,
+                joints: 2
+            })
+        ));
+        assert_eq!(spine_targets(&r.model, &spine), vec![None, None]);
+
+        r.model
+            .set_spine_targets(&spine, vec![Some(param.clone()), None])
+            .unwrap();
+        assert_eq!(spine_targets(&r.model, &spine), vec![Some(param), None]);
+    }
+
+    /// Reshaping carries the targets: a link past the new end loses its param
+    /// and a new one arrives rigid, so an author may pull a joint off a rigged
+    /// spine without unhooking it first.
+    #[test]
+    fn reshaping_a_spine_carries_its_targets() {
+        let mut r = fixture();
+        let spine = r.spine();
+        let param = r.param.clone();
+        r.model
+            .set_spine_targets(&spine, vec![Some(param.clone()), Some(param.clone())])
+            .unwrap();
+
+        r.model
+            .set_spine_joints(&spine, vec![[0.0, -50.0]])
+            .unwrap();
+        assert_eq!(spine_targets(&r.model, &spine), vec![Some(param.clone())]);
+
+        r.model
+            .set_spine_joints(&spine, vec![[0.0, -50.0], [0.0, -90.0], [0.0, -130.0]])
+            .unwrap();
+        assert_eq!(
+            spine_targets(&r.model, &spine),
+            vec![Some(param), None, None]
+        );
+    }
+
+    /// Both spine mutators refuse a node of another kind, and an unknown param
+    /// never reaches the model.
+    #[test]
+    fn the_spine_mutators_refuse_what_they_cannot_hold() {
+        let mut r = fixture();
+        let spine = r.spine();
+        let chain = r.chain();
+        let stranger = ParamId::new("nobody").unwrap();
+
+        assert!(matches!(
+            r.model.set_spine_targets(&chain, vec![None, None]),
+            Err(ModelError::NotSpine)
+        ));
+        assert!(matches!(
+            r.model.set_spine_joints(&chain, vec![[0.0, -1.0]]),
+            Err(ModelError::NotSpine)
+        ));
+        assert!(matches!(
+            r.model
+                .set_spine_targets(&spine, vec![Some(stranger), None]),
+            Err(ModelError::UnknownParam)
+        ));
+        assert_eq!(spine_targets(&r.model, &spine), vec![None, None]);
+    }
+
+    /// Deleting a param unhooks the spine that read it, leaving the link in
+    /// place and rigid — the slot belongs to the link, not to the param.
+    #[test]
+    fn deleting_a_param_leaves_a_rigid_link_behind() {
+        let mut r = fixture();
+        let spine = r.spine();
+        let param = r.param.clone();
+        r.model
+            .set_spine_targets(&spine, vec![Some(param.clone()), None])
+            .unwrap();
+
+        r.model.delete_param(&param).unwrap();
+        assert_eq!(spine_targets(&r.model, &spine), vec![None, None]);
     }
 
     fn chain_outputs(m: &Model, node: &NodeId) -> Vec<Option<ParamId>> {

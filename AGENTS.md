@@ -130,6 +130,9 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-core/src/puppet/bake.rs` — Ids become slots, and what the
   hot loops never look up
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translate_children`
+- `crates/catchlight-core/src/spine.rs` — bend 0 is the art, how the joint
+  rotations compose, where the pass runs and what its descent halts at, and
+  that the per-vertex assignment comes from rest geometry
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down
   frame, the chain's position-based form, what a link bend's sign means, what
   a link's bend spring pulls toward, an anchor that crosses a frame rather
