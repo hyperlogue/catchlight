@@ -3129,8 +3129,7 @@ impl WgpuRenderer {
     /// already be written into `instance_buffer` at `base_offset + i *
     /// size_of::<InstanceRaw>()`. Each source draw writes its own
     /// part-uniform slot carrying the source's alpha threshold
-    /// (the reference masks with the source's own
-    /// maskAlphaThreshold).
+    /// (a mask uses the source's own alpha threshold).
     #[allow(clippy::expect_used)]
     fn write_mask_sources(
         &mut self,

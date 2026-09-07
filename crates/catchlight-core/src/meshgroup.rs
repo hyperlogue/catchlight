@@ -1381,8 +1381,7 @@ mod tests {
     }
 
     /// An outer MG's deform, for meshed children, must carry through a
-    /// for meshed children) must carry
-    /// through a nested MG to the Part under it.
+    /// nested MG to the Part under it.
     #[test]
     fn outer_mg_deform_reaches_part_through_nested_mg() {
         use crate::components::{Mesh, MeshGroupData, MeshIndices, Node, NodeKind, PartData};
