@@ -26,13 +26,15 @@ use std::path::{Path, PathBuf};
 
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile, ClmIndices, ClmMesh,
-    ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmStructure,
-    ClmTexture, ClmTransform, ClmWeld, TextureAlpha, TextureEncoding,
+    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChainLink, ClmComposite, ClmFile,
+    ClmIndices, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmParticleChain,
+    ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmStructure, ClmTexture, ClmTransform, ClmWeld,
+    TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::{Model, NodeId, ParamId, SlotId, TexId};
+use catchlight_editor_core::{chain_keyforms, fit_strand, BEND_KEYS, BEND_RANGE};
 
 /// Builds a fixture's structure and its texture table.
 type Build = fn() -> (ClmStructure, Vec<ClmTexture>);
@@ -41,6 +43,7 @@ type Build = fn() -> (ClmStructure, Vec<ClmTexture>);
 const FIXTURES: &[(&str, Build)] = &[
     ("composite_blit_uniforms", composite_blit_uniforms),
     ("mip_checker", mip_checker),
+    ("strand_chain", strand_chain),
     ("two_param_grid", two_param_grid),
     ("welded_seam", welded_seam),
 ];
@@ -787,6 +790,268 @@ fn grid_part(albedo: usize, growth: Growth) -> ClmPart {
             .collect(),
     }
 }
+
+// --- strand_chain ----------------------------------------------------------
+
+/// The strip the strand is drawn on, in model pixels: half its width, its top
+/// and bottom edge in node-local vertex space, and how many rows of vertices
+/// span them. Two columns is the narrowest strip a bend can bow, and nine rows
+/// is enough that each link's crease ramps across its own third of the art
+/// instead of hinging on one edge.
+const STRAND_HALF_W: f32 = 12.0;
+const STRAND_TOP: f32 = 80.0;
+const STRAND_BOTTOM: f32 = -80.0;
+const STRAND_ROWS: usize = 9;
+
+/// Links the chain hangs the strip on, and so bend params the fixture carries.
+const STRAND_LINKS: u32 = 3;
+/// Fraction of a link particle's velocity shed per second. Low enough that a
+/// swing is still moving several frames after the anchor steps, which is what
+/// a mid-swing baseline needs to be a transient rather than a rest shape.
+const STRAND_DAMPING: f32 = 0.3;
+/// The chain's authored gravity. The bake folds the model's
+/// `pixels_per_meter * gravity` into this, so 1.0 is one g at the model's own
+/// scale — 9800 px/s^2 under the default 1000 px/m — and not a pixel
+/// acceleration. The importer defaults a physics node's gravity to the same
+/// 1.0 for the same reason.
+const STRAND_GRAVITY: f32 = 1.0;
+/// How far `turn` slides the head at either end of its range, in model
+/// pixels — three quarters of the strand's own length, so the step it hands
+/// the chain's anchor swings the strip visibly rather than nudging it.
+const TURN_SHIFT_X: f32 = 120.0;
+/// `turn`'s position in `strand_chain`'s param list, after one bend param per
+/// link.
+const TURN: usize = STRAND_LINKS as usize;
+
+/// The particle-chain regression model: one strip of art hung off a
+/// three-link chain, with a `turn` param that moves the chain's anchor.
+///
+/// Nothing else in the fixture set carries a chain, so without this the whole
+/// path from a solved chain to moved vertices is unpinned: the chain writes a
+/// bend per link into `bend 1`..`bend 3`, each of those drives a seven-key
+/// cubic deform binding on the strip, and the keyforms in those cells are the
+/// ones [`chain_keyforms`] generates for the fit [`fit_strand`] measures. The
+/// bend params are the chain's outputs and are never posed by hand — a config
+/// moves the head with `turn` and the chain writes the rest.
+///
+/// A settled chain hangs straight whatever `turn` is, so a baseline of this
+/// model is only interesting mid-swing; `Config::ticks_after_pose` in
+/// `visual-tests` is what captures that.
+fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
+    let mesh = strand_mesh();
+    // The strip is a literal, so this is a fit of known-good rest geometry.
+    let fit = fit_strand(&mesh, STRAND_LINKS, None).expect("the strip is a fittable strand");
+
+    let mut nodes = Vec::new();
+    let root = push(&mut nodes, None, group_node("root"));
+    // The chain's anchor is this group's world position, so `turn` moving the
+    // group is what starts a swing.
+    let head = push(&mut nodes, Some(root), group_node("Head"));
+    let strand = push(
+        &mut nodes,
+        Some(head),
+        ClmNode {
+            name: "Strand".into(),
+            ..part_node(strand_part(&mesh))
+        },
+    );
+    push(
+        &mut nodes,
+        Some(head),
+        ClmNode {
+            name: "Strand chain".into(),
+            // `fit.root` is in vertex space, so a sibling of the part reaches
+            // it at `part.translation + (root - origin)`; the part sits on its
+            // parent's origin, and the mesh's own origin is zero.
+            transform: ClmTransform {
+                translation: [
+                    fit.root[0] - mesh.origin[0],
+                    fit.root[1] - mesh.origin[1],
+                    0.0,
+                ],
+                ..identity_transform()
+            },
+            kind: ClmNodeKind::ParticleChain(ClmParticleChain {
+                local_only: false,
+                gravity: STRAND_GRAVITY,
+                links: fit
+                    .lengths
+                    .iter()
+                    .map(|&length| ClmChainLink {
+                        length,
+                        gravity_scale: 1.0,
+                        damping: STRAND_DAMPING,
+                        time_scale: 1.0,
+                    })
+                    .collect(),
+                outputs: (0..fit.lengths.len()).map(|i| Some(pid(i))).collect(),
+            }),
+            ..blank_node()
+        },
+    );
+
+    let mut params: Vec<ClmParam> = (0..STRAND_LINKS as usize).map(bend_param).collect();
+    params.push(ClmParam {
+        id: pid(TURN),
+        name: "turn".into(),
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+        // Three keys, so the default sits on an authored one and the rest
+        // pose is an explicit zero rather than an interpolated one.
+        key_positions: vec![0.0, 0.5, 1.0],
+    });
+
+    let mut bindings: Vec<ClmBinding> = (0..STRAND_LINKS as usize)
+        .map(|link| ClmBinding {
+            params: vec![pid(link)],
+            node: nid(strand),
+            // Cubic: a chain lands between keys nearly always, and the seven
+            // keyforms are samples of a rotation, which a linear blend across
+            // a sixth of a turn visibly shortens.
+            interpolate_mode: InterpolateMode::Cubic,
+            values: ClmBindingValues::Deform(ClmCells {
+                cells: BEND_KEYS
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &bend)| ClmCell {
+                        x: k as u32,
+                        y: 0,
+                        value: chain_keyforms(&mesh, &fit, link, bend),
+                    })
+                    .collect(),
+            }),
+        })
+        .collect();
+    bindings.push(ClmBinding {
+        params: vec![pid(TURN)],
+        node: nid(head),
+        interpolate_mode: InterpolateMode::Linear,
+        values: ClmBindingValues::TransformTX(ClmCells {
+            cells: vec![
+                ClmCell {
+                    x: 0,
+                    y: 0,
+                    value: -TURN_SHIFT_X,
+                },
+                ClmCell {
+                    x: 1,
+                    y: 0,
+                    value: 0.0,
+                },
+                ClmCell {
+                    x: 2,
+                    y: 0,
+                    value: TURN_SHIFT_X,
+                },
+            ],
+        }),
+    });
+
+    let doc = ClmStructure {
+        nodes,
+        params,
+        bindings,
+        ..ClmStructure::default()
+    };
+    (doc, textures(vec![strand_texture()]))
+}
+
+/// One link's bend param: the range and the key positions
+/// [`chain_keyforms`]'s own key list implies, so a bend the chain writes lands
+/// exactly on an authored cell whenever it equals one of [`BEND_KEYS`].
+fn bend_param(link: usize) -> ClmParam {
+    ClmParam {
+        id: pid(link),
+        name: format!("bend {}", link + 1),
+        min: BEND_RANGE[0],
+        max: BEND_RANGE[1],
+        default: 0.0,
+        key_positions: BEND_KEYS
+            .iter()
+            .map(|k| (k - BEND_RANGE[0]) / (BEND_RANGE[1] - BEND_RANGE[0]))
+            .collect(),
+    }
+}
+
+/// The strip a strand hangs on: two columns [`STRAND_HALF_W`] either side of
+/// x = 0, [`STRAND_ROWS`] rows from [`STRAND_TOP`] down to [`STRAND_BOTTOM`],
+/// top row first so the fit's root is the strip's first pair of vertices. UVs
+/// put v = 0 on the top row, so the texture sits upright in the Y-up world the
+/// way [`grid_part`]'s does.
+fn strand_mesh() -> ClmMesh {
+    let mut verts = Vec::with_capacity(4 * STRAND_ROWS);
+    let mut uvs = Vec::with_capacity(4 * STRAND_ROWS);
+    for r in 0..STRAND_ROWS {
+        let t = r as f32 / (STRAND_ROWS - 1) as f32;
+        let y = STRAND_TOP + (STRAND_BOTTOM - STRAND_TOP) * t;
+        verts.extend_from_slice(&[-STRAND_HALF_W, y, STRAND_HALF_W, y]);
+        uvs.extend_from_slice(&[0.0, t, 1.0, t]);
+    }
+
+    let mut indices = Vec::with_capacity(6 * (STRAND_ROWS - 1));
+    for r in 0..STRAND_ROWS - 1 {
+        let v = (r * 2) as u16;
+        indices.extend_from_slice(&[v, v + 1, v + 3, v, v + 3, v + 2]);
+    }
+
+    ClmMesh {
+        verts,
+        uvs,
+        indices: ClmIndices::U16(indices),
+        origin: [0.0, 0.0],
+    }
+}
+
+/// The strip's art, wrapping [`strand_mesh`] in the same plain unmasked Part
+/// the rest of the fixtures use.
+fn strand_part(mesh: &ClmMesh) -> ClmPart {
+    ClmPart {
+        mesh: mesh.clone(),
+        albedo: Some(tid(0)),
+        opacity: 1.0,
+        blend_mode: BlendMode::Normal,
+        tint: [1.0, 1.0, 1.0],
+        screen_tint: [0.0, 0.0, 0.0],
+        masks: Vec::new(),
+        mask_threshold: 0.5,
+        slots: Vec::new(),
+    }
+}
+
+/// The strand texture: [`STRAND_TEX_W`] x [`STRAND_TEX_H`], banded across its
+/// length and shaded down it, with one dark column along the left edge.
+///
+/// A bend has to be legible as a bend, and a solid colour would only give a
+/// silhouette — which a translation could equally produce. The bands bow with
+/// the deform, the shading says which end is the root, and the edge column
+/// says which face is which after a half turn, so a keyform applied with the
+/// wrong sign or to the wrong link changes the picture rather than sliding it.
+fn strand_texture() -> Vec<u8> {
+    let img = image::RgbaImage::from_fn(STRAND_TEX_W, STRAND_TEX_H, |x, y| {
+        if x < STRAND_TEX_EDGE {
+            return image::Rgba([35, 25, 55, 255]);
+        }
+        let along = y as f32 / (STRAND_TEX_H - 1) as f32;
+        // Darkens toward the tip, so the two ends never read alike.
+        let fade = 1.0 - 0.5 * along;
+        let band = if (y / STRAND_TEX_BAND).is_multiple_of(2) {
+            1.0
+        } else {
+            0.6
+        };
+        let shade = |c: f32| (c * fade * band) as u8;
+        image::Rgba([shade(240.0), shade(175.0), shade(95.0), 255])
+    });
+    flat_image(img)
+}
+
+/// The strand texture's size and its two features, in texels: the height of
+/// one band and the width of the dark left edge.
+const STRAND_TEX_W: u32 = 32;
+const STRAND_TEX_H: u32 = 256;
+const STRAND_TEX_BAND: u32 = 32;
+const STRAND_TEX_EDGE: u32 = 3;
 
 /// A 64x64 opaque single-colour PNG. Small and deterministic; the fixtures
 /// only need each Part to be visually distinguishable.

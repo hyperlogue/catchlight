@@ -52,6 +52,23 @@ pub struct Config {
     /// at its param defaults — `params` applies to the single-puppet path
     /// only.
     pub frame_puppets: Vec<FramePuppet>,
+    /// Frames to tick after applying `params`, at `render::FRAME_SECONDS`
+    /// each. Zero is the static default: pose first, then settle, and render
+    /// the rest shape the pose ends at.
+    ///
+    /// Anything above zero captures a **deterministic transient** instead.
+    /// The puppet settles at its param defaults, `params` is applied to the
+    /// already-resting puppet, and the frame rendered is the one this many
+    /// fixed-length ticks later — so the baseline pins a driver *in motion*.
+    /// A physics driver is the reason the mode exists: a chain or a pendulum
+    /// hangs to the same rest shape whatever pose put it there, so a settled
+    /// render of one says nothing about how it got there. The count is a
+    /// count and never a wall clock, which is what makes the captured instant
+    /// reproducible.
+    ///
+    /// Single-puppet only: a multi-puppet frame renders every puppet at rest,
+    /// the same reason it ignores `params`.
+    pub ticks_after_pose: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -175,6 +192,21 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
             default_zoom: 0.25,
             texture_halvings: 0,
         },
+        // One strip of art hung off a three-link particle chain, with a
+        // `turn` param that moves the chain's anchor (`cargo xtask
+        // gen-fixture strand_chain`). The only model here with a chain: it
+        // pins the whole path from a solved chain through its per-link bend
+        // params to the cubic deform keyforms those params drive. `zoom` 1.25
+        // frames the strand's full swing to the right of centre without
+        // clipping it.
+        ModelSpec {
+            stem: "strand_chain".into(),
+            path: repro.join("strand_chain.clm"),
+            width: 512,
+            height: 512,
+            default_zoom: 1.25,
+            texture_halvings: 0,
+        },
         // Two grid Parts with a welded seam, per-vertex weights 1 / 0.5 / 0
         // left-to-right (`cargo xtask gen-fixture welded_seam`). The `pull`
         // param deform-shifts the top part; the seam must stay closed with
@@ -238,6 +270,9 @@ struct Curated {
     /// than one into a single frame; empty for the single-puppet default.
     /// Every stem must name an entry in `default_models()`.
     frame_puppets: &'static [(&'static str, f32, f32)],
+    /// Frames to tick after posing; see [`Config::ticks_after_pose`]. Zero on
+    /// every static pose, which is all of them but the chain's swing.
+    ticks_after_pose: u32,
 }
 
 fn curated_configs(stem: &str) -> Vec<Curated> {
@@ -249,6 +284,7 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
                 params: &[],
                 camera_preset: "default",
                 frame_puppets: &[],
+                ticks_after_pose: 0,
             },
             // Deformed: without welds the top part slides off whole; welded,
             // the seam blends per weight (B follows / midway / A pinned).
@@ -257,6 +293,32 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
                 params: &[("pull", 1.0, 0.0)],
                 camera_preset: "default",
                 frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+        ],
+        "strand_chain" => vec![
+            // Settled: a chain hangs straight, so this pins the strip's
+            // undeformed art and the geometry the fit was measured off.
+            Curated {
+                label: "rest",
+                params: &[],
+                camera_preset: "default",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            // Mid-swing. `turn` steps the head 120 model pixels aside on an
+            // already-settled chain, and what the baseline pins is the frame
+            // 11 ticks later: the chain's three bends are still inside the
+            // range its keyforms were authored over, and the strand reads as
+            // one curve rather than the hook it folds into a few frames on.
+            // Nothing but a transient can pin this — settled, the chain hangs
+            // straight at `turn` 1 exactly as it does at 0.
+            Curated {
+                label: "swing",
+                params: &[("turn", 1.0, 0.0)],
+                camera_preset: "default",
+                frame_puppets: &[],
+                ticks_after_pose: 11,
             },
         ],
         "composite_masks" => vec![
@@ -265,6 +327,7 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
                 params: &[],
                 camera_preset: "default",
                 frame_puppets: &[],
+                ticks_after_pose: 0,
             },
             // Three puppets onto one target, sharing one caller-owned
             // StencilTarget and CompositePool across three frames — the
@@ -290,6 +353,7 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
                     ("blend_modes_composite", 0.0, 0.0),
                     ("composite_masks", 640.0, 0.0),
                 ],
+                ticks_after_pose: 0,
             },
         ],
         // The repro models have no params: a single rest render isolates the
@@ -299,6 +363,7 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
             params: &[],
             camera_preset: "default",
             frame_puppets: &[],
+            ticks_after_pose: 0,
         }],
     }
 }
@@ -342,6 +407,7 @@ pub fn build_matrix(model: &ModelSpec) -> Vec<Config> {
                         y: *y,
                     })
                     .collect(),
+                ticks_after_pose: c.ticks_after_pose,
             }
         })
         .collect()
@@ -390,6 +456,32 @@ mod tests {
                 assert!(
                     c.frame_puppets.is_empty() || c.params.is_empty(),
                     "{} sets params on a multi-puppet pose, which ignores them",
+                    c.name
+                );
+            }
+        }
+    }
+
+    // A transient renders whatever `params` does to an already-settled
+    // puppet, so one that sets nothing renders the rest pose after paying for
+    // the ticks, and one that draws several puppets renders them all at their
+    // defaults and drops the pose entirely. Either way the baseline would
+    // pin a settled frame while claiming to pin motion.
+    #[test]
+    fn curated_transients_have_a_pose_to_be_a_transient_of() {
+        for m in default_models(Path::new(".")) {
+            for c in build_matrix(&m) {
+                if c.ticks_after_pose == 0 {
+                    continue;
+                }
+                assert!(
+                    !c.params.is_empty(),
+                    "{} ticks a transient but changes no param",
+                    c.name
+                );
+                assert!(
+                    c.frame_puppets.is_empty(),
+                    "{} ticks a transient on a multi-puppet pose, which ignores params",
                     c.name
                 );
             }

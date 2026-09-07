@@ -11,6 +11,10 @@ pub use catchlight_wgpu::RenderContext;
 
 const SUBSTEP_SECONDS: f32 = 0.01;
 const SETTLE_STEPS: u32 = 500;
+/// One frame of the transient a config with `ticks_after_pose` captures.
+/// Fixed at 60 Hz and never read from a clock, so a tick count in a config
+/// reads as a time and the same count always renders the same instant.
+pub const FRAME_SECONDS: f32 = 1.0 / 60.0;
 
 /// Opaque white, so a dropped or wrongly-blended pixel reads as a difference
 /// rather than blending into the background.
@@ -102,10 +106,15 @@ fn pose_from(cached: &CachedModel, params: &[ParamSetting]) -> Result<Pose> {
 /// render needs except the render pass itself. `world` is the puppet's root
 /// transform: identity for a lone puppet, a translation when several share
 /// one frame.
+///
+/// `ticks_after_pose` chooses which of the two orders that happens in; see
+/// [`crate::config::Config::ticks_after_pose`], whose doc is the one that
+/// explains why there are two.
 pub fn prepare_puppet(
     ctx: &mut RenderContext,
     cached: &mut CachedModel,
     params: &[ParamSetting],
+    ticks_after_pose: u32,
     world: glam::Mat4,
 ) -> Result<RenderList> {
     let pose = pose_from(cached, params)?;
@@ -122,11 +131,26 @@ pub fn prepare_puppet(
     cached.puppet.clone_from(&cached.pristine);
     // Every param the config leaves out goes back to its default, so one
     // config never inherits another's pose.
-    cached.puppet.apply_pose(&pose);
+    //
+    // A static config poses first and then settles, so what it renders is the
+    // rest shape the pose ends at. A transient config settles at the defaults
+    // instead and applies the pose to the already-resting puppet, so the
+    // frames after it are the motion that pose change starts.
+    if ticks_after_pose == 0 {
+        cached.puppet.apply_pose(&pose);
+    }
     for _ in 0..SETTLE_STEPS {
         cached
             .puppet
             .tick_with_root(&cached.model, world, SUBSTEP_SECONDS);
+    }
+    if ticks_after_pose > 0 {
+        cached.puppet.apply_pose(&pose);
+        for _ in 0..ticks_after_pose {
+            cached
+                .puppet
+                .tick_with_root(&cached.model, world, FRAME_SECONDS);
+        }
     }
     let cache = cached
         .cache
@@ -148,7 +172,13 @@ pub fn render_one_to_rgba(
     cached: &mut CachedModel,
     config: &Config,
 ) -> Result<Vec<u8>> {
-    let render_list = prepare_puppet(ctx, cached, &config.params, glam::Mat4::IDENTITY)?;
+    let render_list = prepare_puppet(
+        ctx,
+        cached,
+        &config.params,
+        config.ticks_after_pose,
+        glam::Mat4::IDENTITY,
+    )?;
     let camera = camera_matrix(ctx.width, ctx.height, &config.camera);
     ctx.renderer.update_camera(camera);
     ctx.render(&render_list, Some(CLEAR_COLOR))

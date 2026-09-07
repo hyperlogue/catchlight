@@ -10,6 +10,11 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 catchlight-core = { path = "../catchlight-core" }
+# `gen-fixture strand_chain` hangs a particle chain on a strip and generates
+# its per-link deform keyforms with the same `fit_strand` / `chain_keyforms`
+# the editor calls, so the fixture is authored the way a person would author
+# one rather than by transcribing numbers.
+catchlight-editor-core = { workspace = true }
 catchlight-import-inx = { path = "../catchlight-import-inx" }
 # `xtask generate typescript` reads the wire types through `ts-rs`, so it is the
 # one place in the workspace that turns the `ts` feature on. Cargo unifies

@@ -175,7 +175,10 @@ impl HarnessInner {
             let world = glam::Mat4::from_translation(glam::Vec3::new(puppet.x, puppet.y, 0.0));
             let key = format!("{}#{i}", puppet.model_stem);
             let slot = self.ensure_slot(&key, &puppet.model_stem)?;
-            let render_list = prepare_puppet(&mut slot.ctx, &mut slot.cached, &[], world)?;
+            // Defaults and no transient: a multi-puppet frame is about how
+            // several puppets share one target, and every puppet in it
+            // renders at rest.
+            let render_list = prepare_puppet(&mut slot.ctx, &mut slot.cached, &[], 0, world)?;
             slot.ctx.renderer.update_camera(camera);
             // A renderer owns its own frame and its own submit, so a puppet
             // per model renderer is a submit per model. Queue order is what
