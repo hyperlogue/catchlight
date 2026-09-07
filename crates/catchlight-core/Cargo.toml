@@ -36,6 +36,14 @@ ts = ["dep:ts-rs"]
 [dev-dependencies]
 serde_json.workspace = true
 
+# The puppet-tick benchmark: std only, its own `main`, no harness. `test =
+# false` keeps `cargo test` out of it — a bench target is test-run by default,
+# and the whole matrix is not a test.
+[[bench]]
+name = "puppet_tick"
+harness = false
+test = false
+
 [lints]
 workspace = true
 
