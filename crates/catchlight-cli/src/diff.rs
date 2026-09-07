@@ -342,6 +342,7 @@ fn node_fields(n: &ClmNode) -> Fields {
                 );
                 f.insert(format!("links.{i}.damping"), link.damping.to_string());
                 f.insert(format!("links.{i}.time_scale"), link.time_scale.to_string());
+                f.insert(format!("links.{i}.stiffness"), link.stiffness.to_string());
             }
             for (i, slot) in c.outputs.iter().enumerate() {
                 f.insert(

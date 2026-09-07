@@ -26,6 +26,7 @@ fn link(length: f32) -> ChainLink {
         gravity_scale: 1.0,
         damping: 0.5,
         time_scale: 1.0,
+        stiffness: 0.0,
     }
 }
 
@@ -469,4 +470,143 @@ fn a_chain_beside_a_part_leaves_the_part_alone() {
         puppet.transforms().get(part_idx),
         "a swinging chain nothing binds does not move a part"
     );
+}
+
+/// **The first link's bend zero is the node's own down, not gravity's.** Two
+/// chains under one node turned 30 degrees about Z: the sprung one has no
+/// weight at all, so its spring holds it along the node and its bend reads
+/// zero; the limp one hangs along gravity, which from inside the turned node
+/// is 30 degrees away. This is what makes a stiff strand follow a tilted head
+/// and a limp one hang off it, and it is also where the spring and
+/// `link_bends` are checked against each other: they disagree the moment
+/// either one measures from the wrong direction.
+///
+/// The sign is `link_bends`': a tip displaced toward the node's +X reads
+/// positive (`a_kicked_chain_writes_its_bends_and_only_where_it_is_aimed`).
+/// Turning the node *toward* +X leaves gravity on the node's -X side, so the
+/// limp chain's first bend is **negative** — 30 degrees is a sixth of a half
+/// turn, so -1/6.
+#[test]
+fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
+    let mut hex = SeededHex::new(21);
+    let mut model = Model::new();
+    model.set_physics(ClmPhysics {
+        pixels_per_meter: 1.0,
+        gravity: 1.0,
+    });
+    let root = model.root().expect("root").clone();
+    let mut tilted = ModelNode::new("head", ModelNodeKind::Group);
+    tilted.transform.rotation = [0.0, 0.0, std::f32::consts::FRAC_PI_6];
+    let head = model.add_node(&root, tilted, &mut hex).expect("add group");
+
+    // The third one is the case the rod projection's rounding used to leave
+    // wobbling forever: a spring *and* real weight, so its rest pose is at an
+    // angle to every axis and the projection is not exact there.
+    let mut chains = Vec::new();
+    for (name, stiffness, gravity_scale, links) in [
+        ("stiff", 10.0f32, 0.0f32, 2usize),
+        ("limp", 0.0, 1.0, 2),
+        ("weighted", 4.0, 1.0, 3),
+    ] {
+        let params: Vec<ParamId> = (0..links)
+            .map(|i| {
+                model
+                    .add_param(
+                        ModelParam {
+                            name: Name::truncated(format!("{name}{i}")),
+                            min: -1.0,
+                            max: 1.0,
+                            default: 0.0,
+                            key_positions: vec![0.0, 0.5, 1.0],
+                        },
+                        &mut hex,
+                    )
+                    .expect("add param")
+            })
+            .collect();
+        let mut data = ModelParticleChain::new(
+            (0..links)
+                .map(|_| ChainLink {
+                    length: 60.0,
+                    gravity_scale,
+                    damping: 0.5,
+                    time_scale: 1.0,
+                    stiffness,
+                })
+                .collect(),
+        );
+        data.gravity = 981.0;
+        let node = model
+            .add_node(
+                &head,
+                ModelNode::new(name, ModelNodeKind::ParticleChain(data)),
+                &mut hex,
+            )
+            .expect("add chain");
+        model
+            .set_chain_outputs(&node, params.iter().cloned().map(Some).collect())
+            .expect("aim the chain");
+        chains.push((node, params));
+    }
+
+    let mut puppet = Puppet::new(&model);
+    puppet.settle_physics(&model);
+    let motion = puppet.tick(&model, DT);
+
+    let stiff = puppet
+        .param_value(&chains[0].1[0])
+        .expect("the stiff chain's first bend");
+    assert!(
+        stiff.abs() < 1e-3,
+        "a weightless sprung chain sits along its node, so its bend reads 0, got {stiff}",
+    );
+    let limp = puppet
+        .param_value(&chains[1].1[0])
+        .expect("the limp chain's first bend");
+    assert!(
+        (limp + 1.0 / 6.0).abs() < 1e-3,
+        "a limp chain hangs along gravity, a sixth of a half turn off a node \
+         turned 30 degrees toward +X, got {limp}",
+    );
+
+    // None of the three is still moving, so a viewport over a tilted rig is
+    // allowed to go to sleep — including over the weighted sprung chain,
+    // whose rest pose lies at an angle to every axis.
+    assert!(
+        !motion.physics,
+        "settling put all three chains at rest under the turned node",
+    );
+    for _ in 0..10 {
+        assert!(
+            !puppet.tick(&model, DT).physics,
+            "and they stay there frame after frame",
+        );
+    }
+
+    // And a chain that is knocked off that pose reports motion until it has
+    // unwound, then reports none again — without ever being settled a second
+    // time. The sprung chain relaxes to a pose a hair off the analytic one,
+    // so this is stillness being reported and not a match against it.
+    let weighted = puppet
+        .node_idx(&chains[2].0)
+        .expect("the weighted chain baked");
+    assert!(puppet.kick_chain(weighted, Vec2::new(5.0, -2.0)), "kicked");
+    assert!(
+        puppet.tick(&model, DT).physics,
+        "the kick is motion the next frame will unwind",
+    );
+    let mut quiet_at = None;
+    for f in 0..7200 {
+        if !puppet.tick(&model, DT).physics {
+            quiet_at = Some(f);
+            break;
+        }
+    }
+    let quiet_at = quiet_at.expect("the kicked chain stops within two minutes");
+    for _ in 0..120 {
+        assert!(
+            !puppet.tick(&model, DT).physics,
+            "and stays quiet after settling at frame {quiet_at}",
+        );
+    }
 }

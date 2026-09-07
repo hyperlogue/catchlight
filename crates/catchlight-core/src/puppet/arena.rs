@@ -549,6 +549,41 @@ impl Arena {
         Some(crate::Vec2::new(anchor.x, -anchor.y))
     }
 
+    /// Where bend 0 of a particle chain's first link points, as a unit vector
+    /// in the driver's own **Y-down** frame: the node's local down, taken
+    /// through the same world transform and the same Y flip as
+    /// [`Self::physics_anchor`], so the spring and `link_bends` agree about
+    /// which way "not bent" is.
+    ///
+    /// The `local_only` branch integrates in the parent's frame, where the
+    /// node's own rotation has not been applied, so down there is gravity's
+    /// own direction.
+    ///
+    /// `None` when `id` is not a particle chain.
+    pub(crate) fn chain_down(
+        &self,
+        transforms: &GlobalTransforms,
+        id: NodeIdx,
+    ) -> Option<crate::Vec2> {
+        let node = self.nodes.get(id.0 as usize)?;
+        let crate::NodeKind::ParticleChain(c) = &node.kind else {
+            return None;
+        };
+        if c.local_only {
+            return Some(crate::Vec2::new(0.0, 1.0));
+        }
+        // The node's local -Y in world (model space is Y-up), then flipped
+        // into the physics frame.
+        let world = transforms.get(id);
+        let down = crate::Vec2::new(-world.y_axis.x, -world.y_axis.y);
+        let down = if down.is_finite() && down.length_squared() > 1e-12 {
+            down.normalize()
+        } else {
+            crate::Vec2::new(0.0, -1.0)
+        };
+        Some(crate::Vec2::new(down.x, -down.y))
+    }
+
     /// Record what `translate_children` shift a mesh group applied to one of
     /// its targets this frame, overwriting the last one. A target the pass
     /// skipped is recorded as zero, so a stale delta never survives a frame.

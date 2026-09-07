@@ -1405,7 +1405,7 @@ pub struct PhysicsTargets {
 /// from what a chain actually does; absent means "what the editor would have
 /// used". `{}` is a link at every default.
 ///
-/// A reply fills all four in, so a client can read a chain out of
+/// A reply fills every one of them in, so a client can read a chain out of
 /// [`NodeInfo::chain`], change one number, and send the list straight back
 /// through [`Command::ChainSet`].
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
@@ -1423,6 +1423,10 @@ pub struct ChainLinkArg {
     /// Multiplier on this link's clock; 1 is real time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_scale: Option<f32>,
+    /// Frequency in Hz of the spring pulling this link's bend back to zero;
+    /// 0 is no spring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stiffness: Option<f32>,
 }
 
 impl ChainLinkArg {
@@ -1435,6 +1439,7 @@ impl ChainLinkArg {
             gravity_scale: self.gravity_scale.unwrap_or(d.gravity_scale),
             damping: self.damping.unwrap_or(d.damping),
             time_scale: self.time_scale.unwrap_or(d.time_scale),
+            stiffness: self.stiffness.unwrap_or(d.stiffness),
         }
     }
 
@@ -1446,6 +1451,7 @@ impl ChainLinkArg {
             gravity_scale: Some(link.gravity_scale),
             damping: Some(link.damping),
             time_scale: Some(link.time_scale),
+            stiffness: Some(link.stiffness),
         }
     }
 }

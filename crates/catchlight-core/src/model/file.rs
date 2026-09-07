@@ -1070,6 +1070,7 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
                     gravity_scale: link.gravity_scale,
                     damping: link.damping,
                     time_scale: link.time_scale,
+                    stiffness: link.stiffness,
                 })
                 .collect(),
             // Written in full, never elided: the model's outputs are always as
@@ -1212,6 +1213,9 @@ fn model_chain(
         if !link.time_scale.is_finite() || link.time_scale <= 0.0 {
             return Err(bad(i, "time_scale", "is not finite and above zero"));
         }
+        if !link.stiffness.is_finite() || link.stiffness < 0.0 {
+            return Err(bad(i, "stiffness", "is not finite and at or above zero"));
+        }
     }
     if !c.gravity.is_finite() || c.gravity <= 0.0 {
         return Err(ClmLoadError::ChainGravity {
@@ -1227,6 +1231,7 @@ fn model_chain(
                 gravity_scale: link.gravity_scale,
                 damping: link.damping,
                 time_scale: link.time_scale,
+                stiffness: link.stiffness,
             })
             .collect(),
     );
@@ -2112,12 +2117,14 @@ mod tests {
                         gravity_scale: 1.0,
                         damping: 0.5,
                         time_scale: 1.0,
+                        stiffness: 0.0,
                     },
                     ClmChainLink {
                         length: 50.0,
                         gravity_scale: 1.0,
                         damping: 0.5,
                         time_scale: 1.0,
+                        stiffness: 0.0,
                     },
                 ],
                 outputs: vec![Some(param), None],
@@ -2153,7 +2160,7 @@ mod tests {
 
         /// One way to break a link, and the refusal it has to produce.
         type BreakLink = (fn(&mut ClmParticleChain), &'static str, &'static str);
-        let cases: [BreakLink; 6] = [
+        let cases: [BreakLink; 8] = [
             (
                 |c| c.links[1].length = 0.0,
                 "length",
@@ -2175,6 +2182,16 @@ mod tests {
                 |c| c.links[1].time_scale = 0.0,
                 "time_scale",
                 "is not finite and above zero",
+            ),
+            (
+                |c| c.links[1].stiffness = -1.0,
+                "stiffness",
+                "is not finite and at or above zero",
+            ),
+            (
+                |c| c.links[1].stiffness = f32::NAN,
+                "stiffness",
+                "is not finite and at or above zero",
             ),
         ];
         for (break_it, field, reason) in cases {
@@ -2234,18 +2251,21 @@ mod tests {
                         gravity_scale: 1.0,
                         damping: 0.5,
                         time_scale: 1.0,
+                        stiffness: 0.0,
                     },
                     ClmChainLink {
                         length: 50.0,
                         gravity_scale: 1.0,
                         damping: 0.5,
                         time_scale: 1.0,
+                        stiffness: 0.0,
                     },
                     ClmChainLink {
                         length: 40.0,
                         gravity_scale: 1.0,
                         damping: 0.5,
                         time_scale: 1.0,
+                        stiffness: 0.0,
                     },
                 ],
                 // What `#[serde(default)]` hands the reader for an absent key.
@@ -2264,6 +2284,46 @@ mod tests {
             panic!("the chain came back as another kind");
         };
         assert_eq!(chain.outputs(), [None, None, None]);
+    }
+
+    /// A link written before the bend spring existed has no `stiffness` key,
+    /// and reads back as the unsprung link it describes. The key is additive
+    /// under the format's CBOR-map rule, which is why no version bump goes
+    /// with it; `clm_roundtrip` is where a written one makes the trip back.
+    #[test]
+    fn a_link_map_without_stiffness_reads_as_unsprung() {
+        /// A link map as it was written before there was a spring: the same
+        /// four keys, in the same order, and nothing else.
+        #[derive(serde::Serialize)]
+        struct LinkBeforeTheSpring {
+            length: f32,
+            gravity_scale: f32,
+            damping: f32,
+            time_scale: f32,
+        }
+
+        let mut bytes = Vec::new();
+        ciborium::into_writer(
+            &LinkBeforeTheSpring {
+                length: 60.0,
+                gravity_scale: 1.0,
+                damping: 0.5,
+                time_scale: 1.0,
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        let link: ClmChainLink = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(
+            link,
+            ClmChainLink {
+                length: 60.0,
+                gravity_scale: 1.0,
+                damping: 0.5,
+                time_scale: 1.0,
+                stiffness: 0.0,
+            },
+        );
     }
 
     #[test]

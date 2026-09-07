@@ -607,6 +607,21 @@ pub struct ClmChainLink {
     pub damping: f32,
     /// Multiplier on the link's own clock. Finite and above zero.
     pub time_scale: f32,
+    /// Bend spring frequency in Hz. Finite and at or above zero.
+    ///
+    /// Added after the format shipped, so it defaults: a link map without the
+    /// key is a link with no spring, which is what every file written before
+    /// the spring existed describes. An unsprung link writes no key either,
+    /// so a file that predates the spring is still byte for byte what this
+    /// writer would write for it.
+    #[serde(default, skip_serializing_if = "is_unsprung")]
+    pub stiffness: f32,
+}
+
+/// Whether a link carries no bend spring, and so needs no `stiffness` key.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_unsprung(stiffness: &f32) -> bool {
+    *stiffness == 0.0
 }
 
 /// A chain of rigid links hanging from the node, writing one param per link.

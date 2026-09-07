@@ -860,7 +860,7 @@ export type PhysicsTargets = {
  * from what a chain actually does; absent means "what the editor would have
  * used". `{}` is a link at every default.
  *
- * A reply fills all four in, so a client can read a chain out of
+ * A reply fills every one of them in, so a client can read a chain out of
  * [`NodeInfo::chain`], change one number, and send the list straight back
  * through [`Command::ChainSet`].
  */
@@ -881,6 +881,11 @@ export type ChainLinkArg = {
    * Multiplier on this link's clock; 1 is real time.
    */
   time_scale?: number | null,
+  /**
+   * Frequency in Hz of the spring pulling this link's bend back to zero;
+   * 0 is no spring.
+   */
+  stiffness?: number | null,
 };
 
 /**

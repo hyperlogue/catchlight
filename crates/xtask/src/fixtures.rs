@@ -882,6 +882,7 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
                         gravity_scale: 1.0,
                         damping: STRAND_DAMPING,
                         time_scale: 1.0,
+                        stiffness: 0.0,
                     })
                     .collect(),
                 outputs: (0..fit.lengths.len()).map(|i| Some(pid(i))).collect(),

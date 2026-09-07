@@ -238,18 +238,21 @@ fn a_particle_chain_round_trips_byte_for_byte() {
             gravity_scale: 1.0,
             damping: 0.5,
             time_scale: 1.0,
+            stiffness: 0.0,
         },
         ChainLink {
             length: 50.0,
             gravity_scale: 0.8,
             damping: 0.25,
             time_scale: 1.5,
+            stiffness: 2.5,
         },
         ChainLink {
             length: 40.0,
             gravity_scale: 0.6,
             damping: 0.0,
             time_scale: 0.5,
+            stiffness: 0.0,
         },
     ]);
     chain.local_only = true;
@@ -281,6 +284,8 @@ fn a_particle_chain_round_trips_byte_for_byte() {
     assert_eq!(back.gravity, 12.5);
     assert_eq!(back.links().len(), 3);
     assert_eq!(back.links()[1].time_scale, 1.5);
+    assert_eq!(back.links()[1].stiffness, 2.5);
+    assert_eq!(back.links()[0].stiffness, 0.0, "an unsprung link stays one");
     assert_eq!(back.links()[2].damping, 0.0);
     assert_eq!(
         back.outputs(),

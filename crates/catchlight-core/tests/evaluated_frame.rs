@@ -1010,6 +1010,7 @@ fn particle_chain_fixture() -> FixtureFile {
                         gravity_scale: 1.0,
                         damping: 0.3,
                         time_scale: 1.0,
+                        stiffness: 0.0,
                     })
                     .collect(),
                 outputs: (0..3).map(|i| Some(one(i)[0].clone())).collect(),

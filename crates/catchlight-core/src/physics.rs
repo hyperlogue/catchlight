@@ -24,6 +24,34 @@
 //! fraction of velocity per second and `time_scale` multiplies the link's
 //! own clock, so neither the frame rate nor the substep count changes the
 //! material a model describes.
+//!
+//! **A link's bend spring pulls toward the art, not toward gravity.** A
+//! link's `stiffness` is the frequency in Hz of a spring on the bend at the
+//! joint above it, and the bend it pulls to zero is the one `link_bends`
+//! reports: for the first link, the node's own down, so a stiff strand
+//! follows the head as it tilts while a limp one hangs; for every later link,
+//! the direction of the link above it, so a strand drawn straight is at rest
+//! straight. There is no rest-bend knob — bend 0 is the art as drawn — and
+//! `0` Hz is no spring at all, which is every model written before there was
+//! one. The spring saturates rather than exploding: a step too coarse to
+//! resolve it moves the joint to rest in that step instead of past it, so no
+//! stiffness at any `time_scale` can blow the chain up.
+//!
+//! **Every bend spring damps itself.** A strand of equal links is a resonant
+//! cascade — each link driven by the one above it at its own frequency, one
+//! way only — so the spring carries a fixed damping ratio,
+//! [`BEND_SPRING_DAMPING_RATIO`], on top of whatever drag the link's `damping`
+//! names. Without it a chain of four equal 8 Hz links, kicked once, rings for
+//! ever; with it every stiffness and link count measured settles. The constant
+//! carries the numbers.
+//!
+//! **A chain is at rest when it has stopped, not when it stands in the pose
+//! `settle_to_rest` computes.** The two are the same thing for a straight
+//! hang, which is the only pose the rod projection reproduces exactly; a
+//! sprung chain hangs at an angle and stops a hundredth of a pixel from the
+//! analytic balance. `ParticleChainData::is_at_rest` therefore asks about
+//! velocity alone, and `is_projection_noise` is what makes a stopped chain's
+//! velocities exactly zero rather than a float-floor jitter.
 
 use crate::{Mat4, Vec2};
 
@@ -573,6 +601,10 @@ pub struct ChainLink {
     /// < 1 floatier. Zero or negative reads as a stopped clock: the particle
     /// still follows the rod above it but integrates nothing of its own.
     pub time_scale: f32,
+    /// Natural frequency in **Hz** of the spring pulling this link's bend
+    /// back to zero — how stiff the strand is at this joint. Zero is no
+    /// spring at all, and the link hangs on gravity alone.
+    pub stiffness: f32,
 }
 
 impl Default for ChainLink {
@@ -582,6 +614,7 @@ impl Default for ChainLink {
             gravity_scale: 1.0,
             damping: 0.5,
             time_scale: 1.0,
+            stiffness: 0.0,
         }
     }
 }
@@ -616,10 +649,29 @@ pub struct ParticleChainData {
     /// is enough to reshape it.
     pub particles: Vec<ChainParticle>,
     pub anchor: Vec2,
+    /// Where bend 0 of the **first** link points, as a unit vector in the
+    /// physics (Y-down) frame: the node's own down, which the caller hands
+    /// over every tick because only the puppet knows the node's world
+    /// rotation. `(0, 1)` — gravity's direction — until one is supplied, so
+    /// a chain built and stepped by hand behaves as it always did.
+    pub down: Vec2,
     /// `false` until `tick()` first sees the world-space anchor and hangs the
     /// chain under it, for the same reason `SimplePhysicsData` defers its
     /// snap: construction has only the node-local transform.
     pub anchor_initialized: bool,
+    /// Whether the last thing done to this chain moved a particle: every
+    /// substep of the last [`Self::tick`], or the displacement
+    /// `Puppet::kick_chain` applied. Cleared by [`Self::settle_to_rest`].
+    ///
+    /// [`Self::is_at_rest`] needs the whole tick and not just the state it
+    /// ended in, because a swinging chain passes through zero velocity at the
+    /// top of every swing. Land a frame's last substep there and every
+    /// velocity reads zero for that instant, though the next substep will
+    /// pull it back the other way — eight such frames in one measured decay,
+    /// each one a frame on which a viewport would have gone to sleep on a
+    /// chain still swinging. A turning point lasts microseconds; a frame is
+    /// sixteen milliseconds, and no turning point fills one.
+    pub moved_last_tick: bool,
 }
 
 impl ParticleChainData {
@@ -630,7 +682,9 @@ impl ParticleChainData {
             particles: Vec::with_capacity(links.len() + 1),
             links,
             anchor: Vec2::ZERO,
+            down: Vec2::new(0.0, 1.0),
             anchor_initialized: false,
+            moved_last_tick: true,
         };
         chain
             .particles
@@ -651,15 +705,45 @@ impl Default for ParticleChainData {
 /// many as it needs.
 pub const CHAIN_MAX_STEP: f32 = 1.0 / 240.0;
 
+/// The damping ratio every bend spring carries, whatever the link's own
+/// `damping` says.
+///
+/// **A strand of equal links is a resonant cascade.** Each link's spring is an
+/// oscillator at that link's frequency, driven by the link above it at the
+/// same frequency, and the drive runs one way only — so with nothing but the
+/// velocity damping to resist it, each stage amplifies the one before it by
+/// its quality factor. That factor is `w0 / gamma`: about 70 for an 8 Hz
+/// spring under a `damping` of 0.5, because `damping` is a drag on the
+/// particle and not on the bend. Four equal 8 Hz links kicked once ring for
+/// ever; the same four staggered 8, 6, 4, 2 Hz settle in seventeen seconds,
+/// which is the cascade showing itself.
+///
+/// No real fibre has a Q of 70, and stiffness-proportional damping is the
+/// standard material model, so the spring carries its own. At 0.1 the Q is 5
+/// and a joint sheds about half its swing each cycle: enough that a displaced
+/// joint still visibly wobbles a couple of times, and enough that every
+/// configuration measured — 2 to 32 Hz across 2 to 6 links, at `damping` 0.1
+/// and 0.5 — settles, the slowest in seventeen seconds. A link's own
+/// `damping` adds to this and can never bring it below.
+pub const BEND_SPRING_DAMPING_RATIO: f32 = 0.1;
+
 impl ParticleChainData {
     /// Advance the chain by `dt` with its root pinned to `anchor_world`.
     /// The outer `dt` is clamped and split exactly the way
     /// [`SimplePhysicsData::tick`] splits its own: uniform steps from an
     /// integer count, so there is no drifting remainder and no ragged final
     /// step whose damping would land differently from its neighbours'.
-    pub fn tick(&mut self, anchor_world: Vec2, dt: f32) {
+    ///
+    /// `down_world` is the unit vector, in the physics (Y-down) frame, that
+    /// bend 0 of the first link points along — the node's own down, which is
+    /// gravity's direction only while the node is upright. Every later link
+    /// measures its bend against the link above it instead, so a chain drawn
+    /// straight is bend 0 all the way down whatever the node is doing.
+    pub fn tick(&mut self, anchor_world: Vec2, down_world: Vec2, dt: f32) {
+        self.down = unit_down(down_world);
         if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
-            self.settle_to_rest(anchor_world);
+            let down = self.down;
+            self.settle_to_rest(anchor_world, down);
         }
         self.anchor = anchor_world;
         // NaN survives `clamp` and fails `<= 0.0`, and `NaN as u32` saturates
@@ -676,17 +760,26 @@ impl ParticleChainData {
             .ceil()
             .clamp(1.0, PHYSICS_MAX_SUBSTEPS as f32) as u32;
         let h = clamped / steps as f32;
+        let mut moved = false;
         for _ in 0..steps {
-            self.step(h);
+            moved |= self.step(h);
         }
+        self.moved_last_tick = moved;
     }
 
-    /// Hang the chain straight down from `anchor_world` with no motion, and
-    /// resize `particles` to match `links`. This is the chain's analytic
-    /// equilibrium: gravity is parallel to every rod there, so the solver
-    /// leaves it exactly alone.
-    pub fn settle_to_rest(&mut self, anchor_world: Vec2) {
+    /// Hang the chain from `anchor_world` with no motion, and resize
+    /// `particles` to match `links`. `down_world` is [`Self::tick`]'s, and is
+    /// stored the same way.
+    ///
+    /// This is the solver's analytic equilibrium, link by link. A springless
+    /// link hangs along gravity, which is the whole of what this used to do:
+    /// gravity is parallel to every rod there, so the solver leaves it
+    /// exactly alone. A sprung one balances the two torques it feels — see
+    /// [`rest_pose_dir`] for the equation and why it is exact rather than
+    /// approximate.
+    pub fn settle_to_rest(&mut self, anchor_world: Vec2, down_world: Vec2) {
         self.anchor = anchor_world;
+        self.down = unit_down(down_world);
         self.particles.clear();
         self.particles.reserve(self.links.len() + 1);
         let mut pos = anchor_world;
@@ -694,24 +787,45 @@ impl ParticleChainData {
             pos,
             vel: Vec2::ZERO,
         });
+        let mut rest = self.down;
         for link in &self.links {
-            pos += Vec2::new(0.0, link.length);
+            let dir = rest_pose_dir(link, rest, self.gravity);
+            pos += dir * link.length;
             self.particles.push(ChainParticle {
                 pos,
                 vel: Vec2::ZERO,
             });
+            rest = dir;
         }
         self.anchor_initialized = true;
+        self.moved_last_tick = false;
     }
 
-    /// Whether the chain is standing where [`Self::settle_to_rest`] would put
-    /// it: every particle hanging under the anchor and every velocity zero.
+    /// Whether the chain is standing still: no particle carries a velocity a
+    /// next step would move it by.
     ///
-    /// `eps_sq` bounds the squared displacement from rest *and* each squared
-    /// velocity, so one number covers two quantities in two different units —
-    /// deliberately, and for the same reason
-    /// [`SimplePhysicsData::is_at_rest`] does it: the caller's epsilon is the
-    /// crate's one notion of "settled".
+    /// **Standing still, not standing in the analytic rest pose.** The pose
+    /// [`Self::settle_to_rest`] computes is the exact balance, and the
+    /// solver's own arithmetic reaches it only where the rod projection is
+    /// exact, which is the straight hang. A sprung chain hangs at an angle,
+    /// where `above + normalize(offset) * length` rounds, and a chain that
+    /// relaxes into that pose from a kick stops a hundredth of a pixel or so
+    /// short of it — far below anything visible, and far above the epsilon
+    /// this is asked about. Comparing against the analytic pose would call
+    /// such a chain moving forever and keep a viewport redrawing a picture
+    /// that never changes. What a caller wants to know is whether the next
+    /// frame would differ from this one, and that is a question about
+    /// velocity alone.
+    ///
+    /// The check is exact in practice rather than approximate: a chain the
+    /// solver has stopped moving carries velocities of exactly zero, because
+    /// the same deadband that stopped it zeroes them (see
+    /// [`is_projection_noise`]). `eps_sq` bounds each squared velocity, and
+    /// is the crate's one notion of settled, the same number
+    /// [`SimplePhysicsData::is_at_rest`] is asked about.
+    ///
+    /// It is the whole of the last tick that has to have moved nothing, not
+    /// the instant it ended in; [`Self::moved_last_tick`] says why.
     ///
     /// A chain that has never seen a world anchor is *not* at rest: its first
     /// tick hangs it under the anchor, which is a move.
@@ -719,18 +833,11 @@ impl ParticleChainData {
         if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
             return false;
         }
-        let mut pos = self.anchor;
-        for (i, particle) in self.particles.iter().enumerate() {
-            if i > 0 {
-                pos += Vec2::new(0.0, self.links[i - 1].length);
-            }
-            if (particle.pos - pos).length_squared() > eps_sq
-                || particle.vel.length_squared() > eps_sq
-            {
-                return false;
-            }
-        }
-        true
+        !self.moved_last_tick
+            && self
+                .particles
+                .iter()
+                .all(|p| p.vel.length_squared() <= eps_sq)
     }
 
     /// The bend at the joint above each link, in half turns, written into
@@ -774,7 +881,8 @@ impl ParticleChainData {
         }
     }
 
-    /// One position-based step of size `h`.
+    /// One position-based step of size `h`, reporting whether it moved any
+    /// particle.
     ///
     /// Prediction, constraint and velocity fuse into a single root-to-tip
     /// pass: a particle's free integration does not depend on its neighbour,
@@ -782,12 +890,12 @@ impl ParticleChainData {
     /// final, so the pass yields exactly what integrate-all-then-constrain-all
     /// would. The result lands in scratch and is committed only if all of it
     /// is finite, so one bad step cannot poison the chain permanently.
-    fn step(&mut self, h: f32) {
+    fn step(&mut self, h: f32) -> bool {
         let n = self.links.len();
         // `tick` re-hangs a chain whose two vectors disagree, so this never
         // fires; it is here so the indexing below cannot panic on its own.
         if self.particles.len() != n + 1 {
-            return;
+            return false;
         }
         let mut next: smallvec::SmallVec<[ChainParticle; 16]> =
             smallvec::SmallVec::with_capacity(n + 1);
@@ -796,6 +904,10 @@ impl ParticleChainData {
             vel: Vec2::ZERO,
         });
 
+        // Where bend 0 points for the link being solved. The first link
+        // answers to the node's own down; every later one answers to the link
+        // above it, which this pass has already put in its final place.
+        let mut rest = self.down;
         for i in 1..=n {
             let link = self.links[i - 1];
             let above = next[i - 1].pos;
@@ -804,15 +916,24 @@ impl ParticleChainData {
             let moving = h_i.is_finite() && h_i > 0.0;
 
             let free = if moving {
-                let v =
+                let mut v =
                     self.particles[i].vel + Vec2::new(0.0, self.gravity * link.gravity_scale) * h_i;
+                // The bend spring rides alongside gravity, on this link's own
+                // clock like everything else. Skipped whole when it has
+                // nothing to say, so an unsprung link integrates the same
+                // bits it did before there was a spring at all.
+                if let Some(acc) =
+                    bend_spring_acceleration(rest, old - above, link.length, link.stiffness, h_i)
+                {
+                    v += acc * h_i;
+                }
                 old + v * h_i
             } else {
                 old
             };
 
             let offset = free - above;
-            let pos = if offset.length_squared() > 1e-12 {
+            let projected = if offset.length_squared() > 1e-12 {
                 above + offset.normalize() * link.length
             } else {
                 above + Vec2::new(0.0, link.length)
@@ -825,17 +946,258 @@ impl ParticleChainData {
             // fraction shed per second, so it is raised to this link's own
             // elapsed time.
             let vel = if moving {
-                (pos - old) / h_i * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h_i)
+                let vel = (projected - old) / h_i * (1.0 - link.damping.clamp(0.0, 1.0)).powf(h_i);
+                damp_bend(vel, projected - above, link.stiffness, h_i)
             } else {
                 Vec2::ZERO
             };
 
+            // A move too small to be one is no move. See `is_projection_noise`
+            // for what this is for and why it cannot touch a trajectory.
+            let (pos, vel) = if is_projection_noise(projected - old, old, link.length) {
+                (old, Vec2::ZERO)
+            } else {
+                (projected, vel)
+            };
+
+            // The rod as the constraint left it, which is what the link below
+            // measures its own bend against.
+            let solved = pos - above;
+            if solved.length_squared() > 1e-12 {
+                rest = solved.normalize();
+            }
+
             next.push(ChainParticle { pos, vel });
         }
 
-        if next.iter().all(|p| p.pos.is_finite() && p.vel.is_finite()) {
-            self.particles.copy_from_slice(&next);
+        if !next.iter().all(|p| p.pos.is_finite() && p.vel.is_finite()) {
+            return false;
         }
+        let moved = next
+            .iter()
+            .zip(self.particles.iter())
+            .any(|(now, was)| now.pos != was.pos);
+        self.particles.copy_from_slice(&next);
+        moved
+    }
+}
+
+/// Whether a step's move is the rod projection's own rounding rather than
+/// motion — in which case [`ParticleChainData::step`] puts the particle back
+/// where it was and calls its velocity zero.
+///
+/// **Why it is needed.** `above + normalize(offset) * length` is exact only
+/// where the rod lies on an axis: at a straight hang the x is zero and the y
+/// is a sum, so a settled unsprung chain lands on itself bit for bit and
+/// stops. At any other angle — which is where a bend spring holds a strand
+/// under a turned node — the projection lands an ulp or so from `old` even
+/// when the forces balance exactly and `free` came back as `old`. The
+/// velocity is then read off that ulp, `ulp / h` is about 2e-3 px/s on a
+/// hundred-pixel coordinate at a 240 Hz substep, and that feeds the next
+/// step: a limit cycle at the float floor that never decays and never lets a
+/// viewport's frame loop go to sleep.
+///
+/// **Why it cannot alter a trajectory.** The floor is a few ulps of the
+/// coordinate — under 1e-4 px for a chain within a few hundred pixels of the
+/// model origin — while a chain actually in motion moves a particle by
+/// something like 0.17 px in a substep, three orders of magnitude more. The
+/// committed trajectory baseline is byte for byte unchanged for every
+/// scenario with no spring in it. The scale is `max(|old|, length)` so that a
+/// rod hanging through the origin, where `|old|` goes to zero, still has the
+/// projection's own `EPSILON * length` rounding covered.
+///
+/// **What it gives up: a relaxation stops a hair short of where it was
+/// heading.** A chain easing into rest has a velocity proportional to how far
+/// out it still is, so its per-step move crosses this floor while it is still
+/// `floor / (rate * h)` from the end — a few hundredths of a pixel on a 60 px
+/// link, well under the width of a rendered pixel, and it stops there for
+/// good instead of creeping for another minute. This is why
+/// [`ParticleChainData::is_at_rest`] asks whether the chain has stopped and
+/// not whether it stands in [`ParticleChainData::settle_to_rest`]'s pose. A
+/// per-component floor scaled to each coordinate would land closer, but it
+/// shrinks with the coordinate it scales, so a chain easing to zero along one
+/// axis never stops at all and the frame loop never sleeps: the thing this
+/// exists to prevent.
+///
+/// The same trade freezes motion the floor cannot resolve at all — a link
+/// whose `time_scale` is under about a tenth, alone with gravity and no
+/// anchor moving. Below the floor `f32` cannot represent the move either way.
+fn is_projection_noise(moved: Vec2, old: Vec2, length: f32) -> bool {
+    let floor = 4.0 * f32::EPSILON * old.length().max(length);
+    moved.length_squared() <= floor * floor
+}
+
+/// A caller's down as a unit vector, falling back to gravity's own direction
+/// when what arrives has no direction in it. `(0, 1)` is what a chain that
+/// nobody tells about a node hangs along, and what every chain did before a
+/// link had a bend spring to point anywhere else.
+fn unit_down(v: Vec2) -> Vec2 {
+    if v.is_finite() && v.length_squared() > 1e-12 {
+        v.normalize()
+    } else {
+        Vec2::new(0.0, 1.0)
+    }
+}
+
+/// The angle from `from` to `to`, in `(-pi, pi]`, positive the way
+/// [`rotate_by`] turns.
+fn signed_angle(from: Vec2, to: Vec2) -> f32 {
+    f32::atan2(from.x * to.y - from.y * to.x, from.dot(to))
+}
+
+/// `v` turned by `angle`, the sign [`signed_angle`] reports.
+fn rotate_by(v: Vec2, angle: f32) -> Vec2 {
+    let (s, c) = angle.sin_cos();
+    Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
+}
+
+/// The direction one link takes at rest: `rest` is where its bend reads zero
+/// (the node's down for the first link, the link above for the rest), and
+/// `gravity` is the chain's, before this link's own scale.
+///
+/// **Springless links keep what they always did.** A weighted one hangs along
+/// gravity, whatever the node is doing; one with no weight either has nothing
+/// to decide it, so it keeps the bend it was drawn with — zero — which is
+/// `rest`.
+///
+/// A sprung link solves the torque balance about its joint,
+///
+/// ```text
+///   w0^2 * L * theta  =  g * sin(theta_g - theta)
+/// ```
+///
+/// for `theta`, the bend measured from `rest`: the spring's pull back to zero
+/// against gravity's pull toward `theta_g`, gravity's own direction measured
+/// the same way. **This is the solver's exact equilibrium and not an
+/// approximation of it**, because the coupling runs one way only — a link is
+/// hung off the rod above it and never feels the weight below it — so each
+/// joint balances on its own and a root-to-tip walk is the whole answer.
+///
+/// Solved by bisection on `[min(0, theta_g), max(0, theta_g)]`: at `0` only
+/// gravity pulls, at `theta_g` only the spring does, so the ends have
+/// opposite signs and the root is between them. A negative `gravity_scale` is
+/// gravity pointing the other way, so it flips `theta_g` rather than breaking
+/// the bracket.
+fn rest_pose_dir(link: &ChainLink, rest: Vec2, gravity: f32) -> Vec2 {
+    let g = gravity * link.gravity_scale;
+    let down = Vec2::new(0.0, 1.0);
+    // NaN is spelled out rather than left to fail a comparison: a link whose
+    // stiffness is not a number carries no spring.
+    if link.stiffness.is_nan() || link.stiffness <= 0.0 {
+        return if g != 0.0 && g.is_finite() {
+            down
+        } else {
+            rest
+        };
+    }
+    if g == 0.0 || !g.is_finite() {
+        return rest;
+    }
+    let w0 = std::f32::consts::TAU * link.stiffness;
+    let k = w0 * w0 * link.length;
+    let theta_g = signed_angle(rest, if g > 0.0 { down } else { -down });
+    let g = g.abs();
+    let balance = |theta: f32| k * theta - g * (theta_g - theta).sin();
+
+    let (mut lo, mut hi) = (theta_g.min(0.0), theta_g.max(0.0));
+    let (f_lo, f_hi) = (balance(lo), balance(hi));
+    if !f_lo.is_finite() || !f_hi.is_finite() {
+        return rest;
+    }
+    if f_lo == 0.0 {
+        return rotate_by(rest, lo);
+    }
+    if f_hi == 0.0 {
+        return rotate_by(rest, hi);
+    }
+    if (f_lo > 0.0) == (f_hi > 0.0) {
+        // No bracket to bisect on; nothing sensible to say, so leave the link
+        // where it was drawn.
+        return rest;
+    }
+    let hi_positive = f_hi > 0.0;
+    // Enough halvings to exhaust an f32 mantissa several times over; the
+    // early break is what actually ends it.
+    for _ in 0..64 {
+        let mid = 0.5 * (lo + hi);
+        if mid == lo || mid == hi {
+            break;
+        }
+        if (balance(mid) > 0.0) == hi_positive {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    rotate_by(rest, 0.5 * (lo + hi))
+}
+
+/// The bend spring's tangential acceleration on one particle, or `None` when
+/// the spring has nothing to add: an unsprung link, a rod with no direction
+/// to it, or a bend already exactly at rest. `None` rather than a zero
+/// vector, so a chain without stiffness integrates bit for bit what it did
+/// before the spring existed.
+///
+/// `rest` is where the bend reads zero and `rod` is the joint's current one,
+/// from the particle above to this one. With `w0 = 2*pi*stiffness` the spring
+/// pulls the bend `theta` back toward zero with a tangential `w0^2 * length *
+/// theta` — the pendulum form, so `stiffness` reads straight off the strand
+/// as the frequency in Hz a displaced joint rings at.
+///
+/// **A step too coarse for the spring saturates at critical rather than
+/// exploding.** The spring's own displacement over a step is `w0^2 * theta *
+/// h^2` in angle, so once `w0^2 * h^2` passes 1 it would carry the joint
+/// through rest and out the far side, further every step. `w0^2` is clamped
+/// to `1 / h^2` there instead: the joint lands on rest in that step. That is
+/// what keeps any stiffness finite at any `time_scale`, at the price of
+/// stiffnesses the step is too coarse to tell apart.
+fn bend_spring_acceleration(
+    rest: Vec2,
+    rod: Vec2,
+    length: f32,
+    stiffness: f32,
+    h: f32,
+) -> Option<Vec2> {
+    if stiffness.is_nan() || stiffness <= 0.0 || rod.length_squared() <= 1e-12 {
+        return None;
+    }
+    let dir = rod.normalize();
+    let theta = signed_angle(rest, dir);
+    if theta == 0.0 {
+        return None;
+    }
+    let w0 = std::f32::consts::TAU * stiffness;
+    let k = (w0 * w0).min(1.0 / (h * h));
+    // Perpendicular to the rod, on the side that shrinks `theta`.
+    let acc = Vec2::new(-dir.y, dir.x) * -(k * length * theta);
+    acc.is_finite().then_some(acc)
+}
+
+/// `vel` with [`BEND_SPRING_DAMPING_RATIO`] applied for one step of `h`: the
+/// part of it across the rod is kept in the proportion
+/// `exp(-2 * zeta * w0 * h)`, and the part along the rod is left alone,
+/// because that part is the rod's own to cancel.
+///
+/// Returned unchanged, bit for bit, for a link with no spring or a rod with no
+/// direction, so an unsprung chain reads back the velocity it always did.
+///
+/// A retain rather than a force term, and so it needs no saturation of its
+/// own: the factor is in `[0, 1)` for every stiffness and every step, and goes
+/// to zero — the whole cross-rod velocity shed in that step — where an
+/// explicit `-2 * zeta * w0 * v` would have overshot and flipped it. The two
+/// forms measure the same period at 1 Hz to within a thousandth.
+fn damp_bend(vel: Vec2, rod: Vec2, stiffness: f32, h: f32) -> Vec2 {
+    if stiffness.is_nan() || stiffness <= 0.0 || rod.length_squared() <= 1e-12 {
+        return vel;
+    }
+    let dir = rod.normalize();
+    let along = dir * vel.dot(dir);
+    let w0 = std::f32::consts::TAU * stiffness;
+    let damped = along + (vel - along) * (-2.0 * BEND_SPRING_DAMPING_RATIO * w0 * h).exp();
+    if damped.is_finite() {
+        damped
+    } else {
+        vel
     }
 }
 
@@ -1265,6 +1627,10 @@ mod tests {
         assert!(soft.max_substep() > 1.0 / 60.0);
     }
 
+    /// Straight down in the physics frame: what an upright node's chain gets
+    /// handed, and what every chain assumed before a node could tilt one.
+    const DOWN: Vec2 = Vec2::new(0.0, 1.0);
+
     /// Three links of unequal length, so a bug that only holds for a uniform
     /// chain shows up.
     fn chain(damping: f32) -> ParticleChainData {
@@ -1283,7 +1649,7 @@ mod tests {
     fn a_hanging_chain_stays_hanging() {
         let mut c = chain(0.5);
         for _ in 0..300 {
-            c.tick(Vec2::ZERO, 1.0 / 60.0);
+            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
         }
         let mut rest = Vec2::ZERO;
         for i in 0..c.particles.len() {
@@ -1303,14 +1669,14 @@ mod tests {
     #[test]
     fn a_sideways_kick_reaches_the_tip_after_the_root() {
         let mut c = chain(0.5);
-        c.tick(Vec2::ZERO, 1.0 / 60.0);
+        c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
         let tip = c.particles.len() - 1;
         let kicked = Vec2::new(40.0, 0.0);
 
         let (mut root_peak, mut root_at) = (0.0f32, 0usize);
         let (mut tip_peak, mut tip_at) = (0.0f32, 0usize);
         for f in 0..600 {
-            c.tick(kicked, 1.0 / 60.0);
+            c.tick(kicked, DOWN, 1.0 / 60.0);
             let root = c.particles[1].vel.x.abs();
             if root > root_peak {
                 root_peak = root;
@@ -1341,7 +1707,7 @@ mod tests {
         let mut c = chain(0.1);
         for f in 0..300 {
             let t = f as f32 / 60.0;
-            c.tick(Vec2::new(60.0 * (t * 3.0).sin(), 0.0), 1.0 / 60.0);
+            c.tick(Vec2::new(60.0 * (t * 3.0).sin(), 0.0), DOWN, 1.0 / 60.0);
             for i in 0..c.links.len() {
                 let rod = c.particles[i + 1].pos.distance(c.particles[i].pos);
                 assert!(
@@ -1360,13 +1726,13 @@ mod tests {
         assert_eq!(steps, 4, "the split this test hand-runs");
 
         let mut whole = chain(0.4);
-        whole.settle_to_rest(Vec2::ZERO);
+        whole.settle_to_rest(Vec2::ZERO, DOWN);
         let mut split = whole.clone();
 
         let anchor = Vec2::new(40.0, 0.0);
-        whole.tick(anchor, dt);
+        whole.tick(anchor, DOWN, dt);
         for _ in 0..steps {
-            split.tick(anchor, dt / steps as f32);
+            split.tick(anchor, DOWN, dt / steps as f32);
         }
 
         // The substep is the same size either way, so this is exact; the
@@ -1385,15 +1751,15 @@ mod tests {
     #[test]
     fn the_chain_lands_in_one_place_at_two_frame_rates() {
         let mut sixty = chain(0.4);
-        sixty.settle_to_rest(Vec2::ZERO);
+        sixty.settle_to_rest(Vec2::ZERO, DOWN);
         let mut one_forty_four = sixty.clone();
 
         let anchor = Vec2::new(40.0, 0.0);
         for _ in 0..60 {
-            sixty.tick(anchor, 1.0 / 60.0);
+            sixty.tick(anchor, DOWN, 1.0 / 60.0);
         }
         for _ in 0..144 {
-            one_forty_four.tick(anchor, 1.0 / 144.0);
+            one_forty_four.tick(anchor, DOWN, 1.0 / 144.0);
         }
 
         let total: f32 = sixty.links.iter().map(|l| l.length).sum();
@@ -1410,7 +1776,7 @@ mod tests {
     #[test]
     fn link_bends_reads_zero_hanging_and_a_quarter_turn_at_a_bent_joint() {
         let mut c = chain(0.5);
-        c.settle_to_rest(Vec2::ZERO);
+        c.settle_to_rest(Vec2::ZERO, DOWN);
         let mut bends = Vec::new();
 
         c.link_bends(Mat4::IDENTITY, &mut bends);
@@ -1437,6 +1803,294 @@ mod tests {
             bends[2].abs() < 1e-6,
             "link 2 is parallel to link 1: {}",
             bends[2],
+        );
+    }
+
+    /// One link, no weight and no drag of its own, so the bend spring is the
+    /// only thing acting on it. `stiffness` is a frequency in Hz, and this is
+    /// what says so: 1 Hz has to ring once a second.
+    ///
+    /// **The frequency a link names is the undamped one**, and the ring lands
+    /// a few percent under it. The solver's own discretisation accounts for
+    /// most of that — a 1 Hz spring measures 0.973 s with no damping at all —
+    /// and [`BEND_SPRING_DAMPING_RATIO`] takes it to 0.968. The 5% here is
+    /// sized to hold both while still failing anything that has the frequency
+    /// wrong.
+    #[test]
+    fn a_weightless_sprung_link_rings_at_its_own_frequency() {
+        let mut c = ParticleChainData::new(vec![ChainLink {
+            length: 60.0,
+            gravity_scale: 0.0,
+            damping: 0.0,
+            time_scale: 1.0,
+            stiffness: 1.0,
+        }]);
+        c.settle_to_rest(Vec2::ZERO, DOWN);
+        // A small bend, so the small-angle period the frequency names is the
+        // one being measured.
+        c.particles[1].pos = rotate_by(Vec2::new(0.0, c.links[0].length), 0.05);
+
+        let mut bends = Vec::new();
+        let mut crossings: Vec<f32> = Vec::new();
+        let mut previous = 0.05f32;
+        for f in 0..600 {
+            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+            c.link_bends(Mat4::IDENTITY, &mut bends);
+            let bend = bends[0];
+            if (bend > 0.0) != (previous > 0.0) {
+                // Where the sign flipped, to the frame.
+                let t = (f as f32 - previous / (bend - previous)) / 60.0;
+                crossings.push(t);
+            }
+            previous = bend;
+        }
+
+        assert!(
+            crossings.len() >= 4,
+            "1 Hz over ten seconds crosses zero many times, got {}",
+            crossings.len(),
+        );
+        let half_turns = (crossings.len() - 1) as f32;
+        let last = crossings[crossings.len() - 1];
+        let period = 2.0 * (last - crossings[0]) / half_turns;
+        assert!(
+            (period - 1.0).abs() < 0.05,
+            "1 Hz means a 1 s period, measured {period} s",
+        );
+    }
+
+    /// The same link with damping on it stops, rather than ringing forever:
+    /// the one existing velocity damping is what the spring is damped by, and
+    /// there is no second knob for it.
+    #[test]
+    fn a_damped_sprung_link_returns_to_rest() {
+        let mut c = ParticleChainData::new(vec![ChainLink {
+            length: 60.0,
+            gravity_scale: 0.0,
+            damping: 0.6,
+            time_scale: 1.0,
+            stiffness: 1.0,
+        }]);
+        c.settle_to_rest(Vec2::ZERO, DOWN);
+        c.particles[1].pos = rotate_by(Vec2::new(0.0, c.links[0].length), 0.4);
+
+        // Forty seconds: the spring here is barely damped at all, and the
+        // point is that it does stop, not how soon.
+        for _ in 0..2400 {
+            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+        }
+        assert!(
+            c.is_at_rest(1e-6),
+            "a damped spring winds down to its rest pose, ended at {:?}",
+            c.particles,
+        );
+    }
+
+    /// A stiffness far past what the step can resolve, on a link whose clock
+    /// runs four times as fast, so the substep is four times too coarse for
+    /// it. The spring saturates instead of exploding: every number stays
+    /// finite and the chain still ends up at rest.
+    #[test]
+    fn an_unresolvable_stiffness_saturates_instead_of_exploding() {
+        let mut c = ParticleChainData::new(vec![
+            ChainLink {
+                length: 60.0,
+                gravity_scale: 1.0,
+                damping: 0.5,
+                time_scale: 4.0,
+                stiffness: 1e6,
+            };
+            3
+        ]);
+        c.gravity = 980.0;
+        c.settle_to_rest(Vec2::ZERO, DOWN);
+        c.particles[1].pos = rotate_by(Vec2::new(0.0, 60.0), 0.6);
+        c.particles[2].pos = c.particles[1].pos + Vec2::new(60.0, 0.0);
+        c.particles[3].pos = c.particles[2].pos + Vec2::new(0.0, -60.0);
+
+        for f in 0..1200 {
+            c.tick(Vec2::ZERO, DOWN, 1.0 / 60.0);
+            for (i, p) in c.particles.iter().enumerate() {
+                assert!(
+                    p.pos.is_finite() && p.vel.is_finite(),
+                    "frame {f} particle {i} left the numbers: {p:?}",
+                );
+            }
+        }
+        assert!(
+            c.is_at_rest(1e-6),
+            "the saturated spring still settles, ended at {:?}",
+            c.particles,
+        );
+    }
+
+    /// **A strand of equal links must not ring itself.** Every link is an
+    /// oscillator driven by the link above it at the very same frequency, so
+    /// before [`BEND_SPRING_DAMPING_RATIO`] existed these four were still
+    /// doing 574 px/s three minutes after one kick, and never stopped. It is
+    /// the equal frequencies that do it: staggering the same four at 8, 6, 4
+    /// and 2 Hz settled them in seventeen seconds without any damping floor
+    /// at all.
+    #[test]
+    fn a_strand_of_equal_links_does_not_ring_itself() {
+        let tilted = rotate_by(DOWN, 0.9);
+        let mut c = ParticleChainData::new(vec![
+            ChainLink {
+                length: 60.0,
+                gravity_scale: 1.0,
+                damping: 0.5,
+                time_scale: 1.0,
+                stiffness: 8.0,
+            };
+            4
+        ]);
+        c.gravity = 980.0;
+        c.settle_to_rest(Vec2::ZERO, tilted);
+        for particle in c.particles.iter_mut().skip(1) {
+            particle.pos += Vec2::new(5.0, -2.0);
+        }
+
+        let mut quiet_at = None;
+        for f in 0..600 {
+            c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+            for (i, particle) in c.particles.iter().enumerate() {
+                assert!(
+                    particle.pos.is_finite() && particle.vel.is_finite(),
+                    "frame {f} particle {i} left the numbers: {particle:?}",
+                );
+            }
+            if quiet_at.is_none() && c.is_at_rest(1e-6) {
+                quiet_at = Some(f);
+            }
+        }
+        let quiet_at = quiet_at.expect("four equal 8 Hz links stop within ten seconds");
+        assert!(
+            quiet_at < 600,
+            "settled at frame {quiet_at}, which is inside the ten seconds",
+        );
+    }
+
+    /// A sprung chain that has *relaxed* into rest reads as at rest, not just
+    /// one that was placed there. This is the case the analytic-pose
+    /// comparison used to fail: these chains stop a few thousandths of a
+    /// pixel from where `settle_to_rest` puts them, so a test against that
+    /// pose called them moving forever.
+    #[test]
+    fn a_kicked_sprung_chain_reads_as_at_rest_once_it_stops() {
+        for (links, stiffness, damping) in [
+            (1usize, 4.0f32, 0.5f32),
+            (2, 3.0, 0.5),
+            (2, 4.0, 0.5),
+            (3, 4.0, 0.5),
+            (3, 2.0, 0.3),
+        ] {
+            let tilted = rotate_by(DOWN, 0.5);
+            let mut c = ParticleChainData::new(vec![
+                ChainLink {
+                    length: 60.0,
+                    gravity_scale: 1.0,
+                    damping,
+                    time_scale: 1.0,
+                    stiffness,
+                };
+                links
+            ]);
+            c.gravity = 980.0;
+            c.settle_to_rest(Vec2::ZERO, tilted);
+            for particle in c.particles.iter_mut().skip(1) {
+                particle.pos += Vec2::new(5.0, -2.0);
+            }
+            assert!(
+                !c.is_at_rest(1e-6) || {
+                    c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+                    !c.is_at_rest(1e-6)
+                },
+                "{links}x{stiffness}Hz: a displaced chain is about to move",
+            );
+
+            // Two minutes, which is far longer than any of these take; the
+            // point is that they stop at all, not how soon.
+            for _ in 0..7200 {
+                c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+            }
+            let before: Vec<Vec2> = c.particles.iter().map(|p| p.pos).collect();
+            for _ in 0..120 {
+                c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+            }
+            for (i, was) in before.iter().enumerate() {
+                assert_eq!(
+                    c.particles[i].pos, *was,
+                    "{links}x{stiffness}Hz: particle {i} is still moving",
+                );
+            }
+            assert!(
+                c.is_at_rest(1e-6),
+                "{links}x{stiffness}Hz: a chain that has stopped reads as at rest, \
+                 velocities {:?}",
+                c.particles.iter().map(|p| p.vel).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// [`ParticleChainData::settle_to_rest`] claims to be the solver's own
+    /// equilibrium and not merely near it, so stepping a settled chain has to
+    /// leave it exactly where it is — under a tilted down, where the spring
+    /// and gravity pull different ways and the pose is nothing like a
+    /// straight hang, and with real weight on every link, which is the case
+    /// the rod projection's rounding used to turn into a permanent wobble.
+    ///
+    /// Three links, because the wobble compounded down a chain: each link
+    /// read its parent's jitter as a bend and answered it with `w0^2 *
+    /// length` of spring.
+    #[test]
+    fn a_settled_sprung_chain_is_a_fixed_point_of_the_step() {
+        let tilted = rotate_by(DOWN, 0.5);
+        let mut c = ParticleChainData::new(vec![
+            ChainLink {
+                length: 60.0,
+                gravity_scale: 1.0,
+                damping: 0.5,
+                time_scale: 1.0,
+                stiffness: 4.0,
+            };
+            3
+        ]);
+        c.gravity = 980.0;
+        c.settle_to_rest(Vec2::ZERO, tilted);
+        let settled: Vec<Vec2> = c.particles.iter().map(|p| p.pos).collect();
+
+        // The pose is a real compromise between the two pulls and not either
+        // one of them: a spring this stiff wins, but gravity still shows.
+        let first = (c.particles[1].pos - c.particles[0].pos).normalize();
+        assert!(
+            first.distance(tilted) > 1e-3 && first.distance(DOWN) > 1e-3,
+            "the first link balances the node's down against gravity, got {first}",
+        );
+
+        let mut worst = 0.0f32;
+        for _ in 0..200 {
+            c.tick(Vec2::ZERO, tilted, 1.0 / 60.0);
+            for (i, was) in settled.iter().enumerate() {
+                worst = worst.max(c.particles[i].pos.distance(*was));
+            }
+        }
+        // `SETTLE_EPS_SQ`, the crate's one notion of settled, squares 1e-3 —
+        // but there is nothing to spend it on: the pose does not move at all.
+        assert!(
+            worst < 1e-3,
+            "the settled pose drifted by {worst} px over 200 frames",
+        );
+        for (i, particle) in c.particles.iter().enumerate() {
+            assert_eq!(
+                particle.vel,
+                Vec2::ZERO,
+                "particle {i} carries a velocity at rest: {:?}",
+                particle.vel,
+            );
+        }
+        assert!(
+            c.is_at_rest(1e-6),
+            "and the chain reads as at rest, so a viewport over it may idle",
         );
     }
 }

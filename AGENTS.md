@@ -131,7 +131,8 @@ that enforces them, not here. Add new ones there.
   hot loops never look up
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translate_children`
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down
-  frame, the chain's position-based form and what a link bend's sign means
+  frame, the chain's position-based form, what a link bend's sign means and
+  what a link's bend spring pulls toward
 - `crates/catchlight-core/src/interpolate.rs` — how a binding's grid is read
 - `crates/catchlight-core/src/texture.rs` — the whole texture strategy: decode,
   premultiply, alpha crop, the UV crop it hands back

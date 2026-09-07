@@ -191,6 +191,7 @@ fn a_chain_reads_back_as_what_was_added() {
                     gravity_scale: Some(0.5),
                     damping: Some(0.25),
                     time_scale: Some(2.0),
+                    stiffness: Some(3.0),
                 },
                 // Every field absent: the editor's own defaults, which the
                 // wire deliberately does not restate.
@@ -223,6 +224,7 @@ fn a_chain_reads_back_as_what_was_added() {
                     gravity_scale: Some(0.5),
                     damping: Some(0.25),
                     time_scale: Some(2.0),
+                    stiffness: Some(3.0),
                 },
                 // The defaults, filled in: a reply names every field, so the
                 // list travels straight back through `chain_set`. Compared
@@ -308,6 +310,7 @@ fn an_omitted_knob_is_the_cores_own_default() {
         assert_eq!(link.damping, Some(ChainLink::default().damping));
         assert_eq!(link.time_scale, Some(ChainLink::default().time_scale));
         assert_eq!(link.gravity_scale, Some(ChainLink::default().gravity_scale));
+        assert_eq!(link.stiffness, Some(ChainLink::default().stiffness));
     }
 }
 
@@ -672,6 +675,86 @@ fn a_refit_reuses_the_params_and_names_what_it_replaced() {
     assert_eq!(held.links.len(), 5);
     let total: f32 = held.links.iter().map(|l| l.length.unwrap()).sum();
     assert!(close(total, 100.0), "five links still divide the strip");
+}
+
+/// A re-fit measures a strand and sets each link's length from it. Every
+/// other knob is what a rigger tuned by hand, so a re-fit leaves it alone —
+/// the bend spring included, which is the one a re-fit would be most annoying
+/// to lose.
+#[test]
+fn a_refit_keeps_the_feel_a_rigger_tuned() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let part = strip(&ed, session, "Hair", &node("root"));
+    let chain = match body(
+        &ed,
+        200,
+        Command::ChainFit {
+            session,
+            part: part.clone(),
+            links: 3,
+            axis: None,
+            on: None,
+            chain: None,
+            node: None,
+        },
+    ) {
+        ResponseBody::ChainFit { node, .. } => node,
+        other => panic!("{other:?}"),
+    };
+
+    // Tune the strand: stiffer toward the root, and a slower clock all over.
+    let mut links = info(&ed, session, &chain).chain.unwrap().links;
+    for (i, link) in links.iter_mut().enumerate() {
+        link.stiffness = Some(6.0 - i as f32);
+        link.time_scale = Some(0.5);
+    }
+    body(
+        &ed,
+        201,
+        Command::ChainSet {
+            session,
+            node: chain.clone(),
+            links: Some(links),
+            local_only: None,
+            gravity: None,
+            outputs: None,
+        },
+    );
+
+    // Re-fit at a different link count: the lengths are the fit's, everything
+    // else is the rigger's, and a link past the old end starts from the
+    // core's defaults rather than from nothing.
+    body(
+        &ed,
+        202,
+        Command::ChainFit {
+            session,
+            part,
+            links: 4,
+            axis: None,
+            on: None,
+            chain: Some(chain.clone()),
+            node: None,
+        },
+    );
+    let held = info(&ed, session, &chain).chain.unwrap();
+    assert_eq!(held.links.len(), 4);
+    let total: f32 = held.links.iter().map(|l| l.length.unwrap()).sum();
+    assert!(close(total, 100.0), "four links divide the strip: {total}");
+    for (i, link) in held.links.iter().take(3).enumerate() {
+        assert!(
+            close(link.stiffness.unwrap(), 6.0 - i as f32),
+            "link {i} kept its spring: {:?}",
+            link.stiffness,
+        );
+        assert!(close(link.time_scale.unwrap(), 0.5));
+    }
+    assert_eq!(
+        held.links[3].stiffness,
+        Some(ChainLink::default().stiffness),
+        "the link the re-fit added is a default one",
+    );
 }
 
 /// The strip's geometry again, on a mesh group placed so the art lands in

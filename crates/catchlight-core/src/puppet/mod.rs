@@ -63,10 +63,12 @@
 //!   survives, because the commit that ends a drag *is* a model edit and the
 //!   preview has to outlive it.
 //! - **A tick reports self-driven motion only.** [`Puppet::tick`] returns
-//!   [`Motion`]: a driver away from the rest pose `settle_physics` places
-//!   (`SimplePhysicsData::is_at_rest` / `ParticleChainData::is_at_rest` at
-//!   `SETTLE_EPS_SQ`, the same epsilon `settle_physics` converges on), or an
-//!   animation lane that wrote a param.
+//!   [`Motion`]: a pendulum away from the rest pose `settle_physics` places,
+//!   a chain still moving, or an animation lane that wrote a param. Both
+//!   drivers answer `is_at_rest` at `SETTLE_EPS_SQ`, the same epsilon
+//!   `settle_physics` converges on; they differ in what they measure,
+//!   because a sprung chain's arithmetic settles a hair off the pose it
+//!   settles toward and it is stillness a caller is really asking about.
 //!   A pose, scratch or model change is deliberately not motion — the caller
 //!   made it and already knows to redraw. `Motion` is not `#[must_use]`: most
 //!   callers tick for the frame, not for the answer.
@@ -1274,13 +1276,17 @@ impl Puppet {
             return false;
         };
         if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
-            let anchor = chain.anchor;
-            chain.settle_to_rest(anchor);
+            let (anchor, down) = (chain.anchor, chain.down);
+            chain.settle_to_rest(anchor, down);
         }
         for particle in chain.particles.iter_mut().skip(1) {
             particle.pos += offset;
             particle.vel = Vec2::ZERO;
         }
+        // The velocities are zero but the chain is off its rest pose, so it
+        // is about to move: a kick is a move, and `is_at_rest` has to say so
+        // before the next tick has run.
+        chain.moved_last_tick = offset != Vec2::ZERO;
         true
     }
 
@@ -1307,8 +1313,11 @@ impl Puppet {
             let Some(anchor) = self.arena.physics_anchor(transforms, id) else {
                 continue;
             };
+            let Some(down) = self.arena.chain_down(transforms, id) else {
+                continue;
+            };
             if let Some(NodeKind::ParticleChain(c)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
-                c.tick(anchor, dt);
+                c.tick(anchor, down, dt);
             }
         }
         self.write_driver_param_outputs(transforms)
@@ -1512,14 +1521,22 @@ impl Puppet {
                 let Some(anchor) = self.arena.physics_anchor(&transforms, id) else {
                     continue;
                 };
+                let Some(down) = self.arena.chain_down(&transforms, id) else {
+                    continue;
+                };
                 if let Some(NodeKind::ParticleChain(c)) =
                     self.arena.get_mut(id).map(|n| &mut n.kind)
                 {
-                    if !c.anchor_initialized || (c.anchor - anchor).length_squared() > SETTLE_EPS_SQ
+                    // A turned node is as much a move as a shifted one: it
+                    // points the first link's bend zero somewhere else, so
+                    // the rest pose this pass computes is a different one.
+                    if !c.anchor_initialized
+                        || (c.anchor - anchor).length_squared() > SETTLE_EPS_SQ
+                        || (c.down - down).length_squared() > SETTLE_EPS_SQ
                     {
                         moved = true;
                     }
-                    c.settle_to_rest(anchor);
+                    c.settle_to_rest(anchor, down);
                 }
             }
             self.write_driver_param_outputs(&transforms);

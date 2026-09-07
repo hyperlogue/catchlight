@@ -32,6 +32,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 const DT: f32 = 1.0 / 60.0;
+/// The chain scenarios hang off an upright node, so bend zero of their first
+/// link is gravity's own direction.
+const DOWN: Vec2 = Vec2::new(0.0, 1.0);
 const FRAMES: usize = 300;
 const SAMPLE_EVERY: usize = 5;
 // Per-sample absolute tolerance on the mapped param output. Cross-arch f32
@@ -183,13 +186,41 @@ fn chain_perturbed() -> Vec<Vec<f32>> {
     );
     // Named folded, the way the drivers above name theirs.
     chain.gravity = 980.0;
-    chain.settle_to_rest(Vec2::ZERO);
+    chain.settle_to_rest(Vec2::ZERO, DOWN);
+    yank(chain)
+}
 
+/// A two-link chain with a bend spring on both joints, yanked the same way.
+/// The spring is the one force in the solver that reads a *direction* rather
+/// than only a position, so without a scenario carrying stiffness the whole
+/// of it — the tangential term, its saturation, the rest direction walking
+/// root to tip — is outside the fingerprint. Three hertz is stiff enough to
+/// dominate the swing and slack enough that the 240 Hz step resolves it, so
+/// the curve is the spring's and not the saturation's.
+fn chain_stiff() -> Vec<Vec<f32>> {
+    let mut chain = ParticleChainData::new(
+        [60.0f32, 50.0]
+            .map(|length| ChainLink {
+                length,
+                damping: 0.3,
+                stiffness: 3.0,
+                ..Default::default()
+            })
+            .to_vec(),
+    );
+    chain.gravity = 980.0;
+    chain.settle_to_rest(Vec2::ZERO, DOWN);
+    yank(chain)
+}
+
+/// Step a settled chain for the run with its anchor held 40 px off to one
+/// side, recording every link's bend at the shared cadence.
+fn yank(mut chain: ParticleChainData) -> Vec<Vec<f32>> {
     let anchor = Vec2::new(40.0, 0.0);
     let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
     let mut bends = Vec::new();
     for f in 0..FRAMES {
-        chain.tick(anchor, DT);
+        chain.tick(anchor, DOWN, DT);
         if f % SAMPLE_EVERY == 0 {
             chain.link_bends(Mat4::IDENTITY, &mut bends);
             samples.push(bends.clone());
@@ -243,6 +274,7 @@ fn current_trajectories() -> BTreeMap<String, Vec<Vec<f32>>> {
         );
     }
     m.insert("chain_perturbed".to_string(), chain_perturbed());
+    m.insert("chain_stiff".to_string(), chain_stiff());
     m
 }
 

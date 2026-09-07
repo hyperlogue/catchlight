@@ -2494,8 +2494,9 @@ fn chain_fit(
         }
     }
 
-    // Each link's length comes from the fit; the rest of its feel survives a
-    // re-fit, because damping and time scale are what a rigger tuned by hand.
+    // Each link's length comes from the fit; every other knob on the link
+    // survives a re-fit, because the feel of a strand is what a rigger tuned
+    // by hand and the fit only ever knew where the strand runs.
     let fitted: Vec<ChainLink> = (0..count)
         .map(|i| ChainLink {
             length: fit.lengths[i],
