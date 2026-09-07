@@ -21,9 +21,10 @@
 //! - **The renderer owns the frame and its submit.** [`WgpuRenderer::frame`]
 //!   makes the encoder, [`Frame::render`] / [`Frame::render_ext`] records the
 //!   frame into it and hands back a [`Recorded`], and [`Recorded::submit`] is
-//!   the only exit that submits — so one frame is one submit, and a
-//!   `Recorded` dropped instead draws nothing and warns. A caller with more
-//!   to record puts it in [`Recorded::encoder`] first. The exception is
+//!   the only exit that submits — so one frame is one submit. A `Recorded`
+//!   dropped instead draws nothing: it is `#[must_use]`, and a drop that
+//!   still holds the encoder warns. A caller with more to record puts it in
+//!   [`Recorded::encoder`] first. The exception is
 //!   [`WgpuRenderer::render_into`], the borrowed-encoder path for a host that
 //!   owns the submit itself; the only other `queue.submit` in here is
 //!   `generate_mips`, at texture-upload time.
@@ -5701,6 +5702,7 @@ impl WgpuRenderer {
 /// Recording is the one thing a `Frame` does, and it does it once:
 /// [`Self::render`] / [`Self::render_ext`] take `self` by value and hand back
 /// a [`Recorded`]. A frame that errs is consumed with nothing submitted.
+#[must_use = "a frame draws nothing until render() records it"]
 pub struct Frame<'r> {
     renderer: &'r mut WgpuRenderer,
     encoder: wgpu::CommandEncoder,
@@ -5781,6 +5783,7 @@ impl<'r> Frame<'r> {
 /// already recorded. What a caller may still add is its own work —
 /// a readback copy, a UI pass, a blit — through [`Self::encoder`], before
 /// [`Self::submit`] closes the frame.
+#[must_use = "a recorded frame reaches the queue only through submit()"]
 pub struct Recorded<'r> {
     renderer: &'r mut WgpuRenderer,
     /// Taken by [`Self::submit`], which is how `Drop` tells a dropped frame

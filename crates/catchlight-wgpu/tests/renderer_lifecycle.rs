@@ -848,6 +848,7 @@ fn a_dropped_frame_never_reaches_the_queue() {
     let submits = stage.submits;
 
     // The same frame again, over a red clear, dropped instead of submitted.
+    // The binding is what silences `#[must_use]`; the drop is the point.
     let list = scene.frame(&mut renderer, 0.0);
     {
         let _dropped = renderer
