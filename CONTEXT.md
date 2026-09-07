@@ -4,6 +4,15 @@ Catchlight is a software stack for 2.5D character animation: a character is a
 tree of nodes whose textured 2D meshes are deformed and stacked in depth to
 suggest 3D movement.
 
+Two different things in this codebase are called the reference. **The
+reference** is inochi2d and nijilive: catchlight reads their models and
+matches their rendering semantics, so a comment saying a rule matches the
+reference is naming behaviour catchlight had to reproduce, not a rule it
+chose. [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) says where that
+reaches. **The reference model** is the private rig at
+`example_models/reference/`; no such rig ships here, so the tests that need
+one are ignored.
+
 ## Language
 
 ### The model
@@ -124,6 +133,7 @@ _Avoid_: seam, vertex ref
 A pairing of two parts, slot by slot: each pair names a slot on each side and
 a weight. Each pair of vertices is pulled toward a shared point after all
 other deformation, so the join stays closed. One weld per pair of parts.
+_Avoid_: glue
 
 ### Params and posing
 
