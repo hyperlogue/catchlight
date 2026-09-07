@@ -22,8 +22,9 @@
 //!   it stays an opaque `u64` the server allocates.
 //!
 //! - **An add may name the Id it makes**, under the same word the reply names
-//!   it back with: `node` on [`Command::NodeAdd`] and [`Command::PhysicsAdd`],
-//!   `param` on [`Command::ParamAdd`], `texture` on [`Command::TextureAdd`],
+//!   it back with: `node` on [`Command::NodeAdd`], [`Command::PhysicsAdd`],
+//!   [`Command::ChainAdd`] and [`Command::ChainFit`], `param` on
+//!   [`Command::ParamAdd`], `texture` on [`Command::TextureAdd`],
 //!   `slot` on [`Command::SlotAdd`]. Absent, the editor draws a free
 //!   one; present, it is refused as [`ErrorCode::DuplicateId`] if the model
 //!   already carries it. Either way the reply says which Id was made. So a
@@ -671,6 +672,93 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node: Option<NodeId>,
     },
+    /// Add a particle chain node.
+    ///
+    /// The chain is `links` links long and drives one param per link, in link
+    /// order; [`Command::ChainFit`] is the one call that makes the params and
+    /// the art's bindings as well. Empty `links` is refused — a chain of no
+    /// links has no bend to read out.
+    ChainAdd {
+        session: SessionId,
+        parent: NodeId,
+        #[serde(default)]
+        name: Option<String>,
+        /// Root to tip. Each link's absent fields are the editor's own
+        /// defaults; see [`ChainLinkArg`].
+        links: Vec<ChainLinkArg>,
+        #[serde(default)]
+        local_only: Option<bool>,
+        #[serde(default)]
+        gravity: Option<f32>,
+        /// One param per link, in link order, `None` where a link drives
+        /// nothing. Absent binds none; present, it must be exactly as long as
+        /// `links`.
+        #[serde(default)]
+        outputs: Option<Vec<Option<ParamId>>>,
+        /// The Id to create it under. Absent generates one; an Id the model
+        /// already carries is [`ErrorCode::DuplicateId`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<NodeId>,
+    },
+    /// Change fields on a particle chain node; absent = unchanged.
+    ///
+    /// `links` and `outputs` in one command apply in that order, so `outputs`
+    /// is measured against the length `links` just set rather than the one it
+    /// replaced.
+    ChainSet {
+        session: SessionId,
+        node: NodeId,
+        /// The whole chain, root to tip. Outputs follow the new length: a
+        /// link past the new end loses its param, a new link arrives driving
+        /// nothing.
+        #[serde(default)]
+        links: Option<Vec<ChainLinkArg>>,
+        #[serde(default)]
+        local_only: Option<bool>,
+        #[serde(default)]
+        gravity: Option<f32>,
+        /// One param per link, exactly as long as the chain is after `links`
+        /// is applied.
+        #[serde(default)]
+        outputs: Option<Vec<Option<ParamId>>>,
+    },
+    /// Rig a strand of art to a particle chain in one edit: the params, the
+    /// chain, and the deform bindings that bend the art.
+    ///
+    /// The editor measures the strand, because measuring it is reading the
+    /// part's rest mesh and deciding where each link's joint falls — the same
+    /// reason [`Command::MeshAuto`] traces here rather than in a client. What
+    /// it authors is ordinary: params a [`Command::ParamSet`] can retune,
+    /// deform bindings a rigger can open and edit by hand, and a chain
+    /// [`Command::ChainSet`] can reshape.
+    ///
+    /// Re-runnable: naming `chain` fits the same strand again, keeping that
+    /// chain's params and replacing the bindings below them.
+    ChainFit {
+        session: SessionId,
+        /// The part whose rest mesh is measured. The fit reads its vertices
+        /// and nothing else — no pose, no key form, no binding.
+        part: NodeId,
+        /// How many links to divide the art into. Zero is refused.
+        links: u32,
+        /// The direction the strand hangs, in the part's own frame. Absent is
+        /// straight down; the vector is normalised, and one too short to
+        /// normalise is refused.
+        #[serde(default)]
+        axis: Option<[f32; 2]>,
+        /// The meshed node the deform bindings are written on. Absent is
+        /// `part` itself.
+        #[serde(default)]
+        on: Option<NodeId>,
+        /// An existing particle chain to re-fit instead of making one. Its
+        /// output params are kept and its links resized.
+        #[serde(default)]
+        chain: Option<NodeId>,
+        /// The Id to create the chain under, when one is being created.
+        /// Ignored when `chain` names one that already exists.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<NodeId>,
+    },
     Undo {
         session: SessionId,
     },
@@ -911,6 +999,9 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("weld_weight", CommandKind::Edit),
     ("weld_delete", CommandKind::Edit),
     ("physics_add", CommandKind::Edit),
+    ("chain_add", CommandKind::Edit),
+    ("chain_set", CommandKind::Edit),
+    ("chain_fit", CommandKind::Edit),
     ("undo", CommandKind::Edit),
     ("redo", CommandKind::Edit),
     ("presence_set", CommandKind::Presence),
@@ -1092,6 +1183,9 @@ impl Command {
             Command::WeldSet { .. } => "weld_set",
             Command::WeldDelete { .. } => "weld_delete",
             Command::PhysicsAdd { .. } => "physics_add",
+            Command::ChainAdd { .. } => "chain_add",
+            Command::ChainSet { .. } => "chain_set",
+            Command::ChainFit { .. } => "chain_fit",
             Command::Undo { .. } => "undo",
             Command::Redo { .. } => "redo",
             Command::PresenceSet { .. } => "presence_set",
@@ -1222,6 +1316,9 @@ impl Command {
             | Command::WeldSet { session, .. }
             | Command::WeldDelete { session, .. }
             | Command::PhysicsAdd { session, .. }
+            | Command::ChainAdd { session, .. }
+            | Command::ChainSet { session, .. }
+            | Command::ChainFit { session, .. }
             | Command::Undo { session }
             | Command::Redo { session }
             | Command::PresenceSet { session, .. }
@@ -1297,6 +1394,60 @@ pub struct PhysicsTargets {
     /// The param the driver's second output writes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<ParamId>,
+}
+
+/// One link of a particle chain, as a command names it and a reply reports
+/// it.
+///
+/// **Every field is optional, and none of the defaults are written here.**
+/// They live in `catchlight-core` beside the solver that reads them, the way
+/// [`AutoMesh`]'s live in `catchlight-editor-core`, so the wire cannot drift
+/// from what a chain actually does; absent means "what the editor would have
+/// used". `{}` is a link at every default.
+///
+/// A reply fills all four in, so a client can read a chain out of
+/// [`NodeInfo::chain`], change one number, and send the list straight back
+/// through [`Command::ChainSet`].
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ChainLinkArg {
+    /// Fixed length in model pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<f32>,
+    /// Multiplier on the chain's gravity for this link's particle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity_scale: Option<f32>,
+    /// Fraction of velocity shed per second, `0..=1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damping: Option<f32>,
+    /// Multiplier on this link's clock; 1 is real time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_scale: Option<f32>,
+}
+
+impl ChainLinkArg {
+    /// The link the editor makes of this, absent fields at the core's own
+    /// defaults.
+    pub fn to_link(&self) -> catchlight_core::physics::ChainLink {
+        let d = catchlight_core::physics::ChainLink::default();
+        catchlight_core::physics::ChainLink {
+            length: self.length.unwrap_or(d.length),
+            gravity_scale: self.gravity_scale.unwrap_or(d.gravity_scale),
+            damping: self.damping.unwrap_or(d.damping),
+            time_scale: self.time_scale.unwrap_or(d.time_scale),
+        }
+    }
+
+    /// A link the model holds, with every field filled in — what a reply
+    /// carries, and what a client may send straight back.
+    pub fn of(link: &catchlight_core::physics::ChainLink) -> Self {
+        Self {
+            length: Some(link.length),
+            gravity_scale: Some(link.gravity_scale),
+            damping: Some(link.damping),
+            time_scale: Some(link.time_scale),
+        }
+    }
 }
 
 impl BindingParams {
@@ -2290,6 +2441,25 @@ pub enum ResponseBody {
         node: NodeId,
         slots: Vec<SlotId>,
     },
+    /// What a [`Command::ChainFit`] authored.
+    ///
+    /// `replaced` is the [`Emptied`](Self::Emptied) half of this reply: a
+    /// re-fit rewrites the deform binding under each param, and a rigger who
+    /// had hand-edited one has just lost that edit. Naming them is what lets
+    /// a client say so, rather than leaving the loss to be discovered.
+    ChainFit {
+        /// The particle chain, whether this call made it or re-fitted one.
+        node: NodeId,
+        /// The param driving each link, in link order.
+        params: Vec<ParamId>,
+        /// The node the deform bindings were written on — `part` unless the
+        /// command named another.
+        bound: NodeId,
+        /// The params whose deform binding on `bound` already existed and was
+        /// rewritten, in link order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        replaced: Vec<ParamId>,
+    },
     /// Every extension the model carries, in key order.
     Extensions {
         extensions: Vec<ExtensionInfo>,
@@ -2531,6 +2701,13 @@ fn yes() -> bool {
 /// none, which `kind` tells apart from a node that could not have one — a
 /// reply has nothing to undo, so it never carries the `null` a patch spells
 /// "draw none" with.
+///
+/// The two driver kinds carry their settings nested, in [`NodeInfo::physics`]
+/// and [`NodeInfo::chain`], because a driver's fields belong to no
+/// [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::ChainSet`] are what
+/// write them. The round-trip rule is the same one: each nested field carries
+/// the name its own command sets it under, so an inspector reads a value here
+/// and sends it straight back.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NodeInfo {
@@ -2578,6 +2755,47 @@ pub struct NodeInfo {
     pub propagate_meshgroup: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mg_translate_children: Option<bool>,
+    /// A SimplePhysics driver's settings, absent on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physics: Option<PhysicsInfo>,
+    /// A particle chain's settings, absent on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<ChainInfo>,
+}
+
+/// A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
+/// sets them by.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PhysicsInfo {
+    pub kind: PhysicsKind,
+    pub map_mode: PhysicsMapMode,
+    pub local_only: bool,
+    pub gravity: f32,
+    pub length: f32,
+    pub frequency: f32,
+    pub angle_damping: f32,
+    pub length_damping: f32,
+    pub output_scale: [f32; 2],
+    /// The params the driver's two outputs write, in the shape
+    /// [`Command::PhysicsSet`] takes them.
+    pub target_params: PhysicsTargets,
+}
+
+/// A particle chain in full, under the names [`Command::ChainSet`] sets them
+/// by.
+///
+/// `links` and `outputs` are always the same length: a chain reads out as one
+/// bend per link, and a link driving nothing is a `null` in `outputs`. Every
+/// field of every link is filled in, so the whole list travels back through
+/// [`Command::ChainSet`] unchanged.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ChainInfo {
+    pub local_only: bool,
+    pub gravity: f32,
+    pub links: Vec<ChainLinkArg>,
+    pub outputs: Vec<Option<ParamId>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2931,6 +3149,8 @@ mod tests {
             triangle_count: Some(2),
             propagate_meshgroup: None,
             mg_translate_children: None,
+            physics: None,
+            chain: None,
         };
         let line = serde_json::to_string(&info).unwrap();
         let patch: NodePatch = serde_json::from_str(&line).unwrap();
@@ -2965,6 +3185,10 @@ mod tests {
         assert!(!line.contains("mg_translate_children"), "{line}");
         assert_eq!(patch.mg_translate_children, None);
         assert_eq!(patch.propagate_meshgroup, None);
+        // The two driver blocks are absent under the same rule, so a reply
+        // about a part is byte-identical to what it was before they existed.
+        assert!(!line.contains("physics"), "{line}");
+        assert!(!line.contains("chain"), "{line}");
     }
 
     /// A node's Id, kind and parent are not things a patch can set, so they
@@ -2989,6 +3213,8 @@ mod tests {
                 screen_tint: Some([0.0; 3]),
                 mask_threshold: Some(0.5),
                 texture: None,
+                physics: None,
+                chain: None,
                 vertex_count: Some(0),
                 triangle_count: Some(0),
                 propagate_meshgroup: None,

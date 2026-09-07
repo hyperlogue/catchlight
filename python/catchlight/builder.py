@@ -48,6 +48,9 @@ from .protocol_gen import (
     AutoMesh,
     BindingAdd,
     BindingKey,
+    ChainAdd,
+    ChainFit,
+    ChainLinkArg,
     Check,
     CommandNodeInfo,
     DeformVertices,
@@ -62,6 +65,7 @@ from .protocol_gen import (
     ParamInfo,
     ParamKeyInsert,
     ParamList,
+    ResponseBodyChainFit,
     ResponseBodyNode,
     ResponseBodyNodeInfo,
     ResponseBodyParam,
@@ -80,6 +84,13 @@ _KEY_EPSILON = 1e-5
 
 class BuilderError(RuntimeError):
     """The script asked for something the builder cannot turn into commands."""
+
+
+def _links(links: int | Sequence[ChainLinkArg]) -> list[ChainLinkArg]:
+    """A chain's links, whether they were named or only counted."""
+    if isinstance(links, int):
+        return [ChainLinkArg() for _ in range(links)]
+    return list(links)
 
 
 class Builder:
@@ -163,6 +174,84 @@ class Builder:
         if not isinstance(body, ResponseBodyNode):
             raise BuilderError(f"node_add answered {body!r}")
         return body.node
+
+    # -- chains
+
+    def chain(
+        self,
+        parent: NodeId,
+        links: int | Sequence[ChainLinkArg],
+        *,
+        name: str | None = None,
+        local_only: bool | None = None,
+        gravity: float | None = None,
+        outputs: Sequence[ParamId | None] | None = None,
+        node: NodeId | None = None,
+    ) -> NodeId:
+        """Add a particle chain under `parent` and return its Id.
+
+        `links` is either the links themselves or how many of them to make at
+        the editor's own defaults. `outputs` names the param each link's bend
+        is written into, in link order, and has to be exactly as long as the
+        chain — `None` where a link drives nothing. Absent, the chain drives
+        nothing yet; [`Builder.fit_chain`] is what makes the params and the
+        bindings as well.
+        """
+        made = self.client.send(
+            ChainAdd(
+                session=self.session,
+                parent=parent,
+                name=name,
+                links=_links(links),
+                local_only=local_only,
+                gravity=gravity,
+                outputs=None if outputs is None else list(outputs),
+                node=node,
+            )
+        )
+        if not isinstance(made, ResponseBodyNode):
+            raise BuilderError(f"chain_add answered {made!r}")
+        return made.node
+
+    def fit_chain(
+        self,
+        part: NodeId,
+        links: int,
+        *,
+        axis: tuple[float, float] | None = None,
+        on: NodeId | None = None,
+        chain: NodeId | None = None,
+        node: NodeId | None = None,
+    ) -> ResponseBodyChainFit:
+        """Rig `part`'s art to a chain of `links` links, in one edit.
+
+        The editor measures the strand, divides it into links, and authors a
+        bend param per link, a chain hanging at the top of the art, and one
+        cubic deform binding per param. The reply names all of it: the chain,
+        the params in link order, the node the bindings went on, and any
+        binding that was already there and has been rewritten.
+
+        `axis` is the direction the strand hangs in the part's own frame,
+        absent being straight down. `on` moves the bindings to another meshed
+        node, which the editor refuses unless that node's rest frame differs
+        from the part's by a translation only. `chain` re-fits a chain that
+        already exists, keeping its params, and `node` names the Id a chain
+        this call makes is created under.
+        """
+        body = self.client.send(
+            ChainFit(
+                session=self.session,
+                part=part,
+                links=links,
+                axis=axis,
+                on=on,
+                chain=chain,
+                node=node,
+            )
+        )
+        if not isinstance(body, ResponseBodyChainFit):
+            raise BuilderError(f"chain_fit answered {body!r}")
+        return body
 
     # -- params and bindings
 

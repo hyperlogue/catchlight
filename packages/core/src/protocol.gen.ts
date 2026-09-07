@@ -504,6 +504,82 @@ export type Command =
     node?: NodeId | null,
   }
   | {
+    "cmd": "chain_add",
+    session: SessionId,
+    parent: NodeId,
+    name: string | null,
+    /**
+     * Root to tip. Each link's absent fields are the editor's own
+     * defaults; see [`ChainLinkArg`].
+     */
+    links: Array<ChainLinkArg>,
+    local_only: boolean | null,
+    gravity: number | null,
+    /**
+     * One param per link, in link order, `None` where a link drives
+     * nothing. Absent binds none; present, it must be exactly as long as
+     * `links`.
+     */
+    outputs: Array<ParamId | null> | null,
+    /**
+     * The Id to create it under. Absent generates one; an Id the model
+     * already carries is [`ErrorCode::DuplicateId`].
+     */
+    node?: NodeId | null,
+  }
+  | {
+    "cmd": "chain_set",
+    session: SessionId,
+    node: NodeId,
+    /**
+     * The whole chain, root to tip. Outputs follow the new length: a
+     * link past the new end loses its param, a new link arrives driving
+     * nothing.
+     */
+    links: Array<ChainLinkArg> | null,
+    local_only: boolean | null,
+    gravity: number | null,
+    /**
+     * One param per link, exactly as long as the chain is after `links`
+     * is applied.
+     */
+    outputs: Array<ParamId | null> | null,
+  }
+  | {
+    "cmd": "chain_fit",
+    session: SessionId,
+    /**
+     * The part whose rest mesh is measured. The fit reads its vertices
+     * and nothing else — no pose, no key form, no binding.
+     */
+    part: NodeId,
+    /**
+     * How many links to divide the art into. Zero is refused.
+     */
+    links: number,
+    /**
+     * The direction the strand hangs, in the part's own frame. Absent is
+     * straight down; the vector is normalised, and one too short to
+     * normalise is refused.
+     */
+    axis: [number, number] | null,
+    /**
+     * The meshed node the deform bindings are written on. Absent is
+     * `part` itself.
+     */
+    on: NodeId | null,
+    /**
+     * An existing particle chain to re-fit instead of making one. Its
+     * output params are kept and its links resized.
+     */
+    chain: NodeId | null,
+    /**
+     * The Id to create the chain under, when one is being created.
+     * Ignored when `chain` names one that already exists.
+     */
+    node?: NodeId | null,
+  }
+  | {
     "cmd": "undo",
     session: SessionId,
   }
@@ -772,6 +848,39 @@ export type PhysicsTargets = {
    * The param the driver's second output writes.
    */
   length?: ParamId | null,
+};
+
+/**
+ * One link of a particle chain, as a command names it and a reply reports
+ * it.
+ *
+ * **Every field is optional, and none of the defaults are written here.**
+ * They live in `catchlight-core` beside the solver that reads them, the way
+ * [`AutoMesh`]'s live in `catchlight-editor-core`, so the wire cannot drift
+ * from what a chain actually does; absent means "what the editor would have
+ * used". `{}` is a link at every default.
+ *
+ * A reply fills all four in, so a client can read a chain out of
+ * [`NodeInfo::chain`], change one number, and send the list straight back
+ * through [`Command::ChainSet`].
+ */
+export type ChainLinkArg = {
+  /**
+   * Fixed length in model pixels.
+   */
+  length?: number | null,
+  /**
+   * Multiplier on the chain's gravity for this link's particle.
+   */
+  gravity_scale?: number | null,
+  /**
+   * Fraction of velocity shed per second, `0..=1`.
+   */
+  damping?: number | null,
+  /**
+   * Multiplier on this link's clock; 1 is real time.
+   */
+  time_scale?: number | null,
 };
 
 /**
@@ -1186,6 +1295,27 @@ export type ResponseBody =
     slots: Array<SlotId>,
   }
   | {
+    "result": "chain_fit",
+    /**
+     * The particle chain, whether this call made it or re-fitted one.
+     */
+    node: NodeId,
+    /**
+     * The param driving each link, in link order.
+     */
+    params: Array<ParamId>,
+    /**
+     * The node the deform bindings were written on — `part` unless the
+     * command named another.
+     */
+    bound: NodeId,
+    /**
+     * The params whose deform binding on `bound` already existed and was
+     * rewritten, in link order.
+     */
+    replaced?: Array<ParamId>,
+  }
+  | {
     "result": "extensions",
     extensions: Array<ExtensionInfo>,
   }
@@ -1254,6 +1384,13 @@ export type TreeNode = {
  * none, which `kind` tells apart from a node that could not have one — a
  * reply has nothing to undo, so it never carries the `null` a patch spells
  * "draw none" with.
+ *
+ * The two driver kinds carry their settings nested, in [`NodeInfo::physics`]
+ * and [`NodeInfo::chain`], because a driver's fields belong to no
+ * [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::ChainSet`] are what
+ * write them. The round-trip rule is the same one: each nested field carries
+ * the name its own command sets it under, so an inspector reads a value here
+ * and sends it straight back.
  */
 export type NodeInfo = {
   /**
@@ -1305,6 +1442,51 @@ export type NodeInfo = {
    */
   propagate_meshgroup?: boolean | null,
   mg_translate_children?: boolean | null,
+  /**
+   * A SimplePhysics driver's settings, absent on every other kind.
+   */
+  physics?: PhysicsInfo | null,
+  /**
+   * A particle chain's settings, absent on every other kind.
+   */
+  chain?: ChainInfo | null,
+};
+
+/**
+ * A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
+ * sets them by.
+ */
+export type PhysicsInfo = {
+  kind: PhysicsKind,
+  map_mode: PhysicsMapMode,
+  local_only: boolean,
+  gravity: number,
+  length: number,
+  frequency: number,
+  angle_damping: number,
+  length_damping: number,
+  output_scale: [number, number],
+  /**
+   * The params the driver's two outputs write, in the shape
+   * [`Command::PhysicsSet`] takes them.
+   */
+  target_params: PhysicsTargets,
+};
+
+/**
+ * A particle chain in full, under the names [`Command::ChainSet`] sets them
+ * by.
+ *
+ * `links` and `outputs` are always the same length: a chain reads out as one
+ * bend per link, and a link driving nothing is a `null` in `outputs`. Every
+ * field of every link is filled in, so the whole list travels back through
+ * [`Command::ChainSet`] unchanged.
+ */
+export type ChainInfo = {
+  local_only: boolean,
+  gravity: number,
+  links: Array<ChainLinkArg>,
+  outputs: Array<ParamId | null>,
 };
 
 export type TexInfo = {
@@ -1472,6 +1654,9 @@ export type EditCommandTag =
   | "weld_set"
   | "weld_delete"
   | "physics_add"
+  | "chain_add"
+  | "chain_set"
+  | "chain_fit"
   | "undo"
   | "redo"
   | "import_file"

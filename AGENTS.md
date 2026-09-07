@@ -169,7 +169,8 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-editor-server/src/lib.rs` — a drag never snapshots, the
   undo budget, an observer never runs under a lock, bytes never enter except
   inside the command that uses them, each session draws its own
-  Ids, the editor traces a part's alpha, an extension is carried and never
+  Ids, the editor traces a part's alpha, a fit and the bindings it authors
+  share one frame, an extension is carried and never
   interpreted; `query.rs` — one
   implementation for the reads a replica can answer; `http.rs` — the HTTP
   transport, why loopback is not a permission, the token before the body,

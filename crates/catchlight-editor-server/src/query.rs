@@ -191,6 +191,11 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
 /// `apply_patch` applies on the way in, where a colour set on a mesh group is
 /// ignored. So what comes back is exactly what a `node_set` on this node
 /// would keep.
+///
+/// A driver's own settings are nested rather than flattened, in
+/// [`NodeInfo::physics`] and [`NodeInfo::chain`], because no `node_set` writes
+/// them: the round-trip they answer is to `physics_set` and `chain_set`, whose
+/// field names they carry.
 fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
     // The colour a drawable carries. A group, mesh group or physics node is
     // never drawn, so it reports none rather than a default a patch would
@@ -252,6 +257,36 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             _ => None,
         },
         mg_translate_children,
+        physics: match &node.kind {
+            ModelNodeKind::SimplePhysics(ph) => {
+                let targets = ph.target_params();
+                Some(PhysicsInfo {
+                    kind: ph.kind.into(),
+                    map_mode: ph.map_mode.into(),
+                    local_only: ph.local_only,
+                    gravity: ph.gravity,
+                    length: ph.length,
+                    frequency: ph.frequency,
+                    angle_damping: ph.angle_damping,
+                    length_damping: ph.length_damping,
+                    output_scale: ph.output_scale,
+                    target_params: PhysicsTargets {
+                        angle: targets[0].clone(),
+                        length: targets[1].clone(),
+                    },
+                })
+            }
+            _ => None,
+        },
+        chain: match &node.kind {
+            ModelNodeKind::ParticleChain(chain) => Some(ChainInfo {
+                local_only: chain.local_only,
+                gravity: chain.gravity,
+                links: chain.links().iter().map(ChainLinkArg::of).collect(),
+                outputs: chain.outputs().to_vec(),
+            }),
+            _ => None,
+        },
     }
 }
 

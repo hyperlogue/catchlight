@@ -1848,6 +1848,23 @@ fn print_body(body: &ResponseBody) {
                 }
             }
         }
+        ResponseBody::ChainFit {
+            node,
+            params,
+            bound,
+            replaced,
+        } => {
+            println!("chain {node} on {bound}");
+            for (link, param) in params.iter().enumerate() {
+                println!("  link {} <- {param}", link + 1);
+            }
+            if !replaced.is_empty() {
+                println!("replaced the deform binding under:");
+                for param in replaced {
+                    println!("  {param}");
+                }
+            }
+        }
     }
 }
 

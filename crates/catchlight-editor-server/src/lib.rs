@@ -70,6 +70,14 @@
 //!   other — a revision, an undo entry, an event — because that is what makes
 //!   it survive a save.
 //!
+//! - **A fit and the bindings it authors share one frame.** See
+//!   [`chain_fit`]: a strand is measured on the part's rest mesh, in that
+//!   node's vertex space, and a deform binding's cells are offsets into the
+//!   bound node's mesh in *its* vertex space. So binding somewhere other than
+//!   the part is allowed exactly where the two spaces differ by a translation
+//!   — [`vertex_space_shift`] is that check — and refused otherwise, because
+//!   the alternative is offsets that move art rather than fail.
+//!
 //! - **A model-only read has one implementation.** See [`query`]: the reads
 //!   [`CommandKind::ReplicaQuery`] names are pure functions of the [`Model`],
 //!   so a browser tab holding a replica answers them itself. `dispatch` routes
@@ -114,11 +122,12 @@ use catchlight_core::formats::clm::{
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
 use catchlight_core::LoadBudget;
 
+use catchlight_core::physics::ChainLink;
 use catchlight_core::Vec2;
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Model,
     ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
-    ModelPhysics, ModelTexture, ModelWeld, Puppet, Required,
+    ModelParticleChain, ModelPhysics, ModelTexture, ModelWeld, Puppet, Required,
 };
 // Only the headless preview builds one; the browser GUI poses its own puppet.
 #[cfg(not(target_arch = "wasm32"))]
@@ -126,8 +135,9 @@ use catchlight_core::Pose;
 // The wire's camera and the renderer's framing are the same shape and not the
 // same type; the conversion happens here, at the edge.
 use catchlight_editor_core::{
-    contour_automesh, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, Manifest, ManifestError,
-    MeshError, ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
+    chain_keyforms, contour_automesh, fit_strand, grid_automesh, AlphaMask, ContourKnobs,
+    GridKnobs, Manifest, ManifestError, MeshError, ModelManifestExt as _, ModelMeshExt as _,
+    StrandFit, TextureData, UvMap, BEND_RANGE,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_wgpu::Framing;
@@ -271,6 +281,14 @@ impl EditorError {
                 ModelError::Fragment => ErrorCode::Fragment,
                 ModelError::UnknownExtension(_) => ErrorCode::NoExtension,
                 ModelError::ReservedExtension(_) => ErrorCode::ReservedExtension,
+                // Both are an argument that does not fit the node it names —
+                // a chain command aimed at something that is not a chain, and
+                // an output list of the wrong length for the chain it is
+                // aimed at. That is what `bad_target` says, and it is the
+                // code a client already branches on for a physics field set
+                // on a node that is not a driver.
+                ModelError::NotParticleChain => ErrorCode::BadTarget,
+                ModelError::ChainOutputArity { .. } => ErrorCode::BadTarget,
                 // The size cap has no code of its own: a client that hit it
                 // has nothing to branch on, only a value to shrink.
                 _ => ErrorCode::Edit,
@@ -1843,6 +1861,82 @@ impl Editor {
                     dropped: Vec::new(),
                 })
             }),
+            Command::ChainAdd {
+                session,
+                parent,
+                name,
+                links,
+                local_only,
+                gravity,
+                outputs,
+                node: id,
+            } => self.edit_session(session, |s| {
+                let mut chain = ModelParticleChain::new(chain_links(links)?);
+                if let Some(v) = local_only {
+                    chain.local_only = v;
+                }
+                if let Some(v) = gravity {
+                    chain.gravity = v;
+                }
+                let node = ModelNode::new(
+                    name.unwrap_or_else(|| "Chain".into()),
+                    ModelNodeKind::ParticleChain(chain),
+                );
+                let node = s.add_node(&parent, id, node)?;
+                if let Some(outputs) = outputs {
+                    s.model.set_chain_outputs(&node, outputs)?;
+                }
+                s.touch();
+                Ok(ResponseBody::Node {
+                    node,
+                    dropped: Vec::new(),
+                })
+            }),
+            Command::ChainSet {
+                session,
+                node,
+                links,
+                local_only,
+                gravity,
+                outputs,
+            } => self.edit_session(session, |s| {
+                // Links first, so a set that reshapes and re-aims in one
+                // command has its `outputs` measured against the length it
+                // just asked for rather than the one it replaced.
+                if let Some(links) = links {
+                    s.model.set_chain_links(&node, chain_links(links)?)?;
+                }
+                if local_only.is_some() || gravity.is_some() {
+                    s.model.update_node(&node, |n| {
+                        let ModelNodeKind::ParticleChain(chain) = &mut n.kind else {
+                            return Err(EditorError::BadTarget("not a particle chain".into()));
+                        };
+                        if let Some(v) = local_only {
+                            chain.local_only = v;
+                        }
+                        if let Some(v) = gravity {
+                            chain.gravity = v;
+                        }
+                        Ok(())
+                    })??;
+                }
+                if let Some(outputs) = outputs {
+                    s.model.set_chain_outputs(&node, outputs)?;
+                }
+                s.touch();
+                Ok(ResponseBody::Empty)
+            }),
+            Command::ChainFit {
+                session,
+                part,
+                links,
+                axis,
+                on,
+                chain,
+                node: id,
+            } => self.edit_session(session, |s| {
+                chain_fit(s, &part, links, axis, on.as_ref(), chain.as_ref(), id)
+            }),
             Command::PresenceSet { session, presence } => {
                 // Deliberately not via with_session: presence must not bump rev,
                 // snapshot, or record undo — it is not the model.
@@ -2253,6 +2347,289 @@ fn physics_targets(
         bound => Ok(bound),
     };
     Ok([check(targets.angle)?, check(targets.length)?])
+}
+
+/// The wire's links as the model holds them, refusing the empty chain.
+///
+/// A chain reads out as one bend per link, so a chain of no links drives
+/// nothing and has nothing to drive it — the refusal is the same
+/// [`ErrorCode::BadTarget`] a malformed mesh gets, an argument that parsed and
+/// does not describe a thing the model can hold.
+fn chain_links(links: Vec<ChainLinkArg>) -> Result<Vec<ChainLink>, EditorError> {
+    if links.is_empty() {
+        return Err(EditorError::BadTarget(
+            "a chain needs at least one link".into(),
+        ));
+    }
+    Ok(links.iter().map(ChainLinkArg::to_link).collect())
+}
+
+/// The key positions a link's bend param carries: [`BEND_KEYS`] normalised
+/// into the 0..1 a param stores its keys in, across [`BEND_RANGE`].
+fn bend_key_positions() -> Vec<f32> {
+    let span = BEND_RANGE[1] - BEND_RANGE[0];
+    catchlight_editor_core::BEND_KEYS
+        .iter()
+        .map(|k| (k - BEND_RANGE[0]) / span)
+        .collect()
+}
+
+/// Rig a strand of art to a particle chain in one edit: the bend params, the
+/// chain node, and the deform bindings that bend the art.
+///
+/// **The editor measures, for the reason the editor traces.** Fitting a strand
+/// is reading the part's rest mesh and deciding where each joint falls; a
+/// client doing it itself would have to hold the mesh, agree on the hang axis
+/// and agree on the sign of a bend — three chances to disagree with what the
+/// solver then does. What comes back out is ordinary, though: params a
+/// [`Command::ParamSet`] retunes, deform bindings a rigger opens and edits by
+/// hand, and a chain [`Command::ChainSet`] reshapes.
+///
+/// **The fit is measured on `part` and the bindings are written on `bound`,
+/// and one rule ties the two frames together.** A deform binding's cells are
+/// offsets into the bound node's own mesh, in that node's vertex space, so a
+/// keyform measured in the part's space only applies to another node when the
+/// two spaces differ by a translation. That is what [`vertex_space_shift`]
+/// checks and, where it holds, what it corrects for; where it does not, the
+/// command is refused naming the node that broke it, because the alternative
+/// is offsets that quietly move art rather than fail. `bound` defaults to
+/// `part`, where the shift is zero by construction and no node's transform is
+/// looked at at all — so a rotated part still fits itself.
+///
+/// **A cell at every key position the param carries.** For a param this call
+/// just made that is [`BEND_KEYS`] normalised; for one it inherited from the
+/// chain it was handed, it is whatever keys that param has, each read back as
+/// the bend value its position names. Either way the binding's grid is the
+/// param's own key positions, so no cell is authored outside the grid and none
+/// inside it is left derived.
+fn chain_fit(
+    s: &mut Session,
+    part: &NodeId,
+    links: u32,
+    axis: Option<[f32; 2]>,
+    on: Option<&NodeId>,
+    chain: Option<&NodeId>,
+    id: Option<NodeId>,
+) -> Result<ResponseBody, EditorError> {
+    // Everything read off the part before the model is touched: the fit, and
+    // the three facts that place and name the chain node.
+    let (fit, part_name, part_translation, part_origin, parent) = {
+        let node = s
+            .model
+            .node(part)
+            .ok_or_else(|| EditorError::NoNode(part.clone()))?;
+        let mesh = node
+            .mesh()
+            .ok_or_else(|| EditorError::BadTarget(format!("node {part} holds no mesh to fit")))?;
+        let fit = fit_strand(mesh, links, axis)
+            .map_err(|e| EditorError::BadTarget(format!("cannot fit a chain to {part}: {e}")))?;
+        let parent = node.parent().cloned().ok_or_else(|| {
+            EditorError::BadTarget(format!(
+                "node {part} is the model's root, so a chain has nowhere to hang beside it"
+            ))
+        })?;
+        (
+            fit,
+            node.name.to_string(),
+            node.transform.translation,
+            mesh.origin,
+            parent,
+        )
+    };
+
+    // The node the bindings go on, and the fit as that node's own mesh sees
+    // it.
+    let bound = on.cloned().unwrap_or_else(|| part.clone());
+    let bound_mesh = match s.model.node(&bound) {
+        Some(node) => node
+            .mesh()
+            .ok_or_else(|| {
+                EditorError::BadTarget(format!("node {bound} holds no mesh to bind a deform on"))
+            })?
+            .clone(),
+        None => return Err(EditorError::NoNode(bound)),
+    };
+    let shift = vertex_space_shift(&s.model, part, &bound)?;
+    let bound_fit = StrandFit {
+        root: [fit.root[0] + shift[0], fit.root[1] + shift[1]],
+        axis: fit.axis,
+        lengths: fit.lengths.clone(),
+    };
+
+    // What the chain being re-fitted already holds. An absent `chain` is a
+    // chain about to be made, which holds nothing.
+    let (held_outputs, held_links) = match chain {
+        Some(c) => match s.model.node(c).map(|n| &n.kind) {
+            Some(ModelNodeKind::ParticleChain(ch)) => (ch.outputs().to_vec(), ch.links().to_vec()),
+            Some(_) => {
+                return Err(EditorError::BadTarget(format!(
+                    "node {c} is not a particle chain"
+                )))
+            }
+            None => return Err(EditorError::NoNode(c.clone())),
+        },
+        None => (Vec::new(), Vec::new()),
+    };
+
+    // One param per link, reusing what the chain already drove. A link that
+    // drove nothing, and every link past the old end, gets a fresh one.
+    let count = links as usize;
+    let mut params = Vec::with_capacity(count);
+    for i in 0..count {
+        match held_outputs.get(i).and_then(Option::as_ref) {
+            Some(held) if s.model.param(held).is_some() => params.push(held.clone()),
+            _ => {
+                let param = s.add_param(
+                    None,
+                    ModelParam {
+                        name: Name::truncated(format!("{part_name} bend {}", i + 1)),
+                        min: BEND_RANGE[0],
+                        max: BEND_RANGE[1],
+                        default: 0.0,
+                        key_positions: bend_key_positions(),
+                    },
+                )?;
+                params.push(param);
+            }
+        }
+    }
+
+    // Each link's length comes from the fit; the rest of its feel survives a
+    // re-fit, because damping and time scale are what a rigger tuned by hand.
+    let fitted: Vec<ChainLink> = (0..count)
+        .map(|i| ChainLink {
+            length: fit.lengths[i],
+            ..held_links.get(i).copied().unwrap_or_default()
+        })
+        .collect();
+
+    // The chain sits at the root of the strand: a vertex draws at
+    // `translation + (v - origin)`, so the root reaches `root - origin` from
+    // the part's own translation.
+    let translation = [
+        part_translation[0] + fit.root[0] - part_origin[0],
+        part_translation[1] + fit.root[1] - part_origin[1],
+        part_translation[2],
+    ];
+    let node = match chain {
+        Some(c) => {
+            s.model.set_chain_links(c, fitted)?;
+            s.model.update_node(c, |n| {
+                n.transform.translation = translation;
+            })?;
+            c.clone()
+        }
+        None => {
+            let mut node = ModelNode::new(
+                format!("{part_name} chain"),
+                ModelNodeKind::ParticleChain(ModelParticleChain::new(fitted)),
+            );
+            node.transform.translation = translation;
+            s.add_node(&parent, id, node)?
+        }
+    };
+    s.model
+        .set_chain_outputs(&node, params.iter().cloned().map(Some).collect())?;
+
+    // One deform binding per link, replacing whatever stood under that param
+    // on this node.
+    let mut replaced = Vec::new();
+    for (link, param) in params.iter().enumerate() {
+        let key = BindingKey::new(param.clone(), bound.clone(), CoreBindingTarget::Deform);
+        if s.model.binding(&key).is_some() {
+            replaced.push(param.clone());
+            s.model.delete_binding(&key)?;
+        }
+        let positions = s
+            .model
+            .param(param)
+            .map(|p| (p.min, p.max, p.key_positions.clone()))
+            .ok_or_else(|| EditorError::NoParam(param.clone()))?;
+        let (min, max, positions) = positions;
+        // Made before the cells, so a param carrying no key position at all
+        // still leaves a binding behind for the interpolation to land on.
+        s.model.add_binding(&key)?;
+        for (cell, position) in positions.iter().enumerate() {
+            let bend = min + position * (max - min);
+            let offsets = chain_keyforms(&bound_mesh, &bound_fit, link, bend);
+            s.model
+                .set_deform_vertices(&key, [cell as u32, 0], offsets)?;
+        }
+        s.model
+            .set_binding_interpolate(&key, Interpolate::Cubic.into())?;
+    }
+
+    s.touch();
+    Ok(ResponseBody::ChainFit {
+        node,
+        params,
+        bound,
+        replaced,
+    })
+}
+
+/// The vector that takes a point in `from`'s vertex space to the same point in
+/// `to`'s, refusing when the two spaces differ by more than that.
+///
+/// Rest geometry only, which is the whole reason this is answerable: a mesh
+/// group deforming between the two nodes moves them at pose time and leaves
+/// their rest vertices where they were. What it cannot survive is a rotation
+/// or a scale, which turns a translation between the frames into a transform
+/// no single vector expresses — so any of those, anywhere from the root down
+/// to either node, is a refusal naming the node that carries it. The walk
+/// stops at a node locked to the root, because that is where its ancestors
+/// stop reaching it.
+///
+/// Conservative on purpose: a rotation shared by both nodes would cancel, and
+/// is refused anyway rather than reasoned about. `from == to` never looks at a
+/// transform at all.
+fn vertex_space_shift(model: &Model, from: &NodeId, to: &NodeId) -> Result<[f32; 2], EditorError> {
+    if from == to {
+        return Ok([0.0, 0.0]);
+    }
+    let (a, origin_a) = (rest_translation(model, from)?, mesh_origin(model, from)?);
+    let (b, origin_b) = (rest_translation(model, to)?, mesh_origin(model, to)?);
+    Ok([
+        a[0] - b[0] + origin_b[0] - origin_a[0],
+        a[1] - b[1] + origin_b[1] - origin_a[1],
+    ])
+}
+
+/// Where a node's frame sits relative to the root at rest, as a translation —
+/// or a refusal, if anything on the way up is not one.
+fn rest_translation(model: &Model, id: &NodeId) -> Result<[f32; 2], EditorError> {
+    let mut at = Some(id.clone());
+    let mut out = [0.0f32, 0.0];
+    while let Some(current) = at {
+        let node = model
+            .node(&current)
+            .ok_or_else(|| EditorError::NoNode(current.clone()))?;
+        if node.transform.rotation != [0.0; 3] || node.transform.scale != [1.0, 1.0] {
+            return Err(EditorError::BadTarget(format!(
+                "node {current} carries a rotation or a scale, so the frames of {id} and its \
+                 chain differ by more than a translation; fit and bind on the same node"
+            )));
+        }
+        out[0] += node.transform.translation[0];
+        out[1] += node.transform.translation[1];
+        at = if node.lock_to_root {
+            None
+        } else {
+            node.parent().cloned()
+        };
+    }
+    Ok(out)
+}
+
+/// A meshed node's mesh origin.
+fn mesh_origin(model: &Model, id: &NodeId) -> Result<[f32; 2], EditorError> {
+    match model.node(id) {
+        Some(node) => node
+            .mesh()
+            .map(|mesh| mesh.origin)
+            .ok_or_else(|| EditorError::BadTarget(format!("node {id} holds no mesh"))),
+        None => Err(EditorError::NoNode(id.clone())),
+    }
 }
 
 /// The wire's mesh as the model stores one.
