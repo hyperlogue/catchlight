@@ -14,6 +14,8 @@
 //! transport, a texture or a GPU: the strip these chains hang on is a mesh set
 //! by hand, so the numbers a fit produces are numbers this file can predict.
 
+use catchlight_core::physics::ChainLink;
+use catchlight_core::ModelParticleChain;
 use catchlight_editor_protocol::{
     BindingTarget, ChainInfo, ChainLinkArg, Command, ErrorCode, Interpolate, NodeId, NodeInfo,
     NodeKind, NodeKindArg, ParamId, ParamInfo, Reply, Request, ResponseBody, SessionId,
@@ -223,13 +225,10 @@ fn a_chain_reads_back_as_what_was_added() {
                     time_scale: Some(2.0),
                 },
                 // The defaults, filled in: a reply names every field, so the
-                // list travels straight back through `chain_set`.
-                ChainLinkArg {
-                    length: Some(100.0),
-                    gravity_scale: Some(1.0),
-                    damping: Some(0.5),
-                    time_scale: Some(1.0),
-                },
+                // list travels straight back through `chain_set`. Compared
+                // against the core's own default rather than its numbers, so
+                // a retune there is not a failure here.
+                ChainLinkArg::of(&ChainLink::default()),
             ],
             outputs: vec![Some(swing), None],
         },
@@ -249,6 +248,67 @@ fn a_chain_reads_back_as_what_was_added() {
         },
     );
     assert_eq!(info(&ed, session, &made).chain, Some(chain));
+}
+
+/// A knob a command leaves out is the core's own default, read off a freshly
+/// constructed chain rather than restated as a number here. Gravity is the
+/// one that bit: a node's gravity is a multiple of the model-level gravity,
+/// which the bake folds in, so a literal copied from the wrong place is off
+/// by a factor of g. This would fail if either handler ever substituted one.
+#[test]
+fn an_omitted_knob_is_the_cores_own_default() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let fresh = ModelParticleChain::new(vec![ChainLink::default()]);
+
+    let added = match body(
+        &ed,
+        2,
+        Command::ChainAdd {
+            session,
+            parent: node("root"),
+            name: None,
+            links: vec![ChainLinkArg::default()],
+            local_only: None,
+            gravity: None,
+            outputs: None,
+            node: None,
+        },
+    ) {
+        ResponseBody::Node { node, .. } => node,
+        other => panic!("{other:?}"),
+    };
+    let chain = info(&ed, session, &added).chain.unwrap();
+    assert_eq!(chain.gravity, fresh.gravity);
+    assert_eq!(chain.local_only, fresh.local_only);
+    assert_eq!(chain.links, vec![ChainLinkArg::of(&ChainLink::default())]);
+
+    // A fitted chain starts from the same place; the fit sets lengths only.
+    let part = strip(&ed, session, "Hair", &node("root"));
+    let fitted = match body(
+        &ed,
+        3,
+        Command::ChainFit {
+            session,
+            part,
+            links: 2,
+            axis: None,
+            on: None,
+            chain: None,
+            node: None,
+        },
+    ) {
+        ResponseBody::ChainFit { node, .. } => node,
+        other => panic!("{other:?}"),
+    };
+    let chain = info(&ed, session, &fitted).chain.unwrap();
+    assert_eq!(chain.gravity, fresh.gravity);
+    assert_eq!(chain.local_only, fresh.local_only);
+    for link in &chain.links {
+        assert_eq!(link.damping, Some(ChainLink::default().damping));
+        assert_eq!(link.time_scale, Some(ChainLink::default().time_scale));
+        assert_eq!(link.gravity_scale, Some(ChainLink::default().gravity_scale));
+    }
 }
 
 /// A chain of no links has no bend to read out and nothing to drive it.
