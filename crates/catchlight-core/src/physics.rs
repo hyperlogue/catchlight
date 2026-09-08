@@ -48,7 +48,11 @@
 //! velocity still pushing outward, and only that: the part heading back
 //! inside is real motion, so a strand blown onto its limit falls off it the
 //! moment the wind stops, while one that kept its outward push would buzz
-//! against the wall for as long as the wind lasted.
+//! against the wall for as long as the wind lasted. The solve is only half of
+//! the promise: a chain decides its param at its own `weight`, so
+//! `Puppet::write_driver_param_outputs` clamps the *blend* of pose and solve
+//! and not just what happened here — otherwise a chain at half weight would
+//! mix half the pose's excess back past the wall.
 //!
 //! **A chain is damped in its anchor's frame, not the world's.** A character
 //! walking across the screen carries the whole strand along, and that is not

@@ -160,6 +160,40 @@ fn resolve_contributions(entries: &[Contribution], claims: &[u32], base: f32) ->
     }
 }
 
+/// One chain's claim on one slot: its solved bend blended against the bend the
+/// caller posed, at the chain's own `weight`.
+///
+/// **The arithmetic is [`resolve_contributions`]'s, written out.** That is
+/// what the fold used to do with a claim of weight `w`, and doing it here
+/// instead must not move a bit of any model that carries no limit — so the
+/// order is its order: its sum starts at `0.0`, so `0.0 + bend * w` is
+/// `bend * w`, and its `total < 1.0` branch is `sum + base * (1.0 - total)`.
+/// A weight at or above 1 is the chain deciding outright, which is `bend`
+/// itself rather than the fold's `(bend * w) / w`; the two differ by at most
+/// an ulp above 1, and this one is the answer the knob names.
+///
+/// Weight 0 therefore claims the base itself — the chain asserting nothing,
+/// which is what it always meant.
+fn blend_claim(bend: f32, base: f32, weight: f32) -> f32 {
+    if weight >= 1.0 {
+        bend
+    } else {
+        bend * weight + base * (1.0 - weight)
+    }
+}
+
+/// A bend held inside its link's limit, in half turns.
+///
+/// The same rule [`crate::physics`] applies to the solve — a limit that is not
+/// a number, or is not above zero, is no limit — so a link the solver treats
+/// as free is free here too.
+fn clamp_to_bend_limit(bend: f32, limit: Option<f32>) -> f32 {
+    match limit.filter(|l| l.is_finite() && *l > 0.0) {
+        Some(limit) => bend.clamp(-limit, limit),
+        None => bend,
+    }
+}
+
 /// A live edit to node properties, handed to the closure
 /// [`Puppet::refold_with_node_edits`] takes.
 ///
@@ -352,10 +386,11 @@ pub struct Puppet {
     /// and the chain it may carry writes them — because they are the same
     /// bends.
     spine_targets: Vec<Vec<Option<u32>>>,
-    /// This frame's chain claims, `(source, slot, bend, weight)`. Flat rather
+    /// This frame's chain claims, `(source, slot, value)`, the value already
+    /// blended at the chain's weight and held inside its limit. Flat rather
     /// than grouped by chain because the only two readers want it flat: the
     /// contribution loop and the retirement scan.
-    chain_update_scratch: Vec<(NodeIdx, u32, f32, f32)>,
+    chain_update_scratch: Vec<(NodeIdx, u32, f32)>,
     /// Held so reading a chain out costs no allocation per frame.
     chain_bends_scratch: Vec<f32>,
     /// Retirement's two sets, held for the same reason: which nodes are
@@ -1455,11 +1490,21 @@ impl Puppet {
     /// a pendulum through its map mode, a chain one bend per link. Returns
     /// whether any resolved value moved.
     ///
-    /// A pendulum claims at full authority; a chain claims at its own
-    /// `weight`, which is the one knob that says how much of the param the
-    /// solve decides and how much the pose keeps. Either way two drivers
-    /// aimed at one param average rather than resolving by their position in
-    /// the arena, which is tree order and carries no meaning here.
+    /// **Both kinds claim at full authority, and a chain folds its own
+    /// `weight` in before it claims.** `weight` is the knob that says how much
+    /// of the param the solve decides and how much the pose keeps, so the
+    /// obvious shape is to claim the solve at that weight and let
+    /// [`resolve_contributions`] blend it against the pose. That shape cannot
+    /// carry a bend limit: the fold would mix the pose's excess straight back
+    /// past a wall the solver had just stopped the joint at, and
+    /// [`crate::model::LinkFeel::limit`] promises the art, not the solve. So
+    /// the blend happens here, where the limit is in reach, and what the chain
+    /// claims is the finished number.
+    ///
+    /// The consequence to know: two drivers aimed at one param now average
+    /// each chain's *blend* rather than its raw solve. They still average
+    /// rather than resolving by their position in the arena, which is tree
+    /// order and carries no meaning here.
     fn write_driver_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
         self.physics_update_scratch.clear();
         for i in 0..self.arena.physics_node_ids.len() {
@@ -1521,11 +1566,19 @@ impl Puppet {
             let flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
             chain.link_bends(flip * world_inverse * flip, &mut bends);
             let weight = chain.weight;
+            // Copied out beside the bends, for the reason `targets` is: the
+            // claim below needs the puppet back, and a link's limit has to
+            // travel with the bend it bounds.
+            let limits: smallvec::SmallVec<[Option<f32>; 8]> =
+                chain.links.iter().map(|l| l.limit).collect();
             for (i, slot) in targets.iter().enumerate() {
                 let (Some(slot), Some(&bend)) = (*slot, bends.get(i)) else {
                     continue;
                 };
-                self.chain_update_scratch.push((id, slot, bend, weight));
+                let base = self.param_base(slot).unwrap_or(0.0);
+                let blended = blend_claim(bend, base, weight);
+                let value = clamp_to_bend_limit(blended, limits.get(i).copied().flatten());
+                self.chain_update_scratch.push((id, slot, value));
             }
         }
         self.chain_bends_scratch = bends;
@@ -1544,8 +1597,8 @@ impl Puppet {
             }
         }
         for i in 0..self.chain_update_scratch.len() {
-            let (source, slot, bend, weight) = self.chain_update_scratch[i];
-            if self.contribute(slot, source, bend, weight) {
+            let (source, slot, value) = self.chain_update_scratch[i];
+            if self.contribute(slot, source, value, 1.0) {
                 changed = true;
             }
         }

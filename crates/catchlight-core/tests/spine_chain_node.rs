@@ -947,3 +947,90 @@ fn a_limited_chain_never_writes_a_bend_past_its_limit() {
         "the kick reached the limit; the worst bend seen was {worst}",
     );
 }
+
+/// A one-link weightless spine with a limit, settled and then run: the joint
+/// can only be where the limit lets it be.
+fn limited_chain(limit: f32, weight: f32) -> (Model, NodeId, ParamId) {
+    let (mut model, chain, params) = posed_chain(0.0, 1);
+    let mut data = ModelChain::new(1);
+    data.gravity = 981.0;
+    data.weight = weight;
+    data.set_links(vec![catchlight_core::LinkFeel {
+        gravity_scale: 0.0,
+        damping: 0.5,
+        stiffness: 10.0,
+        limit: Some(limit),
+    }]);
+    model
+        .set_spine_chain(&chain, Some(data))
+        .expect("hang the chain");
+    let param = params.into_iter().next().expect("one link, one param");
+    (model, chain, param)
+}
+
+/// **A limit binds the blended bend, not only the solve.** A chain claims its
+/// param at its own weight, and the fold blends that claim against the pose —
+/// so a claim of the raw solve leaves the excess the limit just removed to be
+/// mixed straight back in. At weight 0.5 a joint posed a half turn past a
+/// quarter-turn limit would read 67.5 degrees, and at weight 0 the whole 90.
+///
+/// The promise `LinkFeel::limit` makes is about the art, so it has to hold at
+/// every weight: the claim is the blend, clamped, at full authority.
+#[test]
+fn a_limit_binds_the_param_at_every_weight() {
+    for weight in [0.0f32, 0.5, 1.0] {
+        let (model, chain, param) = limited_chain(0.25, weight);
+        let mut puppet = Puppet::new(&model);
+        // Posed at a half turn: twice the limit, and the wrong side of it.
+        puppet.set_param_value(&param, 0.5);
+        puppet.settle_physics(&model);
+        for _ in 0..120 {
+            puppet.tick(&model, DT);
+        }
+
+        let read = puppet.param_value(&param).expect("the chain claims it");
+        assert!(
+            (read - 0.25).abs() < 1e-4,
+            "weight {weight}: the param reads {read}, not the quarter turn the limit allows",
+        );
+
+        // And the art turns by the same number: the spine reads its bends off
+        // the resolved param, so a param the limit binds is a joint the limit
+        // binds.
+        let idx = puppet.node_idx(&chain).expect("the spine baked");
+        let turned = match &puppet.get(idx).expect("the node").kind {
+            catchlight_core::NodeKind::Spine(sp) => sp.bends[0],
+            other => panic!("not a spine: {other:?}"),
+        };
+        assert!(
+            (turned - read).abs() < 1e-6,
+            "weight {weight}: the art turns by {turned} while the param reads {read}",
+        );
+    }
+}
+
+/// The same wall on the other side: a limit is a wall in either direction, so
+/// a pose past it the other way reads the negative limit.
+#[test]
+fn a_limit_binds_a_negative_pose_too() {
+    for weight in [0.0f32, 0.5, 1.0] {
+        let (model, chain, param) = limited_chain(0.25, weight);
+        let mut puppet = Puppet::new(&model);
+        puppet.set_param_value(&param, -0.5);
+        puppet.settle_physics(&model);
+        for _ in 0..120 {
+            puppet.tick(&model, DT);
+        }
+        let read = puppet.param_value(&param).expect("the chain claims it");
+        assert!(
+            (read + 0.25).abs() < 1e-4,
+            "weight {weight}: the param reads {read}, not the quarter turn back the limit allows",
+        );
+        let idx = puppet.node_idx(&chain).expect("the spine baked");
+        let turned = match &puppet.get(idx).expect("the node").kind {
+            catchlight_core::NodeKind::Spine(sp) => sp.bends[0],
+            other => panic!("not a spine: {other:?}"),
+        };
+        assert!((turned - read).abs() < 1e-6, "weight {weight}");
+    }
+}

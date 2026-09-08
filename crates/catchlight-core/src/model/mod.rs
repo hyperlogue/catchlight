@@ -728,9 +728,12 @@ pub struct LinkFeel {
     /// within `(0, 1]`. `None` is a joint that turns as far as the forces
     /// take it, which is every link written before there was a limit.
     ///
-    /// A limit binds the pose as well as the physics: a param posed past it
-    /// moves the spring's target out there, and the link still stops at the
-    /// boundary.
+    /// A limit binds the pose as well as the physics, **at every weight**: a
+    /// param posed past it moves the spring's target out there, the link still
+    /// stops at the boundary, and what the chain claims its param at is the
+    /// blend of pose and solve already held inside the wall. A limit is a
+    /// promise about the art, so a chain that only half decides its param
+    /// cannot half break it.
     pub limit: Option<f32>,
 }
 
