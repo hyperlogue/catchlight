@@ -1433,8 +1433,8 @@ impl Puppet {
             return false;
         };
         if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
-            let (anchor, orient) = (chain.anchor, chain.orient);
-            chain.settle_to_rest(anchor, orient, &posed);
+            let (anchor, carry) = (chain.anchor, chain.carry);
+            chain.settle_to_rest(anchor, carry, &posed);
         }
         for particle in chain.particles.iter_mut().skip(1) {
             particle.pos += offset;
@@ -1472,13 +1472,13 @@ impl Puppet {
             let Some(anchor) = self.arena.physics_anchor(transforms, id) else {
                 continue;
             };
-            let Some(orient) = self.arena.chain_orient(transforms, id) else {
+            let Some(carry) = self.arena.chain_carry(transforms, id) else {
                 continue;
             };
             self.chain_posed_bends(i, &mut posed);
             if let Some(NodeKind::Spine(sp)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
                 if let Some(c) = &mut sp.chain {
-                    c.tick(anchor, orient, &posed, dt);
+                    c.tick(anchor, carry, &posed, dt);
                 }
             }
         }
@@ -1727,7 +1727,7 @@ impl Puppet {
                 let Some(anchor) = self.arena.physics_anchor(&transforms, id) else {
                     continue;
                 };
-                let Some(orient) = self.arena.chain_orient(&transforms, id) else {
+                let Some(carry) = self.arena.chain_carry(&transforms, id) else {
                     continue;
                 };
                 self.chain_posed_bends(i, &mut posed);
@@ -1738,11 +1738,17 @@ impl Puppet {
                     // this pass computes is a different one.
                     if !c.anchor_initialized
                         || (c.anchor - anchor).length_squared() > SETTLE_EPS_SQ
-                        || (c.orient - orient).length_squared() > SETTLE_EPS_SQ
+                        // A node that turned, scaled or mirrored is as much
+                        // a move as a shifted one: it puts the drawing
+                        // somewhere else, so the rest pose this pass computes
+                        // is a different one. Both columns are asked, because
+                        // either axis alone can carry the change.
+                        || (c.carry.x_axis - carry.x_axis).length_squared() > SETTLE_EPS_SQ
+                        || (c.carry.y_axis - carry.y_axis).length_squared() > SETTLE_EPS_SQ
                     {
                         moved = true;
                     }
-                    c.settle_to_rest(anchor, orient, &posed);
+                    c.settle_to_rest(anchor, carry, &posed);
                 }
             }
             self.write_driver_param_outputs(&transforms);

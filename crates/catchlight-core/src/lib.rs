@@ -42,4 +42,5 @@ pub use weld::{Weld, WeldPair};
 
 pub type Vec2 = glam::Vec2;
 pub type Vec3 = glam::Vec3;
+pub type Mat2 = glam::Mat2;
 pub type Mat4 = glam::Mat4;

@@ -399,21 +399,21 @@ impl Arena {
                 (
                     id,
                     crate::spine::bake_spine_pins(self, &transforms, id),
-                    self.chain_orient(&transforms, id),
+                    self.chain_carry(&transforms, id),
                 )
             })
             .collect();
-        for (id, pins, orient) in baked {
+        for (id, pins, carry) in baked {
             let Some(crate::NodeKind::Spine(spine)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             else {
                 continue;
             };
             spine.pins = pins;
-            if let (Some(chain), Some(orient)) = (&mut spine.chain, orient) {
+            if let (Some(chain), Some(carry)) = (&mut spine.chain, carry) {
                 let gravity = chain.gravity;
                 for link in chain.links.iter_mut() {
-                    link.preload = crate::physics::fitted_preload(link, gravity, orient);
+                    link.preload = crate::physics::fitted_preload(link, gravity, carry);
                 }
             }
         }
@@ -640,29 +640,31 @@ impl Arena {
     /// The `local_only` branch integrates in the parent's frame, where the
     /// node's own rotation has not been applied, so the shape is carried by
     /// nothing.
-    pub(crate) fn chain_orient(
+    pub(crate) fn chain_carry(
         &self,
         transforms: &GlobalTransforms,
         id: NodeIdx,
-    ) -> Option<crate::Vec2> {
+    ) -> Option<crate::Mat2> {
         let node = self.nodes.get(id.0 as usize)?;
         let crate::NodeKind::Spine(sp) = &node.kind else {
             return None;
         };
         let chain = sp.chain.as_ref()?;
         if chain.local_only {
-            return Some(crate::Vec2::new(0.0, 1.0));
+            return Some(crate::Mat2::IDENTITY);
         }
-        // The node's local -Y in world (model space is Y-up), then flipped
-        // into the physics frame.
+        // The node's world linear map, conjugated by the Y flip that takes
+        // model space (Y-up) into the physics frame (Y-down). The whole map
+        // and not just its rotation: a scaled or mirrored node draws its
+        // strand at a different angle and a different length, and
+        // `link_bends` reads the rods back through the full inverse.
         let world = transforms.get(id);
-        let down = crate::Vec2::new(-world.y_axis.x, -world.y_axis.y);
-        let down = if down.is_finite() && down.length_squared() > 1e-12 {
-            down.normalize()
-        } else {
-            crate::Vec2::new(0.0, -1.0)
-        };
-        Some(crate::Vec2::new(down.x, -down.y))
+        let m = crate::Mat2::from_cols(
+            crate::Vec2::new(world.x_axis.x, world.x_axis.y),
+            crate::Vec2::new(world.y_axis.x, world.y_axis.y),
+        );
+        let flip = crate::Mat2::from_cols(crate::Vec2::new(1.0, 0.0), crate::Vec2::new(0.0, -1.0));
+        Some(flip * m * flip)
     }
 
     /// Record what `translate_children` shift a mesh group applied to one of

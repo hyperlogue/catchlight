@@ -137,7 +137,8 @@ that enforces them, not here. Add new ones there.
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down
   frame, the chain's position-based form, what a link bend's sign means, why the
   drawing is the equilibrium and the preload that makes it one is a field
-  fixed in the node's frame, an anchor that crosses a frame rather
+  fixed in the node's frame, what carries the drawing into the world, an
+  anchor that crosses a frame rather
   than jumping at its first substep, what a link's damping is measured
   against, and what a bend limit clamps
 - `crates/catchlight-core/src/interpolate.rs` — how a binding's grid is read

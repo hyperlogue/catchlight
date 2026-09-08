@@ -27,14 +27,11 @@ use catchlight_core::formats::clm::ClmPhysics;
 use catchlight_core::id::SeededHex;
 use catchlight_core::model::{ModelNode, ModelNodeKind, ModelParam, ModelPhysics};
 use catchlight_core::physics::{ChainLink, ParticleChainData, PendulumKind, PhysicsParamMapMode};
-use catchlight_core::{Mat4, Model, Name, ParamId, Puppet, Vec2};
+use catchlight_core::{Mat2, Mat4, Model, Name, ParamId, Puppet, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 const DT: f32 = 1.0 / 60.0;
-/// The chain scenarios hang off an upright node, so bend zero of their first
-/// link is gravity's own direction.
-const DOWN: Vec2 = Vec2::new(0.0, 1.0);
 const FRAMES: usize = 300;
 const SAMPLE_EVERY: usize = 5;
 // Per-sample absolute tolerance on the mapped param output. Cross-arch f32
@@ -186,7 +183,7 @@ fn chain_perturbed() -> Vec<Vec<f32>> {
     );
     // Named folded, the way the drivers above name theirs.
     chain.gravity = 980.0;
-    chain.settle_to_rest(Vec2::ZERO, DOWN, &[]);
+    chain.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
     yank(chain)
 }
 
@@ -209,7 +206,7 @@ fn chain_stiff() -> Vec<Vec<f32>> {
             .to_vec(),
     );
     chain.gravity = 980.0;
-    chain.settle_to_rest(Vec2::ZERO, DOWN, &[]);
+    chain.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
     yank(chain)
 }
 
@@ -220,7 +217,7 @@ fn yank(mut chain: ParticleChainData) -> Vec<Vec<f32>> {
     let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
     let mut bends = Vec::new();
     for f in 0..FRAMES {
-        chain.tick(anchor, DOWN, &[], DT);
+        chain.tick(anchor, Mat2::IDENTITY, &[], DT);
         if f % SAMPLE_EVERY == 0 {
             chain.link_bends(Mat4::IDENTITY, &mut bends);
             samples.push(bends.clone());

@@ -1034,3 +1034,194 @@ fn a_limit_binds_a_negative_pose_too() {
         assert!((turned - read).abs() < 1e-6, "weight {weight}");
     }
 }
+
+/// A one-joint spine under a node the transform scales, mirrors or both.
+/// `3 Hz` and weighted, so the link is held off gravity by its preload and
+/// has somewhere else to fall if the carry is wrong.
+fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
+    let mut hex = SeededHex::new(9);
+    let mut model = Model::new();
+    model.set_physics(ClmPhysics {
+        pixels_per_meter: 1.0,
+        gravity: 1.0,
+    });
+    let param = model
+        .add_param(
+            ModelParam {
+                name: Name::truncated("bend0"),
+                min: -1.0,
+                max: 1.0,
+                default: 0.0,
+                key_positions: vec![0.0, 0.5, 1.0],
+            },
+            &mut hex,
+        )
+        .expect("add param");
+    let root = model.root().expect("a fresh model has a root").clone();
+    let under = if on_parent {
+        let mut group = ModelNode::new("scaled", ModelNodeKind::Group);
+        group.transform.scale = scale;
+        model.add_node(&root, group, &mut hex).expect("add group")
+    } else {
+        root
+    };
+
+    let mut spine = ModelSpine::new(vec![[50.0, -50.0]]);
+    let mut chain = ModelChain::new(1);
+    chain.gravity = 981.0;
+    chain.set_links(vec![catchlight_core::LinkFeel {
+        gravity_scale: 1.0,
+        damping: 0.5,
+        stiffness: 3.0,
+        limit: None,
+    }]);
+    spine.set_chain(Some(chain));
+    let mut node = ModelNode::new("hair", ModelNodeKind::Spine(spine));
+    if !on_parent {
+        node.transform.scale = scale;
+    }
+    let id = model
+        .add_node(&under, node, &mut hex)
+        .expect("add the spine");
+    model
+        .set_spine_targets(&id, vec![Some(param.clone())])
+        .expect("aim the spine");
+    (model, id, param)
+}
+
+/// **A chain rests on its drawing under any linear map the node applies, not
+/// just a rotation.** A spine's joints are node-local and `link_bends` reads
+/// its rods back through the node's full inverse, so the solver has to carry
+/// the drawing by the full map too. Carrying it by the rotation alone left
+/// the two disagreeing: this spine read 18.4 degrees at rest under a 2:1
+/// scale, 18.4 the other way under 1:2, and 90 degrees under a mirror.
+///
+/// A uniform scale and a double mirror read zero either way, which is why
+/// they are here: they are the two cases a rotation-only carry gets right by
+/// accident, and a test that only tried those would have passed throughout.
+#[test]
+fn a_scaled_node_rests_on_its_drawing() {
+    for on_parent in [false, true] {
+        for scale in [
+            [1.0f32, 1.0],
+            [2.0, 1.0],
+            [1.0, 2.0],
+            [-1.0, 1.0],
+            [2.0, 2.0],
+            [-1.0, -1.0],
+        ] {
+            let (model, _node, param) = scaled_spine(scale, on_parent);
+            let mut puppet = Puppet::new(&model);
+            puppet.settle_physics(&model);
+            puppet.tick(&model, DT);
+            let where_it_is = if on_parent { "a parent" } else { "the node" };
+            let settled = puppet.param_value(&param).expect("a bend");
+            assert!(
+                settled.abs() < 1e-4,
+                "scale {scale:?} on {where_it_is}: rests at {settled} half turns",
+            );
+            // And it stays: a rest the step disagrees with would drift.
+            for _ in 0..120 {
+                puppet.tick(&model, DT);
+            }
+            let held = puppet.param_value(&param).expect("a bend");
+            assert!(
+                held.abs() < 1e-4,
+                "scale {scale:?} on {where_it_is}: drifted to {held} half turns \
+                 over two seconds",
+            );
+        }
+    }
+}
+
+/// **A mirrored spine is the mirror of an unmirrored one.** Same strand, same
+/// kick in world space, and every bend comes back with the sign flipped —
+/// which is what a bend measured in the node's own frame means when the
+/// node's frame is the mirrored one. It holds because the carry is the whole
+/// map, sign included, and it is the sharpest check that the sign convention
+/// survived the change.
+#[test]
+fn a_mirrored_spine_bends_the_other_way() {
+    let two_link = |scale: [f32; 2]| {
+        let mut hex = SeededHex::new(9);
+        let mut model = Model::new();
+        model.set_physics(ClmPhysics {
+            pixels_per_meter: 1.0,
+            gravity: 1.0,
+        });
+        let params: Vec<ParamId> = (0..2)
+            .map(|i| {
+                model
+                    .add_param(
+                        ModelParam {
+                            name: Name::truncated(format!("bend{i}")),
+                            min: -1.0,
+                            max: 1.0,
+                            default: 0.0,
+                            key_positions: vec![0.0, 0.5, 1.0],
+                        },
+                        &mut hex,
+                    )
+                    .expect("add param")
+            })
+            .collect();
+        let root = model.root().expect("a fresh model has a root").clone();
+        let mut spine = ModelSpine::new(vec![[0.0, -50.0], [0.0, -100.0]]);
+        let mut chain = ModelChain::new(2);
+        chain.gravity = 981.0;
+        chain.set_links(vec![
+            catchlight_core::LinkFeel {
+                gravity_scale: 1.0,
+                damping: 0.5,
+                stiffness: 2.0,
+                limit: None,
+            };
+            2
+        ]);
+        spine.set_chain(Some(chain));
+        let mut node = ModelNode::new("hair", ModelNodeKind::Spine(spine));
+        node.transform.scale = scale;
+        let id = model
+            .add_node(&root, node, &mut hex)
+            .expect("add the spine");
+        model
+            .set_spine_targets(&id, params.iter().cloned().map(Some).collect())
+            .expect("aim the spine");
+        (model, id, params)
+    };
+
+    let swing = |scale: [f32; 2]| {
+        let (model, id, params) = two_link(scale);
+        let mut puppet = Puppet::new(&model);
+        puppet.settle_physics(&model);
+        let idx = puppet.node_idx(&id).expect("the spine baked");
+        assert!(puppet.kick_chain(idx, Vec2::new(30.0, 0.0)), "kicked");
+        let mut frames = Vec::new();
+        for _ in 0..30 {
+            puppet.tick(&model, DT);
+            frames.push(
+                params
+                    .iter()
+                    .map(|p| puppet.param_value(p).expect("a bend"))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        frames
+    };
+
+    let plain = swing([1.0, 1.0]);
+    let mirrored = swing([-1.0, 1.0]);
+    let mut worst = 0.0f32;
+    for (f, (a, b)) in plain.iter().zip(&mirrored).enumerate() {
+        for (i, (p, m)) in a.iter().zip(b).enumerate() {
+            assert!(
+                (p + m).abs() < 1e-4,
+                "frame {f} link {i}: {p} against a mirrored {m}",
+            );
+            worst = worst.max(p.abs());
+        }
+    }
+    // The kick really did bend the strand, so the two are not agreeing on
+    // zero for thirty frames.
+    assert!(worst > 0.1, "the kick swung the strand: worst {worst}");
+}

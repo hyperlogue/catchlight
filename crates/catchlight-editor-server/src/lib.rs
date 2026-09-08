@@ -2454,18 +2454,19 @@ fn clm_transform_matrix(t: &catchlight_core::formats::clm::ClmTransform) -> Mat4
     catchlight_core::Transform::from(t).to_matrix()
 }
 
-/// The node's own down in the physics frame — what `Arena::chain_orient`
-/// computes from a puppet's transforms, computed here from the model's, so a
-/// command can warn about a fit before anything is baked.
-fn rest_orient(model: &Model, id: &NodeId) -> Vec2 {
+/// The node's world linear map in the physics frame — what
+/// `Arena::chain_carry` computes from a puppet's transforms, computed here
+/// from the model's, so a command can warn about a fit before anything is
+/// baked.
+fn rest_carry(model: &Model, id: &NodeId) -> catchlight_core::Mat2 {
+    use catchlight_core::Mat2;
     let world = rest_world(model, id);
-    let down = Vec2::new(-world.y_axis.x, -world.y_axis.y);
-    let down = if down.is_finite() && down.length_squared() > 1e-12 {
-        down.normalize()
-    } else {
-        Vec2::new(0.0, -1.0)
-    };
-    Vec2::new(down.x, -down.y)
+    let m = Mat2::from_cols(
+        Vec2::new(world.x_axis.x, world.x_axis.y),
+        Vec2::new(world.y_axis.x, world.y_axis.y),
+    );
+    let flip = Mat2::from_cols(Vec2::new(1.0, 0.0), Vec2::new(0.0, -1.0));
+    flip * m * flip
 }
 
 /// What a chain cannot do with the drawing it was given: one line per link
@@ -2482,7 +2483,7 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
     };
     let g_scale = model.physics().pixels_per_meter * model.physics().gravity;
     let gravity = chain.gravity * g_scale;
-    let orient = rest_orient(model, node);
+    let carry = rest_carry(model, node);
     let data = catchlight_core::SpineData::new(
         spine
             .joints()
@@ -2503,7 +2504,7 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
                 limit: feel.limit,
                 preload: 0.0,
             };
-            (!catchlight_core::physics::link_can_rest_as_drawn(&link, gravity, orient)).then(|| {
+            (!catchlight_core::physics::link_can_rest_as_drawn(&link, gravity, carry)).then(|| {
                 // Two ways to fail, and the rigger fixes them differently:
                 // one wants a spring at all, the other a stronger one.
                 let why = if link.stiffness.is_nan() || link.stiffness <= 0.0 {
