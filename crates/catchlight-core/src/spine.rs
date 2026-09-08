@@ -22,7 +22,21 @@
 //! proportion. That is O(N) per spine and O(1) per vertex, and it is the
 //! composition itself rather than a sum of samples of it: two 50 px links bent
 //! a sixth of a turn each put the tip where the composed rigid motion puts it,
-//! and no segment changes length.
+//! and every joint stays the drawn distance from the joint above it.
+//!
+//! **The joints are exact; the art between them stretches.** A vertex `f` of
+//! the way along a link turns by `f * theta` about the hinge, so the interior
+//! of a bent link leaves the hinge along the link above and spirals out to
+//! the joint rather than running straight to it, and that spiral is longer
+//! than the chord it replaces: a 100 px link bent a quarter turn measures
+//! about 124 px along a three-row centre line and about 132 px along a dense
+//! one, all of the excess in the half nearer the joint; a sixth of a turn
+//! costs about 16 %, a twelfth about 4 %. This is the ramp's trade and not a
+//! defect to tune away. With the joint pinned by the composition, the only
+//! interior that keeps its length is the crease (`f = 1` everywhere), which
+//! is a hinge and not a bend; every smooth interior from the hinge is longer
+//! than the chord. Art that must not stretch along its strand wants more,
+//! shorter links, so that each joint's turn is small.
 //!
 //! **The assignment comes from rest geometry, once per bake.** Each descendant
 //! vertex is mapped into spine space through the rest transforms and projected

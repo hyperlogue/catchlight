@@ -131,9 +131,9 @@ that enforces them, not here. Add new ones there.
   hot loops never look up
 - `crates/catchlight-core/src/meshgroup.rs` — descent, `translate_children`
 - `crates/catchlight-core/src/spine.rs` — bend 0 is the art, how the joint
-  rotations compose, where the pass runs and what its descent halts at, that
-  the per-vertex assignment comes from rest geometry, and the chain it may
-  carry
+  rotations compose, that the joints are exact and the art between them
+  stretches, where the pass runs and what its descent halts at, that the
+  per-vertex assignment comes from rest geometry, and the chain it may carry
 - `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down
   frame, the chain's position-based form, what a link bend's sign means, why the
   drawing is the equilibrium and the spring is fitted to make it one, an

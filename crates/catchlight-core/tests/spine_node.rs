@@ -233,7 +233,8 @@ fn three_unequal_bends_compose_at_every_joint() {
 }
 
 /// Halfway into a link, a vertex takes half that link's turn — the ramp that
-/// makes a crease a bend rather than a hinge.
+/// makes a crease a bend rather than a hinge. This pins the mapping; what the
+/// mapping costs in length is measured by the test after it.
 #[test]
 fn a_vertex_halfway_into_a_link_takes_half_its_turn() {
     // Five rows over one 100 px link: row 2 sits at the middle.
@@ -247,6 +248,30 @@ fn a_vertex_halfway_into_a_link_takes_half_its_turn() {
     assert!(
         (middle - want).length() < 1e-3,
         "middle at {middle:?}, want {want:?}"
+    );
+}
+
+/// **The joints are exact and the art between them stretches**, and this
+/// pins how much: a 100 px link bent a quarter turn keeps its tip 100 px from
+/// the root, and its three-row centre line measures 123.7 px, the middle row
+/// having turned half as far about the same hinge. The number is the ramp's
+/// trade, documented in the module doc, and a change that moves it is a
+/// change to what a bend looks like.
+#[test]
+fn the_ramp_stretches_the_interior_between_exact_joints() {
+    // Three rows over one 100 px link: root, middle and tip.
+    let f = Fixture::new(1, 100.0, 3);
+    let posed = f.bend(&[0.5]);
+    let centre = |row: usize| 0.5 * (posed[2 * row] + posed[2 * row + 1]);
+    let (root, middle, tip) = (centre(0), centre(1), centre(2));
+    assert!(
+        (tip - root).length() > 100.0 - 1e-3 && (tip - root).length() < 100.0 + 1e-3,
+        "the joint kept its distance from the hinge: tip at {tip:?}",
+    );
+    let along = (middle - root).length() + (tip - middle).length();
+    assert!(
+        (along - 123.68).abs() < 0.05,
+        "the centre line of a quarter-turn link measures {along}, want 123.68",
     );
 }
 
