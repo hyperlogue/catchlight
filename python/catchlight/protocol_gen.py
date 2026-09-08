@@ -3362,8 +3362,9 @@ class ResponseBodySpineFit:
 
     `warnings` is the fit telling the rigger what the physics cannot do:
     a limp weighted link drawn off gravity settles along gravity and not
-    along the art, and saying so beats a strand that quietly falls out of
-    its pose. Empty when the drawing is one the chain can hold.
+    along the art, and a link drawn upward under a spring too weak to hold
+    it falls over; saying so beats a strand that quietly falls out of its
+    pose. Empty when the drawing is one the chain can hold.
     """
 
     TAG_FIELD: ClassVar[str] = "result"

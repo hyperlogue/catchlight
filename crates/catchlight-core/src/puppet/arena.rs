@@ -413,8 +413,7 @@ impl Arena {
             if let (Some(chain), Some(orient)) = (&mut spine.chain, orient) {
                 let gravity = chain.gravity;
                 for link in chain.links.iter_mut() {
-                    link.spring_offset =
-                        crate::physics::fitted_spring_offset(link, gravity, orient);
+                    link.preload = crate::physics::fitted_preload(link, gravity, orient);
                 }
             }
         }

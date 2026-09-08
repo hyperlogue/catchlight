@@ -2501,13 +2501,17 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
                 damping: feel.damping,
                 stiffness: feel.stiffness,
                 limit: feel.limit,
-                spring_offset: 0.0,
+                preload: 0.0,
             };
             (!catchlight_core::physics::link_can_rest_as_drawn(&link, gravity, orient)).then(|| {
-                format!(
-                    "link {} has no stiffness and is drawn off gravity, so it cannot rest as drawn",
-                    i + 1
-                )
+                // Two ways to fail, and the rigger fixes them differently:
+                // one wants a spring at all, the other a stronger one.
+                let why = if link.stiffness.is_nan() || link.stiffness <= 0.0 {
+                    "has no stiffness and is drawn off gravity"
+                } else {
+                    "is drawn upward and its spring is too weak to hold it"
+                };
+                format!("link {} {why}, so it cannot rest as drawn", i + 1)
             })
         })
         .collect()

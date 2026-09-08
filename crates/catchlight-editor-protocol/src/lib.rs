@@ -2512,8 +2512,9 @@ pub enum ResponseBody {
     ///
     /// `warnings` is the fit telling the rigger what the physics cannot do:
     /// a limp weighted link drawn off gravity settles along gravity and not
-    /// along the art, and saying so beats a strand that quietly falls out of
-    /// its pose. Empty when the drawing is one the chain can hold.
+    /// along the art, and a link drawn upward under a spring too weak to hold
+    /// it falls over; saying so beats a strand that quietly falls out of its
+    /// pose. Empty when the drawing is one the chain can hold.
     SpineFit {
         /// The spine, whether this call made it or re-fitted one.
         node: NodeId,

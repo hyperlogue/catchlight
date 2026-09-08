@@ -68,27 +68,60 @@
 //! direction each rod is drawn in come from the spine's joints, so the shape
 //! the art was drawn in is the shape the strand hangs in. That is a claim
 //! about a *loaded* pose — a weighted link drawn off gravity is already
-//! pulling — so [`fitted_spring_offset`] runs the torque balance backwards at
-//! bake and puts the spring's unloaded target where the loaded balance lands
-//! on the drawing. A link's `stiffness` is still the frequency in Hz of a
-//! spring on the bend at the joint above it, and `link_bends` still reports
+//! pulling — so [`fitted_preload`] gives the spring a constant tangential
+//! acceleration, in px/s², that cancels gravity across the rod exactly where
+//! the drawing puts it. A link's `stiffness` is still the frequency in Hz of
+//! a spring on the bend at the joint above it, and `link_bends` still reports
 //! that bend as a deviation from the drawing, so **a chain lying on its
 //! drawing reads zero on every link whatever the drawing is**.
 //!
-//! **A limp weighted link is the one shape that cannot be fitted.** With no
-//! spring there is no target to move: gravity alone decides, and it decides
-//! along gravity. Such a link drawn off gravity settles somewhere the drawing
-//! is not, and [`link_can_rest_as_drawn`] is what an editor asks so it can say
-//! so rather than letting the strand quietly fall out of its pose.
+//! **The preload is a constant field, not a turned target.** Turning the
+//! spring's target instead buys the same balance at the drawing and a second
+//! one half a turn away, because the bend the solver reads is folded into a
+//! half turn either way: a 1.5 Hz link drawn across gravity used to settle
+//! 139 degrees off its pose and stay there. The preload has one root the fold
+//! can reach.
+//!
+//! **And it is fixed in the node's frame, not the rod's.** The same number
+//! applied across whatever direction the rod has swung to would be a torque
+//! of constant magnitude, which does work on every lap the joint turns, so a
+//! link knocked over the top would be driven round and round rather than
+//! coming back; applied along the perpendicular to the *drawing* it is a
+//! uniform field, as conservative as gravity, with a bottom to fall to.
+//! Writing the total tangential acceleration at a bend `theta` from the
+//! drawing, the field's part and gravity's collapse together into
+//!
+//! ```text
+//!   A(theta) = -(g * gs * cos gamma) * sin theta - K * theta
+//! ```
+//!
+//! with `K = (2*pi*f)^2 * L` and `gamma` the angle from the drawing to
+//! gravity: a pendulum in an effective gravity of `g * gs * cos gamma` along
+//! the drawing, plus the torsional spring. So a link drawn horizontally
+//! swings about its drawing as if it were weightless, one drawn below the
+//! horizontal has an effective gravity holding it there, and only one drawn
+//! *upward* can be unstable — exactly when `K + g * gs * cos gamma > 0`
+//! fails, which is what [`link_can_rest_as_drawn`] asks. Nothing is bistable
+//! and nothing circulates.
+//!
+//! **A limp weighted link is the one shape that cannot be fitted at all.**
+//! With no spring there is no preload to carry: gravity alone decides, and it
+//! decides along gravity. Such a link drawn off gravity settles somewhere the
+//! drawing is not, and [`link_can_rest_as_drawn`] is what an editor asks so
+//! it can say so rather than letting the strand quietly fall out of its pose.
+//! A sprung link drawn *upward* under a spring too weak to hold it is the
+//! other refusal, and the same call answers both.
 //!
 //! **The pose moves the target on top of the fit.** A link's own param poses
 //! its bend, and that is where the spring pulls: an animation that bends a
 //! joint to a quarter turn moves the target there, and physics supplies the
-//! lag and the settle around it. There is no rest-bend knob because the
-//! drawing is one and the pose is the other. `0` Hz is no spring at all. The
-//! spring saturates rather than exploding: a step too coarse to resolve it
-//! moves the joint to rest in that step instead of past it, so no stiffness
-//! can blow the chain up.
+//! lag and the settle around it. The preload does not move with it — it is
+//! the drawing's own, and a posed link balances the two, which is why the
+//! rest pose of a posed link is solved rather than read off. There is no
+//! rest-bend knob because the drawing is one and the pose is the other. `0`
+//! Hz is no spring at all. The spring saturates rather than exploding: a step
+//! too coarse to resolve it moves the joint to rest in that step instead of
+//! past it, so no stiffness can blow the chain up.
 //!
 //! **Every bend spring damps itself.** A strand of equal links is a resonant
 //! cascade — each link driven by the one above it at its own frequency, one
@@ -646,7 +679,7 @@ impl SimplePhysicsData {
 ///
 /// The runtime half. What an author writes down is a
 /// [`crate::model::LinkFeel`] on a spine's chain; the length and the drawn
-/// direction come from the spine's joints, and `spring_offset` is fitted at
+/// direction come from the spine's joints, and `preload` is fitted at
 /// bake. Nothing here is stored in a file.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChainLink {
@@ -671,15 +704,15 @@ pub struct ChainLink {
     /// `(0, 1]`, and measured around the same direction
     /// [`ParticleChainData::link_bends`] reports a bend from.
     pub limit: Option<f32>,
-    /// Where the spring's unloaded target sits, in radians from the drawn
-    /// direction, so that the loaded equilibrium *is* the drawn direction.
+    /// A constant tangential acceleration on this link's particle, in
+    /// px/s², along the same perpendicular the bend spring pushes on — the
+    /// spring's own preload, holding the drawing up against gravity.
     ///
-    /// Fitted by [`fitted_spring_offset`] at bake against the node's rest
+    /// Fitted by [`fitted_preload`] at bake against the node's rest
     /// orientation, because the drawing is the equilibrium under gravity and
     /// not the shape a weightless strand would hold. Zero for a link with no
-    /// spring, no weight, or one drawn along gravity — every case where the
-    /// spring has nothing to pull against.
-    pub spring_offset: f32,
+    /// spring or no weight, every case where there is nothing to hold up.
+    pub preload: f32,
 }
 
 impl Default for ChainLink {
@@ -691,91 +724,104 @@ impl Default for ChainLink {
             damping: 0.5,
             stiffness: 0.0,
             limit: None,
-            spring_offset: 0.0,
+            preload: 0.0,
         }
     }
 }
 
-/// The angle a link's spring target sits at, measured from the link's drawn
-/// direction, so that the link's equilibrium under gravity is that drawn
-/// direction.
+/// The constant tangential acceleration a link's spring carries so that the
+/// link's equilibrium under gravity is the direction it is drawn in.
 ///
-/// **The drawing is the equilibrium, so the spring's target is not the
-/// drawing.** A weighted sprung link drawn off gravity is already loaded where
-/// it stands: gravity is pulling it away from wherever its spring is anchored,
-/// and the drawing is where the two balance. Aiming the spring at the drawing
-/// would make the strand sag off it the moment it was simulated.
+/// **The drawing is the equilibrium, so the spring alone cannot be the whole
+/// story.** A weighted sprung link drawn off gravity is already loaded where
+/// it stands: gravity pulls it away from the drawing, and something has to
+/// pull back exactly as hard or the strand sags off its pose the moment it is
+/// simulated.
 ///
-/// [`rest_pose_dir`] solves the balance forward, `k*theta = g*sin(theta_g -
-/// theta)` for `theta` measured from the spring's target. Run it backwards
-/// with `theta_g - theta` pinned to `gamma`, the angle from the drawn
-/// direction to gravity, and the sine's argument stops depending on the
-/// unknown:
-///
-/// ```text
-///   theta = g * sin(gamma) / (w0^2 * L)
-/// ```
-///
-/// which is the whole answer in closed form, no bisection. The target is then
-/// the drawn direction turned back by that angle. A negative `gravity_scale`
-/// is gravity the other way and flips the sine's sign, which is exactly what
-/// keeping `g` signed does.
+/// **What pulls back is a constant, not a turned target.** Gravity's pull
+/// across the rod at the drawing is `g * gs * d.x`, where `d` is the drawn
+/// direction carried by the node's rest rotation, so the preload that cancels
+/// it is that with the sign flipped and nothing else in it — no stiffness, no
+/// length. Turning the spring's target instead, which is what this used to
+/// do, buys the same balance at the drawing and a second one half a turn
+/// away: the shortest-arc fold puts a stable basin at `pi - offset` from the
+/// drawing, and a 1.5 Hz link drawn across gravity settled 139 degrees off
+/// its pose and stayed there. A constant has no second root to fall into
+/// (see [`link_can_rest_as_drawn`]). It is applied as a field fixed in the
+/// node's frame — across the drawing, not across wherever the rod has swung
+/// to — and the module doc says why that is the difference between a strand
+/// that comes back and one that circulates.
 ///
 /// `orient` is the node's own down in the physics frame — the rotation the
 /// drawn shape is carried by — because gravity is world-fixed and the balance
-/// is not the same one at a different tilt. Zero whenever there is no spring,
-/// no weight, or no lever arm: a link the fit has nothing to say about.
-pub fn fitted_spring_offset(link: &ChainLink, gravity: f32, orient: Vec2) -> f32 {
+/// is not the same one at a different tilt. Zero whenever there is no spring
+/// or no weight: a link the fit has nothing to say about.
+pub fn fitted_preload(link: &ChainLink, gravity: f32, orient: Vec2) -> f32 {
     let g = gravity * link.gravity_scale;
     if link.stiffness.is_nan() || link.stiffness <= 0.0 || !g.is_finite() || g == 0.0 {
         return 0.0;
     }
-    if !link.length.is_finite() || link.length <= 0.0 {
-        return 0.0;
-    }
-    let w0 = std::f32::consts::TAU * link.stiffness;
-    let k = w0 * w0 * link.length;
-    if !k.is_finite() || k == 0.0 {
-        return 0.0;
-    }
-    // The drawn direction where the node's rest rotation puts it, and the
-    // angle from there to gravity.
+    // The drawn direction where the node's rest rotation puts it. Its x is
+    // the sine of the angle from gravity, which is the whole of what gravity
+    // has across the rod there.
     let drawn = rotate_by(
         unit_down(link.drawn),
         signed_angle(GRAVITY_DIR, unit_down(orient)),
     );
-    let gamma = signed_angle(drawn, GRAVITY_DIR);
-    let offset = g * gamma.sin() / k;
-    if offset.is_finite() {
-        offset
+    let preload = -g * drawn.x;
+    if preload.is_finite() {
+        preload
     } else {
         0.0
     }
 }
 
-/// Whether a link can settle where it is drawn, once
-/// [`fitted_spring_offset`] has done what it can.
+/// Whether a link can settle where it is drawn, once [`fitted_preload`] has
+/// done what it can.
 ///
-/// A limp weighted link has no spring to fit: gravity alone decides where it
-/// hangs, and that is along gravity whatever the drawing says. One drawn off
-/// gravity therefore cannot rest as drawn, and an author wants telling rather
-/// than a strand that quietly falls out of its pose on the first tick.
+/// Two ways it cannot. **A limp weighted link has no spring to preload:**
+/// gravity alone decides where it hangs, and that is along gravity whatever
+/// the drawing says. **A sprung one drawn upward may have a spring too weak
+/// to hold it:** the preload balances the drawing, but a balance is not a
+/// rest unless it is stable, and past the top a stiffer pull from gravity
+/// wins. The module doc collapses the field and gravity into one tangential
+/// acceleration at a bend `theta` from the drawing,
 ///
-/// `orient` is [`fitted_spring_offset`]'s. Weightless links rest wherever they
-/// are put, so they are never a complaint.
+/// ```text
+///   A(theta) = -(g * gs * cos gamma) * sin theta - K * theta,   K = (2*pi*f)^2 * L
+/// ```
+///
+/// zero at the drawing by the fit's construction and restoring there exactly
+/// when `K + g * gs * cos gamma > 0`, with `gamma` the angle from the drawing
+/// to gravity. Drawn downward, `cos gamma > 0` and any spring will do; drawn
+/// upward it is a race between the spring and the weight.
+///
+/// An author wants telling about either, rather than a strand that quietly
+/// falls out of its pose on the first tick.
+///
+/// `orient` is [`fitted_preload`]'s. Weightless links rest wherever they are
+/// put, so they are never a complaint.
 pub fn link_can_rest_as_drawn(link: &ChainLink, gravity: f32, orient: Vec2) -> bool {
     let g = gravity * link.gravity_scale;
     if !g.is_finite() || g == 0.0 {
-        return true;
-    }
-    if !link.stiffness.is_nan() && link.stiffness > 0.0 {
         return true;
     }
     let drawn = rotate_by(
         unit_down(link.drawn),
         signed_angle(GRAVITY_DIR, unit_down(orient)),
     );
-    signed_angle(drawn, GRAVITY_DIR).abs() <= 1e-3
+    let gamma = signed_angle(drawn, GRAVITY_DIR);
+    if link.stiffness.is_nan() || link.stiffness <= 0.0 {
+        return gamma.abs() <= 1e-3;
+    }
+    if !link.length.is_finite() || link.length <= 0.0 {
+        // No lever arm to speak of, and the loader refuses such a link
+        // anyway; there is nothing useful to warn about.
+        return true;
+    }
+    let w0 = std::f32::consts::TAU * link.stiffness;
+    let k = w0 * w0 * link.length;
+    k.is_finite() && k + g * gamma.cos() > 0.0
 }
 
 /// A point mass on a chain. Both halves of the state are stored; see the
@@ -1001,9 +1047,8 @@ impl ParticleChainData {
         let mut previous: Option<Vec2> = None;
         for (i, link) in self.links.iter().enumerate() {
             let rest = zero_bend_dir(&self.links, i, previous, turn);
-            let target = spring_target(rest, link.spring_offset, posed.get(i).copied());
-            let dir = rest_pose_dir(link, target, self.gravity);
-            // The balance the bisection finds is where the link would stand
+            let dir = rest_pose_dir(link, rest, posed.get(i).copied(), self.gravity);
+            // The balance the solve finds is where the link would stand
             // if it could; a limited one stands on its boundary instead, and
             // the rest pose has to say so or the first tick would move.
             let dir = match clamp_to_limit(rest, dir, link.limit) {
@@ -1167,13 +1212,22 @@ impl ParticleChainData {
             let rest = zero_bend_dir(&self.links, i - 1, previous, turn);
 
             let free = if moving {
-                let mut v =
-                    self.particles[i].vel + Vec2::new(0.0, self.gravity * link.gravity_scale) * h;
+                // The field this link falls in: gravity, plus the preload
+                // that holds its drawing up. The preload is a vector fixed in
+                // the node's frame — across the drawn direction, not across
+                // wherever the rod has swung to — so it is as conservative as
+                // gravity is. Skipped whole when there is none, so an
+                // unfitted link integrates the bits it always did.
+                let mut field = Vec2::new(0.0, self.gravity * link.gravity_scale);
+                if link.preload != 0.0 && link.preload.is_finite() {
+                    field += Vec2::new(-rest.y, rest.x) * link.preload;
+                }
+                let mut v = self.particles[i].vel + field * h;
                 // The bend spring rides alongside gravity, on this link's own
                 // clock like everything else. Skipped whole when it has
                 // nothing to say, so an unsprung link integrates the same
                 // bits it did before there was a spring at all.
-                let target = spring_target(rest, link.spring_offset, posed.get(i - 1).copied());
+                let target = spring_target(rest, posed.get(i - 1).copied());
                 if let Some(acc) =
                     bend_spring_acceleration(target, old - above, link.length, link.stiffness, h)
                 {
@@ -1350,30 +1404,36 @@ fn zero_bend_dir(links: &[ChainLink], i: usize, previous: Option<Vec2>, turn: f3
 }
 
 /// Where a link's bend spring pulls: the direction its bend reads zero along,
-/// turned by the fitted offset that makes the drawing its equilibrium and then
-/// by the bend its own param is posed at.
+/// turned by the bend its own param is posed at.
 ///
 /// **The pose is the spring's target, and physics is what happens around
 /// it.** An animation that poses a joint at a quarter turn is saying the
 /// strand is drawn bent there, so a stiff link holds it there and a limp one
-/// sags away from it, exactly as both do about a strand at bend zero.
+/// sags away from it, exactly as both do about a strand at bend zero. What
+/// holds the *drawing* up is not here but in the link's `preload`, which is a
+/// constant acceleration and not a turn of this target — see
+/// [`fitted_preload`] for why the two are not interchangeable.
 ///
 /// `posed` is in half turns, the convention
 /// [`ParticleChainData::link_bends`] reports and the one a bend param
 /// carries: positive is the link's tip toward the node's +X. That reads
 /// `theta = atan2(dir.x, dir.y)` off the rod, and [`rotate_by`] by `a` takes
 /// `theta` to `theta - a`, so the turn that *raises* the reported bend by
-/// `posed` is by `-posed * pi`. [`ChainLink::spring_offset`] is already in
-/// that sign, having been measured from the drawn direction the same way.
-/// Both zero returns `rest` itself rather than a rotation by zero, so a chain
-/// nothing poses and nothing fitted integrates the bits it always did.
-fn spring_target(rest: Vec2, offset: f32, posed: Option<f32>) -> Vec2 {
-    let posed = posed.filter(|p| p.is_finite()).unwrap_or(0.0);
-    let offset = if offset.is_finite() { offset } else { 0.0 };
-    if offset == 0.0 && posed == 0.0 {
+/// `posed` is by `-posed * pi`. Zero returns `rest` itself rather than a
+/// rotation by zero, so a chain nobody poses integrates the bits it always
+/// did.
+fn spring_target(rest: Vec2, posed: Option<f32>) -> Vec2 {
+    let posed = posed_bend(posed);
+    if posed == 0.0 {
         return rest;
     }
-    rotate_by(rest, -offset - posed * std::f32::consts::PI)
+    rotate_by(rest, -posed * std::f32::consts::PI)
+}
+
+/// The bend a param poses, in half turns: what the caller set, or zero where
+/// nothing is posed and where what is posed is not a number.
+fn posed_bend(posed: Option<f32>) -> f32 {
+    posed.filter(|p| p.is_finite()).unwrap_or(0.0)
 }
 
 /// `dir` held inside a link's bend limit: `Some((direction, sign))` naming
@@ -1457,35 +1517,46 @@ fn rotate_by(v: Vec2, angle: f32) -> Vec2 {
     Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
 }
 
-/// The direction one link takes at rest: `rest` is where its spring pulls —
-/// [`spring_target`] of where its bend reads zero — and `gravity` is the
-/// chain's, before this link's own scale.
+/// The direction one link stands in at rest: `rest` is where its bend reads
+/// zero — the drawing, carried — `posed` is the bend its param asks for, and
+/// `gravity` is the chain's, before this link's own scale.
 ///
 /// **Springless links keep what they always did.** A weighted one hangs along
-/// gravity, whatever the node is doing; one with no weight either has nothing
-/// to decide it, so it keeps the bend it was drawn with — zero — which is
-/// `rest`.
+/// gravity, whatever the drawing says; one with no weight either has nothing
+/// to decide it, so it keeps the bend it is posed at.
 ///
-/// A sprung link solves the torque balance about its joint,
+/// **A sprung link nobody poses stands on its drawing, with nothing to
+/// solve — where the node stands where the fit saw it.** That is what
+/// [`fitted_preload`] bought: the preload is what gravity has across the
+/// drawing with the sign turned round, so the two cancel there and the
+/// drawing is the equilibrium by construction. The field then lies along the
+/// drawing to within rounding, and the answer is `rest` itself, bit for bit,
+/// which is what lets a settled chain be an exact fixed point of the step.
+/// Under a tilt the fit did not see — a node a param has turned since the
+/// bake — the field has swung off the drawing, the strand sags by what the
+/// tilt added, and the balance is solved like a posed link's.
+///
+/// **A posed one balances the field against its spring.** The pose moves the
+/// spring's target and leaves the preload on the drawing, so the link hangs
+/// in `field = gravity + preload` — a constant vector for the frame, exactly
+/// as gravity alone used to be — and solves the same torque balance it always
+/// did,
 ///
 /// ```text
-///   w0^2 * L * theta  =  g * sin(theta_g - theta)
+///   K * theta  =  |field| * sin(theta_g - theta)
 /// ```
 ///
-/// for `theta`, the bend measured from `rest`: the spring's pull back to zero
-/// against gravity's pull toward `theta_g`, gravity's own direction measured
-/// the same way. **This is the solver's exact equilibrium and not an
-/// approximation of it**, because the coupling runs one way only — a link is
-/// hung off the rod above it and never feels the weight below it — so each
-/// joint balances on its own and a root-to-tip walk is the whole answer.
-///
-/// Solved by bisection on `[min(0, theta_g), max(0, theta_g)]`: at `0` only
-/// gravity pulls, at `theta_g` only the spring does, so the ends have
-/// opposite signs and the root is between them. A negative `gravity_scale` is
-/// gravity pointing the other way, so it flips `theta_g` rather than breaking
-/// the bracket.
-fn rest_pose_dir(link: &ChainLink, rest: Vec2, gravity: f32) -> Vec2 {
+/// for `theta` measured from the spring's target, with `theta_g` the angle
+/// from that target to the field. Bisected on `[min(0, theta_g), max(0,
+/// theta_g)]`: at `0` only the field pulls and at `theta_g` only the spring
+/// does, so the ends have opposite signs and the root is between them. **This
+/// is the solver's exact equilibrium and not an approximation of it**,
+/// because the coupling runs one way only — a link is hung off the rod above
+/// it and never feels the weight below it — so each joint balances on its own
+/// and a root-to-tip walk is the whole answer.
+fn rest_pose_dir(link: &ChainLink, rest: Vec2, posed: Option<f32>, gravity: f32) -> Vec2 {
     let g = gravity * link.gravity_scale;
+    let target = spring_target(rest, posed);
     let down = Vec2::new(0.0, 1.0);
     // NaN is spelled out rather than left to fail a comparison: a link whose
     // stiffness is not a number carries no spring.
@@ -1493,33 +1564,53 @@ fn rest_pose_dir(link: &ChainLink, rest: Vec2, gravity: f32) -> Vec2 {
         return if g != 0.0 && g.is_finite() {
             down
         } else {
-            rest
+            target
         };
     }
     if g == 0.0 || !g.is_finite() {
-        return rest;
+        return target;
     }
     let w0 = std::f32::consts::TAU * link.stiffness;
     let k = w0 * w0 * link.length;
-    let theta_g = signed_angle(rest, if g > 0.0 { down } else { -down });
-    let g = g.abs();
-    let balance = |theta: f32| k * theta - g * (theta_g - theta).sin();
+    if !k.is_finite() || k == 0.0 {
+        return target;
+    }
+    // Gravity and the preload together, the preload across the *unposed*
+    // drawing because that is the direction it was fitted to hold up.
+    let mut field = Vec2::new(0.0, g);
+    if link.preload != 0.0 && link.preload.is_finite() {
+        field += Vec2::new(-rest.y, rest.x) * link.preload;
+    }
+    let strength = field.length();
+    if !strength.is_finite() || strength <= 0.0 {
+        // Nothing pulls, so the spring has its target to itself.
+        return target;
+    }
+    let theta_g = signed_angle(target, field / strength);
+    // The fitted case: nothing posed and the field along the drawing to
+    // within rounding (a fit that cancelled gravity there exactly leaves a
+    // few ulps of cross product). The drawing is the root by construction,
+    // so it is returned as it is rather than as a bisection's approach to it.
+    if posed_bend(posed) == 0.0 && theta_g.abs() <= 1e-5 {
+        return rest;
+    }
+    let balance = |theta: f32| k * theta - strength * (theta_g - theta).sin();
 
     let (mut lo, mut hi) = (theta_g.min(0.0), theta_g.max(0.0));
     let (f_lo, f_hi) = (balance(lo), balance(hi));
     if !f_lo.is_finite() || !f_hi.is_finite() {
-        return rest;
+        return target;
     }
     if f_lo == 0.0 {
-        return rotate_by(rest, lo);
+        return rotate_by(target, lo);
     }
     if f_hi == 0.0 {
-        return rotate_by(rest, hi);
+        return rotate_by(target, hi);
     }
     if (f_lo > 0.0) == (f_hi > 0.0) {
         // No bracket to bisect on; nothing sensible to say, so leave the link
-        // where it was drawn.
-        return rest;
+        // on its target.
+        return target;
     }
     let hi_positive = f_hi > 0.0;
     // Enough halvings to exhaust an f32 mantissa several times over; the
@@ -1535,7 +1626,7 @@ fn rest_pose_dir(link: &ChainLink, rest: Vec2, gravity: f32) -> Vec2 {
             lo = mid;
         }
     }
-    rotate_by(rest, 0.5 * (lo + hi))
+    rotate_by(target, 0.5 * (lo + hi))
 }
 
 /// The bend spring's tangential acceleration on one particle, or `None` when
@@ -1544,11 +1635,17 @@ fn rest_pose_dir(link: &ChainLink, rest: Vec2, gravity: f32) -> Vec2 {
 /// vector, so a chain without stiffness integrates bit for bit what it did
 /// before the spring existed.
 ///
-/// `rest` is where the bend reads zero and `rod` is the joint's current one,
-/// from the particle above to this one. With `w0 = 2*pi*stiffness` the spring
-/// pulls the bend `theta` back toward zero with a tangential `w0^2 * length *
-/// theta` — the pendulum form, so `stiffness` reads straight off the strand
-/// as the frequency in Hz a displaced joint rings at.
+/// `rest` is where the bend reads zero, already turned by the pose, and `rod`
+/// is the joint's current one, from the particle above to this one. With `w0
+/// = 2*pi*stiffness` the spring pulls the bend `theta` back toward zero with
+/// a tangential `w0^2 * length * theta` — the pendulum form, so `stiffness`
+/// reads straight off the strand as the frequency in Hz a displaced joint
+/// rings at.
+///
+/// The preload that holds the drawing up is not here. It is a uniform field
+/// the free integration adds beside gravity, for the reason the module doc
+/// gives: a pull of fixed magnitude across the *rod* would do work on every
+/// lap the joint turned, and one fixed in the node's frame does none.
 ///
 /// **A step too coarse for the spring saturates at critical rather than
 /// exploding.** The spring's own displacement over a step is `w0^2 * theta *
@@ -2591,15 +2688,25 @@ mod tests {
             3
         ]);
         c.gravity = 980.0;
+        for link in c.links.iter_mut() {
+            link.preload = fitted_preload(link, 980.0, tilted);
+        }
         c.settle_to_rest(Vec2::ZERO, tilted, &[]);
         let settled: Vec<Vec2> = c.particles.iter().map(|p| p.pos).collect();
 
-        // The pose is a real compromise between the two pulls and not either
-        // one of them: a spring this stiff wins, but gravity still shows.
+        // The strand stands on its drawing, carried by the node — not along
+        // gravity, which is where an unfitted weighted link would hang. That
+        // is the preload doing its work, and there is real work to do: at
+        // this tilt it carries 470 px/s^2 across the rod.
         let first = (c.particles[1].pos - c.particles[0].pos).normalize();
         assert!(
-            first.distance(tilted) > 1e-3 && first.distance(DOWN) > 1e-3,
-            "the first link balances the node's down against gravity, got {first}",
+            first.distance(tilted) < 1e-4 && first.distance(DOWN) > 1e-3,
+            "the first link stands where the node carries its drawing, got {first}",
+        );
+        assert!(
+            c.links[0].preload.abs() > 1.0,
+            "and it is held there rather than hanging: preload {}",
+            c.links[0].preload,
         );
 
         let mut worst = 0.0f32;
@@ -2814,6 +2921,209 @@ mod tests {
             bends[0],
         );
     }
+    /// The link the preload was reformulated for: 50 px drawn straight
+    /// across a gravity of 9800, which is a model authored at a thousand
+    /// pixels to the metre. It is fittable, it settles exactly on its
+    /// drawing, and it stays there.
+    ///
+    /// With the preload folded into a turned target instead, this settled 139
+    /// degrees off its pose at 1.5 Hz and 88 degrees off at 1.0 Hz: the
+    /// shortest-arc fold put a second stable basin half a turn from the
+    /// drawing and the solve fell into it.
+    fn across_gravity(stiffness: f32) -> ChainLink {
+        let mut link = ChainLink {
+            length: 50.0,
+            drawn: Vec2::new(1.0, 0.0),
+            gravity_scale: 1.0,
+            damping: 0.5,
+            stiffness,
+            limit: None,
+            preload: 0.0,
+        };
+        link.preload = fitted_preload(&link, 9800.0, GRAVITY_DIR);
+        link
+    }
+
+    #[test]
+    fn a_link_drawn_across_gravity_rests_on_its_drawing() {
+        for stiffness in [1.5f32, 1.0] {
+            let link = across_gravity(stiffness);
+            assert!(
+                link_can_rest_as_drawn(&link, 9800.0, GRAVITY_DIR),
+                "{stiffness} Hz across gravity is a shape a spring can hold",
+            );
+            let mut c = ParticleChainData::new(vec![link]);
+            c.gravity = 9800.0;
+            c.settle_to_rest(Vec2::ZERO, GRAVITY_DIR, &[]);
+
+            let mut bends = Vec::new();
+            c.link_bends(Mat4::IDENTITY, &mut bends);
+            assert!(
+                bends[0].abs() < 1e-6,
+                "{stiffness} Hz settles on its drawing, got {} half turns",
+                bends[0],
+            );
+            // Three seconds of ticking from there move nothing: the rest the
+            // settle computes is the rest the step agrees with.
+            for _ in 0..180 {
+                c.tick(Vec2::ZERO, GRAVITY_DIR, &[], 1.0 / 60.0);
+            }
+            c.link_bends(Mat4::IDENTITY, &mut bends);
+            assert!(
+                bends[0].abs() < 1e-4,
+                "{stiffness} Hz holds its drawing, got {} half turns",
+                bends[0],
+            );
+        }
+    }
+
+    /// **A displaced link comes back to its drawing, from anywhere.** The
+    /// preload is a uniform field and not a pull across the rod, so there is
+    /// no lap of the joint it does work on and nothing to circulate: the
+    /// drawing is the one equilibrium and everything falls into it. Dropped a
+    /// quarter turn and then five twelfths of one — past the horizontal,
+    /// which a constant torque across the rod could not come back from — the
+    /// link is inside a degree of its drawing after five seconds.
+    #[test]
+    fn a_displaced_link_comes_back_to_its_drawing() {
+        for stiffness in [1.5f32, 1.0] {
+            for drop_deg in [90.0f32, 150.0] {
+                let mut c = ParticleChainData::new(vec![across_gravity(stiffness)]);
+                c.gravity = 9800.0;
+                c.settle_to_rest(Vec2::ZERO, DOWN, &[]);
+
+                // The drawing points along +X, which is bearing pi/2;
+                // dropping it toward gravity is a smaller bearing.
+                let beta = (90.0 - drop_deg).to_radians();
+                c.particles[1].pos = Vec2::new(50.0 * beta.sin(), 50.0 * beta.cos());
+                c.particles[1].vel = Vec2::ZERO;
+                for _ in 0..300 {
+                    c.tick(Vec2::ZERO, DOWN, &[], 1.0 / 60.0);
+                }
+                let mut bends = Vec::new();
+                c.link_bends(Mat4::IDENTITY, &mut bends);
+                assert!(
+                    bends[0].abs() * 180.0 < 1.0,
+                    "{stiffness} Hz dropped {drop_deg} degrees is back within a \
+                     degree after five seconds, got {} degrees",
+                    bends[0] * 180.0,
+                );
+            }
+        }
+    }
+
+    /// A link drawn upward is the one sprung shape a spring can be too weak
+    /// to hold: the preload balances the drawing either way, but past the top
+    /// gravity's pull grows faster than the spring's, and the balance is a
+    /// hilltop rather than a rest. The line is `K + g * gs * cos gamma > 0`,
+    /// which at 150 degrees from gravity is `K > 0.866 * g`.
+    #[test]
+    fn a_spring_too_weak_for_an_upward_drawing_is_refused() {
+        // 150 degrees from gravity, so `cos gamma` is -0.866 and the spring
+        // has to carry 849 of the 980 gravity puts on it.
+        let up = Vec2::new(150f32.to_radians().sin(), 150f32.to_radians().cos());
+        let of = |stiffness: f32| {
+            let mut link = ChainLink {
+                length: 50.0,
+                drawn: up,
+                gravity_scale: 1.0,
+                damping: 0.5,
+                stiffness,
+                limit: None,
+                preload: 0.0,
+            };
+            link.preload = fitted_preload(&link, 980.0, GRAVITY_DIR);
+            link
+        };
+
+        // K = (2 pi f)^2 * 50: 493 at half a hertz, 1974 at one.
+        let weak = of(0.5);
+        assert!(
+            !link_can_rest_as_drawn(&weak, 980.0, GRAVITY_DIR),
+            "a spring worth 493 cannot hold 849",
+        );
+        let strong = of(1.0);
+        assert!(
+            link_can_rest_as_drawn(&strong, 980.0, GRAVITY_DIR),
+            "one worth 1974 can",
+        );
+
+        // And the one that can, does: three seconds on its drawing.
+        let mut c = ParticleChainData::new(vec![strong]);
+        c.gravity = 980.0;
+        c.settle_to_rest(Vec2::ZERO, GRAVITY_DIR, &[]);
+        let mut bends = Vec::new();
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(bends[0].abs() < 1e-6, "settled at {}", bends[0]);
+        for _ in 0..180 {
+            c.tick(Vec2::ZERO, GRAVITY_DIR, &[], 1.0 / 60.0);
+        }
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(
+            bends[0].abs() < 1e-4,
+            "an upward drawing a spring can hold stays held, got {}",
+            bends[0],
+        );
+    }
+
+    /// **A tilt the fit did not see still settles to a fixed point.** The
+    /// preload is fitted once, at the node's rest, and a param can turn the
+    /// node afterwards; the settle then has a field that no longer lies
+    /// along the drawing, and it has to solve the sag rather than stand the
+    /// strand on the tilted drawing and let the first tick drop it. The
+    /// drawing is the answer only where the fit's balance still holds.
+    #[test]
+    fn a_tilt_the_fit_did_not_see_is_still_a_fixed_point() {
+        // Fitted level, then settled under a node turned 30 degrees.
+        let tilt = Vec2::new(30f32.to_radians().sin(), 30f32.to_radians().cos());
+        let mut c = ParticleChainData::new(vec![across_gravity(1.5)]);
+        c.gravity = 9800.0;
+        c.settle_to_rest(Vec2::ZERO, tilt, &[]);
+        let mut bends = Vec::new();
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        let settled = bends[0];
+        assert!(
+            settled.abs() > 1e-3,
+            "the tilt adds gravity across the rod that the fit did not cancel, \
+             so the strand sags off its drawing: got {settled} half turns",
+        );
+        for _ in 0..60 {
+            c.tick(Vec2::ZERO, tilt, &[], 1.0 / 60.0);
+        }
+        c.link_bends(Mat4::IDENTITY, &mut bends);
+        assert!(
+            (bends[0] - settled).abs() < 1e-4,
+            "and that sag is where the step agrees it rests: settled {settled}, \
+             a second later {}",
+            bends[0],
+        );
+    }
+
+    /// The preload is what gravity puts across the rod at the drawing, and
+    /// nothing else: no stiffness in it, and no length either. A rigger who
+    /// changes how stiff a strand is has not changed what holds it up.
+    #[test]
+    fn the_preload_does_not_depend_on_the_stiffness() {
+        let soft = across_gravity(0.25);
+        let stiff = across_gravity(12.0);
+        assert_eq!(soft.preload, stiff.preload);
+        assert!(
+            (soft.preload + 9800.0).abs() < 1e-3,
+            "drawn straight across gravity, the preload is the whole of it: {}",
+            soft.preload,
+        );
+        // A link drawn along gravity has nothing to hold up.
+        let mut along = across_gravity(1.5);
+        along.drawn = GRAVITY_DIR;
+        assert_eq!(fitted_preload(&along, 9800.0, GRAVITY_DIR), 0.0);
+        // Nor has a weightless one, or one with no spring.
+        let mut weightless = across_gravity(1.5);
+        weightless.gravity_scale = 0.0;
+        assert_eq!(fitted_preload(&weightless, 9800.0, GRAVITY_DIR), 0.0);
+        let mut limp = across_gravity(1.5);
+        limp.stiffness = 0.0;
+        assert_eq!(fitted_preload(&limp, 9800.0, GRAVITY_DIR), 0.0);
+    }
 }
 
 #[cfg(test)]
@@ -2844,7 +3154,7 @@ mod drawn_shape_tests {
         );
         chain.gravity = 980.0;
         for link in chain.links.iter_mut() {
-            link.spring_offset = fitted_spring_offset(link, 980.0, GRAVITY_DIR);
+            link.preload = fitted_preload(link, 980.0, GRAVITY_DIR);
         }
         chain
     }
@@ -2903,7 +3213,7 @@ mod drawn_shape_tests {
     fn a_limp_link_drawn_off_gravity_cannot_rest_as_drawn() {
         let mut chain = curved(0.0);
         assert!(
-            chain.links.iter().all(|l| l.spring_offset == 0.0),
+            chain.links.iter().all(|l| l.preload == 0.0),
             "a link with no spring has no target to fit"
         );
         assert!(
@@ -2960,7 +3270,7 @@ mod drawn_shape_tests {
         ]);
         chain.gravity = 980.0;
         for link in chain.links.iter_mut() {
-            link.spring_offset = fitted_spring_offset(link, 980.0, tilt);
+            link.preload = fitted_preload(link, 980.0, tilt);
         }
         chain.settle_to_rest(Vec2::ZERO, tilt, &[]);
         // `link_bends` reads rods in the node's own frame, so the caller's
