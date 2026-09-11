@@ -947,6 +947,8 @@ class BindingKeys:
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    # Refuse a stale draft or gesture while holding the session lock.
+    if_rev: int | None = None
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
@@ -1139,6 +1141,8 @@ class DeformVertices:
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    # Refuse a stale draft or gesture while holding the session lock.
+    if_rev: int | None = None
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
@@ -1163,6 +1167,8 @@ class MeshSet:
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    # Refuse a stale draft or gesture while holding the session lock.
+    if_rev: int | None = None
     node: NodeId
     # One `[x, y]` per vertex.
     verts: list[tuple[float, float]]
@@ -3013,6 +3019,8 @@ class ErrorCode(StrEnum):
     branches on this rather than on the message text.
     """
 
+    # The session changed after a draft or recording gesture began.
+    REVISION_CONFLICT = "revision_conflict"
     # No open session with that [`SessionId`].
     NO_SESSION = "no_session"
     # The model carries no node with that [`NodeId`].
@@ -3545,6 +3553,11 @@ class StatusInfo:
     texture_count: int
     dirty: bool
     rev: int
+    # History belongs to the editor, so only this server query can answer it.
+    undo_steps: int = 0
+    redo_steps: int = 0
+    gravity: float | None = None
+    pixels_per_meter: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3622,6 +3635,30 @@ class NodeInfo:
     physics: PhysicsInfo | None = None
     # A spine's settings, absent on every other kind.
     spine: SpineInfo | None = None
+    # Authored geometry, in the same coordinates accepted by `mesh_set`.
+    mesh: MeshInfo | None = None
+    # Ordered clipping rules. Empty on nodes that do not draw.
+    masks: list[MaskInfo] = field(default_factory=list)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MeshInfo:
+    """A mesh's authored vertices, UVs, triangles and origin. A client may send
+    these fields directly to `mesh_set`; posing never changes this read.
+    """
+
+    verts: list[tuple[float, float]]
+    uvs: list[tuple[float, float]]
+    indices: list[tuple[int, int, int]]
+    origin: tuple[float, float]
+
+
+@dataclass(frozen=True, kw_only=True)
+class MaskInfo:
+    """One ordered clipping rule, addressed by its position in `NodeInfo::masks`."""
+
+    source: NodeId
+    mode: MaskMode
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3941,6 +3978,8 @@ __all__ = [
     "StatusInfo",
     "TreeNode",
     "NodeInfo",
+    "MeshInfo",
+    "MaskInfo",
     "PhysicsInfo",
     "SpineInfo",
     "TexInfo",

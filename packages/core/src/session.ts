@@ -65,11 +65,18 @@ import type {
   TreeNode,
 } from "./protocol.gen.js";
 import type { Attachment, Backend, Request, Unsubscribe } from "./backend.js";
-import { asProtocolError, expectResult, ProtocolError, readReply } from "./backend.js";
+import {
+  asProtocolError,
+  expectResult,
+  ProtocolError,
+  readReply,
+} from "./backend.js";
 import type { WasmReplica } from "./wasm.js";
 
 /** `Omit` that distributes over a union instead of collapsing it. */
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
 
 /**
  * The arms of `T` that address a session, with the `session` field removed.
@@ -79,7 +86,10 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
  * `session_list`) drops out of the union entirely, because it belongs on the
  * `Editor` rather than here.
  */
-type OnSession<T> = DistributiveOmit<Extract<T, { session: SessionId }>, "session">;
+type OnSession<T> = DistributiveOmit<
+  Extract<T, { session: SessionId }>,
+  "session"
+>;
 
 /** A command that changes this session's model. Goes to [`Session#send`]. */
 export type SessionEditCommand = OnSession<EditCommand>;
@@ -153,7 +163,12 @@ export class Session {
    * replica before it re-feeds; it defaults to [`CATCH_UP_TIMEOUT_MS`] and is
    * a parameter so a test does not have to wait out a real one.
    */
-  constructor(backend: Backend, id: SessionId, replica: WasmReplica, timeout?: number) {
+  constructor(
+    backend: Backend,
+    id: SessionId,
+    replica: WasmReplica,
+    timeout?: number,
+  ) {
     this.#backend = backend;
     this.id = id;
     this.replica = replica;
@@ -185,7 +200,10 @@ export class Session {
     command: SessionEditCommand,
     attachments: readonly Attachment[],
   ): Promise<ResponseBody> {
-    const reply = await this.#backend.sendWith(this.#address(command), attachments);
+    const reply = await this.#backend.sendWith(
+      this.#address(command),
+      attachments,
+    );
     if (reply.rev !== undefined) await this.#reached(reply.rev);
     this.#advance();
     return reply.body;
@@ -211,7 +229,10 @@ export class Session {
    * React render call this directly instead of holding a mirrored store.
    */
   query(command: SessionReplicaQueryCommand): ResponseBody {
-    const request = { id: this.#nextQueryId++, ...this.#address(command) } as Request;
+    const request = {
+      id: this.#nextQueryId++,
+      ...this.#address(command),
+    } as Request;
     let text: string;
     try {
       text = this.replica.query(JSON.stringify(request));
@@ -250,7 +271,8 @@ export class Session {
     try {
       body = this.query({ cmd: "node_info", node });
     } catch (cause) {
-      if (cause instanceof ProtocolError && cause.code === "no_node") return undefined;
+      if (cause instanceof ProtocolError && cause.code === "no_node")
+        return undefined;
       throw cause;
     }
     return expectResult(body, "node_info").node;
@@ -280,7 +302,37 @@ export class Session {
 
   /** Every texture the model carries, with its dimensions. */
   textures(): TexInfo[] {
-    return expectResult(this.query({ cmd: "texture_list" }), "textures").textures;
+    return expectResult(this.query({ cmd: "texture_list" }), "textures")
+      .textures;
+  }
+
+  /** Existing parameter pairs, keeping each pair's original axis order. */
+  recordingPairs(node: NodeId, param: ParamId): [string, string][] {
+    return JSON.parse(this.replica.recordingPairs(node, param)) as [
+      string,
+      string,
+    ][];
+  }
+
+  setEditing(editing: boolean): void {
+    if (this.#closed) return;
+    this.replica.setEditing(editing);
+    this.invalidate();
+  }
+
+  /** Full-resolution straight-alpha artwork, for editing a mesh over its
+   * original texture. This is decoded once when the texture view opens. */
+  textureImage(
+    texture: string,
+  ): { width: number; height: number; rgba: Uint8Array } | undefined {
+    if (this.#closed) return undefined;
+    const image = this.replica.textureImage(texture);
+    if (!image) return undefined;
+    try {
+      return { width: image.width, height: image.height, rgba: image.pixels() };
+    } finally {
+      image.free();
+    }
   }
 
   /** Poses one param. Repaints; authors nothing. */
@@ -349,6 +401,61 @@ export class Session {
    */
   nodeWorldTransform(node: NodeId): Float32Array | undefined {
     return this.replica.nodeWorldTransform(node);
+  }
+
+  /** Frontmost enabled part whose evaluated triangles contain this Y-up
+   * world point. Texture transparency and clipping are not hit-test shapes. */
+  pickNode(x: number, y: number): NodeId | undefined {
+    if (this.#closed) return undefined;
+    return this.replica.pickNode(x, y);
+  }
+
+  /** Evaluated Y-up world positions, packed x/y. A part keeps mesh vertex
+   * order; a group concatenates its enabled descendant parts for bounds. */
+  nodeVertices(node: NodeId): Float32Array | undefined {
+    if (this.#closed) return undefined;
+    return this.replica.nodeVertices(node);
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  /** Evaluated local translate xyz, rotate xyz, scale xy. Preview gestures
+   * read this once to retain the pose while editing the authored transform. */
+  nodeLocalTransform(node: NodeId): Float32Array | undefined {
+    return this.#closed ? undefined : this.replica.nodeLocalTransform(node);
+  }
+
+  /** A world direction in this node's evaluated local frame. Undefined for
+   * a missing node or a collapsed transform with no inverse. */
+  nodeDeltaFromWorld(
+    node: NodeId,
+    x: number,
+    y: number,
+  ): Float32Array | undefined {
+    return this.#closed
+      ? undefined
+      : this.replica.nodeDeltaFromWorld(node, x, y);
+  }
+
+  /** Bounded, straight-alpha pixels for an artwork preview, decoded by Rust
+   * for both PNG and TGA. The caller owns these bytes, never a wasm object. */
+  textureThumbnail(
+    texture: string,
+  ): { width: number; height: number; rgba: Uint8Array } | undefined {
+    if (this.#closed) return undefined;
+    const thumbnail = this.replica.textureThumbnail(texture);
+    if (!thumbnail) return undefined;
+    try {
+      return {
+        width: thumbnail.width,
+        height: thumbnail.height,
+        rgba: thumbnail.pixels(),
+      };
+    } finally {
+      thumbnail.free();
+    }
   }
 
   /**
@@ -483,7 +590,10 @@ export class Session {
     this.#closed = true;
     this.#offEvents();
     this.#failWaiters(
-      new ProtocolError({ code: "closed", message: `session ${this.id} is closed` }),
+      new ProtocolError({
+        code: "closed",
+        message: `session ${this.id} is closed`,
+      }),
     );
     this.#listeners.clear();
     this.#redraw.clear();
@@ -534,10 +644,14 @@ export class Session {
     if (this.replica.rev() >= rev) return Promise.resolve();
     if (this.#closed) {
       return Promise.reject(
-        new ProtocolError({ code: "closed", message: `session ${this.id} is closed` }),
+        new ProtocolError({
+          code: "closed",
+          message: `session ${this.id} is closed`,
+        }),
       );
     }
-    if (this.#feeding === 0 && this.#failure) return Promise.reject(this.#failure);
+    if (this.#feeding === 0 && this.#failure)
+      return Promise.reject(this.#failure);
     return new Promise<void>((resolve, reject) => {
       const waiter: Waiter = { rev, resolve, reject, timer: undefined };
       waiter.timer = setTimeout(() => void this.#refeed(waiter), this.#timeout);

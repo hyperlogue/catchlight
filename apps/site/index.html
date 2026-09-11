@@ -3,15 +3,28 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- No icon, and no request for one. -->
-    <link rel="icon" href="data:," />
-    <title>catchlight</title>
+    <meta name="theme-color" content="#17191c" />
+    <meta
+      name="description"
+      content="A home for your next character. Build, shape, and bring your artwork to life with Catchlight."
+    />
+    <link rel="icon" type="image/svg+xml" href="../../assets/logo-transparent.svg" />
+    <title>Catchlight — Character studio</title>
   </head>
   <body>
     <div id="root">
       <!-- Anything that went wrong before or after the mount, in the page. -->
       <pre id="failure" hidden></pre>
-      <div id="editor"></div>
+      <div id="editor">
+        <div class="loading" role="status">
+          <img
+            src="../../assets/logo-transparent.svg"
+            alt=""
+            width="32"
+            height="32"
+          />Opening your studio…
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

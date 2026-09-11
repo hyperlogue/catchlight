@@ -50,6 +50,7 @@
         "@catchlight/core": "workspace:*",
         "@catchlight/react": "workspace:*",
         "react": "^19",
+        "react-dom": "^19",
       },
     },
     "packages/react": {

@@ -40,7 +40,7 @@
  * CLI remembers a current session there.
  */
 
-import { openSync, readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,7 +78,12 @@ if (!chromium) {
 
 await mkdir(shots, { recursive: true });
 const runtime = await mkdtemp(join(tmpdir(), "catchlight-e2e-"));
-const env = { ...process.env, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(runtime, "cache") };
+await mkdir(join(runtime, "models"));
+const env = {
+  ...process.env,
+  XDG_RUNTIME_DIR: runtime,
+  XDG_CACHE_HOME: join(runtime, "cache"),
+};
 
 for (const model of [SERVER_MODEL, OPEN_MODEL, "apps/site/public/sample.clm"]) {
   const head = readFileSync(at(model)).subarray(0, 40).toString("latin1");
@@ -93,16 +98,33 @@ for (const bin of ["catchlight-editor-server", "catchlight-editor-cli"]) {
     break;
   }
 }
-if (process.env.E2E_BUILD === "1" || !(await Bun.file(at("apps", "site", "dist", "index.html")).exists())) {
+if (
+  process.env.E2E_BUILD === "1" ||
+  !(await Bun.file(at("apps", "site", "dist", "index.html")).exists())
+) {
   await must("bun", ["run", "--filter", "catchlight-site", "build"]);
 }
 
-const preview = serve("site", at("apps", "site", "node_modules", ".bin", "vite"), [
-  "preview", "--host", "127.0.0.1", "--port", String(sitePort), "--strictPort",
-], at("apps", "site"));
-const server = serve("server", at("target", "debug", "catchlight-editor-server"), [
-  "--http", `127.0.0.1:${serverPort}`, "--allow-origin", origin, SERVER_MODEL,
-], root);
+const preview = serve(
+  "site",
+  at("apps", "site", "node_modules", ".bin", "vite"),
+  ["preview", "--host", "127.0.0.1", "--port", String(sitePort), "--strictPort"],
+  at("apps", "site"),
+);
+const server = serve(
+  "server",
+  at("target", "debug", "catchlight-editor-server"),
+  [
+    "--http",
+    `127.0.0.1:${serverPort}`,
+    "--allow-origin",
+    origin,
+    "--store",
+    join(runtime, "models"),
+    at(SERVER_MODEL),
+  ],
+  root,
+);
 
 let code = 1;
 try {
@@ -116,11 +138,12 @@ try {
     await drive("in-tab, WebGPU", [chromium, `${origin}/`], { TIER: "webgpu" }),
     await drive("connected, WebGPU", [chromium, `${origin}/`, serverBase], {
       TIER: "webgpu",
-      AGENT_CMD:
-        `target/debug/catchlight-editor-cli node add --session 1 --parent root --kind group --name ${AGENT_NODE}`,
+      AGENT_CMD: `target/debug/catchlight-editor-cli node add --session 1 --parent root --kind group --name ${AGENT_NODE}`,
     }),
     await drive("in-tab, WebGL2", [chromium, `${origin}/`], { TIER: "webgl2" }),
-    await drive("in-tab, neither tier", [chromium, `${origin}/`], { TIER: "none" }),
+    await drive("in-tab, neither tier", [chromium, `${origin}/`], {
+      TIER: "none",
+    }),
   ];
   code = passes.every((exit) => exit === 0) ? 0 : 1;
 } finally {
@@ -150,7 +173,41 @@ async function drive(name: string, args: string[], extra: Record<string, string>
 /** A long-lived child whose output goes to a log this can print on failure. */
 function serve(name: string, exe: string, args: string[], cwd: string) {
   const log = openSync(join(shots, `${name}.log`), "w");
-  return Bun.spawn([exe, ...args], { cwd, env, stdout: log, stderr: log });
+  const child = Bun.spawn([exe, ...args], {
+    cwd,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  // The server announces its launch credential and local paths. Keep useful
+  // diagnostics without persisting either in a test artifact.
+  const record = (line: string) =>
+    writeSync(
+      log,
+      line
+        .replace(/\btoken:\s*\S+/gi, "token: [redacted]")
+        .replaceAll(root, "<repo>")
+        .replaceAll(runtime, "<runtime>")
+        .replace(/\/(?:home|Users)\/[^/\s]+/g, "~"),
+    );
+  const drain = async (stream: ReadableStream<Uint8Array>) => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let pending = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      pending += decoder.decode(value, { stream: !done });
+      const lines = pending.split("\n");
+      pending = lines.pop()!;
+      for (const line of lines) record(`${line}\n`);
+      if (done) {
+        if (pending) record(pending);
+        return;
+      }
+    }
+  };
+  void Promise.all([drain(child.stdout), drain(child.stderr)]).finally(() => closeSync(log));
+  return child;
 }
 
 /**
@@ -167,7 +224,10 @@ async function reachable(url: string, name: string, child: Bun.Subprocess): Prom
       await tail(name);
       fail(`${name} exited with ${child.exitCode} before it served ${url}`);
     }
-    const ok = await fetch(url).then((r) => r.ok, () => false);
+    const ok = await fetch(url).then(
+      (r) => r.ok,
+      () => false,
+    );
     if (ok) return;
     if (Date.now() > deadline) {
       await tail(name);
@@ -186,12 +246,20 @@ async function reachable(url: string, name: string, child: Bun.Subprocess): Prom
  * against a model nobody set up. Binding here first is the cheap way to
  * find out, and moving is better than refusing to run.
  */
-async function pick(name: string, override: string | undefined, preferred: number): Promise<number> {
+async function pick(
+  name: string,
+  override: string | undefined,
+  preferred: number,
+): Promise<number> {
   if (override !== undefined) return Number(override);
   for (const candidate of [preferred, 0]) {
     let chosen: number | undefined;
     try {
-      const probe = Bun.serve({ port: candidate, hostname: "127.0.0.1", fetch: () => new Response() });
+      const probe = Bun.serve({
+        port: candidate,
+        hostname: "127.0.0.1",
+        fetch: () => new Response(),
+      });
       chosen = probe.port;
       probe.stop(true);
     } catch {
@@ -206,7 +274,12 @@ async function pick(name: string, override: string | undefined, preferred: numbe
 
 async function must(exe: string, args: string[]): Promise<void> {
   console.log(`+ ${exe} ${args.join(" ")}`);
-  const child = Bun.spawn([exe, ...args], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
+  const child = Bun.spawn([exe, ...args], {
+    cwd: root,
+    env,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
   if ((await child.exited) !== 0) fail(`${exe} ${args.join(" ")} failed`);
 }
 

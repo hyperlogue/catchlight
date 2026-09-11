@@ -93,6 +93,7 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
             &ed,
             4,
             Command::DeformVertices {
+                if_rev: None,
                 session,
                 params: BindingParams::one(param),
                 node: node.clone(),

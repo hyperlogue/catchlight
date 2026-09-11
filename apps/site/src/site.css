@@ -5,23 +5,28 @@ html,
 body {
   margin: 0;
   block-size: 100%;
-  background: #11111b;
+  background: #17191c;
 }
 
 #root {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  block-size: 100vh;
+  block-size: 100dvh;
 }
 
 #failure {
   margin: 0;
   padding: 8px 12px;
-  background: #181825;
-  color: #eba0ac;
-  font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  background: #202225;
+  color: #f5a6a6;
+  font:
+    12px/1.5 ui-monospace,
+    "SFMono-Regular",
+    Menlo,
+    Consolas,
+    monospace;
   white-space: pre-wrap;
-  border-block-end: 1px solid #45475a;
+  border-block-end: 1px solid #ffffff21;
 }
 
 /* Row 2 by name, not by order: `#failure` is `hidden` until something goes
@@ -30,4 +35,19 @@ body {
 #editor {
   grid-row: 2;
   min-block-size: 0;
+}
+.loading {
+  height: 100%;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  color: #b3b8ba;
+  font:
+    13px system-ui,
+    sans-serif;
+}
+.loading img {
+  display: block;
+  flex-shrink: 0;
 }

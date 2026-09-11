@@ -21,6 +21,12 @@ export * from "./protocol.gen.js";
 
 export { Editor, fileKey } from "./editor.js";
 export { Session } from "./session.js";
+export { MeshDraft, RecordingGesture } from "./authoring.js";
+export type {
+  MeshDraftView,
+  RecordingTarget,
+  RecordProperties,
+} from "./authoring.js";
 export type {
   ScratchTransform,
   SessionCommand,

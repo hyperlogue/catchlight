@@ -124,6 +124,17 @@ export interface ExtensionRequest {
 
 /** One session's model, puppet and render cache, in this tab. */
 export interface WasmReplica extends WasmOwned {
+  meshDraft(node: NodeId): WasmMeshDraft;
+  recordingPairs(node: NodeId, param: ParamId): string;
+  recording(
+    node: NodeId,
+    param: ParamId,
+    paramY: string | undefined,
+    x: number,
+    y: number,
+  ): WasmRecording;
+  setEditing(editing: boolean): void;
+  textureImage(texture: string): ReturnType<WasmReplica["textureThumbnail"]>;
   /** The model revision this replica currently holds. */
   rev(): number;
 
@@ -179,12 +190,35 @@ export interface WasmReplica extends WasmOwned {
    * column-major. `undefined` when the model holds no such node.
    */
   nodeWorldTransform(node: NodeId): Float32Array | undefined;
+  /** Frontmost visible part under a world-space point. */
+  pickNode(x: number, y: number): string | undefined;
+  /** Evaluated part vertices, flattened world-space pairs. */
+  nodeVertices(node: NodeId): Float32Array | undefined;
+  nodeLocalTransform(node: NodeId): Float32Array | undefined;
+  nodeDeltaFromWorld(
+    node: NodeId,
+    x: number,
+    y: number,
+  ): Float32Array | undefined;
+  textureThumbnail(texture: string):
+    | {
+        width: number;
+        height: number;
+        pixels(): Uint8Array;
+        free(): void;
+        [Symbol.dispose](): void;
+      }
+    | undefined;
   /**
    * The node's authored local translation `[x, y, z]` moved by a world-space
    * delta, expressed in its parent's frame — what a drag previews and then
    * commits. `undefined` when the model holds no such node.
    */
-  translationAfterWorldDelta(node: NodeId, dx: number, dy: number): Float32Array | undefined;
+  translationAfterWorldDelta(
+    node: NodeId,
+    dx: number,
+    dy: number,
+  ): Float32Array | undefined;
   /**
    * The world-space box the last tick left the drawn geometry in:
    * `[min_x, min_y, max_x, max_y]` in world units, Y-up. `undefined` when the
@@ -194,6 +228,31 @@ export interface WasmReplica extends WasmOwned {
    * swung out is inside the box.
    */
   bounds(): Float32Array | undefined;
+}
+
+/** Local authoring owners. Releasing one never changes the model. */
+export interface WasmMeshDraft extends WasmOwned {
+  view(): string;
+  finish(): string;
+  vertices(): Float32Array;
+  triangles(): Uint32Array;
+  beginGesture(): void;
+  endGesture(commit: boolean): void;
+  moveVertex(index: number, x: number, y: number): void;
+  translateVertices(indices: Uint32Array, dx: number, dy: number): void;
+  addVertex(x: number, y: number): number;
+  deleteVertices(indices: Uint32Array): void;
+  toggleEdge(a: number, b: number): void;
+  generateContour(spacing: number, margin: number): void;
+  generateGrid(cols: number, rows: number): void;
+  undo(): void;
+  redo(): void;
+}
+
+export interface WasmRecording extends WasmOwned {
+  posed(): string;
+  patch(json: string, authoredBasis: boolean): string;
+  deform(deltas: Float32Array): Float32Array;
 }
 
 /** One frame of a canvas, as the renderer copied it back off the GPU. */
@@ -252,5 +311,9 @@ export interface WasmModule {
   manifestRequirements(json: string): string[];
   Gpu: { acquire(canvas: HTMLCanvasElement): Promise<WasmGpu> };
   Replica: new () => WasmReplica;
-  Viewport: new (gpu: WasmGpu, replica: WasmReplica, canvas: HTMLCanvasElement) => WasmViewport;
+  Viewport: new (
+    gpu: WasmGpu,
+    replica: WasmReplica,
+    canvas: HTMLCanvasElement,
+  ) => WasmViewport;
 }

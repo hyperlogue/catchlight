@@ -564,6 +564,7 @@ fn strip_part(
         ed,
         21,
         Command::MeshSet {
+            if_rev: None,
             session,
             node: at.clone(),
             verts: STRIP.to_vec(),

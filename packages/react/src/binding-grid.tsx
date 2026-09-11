@@ -17,9 +17,8 @@
  * what the cell describes are the same thing. Authoring is the number in the
  * cell, and every other control on the row.
  *
- * **Two-param bindings are shown, not created.** The add control makes a
- * binding on the one param the panel is showing; a grid that spans two is an
- * XY pad's business, and this part draws the one it finds.
+ * A second driving param is optional. The same grid authors one-param curves
+ * and two-param surfaces, with both pose coordinates named on every cell.
  */
 
 import type {
@@ -36,6 +35,7 @@ import type { ComponentProps, KeyboardEvent } from "react";
 
 import {
   BINDING_TARGETS,
+  BINDING_LABELS,
   INTERPOLATE_MODES,
   bindingsOfParam,
   useBindings,
@@ -64,13 +64,7 @@ export interface BindingGridRootProps extends Omit<ComponentProps<"div">, "child
   onError?: ErrorSink;
 }
 
-export function BindingGridRoot({
-  session,
-  node,
-  param,
-  onError,
-  ...rest
-}: BindingGridRootProps) {
+export function BindingGridRoot({ session, node, param, onError, ...rest }: BindingGridRootProps) {
   const actions = useParamActions(session);
   const params = useParams(session);
   const all = useBindings(session, node);
@@ -78,6 +72,7 @@ export function BindingGridRoot({
   const [selected, setSelected] = useState<CellRef | undefined>(undefined);
   const [target, setTarget] = useState<ScalarTarget>(BINDING_TARGETS[0] ?? "tx");
   const [copying, setCopying] = useState<CellRef | undefined>(undefined);
+  const [secondary, setSecondary] = useState("");
 
   if (node === undefined || param === undefined) {
     return <div data-catchlight-binding-grid="" data-empty="" {...rest} />;
@@ -137,14 +132,36 @@ export function BindingGridRoot({
         >
           {BINDING_TARGETS.map((name) => (
             <option key={name} value={name}>
-              {name}
+              {BINDING_LABELS[name]}
             </option>
           ))}
+        </select>
+        <select
+          aria-label="Second driving param"
+          value={secondary}
+          onChange={(e) => setSecondary(e.currentTarget.value)}
+        >
+          <option value="">One param</option>
+          {params
+            .filter((p) => p.id !== param)
+            .map((p) => (
+              <option key={p.id} value={p.id}>
+                × {p.name}
+              </option>
+            ))}
         </select>
         <button
           type="button"
           data-catchlight-binding-add-submit=""
-          onClick={() => report(onError, actions.addBinding(node, target, { param }))}
+          onClick={() =>
+            report(
+              onError,
+              actions.addBinding(node, target, {
+                param,
+                param_y: secondary || null,
+              }),
+            )
+          }
         >
           Bind
         </button>
@@ -161,7 +178,10 @@ export function BindingGridRoot({
             data-param-y={binding.param_y ?? undefined}
           >
             <div data-catchlight-binding-head="">
-              <span data-catchlight-binding-name="">{binding.target}</span>
+              <span data-catchlight-binding-name="">
+                {BINDING_LABELS[binding.target]}
+                {binding.param_y && <small> × {paramInfo(binding.param_y)?.name}</small>}
+              </span>
               <select
                 data-catchlight-binding-interpolate=""
                 aria-label={`${binding.target} interpolation`}
@@ -224,6 +244,8 @@ export function BindingGridRoot({
                       data-unset={authored ? undefined : ""}
                       data-selected={isSelected ? "" : undefined}
                       aria-label={`${binding.target} cell ${x},${y}`}
+                      title={`${paramInfo(binding.param)?.name ?? binding.param}: ${valueAtKey(paramInfo(binding.param)!, x)}${binding.param_y ? ` · ${paramInfo(binding.param_y)?.name}: ${valueAtKey(paramInfo(binding.param_y)!, y)}` : ""}${binding.target.startsWith("r") ? " · radians" : ""}${authored ? " · authored key" : " · interpolated"}`}
+                      placeholder={binding.target === "deform" ? (authored ? "Set" : "—") : "Auto"}
                       // A deform cell holds a vertex list; there is no number
                       // to type into it, and `binding_key` refuses the target.
                       readOnly={binding.target === "deform"}
@@ -296,7 +318,10 @@ function keyOf(binding: BindingInfo): string {
 }
 
 /** The binding's params, as every binding command carries them. */
-function paramsOf(binding: BindingInfo): { param: ParamId; param_y?: ParamId | null } {
+function paramsOf(binding: BindingInfo): {
+  param: ParamId;
+  param_y?: ParamId | null;
+} {
   return { param: binding.param, param_y: binding.param_y ?? null };
 }
 

@@ -17,7 +17,7 @@
 
 import type { Session } from "@catchlight/core";
 import { fileKey } from "@catchlight/core";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { ComponentProps, FormEvent, ReactNode } from "react";
 
 import { useEditor } from "./editor-context.js";
@@ -37,10 +37,11 @@ export interface FileSaver {
   save(name?: string): Promise<SaveOutcome>;
 }
 
-export function useFileSave(session: Session): FileSaver {
+export function useFileSave(session: Session | undefined): FileSaver {
   const editor = useEditor();
   const save = useCallback(
     async (name?: string): Promise<SaveOutcome> => {
+      if (!session) throw new Error("Open a model before saving.");
       const key = await editor.saveSession(session, name === undefined ? undefined : saveKey(name));
       const bytes = await editor.readFile(key);
       if (bytes) downloadBytes(bytes, downloadName(key));
@@ -73,16 +74,21 @@ export function FileSaveRoot({
 }: FileSaveRootProps) {
   const { save } = useFileSave(session);
   const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    void save(input.current?.value ?? "").then(
-      (outcome) => onSaved?.(outcome),
-      (cause: unknown) => {
-        if (onError) onError(cause);
-        else console.warn("catchlight: saving failed", cause);
-      },
-    );
+    if (busy) return;
+    setBusy(true);
+    void save(input.current?.value ?? "")
+      .then(
+        (outcome) => onSaved?.(outcome),
+        (cause: unknown) => {
+          if (onError) onError(cause);
+          else console.warn("catchlight: saving failed", cause);
+        },
+      )
+      .finally(() => setBusy(false));
   };
 
   return (
@@ -94,9 +100,10 @@ export function FileSaveRoot({
         placeholder="name.clm"
         defaultValue={defaultName}
         ref={input}
+        disabled={busy}
       />
-      <button type="submit" data-catchlight-save-as-submit="">
-        {children ?? "Save As"}
+      <button type="submit" data-catchlight-save-as-submit="" disabled={busy}>
+        {busy ? "Saving…" : (children ?? "Save As")}
       </button>
     </form>
   );
@@ -124,7 +131,9 @@ export function downloadName(key: string): string {
  * outlives it, because the download it names may still be starting.
  */
 export function downloadBytes(bytes: Uint8Array, name: string): void {
-  const blob = new Blob([bytes as BlobPart], { type: "application/octet-stream" });
+  const blob = new Blob([bytes as BlobPart], {
+    type: "application/octet-stream",
+  });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

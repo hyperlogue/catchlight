@@ -13,8 +13,15 @@
 
 mod manifest;
 mod mesh;
+mod mesh_draft;
+mod recording;
 mod strand;
 
 pub use manifest::*;
 pub use mesh::*;
+pub use mesh_draft::MeshDraft;
+pub use recording::{RecordProperties, Recording};
 pub use strand::*;
+
+/// Picking and selection bounds against the evaluated puppet.
+pub mod picking;

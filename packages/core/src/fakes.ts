@@ -102,7 +102,14 @@ export function emptyDoc(title: string): FakeDoc {
     rev: 1,
     title,
     file: null,
-    root: { id: "root", name: "root", kind: "group", z_order: 0, enabled: true, children: [] },
+    root: {
+      id: "root",
+      name: "root",
+      kind: "group",
+      z_order: 0,
+      enabled: true,
+      children: [],
+    },
     params: [],
     textures: [],
     albedo: {},
@@ -154,6 +161,29 @@ export class FakeEditor implements WasmEditor {
     if (refusal) return JSON.stringify({ reply: "err", id, ...refusal });
 
     switch (request.cmd) {
+      case "status": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        return this.#ok(
+          id,
+          {
+            result: "status",
+            status: {
+              title: doc.title,
+              node_count: 1 + doc.root.children.length,
+              param_count: doc.params.length,
+              texture_count: doc.textures.length,
+              dirty: false,
+              rev: doc.rev,
+              undo_steps: Math.max(0, doc.rev - 1),
+              redo_steps: 0,
+              gravity: 9.8,
+              pixels_per_meter: 1000,
+            },
+          },
+          doc.rev,
+        );
+      }
       case "session_new":
         return this.#opened(id, request.name ?? "untitled", null);
       case "session_open": {
@@ -181,18 +211,28 @@ export class FakeEditor implements WasmEditor {
           children: [],
         });
         doc.rev += 1;
-        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
-        return this.#ok(id, { result: "session", session: request.session }, doc.rev);
+        this.#emit({
+          event: "model_changed",
+          session: request.session,
+          rev: doc.rev,
+        });
+        return this.#ok(
+          id,
+          { result: "session", session: request.session },
+          doc.rev,
+        );
       }
       case "session_list": {
-        const sessions: SessionInfo[] = [...this.docs].map(([session, doc]) => ({
-          session,
-          title: doc.title,
-          file: doc.file,
-          dirty: false,
-          rev: doc.rev,
-          node_count: 1 + doc.root.children.length,
-        }));
+        const sessions: SessionInfo[] = [...this.docs].map(
+          ([session, doc]) => ({
+            session,
+            title: doc.title,
+            file: doc.file,
+            dirty: false,
+            rev: doc.rev,
+            node_count: 1 + doc.root.children.length,
+          }),
+        );
         return this.#ok(id, { result: "sessions", sessions });
       }
       case "node_add": {
@@ -208,7 +248,11 @@ export class FakeEditor implements WasmEditor {
           children: [],
         });
         doc.rev += 1;
-        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
+        this.#emit({
+          event: "model_changed",
+          session: request.session,
+          rev: doc.rev,
+        });
         return this.#ok(id, { result: "node", node }, doc.rev);
       }
       // Only the albedo: it is the one node field the fake holds, and its
@@ -218,9 +262,14 @@ export class FakeEditor implements WasmEditor {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
         if (request.texture === null) delete doc.albedo[request.node];
-        else if (request.texture !== undefined) doc.albedo[request.node] = request.texture;
+        else if (request.texture !== undefined)
+          doc.albedo[request.node] = request.texture;
         doc.rev += 1;
-        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
+        this.#emit({
+          event: "model_changed",
+          session: request.session,
+          rev: doc.rev,
+        });
         return this.#ok(id, { result: "node", node: request.node }, doc.rev);
       }
       // A texture belongs to a part: it arrives named by the node that draws
@@ -232,8 +281,16 @@ export class FakeEditor implements WasmEditor {
         doc.textures.push({ id: texture, width: 4, height: 4 });
         doc.albedo[request.node] = texture;
         doc.rev += 1;
-        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
-        return this.#ok(id, { result: "texture", texture, dropped: [] }, doc.rev);
+        this.#emit({
+          event: "model_changed",
+          session: request.session,
+          rev: doc.rev,
+        });
+        return this.#ok(
+          id,
+          { result: "texture", texture, dropped: [] },
+          doc.rev,
+        );
       }
       case "param_add": {
         const doc = this.docs.get(request.session);
@@ -249,7 +306,11 @@ export class FakeEditor implements WasmEditor {
           bindings: 0,
         });
         doc.rev += 1;
-        this.#emit({ event: "model_changed", session: request.session, rev: doc.rev });
+        this.#emit({
+          event: "model_changed",
+          session: request.session,
+          rev: doc.rev,
+        });
         return this.#ok(id, { result: "param", param }, doc.rev);
       }
       case "param_delete": {
@@ -299,7 +360,8 @@ export class FakeEditor implements WasmEditor {
         return this.#ok(id, { result: "saved", path: request.path }, doc.rev);
       }
       case "session_close": {
-        if (!this.docs.delete(request.session)) return this.#noSession(id, request.session);
+        if (!this.docs.delete(request.session))
+          return this.#noSession(id, request.session);
         this.presence.delete(request.session);
         this.#emit({ event: "sessions_changed" });
         // No rev: the session it would have named is gone.
@@ -319,7 +381,8 @@ export class FakeEditor implements WasmEditor {
         return this.#ok(id, { result: "presence", presence }, doc.rev);
       }
       default: {
-        const session = "session" in request ? (request.session as number) : undefined;
+        const session =
+          "session" in request ? (request.session as number) : undefined;
         return this.#ok(
           id,
           { result: "empty" },
@@ -377,11 +440,20 @@ export class FakeEditor implements WasmEditor {
   }
 
   #noSession(id: number, session: number): string {
-    return JSON.stringify({ reply: "err", id, code: "no_session", message: `no session ${session}` });
+    return JSON.stringify({
+      reply: "err",
+      id,
+      code: "no_session",
+      message: `no session ${session}`,
+    });
   }
 
   #ok(id: number, body: ResponseBody, rev?: number): string {
-    return JSON.stringify(rev === undefined ? { reply: "ok", id, body } : { reply: "ok", id, rev, body });
+    return JSON.stringify(
+      rev === undefined
+        ? { reply: "ok", id, body }
+        : { reply: "ok", id, rev, body },
+    );
   }
 
   #emit(event: Event): void {
@@ -414,6 +486,25 @@ export class FakeGpu implements WasmGpu {
 
 /** This tab's copy of one model, and what it was told. */
 export class FakeReplica implements WasmReplica {
+  setEditing(_editing: boolean): void {}
+  recordingPairs(_node: string, _param: string): string {
+    return "[]";
+  }
+  textureImage(texture: string) {
+    return this.textureThumbnail(texture);
+  }
+  meshDraft(_node: string): never {
+    throw new Error("The fake does not implement mesh geometry.");
+  }
+  recording(
+    _node: string,
+    _param: string,
+    _paramY: string | undefined,
+    _x: number,
+    _y: number,
+  ): never {
+    throw new Error("The fake does not evaluate recording keys.");
+  }
   doc: FakeDoc | undefined;
   applied: Array<{ rev: number; textures: string[] }> = [];
   syncs: number[] = [];
@@ -439,7 +530,11 @@ export class FakeReplica implements WasmReplica {
     const doc = readStructure(structure);
     const needed: TextureRequest[] = doc.textures
       .filter((texture) => !this.held.has(texture.id))
-      .map((texture) => ({ id: texture.id, encoding: "png", alpha: "straight" }));
+      .map((texture) => ({
+        id: texture.id,
+        encoding: "png",
+        alpha: "straight",
+      }));
     return JSON.stringify(needed);
   }
 
@@ -450,7 +545,9 @@ export class FakeReplica implements WasmReplica {
   extensionsNeeded(structure: Uint8Array): string {
     const doc = readStructure(structure);
     const needed: ExtensionRequest[] = doc.extensions
-      .filter((e) => e.kind === "bytes" && this.heldExtensions.get(e.key) !== e.hash)
+      .filter(
+        (e) => e.kind === "bytes" && this.heldExtensions.get(e.key) !== e.hash,
+      )
       .map((e) => ({ key: e.key, hash: e.kind === "bytes" ? e.hash : "" }));
     return JSON.stringify(needed);
   }
@@ -463,8 +560,11 @@ export class FakeReplica implements WasmReplica {
 
   applyStructure(structure: Uint8Array, rev: number): boolean {
     const doc = readStructure(structure);
-    const missing = doc.textures.filter((texture) => !this.held.has(texture.id));
-    if (missing.length > 0) throw `missing textures: ${missing.map((t) => t.id).join(", ")}`;
+    const missing = doc.textures.filter(
+      (texture) => !this.held.has(texture.id),
+    );
+    if (missing.length > 0)
+      throw `missing textures: ${missing.map((t) => t.id).join(", ")}`;
     const unfetched = doc.extensions.filter(
       (e) => e.kind === "bytes" && this.heldExtensions.get(e.key) !== e.hash,
     );
@@ -492,13 +592,35 @@ export class FakeReplica implements WasmReplica {
     const id = request.id;
     const doc = this.doc;
     if (!doc) {
-      return JSON.stringify({ reply: "err", id, code: "no_session", message: "nothing fed yet" });
+      return JSON.stringify({
+        reply: "err",
+        id,
+        code: "no_session",
+        message: "nothing fed yet",
+      });
     }
     switch (request.cmd) {
+      case "slots":
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "slots", node: request.node, slots: [] },
+        });
       case "node_tree":
-        return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "tree", root: doc.root } });
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "tree", root: doc.root },
+        });
       case "param_list":
-        return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "params", params: doc.params } });
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "params", params: doc.params },
+        });
       case "texture_list":
         return JSON.stringify({
           reply: "ok",
@@ -518,7 +640,12 @@ export class FakeReplica implements WasmReplica {
         const bindings = doc.bindings
           .filter((b) => b.node === request.node)
           .map((b) => bindingInfo(doc, b));
-        return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "bindings", bindings } });
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "bindings", bindings },
+        });
       }
       case "node_info": {
         const node = nodeInfo(doc, doc.root, request.node);
@@ -530,7 +657,12 @@ export class FakeReplica implements WasmReplica {
             message: `no node ${request.node}`,
           });
         }
-        return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "node_info", node } });
+        return JSON.stringify({
+          reply: "ok",
+          id,
+          rev: this.#rev,
+          body: { result: "node_info", node },
+        });
       }
       default:
         return JSON.stringify({
@@ -570,6 +702,23 @@ export class FakeReplica implements WasmReplica {
   }
 
   /** Identity: the fake has no fold, and nothing here reads the rotation. */
+  pickNode(_x: number, _y: number): string | undefined {
+    return undefined;
+  }
+
+  nodeVertices(_node: string): Float32Array | undefined {
+    return undefined;
+  }
+  nodeLocalTransform(_node: string): Float32Array | undefined {
+    return undefined;
+  }
+  nodeDeltaFromWorld(_node: string, x: number, y: number): Float32Array {
+    return new Float32Array([x, y]);
+  }
+  textureThumbnail(_texture: string): undefined {
+    return undefined;
+  }
+
   nodeWorldTransform(node: string): Float32Array | undefined {
     if (!this.#holds(node)) return undefined;
     const world = new Float32Array(16);
@@ -578,7 +727,11 @@ export class FakeReplica implements WasmReplica {
   }
 
   /** The stored local translation plus the delta, the parent frame being identity. */
-  translationAfterWorldDelta(node: string, dx: number, dy: number): Float32Array | undefined {
+  translationAfterWorldDelta(
+    node: string,
+    dx: number,
+    dy: number,
+  ): Float32Array | undefined {
     if (!this.#holds(node)) return undefined;
     const [x, y, z] = this.translations.get(node) ?? [0, 0, 0];
     return new Float32Array([x + dx, y + dy, z]);
@@ -677,7 +830,12 @@ function holds(tree: TreeNode, node: string): boolean {
 /** Whether `binding` is the one a command addresses. */
 function addresses(
   binding: FakeBinding,
-  at: { node: string; target: BindingTarget; param: string; param_y?: string | null },
+  at: {
+    node: string;
+    target: BindingTarget;
+    param: string;
+    param_y?: string | null;
+  },
 ): boolean {
   return (
     binding.node === at.node &&
@@ -690,7 +848,12 @@ function addresses(
 /** The binding a command addresses, created if this is the first mention. */
 function binding(
   doc: FakeDoc,
-  at: { node: string; target: BindingTarget; param: string; param_y?: string | null },
+  at: {
+    node: string;
+    target: BindingTarget;
+    param: string;
+    param_y?: string | null;
+  },
 ): FakeBinding {
   const found = doc.bindings.find((b) => addresses(b, at));
   if (found) return found;
@@ -716,7 +879,10 @@ function binding(
  */
 function bindingInfo(doc: FakeDoc, b: FakeBinding): BindingInfo {
   const keyCount = (param: string): number =>
-    Math.max(1, doc.params.find((p) => p.id === param)?.key_positions.length ?? 1);
+    Math.max(
+      1,
+      doc.params.find((p) => p.id === param)?.key_positions.length ?? 1,
+    );
   const width = keyCount(b.param);
   const height = b.param_y ? keyCount(b.param_y) : 1;
   const keys: (number | null)[][] = [];
@@ -753,7 +919,11 @@ export class FakeViewport implements WasmViewport {
   size: [number, number] | undefined;
   camera: [number, number, number] | undefined;
   /** What `readback` resolves with. One grey pixel unless a test says more. */
-  frame = { width: 1, height: 1, rgba: new Uint8Array([0x80, 0x80, 0x80, 0xff]) };
+  frame = {
+    width: 1,
+    height: 1,
+    rgba: new Uint8Array([0x80, 0x80, 0x80, 0xff]),
+  };
 
   readback(): Promise<{ width: number; height: number; rgba: Uint8Array }> {
     return Promise.resolve(this.frame);
@@ -805,7 +975,11 @@ export function fakeWasm(): FakeModule {
   }
 
   class TrackedViewport extends FakeViewport {
-    constructor(_gpu: WasmGpu, _replica: WasmReplica, _canvas: HTMLCanvasElement) {
+    constructor(
+      _gpu: WasmGpu,
+      _replica: WasmReplica,
+      _canvas: HTMLCanvasElement,
+    ) {
       super();
       viewports.push(this);
     }
@@ -820,7 +994,9 @@ export function fakeWasm(): FakeModule {
       CatchlightEditor: FakeEditor,
       manifestRequirements: (json: string): string[] => {
         const doc = JSON.parse(json) as { textures?: Array<{ path?: string }> };
-        return (doc.textures ?? []).flatMap((t) => (t.path === undefined ? [] : [t.path]));
+        return (doc.textures ?? []).flatMap((t) =>
+          t.path === undefined ? [] : [t.path],
+        );
       },
       Gpu: {
         acquire: (canvas: HTMLCanvasElement) => {
@@ -876,9 +1052,14 @@ export class ScriptedBackend implements Backend {
     this.sent.push(command);
     const scripted = this.replies.get(command.cmd);
     if (scripted) return Promise.resolve(scripted);
-    const session = "session" in command ? (command.session as number) : undefined;
+    const session =
+      "session" in command ? (command.session as number) : undefined;
     const rev = session === undefined ? undefined : this.revs.get(session);
-    return Promise.resolve(rev === undefined ? { body: { result: "empty" } } : { body: { result: "empty" }, rev });
+    return Promise.resolve(
+      rev === undefined
+        ? { body: { result: "empty" } }
+        : { body: { result: "empty" }, rev },
+    );
   }
 
   async sendWith(
@@ -977,17 +1158,27 @@ export function httpResponse(
   init?: { status?: number; headers?: Record<string, string> },
 ): HttpResponse {
   const status = init?.status ?? 200;
-  const headers = new Map(Object.entries(init?.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const headers = new Map(
+    Object.entries(init?.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
+  );
   const bytes =
-    body instanceof Uint8Array ? body : new TextEncoder().encode(JSON.stringify(body));
+    body instanceof Uint8Array
+      ? body
+      : new TextEncoder().encode(JSON.stringify(body));
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText: status === 200 ? "OK" : "no",
     headers: { get: (name: string) => headers.get(name.toLowerCase()) ?? null },
     arrayBuffer: () =>
-      Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer),
-    json: () => Promise.resolve(JSON.parse(new TextDecoder().decode(bytes)) as unknown),
+      Promise.resolve(
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ) as ArrayBuffer,
+      ),
+    json: () =>
+      Promise.resolve(JSON.parse(new TextDecoder().decode(bytes)) as unknown),
   };
 }
 
@@ -1002,7 +1193,8 @@ export function fakeFetch(routes: Record<string, () => HttpResponse>): {
     fetch: (url, init) => {
       calls.push({ url, init });
       const route = routes[new URL(url, "http://editor.invalid").pathname];
-      if (!route) return Promise.resolve(httpResponse({ error: url }, { status: 404 }));
+      if (!route)
+        return Promise.resolve(httpResponse({ error: url }, { status: 404 }));
       return Promise.resolve(route());
     },
   };

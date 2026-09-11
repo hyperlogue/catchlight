@@ -301,6 +301,10 @@ export type Command =
   | {
     "cmd": "binding_keys",
     session: SessionId,
+    /**
+     * Refuse a stale draft or gesture while holding the session lock.
+     */
+    if_rev?: number | null,
     node: NodeId,
     cell: [number, number],
     entries: Array<BindingKeyEntry>,
@@ -379,6 +383,10 @@ export type Command =
   | {
     "cmd": "deform_vertices",
     session: SessionId,
+    /**
+     * Refuse a stale draft or gesture while holding the session lock.
+     */
+    if_rev?: number | null,
     node: NodeId,
     cell: [number, number],
     offsets: Array<[number, number]>,
@@ -388,6 +396,10 @@ export type Command =
   | {
     "cmd": "mesh_set",
     session: SessionId,
+    /**
+     * Refuse a stale draft or gesture while holding the session lock.
+     */
+    if_rev?: number | null,
     node: NodeId,
     /**
      * One `[x, y]` per vertex.
@@ -1200,6 +1212,7 @@ export type Reply =
  * branches on this rather than on the message text.
  */
 export type ErrorCode =
+  | "revision_conflict"
   | "no_session"
   | "no_node"
   | "no_param"
@@ -1377,6 +1390,13 @@ export type StatusInfo = {
   texture_count: number,
   dirty: boolean,
   rev: number,
+  /**
+   * History belongs to the editor, so only this server query can answer it.
+   */
+  undo_steps: number,
+  redo_steps: number,
+  gravity?: number | null,
+  pixels_per_meter?: number | null,
 };
 
 export type TreeNode = {
@@ -1476,6 +1496,33 @@ export type NodeInfo = {
    * A spine's settings, absent on every other kind.
    */
   spine?: SpineInfo | null,
+  /**
+   * Authored geometry, in the same coordinates accepted by `mesh_set`.
+   */
+  mesh?: MeshInfo | null,
+  /**
+   * Ordered clipping rules. Empty on nodes that do not draw.
+   */
+  masks?: Array<MaskInfo>,
+};
+
+/**
+ * A mesh's authored vertices, UVs, triangles and origin. A client may send
+ * these fields directly to `mesh_set`; posing never changes this read.
+ */
+export type MeshInfo = {
+  verts: Array<[number, number]>,
+  uvs: Array<[number, number]>,
+  indices: Array<[number, number, number]>,
+  origin: [number, number],
+};
+
+/**
+ * One ordered clipping rule, addressed by its position in `NodeInfo::masks`.
+ */
+export type MaskInfo = {
+  source: NodeId,
+  mode: MaskMode,
 };
 
 /**

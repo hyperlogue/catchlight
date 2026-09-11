@@ -156,6 +156,8 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::StatusInfo,
         proto::TreeNode,
         proto::NodeInfo,
+        proto::MeshInfo,
+        proto::MaskInfo,
         proto::PhysicsInfo,
         proto::SpineInfo,
         proto::TexInfo,

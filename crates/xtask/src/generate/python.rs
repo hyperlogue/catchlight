@@ -1570,6 +1570,7 @@ mod wire_shapes {
     fn a_mesh_travels_as_lists_of_points() {
         assert_wire(
             Command::MeshSet {
+                if_rev: None,
                 session: SessionId(1),
                 node: id("hair"),
                 verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],

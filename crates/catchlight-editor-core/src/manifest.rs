@@ -242,8 +242,8 @@ impl ModelManifestExt for Model {
                 .get(&t.id)
                 .ok_or_else(|| ManifestError::MissingTextureData(t.id.clone()))?;
             budget.charge(LoadResource::EncodedBytes, d.bytes.len() as u64)?;
-            let (w, h) =
-                image_dims(&d.bytes).map_err(|e| ManifestError::Decode(t.id.clone(), e))?;
+            let (w, h) = image_dims_as(&d.bytes, d.encoding)
+                .map_err(|e| ManifestError::Decode(t.id.clone(), e))?;
             budget.check_texture_dimensions(w, h)?;
             tex_data.insert(t.id.as_str(), d);
             tex_dims.insert(t.id.as_str(), (w as f32, h as f32));
@@ -602,6 +602,17 @@ pub fn image_dims(bytes: &[u8]) -> Result<(u32, u32), String> {
     image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?
+        .into_dimensions()
+        .map_err(|e| e.to_string())
+}
+
+/// The encoded format is authoritative; TGA cannot be identified by magic.
+pub fn image_dims_as(bytes: &[u8], encoding: TextureEncoding) -> Result<(u32, u32), String> {
+    let format = match encoding {
+        TextureEncoding::Png => image::ImageFormat::Png,
+        TextureEncoding::Tga => image::ImageFormat::Tga,
+    };
+    image::ImageReader::with_format(Cursor::new(bytes), format)
         .into_dimensions()
         .map_err(|e| e.to_string())
 }

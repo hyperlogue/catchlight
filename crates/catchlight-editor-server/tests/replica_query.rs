@@ -189,6 +189,7 @@ impl Fixture {
             node: None,
         });
         self.step(Command::MeshSet {
+            if_rev: None,
             session: self.session,
             node: node.clone(),
             verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
@@ -387,6 +388,13 @@ fn a_replica_answers_every_model_only_read_exactly_as_the_editor_does() {
             assert_eq!(node.name, "Body");
             assert_eq!(node.vertex_count, Some(4), "the fixture's quad");
             assert_eq!(node.triangle_count, Some(2));
+            let mesh = node
+                .mesh
+                .as_ref()
+                .expect("a part answers its authored geometry");
+            assert_eq!(mesh.verts.len(), 4);
+            assert_eq!(mesh.uvs.len(), 4);
+            assert_eq!(mesh.indices.len(), 2);
         }
         other => panic!("expected NodeInfo, got {other:?}"),
     }
@@ -585,6 +593,7 @@ fn node_info_counts_the_mesh_a_part_holds() {
     assert_eq!(counts(&bare), (Some(0), Some(0)));
 
     f.step(Command::MeshSet {
+        if_rev: None,
         session,
         node: bare.clone(),
         verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
@@ -777,6 +786,7 @@ fn binding_list_reports_the_authored_grid_and_the_holes_in_it() {
     // fixture's part is a quad. `[1, 0]` is also both params' rest cell, so
     // this authors exactly one.
     f.step(Command::DeformVertices {
+        if_rev: None,
         session,
         params: catchlight_editor_protocol::BindingParams::one(pull.clone()),
         node: f.body_part.clone(),

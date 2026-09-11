@@ -23,8 +23,10 @@ type ErrorSink = ((cause: unknown) => void) | undefined;
 /** Whatever React currently calls a range input's live-value event. */
 type InputHandler = NonNullable<ComponentProps<"input">["onInput"]>;
 
-export interface ParamSliderRootProps
-  extends Omit<ComponentProps<"input">, "type" | "value" | "min" | "max" | "step"> {
+export interface ParamSliderRootProps extends Omit<
+  ComponentProps<"input">,
+  "type" | "value" | "min" | "max" | "step"
+> {
   session: Session;
   param: ParamInfo;
 }
@@ -146,7 +148,9 @@ export function ParamKeysRoot({ session, param, onError, ...rest }: ParamKeysRoo
             data-interior={interior(index) ? "" : undefined}
             data-current={on === index ? "" : undefined}
             data-dragging={drag?.index === index ? "" : undefined}
-            style={{ left: `${(drag?.index === index ? drag.at : position) * 100}%` }}
+            style={{
+              left: `${(drag?.index === index ? drag.at : position) * 100}%`,
+            }}
             aria-label={`${param.name} key ${index}`}
             onPointerDown={(event) => down(event, index)}
             onPointerMove={(event) => move(event, index)}
@@ -209,7 +213,7 @@ function report(onError: ErrorSink, work: Promise<unknown>): void {
 }
 
 /** What the puppet is posed at, or the param's default before anything posed it. */
-function useParamValue(session: Session, param: ParamInfo): number {
+export function useParamValue(session: Session, param: ParamInfo): number {
   const read = useCallback(
     () => session.paramValue(param.id) ?? param.default,
     [session, param.id, param.default],

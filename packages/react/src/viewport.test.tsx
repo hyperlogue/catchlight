@@ -479,6 +479,15 @@ describe("framing the model", () => {
     // margin.
     expect(api?.camera.center).toEqual([0, 0]);
     expect(api?.camera.height).toBeCloseTo(13.2, 9);
+    // A fitted model remains fully framed as a sidebar or window narrows.
+    await run(() => api?.onResize({ width: 300, height: 600 }));
+    expect(api?.camera.height).toBeCloseTo(35.2, 9);
+    expect(api?.zoom).toBeCloseTo(1, 9);
+    // A deliberate pan belongs to the user, even at the fitted zoom level.
+    await run(() => api?.setCamera({ center: [3, 4], height: 35.2 }));
+    await run(() => api?.onResize({ width: 800, height: 600 }));
+    expect(api?.camera.center).toEqual([3, 4]);
+    expect(api?.camera.height).toBeCloseTo(35.2, 9);
     await view.unmount();
   });
 
@@ -532,7 +541,8 @@ describe("framing the model", () => {
 });
 
 /** What the wasm module says when the browser has no device to give. */
-const NO_DEVICE = "the catchlight editor needs WebGPU or WebGL2 to draw and this browser offered neither";
+const NO_DEVICE =
+  "the catchlight editor needs WebGPU or WebGL2 to draw and this browser offered neither";
 
 /**
  * The harness's stack, with the one device acquisition rigged to fail.

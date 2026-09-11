@@ -148,7 +148,7 @@ function Fields({
           commit={(next) => submit({ name: next })}
         />
       </Row>
-      <Row label="Translate" field="translate">
+      <Row label="Position" field="translate">
         <Axes
           field="translate"
           label="Translate"
@@ -157,13 +157,13 @@ function Fields({
           commit={(axis, next) => submit({ translate: with3(translate, axis, next) })}
         />
       </Row>
-      <Row label="Rotate" field="rotate">
+      <Row label="Rotation °" field="rotate">
         <Axes
           field="rotate"
           label="Rotate"
           axes={XYZ}
-          values={rotate}
-          commit={(axis, next) => submit({ rotate: with3(rotate, axis, next) })}
+          values={rotate.map((v) => (v * 180) / Math.PI)}
+          commit={(axis, next) => submit({ rotate: with3(rotate, axis, (next * Math.PI) / 180) })}
         />
       </Row>
       <Row label="Scale" field="scale">
@@ -337,16 +337,18 @@ function Axes({
       {values.map((value, axis) => {
         const name = axes[axis] ?? String(axis);
         return (
-          <NumberInput
-            key={name}
-            field={field}
-            axis={name}
-            label={`${label} ${name}`}
-            value={value}
-            min={min}
-            max={max}
-            commit={(next) => commit(axis, next)}
-          />
+          <label key={name} data-catchlight-axis-input="">
+            <span aria-hidden="true">{name}</span>
+            <NumberInput
+              field={field}
+              axis={name}
+              label={`${label} ${name}`}
+              value={value}
+              min={min}
+              max={max}
+              commit={(next) => commit(axis, next)}
+            />
+          </label>
         );
       })}
     </>
@@ -370,11 +372,18 @@ function NumberInput({
   max?: number | undefined;
   commit: (next: number) => Promise<void>;
 }): ReactNode {
-  const draft = useDraft(String(value), (text) => {
+  const draft = useDraft(String(Math.round(value * 1000) / 1000), (text) => {
     const next = Number(text);
     // A box holding nothing, or `1.2.3`, is not an edit. Reverting is what a
     // person who typed it expects, and there is nothing to send.
-    if (text.trim() === "" || !Number.isFinite(next) || next === value) return undefined;
+    if (
+      text.trim() === "" ||
+      !Number.isFinite(next) ||
+      next === value ||
+      (min !== undefined && next < min) ||
+      (max !== undefined && next > max)
+    )
+      return undefined;
     return commit(next);
   });
 
@@ -560,7 +569,10 @@ function blendOptions(current: BlendMode): Option<BlendMode>[] {
   // A file can carry a mode this build does not list. Showing it is how the
   // select stays a readout as well as a control.
   if (!names.includes(current)) names.unshift(current);
-  return names.map((name) => ({ value: name, label: name }));
+  return names.map((name) => ({
+    value: name,
+    label: name.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase()),
+  }));
 }
 
 function textureOptions(textures: TexInfo[]): Option[] {

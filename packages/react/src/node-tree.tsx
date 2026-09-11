@@ -32,6 +32,8 @@ import type { DropAt } from "./node-actions.js";
 import { dropIndex, findNode, siblingIndex, subtreeIds, useNodeActions } from "./node-actions.js";
 import { useTree } from "./replica.js";
 import { useSelection } from "./selection.js";
+import { Icon } from "./controls.js";
+import { kindIcons, kindLabels } from "./authoring.js";
 
 /** The node kinds a panel can add, in the order the picker lists them. */
 export const NODE_KINDS: readonly NodeKindArg[] = ["group", "part", "composite", "mesh_group"];
@@ -43,13 +45,31 @@ type ErrorSink = ((cause: unknown) => void) | undefined;
 export interface NodeTreeRootProps extends Omit<ComponentProps<"ul">, "children" | "onError"> {
   session: Session;
   onError?: ErrorSink;
+  filter?: string;
 }
 
-export function NodeTreeRoot({ session, onError, ...rest }: NodeTreeRootProps) {
+export function NodeTreeRoot({ session, onError, filter = "", ...rest }: NodeTreeRootProps) {
   const root = useTree(session);
+  const needle = filter.trim().toLocaleLowerCase();
+  const matching = (node: TreeNode): TreeNode | undefined => {
+    if (!needle || node.name.toLocaleLowerCase().includes(needle)) return node;
+    const children = node.children.map(matching).filter((child): child is TreeNode => !!child);
+    return children.length ? { ...node, children } : undefined;
+  };
+  const shown = matching(root);
   return (
-    <ul role="tree" data-catchlight-node-tree="" {...rest}>
-      <NodeTreeItem session={session} node={root} isRoot onError={onError} />
+    <ul role="tree" aria-label="Model structure" data-catchlight-node-tree="" {...rest}>
+      {shown ? (
+        <NodeTreeItem
+          key={needle ? "filtered" : "all"}
+          session={session}
+          node={shown}
+          isRoot
+          onError={onError}
+        />
+      ) : (
+        <li data-catchlight-empty="">No matching nodes.</li>
+      )}
     </ul>
   );
 }
@@ -67,6 +87,7 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
   const actions = useNodeActions(session);
   const [drop, setDrop] = useState<DropAt | undefined>(undefined);
   const [renaming, setRenaming] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const isSelected = selected === node.id;
 
   const onDragStart = (event: DragEvent<HTMLElement>): void => {
@@ -122,6 +143,7 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
     <li
       role="treeitem"
       aria-selected={isSelected}
+      aria-expanded={node.children.length ? expanded : undefined}
       data-catchlight-node=""
       data-node={node.id}
       data-kind={node.kind}
@@ -138,29 +160,75 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <input
-          type="checkbox"
-          data-catchlight-node-enabled=""
-          aria-label={`${node.name} enabled`}
-          checked={node.enabled}
-          onChange={(event) =>
-            report(onError, actions.setEnabled(node.id, event.currentTarget.checked))
-          }
-        />
+        {node.children.length ? (
+          <button
+            type="button"
+            data-catchlight-disclosure-toggle=""
+            aria-label={`${expanded ? "Collapse" : "Expand"} ${node.name}`}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <Icon name={expanded ? "down" : "chevron"} width="12" height="12" />
+          </button>
+        ) : (
+          <span data-catchlight-disclosure-spacer="" />
+        )}
+        <span data-catchlight-kind-icon="" title={kindLabels[node.kind]}>
+          <Icon name={kindIcons[node.kind]} width="16" height="16" />
+        </span>
+        <label data-catchlight-visibility="" title={node.enabled ? "Hide node" : "Show node"}>
+          <input
+            type="checkbox"
+            data-catchlight-node-enabled=""
+            aria-label={`${node.name} enabled`}
+            checked={node.enabled}
+            onChange={(event) =>
+              report(onError, actions.setEnabled(node.id, event.currentTarget.checked))
+            }
+          />
+          <Icon name={node.enabled ? "eye" : "hidden"} width="15" height="15" />
+        </label>
         {renaming ? (
-          <NodeRename name={node.name} onCommit={commitRename} onCancel={() => setRenaming(false)} />
+          <NodeRename
+            name={node.name}
+            onCommit={commitRename}
+            onCancel={() => setRenaming(false)}
+          />
         ) : (
           <button
             type="button"
             data-catchlight-node-label=""
             onClick={() => select(node.id)}
             onDoubleClick={() => setRenaming(true)}
+            onKeyDown={(event) => {
+              if (event.key === "F2") {
+                event.preventDefault();
+                setRenaming(true);
+              }
+              if (event.key === "ArrowRight") {
+                event.preventDefault();
+                setExpanded(true);
+              }
+              if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                setExpanded(false);
+              }
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                const tree = event.currentTarget.closest('[role="tree"]');
+                const rows = [
+                  ...(tree?.querySelectorAll<HTMLButtonElement>("[data-catchlight-node-label]") ??
+                    []),
+                ];
+                const at = rows.indexOf(event.currentTarget);
+                rows[at + (event.key === "ArrowDown" ? 1 : -1)]?.focus();
+              }
+            }}
           >
             {node.name}
           </button>
         )}
       </div>
-      {node.children.length > 0 && (
+      {node.children.length > 0 && expanded && (
         <ul role="group">
           {node.children.map((child) => (
             <NodeTreeItem session={session} node={child} key={child.id} onError={onError} />
@@ -305,7 +373,11 @@ export function NodeTreeActions({ session, onError, ...rest }: NodeTreeActionsPr
   );
 }
 
-export const NodeTree = { Root: NodeTreeRoot, Item: NodeTreeItem, Actions: NodeTreeActions };
+export const NodeTree = {
+  Root: NodeTreeRoot,
+  Item: NodeTreeItem,
+  Actions: NodeTreeActions,
+};
 
 /** The drag this browser is in the middle of, and what it may not be dropped on. */
 let dragging: { node: NodeId; subtree: Set<NodeId> } | undefined;

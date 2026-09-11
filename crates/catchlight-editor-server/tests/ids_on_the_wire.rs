@@ -54,6 +54,7 @@ fn root(ed: &Editor, id: u64, session: catchlight_editor_protocol::SessionId) ->
 /// A quad, so a part has vertices for its slots to point at.
 fn quad(session: catchlight_editor_protocol::SessionId, node: NodeId) -> Command {
     Command::MeshSet {
+        if_rev: None,
         session,
         node,
         verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],

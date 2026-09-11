@@ -59,7 +59,12 @@ describe("the assembled editor", () => {
     const stop = stubObservers();
     const editor = await fakeEditor();
     const session = await editor.newSession("akari");
-    await session.send({ cmd: "node_add", parent: "root", kind: "part", name: "body" });
+    await session.send({
+      cmd: "node_add",
+      parent: "root",
+      kind: "part",
+      name: "body",
+    });
     await session.send({
       cmd: "param_add",
       name: "head:yaw",
@@ -82,8 +87,9 @@ describe("the assembled editor", () => {
     expect(view.querySelector("[data-catchlight-node][data-selected]")).not.toBeNull();
     expect(text(view, "[data-catchlight-status]")).toContain("selected");
 
-    // The default row is a bare slider, so the fields around it are this
-    // package's doing — and the name is one a person can edit, not a label.
+    // Posing is immediately reachable; definitions have an explicit editor.
+    expect(text(view, "[data-catchlight-param-name]")).toContain("head:yaw");
+    await run(() => button(view, '[aria-label="Edit head:yaw"]').click());
     const name = view.querySelector<HTMLInputElement>("[data-catchlight-param-rename]");
     expect(name?.value).toBe("head:yaw");
     const slider = view.querySelector<HTMLInputElement>("[data-catchlight-param-slider]");
@@ -140,11 +146,16 @@ describe("the assembled editor", () => {
     await settle();
     expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
     expect(text(view, "[data-catchlight-status]")).toContain("untitled");
-    expect(text(view, "[data-catchlight-file]")).toBe("not saved yet");
+    expect(text(view, "[data-catchlight-save-state]")).toBe("All changes saved");
+    await run(() =>
+      Array.from(view.querySelectorAll<HTMLButtonElement>("button"))
+        .find((b) => b.textContent === "Save as…")
+        ?.click(),
+    );
 
     const input = view.querySelector<HTMLInputElement>("[data-catchlight-save-as]");
     const form = view.querySelector<HTMLFormElement>("[data-catchlight-file-save]");
-    if (!input || !form) throw new Error("no save-as form in the toolbar");
+    if (!input || !form) throw new Error("no save-as form in the dialog");
     input.value = "copy";
     await run(() => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await settle();
@@ -156,7 +167,7 @@ describe("the assembled editor", () => {
       path: "copy.clm",
     });
     expect(download.names).toEqual(["copy.clm"]);
-    expect(text(view, "[data-catchlight-notice]")).toBe("downloaded copy.clm");
+    expect(text(view, "[data-catchlight-notice]")).toBe("Downloaded copy.clm");
 
     await run(() => button(view, "[data-catchlight-session-close]").click());
     await settle();
@@ -281,8 +292,8 @@ describe("the assembled editor", () => {
     const session = await run(() => editor.newSession("akari"));
     await settle();
 
-    // No fit yet, so nothing to be relative to.
-    expect(text(view, "[data-catchlight-zoom]")).toBe("–");
+    // Before a fit, the camera starts at its default 100% scale.
+    expect(text(view, "[data-catchlight-zoom]")).toBe("100%");
 
     (session.replica as FakeReplica).box = [10, 20, 12, 24];
     await run(() => fit(view).click());
@@ -292,11 +303,17 @@ describe("the assembled editor", () => {
     const canvas = view.querySelector("canvas");
     if (!canvas) throw new Error("no canvas");
     await run(() =>
-      canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true })),
+      canvas.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: -100,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
     );
     expect(text(view, "[data-catchlight-zoom]")).toBe("110%");
 
-    await run(() => button(view, "[data-catchlight-camera-reset]").click());
+    await run(() => button(view, "[data-catchlight-fit]").click());
     expect(text(view, "[data-catchlight-zoom]")).toBe("100%");
 
     await unmount();
@@ -418,6 +435,9 @@ function stubObservers(): () => void {
     unobserve(): void {}
     disconnect(): void {}
   }
-  Object.assign(globalThis, { ResizeObserver: Noop, IntersectionObserver: Noop });
+  Object.assign(globalThis, {
+    ResizeObserver: Noop,
+    IntersectionObserver: Noop,
+  });
   return () => Object.assign(globalThis, saved);
 }

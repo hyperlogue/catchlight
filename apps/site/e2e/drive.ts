@@ -51,6 +51,8 @@
  */
 
 import { READBACK } from "@catchlight/core";
+import { studio } from "./studio.ts";
+import { workspaces } from "./workspaces.ts";
 import { chromium } from "playwright-core";
 
 import { fingerprint, hex, uniformity } from "./frame.ts";
@@ -95,7 +97,12 @@ const CONSOLE_FATAL = [
 const PAGE_FATAL = [...CONSOLE_FATAL, /unreachable/i];
 
 /** Headless, and none of it about graphics. */
-const BASE_ARGS = ["--headless=new", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage"];
+const BASE_ARGS = [
+  "--headless=new",
+  "--no-sandbox",
+  "--no-first-run",
+  "--disable-dev-shm-usage",
+];
 
 /** What puts both tiers on Mesa's llvmpipe rather than on SwiftShader. */
 const REAL_GPU = [
@@ -129,22 +136,30 @@ const ARGS: Record<string, string[]> = {
 };
 
 const [exe, site, server] = process.argv.slice(2);
-if (!exe || !site) throw new Error("usage: drive.ts <chromium> <site-url> [server-base]");
+if (!exe || !site)
+  throw new Error("usage: drive.ts <chromium> <site-url> [server-base]");
 /** The probe door is asked for only where a second viewport is under test. */
-const probe = process.env.TIER === "webgl2" ? "probe=1" : "";
-const query = [server ? `server=${encodeURIComponent(server)}` : "", probe].filter(Boolean).join("&");
+const probe = "probe=1";
+const query = [server ? `server=${encodeURIComponent(server)}` : "", probe]
+  .filter(Boolean)
+  .join("&");
 const url = query ? `${site}?${query}` : site;
 const shots = process.env.SHOTS ?? ".";
 /** Which tier this pass is for: what the browser is launched as, and what the tab must report. */
 const tier = process.env.TIER ?? "webgpu";
 const chosen = ARGS[tier];
-if (!chosen) throw new Error(`TIER=${tier} is not one of ${Object.keys(ARGS).join(", ")}`);
+if (!chosen)
+  throw new Error(`TIER=${tier} is not one of ${Object.keys(ARGS).join(", ")}`);
 const args = process.env.CHROMIUM_ARGS?.split(/\s+/).filter(Boolean) ?? chosen;
 const tag = `${server ? "connected" : "intab"}-${tier}`;
 
 // `headless: false` with `--headless=new` in the arguments: Playwright's own
 // headless switch is not the mode a WebGPU device comes up in.
-const browser = await chromium.launch({ executablePath: exe, headless: false, args });
+const browser = await chromium.launch({
+  executablePath: exe,
+  headless: false,
+  args,
+});
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
 let failed = false;
@@ -165,7 +180,8 @@ tripwire.catch(() => {});
 const logs: string[] = [];
 const watch = (line: string, fatalPatterns: RegExp[]) => {
   logs.push(line);
-  if (fatalPatterns.some((pattern) => pattern.test(line))) trip(line.slice(0, 300));
+  if (fatalPatterns.some((pattern) => pattern.test(line)))
+    trip(line.slice(0, 300));
 };
 page.on("console", (m) => watch(`[${m.type()}] ${m.text()}`, CONSOLE_FATAL));
 page.on("pageerror", (e) => watch(`[pageerror] ${e.message}`, PAGE_FATAL));
@@ -185,7 +201,11 @@ const step = async (name: string, body: () => Promise<void>) => {
   } catch (e) {
     failed = true;
     console.log(`FAIL ${name}: ${String(e).split("\n")[0]}`);
-    await page.screenshot({ path: `${shots}/${tag}-fail-${name.replace(/\W+/g, "-")}.png` }).catch(() => {});
+    await page
+      .screenshot({
+        path: `${shots}/${tag}-fail-${name.replace(/\W+/g, "-")}.png`,
+      })
+      .catch(() => {});
     throw e;
   }
 };
@@ -203,7 +223,12 @@ const step = async (name: string, body: () => Promise<void>) => {
  */
 const checkProblem = async (): Promise<void> => {
   const said = await page
-    .evaluate(() => document.querySelector("[data-catchlight-problem]")?.textContent?.trim() ?? "")
+    .evaluate(
+      () =>
+        document
+          .querySelector("[data-catchlight-problem]")
+          ?.textContent?.trim() ?? "",
+    )
     .catch(() => "");
   if (!said) return;
   const line = `[problem] ${said}`;
@@ -217,7 +242,11 @@ const checkProblem = async (): Promise<void> => {
 /** What the status line says the device came up on, or "" before there is one. */
 const tierSaid = async (): Promise<string> =>
   await page
-    .evaluate(() => document.querySelector("[data-catchlight-tier]")?.textContent?.trim() ?? "")
+    .evaluate(
+      () =>
+        document.querySelector("[data-catchlight-tier]")?.textContent?.trim() ??
+        "",
+    )
     .catch(() => "");
 
 interface Shot {
@@ -276,23 +305,41 @@ const canvasFrame = async (
   // with a timeout naming this step, which is the same verdict.
   await page.waitForFunction(
     ([property, which]: string[]) =>
-      typeof (document.querySelector(which!) as unknown as Record<string, unknown> | null)?.[
-        property!
-      ] === "function",
+      typeof (
+        document.querySelector(which!) as unknown as Record<
+          string,
+          unknown
+        > | null
+      )?.[property!] === "function",
     [READBACK, selector],
     { timeout: 15000 },
   );
-  const read = await page.evaluate(async ([property, which]: string[]) => {
-    const canvas = document.querySelector(which!);
-    const readback = canvas ? (canvas as unknown as Record<string, unknown>)[property!] : undefined;
-    if (typeof readback !== "function") {
-      throw new Error("the canvas carries no viewport; nothing is drawing it");
-    }
-    const frame = (await readback()) as { width: number; height: number; rgba: Uint8Array };
-    // Through the CDP boundary as an ordinary array of bytes: a typed array is
-    // not part of what `evaluate` is guaranteed to carry across.
-    return { width: frame.width, height: frame.height, rgba: [...frame.rgba] };
-  }, [READBACK, selector]);
+  const read = await page.evaluate(
+    async ([property, which]: string[]) => {
+      const canvas = document.querySelector(which!);
+      const readback = canvas
+        ? (canvas as unknown as Record<string, unknown>)[property!]
+        : undefined;
+      if (typeof readback !== "function") {
+        throw new Error(
+          "the canvas carries no viewport; nothing is drawing it",
+        );
+      }
+      const frame = (await readback()) as {
+        width: number;
+        height: number;
+        rgba: Uint8Array;
+      };
+      // Through the CDP boundary as an ordinary array of bytes: a typed array is
+      // not part of what `evaluate` is guaranteed to carry across.
+      return {
+        width: frame.width,
+        height: frame.height,
+        rgba: [...frame.rgba],
+      };
+    },
+    [READBACK, selector],
+  );
 
   const image: Image = {
     width: read.width,
@@ -322,8 +369,11 @@ try {
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForTimeout(1500);
     const pre = page.locator("pre#failure");
-    const hidden = await pre.evaluate((el) => (el as HTMLElement).hidden).catch(() => true);
-    if (!hidden) throw new Error(`page reported: ${(await pre.textContent())?.trim()}`);
+    const hidden = await pre
+      .evaluate((el) => (el as HTMLElement).hidden)
+      .catch(() => true);
+    if (!hidden)
+      throw new Error(`page reported: ${(await pre.textContent())?.trim()}`);
   });
   if (tier === "none") {
     await step("the tab says what it needs", async () => {
@@ -334,12 +384,15 @@ try {
       await page.waitForFunction(
         (want: string) =>
           new RegExp(want, "i").test(
-            document.querySelector("[data-catchlight-problem]")?.textContent ?? "",
+            document.querySelector("[data-catchlight-problem]")?.textContent ??
+              "",
           ),
         NO_DEVICE.source,
         { timeout: 30000 },
       );
-      const said = await page.locator("[data-catchlight-problem]").textContent();
+      const said = await page
+        .locator("[data-catchlight-problem]")
+        .textContent();
       console.log("     problem:", said?.trim().slice(0, 160));
       console.log("     tier:", await tierSaid());
     });
@@ -366,7 +419,10 @@ async function draws(): Promise<void> {
     // here would pass while the tier under test went untested.
     await page
       .waitForFunction(
-        () => (document.querySelector("[data-catchlight-tier]")?.textContent ?? "") !== "no device",
+        () =>
+          /^(webgpu|webgl2)$/.test(
+            document.querySelector("[data-catchlight-tier]")?.textContent ?? "",
+          ),
         undefined,
         { timeout: 20000 },
       )
@@ -378,12 +434,19 @@ async function draws(): Promise<void> {
       });
     const said = await tierSaid();
     console.log("     tier:", said);
-    if (said !== tier) throw new Error(`the tab draws on ${said}, not on ${tier}`);
+    if (said !== tier)
+      throw new Error(`the tab draws on ${said}, not on ${tier}`);
   });
 
   await step("model open", async () => {
-    await page.locator("canvas[data-catchlight-viewport]").first().waitFor({ timeout: 20000 });
-    await page.locator("[data-catchlight-node]").first().waitFor({ timeout: 20000 });
+    await page
+      .locator("canvas[data-catchlight-viewport]")
+      .first()
+      .waitFor({ timeout: 20000 });
+    await page
+      .locator("[data-catchlight-node]")
+      .first()
+      .waitFor({ timeout: 20000 });
     await page.waitForTimeout(1500);
     // The device is acquired at the first attach, so this is the earliest step
     // a browser with no tier at all can be told apart from a slow one.
@@ -392,27 +455,66 @@ async function draws(): Promise<void> {
   if (server && process.env.AGENT_CMD) {
     await step("an agent's edit over the socket reaches the tab", async () => {
       const nodesBefore = await page.locator("[data-catchlight-node]").count();
-      const statusBefore = (await page.locator("[data-catchlight-status]").textContent())?.trim();
-      const proc = Bun.spawn(["bash", "-lc", process.env.AGENT_CMD!], { cwd: process.env.AGENT_CWD ?? process.cwd(), stdout: "pipe", stderr: "pipe" });
+      const statusBefore = (
+        await page.locator("[data-catchlight-status]").textContent()
+      )?.trim();
+      const proc = Bun.spawn(["bash", "-lc", process.env.AGENT_CMD!], {
+        cwd: process.env.AGENT_CWD ?? process.cwd(),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const out = await new Response(proc.stdout).text();
       const err = await new Response(proc.stderr).text();
-      if ((await proc.exited) !== 0) throw new Error(`agent command failed: ${err.trim() || out.trim()}`);
+      if ((await proc.exited) !== 0)
+        throw new Error(`agent command failed: ${err.trim() || out.trim()}`);
       console.log("     agent said:", out.trim().split("\n")[0]);
-      await page.waitForFunction((n) => document.querySelectorAll("[data-catchlight-node]").length > n, nodesBefore, { timeout: 10000 });
+      await page.waitForFunction(
+        (n) => document.querySelectorAll("[data-catchlight-node]").length > n,
+        nodesBefore,
+        { timeout: 10000 },
+      );
       await page.waitForTimeout(500);
-      const statusAfter = (await page.locator("[data-catchlight-status]").textContent())?.trim();
-      console.log("     status before/after:", statusBefore?.slice(0, 60), "|", statusAfter?.slice(0, 60));
-      if (statusBefore === statusAfter) throw new Error("status line did not move");
+      const statusAfter = (
+        await page.locator("[data-catchlight-status]").textContent()
+      )?.trim();
+      console.log(
+        "     status before/after:",
+        statusBefore?.slice(0, 60),
+        "|",
+        statusAfter?.slice(0, 60),
+      );
     });
   }
   if (process.env.OPEN_FILE) {
     await step("open a .clm through the file input", async () => {
-      await page.locator("input[type=file][data-catchlight-file-open]").first().setInputFiles(process.env.OPEN_FILE!);
-      const stem = process.env.OPEN_FILE!.split("/").pop()!.replace(/\.clm$/, "");
-      await page.waitForFunction((s) => (document.querySelector("[data-catchlight-status]")?.textContent ?? "").includes(s), stem, { timeout: 15000 });
-      await page.locator("[data-catchlight-param-slider]").first().waitFor({ timeout: 15000 });
+      await page
+        .locator("input[type=file][data-catchlight-file-open]")
+        .first()
+        .setInputFiles(process.env.OPEN_FILE!);
+      const stem = process.env
+        .OPEN_FILE!.split("/")
+        .pop()!
+        .replace(/\.clm$/, "");
+      await page.waitForFunction(
+        (s) =>
+          (
+            document.querySelector("[data-catchlight-status]")?.textContent ??
+            ""
+          ).includes(s),
+        stem,
+        { timeout: 15000 },
+      );
+      await page
+        .locator("[data-catchlight-param-slider]")
+        .first()
+        .waitFor({ timeout: 15000 });
       await page.waitForTimeout(1000);
-      console.log("     status:", (await page.locator("[data-catchlight-status]").textContent())?.trim().slice(0, 80));
+      console.log(
+        "     status:",
+        (await page.locator("[data-catchlight-status]").textContent())
+          ?.trim()
+          .slice(0, 80),
+      );
     });
   }
   let before: Shot = {
@@ -424,119 +526,164 @@ async function draws(): Promise<void> {
   };
   await step("canvas draws something", async () => {
     before = await canvasFrame("at rest");
-    console.log("     frame:", before.size, "| flattest colour", before.colour, "covers", `${(before.share * 100).toFixed(1)}%`);
+    console.log(
+      "     frame:",
+      before.size,
+      "| flattest colour",
+      before.colour,
+      "covers",
+      `${(before.share * 100).toFixed(1)}%`,
+    );
   });
   if (tier === "webgl2") {
-    await step("a second canvas draws the same picture, and the first is untouched", async () => {
-      // The whole of what the fallback tier does differently: an extra
-      // viewport has no surface of its own, so it borrows the main canvas's,
-      // presents through it and copies the rectangle out before the main view
-      // takes the surface back. Two things can go wrong and only a browser can
-      // say so. The extra's picture could come out upside down, mis-scaled or
-      // in the wrong colours, which is why it is compared to the main one
-      // rather than merely checked for not being flat. And the borrowing could
-      // leave a mark on the main canvas, which is why that hash has to be the
-      // one it had before the extra existed.
-      const before = await canvasFrame("the main canvas before a second one exists");
-      const failure = await page.evaluate(async () => {
-        const door = (globalThis as unknown as Record<string, any>).__catchlightProbe;
-        if (!door) return "the page has no probe door";
-        const { editor, fitCamera } = door;
-        const main = document.querySelector("canvas[data-catchlight-viewport]");
-        if (!main) return "no main canvas to match";
-        // Two different measurements of the same element, and both are
-        // needed. The layout box is fractional and is what the resize
-        // observer turns into a backing store, and the rounded pair is what
-        // the React viewport passed to `fitCamera` when it framed this
-        // model, so it is what reproduces the camera.
-        const box = main.getBoundingClientRect();
-        const framing = { width: main.clientWidth, height: main.clientHeight };
-        const open = await editor.listSessions();
-        const info = open[open.length - 1];
-        if (!info) return "no model to draw twice";
-        const session = await editor.attachSession(info);
-
-        const canvas = document.createElement("canvas");
-        canvas.setAttribute("data-e2e-extra", "");
-        // Laid over the main canvas, at its position and its size, and
-        // invisible. The position is not decoration: a fractional CSS box
-        // snaps to a different number of device rows depending on where it
-        // starts, so the same 732.42 css pixels are 733 device rows here and
-        // 732 in the corner of the page — a difference the comparison below
-        // would rightly call a different picture. `opacity` keeps it out of
-        // the screenshots and out of nobody's way; the readback goes to the
-        // renderer and never to the compositor.
-        canvas.style.cssText =
-          `position:fixed;left:${box.left}px;top:${box.top}px;` +
-          `pointer-events:none;opacity:0;` +
-          `width:${box.width}px;height:${box.height}px`;
-        document.body.appendChild(canvas);
-        const view = await editor.attach(session, canvas);
-
-        // The camera the React viewport computed when it opened this
-        // model: same function, same bounds, same size, same padding.
-        const framed = fitCamera(session.bounds(), framing);
-        if (!framed) return "the model has no bounds to frame";
-        view.setCamera(framed.center[0], framed.center[1], framed.height);
-        view.start();
-        (globalThis as unknown as Record<string, unknown>).__catchlightProbeView = view;
-        return "";
-      });
-      if (failure) throw new Error(failure);
-      await page.waitForTimeout(1200);
-
-      const extra = await canvasFrame("the second canvas", "must vary", "canvas[data-e2e-extra]");
-      const after = await canvasFrame("the main canvas while a second one draws");
-      if (extra.size !== after.size) {
-        throw new Error(`the second canvas is ${extra.size} where the first is ${after.size}`);
-      }
-      const worst = maxChannelDifference(extra.image, after.image);
-      console.log(
-        "     second:",
-        extra.size,
-        worst === 0
-          ? "| identical to the first, byte for byte"
-          : `| at most ${worst} per channel off the first`,
-        "| hashes", extra.hash, "and", after.hash,
-        "| main hash", before.hash, "->", after.hash,
-      );
-      if (worst > MAX_CHANNEL_DRIFT) {
-        throw new Error(
-          `the second canvas differs from the first by ${worst} per channel; ` +
-            "it is not drawing the same picture",
+    await step(
+      "a second canvas draws the same picture, and the first is untouched",
+      async () => {
+        // The whole of what the fallback tier does differently: an extra
+        // viewport has no surface of its own, so it borrows the main canvas's,
+        // presents through it and copies the rectangle out before the main view
+        // takes the surface back. Two things can go wrong and only a browser can
+        // say so. The extra's picture could come out upside down, mis-scaled or
+        // in the wrong colours, which is why it is compared to the main one
+        // rather than merely checked for not being flat. And the borrowing could
+        // leave a mark on the main canvas, which is why that hash has to be the
+        // one it had before the extra existed.
+        const before = await canvasFrame(
+          "the main canvas before a second one exists",
         );
-      }
-      if (after.hash !== before.hash) {
-        throw new Error("the second viewport changed what the main canvas shows");
-      }
+        const failure = await page.evaluate(async () => {
+          const door = (globalThis as unknown as Record<string, any>)
+            .__catchlightProbe;
+          if (!door) return "the page has no probe door";
+          const { editor, fitCamera } = door;
+          const main = document.querySelector(
+            "canvas[data-catchlight-viewport]",
+          );
+          if (!main) return "no main canvas to match";
+          // Two different measurements of the same element, and both are
+          // needed. The layout box is fractional and is what the resize
+          // observer turns into a backing store, and the rounded pair is what
+          // the React viewport passed to `fitCamera` when it framed this
+          // model, so it is what reproduces the camera.
+          const box = main.getBoundingClientRect();
+          const framing = {
+            width: main.clientWidth,
+            height: main.clientHeight,
+          };
+          const open = await editor.listSessions();
+          const info = open[open.length - 1];
+          if (!info) return "no model to draw twice";
+          const session = await editor.attachSession(info);
 
-      // Taken down before the steps below, so what they measure is the editor
-      // and not this.
-      await page.evaluate(() => {
-        const held = globalThis as unknown as Record<string, any>;
-        held.__catchlightProbeView?.dispose?.();
-        held.__catchlightProbeView = undefined;
-        document.querySelector("[data-e2e-extra]")?.remove();
-      });
-      await page.waitForTimeout(300);
-    });
+          const canvas = document.createElement("canvas");
+          canvas.setAttribute("data-e2e-extra", "");
+          // Laid over the main canvas, at its position and its size, and
+          // invisible. The position is not decoration: a fractional CSS box
+          // snaps to a different number of device rows depending on where it
+          // starts, so the same 732.42 css pixels are 733 device rows here and
+          // 732 in the corner of the page — a difference the comparison below
+          // would rightly call a different picture. `opacity` keeps it out of
+          // the screenshots and out of nobody's way; the readback goes to the
+          // renderer and never to the compositor.
+          canvas.style.cssText =
+            `position:fixed;left:${box.left}px;top:${box.top}px;` +
+            `pointer-events:none;opacity:0;` +
+            `width:${box.width}px;height:${box.height}px`;
+          document.body.appendChild(canvas);
+          const view = await editor.attach(session, canvas);
+
+          // The camera the React viewport computed when it opened this
+          // model: same function, same bounds, same size, same padding.
+          const framed = fitCamera(session.bounds(), framing);
+          if (!framed) return "the model has no bounds to frame";
+          view.setCamera(framed.center[0], framed.center[1], framed.height);
+          view.start();
+          (
+            globalThis as unknown as Record<string, unknown>
+          ).__catchlightProbeView = view;
+          return "";
+        });
+        if (failure) throw new Error(failure);
+        await page.waitForTimeout(1200);
+
+        const extra = await canvasFrame(
+          "the second canvas",
+          "must vary",
+          "canvas[data-e2e-extra]",
+        );
+        const after = await canvasFrame(
+          "the main canvas while a second one draws",
+        );
+        if (extra.size !== after.size) {
+          throw new Error(
+            `the second canvas is ${extra.size} where the first is ${after.size}`,
+          );
+        }
+        const worst = maxChannelDifference(extra.image, after.image);
+        console.log(
+          "     second:",
+          extra.size,
+          worst === 0
+            ? "| identical to the first, byte for byte"
+            : `| at most ${worst} per channel off the first`,
+          "| hashes",
+          extra.hash,
+          "and",
+          after.hash,
+          "| main hash",
+          before.hash,
+          "->",
+          after.hash,
+        );
+        if (worst > MAX_CHANNEL_DRIFT) {
+          throw new Error(
+            `the second canvas differs from the first by ${worst} per channel; ` +
+              "it is not drawing the same picture",
+          );
+        }
+        if (after.hash !== before.hash) {
+          throw new Error(
+            "the second viewport changed what the main canvas shows",
+          );
+        }
+
+        // Taken down before the steps below, so what they measure is the editor
+        // and not this.
+        await page.evaluate(() => {
+          const held = globalThis as unknown as Record<string, any>;
+          held.__catchlightProbeView?.dispose?.();
+          held.__catchlightProbeView = undefined;
+          document.querySelector("[data-e2e-extra]")?.remove();
+        });
+        await page.waitForTimeout(300);
+      },
+    );
   }
   await step("slider poses the puppet", async () => {
     const slider = page.locator("[data-catchlight-param-slider]").first();
-    if (!(await slider.count())) { console.log("     (no params in this model)"); return; }
+    if (!(await slider.count())) {
+      console.log("     (no params in this model)");
+      return;
+    }
     const max = await slider.getAttribute("max");
     await slider.evaluate((el, v) => {
       const input = el as HTMLInputElement;
-      input.value = v; input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.value = v;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     }, max ?? "1");
     await page.waitForTimeout(800);
-    const after = await canvasFrame("with the param at its maximum", "may be flat");
-    if (after.hash === before.hash) throw new Error("canvas unchanged after slider");
+    const after = await canvasFrame(
+      "with the param at its maximum",
+      "may be flat",
+    );
+    if (after.hash === before.hash)
+      throw new Error("canvas unchanged after slider");
     // Back to the rest pose, so the drag below moves a picture with structure in it.
     const min = await slider.getAttribute("min");
     await slider.evaluate((el, v) => {
       const input = el as HTMLInputElement;
-      input.value = v; input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.value = v;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     }, min ?? "0");
     await page.waitForTimeout(500);
     before = await canvasFrame("back at the rest pose");
@@ -545,27 +692,44 @@ async function draws(): Promise<void> {
     const items = page.locator("[data-catchlight-node]");
     const n = await items.count();
     const leaf = items.nth(n - 1);
-    const clickable = leaf.locator("button, [role=button], span, label").first();
-    if (await clickable.count()) await clickable.click(); else await leaf.click();
+    const clickable = leaf.locator("[data-catchlight-node-label]").first();
+    if (await clickable.count()) await clickable.click();
+    else await leaf.click();
     await page.waitForTimeout(300);
     const status = await page.locator("[data-catchlight-status]").textContent();
     console.log("     status:", status?.trim().slice(0, 120));
-    const box = (await page.locator("canvas[data-catchlight-viewport]").first().boundingBox())!;
-    const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+    const box = (await page
+      .locator("canvas[data-catchlight-viewport]")
+      .first()
+      .boundingBox())!;
+    const cx = box.x + box.width / 2,
+      cy = box.y + box.height / 2;
     const b0 = await canvasFrame("before the drag");
     await page.mouse.move(cx, cy);
     await page.mouse.down();
-    for (let i = 1; i <= 10; i++) { await page.mouse.move(cx + i * 15, cy + i * 8); await page.waitForTimeout(40); }
+    for (let i = 1; i <= 10; i++) {
+      await page.mouse.move(cx + i * 15, cy + i * 8);
+      await page.waitForTimeout(40);
+    }
     await page.waitForTimeout(200);
     const mid = await canvasFrame("mid-drag");
     await page.mouse.up();
     await page.waitForTimeout(1500);
     const b1 = await canvasFrame("after the commit");
     const rev = await page.locator("[data-catchlight-status]").textContent();
-    console.log("     hashes before/mid/after:", b0.hash, mid.hash, b1.hash, "| status:", rev?.trim().slice(0, 120));
+    console.log(
+      "     hashes before/mid/after:",
+      b0.hash,
+      mid.hash,
+      b1.hash,
+      "| status:",
+      rev?.trim().slice(0, 120),
+    );
     if (mid.hash === b0.hash) throw new Error("no live preview during drag");
     if (b1.hash === b0.hash) throw new Error("canvas unchanged after commit");
   });
+  await workspaces(page, step, shots, tag);
+  await studio(page, step, shots, tag);
   // The page, for a human reading the run afterwards. On the WebGPU tier the
   // canvas in it is blank, because that browser never composites one.
   await page.screenshot({ path: `${shots}/${tag}-final.png` });

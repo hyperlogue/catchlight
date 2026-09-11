@@ -453,7 +453,153 @@ impl ReplicaState {
         self.puppet.combine_deforms();
     }
 
+    /// Pick evaluated mesh triangles, front to back, using the same routine as
+    /// the desktop editor. Hidden ancestors and culled drawables do not hit.
+    pub fn pick_node(&self, x: f32, y: f32) -> Option<String> {
+        let hit =
+            catchlight_editor_core::picking::pick_all(&self.model, &self.puppet, Vec2::new(x, y))
+                .into_iter()
+                .next()?;
+        self.puppet
+            .node_id(catchlight_core::NodeIdx(hit))
+            .map(ToString::to_string)
+    }
+
+    /// Evaluated part vertices in world coordinates. The overlay gets the
+    /// exact geometry the GPU draws, including origin, pose, welds and scratch.
+    pub fn node_vertices(&self, node: &str) -> Option<Vec<f32>> {
+        let id = NodeId::new(node).ok()?;
+        let idx = self.puppet.node_idx(&id)?;
+        let NodeKind::Part(part) = &self.puppet.get(idx)?.kind else {
+            let mut vertices = Vec::new();
+            let mut pending = self.puppet.tree().get_children(idx);
+            while let Some(child) = pending.pop() {
+                let Some(node) = self.puppet.get(child) else {
+                    continue;
+                };
+                if !node.enabled {
+                    continue;
+                }
+                if let NodeKind::Part(part) = &node.kind {
+                    let transform = self.puppet.transforms().get(child);
+                    for i in 0..part.mesh.vertices.len() {
+                        vertices.extend(
+                            catchlight_editor_core::picking::part_world_vertex(part, &transform, i)
+                                .to_array(),
+                        );
+                    }
+                }
+                pending.extend(self.puppet.tree().get_children(child));
+            }
+            return Some(vertices);
+        };
+        let transform = self.puppet.transforms().get(idx);
+        Some(
+            (0..part.mesh.vertices.len())
+                .flat_map(|i| {
+                    catchlight_editor_core::picking::part_world_vertex(part, &transform, i)
+                        .to_array()
+                })
+                .collect(),
+        )
+    }
+
+    /// Bounded artwork preview in straight-alpha sRGB, the form a browser's
+    /// ImageData consumes. Decoding stays beside the model and handles both
+    /// source formats and both alpha conventions exactly as the renderer does.
+    pub fn texture_thumbnail(
+        &self,
+        texture: &str,
+    ) -> Option<catchlight_core::components::DecodedTexture> {
+        self.texture_image(texture, 128)
+    }
+
+    pub fn texture_image(
+        &self,
+        texture: &str,
+        limit: u32,
+    ) -> Option<catchlight_core::components::DecodedTexture> {
+        let id = TexId::new(texture).ok()?;
+        let encoded = catchlight_core::texture::EncodedTexture::from(self.model.texture(&id)?);
+        let mut decoded = encoded.decode().ok()?;
+        while limit > 0 && decoded.width.max(decoded.height) > limit {
+            decoded = decoded.halved();
+        }
+        let mut rgba = decoded.rgba.to_vec();
+        catchlight_core::texture::unpremultiply_linear_from_srgb_inplace(&mut rgba);
+        decoded.rgba = rgba.into();
+        Some(decoded)
+    }
+
+    /// Editing pauses this tab's simulation, without changing model physics.
+    pub fn set_editing(&mut self, editing: bool) {
+        self.puppet.set_physics_enabled(!editing);
+        self.tick(0.0);
+    }
+
+    pub fn mesh_draft(&self, node: &str) -> Result<crate::authoring::MeshDraftState, String> {
+        crate::authoring::MeshDraftState::new(&self.model, node)
+    }
+
+    pub fn recording_pairs(&self, node: &str, param: &str) -> Vec<[String; 2]> {
+        let (Ok(node), Ok(param)) = (NodeId::new(node), ParamId::new(param)) else {
+            return Vec::new();
+        };
+        let mut pairs = Vec::new();
+        for b in self
+            .model
+            .bindings_of_node(&node)
+            .chain(self.model.bindings_of_param(&param))
+        {
+            if b.params().contains(&param) {
+                if let Some(y) = b.params().y() {
+                    let pair = [b.params().x().to_string(), y.to_string()];
+                    if !pairs.contains(&pair) {
+                        pairs.push(pair);
+                    }
+                }
+            }
+        }
+        pairs
+    }
+
+    pub fn recording(
+        &mut self,
+        node: &str,
+        param: &str,
+        param_y: Option<&str>,
+        cell: [u32; 2],
+    ) -> Result<catchlight_editor_core::Recording, String> {
+        self.tick(0.0);
+        crate::authoring::capture(&self.model, &self.puppet, node, param, param_y, cell)
+    }
+
     // ---- gizmo math --------------------------------------------------------
+
+    /// Evaluated local translation, rotation and scale. A gesture captures
+    /// these once, preserving the posed contribution while editing the base.
+    pub fn node_local_transform(&self, node: &str) -> Option<Vec<f32>> {
+        let transform = &self.puppet.get(self.node_idx(node)?)?.transform;
+        Some(
+            transform
+                .translation
+                .to_array()
+                .into_iter()
+                .chain(transform.rotation.to_array())
+                .chain(transform.scale.to_array())
+                .collect(),
+        )
+    }
+
+    /// A world-space direction expressed in the selected mesh's frame.
+    /// Collapsed transforms refuse a drag rather than producing NaNs.
+    pub fn node_delta_from_world(&self, node: &str, dx: f32, dy: f32) -> Option<Vec<f32>> {
+        let transform = self.puppet.transforms().get(self.node_idx(node)?);
+        let local = transform
+            .inverse()
+            .transform_vector3(Vec3::new(dx, dy, 0.0));
+        local.is_finite().then(|| vec![local.x, local.y])
+    }
 
     /// The node's evaluated world transform after the last tick, as 16 floats
     /// in column-major order. `None` for a node the model does not have.
@@ -769,6 +915,22 @@ pub(crate) mod browser {
         }
     }
 
+    /// One bounded, straight-alpha artwork thumbnail. JavaScript copies the
+    /// pixels once, then releases this owner.
+    #[wasm_bindgen]
+    pub struct TextureThumbnail {
+        pub width: u32,
+        pub height: u32,
+        rgba: Vec<u8>,
+    }
+
+    #[wasm_bindgen]
+    impl TextureThumbnail {
+        pub fn pixels(&self) -> Vec<u8> {
+            self.rgba.clone()
+        }
+    }
+
     /// One session's model, puppet, textures and render cache, in the tab.
     #[wasm_bindgen]
     pub struct Replica {
@@ -939,6 +1101,76 @@ pub(crate) mod browser {
             self.inner.borrow_mut().state.clear_all_scratch();
         }
 
+        #[wasm_bindgen(js_name = pickNode)]
+        pub fn pick_node(&self, x: f32, y: f32) -> Option<String> {
+            self.inner.borrow().state.pick_node(x, y)
+        }
+
+        #[wasm_bindgen(js_name = nodeVertices)]
+        pub fn node_vertices(&self, node: &str) -> Option<Vec<f32>> {
+            self.inner.borrow().state.node_vertices(node)
+        }
+
+        #[wasm_bindgen(js_name = meshDraft)]
+        pub fn mesh_draft(
+            &self,
+            node: &str,
+        ) -> Result<crate::authoring::browser::MeshEditDraft, JsValue> {
+            self.inner
+                .borrow()
+                .state
+                .mesh_draft(node)
+                .map(|state| crate::authoring::browser::MeshEditDraft { state })
+                .map_err(|e| JsValue::from_str(&e))
+        }
+
+        #[wasm_bindgen(js_name = recordingPairs)]
+        pub fn recording_pairs(&self, node: &str, param: &str) -> String {
+            serde_json::to_string(&self.inner.borrow().state.recording_pairs(node, param))
+                .unwrap_or_default()
+        }
+
+        pub fn recording(
+            &self,
+            node: &str,
+            param: &str,
+            param_y: Option<String>,
+            x: u32,
+            y: u32,
+        ) -> Result<crate::authoring::browser::RecordingGesture, JsValue> {
+            self.inner
+                .borrow_mut()
+                .state
+                .recording(node, param, param_y.as_deref(), [x, y])
+                .map(|state| crate::authoring::browser::RecordingGesture { state })
+                .map_err(|e| JsValue::from_str(&e))
+        }
+
+        #[wasm_bindgen(js_name = setEditing)]
+        pub fn set_editing(&self, editing: bool) {
+            self.inner.borrow_mut().state.set_editing(editing);
+        }
+
+        #[wasm_bindgen(js_name = textureImage)]
+        pub fn texture_image(&self, texture: &str) -> Option<TextureThumbnail> {
+            let decoded = self.inner.borrow().state.texture_image(texture, 0)?;
+            Some(TextureThumbnail {
+                width: decoded.width,
+                height: decoded.height,
+                rgba: decoded.rgba.to_vec(),
+            })
+        }
+
+        #[wasm_bindgen(js_name = textureThumbnail)]
+        pub fn texture_thumbnail(&self, texture: &str) -> Option<TextureThumbnail> {
+            let decoded = self.inner.borrow().state.texture_thumbnail(texture)?;
+            Some(TextureThumbnail {
+                width: decoded.width,
+                height: decoded.height,
+                rgba: decoded.rgba.to_vec(),
+            })
+        }
+
         /// The node's evaluated world transform after the last tick: 16 floats,
         /// column-major. Where a gizmo draws its handles.
         #[wasm_bindgen(js_name = nodeWorldTransform)]
@@ -948,6 +1180,19 @@ pub(crate) mod browser {
                 .state
                 .node_world_transform(node)
                 .map(|m| m.to_vec())
+        }
+
+        #[wasm_bindgen(js_name = nodeLocalTransform)]
+        pub fn node_local_transform(&self, node: &str) -> Option<Vec<f32>> {
+            self.inner.borrow().state.node_local_transform(node)
+        }
+
+        #[wasm_bindgen(js_name = nodeDeltaFromWorld)]
+        pub fn node_delta_from_world(&self, node: &str, dx: f32, dy: f32) -> Option<Vec<f32>> {
+            self.inner
+                .borrow()
+                .state
+                .node_delta_from_world(node, dx, dy)
         }
 
         /// The world-space box the last tick left the drawn geometry in:
@@ -1436,6 +1681,97 @@ mod tests {
         part
     }
 
+    #[test]
+    fn selection_geometry_and_picking_follow_pose_visibility_and_order() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let back = add_drawn_part(&editor, session, "back");
+        let front = add_drawn_part(&editor, session, "front");
+        set_quad_mesh(&editor, session, &back, 2.0);
+        set_quad_mesh(&editor, session, &front, 1.0);
+        node_set(
+            &editor,
+            session,
+            &front,
+            json!({"z_order": 2.0, "translate": [1.0, 0.0, 0.0], "scale": [2.0, 2.0]}),
+        );
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        replica.tick(0.0);
+        assert_eq!(replica.pick_node(0.0, 0.0), Some(front.clone()));
+        assert_eq!(
+            replica.node_vertices(&front).unwrap(),
+            vec![-1.0, -2.0, 3.0, -2.0, 3.0, 2.0, -1.0, 2.0]
+        );
+        assert_eq!(replica.node_vertices(ROOT).unwrap().len(), 16);
+        assert_eq!(
+            replica.node_delta_from_world(&front, 4.0, 2.0),
+            Some(vec![2.0, 1.0])
+        );
+        assert_eq!(
+            replica.node_local_transform(&front).unwrap(),
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0]
+        );
+        node_set(&editor, session, &front, json!({"enabled": false}));
+        replica.sync_from_editor(editor.editor(), session);
+        replica.tick(0.0);
+        assert_eq!(replica.pick_node(0.0, 0.0), Some(back));
+        assert_eq!(replica.node_vertices(ROOT).unwrap().len(), 8);
+        assert!(replica.pick_node(100.0, 100.0).is_none());
+        assert!(replica.node_vertices("missing").is_none());
+        node_set(&editor, session, &front, json!({"scale": [0.0, 0.0]}));
+        replica.sync_from_editor(editor.editor(), session);
+        replica.tick(0.0);
+        assert!(replica.node_delta_from_world(&front, 1.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn artwork_thumbnails_are_bounded_and_straight_alpha_on_both_formats() {
+        for (encoding, format) in [
+            ("png", image::ImageFormat::Png),
+            ("tga", image::ImageFormat::Tga),
+        ] {
+            let editor = CatchlightEditor::new();
+            let session = new_session(&editor);
+            let part = add_node(&editor, session, ROOT, "part", "artwork");
+            let mut bytes = Vec::new();
+            image::RgbaImage::from_pixel(512, 256, image::Rgba([200, 80, 40, 128]))
+                .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+                .unwrap();
+            let mut attachments = Attachments::none();
+            attachments.insert("texture", bytes);
+            let (reply, _) = editor.dispatch_with(&json!({"id": 10, "cmd": "texture_add", "session": session.0, "node": part, "encoding": encoding}).to_string(), attachments);
+            let reply: Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(reply["reply"], "ok", "{reply}");
+            let texture = reply["body"]["texture"].as_str().unwrap();
+            let mut replica = ReplicaState::new();
+            replica.sync_from_editor(editor.editor(), session);
+            let thumbnail = replica.texture_thumbnail(texture).unwrap();
+            assert_eq!((thumbnail.width, thumbnail.height), (128, 64));
+            for (actual, expected) in thumbnail.rgba[..4].iter().zip([200u8, 80, 40, 128]) {
+                assert!(
+                    actual.abs_diff(expected) <= 2,
+                    "{encoding}: {:?}",
+                    &thumbnail.rgba[..4]
+                );
+            }
+            assert!(replica.texture_thumbnail("missing").is_none());
+            let listed = call(
+                &editor,
+                json!({"id": 11, "cmd": "texture_list", "session": session.0}),
+            );
+            assert_eq!(listed["body"]["textures"][0]["width"], 512);
+            assert_eq!(listed["body"]["textures"][0]["height"], 256);
+            // TGA has no magic bytes for a format sniffer. Both tracing and
+            // dimension reads must use the texture's declared encoding.
+            let meshed = call(
+                &editor,
+                json!({"id": 12, "cmd": "mesh_auto", "session": session.0, "node": part}),
+            );
+            assert_eq!(meshed["reply"], "ok", "{encoding}: {meshed}");
+        }
+    }
+
     /// A square of side `2 * half` centred on the node's own origin.
     fn set_quad_mesh(editor: &CatchlightEditor, session: SessionId, node: &str, half: f32) {
         let reply = call(
@@ -1711,6 +2047,116 @@ mod tests {
         assert_eq!(replica.frame(0.0), Motion::default());
         assert_eq!(replica.frame(16.0), Motion::default());
         assert_bounds(&replica, [-1.0, -1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn recording_captures_one_cell_without_baking_other_params_into_it() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let face = add_drawn_part(&editor, session, "record-face");
+        set_quad_mesh(&editor, session, &face, 1.0);
+        let send = |value: Value| {
+            let mut value = value;
+            value["id"] = json!(90);
+            value["session"] = json!(session.0);
+            let reply = call(&editor, value);
+            assert_eq!(reply["reply"], "ok", "{reply}");
+            reply
+        };
+        for param in ["x", "y", "other"] {
+            send(json!({"cmd":"param_add", "param":param, "name":param,
+                "min":0, "max":1, "default":0, "key_positions":[0,1]}));
+        }
+        send(json!({"cmd":"node_set", "node":face, "translate":[100,0,0], "scale":[2,2]}));
+        send(
+            json!({"cmd":"binding_keys", "node":face, "param":"x", "param_y":"y", "cell":[1,1],
+            "entries":[{"target":"tx","value":10},{"target":"sx","value":3}]}),
+        );
+        send(
+            json!({"cmd":"binding_keys", "node":face, "param":"other", "cell":[1,0],
+            "entries":[{"target":"tx","value":20},{"target":"sx","value":2}]}),
+        );
+        send(
+            json!({"cmd":"deform_vertices", "node":face, "param":"x", "param_y":"y", "cell":[1,1],
+            "offsets":[[10,0],[10,0],[10,0],[10,0]]}),
+        );
+        send(
+            json!({"cmd":"deform_vertices", "node":face, "param":"other", "cell":[1,0],
+            "offsets":[[20,0],[20,0],[20,0],[20,0]]}),
+        );
+        let mut replica = ReplicaState::new();
+        replica.sync_from_editor(editor.editor(), session);
+        replica.set_editing(true);
+        for p in ["x", "y", "other"] {
+            replica.set_param(p, 1.0);
+        }
+        let revision = replica.rev();
+        let recording = replica.recording(&face, "x", Some("y"), [1, 1]).unwrap();
+        assert_eq!(replica.rev(), revision, "arming never authors");
+        assert_eq!(recording.posed.translate.unwrap()[0], 130.0);
+        assert_eq!(recording.posed.scale.unwrap()[0], 12.0);
+        let patch = catchlight_editor_core::RecordProperties {
+            translate: Some([133.0, 0.0, 0.0]),
+            scale: Some([18.0, 2.0]),
+            ..Default::default()
+        };
+        let entries = recording.patch(&patch, false).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                (catchlight_core::ScalarTarget::Tx, 13.0),
+                (catchlight_core::ScalarTarget::Sx, 4.5)
+            ]
+        );
+        let offsets = recording
+            .deform(&[5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        assert_eq!(offsets, vec![15.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0]);
+        assert_eq!(
+            replica.recording_pairs(&face, "y"),
+            vec![["x".to_string(), "y".to_string()]]
+        );
+        replica.set_param("y", 0.25);
+        assert!(replica.recording(&face, "x", Some("y"), [1, 1]).is_err());
+        send(json!({"cmd":"node_set", "node":face, "name":"renamed"}));
+        replica.sync_from_editor(editor.editor(), session);
+        assert!(
+            !replica.puppet.physics_enabled(),
+            "rebaking keeps editing physics paused"
+        );
+        replica.set_editing(false);
+        assert!(replica.puppet.physics_enabled());
+    }
+
+    #[test]
+    fn authoring_commands_refuse_a_stale_revision_without_history_or_model_changes() {
+        let editor = CatchlightEditor::new();
+        let session = new_session(&editor);
+        let face = add_drawn_part(&editor, session, "draft-face");
+        set_quad_mesh(&editor, session, &face, 1.0);
+        let revision = editor.editor().revision(session).unwrap();
+        let before = structure_of(&editor, session);
+        let status = call(&editor, json!({"id":80,"cmd":"status","session":session.0}));
+        let commands = [
+            json!({"cmd":"mesh_set","verts":[[0,0],[1,0],[1,1]],"uvs":[[0,0],[1,0],[1,1]],"indices":[[0,1,2]],"origin":[0,0]}),
+            json!({"cmd":"binding_keys","param":"missing","cell":[0,0],"entries":[{"target":"tx","value":20}]}),
+            json!({"cmd":"deform_vertices","param":"missing","cell":[0,0],"offsets":[[0,0],[0,0],[0,0],[0,0]]}),
+        ];
+        for mut command in commands {
+            command["id"] = json!(81);
+            command["session"] = json!(session.0);
+            command["node"] = json!(face);
+            command["if_rev"] = json!(revision - 1);
+            let reply = call(&editor, command);
+            assert_eq!(reply["reply"], "err", "{reply}");
+            assert_eq!(reply["code"], "revision_conflict", "{reply}");
+            assert_eq!(editor.editor().revision(session), Some(revision));
+            assert_eq!(structure_of(&editor, session), before);
+            assert_eq!(
+                call(&editor, json!({"id":80,"cmd":"status","session":session.0})),
+                status
+            );
+        }
     }
 
     /// The smallest valid PNG: one opaque pixel.

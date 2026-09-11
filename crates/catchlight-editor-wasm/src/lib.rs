@@ -60,6 +60,7 @@ use catchlight_editor_core::Manifest;
 use catchlight_editor_protocol::{ErrorCode, Reply, Request, RequestId};
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
+pub mod authoring;
 mod replica;
 #[cfg(target_arch = "wasm32")]
 pub use replica::Replica;

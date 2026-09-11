@@ -374,6 +374,7 @@ fn a_part_that_already_has_a_mesh_keeps_its_mapping() {
     // A 64×64 quad on the centered convention, v increasing downward: exactly
     // what `from_texture_size` describes, so the fit has to recover it.
     f.body(Command::MeshSet {
+        if_rev: None,
         session,
         node: part.clone(),
         verts: vec![[-32.0, -32.0], [32.0, -32.0], [32.0, 32.0], [-32.0, 32.0]],
@@ -394,6 +395,7 @@ fn a_trace_is_one_undoable_edit() {
     let part = f.part("blob.png");
     let session = f.session;
     f.body(Command::MeshSet {
+        if_rev: None,
         session,
         node: part.clone(),
         verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],

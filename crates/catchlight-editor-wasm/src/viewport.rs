@@ -129,9 +129,9 @@ use crate::{Gpu, Replica};
 /// draws its own checkerboard behind the canvas when it wants one, and an
 /// alpha-blended canvas costs a composite pass the page never asked for.
 const CLEAR: wgpu::Color = wgpu::Color {
-    r: 0.12,
-    g: 0.12,
-    b: 0.14,
+    r: 0.016,
+    g: 0.019,
+    b: 0.023,
     a: 1.0,
 };
 

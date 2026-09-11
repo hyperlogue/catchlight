@@ -26,7 +26,13 @@
 export { EditorProvider, useEditor } from "./editor-context.js";
 export type { EditorProviderProps } from "./editor-context.js";
 
-export { useNodeInfo, useParams, useReplica, useRevision, useTree } from "./replica.js";
+export {
+  useNodeInfo,
+  useParams,
+  useReplica,
+  useRevision,
+  useTree,
+} from "./replica.js";
 
 export { useSessions } from "./sessions.js";
 export type { Sessions } from "./sessions.js";
@@ -35,7 +41,11 @@ export { SelectionProvider, useSelection } from "./selection.js";
 export type { Selection, SelectionProviderProps } from "./selection.js";
 
 export { Viewport, ViewportRoot, useViewportCamera } from "./viewport.js";
-export type { ViewportCamera, ViewportPointerEvent, ViewportRootProps } from "./viewport.js";
+export type {
+  ViewportCamera,
+  ViewportPointerEvent,
+  ViewportRootProps,
+} from "./viewport.js";
 // The arithmetic itself, for a host placing an HTML overlay over the canvas.
 export {
   DEFAULT_CAMERA,
@@ -52,8 +62,16 @@ export type { Bounds, Point, Size } from "./camera.js";
 export { useNodeDrag } from "./node-drag.js";
 export type { NodeDrag } from "./node-drag.js";
 
-export { ParamKeys, ParamKeysRoot, ParamSlider, ParamSliderRoot } from "./param-slider.js";
-export type { ParamKeysRootProps, ParamSliderRootProps } from "./param-slider.js";
+export {
+  ParamKeys,
+  ParamKeysRoot,
+  ParamSlider,
+  ParamSliderRoot,
+} from "./param-slider.js";
+export type {
+  ParamKeysRootProps,
+  ParamSliderRootProps,
+} from "./param-slider.js";
 export {
   ParamAdd,
   ParamAddRoot,
@@ -62,12 +80,22 @@ export {
   ParamList,
   ParamListRoot,
 } from "./param-list.js";
-export type { ParamAddRootProps, ParamFieldsRootProps, ParamListRootProps } from "./param-list.js";
+export type {
+  ParamAddRootProps,
+  ParamFieldsRootProps,
+  ParamListRootProps,
+} from "./param-list.js";
 
 export { useNodeActions } from "./node-actions.js";
 export type { DropAt, NodeActions } from "./node-actions.js";
 
-export { NODE_KINDS, NodeTree, NodeTreeActions, NodeTreeItem, NodeTreeRoot } from "./node-tree.js";
+export {
+  NODE_KINDS,
+  NodeTree,
+  NodeTreeActions,
+  NodeTreeItem,
+  NodeTreeRoot,
+} from "./node-tree.js";
 export type {
   NodeTreeActionsProps,
   NodeTreeItemProps,
@@ -90,7 +118,12 @@ export {
   valueAtKey,
 } from "./bindings.js";
 export { useParamActions } from "./param-actions.js";
-export type { BindingCell, NewParam, ParamActions, ParamPatch } from "./param-actions.js";
+export type {
+  BindingCell,
+  NewParam,
+  ParamActions,
+  ParamPatch,
+} from "./param-actions.js";
 export { BindingGrid, BindingGridRoot } from "./binding-grid.js";
 export type { BindingGridRootProps } from "./binding-grid.js";
 
@@ -112,4 +145,82 @@ export {
 } from "./file-save.js";
 export type { FileSaver, FileSaveRootProps, SaveOutcome } from "./file-save.js";
 
-export type { BindingInfo, BindingParams, Camera, NodeInfo } from "@catchlight/core";
+export type {
+  BindingInfo,
+  BindingParams,
+  Camera,
+  NodeInfo,
+} from "@catchlight/core";
+
+export {
+  Icon,
+  IconButton,
+  Field,
+  NumberField,
+  TextField,
+  Disclosure,
+  EmptyState,
+  Modal,
+} from "./controls.js";
+export type { IconName } from "./controls.js";
+export {
+  useCommand,
+  useSessionStatus,
+  useModelQuery,
+  importArtwork,
+  flattenTree,
+  kindLabels,
+  kindIcons,
+} from "./authoring.js";
+export type { ErrorHandler } from "./authoring.js";
+export {
+  MeshPanel,
+  SpinePanel,
+  PhysicsPanel,
+  RiggingEmpty,
+} from "./rigging.js";
+export {
+  MaskPanel,
+  SlotsPanel,
+  WeldsPanel,
+  ModelHealth,
+  ExtensionsPanel,
+} from "./model-panels.js";
+export {
+  ParamsPanel,
+  BindingsPanel,
+  usePoseSweep,
+  DeformPanel,
+} from "./posing-panel.js";
+export {
+  useWorkspaceActions,
+  useCanvasSelection,
+  useSelectionVertices,
+} from "./workspace.js";
+export {
+  PropertiesPanel,
+  AssetsPanel,
+  TextureThumbnail,
+} from "./properties-panel.js";
+export {
+  usePanelSize,
+  useDismissMenus,
+  usePreviewExport,
+} from "./workspace-layout.js";
+export { SelectionOverlay } from "./gizmo.js";
+export { PhysicsSettings } from "./model-panels.js";
+
+export { EditingProvider, useEditing } from "./editing.js";
+export type { Editing, EditingMode } from "./editing.js";
+export {
+  MeshCanvas,
+  MeshTools,
+  MeshInspector,
+  meshBounds,
+} from "./mesh-editor.js";
+export {
+  WorkspaceModes,
+  EditingBar,
+  RecordingInspector,
+  RecordingKeys,
+} from "./recording-panel.js";

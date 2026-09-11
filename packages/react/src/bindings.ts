@@ -51,18 +51,37 @@ export const BINDING_TARGETS: readonly ScalarTarget[] = [
   "outputscaley",
 ];
 
+export const BINDING_LABELS: Record<ScalarTarget | "deform", string> = {
+  tx: "Position X",
+  ty: "Position Y",
+  sx: "Scale X",
+  sy: "Scale Y",
+  rx: "Rotation X",
+  ry: "Rotation Y",
+  rz: "Rotation Z",
+  z_order: "Draw order",
+  opacity: "Opacity",
+  tintr: "Tint red",
+  tintg: "Tint green",
+  tintb: "Tint blue",
+  screentintr: "Screen red",
+  screentintg: "Screen green",
+  screentintb: "Screen blue",
+  outputscalex: "Physics output X",
+  outputscaley: "Physics output Y",
+  deform: "Mesh deform",
+};
+
 /** How a binding reads between its cells. */
 export const INTERPOLATE_MODES: readonly Interpolate[] = ["nearest", "stepped", "linear", "cubic"];
 
 // Typing the tables only rules out a word the wire does not carry. These say
 // the other half: a target or a mode added in Rust is missing from them.
 type Unlisted<Union extends string, Listed extends string> = Exclude<Union, Listed>;
-type _EveryTargetListed = Unlisted<ScalarTarget, (typeof BINDING_TARGETS)[number]> extends never
-  ? true
-  : never;
-type _EveryModeListed = Unlisted<Interpolate, (typeof INTERPOLATE_MODES)[number]> extends never
-  ? true
-  : never;
+type _EveryTargetListed =
+  Unlisted<ScalarTarget, (typeof BINDING_TARGETS)[number]> extends never ? true : never;
+type _EveryModeListed =
+  Unlisted<Interpolate, (typeof INTERPOLATE_MODES)[number]> extends never ? true : never;
 
 /**
  * Every binding on one node, redone whenever the model moves.

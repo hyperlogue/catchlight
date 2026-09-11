@@ -41,6 +41,9 @@ pub enum MeshError {
     /// shape to mesh.
     #[error("the texture is empty above the alpha threshold")]
     NothingToMesh,
+    /// The existing mesh has no single axis-aligned mapping onto its artwork.
+    #[error("This mesh has a custom texture mapping. Mesh placement requires an undeformed artwork mesh.")]
+    CustomTextureMapping,
     /// The triangulator refused the point set.
     #[error("triangulation failed")]
     Triangulation,
@@ -143,6 +146,23 @@ impl WorkingMesh {
         }
         self.verts[i as usize * 2] = pos[0];
         self.verts[i as usize * 2 + 1] = pos[1];
+        Ok(())
+    }
+
+    /// Move a selection atomically. Validate the final positions together so
+    /// translating adjacent vertices cannot collide with an intermediate state.
+    pub fn move_vertices(&mut self, positions: &[(u32, [f32; 2])]) -> Result<(), MeshError> {
+        let mut next = self.clone();
+        for &(index, point) in positions {
+            if index as usize >= next.vertex_count() {
+                return Err(MeshError::NoSuchVertex);
+            }
+            next.verts[index as usize * 2..index as usize * 2 + 2].copy_from_slice(&point);
+        }
+        for &(index, point) in positions {
+            next.move_vertex(index, point)?;
+        }
+        *self = next;
         Ok(())
     }
 
@@ -367,13 +387,33 @@ pub struct AlphaMask {
 impl AlphaMask {
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+        Some(Self::from_rgba(&img))
+    }
+
+    /// A model already declares the encoding. TGA has no reliable magic
+    /// signature, so tracing must use that declaration instead of guessing.
+    pub fn decode_as(
+        bytes: &[u8],
+        encoding: catchlight_core::formats::clm::TextureEncoding,
+    ) -> Option<Self> {
+        let format = match encoding {
+            catchlight_core::formats::clm::TextureEncoding::Png => image::ImageFormat::Png,
+            catchlight_core::formats::clm::TextureEncoding::Tga => image::ImageFormat::Tga,
+        };
+        let img = image::load_from_memory_with_format(bytes, format)
+            .ok()?
+            .to_rgba8();
+        Some(Self::from_rgba(&img))
+    }
+
+    fn from_rgba(img: &image::RgbaImage) -> Self {
         let (width, height) = (img.width(), img.height());
         let alpha = img.pixels().map(|p| p.0[3]).collect();
-        Some(Self {
+        Self {
             width,
             height,
             alpha,
-        })
+        }
     }
 
     fn at(&self, x: i64, y: i64) -> u8 {

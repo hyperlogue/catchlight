@@ -1,608 +1,1271 @@
-/**
- * The editor, assembled: a toolbar, two panels, a canvas and a status line.
- *
- * Layer 4, and the only layer with an opinion about how the editor *looks*.
- * What it is allowed to contain is exactly this: layout, and the wiring one
- * screen needs to hold together — which model is the current one, and what
- * a failed call says. Every behaviour is a part or a hook from
- * `@catchlight/react`; nothing here reads a replica, builds a command, or
- * touches the GPU.
- *
- * **The current session is this component's one piece of state.** `Session` is
- * an object with a replica behind it, and `useSessions` reports `SessionInfo`
- * — a description. Turning one into the other is `attachSession`, which is a
- * round trip, so the choice cannot be derived during render. The first
- * model the editor lists wins until something is opened or picked, which
- * is what makes a page that was handed a model on the command line come up
- * showing it.
- *
- * **A failure is shown, never swallowed.** The parts report through `onError`
- * callbacks and the editor's promises reject; both land in one line at the
- * bottom, because a browser console is not part of the product. The canvas is
- * on the same wire and has the most to say: it draws on WebGPU or on WebGL2,
- * and a browser with neither fails the attach — that sentence is then the only
- * thing on the screen that explains an empty stage.
- *
- * **The camera is held here, not in the canvas.** The viewport frames a model
- * by itself the first time it draws one, but "Fit" is a toolbar button and the
- * toolbar is not inside the stage — so the one piece of view state that two
- * cells share lives in the component that contains both.
- *
- * **The stage is never unmounted.** The grid's cells are rendered whether or
- * not a model is open; with none, the panels are empty and the canvas
- * draws nothing under a hint. So one canvas element lives for the whole
- * screen. Nothing forces that — a device on either tier draws whatever canvas
- * a viewport was handed — it is simply cheaper: a remount would tear down a
- * surface and its stencil and composite targets and build them again on the
- * next model, and every layout of the grid would have to be written to keep
- * the element in place anyway. The presence provider sits above the cells for
- * the same reason, and tolerates having no session.
- *
- * **Closing the current model moves the screen off it first.** The panels
- * under it read its replica, and the close frees that replica — so the next
- * model is attached and made current (or the session is dropped, when it
- * was the last), the commit that does so re-attaches the viewport on the same
- * canvas, and only an effect after that commit sends the close. The closed
- * id is remembered so the automatic pick below does not take it back off a
- * list that has not refreshed yet.
- */
-
-import type { Editor, ParamId, Session, SessionId, SessionInfo } from "@catchlight/core";
+/** The assembled workspace. Its canvas survives every session switch. A close
+ * first moves the screen to a live session; only then does an effect free the
+ * old replica. Authoring behavior lives in the public React parts and hooks. */
+import type { Editor, ParamId, Session, SessionInfo } from "@catchlight/core";
 import {
-  BindingGrid,
+  AssetsPanel,
+  EditingProvider,
+  useEditing,
+  WorkspaceModes,
+  EditingBar,
+  MeshTools,
+  MeshInspector,
+  RecordingInspector,
+  RecordingKeys,
+  meshBounds,
+  fitCamera,
+  BindingsPanel,
+  Disclosure,
   EditorProvider,
+  EmptyState,
+  ExtensionsPanel,
   FileOpen,
   FileSave,
-  Inspector,
+  Icon,
+  IconButton,
+  Modal,
+  ModelHealth,
   NodeTree,
-  ParamAdd,
-  ParamFields,
-  ParamKeys,
-  ParamList,
-  ParamSlider,
+  ParamsPanel,
   PresenceProvider,
+  PropertiesPanel,
+  PhysicsSettings,
   SessionList,
-  Viewport,
+  WeldsPanel,
   downloadName,
+  kindIcons,
+  kindLabels,
   useEditor,
   useFileSave,
-  useNodeDrag,
-  useParams,
   usePosePublisher,
-  useResetPose,
-  useRevision,
+  usePoseSweep,
   useSelection,
   useSessions,
   useViewportCamera,
+  useWorkspaceActions,
+  usePanelSize,
+  useDismissMenus,
+  usePreviewExport,
 } from "@catchlight/react";
-import type { SaveOutcome, ViewportCamera } from "@catchlight/react";
+import type { IconName, SaveOutcome } from "@catchlight/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties } from "react";
+import { Stage, Environment } from "./stage.js";
+import { CommandPalette, Shortcuts } from "./dialogs.js";
+import { Notification } from "./notification.js";
+import type { PaletteAction } from "./dialogs.js";
+
+const logoUrl = new URL("../../../assets/logo-transparent.svg", import.meta.url)
+  .href;
 
 export interface CatchlightEditorProps {
   editor: Editor;
-  /** Added to the `catchlight` class, for a host theming one instance. */
   className?: string;
+  onOpenStarter?: () => Promise<Session>;
 }
-
-export function CatchlightEditor({ editor, className }: CatchlightEditorProps): ReactNode {
+export function CatchlightEditor({
+  editor,
+  className,
+  onOpenStarter,
+}: CatchlightEditorProps) {
   return (
     <div className={className ? `catchlight ${className}` : "catchlight"}>
       <EditorProvider editor={editor}>
-        <Shell />
+        <Shell {...(onOpenStarter ? { onOpenStarter } : {})} />
       </EditorProvider>
     </div>
   );
 }
-
-/** Everything under the provider: the grid's five cells, and what fills them. */
-function Shell(): ReactNode {
+function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
   const editor = useEditor();
   const { sessions } = useSessions();
-  const [session, setSession] = useState<Session | undefined>(undefined);
-  const [problem, setProblem] = useState<string | undefined>(undefined);
-  /** What the last save did, for the status line. Cleared by the next switch. */
-  const [notice, setNotice] = useState<string | undefined>(undefined);
-  /** Sessions this screen closed, which the automatic pick must not take back. */
-  const dismissed = useRef(new Set<SessionId>());
-  const view = useViewportCamera();
-
-  const opened = useCallback((next: Session): void => {
+  const [session, setSession] = useState<Session>();
+  const [problem, setProblem] = useState<string>();
+  const [notice, setNotice] = useState<string>();
+  const [closing, setClosing] = useState<number>();
+  const [confirmClose, setConfirmClose] = useState<SessionInfo>();
+  const dismissed = useRef(new Set<number>());
+  const request = useRef(0);
+  const failed = useCallback(
+    (cause: unknown) =>
+      setProblem(cause instanceof Error ? cause.message : String(cause)),
+    [],
+  );
+  const opened = useCallback((next: Session) => {
+    ++request.current;
     setProblem(undefined);
     setNotice(undefined);
     setSession(next);
   }, []);
-
-  const failed = useCallback((cause: unknown): void => {
-    setProblem(describe(cause));
-  }, []);
-
   const choose = useCallback(
-    (info: SessionInfo): void => {
-      void editor.attachSession(info).then(opened, failed);
+    (info: SessionInfo) => {
+      const generation = ++request.current;
+      void editor.attachSession(info).then((next) => {
+        if (generation === request.current) opened(next);
+      }, failed);
     },
     [editor, opened, failed],
   );
-
-  const create = useCallback((): void => {
+  const create = useCallback(() => {
     void editor.newSession().then(opened, failed);
   }, [editor, opened, failed]);
-
-  /** The model to close once the screen has moved off it. */
-  const [closing, setClosing] = useState<SessionId | undefined>(undefined);
-
   const close = useCallback(
-    (info: SessionInfo): void => {
+    (info: SessionInfo) => {
+      setConfirmClose(undefined);
       if (session?.id !== info.session) {
-        void editor.closeSession(info.session).then(() => setProblem(undefined), failed);
+        void editor.closeSession(info.session).catch(failed);
         return;
       }
       const next = sessions.find(
-        (each) => each.session !== info.session && !dismissed.current.has(each.session),
+        (s) => s.session !== info.session && !dismissed.current.has(s.session),
       );
-      if (!next) {
+      const finish = (attached?: Session) => {
         dismissed.current.add(info.session);
-        setSession(undefined);
-        setNotice(undefined);
-        setClosing(info.session);
-        return;
-      }
-      void editor.attachSession(next).then((attached) => {
-        dismissed.current.add(info.session);
-        setProblem(undefined);
-        setNotice(undefined);
+        ++request.current;
         setSession(attached);
+        setNotice(undefined);
         setClosing(info.session);
-      }, failed);
+      };
+      if (next) void editor.attachSession(next).then(finish, failed);
+      else finish();
     },
-    [editor, session, sessions, failed],
+    [session, sessions, editor, failed],
   );
-
-  // After the commit that moved the screen off the closing model: nothing
-  // under the stage reads its replica any more, and the viewport was disposed
-  // and re-attached on the same canvas rather than replaced.
   useEffect(() => {
     if (closing === undefined) return;
     setClosing(undefined);
-    void editor.closeSession(closing).then(() => setProblem(undefined), failed);
+    void editor.closeSession(closing).catch(failed);
   }, [closing, editor, failed]);
-
-  // Whatever the editor already had open: a model named on a server's command
-  // line, or a session an agent opened over the socket.
   useEffect(() => {
-    if (session !== undefined) return;
-    const first = sessions.find((each) => !dismissed.current.has(each.session));
+    if (session) return;
+    const first = sessions.find((s) => !dismissed.current.has(s.session));
     if (!first) return;
     let live = true;
-    void editor.attachSession(first).then(
-      (attached) => {
-        if (live) setSession(attached);
-      },
-      (cause: unknown) => {
-        if (live) setProblem(describe(cause));
-      },
-    );
+    const generation = request.current;
+    void editor.attachSession(first).then((next) => {
+      if (live && generation === request.current) setSession(next);
+    }, failed);
     return () => {
       live = false;
     };
-  }, [editor, session, sessions]);
-
-  const saved = useCallback((outcome: SaveOutcome): void => {
-    setProblem(undefined);
-    setNotice(
-      outcome.downloaded ? `downloaded ${downloadName(outcome.key)}` : `saved to ${outcome.key}`,
-    );
-  }, []);
-
-  const fit = useCallback((): void => {
-    if (session) view.fit(session);
-  }, [session, view]);
-
-  const info = session ? sessions.find((each) => each.session === session.id) : undefined;
-
+  }, [session, sessions, editor, failed]);
+  useEffect(() => session?.onError(failed), [session, failed]);
+  useEffect(() => {
+    const before = (e: BeforeUnloadEvent) => {
+      if (sessions.some((s) => s.dirty)) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", before);
+    return () => window.removeEventListener("beforeunload", before);
+  }, [sessions]);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(undefined), 4500);
+    return () => clearTimeout(timer);
+  }, [notice]);
   return (
-    <>
-      <header data-catchlight-toolbar="">
-        <button type="button" data-catchlight-new="" onClick={create}>
-          New
+    <PresenceProvider session={session}>
+      <EditingProvider session={session} onError={failed} onNotice={setNotice}>
+        <Workspace
+          session={session}
+          info={sessions.find((s) => s.session === session?.id)}
+          onOpened={opened}
+          onNew={create}
+          onChoose={choose}
+          onClose={(s) => (s.dirty ? setConfirmClose(s) : close(s))}
+          onError={failed}
+          onNotice={setNotice}
+          {...(onOpenStarter ? { onOpenStarter } : {})}
+        />
+      </EditingProvider>
+      {(problem || notice) && (
+        <Notification>
+          <div
+            data-catchlight-toast=""
+            data-error={problem ? "" : undefined}
+            role={problem ? "alert" : "status"}
+          >
+            <Icon name={problem ? "warning" : "check"} />
+            <span
+              {...(problem
+                ? { "data-catchlight-problem": "" }
+                : { "data-catchlight-notice": "" })}
+            >
+              {problem ?? notice}
+            </span>
+            <IconButton
+              icon="close"
+              label="Dismiss notification"
+              onClick={() => {
+                setProblem(undefined);
+                setNotice(undefined);
+              }}
+            />
+          </div>
+        </Notification>
+      )}
+      {confirmClose && (
+        <CloseDialog
+          info={confirmClose}
+          onCancel={() => setConfirmClose(undefined)}
+          onClose={() => close(confirmClose)}
+          onError={failed}
+        />
+      )}
+    </PresenceProvider>
+  );
+}
+function CloseDialog({
+  info,
+  onCancel,
+  onClose,
+  onError,
+}: {
+  info: SessionInfo;
+  onCancel: () => void;
+  onClose: () => void;
+  onError: (cause: unknown) => void;
+}) {
+  const editor = useEditor();
+  const [session, setSession] = useState<Session>();
+  useEffect(() => {
+    let live = true;
+    void editor.attachSession(info).then((s) => {
+      if (live) setSession(s);
+    }, onError);
+    return () => {
+      live = false;
+    };
+  }, [editor, info, onError]);
+  return (
+    <Modal title="Save your changes?" onClose={onCancel}>
+      <p>“{info.title}” has changes that haven’t been saved.</p>
+      {session && (
+        <FileSave.Root
+          session={session}
+          defaultName={downloadName(info.file ?? info.title)}
+          onSaved={onClose}
+          onError={onError}
+        >
+          Save and close
+        </FileSave.Root>
+      )}
+      <div data-catchlight-dialog-actions="">
+        <button type="button" onClick={onCancel}>
+          Keep editing
         </button>
-        <label data-catchlight-open="">
-          <span>Open .clm</span>
-          <FileOpen.Root onOpened={opened} onError={failed} />
-        </label>
-        {session ? (
-          <SaveTools session={session} info={info} onSaved={saved} onError={failed} />
-        ) : (
-          <button type="button" data-catchlight-save="" disabled>
-            Save
-          </button>
-        )}
+        <button type="button" data-catchlight-danger="" onClick={onClose}>
+          Close without saving
+        </button>
+      </div>
+    </Modal>
+  );
+}
+type WorkspaceProps = {
+  session: Session | undefined;
+  info: SessionInfo | undefined;
+  onOpened: (s: Session) => void;
+  onNew: () => void;
+  onChoose: (s: SessionInfo) => void;
+  onClose: (s: SessionInfo) => void;
+  onError: (e: unknown) => void;
+  onNotice: (s: string) => void;
+  onOpenStarter?: () => Promise<Session>;
+};
+function Workspace({
+  session,
+  info,
+  onOpened,
+  onNew,
+  onChoose,
+  onClose,
+  onError,
+  onNotice,
+  onOpenStarter,
+}: WorkspaceProps) {
+  const editor = useEditor();
+  const { node, select } = useSelection();
+  const editing = useEditing()!;
+  const actions = useWorkspaceActions(session, onError);
+  const modelView = useViewportCamera();
+  const meshView = useViewportCamera();
+  const view = editing.mode === "mesh" ? meshView : modelView;
+  const { save } = useFileSave(session);
+  const [tool, setTool] = useState<"select" | "hand">("select");
+  const mesh = editing.mode === "mesh";
+  const setMesh = (next: boolean) =>
+    editing.requestMode(next ? "mesh" : "arrange");
+  const [grid, setGrid] = useState(false);
+  const [left, setLeft] = useState<"structure" | "assets">("structure");
+  const [right, setRight] = useState<"properties" | "model">("properties");
+  const [dock, setDock] = useState<"params" | "bindings">("params");
+  const [dockOpen, setDockOpen] = useState(true);
+  const [focus, setFocus] = useState(false);
+  const [search, setSearch] = useState("");
+  const { param, selectParam: setParam } = editing;
+  const [dialog, setDialog] = useState<"save" | "commands" | "help">();
+  const [dragOver, setDragOver] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<"structure" | "properties">();
+  const file = useRef<HTMLInputElement>(null);
+  const art = useRef<HTMLInputElement>(null);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const workspace = useRef<HTMLDivElement>(null);
+  useDismissMenus(workspace);
+  useEffect(() => {
+    workspace.current
+      ?.querySelector(
+        '[data-catchlight-panel="right"] [data-catchlight-panel-scroll]',
+      )
+      ?.scrollTo({ top: 0 });
+  }, [node, session, right, editing.mode]);
+  const structureSize = usePanelSize("structure", 232, 180, 360, "x");
+  const propertiesSize = usePanelSize("properties", 288, 248, 400, "x", -1);
+  const dockSize = usePanelSize("posing tools", 300, 140, 420, "y", -1);
+  const capture = usePreviewExport(canvas);
+  const sweep = usePoseSweep(session, param);
+  const fit = useCallback(() => {
+    if (editing.mesh) {
+      const element = workspace.current?.querySelector(
+        "[data-catchlight-mesh-canvas]",
+      );
+      if (element) {
+        const next = fitCamera(
+          meshBounds(editing.mesh),
+          { width: element.clientWidth, height: element.clientHeight },
+          0.35,
+        );
+        if (next) {
+          view.setCamera(next);
+          view.onFit(next);
+        }
+      }
+    } else if (session) view.fit(session);
+  }, [session, view, editing.mesh]);
+  useEffect(() => {
+    sweep.setPlaying(false);
+    if (editing.mode === "record") {
+      setDock("bindings");
+      setDockOpen(true);
+    } else if (editing.mode === "arrange") setDock("params");
+  }, [editing.mode]);
+  useEffect(() => {
+    if (editing.gate) {
+      setDock("bindings");
+      setDockOpen(true);
+    }
+  }, [editing.gate]);
+  const saved = useCallback(
+    (outcome: SaveOutcome) => {
+      onNotice(
+        outcome.downloaded
+          ? `Downloaded ${downloadName(outcome.key)}`
+          : `Saved ${downloadName(outcome.key)}`,
+      );
+      setDialog(undefined);
+    },
+    [onNotice],
+  );
+  const quickSave = useCallback(() => {
+    const run = () => {
+      if (session)
+        void save(info?.file ? undefined : info?.title).then(saved, onError);
+    };
+    if (editing.mesh?.dirty) editing.guard(run);
+    else run();
+  }, [session, info, save, saved, onError, editing]);
+  useEffect(() => {
+    setSearch("");
+  }, [session]);
+  const zoom = (factor: number) =>
+    view.setCamera({
+      ...view.camera,
+      height: Math.min(1e7, Math.max(0.001, view.camera.height / factor)),
+    });
+  const exportPng = () =>
+    editing.guard(
+      () =>
+        void capture(downloadName(info?.title ?? "model")).then(
+          () => onNotice("Preview exported as PNG"),
+          onError,
+        ),
+    );
+  const openModel = () => editing.guard(() => file.current?.click());
+  const newModel = () => editing.guard(onNew);
+  const importImages = () => editing.guard(() => art.current?.click());
+  const saveCopy = () => editing.guard(() => setDialog("save"));
+  const commands: PaletteAction[] = [
+    {
+      name: "Open model…",
+      detail: "Load a .clm file",
+      icon: "group",
+      key: "⌘ O",
+      run: openModel,
+    },
+    {
+      name: "New model",
+      detail: "Start with an empty canvas",
+      icon: "plus",
+      run: newModel,
+    },
+    {
+      name: "Save model",
+      detail: "Download a .clm file",
+      icon: "save",
+      key: "⌘ S",
+      run: quickSave,
+      disabled: !session,
+    },
+    {
+      name: "Import artwork…",
+      detail: "PNG or TGA images",
+      icon: "upload",
+      run: importImages,
+      disabled: !session,
+    },
+    {
+      name: "Export preview",
+      detail: "Save the current view as PNG",
+      icon: "download",
+      run: () => void exportPng(),
+      disabled: !session,
+    },
+    {
+      name: "Fit model in view",
+      detail: "Frame the complete model",
+      icon: "fit",
+      key: "F",
+      run: fit,
+      disabled: !session,
+    },
+    {
+      name: "Reset pose",
+      detail: "Restore every param to its default",
+      icon: "reset",
+      run: actions.resetPose,
+      disabled: !session || mesh,
+    },
+    {
+      name: "Undo",
+      detail: "Undo the last model edit",
+      icon: "undo",
+      key: "⌘ Z",
+      run: actions.undo,
+      disabled: !actions.canUndo,
+    },
+    {
+      name: "Redo",
+      detail: "Restore an undone edit",
+      icon: "redo",
+      key: "⇧ ⌘ Z",
+      run: actions.redo,
+      disabled: !actions.canRedo,
+    },
+    {
+      name: "Edit mesh on artwork",
+      detail: "Place vertices without stretching the image",
+      icon: "mesh",
+      key: "M",
+      run: () => setMesh(!mesh),
+      disabled:
+        !session ||
+        (!mesh && (editing.info?.kind !== "part" || !editing.info.texture)),
+    },
+    {
+      name: "Toggle focus mode",
+      detail: "Make room for the canvas",
+      icon: "panel",
+      key: "⇧ F",
+      run: () => setFocus(!focus),
+    },
+  ];
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target?.matches("input,textarea,select") || target?.isContentEditable;
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (dialog || document.querySelector("dialog[open]")) return;
+      if (mod && key === "k") {
+        e.preventDefault();
+        setDialog("commands");
+        return;
+      }
+      if (mod && key === "s") {
+        e.preventDefault();
+        if (e.shiftKey) saveCopy();
+        else quickSave();
+        return;
+      }
+      if (mod && key === "o") {
+        e.preventDefault();
+        openModel();
+        return;
+      }
+      if (typing) return;
+      if (mod && key === "z") {
+        e.preventDefault();
+        void (e.shiftKey ? actions.redo() : actions.undo());
+      } else if (mod && key === "d") {
+        e.preventDefault();
+        void actions.duplicate();
+      } else if (key === "delete" || key === "backspace") {
+        e.preventDefault();
+        void actions.remove();
+      } else if (key === "v") setTool("select");
+      else if (key === "h") setTool("hand");
+      else if (key === "f") {
+        e.preventDefault();
+        if (e.shiftKey) setFocus(!focus);
+        else fit();
+      } else if (key === "m") setMesh(!mesh);
+      else if (key === "r") {
+        if (editing.mode !== "record") editing.requestMode("record");
+        else if (editing.recording) editing.stop();
+        else editing.arm();
+      } else if (key === "g") setGrid(!grid);
+      else if (key === "?") setDialog("help");
+      else if (key === "escape") {
+        if (mesh) editing.requestMode("arrange");
+        else if (editing.recording) editing.stop();
+        else select(undefined);
+        setMobilePanel(undefined);
+      } else if (key === "+" || key === "=") {
+        e.preventDefault();
+        zoom(1.2);
+      } else if (key === "-") {
+        e.preventDefault();
+        zoom(1 / 1.2);
+      } else if (node && target?.closest("[data-catchlight-stage]")) {
+        const n = e.shiftKey ? 10 : 1;
+        const delta: Record<string, [number, number]> = {
+          arrowleft: [-n, 0],
+          arrowright: [n, 0],
+          arrowup: [0, n],
+          arrowdown: [0, -n],
+        };
+        if (delta[key]) {
+          e.preventDefault();
+          void actions.nudge(...delta[key]);
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  });
+  const menuItem = (
+    label: string,
+    icon: IconName,
+    action: () => unknown,
+    disabled = false,
+    shortcut?: string,
+  ) => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={(e) => {
+        e.currentTarget.closest("details")?.removeAttribute("open");
+        action();
+      }}
+    >
+      <Icon name={icon} />
+      <span>{label}</span>
+      {shortcut && <kbd>{shortcut}</kbd>}
+    </button>
+  );
+  return (
+    <div
+      ref={workspace}
+      style={
+        {
+          "--cl-panel-width": `${structureSize.size}px`,
+          "--cl-properties-width": `${propertiesSize.size}px`,
+          "--cl-dock-height": `${dockSize.size}px`,
+        } as CSSProperties
+      }
+      data-catchlight-workspace=""
+      data-mode={editing.mode}
+      data-recording={editing.recording ? "" : undefined}
+      data-focus={focus ? "" : undefined}
+      data-dock-open={dockOpen ? "" : undefined}
+      data-mobile-panel={mobilePanel}
+    >
+      <header data-catchlight-toolbar="">
+        <a
+          data-catchlight-brand=""
+          href="#"
+          aria-label="Catchlight home"
+          onClick={(e) => {
+            e.preventDefault();
+            setDialog("commands");
+          }}
+        >
+          <img
+            data-catchlight-logo=""
+            src={logoUrl}
+            alt=""
+            width="28"
+            height="28"
+          />
+          catchlight<span data-catchlight-product="">STUDIO</span>
+        </a>
+        <div data-catchlight-main-menus="">
+          <details data-catchlight-menu="">
+            <summary>
+              File
+              <Icon name="down" width="11" height="11" />
+            </summary>
+            <div role="group" aria-label="File actions">
+              {menuItem("New model", "plus", newModel)}
+              {menuItem("Open model…", "group", openModel, false, "⌘ O")}
+              {menuItem("Import artwork…", "upload", importImages, !session)}
+              <hr />
+              {menuItem("Save", "save", quickSave, !session, "⌘ S")}
+              {menuItem("Save as…", "save", saveCopy, !session)}
+              {menuItem(
+                "Export preview…",
+                "download",
+                () => void exportPng(),
+                !session,
+              )}
+            </div>
+          </details>
+          <details data-catchlight-menu="">
+            <summary>
+              Edit
+              <Icon name="down" width="11" height="11" />
+            </summary>
+            <div>
+              {menuItem("Undo", "undo", actions.undo, !actions.canUndo, "⌘ Z")}
+              {menuItem(
+                "Redo",
+                "redo",
+                actions.redo,
+                !actions.canRedo,
+                "⇧ ⌘ Z",
+              )}
+              <hr />
+              {menuItem(
+                "Duplicate",
+                "duplicate",
+                actions.duplicate,
+                !actions.canDuplicate,
+                "⌘ D",
+              )}
+              {menuItem(
+                "Delete",
+                "trash",
+                actions.remove,
+                !actions.canRemove,
+                "⌫",
+              )}
+            </div>
+          </details>
+        </div>
+        <div data-catchlight-history-tools="">
+          <IconButton
+            icon="undo"
+            label="Undo (Ctrl/⌘ Z)"
+            disabled={!actions.canUndo || actions.busy || editing.busy}
+            onClick={actions.undo}
+          />
+          <IconButton
+            icon="redo"
+            label="Redo (Ctrl/⌘ Shift Z)"
+            disabled={!actions.canRedo || actions.busy || editing.busy}
+            onClick={actions.redo}
+          />
+        </div>
         <button
           type="button"
-          data-catchlight-fit=""
-          disabled={session === undefined}
-          onClick={fit}
+          data-catchlight-command-trigger=""
+          onClick={() => setDialog("commands")}
         >
-          Fit
+          <Icon name="search" width="15" height="15" />
+          <span>Search anything…</span>
+          <kbd>⌘ K</kbd>
         </button>
-        <span data-catchlight-zoom="" title="Zoom, relative to the fitted view">
-          {zoomLabel(view.zoom)}
+        <span data-catchlight-save-state="">
+          <i data-dirty={info?.dirty || editing.mesh?.dirty ? "" : undefined} />
+          {session
+            ? editing.mesh?.dirty
+              ? "Mesh draft · not applied"
+              : info?.dirty
+                ? "Unsaved changes"
+                : "All changes saved"
+            : "Your next creation"}
         </span>
         <button
           type="button"
-          data-catchlight-camera-reset=""
-          disabled={session === undefined}
-          onClick={fit}
+          data-catchlight-save=""
+          data-primary=""
+          disabled={!session}
+          onClick={quickSave}
         >
-          Reset
+          <Icon name="save" width="15" height="15" />
+          Save<span data-catchlight-save-label=""> model</span>
         </button>
-        {session ? (
-          <ResetPose session={session} />
-        ) : (
-          <button type="button" data-catchlight-pose-reset="" disabled>
-            Reset pose
-          </button>
-        )}
+        <label data-catchlight-hidden-file="">
+          <FileOpen.Root ref={file} onOpened={onOpened} onError={onError} />
+        </label>
+        <input
+          ref={art}
+          type="file"
+          accept=".png,.tga"
+          multiple
+          aria-label="Import artwork"
+          data-catchlight-hidden-file=""
+          onChange={(e) => {
+            const files = Array.from(e.currentTarget.files ?? []);
+            e.currentTarget.value = "";
+            editing.guard(() => {
+              void actions.importImages(files);
+            });
+          }}
+        />
       </header>
-      <PresenceProvider session={session}>
-        <nav data-catchlight-panel="left">
-          <Models onSelect={choose} onClose={close} current={session?.id} />
-          {session ? (
-            <Section
-              title="Nodes"
-              grow
-              controls={<NodeTree.Actions session={session} onError={failed} />}
-            >
-              <NodeTree.Root session={session} onError={failed} />
-            </Section>
-          ) : null}
-        </nav>
-        <Stage session={session} view={view} onError={failed} />
-        <aside data-catchlight-panel="right">
-          {session ? (
-            <>
-              <Section title="Inspector">
-                <Inspector.Root session={session} onError={failed} />
-              </Section>
-              <Section
-                title="Params"
-                grow
-                controls={<ParamAdd.Root session={session} onError={failed} />}
-              >
-                {/* The default row is the slider alone, and a column of
-                    unlabelled sliders names nothing. */}
-                <ParamList.Root session={session}>
-                  {(param) => (
-                    <>
-                      <ParamFields.Root session={session} param={param} onError={failed} />
-                      <ParamSlider.Root session={session} param={param} />
-                      <ParamKeys.Root session={session} param={param} onError={failed} />
-                    </>
-                  )}
-                </ParamList.Root>
-              </Section>
-              <Section title="Bindings">
-                <Bindings session={session} onError={failed} />
-              </Section>
-            </>
-          ) : null}
-        </aside>
-        {session ? (
+      <nav data-catchlight-model-tabs="" aria-label="Open models">
+        <SessionList.Root
+          current={session?.id}
+          onSelect={(s) => editing.guard(() => onChoose(s))}
+          onClose={(s) => editing.guard(() => onClose(s))}
+        />
+        <IconButton
+          data-catchlight-new=""
+          icon="plus"
+          label="New model"
+          onClick={newModel}
+        />
+      </nav>
+      <aside data-catchlight-panel="left" inert={mesh || editing.busy}>
+        <div data-catchlight-resize="left" {...structureSize.handle} />
+        <div data-catchlight-panel-tabs="">
+          <button
+            type="button"
+            data-active={left === "structure" ? "" : undefined}
+            onClick={() => setLeft("structure")}
+          >
+            Structure
+          </button>
+          <button
+            type="button"
+            data-active={left === "assets" ? "" : undefined}
+            onClick={() => setLeft("assets")}
+          >
+            Artwork
+          </button>
+          <IconButton
+            icon="close"
+            label="Close structure panel"
+            data-catchlight-mobile-only=""
+            onClick={() => setMobilePanel(undefined)}
+          />
+        </div>
+        {left === "structure" ? (
           <>
-            <PosePublisher session={session} />
-            <Status session={session} info={info} notice={notice} problem={problem} />
+            <div data-catchlight-tree-tools="">
+              <label data-catchlight-search="">
+                <Icon name="search" width="14" height="14" />
+                <input
+                  aria-label="Search nodes"
+                  placeholder="Find a node…"
+                  value={search}
+                  onChange={(e) => setSearch(e.currentTarget.value)}
+                />
+              </label>
+              <details data-catchlight-menu="">
+                <summary aria-label="Add node">
+                  <Icon name="plus" />
+                </summary>
+                <div>
+                  {(
+                    [
+                      "group",
+                      "part",
+                      "composite",
+                      "mesh_group",
+                      "spine",
+                      "physics",
+                    ] as const
+                  ).map((kind) => (
+                    <button
+                      type="button"
+                      key={kind}
+                      disabled={!session}
+                      onClick={(e) => {
+                        e.currentTarget
+                          .closest("details")
+                          ?.removeAttribute("open");
+                        void actions.add(kind);
+                      }}
+                    >
+                      <Icon name={kindIcons[kind]} />
+                      <span>{kindLabels[kind]}</span>
+                    </button>
+                  ))}
+                </div>
+              </details>
+            </div>
+            <div data-catchlight-tree-scroll="">
+              {session ? (
+                <NodeTree.Root
+                  session={session}
+                  filter={search}
+                  onError={onError}
+                />
+              ) : (
+                <EmptyState icon="group" title="A place for every part">
+                  Your model’s structure will appear here.
+                </EmptyState>
+              )}
+            </div>
+            <div data-catchlight-tree-footer="">
+              <button
+                type="button"
+                data-catchlight-import-artwork=""
+                onClick={importImages}
+                disabled={!session}
+              >
+                <Icon name="upload" width="15" height="15" />
+                Import artwork
+              </button>
+              <IconButton
+                icon="duplicate"
+                label="Duplicate selected node"
+                disabled={!actions.canDuplicate}
+                onClick={actions.duplicate}
+              />
+              <IconButton
+                icon="trash"
+                label="Delete selected node"
+                disabled={!actions.canRemove}
+                onClick={actions.remove}
+              />
+            </div>
           </>
         ) : (
-          <footer data-catchlight-status="" role="status">
-            <span data-catchlight-status-item="">no model</span>
-            <Environment />
-            <Problem problem={problem} />
-          </footer>
+          <div data-catchlight-panel-scroll="">
+            {session ? (
+              <AssetsPanel session={session} />
+            ) : (
+              <EmptyState icon="part" title="No artwork yet">
+                Open a model or create a new one to import your images.
+              </EmptyState>
+            )}
+            <button
+              type="button"
+              data-catchlight-action=""
+              data-catchlight-import-artwork=""
+              disabled={!session}
+              onClick={importImages}
+            >
+              <Icon name="upload" />
+              Import artwork
+            </button>
+          </div>
         )}
-      </PresenceProvider>
-    </>
-  );
-}
-
-/**
- * One section of a panel: a heading, the controls that stay under it, and a
- * body that scrolls.
- *
- * The three-part shape is why this exists rather than a bare `<section>`. A
- * panel is a flex column of these, so a section whose content outgrows the
- * space left over has to give somewhere, and the only place that reads
- * correctly is the body: the heading is what says which section a scrolled
- * panel is showing, and a toolbar that scrolled out of reach would be worse
- * than one that never fitted. `grow` marks the section that takes the slack
- * when the others have what they need — one per panel.
- */
-function Section({
-  title,
-  grow,
-  controls,
-  children,
-}: {
-  title: string;
-  grow?: boolean;
-  /** Between the heading and the body, and never scrolled away from it. */
-  controls?: ReactNode;
-  children: ReactNode;
-}): ReactNode {
-  return (
-    <section data-catchlight-section="" data-grow={grow ? "" : undefined}>
-      <h2 data-catchlight-heading="">{title}</h2>
-      {controls}
-      <div data-catchlight-section-body="">{children}</div>
-    </section>
-  );
-}
-
-/**
- * What the selected node's bindings on one param look like.
- *
- * The param is picked here rather than taken from the selection because a node
- * is usually driven by several, and a panel that showed all of them at once
- * would be a wall of grids. Which node is a different question, and the
- * selection already answers it — so this reads the selection and lets a person
- * choose the axis.
- */
-function Bindings({
-  session,
-  onError,
-}: {
-  session: Session;
-  onError: (cause: unknown) => void;
-}): ReactNode {
-  const { node } = useSelection();
-  const params = useParams(session);
-  const [param, setParam] = useState<ParamId | undefined>(undefined);
-  // Whatever is still there: a param deleted from under this falls back to the
-  // first one rather than leaving the panel pointing at nothing.
-  const showing = params.some((each) => each.id === param) ? param : params[0]?.id;
-
-  if (!node) {
-    return <p data-catchlight-empty="">Select a node to see what drives it.</p>;
-  }
-  if (params.length === 0) {
-    return <p data-catchlight-empty="">This model has no params yet.</p>;
-  }
-
-  return (
-    <>
-      <select
-        data-catchlight-binding-param=""
-        aria-label="Param"
-        value={showing ?? ""}
-        onChange={(event) => setParam(event.currentTarget.value)}
-      >
-        {params.map((each) => (
-          <option key={each.id} value={each.id}>
-            {each.name}
-          </option>
-        ))}
-      </select>
-      <BindingGrid.Root session={session} node={node} param={showing} onError={onError} />
-    </>
-  );
-}
-
-/**
- * Save and Save As, for the model that is open.
- *
- * Its own component because the hook wants a session, and the toolbar exists
- * before there is one. A model that was never saved has no path to save
- * to, so a plain Save on it goes under its title — which is what a person who
- * pressed New and then Save expects to find in their downloads.
- */
-function SaveTools({
-  session,
-  info,
-  onSaved,
-  onError,
-}: {
-  session: Session;
-  info: SessionInfo | undefined;
-  onSaved: (outcome: SaveOutcome) => void;
-  onError: (cause: unknown) => void;
-}): ReactNode {
-  const { save } = useFileSave(session);
-  const handleSave = (): void => {
-    void save(info?.file ? undefined : info?.title).then(onSaved, onError);
-  };
-  return (
-    <>
-      <button type="button" data-catchlight-save="" onClick={handleSave}>
-        Save
-      </button>
-      {/* Keyed so the name input starts over with each model. */}
-      <FileSave.Root
-        key={session.id}
-        session={session}
-        defaultName={info?.file ? downloadName(info.file) : undefined}
-        onSaved={onSaved}
-        onError={onError}
-      />
-    </>
-  );
-}
-
-function ResetPose({ session }: { session: Session }): ReactNode {
-  const reset = useResetPose(session);
-  return (
-    <button type="button" data-catchlight-pose-reset="" onClick={reset}>
-      Reset pose
-    </button>
-  );
-}
-
-/** Every model the editor has open, this tab's and everyone else's. */
-function Models({
-  onSelect,
-  onClose,
-  current,
-}: {
-  onSelect: (info: SessionInfo) => void;
-  onClose: (info: SessionInfo) => void;
-  current: SessionId | undefined;
-}): ReactNode {
-  return (
-    <Section title="Models">
-      <SessionList.Root onSelect={onSelect} onClose={onClose} current={current} />
-    </Section>
-  );
-}
-
-/**
- * The canvas and the one gesture layered over it.
- *
- * Mounted with or without a model: the canvas element has to be the same
- * one for the life of the screen (see the header), so with no session it is
- * drawn on by nothing and the hint sits over it. The drag is here rather than
- * in `Shell` because it needs the selection, which the provider above the
- * cells supplies.
- *
- * `onError` is the shell's, like every other part's: an attach that fails —
- * a browser with neither graphics tier is the one that matters — has nowhere
- * else to be read, and the stage under it looks exactly like a model that
- * draws nothing.
- */
-function Stage({
-  session,
-  view,
-  onError,
-}: {
-  session: Session | undefined;
-  view: ViewportCamera;
-  onError: (cause: unknown) => void;
-}): ReactNode {
-  const { node } = useSelection();
-  const drag = useNodeDrag(session, node);
-  return (
-    <div
-      data-catchlight-stage=""
-      data-empty={session ? undefined : ""}
-      data-dragging={drag.dragging ? "" : undefined}
-    >
-      <Viewport.Root
-        session={session}
-        camera={view.camera}
-        onCameraChange={view.onCameraChange}
-        onFit={view.onFit}
-        onResize={view.onResize}
-        onError={onError}
-        {...drag.handlers}
-      />
-      {session ? null : (
-        <p data-catchlight-stage-hint="">
-          No model open. Pick a .clm above, or choose one on the left.
-        </p>
+      </aside>
+      <main data-catchlight-center="">
+        <div data-catchlight-canvas-toolbar="">
+          <div data-catchlight-tool-group="">
+            <IconButton
+              icon="select"
+              label="Select and move (V)"
+              aria-pressed={tool === "select"}
+              onClick={() => setTool("select")}
+            />
+            <IconButton
+              icon="hand"
+              label="Pan (H)"
+              aria-pressed={tool === "hand"}
+              onClick={() => setTool("hand")}
+            />
+            <span data-catchlight-separator="" />
+            <IconButton
+              icon="grid"
+              label="Show grid (G)"
+              aria-pressed={grid}
+              disabled={mesh}
+              onClick={() => setGrid(!grid)}
+            />
+          </div>
+          <WorkspaceModes />
+          <div data-catchlight-zoom-tools="">
+            <IconButton
+              icon="minus"
+              label="Zoom out"
+              onClick={() => zoom(1 / 1.2)}
+            />
+            <button
+              type="button"
+              data-catchlight-zoom=""
+              onClick={fit}
+              title="Fit model in view"
+            >
+              {view.zoom === undefined
+                ? "100%"
+                : `${Math.round(view.zoom * 100)}%`}
+            </button>
+            <IconButton icon="plus" label="Zoom in" onClick={() => zoom(1.2)} />
+            <IconButton
+              data-catchlight-fit=""
+              icon="fit"
+              label="Fit model (F)"
+              onClick={fit}
+              disabled={!session}
+            />
+            <IconButton
+              icon="panel"
+              label="Focus mode (Shift F)"
+              aria-pressed={focus}
+              onClick={() => setFocus(!focus)}
+            />
+          </div>
+        </div>
+        <EditingBar />
+        {mesh && <MeshTools />}
+        <div
+          data-catchlight-stage-wrap=""
+          data-drop={dragOver ? "" : undefined}
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes("Files")) {
+              e.preventDefault();
+              setDragOver(true);
+            }
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node))
+              setDragOver(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            const files = Array.from(e.dataTransfer.files);
+            const model = files.find((f) => /\.clm$/i.test(f.name));
+            editing.guard(() => {
+              if (model)
+                void model
+                  .arrayBuffer()
+                  .then((bytes) =>
+                    editor.openFile(new Uint8Array(bytes), model.name),
+                  )
+                  .then(onOpened, onError);
+              else if (session) void actions.importImages(files);
+              else
+                onError(
+                  new Error(
+                    "Create a model first, then drop your artwork here.",
+                  ),
+                );
+            });
+          }}
+        >
+          <Stage
+            session={session}
+            view={modelView}
+            meshView={meshView}
+            tool={tool}
+            grid={grid}
+            canvas={canvas}
+            onError={onError}
+          />
+          {!session && (
+            <div data-catchlight-welcome="">
+              <span data-catchlight-welcome-symbol="">
+                <img
+                  data-catchlight-logo=""
+                  src={logoUrl}
+                  alt=""
+                  width="56"
+                  height="56"
+                />
+              </span>
+              <p data-catchlight-eyebrow="">A LITTLE ART. A LOT OF LIFE.</p>
+              <h1>
+                Make something
+                <br />
+                <em>move you.</em>
+              </h1>
+              <p>
+                A home for your next character.
+                <br />
+                Build, shape, and bring it to life.
+              </p>
+              <div>
+                <button type="button" data-primary="" onClick={newModel}>
+                  <Icon name="plus" />
+                  Create a model
+                </button>
+                <button type="button" onClick={openModel}>
+                  <Icon name="group" />
+                  Open a model
+                </button>
+              </div>
+              {onOpenStarter && (
+                <button
+                  type="button"
+                  data-catchlight-text-button=""
+                  onClick={() => void onOpenStarter().then(onOpened, onError)}
+                >
+                  Explore the starter character{" "}
+                  <Icon name="arrow" width="14" height="14" />
+                </button>
+              )}
+              <small>Or drop a .clm file anywhere on the canvas</small>
+            </div>
+          )}
+          {dragOver && (
+            <div data-catchlight-drop-hint="">
+              <Icon name="upload" width="30" height="30" />
+              <strong>Drop to bring it in</strong>
+              <span>Model files or PNG / TGA artwork</span>
+            </div>
+          )}
+          {session && (
+            <div data-catchlight-canvas-hint="">
+              <kbd>Space</kbd> + drag to pan<span>·</span>Scroll to zoom
+            </div>
+          )}
+        </div>
+        <section
+          data-catchlight-dock=""
+          data-open={dockOpen ? "" : undefined}
+          aria-label="Posing tools"
+        >
+          {dockOpen && (
+            <div data-catchlight-resize="dock" {...dockSize.handle} />
+          )}
+          <div data-catchlight-dock-header="">
+            <div data-catchlight-panel-tabs="">
+              <button
+                type="button"
+                data-active={dock === "params" ? "" : undefined}
+                onClick={() => {
+                  setDock("params");
+                  setDockOpen(true);
+                }}
+              >
+                <Icon name="settings" width="14" height="14" />
+                Params
+              </button>
+              <button
+                type="button"
+                data-active={dock === "bindings" ? "" : undefined}
+                onClick={() => {
+                  setDock("bindings");
+                  setDockOpen(true);
+                }}
+              >
+                <Icon name="link" width="14" height="14" />
+                {editing.mode === "record" ? "Keypoints" : "Bindings"}
+              </button>
+            </div>
+            <div data-catchlight-dock-actions="">
+              <button
+                type="button"
+                disabled={!session || !param || editing.mode !== "arrange"}
+                aria-pressed={sweep.playing}
+                onClick={() => sweep.setPlaying(!sweep.playing)}
+              >
+                <Icon
+                  name={sweep.playing ? "pause" : "play"}
+                  width="13"
+                  height="13"
+                />
+                {sweep.playing ? "Stop sweep" : "Preview sweep"}
+              </button>
+              <IconButton
+                data-catchlight-pose-reset=""
+                icon="reset"
+                label="Reset pose"
+                disabled={!session || mesh}
+                onClick={actions.resetPose}
+              />
+              <IconButton
+                icon={dockOpen ? "down" : "chevron"}
+                label={
+                  dockOpen ? "Collapse posing tools" : "Expand posing tools"
+                }
+                onClick={() => setDockOpen(!dockOpen)}
+              />
+            </div>
+          </div>
+          {dockOpen && (
+            <div data-catchlight-dock-body="">
+              {mesh ? (
+                <p data-catchlight-mesh-pose-held="">
+                  Pose held while editing topology. Apply or cancel your mesh to
+                  return.
+                </p>
+              ) : session ? (
+                dock === "params" ? (
+                  <ParamsPanel
+                    key={session.id}
+                    session={session}
+                    selected={param}
+                    onSelect={setParam}
+                    onError={onError}
+                  />
+                ) : editing.mode === "record" ? (
+                  <RecordingKeys />
+                ) : (
+                  <BindingsPanel
+                    session={session}
+                    node={node}
+                    param={param}
+                    onError={onError}
+                  />
+                )
+              ) : (
+                <p data-catchlight-empty="">
+                  Open a model to explore its controls.
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+      </main>
+      <aside data-catchlight-panel="right">
+        <div data-catchlight-resize="right" {...propertiesSize.handle} />
+        <div data-catchlight-panel-tabs="">
+          <button
+            type="button"
+            data-active={
+              right === "properties" || editing.mode !== "arrange"
+                ? ""
+                : undefined
+            }
+            onClick={() => setRight("properties")}
+          >
+            Properties
+          </button>
+          <button
+            type="button"
+            disabled={editing.mode !== "arrange"}
+            data-active={right === "model" ? "" : undefined}
+            onClick={() => setRight("model")}
+          >
+            Model
+          </button>
+          <IconButton
+            icon="close"
+            label="Close properties panel"
+            data-catchlight-mobile-only=""
+            onClick={() => setMobilePanel(undefined)}
+          />
+        </div>
+        <div data-catchlight-panel-scroll="">
+          {session ? (
+            mesh ? (
+              <MeshInspector />
+            ) : editing.mode === "record" ? (
+              <RecordingInspector />
+            ) : right === "properties" ? (
+              <>
+                {!!editing.emptiedSlots.length && (
+                  <div data-catchlight-warning="" role="status">
+                    Mesh applied. Reassign slots:{" "}
+                    {editing.emptiedSlots.join(", ")}. Open the Slots section
+                    below.
+                  </div>
+                )}
+                <PropertiesPanel session={session} onError={onError} />
+              </>
+            ) : (
+              <>
+                <ModelHealth session={session} />
+                <PhysicsSettings session={session} onError={onError} />
+                <Disclosure title="Connections">
+                  <WeldsPanel session={session} onError={onError} />
+                </Disclosure>
+                <Disclosure title="Metadata" defaultOpen={false}>
+                  <ExtensionsPanel session={session} onError={onError} />
+                </Disclosure>
+              </>
+            )
+          ) : (
+            <EmptyState title="Room for possibility">
+              Everything you need to shape your character, right here when you
+              need it.
+            </EmptyState>
+          )}
+        </div>
+      </aside>
+      <footer data-catchlight-status="">
+        <div>
+          <button
+            type="button"
+            data-catchlight-mobile-only=""
+            onClick={() =>
+              setMobilePanel(
+                mobilePanel === "structure" ? undefined : "structure",
+              )
+            }
+          >
+            <Icon name="group" />
+            Structure
+          </button>
+          <span data-catchlight-status-title="">
+            {info?.title ?? "No model open"}
+          </span>
+          <span data-catchlight-status-selection="">
+            {node ? `selected ${node.split("/").pop()}` : "Nothing selected"}
+          </span>
+        </div>
+        <div>
+          <Environment />
+          <button
+            type="button"
+            data-catchlight-mobile-only=""
+            onClick={() =>
+              setMobilePanel(
+                mobilePanel === "properties" ? undefined : "properties",
+              )
+            }
+          >
+            <Icon name="settings" />
+            Properties
+          </button>
+          <IconButton
+            icon="help"
+            label="Keyboard shortcuts (?)"
+            onClick={() => setDialog("help")}
+          />
+        </div>
+      </footer>
+      {session && <PosePublisher session={session} />}
+      {dialog === "save" && session && (
+        <Modal title="Save a copy" onClose={() => setDialog(undefined)}>
+          <p data-catchlight-hint="">
+            Your .clm file contains the complete model and its artwork.
+          </p>
+          <FileSave.Root
+            session={session}
+            defaultName={downloadName(
+              info?.file ?? info?.title ?? "untitled.clm",
+            )}
+            onSaved={saved}
+            onError={onError}
+          >
+            Save model
+          </FileSave.Root>
+        </Modal>
       )}
+      {dialog === "commands" && (
+        <CommandPalette
+          session={session}
+          actions={commands}
+          onClose={() => setDialog(undefined)}
+        />
+      )}
+      {dialog === "help" && <Shortcuts onClose={() => setDialog(undefined)} />}
     </div>
   );
 }
-
-/**
- * Publishes the pose of the open model through the provider. A component
- * rather than a hook call in `Stage`, because the stage also exists with no
- * model and the publisher wants one.
- */
-function PosePublisher({ session }: { session: Session }): ReactNode {
+function PosePublisher({ session }: { session: Session }) {
   usePosePublisher(session);
   return null;
-}
-
-function Status({
-  session,
-  info,
-  notice,
-  problem,
-}: {
-  session: Session;
-  info: SessionInfo | undefined;
-  notice: string | undefined;
-  problem: string | undefined;
-}): ReactNode {
-  const revision = useRevision(session);
-  const { node } = useSelection();
-  return (
-    <footer data-catchlight-status="" role="status">
-      <span data-catchlight-status-item="">{info?.title ?? "untitled"}</span>
-      <span data-catchlight-status-item="" data-catchlight-file="">
-        {info?.file ?? "not saved yet"}
-      </span>
-      <span data-catchlight-status-item="">rev {revision}</span>
-      {info?.dirty ? (
-        <span data-catchlight-status-item="" data-dirty="">
-          unsaved
-        </span>
-      ) : null}
-      <span data-catchlight-status-item="">{node ? `selected ${node}` : "nothing selected"}</span>
-      {notice ? (
-        <span data-catchlight-status-item="" data-catchlight-notice="">
-          {notice}
-        </span>
-      ) : null}
-      <Environment />
-      <Problem problem={problem} />
-    </footer>
-  );
-}
-
-/** The zoom as a person reads it: relative to the fit, once there has been one. */
-function zoomLabel(zoom: number | undefined): string {
-  if (zoom === undefined) return "–";
-  return `${Math.round(zoom * 100)}%`;
-}
-
-/**
- * Where the model is, and which graphics tier is drawing it.
- *
- * Two facts a person cannot get by looking at the picture, and both change
- * what a bug report means: an in-tab editor and a connected one fail
- * differently, and so do WebGPU and the WebGL2 fallback.
- */
-function Environment(): ReactNode {
-  const editor = useEditor();
-  const tier = useGpuTier(editor);
-  return (
-    <>
-      <span data-catchlight-status-item="" data-catchlight-backend="">
-        {editor.backendKind()}
-      </span>
-      <span data-catchlight-status-item="" data-catchlight-tier="">
-        {tier ?? "no device"}
-      </span>
-    </>
-  );
-}
-
-/**
- * Which graphics tier this tab came up on, once a canvas has asked for a
- * device.
- *
- * A device is acquired at the first viewport and never swapped, so the
- * subscription fires once and the state settles for the life of the editor.
- */
-function useGpuTier(editor: Editor): string | undefined {
-  const [tier, setTier] = useState<string | undefined>(() => editor.gpuTier());
-  useEffect(() => {
-    setTier(editor.gpuTier());
-    return editor.onGpuChanged(() => setTier(editor.gpuTier()));
-  }, [editor]);
-  return tier;
-}
-
-function Problem({ problem }: { problem: string | undefined }): ReactNode {
-  if (!problem) return null;
-  return (
-    <span data-catchlight-problem="" role="alert">
-      {problem}
-    </span>
-  );
-}
-
-/** What a rejected promise or a part's `onError` says, as one line. */
-function describe(cause: unknown): string {
-  if (cause instanceof Error) return cause.message;
-  return String(cause);
 }

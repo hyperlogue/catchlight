@@ -823,6 +823,7 @@ impl App {
                     let entries = self.record_entries(&params, cell, &node, &patch);
                     if !entries.is_empty() {
                         self.send(Command::BindingKeys {
+                            if_rev: None,
                             session,
                             params,
                             node: node.clone(),
@@ -1220,6 +1221,7 @@ impl App {
         };
         let node = mesh.node.clone();
         let reply = self.send(Command::MeshSet {
+            if_rev: None,
             session,
             node: node.clone(),
             verts: pairs(&new_mesh.verts),
@@ -1673,6 +1675,7 @@ impl App {
             match refit {
                 Some(offsets) => {
                     self.send(Command::DeformVertices {
+                        if_rev: None,
                         session,
                         params,
                         node,
@@ -2776,6 +2779,7 @@ impl App {
             offsets[vertex * 2 + 1] += local.y;
         }
         self.send(Command::DeformVertices {
+            if_rev: None,
             session,
             params,
             node,

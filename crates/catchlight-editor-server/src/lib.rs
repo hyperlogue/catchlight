@@ -154,6 +154,8 @@ const DEFAULT_CAMERA_HEIGHT: f32 = 2000.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EditorError {
+    #[error("The model changed during this edit. Reload the draft or start the gesture again.")]
+    RevisionConflict,
     #[error("no session {}", .0.0)]
     NoSession(SessionId),
     #[error("no node {0}")]
@@ -217,6 +219,7 @@ impl EditorError {
     /// this is what a commit gate or a mesh editor reacts to.
     pub fn code(&self) -> ErrorCode {
         match self {
+            Self::RevisionConflict => ErrorCode::RevisionConflict,
             Self::NoSession(_) => ErrorCode::NoSession,
             Self::NoNode(_) => ErrorCode::NoNode,
             Self::NoParam(_) => ErrorCode::NoParam,
@@ -940,7 +943,7 @@ impl Editor {
         encoding: CoreTextureEncoding,
         bytes: Vec<u8>,
     ) -> Result<(TexId, Vec<TexId>), EditorError> {
-        image_dims(&bytes)?;
+        image_dims(&bytes, encoding)?;
         self.edit_session(id, |s| {
             let added = s.add_texture(
                 part,
@@ -1183,6 +1186,10 @@ impl Editor {
                 Ok(ResponseBody::Status {
                     status: StatusInfo {
                         title: s.title.clone(),
+                        undo_steps: s.history.undo.len() as u32,
+                        redo_steps: s.history.redo.len() as u32,
+                        gravity: Some(s.model.physics().gravity),
+                        pixels_per_meter: Some(s.model.physics().pixels_per_meter),
                         node_count: s.model.node_count() as u32,
                         param_count: s.model.param_ids().len() as u32,
                         texture_count: s.model.texture_ids().len() as u32,
@@ -1431,7 +1438,7 @@ impl Editor {
                 let bytes = attachments.take("texture").unwrap_or_default();
                 let encoding = encoding.into();
                 self.edit_session(session, move |s| {
-                    image_dims(&bytes)?; // validate it decodes
+                    image_dims(&bytes, encoding)?;
                     let (texture, dropped) = s.add_texture(
                         &node,
                         id,
@@ -1558,12 +1565,16 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::BindingKeys {
+                if_rev,
                 session,
                 params,
                 node,
                 cell,
                 entries,
             } => self.edit_session(session, |s| {
+                if if_rev.is_some_and(|rev| rev != s.rev) {
+                    return Err(EditorError::RevisionConflict);
+                }
                 for e in entries {
                     let key = binding_key(params.clone(), node.clone(), e.target)?;
                     s.model.set_binding_key(&key, cell, e.value)?;
@@ -1663,18 +1674,23 @@ impl Editor {
                 Ok(ResponseBody::Empty)
             }),
             Command::DeformVertices {
+                if_rev,
                 session,
                 params,
                 node,
                 cell,
                 offsets,
             } => self.edit_session(session, |s| {
+                if if_rev.is_some_and(|rev| rev != s.rev) {
+                    return Err(EditorError::RevisionConflict);
+                }
                 let key = binding_key(params, node, BindingTarget::Deform)?;
                 s.model.set_deform_vertices(&key, cell, offsets.concat())?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::MeshSet {
+                if_rev,
                 session,
                 node,
                 verts,
@@ -1682,6 +1698,9 @@ impl Editor {
                 indices,
                 origin,
             } => self.edit_session(session, |s| {
+                if if_rev.is_some_and(|rev| rev != s.rev) {
+                    return Err(EditorError::RevisionConflict);
+                }
                 let mesh = build_mesh(verts, uvs, indices, origin)?;
                 let emptied = s.model.set_mesh_with_refit(&node, mesh)?;
                 s.touch();
@@ -2748,7 +2767,7 @@ fn automesh(model: &Model, node: &NodeId, mode: AutoMesh) -> Result<ClmMesh, Edi
     let texture = model
         .texture(albedo)
         .ok_or_else(|| EditorError::NoTexture(albedo.clone()))?;
-    let alpha = AlphaMask::decode(&texture.data)
+    let alpha = AlphaMask::decode_as(&texture.data, texture.encoding)
         .ok_or_else(|| EditorError::Image(format!("texture {albedo} does not decode")))?;
 
     let mesh = part.mesh();
@@ -3138,8 +3157,8 @@ fn encoding_from_path(path: &str) -> CoreTextureEncoding {
     }
 }
 
-fn image_dims(bytes: &[u8]) -> Result<(u32, u32), EditorError> {
-    catchlight_editor_core::image_dims(bytes).map_err(|e| EditorError::Image(e.to_string()))
+fn image_dims(bytes: &[u8], encoding: CoreTextureEncoding) -> Result<(u32, u32), EditorError> {
+    catchlight_editor_core::image_dims_as(bytes, encoding).map_err(EditorError::Image)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

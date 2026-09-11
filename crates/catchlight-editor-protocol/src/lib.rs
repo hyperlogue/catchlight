@@ -442,6 +442,9 @@ pub enum Command {
     /// gizmo drag commits tx+ty together).
     BindingKeys {
         session: SessionId,
+        /// Refuse a stale draft or gesture while holding the session lock.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
@@ -526,6 +529,9 @@ pub enum Command {
     /// the mesh's own order. This is what commits a live drag.
     DeformVertices {
         session: SessionId,
+        /// Refuse a stale draft or gesture while holding the session lock.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
@@ -537,6 +543,9 @@ pub enum Command {
     /// with the slots the new mesh emptied.
     MeshSet {
         session: SessionId,
+        /// Refuse a stale draft or gesture while holding the session lock.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
         node: NodeId,
         /// One `[x, y]` per vertex.
         verts: Vec<[f32; 2]>,
@@ -2355,6 +2364,8 @@ pub enum Reply {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ErrorCode {
+    /// The session changed after a draft or recording gesture began.
+    RevisionConflict,
     /// No open session with that [`SessionId`].
     NoSession,
     /// The model carries no node with that [`NodeId`].
@@ -2638,6 +2649,15 @@ pub struct StatusInfo {
     pub texture_count: u32,
     pub dirty: bool,
     pub rev: u64,
+    /// History belongs to the editor, so only this server query can answer it.
+    #[serde(default)]
+    pub undo_steps: u32,
+    #[serde(default)]
+    pub redo_steps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixels_per_meter: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2823,6 +2843,31 @@ pub struct NodeInfo {
     /// A spine's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spine: Option<SpineInfo>,
+    /// Authored geometry, in the same coordinates accepted by `mesh_set`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<MeshInfo>,
+    /// Ordered clipping rules. Empty on nodes that do not draw.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<MaskInfo>,
+}
+
+/// A mesh's authored vertices, UVs, triangles and origin. A client may send
+/// these fields directly to `mesh_set`; posing never changes this read.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MeshInfo {
+    pub verts: Vec<[f32; 2]>,
+    pub uvs: Vec<[f32; 2]>,
+    pub indices: Vec<[u32; 3]>,
+    pub origin: [f32; 2],
+}
+
+/// One ordered clipping rule, addressed by its position in `NodeInfo::masks`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MaskInfo {
+    pub source: NodeId,
+    pub mode: MaskMode,
 }
 
 /// A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
@@ -3214,6 +3259,8 @@ mod tests {
             mg_translate_children: None,
             physics: None,
             spine: None,
+            mesh: None,
+            masks: Vec::new(),
         };
         let line = serde_json::to_string(&info).unwrap();
         let patch: NodePatch = serde_json::from_str(&line).unwrap();
@@ -3278,6 +3325,8 @@ mod tests {
                 texture: None,
                 physics: None,
                 spine: None,
+                mesh: None,
+                masks: Vec::new(),
                 vertex_count: Some(0),
                 triangle_count: Some(0),
                 propagate_meshgroup: None,

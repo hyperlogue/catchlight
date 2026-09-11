@@ -86,7 +86,7 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
             let mut textures = Vec::new();
             for tid in model.texture_ids() {
                 if let Some(t) = model.texture(tid) {
-                    let (width, height) = image_dims(&t.data).unwrap_or((0, 0));
+                    let (width, height) = image_dims(&t.data, t.encoding).unwrap_or((0, 0));
                     textures.push(TexInfo {
                         id: tid.clone(),
                         width,
@@ -231,6 +231,48 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
         None => (None, None),
     };
     NodeInfo {
+        mesh: node.mesh().map(|mesh| MeshInfo {
+            verts: mesh
+                .verts
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|v| [v[0], v[1]])
+                .collect(),
+            uvs: mesh
+                .uvs
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|v| [v[0], v[1]])
+                .collect(),
+            indices: match &mesh.indices {
+                catchlight_core::formats::clm::ClmIndices::U16(v) => v
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|t| [u32::from(t[0]), u32::from(t[1]), u32::from(t[2])])
+                    .collect(),
+                catchlight_core::formats::clm::ClmIndices::U32(v) => v
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|t| [t[0], t[1], t[2]])
+                    .collect(),
+            },
+            origin: mesh.origin,
+        }),
+        masks: match &node.kind {
+            ModelNodeKind::Part(p) => p.masks(),
+            ModelNodeKind::Composite(c) => c.masks(),
+            _ => &[],
+        }
+        .iter()
+        .map(|mask| MaskInfo {
+            source: mask.source().clone(),
+            mode: mask.mode().into(),
+        })
+        .collect(),
         id: id.clone(),
         kind: NodeKind::of(&node.kind),
         parent: node.parent().cloned(),

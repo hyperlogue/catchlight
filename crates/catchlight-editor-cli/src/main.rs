@@ -1103,6 +1103,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     }
                     let m: MeshJson = serde_json::from_str(&std::fs::read_to_string(file)?)?;
                     Command::MeshSet {
+                        if_rev: None,
                         session,
                         node: node.clone(),
                         verts: m.verts,
@@ -1267,6 +1268,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     cell,
                     file,
                 } => Command::DeformVertices {
+                    if_rev: None,
                     session,
                     params: params.wire(),
                     node: node.clone(),

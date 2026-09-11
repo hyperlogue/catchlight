@@ -70,6 +70,7 @@ fn recorded_binding_moves_the_rebaked_puppet() {
         &ed,
         4,
         Command::BindingKeys {
+            if_rev: None,
             session,
             params: BindingParams::one(param.clone()),
             node: node.clone(),

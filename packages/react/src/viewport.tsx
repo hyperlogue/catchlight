@@ -63,7 +63,7 @@ import {
   ZOOM_PER_NOTCH,
   zoomAbout,
 } from "./camera.js";
-import type { Point, Size } from "./camera.js";
+import type { Bounds, Point, Size } from "./camera.js";
 
 /** A pointer over the canvas, in both frames a host might want it in. */
 export interface ViewportPointerEvent {
@@ -78,8 +78,10 @@ type PointerHandler = (event: ViewportPointerEvent) => void;
 type OwnPointerProps = "onPointerDown" | "onPointerMove" | "onPointerUp" | "onPointerCancel";
 
 // `onError` is also a DOM event on every element; this one wins.
-export interface ViewportRootProps
-  extends Omit<ComponentProps<"canvas">, OwnPointerProps | "onError"> {
+export interface ViewportRootProps extends Omit<
+  ComponentProps<"canvas">,
+  OwnPointerProps | "onError"
+> {
   /** What to draw. `undefined` keeps the canvas, drawing nothing, until one arrives. */
   session: Session | undefined;
   /** Controlled camera. With this set, the component moves only when the host says so. */
@@ -93,7 +95,7 @@ export interface ViewportRootProps
    * owns the camera can tell the reference a zoom readout is relative to from
    * an ordinary move.
    */
-  onFit?: (camera: Camera) => void;
+  onFit?: (camera: Camera, bounds?: Bounds) => void;
   /**
    * The canvas's CSS size, whenever it changes. How a host that owns the
    * camera learns the aspect a fit has to frame against.
@@ -109,6 +111,8 @@ export interface ViewportRootProps
    * nothing else on the screen says why the canvas stayed empty.
    */
   onError?: (cause: unknown) => void;
+  /** The hand tool pans with the primary pointer, without a Space modifier. */
+  panMode?: boolean;
 }
 
 /** A pan in flight: the pointer, and where it started from. */
@@ -131,6 +135,7 @@ export function ViewportRoot(props: ViewportRootProps) {
     onPointerUp,
     onPointerCancel,
     onError,
+    panMode,
     style,
     ref,
     ...rest
@@ -210,7 +215,10 @@ export function ViewportRoot(props: ViewportRootProps) {
       };
       // Non-passive, so the page does not scroll while the canvas zooms.
       canvas.addEventListener("wheel", onWheel, { passive: false });
-      globalThis.addEventListener?.("scroll", remeasure, { capture: true, passive: true });
+      globalThis.addEventListener?.("scroll", remeasure, {
+        capture: true,
+        passive: true,
+      });
       globalThis.addEventListener?.("resize", remeasure, { passive: true });
 
       const releaseRef = applyRef(forwarded.current, canvas);
@@ -226,11 +234,12 @@ export function ViewportRoot(props: ViewportRootProps) {
         const tryFit = (): void => {
           frame = undefined;
           if (!live || !autoFits.current || fitted.current === drawn.id) return;
-          const fit = fitCamera(drawn.bounds(), size.current);
+          const bounds = drawn.bounds();
+          const fit = fitCamera(bounds, size.current);
           if (fit) {
             fitted.current = drawn.id;
             commit(fit);
-            framed.current?.(fit);
+            framed.current?.(fit, bounds);
             return;
           }
           attempts += 1;
@@ -266,7 +275,9 @@ export function ViewportRoot(props: ViewportRootProps) {
         cancelFrame(frame);
         observer?.disconnect();
         canvas.removeEventListener("wheel", onWheel);
-        globalThis.removeEventListener?.("scroll", remeasure, { capture: true });
+        globalThis.removeEventListener?.("scroll", remeasure, {
+          capture: true,
+        });
         globalThis.removeEventListener?.("resize", remeasure);
         releaseRef?.();
         pan.current = undefined;
@@ -288,7 +299,15 @@ export function ViewportRoot(props: ViewportRootProps) {
   // it can go down before the pointer ever enters the element.
   useEffect(() => {
     const down = (event: KeyboardEvent): void => {
-      if (event.code === "Space") space.current = true;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (
+        event.code === "Space" &&
+        !target?.matches("input,textarea,select,button,summary") &&
+        !target?.isContentEditable
+      ) {
+        space.current = true;
+        event.preventDefault();
+      }
     };
     const up = (event: KeyboardEvent): void => {
       if (event.code === "Space") space.current = false;
@@ -308,7 +327,11 @@ export function ViewportRoot(props: ViewportRootProps) {
 
   const locate = (event: ReactPointerEvent<HTMLCanvasElement>): ViewportPointerEvent => {
     const screen = screenOf(event.clientX, event.clientY, origin.current);
-    return { screen, world: worldAt(cameraNow.current, size.current, screen), event };
+    return {
+      screen,
+      world: worldAt(cameraNow.current, size.current, screen),
+      event,
+    };
   };
 
   const handleDown = (event: ReactPointerEvent<HTMLCanvasElement>): void => {
@@ -317,7 +340,7 @@ export function ViewportRoot(props: ViewportRootProps) {
     const rect = event.currentTarget.getBoundingClientRect();
     origin.current = [rect.left, rect.top];
     capture(event);
-    if (event.button === MIDDLE || (event.button === PRIMARY && space.current)) {
+    if (event.button === MIDDLE || (event.button === PRIMARY && (space.current || panMode))) {
       pan.current = {
         pointerId: event.pointerId,
         camera: cameraNow.current,
@@ -376,7 +399,7 @@ export interface ViewportCamera {
   /** Pass to `Viewport.Root` as `onCameraChange`. */
   onCameraChange: (camera: Camera) => void;
   /** Pass to `Viewport.Root` as `onFit`. What [`zoom`] is measured against. */
-  onFit: (camera: Camera) => void;
+  onFit: (camera: Camera, bounds?: Bounds) => void;
   /** Pass to `Viewport.Root` as `onResize`. What [`fit`] frames against. */
   onResize: (size: Size) => void;
   /** Moves the camera outright. */
@@ -411,18 +434,35 @@ export function useViewportCamera(initial: Camera = DEFAULT_CAMERA): ViewportCam
   const [cameraState, setCamera] = useState<Camera>(initial);
   const [fitHeight, setFitHeight] = useState<number | undefined>(undefined);
   const size = useRef<Size>({ width: 0, height: 0 });
+  const currentCamera = useLatest(cameraState);
+  const lastFit = useRef<{ camera: Camera; bounds: Bounds } | undefined>(undefined);
 
   const onResize = useCallback((next: Size): void => {
     size.current = next;
+    // A fitted view follows the available space until the user pans or zooms.
+    // Keep the bounds from the fit so a moving pose never recentres the view.
+    const previous = lastFit.current;
+    if (previous && previous.camera === currentCamera.current) {
+      const framed = fitCamera(previous.bounds, next);
+      if (framed) {
+        lastFit.current = { camera: framed, bounds: previous.bounds };
+        currentCamera.current = framed;
+        setCamera(framed);
+        setFitHeight(framed.height);
+      }
+    }
   }, []);
 
-  const onFit = useCallback((framed: Camera): void => {
+  const onFit = useCallback((framed: Camera, bounds?: Bounds): void => {
+    lastFit.current = bounds ? { camera: framed, bounds } : undefined;
     setFitHeight(framed.height);
   }, []);
 
   const fit = useCallback((session: Session): boolean => {
-    const framed = fitCamera(session.bounds(), size.current);
+    const bounds = session.bounds();
+    const framed = fitCamera(bounds, size.current);
     if (!framed) return false;
+    lastFit.current = bounds ? { camera: framed, bounds } : undefined;
     setCamera(framed);
     setFitHeight(framed.height);
     return true;
@@ -430,7 +470,15 @@ export function useViewportCamera(initial: Camera = DEFAULT_CAMERA): ViewportCam
 
   const zoom = fitHeight === undefined ? undefined : fitHeight / cameraState.height;
 
-  return { camera: cameraState, setCamera, onCameraChange: setCamera, onFit, onResize, fit, zoom };
+  return {
+    camera: cameraState,
+    setCamera,
+    onCameraChange: setCamera,
+    onFit,
+    onResize,
+    fit,
+    zoom,
+  };
 }
 
 const PRIMARY = 0;
