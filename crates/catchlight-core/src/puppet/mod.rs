@@ -126,6 +126,8 @@ struct Contribution {
     source: NodeIdx,
     value: f32,
     weight: f32,
+    /// A chain's bend limit constrains the final value, even at zero weight.
+    limit: Option<f32>,
 }
 
 /// Fold weighted claims against the value the caller posed.
@@ -141,57 +143,34 @@ struct Contribution {
 /// puppet. Order-independent is the rule and not the arithmetic: the row is
 /// in the order the claims were made, which is the order the filter used to
 /// produce, so the sum lands on the same bits it always did.
+///
+/// **Bend limits constrain the combined value, after every claim and the
+/// pose have been blended.** A per-driver clamp would let another claim or
+/// the pose move the result past the wall. Where links share a param, its
+/// value must satisfy every link's limit, so the smallest wins. A limit is
+/// independent of authority: weight zero adds no motion but keeps the wall.
 fn resolve_contributions(entries: &[Contribution], claims: &[u32], base: f32) -> f32 {
     let mut total = 0.0;
     let mut sum = 0.0;
+    let mut limit = f32::INFINITY;
     for &i in claims {
         let Some(e) = entries.get(i as usize) else {
             continue;
         };
         total += e.weight;
         sum += e.value * e.weight;
+        if let Some(cap) = e.limit.filter(|l| l.is_finite() && *l > 0.0) {
+            limit = limit.min(cap);
+        }
     }
-    if total <= 0.0 {
+    let value = if total <= 0.0 {
         base
     } else if total < 1.0 {
         sum + base * (1.0 - total)
     } else {
         sum / total
-    }
-}
-
-/// One chain's claim on one slot: its solved bend blended against the bend the
-/// caller posed, at the chain's own `weight`.
-///
-/// **The arithmetic is [`resolve_contributions`]'s, written out.** That is
-/// what the fold used to do with a claim of weight `w`, and doing it here
-/// instead must not move a bit of any model that carries no limit — so the
-/// order is its order: its sum starts at `0.0`, so `0.0 + bend * w` is
-/// `bend * w`, and its `total < 1.0` branch is `sum + base * (1.0 - total)`.
-/// A weight at or above 1 is the chain deciding outright, which is `bend`
-/// itself rather than the fold's `(bend * w) / w`; the two differ by at most
-/// an ulp above 1, and this one is the answer the knob names.
-///
-/// Weight 0 therefore claims the base itself — the chain asserting nothing,
-/// which is what it always meant.
-fn blend_claim(bend: f32, base: f32, weight: f32) -> f32 {
-    if weight >= 1.0 {
-        bend
-    } else {
-        bend * weight + base * (1.0 - weight)
-    }
-}
-
-/// A bend held inside its link's limit, in half turns.
-///
-/// The same rule [`crate::physics`] applies to the solve — a limit that is not
-/// a number, or is not above zero, is no limit — so a link the solver treats
-/// as free is free here too.
-fn clamp_to_bend_limit(bend: f32, limit: Option<f32>) -> f32 {
-    match limit.filter(|l| l.is_finite() && *l > 0.0) {
-        Some(limit) => bend.clamp(-limit, limit),
-        None => bend,
-    }
+    };
+    value.clamp(-limit, limit)
 }
 
 /// A live edit to node properties, handed to the closure
@@ -386,11 +365,14 @@ pub struct Puppet {
     /// and the chain it may carry writes them — because they are the same
     /// bends.
     spine_targets: Vec<Vec<Option<u32>>>,
-    /// This frame's chain claims, `(source, slot, value)`, the value already
-    /// blended at the chain's weight and held inside its limit. Flat rather
-    /// than grouped by chain because the only two readers want it flat: the
-    /// contribution loop and the retirement scan.
-    chain_update_scratch: Vec<(NodeIdx, u32, f32)>,
+    /// This frame's raw chain bends, with their authored weights and limits.
+    /// Flat because the contribution loop and the retirement scan read it
+    /// that way; the blend and its clamp belong to `resolve_contributions`.
+    chain_update_scratch: Vec<Contribution>,
+    /// Per-slot index into `chain_update_scratch` while collecting one chain.
+    /// Repeated targets keep the last bend but all their limits. Clearing only
+    /// the slots that chain touched keeps collection linear in its outputs.
+    chain_claim_scratch: Vec<Option<usize>>,
     /// Held so reading a chain out costs no allocation per frame.
     chain_bends_scratch: Vec<f32>,
     /// Retirement's two sets, held for the same reason: which nodes are
@@ -445,6 +427,7 @@ impl Puppet {
             physics_update_scratch: Vec::new(),
             spine_targets: Vec::new(),
             chain_update_scratch: Vec::new(),
+            chain_claim_scratch: Vec::new(),
             chain_bends_scratch: Vec::new(),
             chain_posed_scratch: Vec::new(),
             retire_drivers_scratch: HashSet::new(),
@@ -496,7 +479,7 @@ impl Puppet {
                     .map(|(id, v)| (id.clone(), *v)),
             )
             .collect();
-        let contributions: Vec<(ParamId, NodeId, f32, f32)> = self
+        let contributions: Vec<_> = self
             .param_contributions
             .iter()
             .filter_map(|c| {
@@ -505,6 +488,7 @@ impl Puppet {
                     self.id_of_node.get(c.source.0 as usize)?.clone(),
                     c.value,
                     c.weight,
+                    c.limit,
                 ))
             })
             .collect();
@@ -550,13 +534,19 @@ impl Puppet {
         for (id, value) in pose {
             self.set_param_value(&id, value);
         }
-        for (param, source, value, weight) in contributions {
+        for (param, source, value, weight, limit) in contributions {
             let (Some(&slot), Some(&source)) =
                 (self.slot_of_param.get(&param), self.node_of_id.get(&source))
             else {
                 continue;
             };
-            self.contribute(slot, source, value, weight);
+            self.record_contribution(Contribution {
+                slot,
+                source,
+                value,
+                weight,
+                limit,
+            });
         }
         for (id, saved) in drivers {
             let Some(&idx) = self.node_of_id.get(&id) else {
@@ -1088,6 +1078,17 @@ impl Puppet {
     }
 
     fn contribute(&mut self, slot: u32, source: NodeIdx, value: f32, weight: f32) -> bool {
+        self.record_contribution(Contribution {
+            slot,
+            source,
+            value,
+            weight,
+            limit: None,
+        })
+    }
+
+    fn record_contribution(&mut self, contribution: Contribution) -> bool {
+        let slot = contribution.slot;
         // A slot with no row is a slot this puppet does not have; there is
         // nowhere to record the claim, and recording it only in the storage
         // would put the two out of step.
@@ -1098,23 +1099,17 @@ impl Puppet {
         let held = claims.iter().find(|&&i| {
             self.param_contributions
                 .get(i as usize)
-                .is_some_and(|e| e.source == source)
+                .is_some_and(|e| e.source == contribution.source)
         });
         match held.copied() {
             Some(i) => {
                 if let Some(e) = self.param_contributions.get_mut(i as usize) {
-                    e.value = value;
-                    e.weight = weight;
+                    *e = contribution;
                 }
             }
             None => {
                 let at = self.param_contributions.len() as u32;
-                self.param_contributions.push(Contribution {
-                    slot,
-                    source,
-                    value,
-                    weight,
-                });
+                self.param_contributions.push(contribution);
                 if let Some(row) = self.slot_claims.get_mut(slot as usize) {
                     row.push(at);
                 }
@@ -1490,21 +1485,11 @@ impl Puppet {
     /// a pendulum through its map mode, a chain one bend per link. Returns
     /// whether any resolved value moved.
     ///
-    /// **Both kinds claim at full authority, and a chain folds its own
-    /// `weight` in before it claims.** `weight` is the knob that says how much
-    /// of the param the solve decides and how much the pose keeps, so the
-    /// obvious shape is to claim the solve at that weight and let
-    /// [`resolve_contributions`] blend it against the pose. That shape cannot
-    /// carry a bend limit: the fold would mix the pose's excess straight back
-    /// past a wall the solver had just stopped the joint at, and
-    /// [`crate::model::LinkFeel::limit`] promises the art, not the solve. So
-    /// the blend happens here, where the limit is in reach, and what the chain
-    /// claims is the finished number.
-    ///
-    /// The consequence to know: two drivers aimed at one param now average
-    /// each chain's *blend* rather than its raw solve. They still average
-    /// rather than resolving by their position in the arena, which is tree
-    /// order and carries no meaning here.
+    /// Pendulums claim at full authority; chains claim their raw bends at
+    /// their authored weights. Each link's limit travels with its claim so
+    /// `resolve_contributions` can clamp after every driver and the pose have
+    /// been blended. Pre-blending each chain and claiming at full authority
+    /// would let a zero-weight chain dilute another driver's output.
     fn write_driver_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
         self.physics_update_scratch.clear();
         for i in 0..self.arena.physics_node_ids.len() {
@@ -1536,6 +1521,7 @@ impl Puppet {
             self.physics_update_scratch.push((targets, id, value));
         }
         self.chain_update_scratch.clear();
+        self.chain_claim_scratch.resize(self.params.len(), None);
         // Moved out so `link_bends` can fill it while the arena is borrowed;
         // it goes straight back, so the allocation is the puppet's for life.
         let mut bends = std::mem::take(&mut self.chain_bends_scratch);
@@ -1571,14 +1557,42 @@ impl Puppet {
             // travel with the bend it bounds.
             let limits: smallvec::SmallVec<[Option<f32>; 8]> =
                 chain.links.iter().map(|l| l.limit).collect();
+            let start = self.chain_update_scratch.len();
             for (i, slot) in targets.iter().enumerate() {
                 let (Some(slot), Some(&bend)) = (*slot, bends.get(i)) else {
                     continue;
                 };
-                let base = self.param_base(slot).unwrap_or(0.0);
-                let blended = blend_claim(bend, base, weight);
-                let value = clamp_to_bend_limit(blended, limits.get(i).copied().flatten());
-                self.chain_update_scratch.push((id, slot, value));
+                let Some(at) = self.chain_claim_scratch.get_mut(slot as usize) else {
+                    continue;
+                };
+                let limit = limits
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .filter(|l| l.is_finite() && *l > 0.0);
+                if let Some(claim) = at.and_then(|i| self.chain_update_scratch.get_mut(i)) {
+                    // A source has one claim per param. Preserve the existing
+                    // last-link-wins bend without discarding an earlier wall.
+                    claim.value = bend;
+                    claim.limit = match (claim.limit, limit) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    };
+                    continue;
+                }
+                *at = Some(self.chain_update_scratch.len());
+                self.chain_update_scratch.push(Contribution {
+                    source: id,
+                    slot,
+                    value: bend,
+                    weight,
+                    limit,
+                });
+            }
+            for claim in &self.chain_update_scratch[start..] {
+                if let Some(at) = self.chain_claim_scratch.get_mut(claim.slot as usize) {
+                    *at = None;
+                }
             }
         }
         self.chain_bends_scratch = bends;
@@ -1597,8 +1611,7 @@ impl Puppet {
             }
         }
         for i in 0..self.chain_update_scratch.len() {
-            let (source, slot, value) = self.chain_update_scratch[i];
-            if self.contribute(slot, source, value, 1.0) {
+            if self.record_contribution(self.chain_update_scratch[i]) {
                 changed = true;
             }
         }
@@ -1631,8 +1644,8 @@ impl Puppet {
                 live.insert((slot, *source));
             }
         }
-        for &(source, slot, ..) in &self.chain_update_scratch {
-            live.insert((slot, source));
+        for claim in &self.chain_update_scratch {
+            live.insert((claim.slot, claim.source));
         }
 
         let mut entries = std::mem::take(&mut self.param_contributions);

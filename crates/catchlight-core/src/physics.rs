@@ -50,9 +50,10 @@
 //! moment the wind stops, while one that kept its outward push would buzz
 //! against the wall for as long as the wind lasted. The solve is only half of
 //! the promise: a chain decides its param at its own `weight`, so
-//! `Puppet::write_driver_param_outputs` clamps the *blend* of pose and solve
-//! and not just what happened here — otherwise a chain at half weight would
-//! mix half the pose's excess back past the wall.
+//! the puppet clamps the combined claims and pose after blending — otherwise
+//! a chain at half weight, or another driver on the same param, could mix an
+//! excess back past the wall. The tightest limit on a shared param wins,
+//! independently of each driver's weight.
 //!
 //! **A chain is damped in its anchor's frame, not the world's.** A character
 //! walking across the screen carries the whole strand along, and that is not

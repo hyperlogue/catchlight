@@ -975,7 +975,7 @@ fn limited_chain(limit: f32, weight: f32) -> (Model, NodeId, ParamId) {
 /// quarter-turn limit would read 67.5 degrees, and at weight 0 the whole 90.
 ///
 /// The promise `LinkFeel::limit` makes is about the art, so it has to hold at
-/// every weight: the claim is the blend, clamped, at full authority.
+/// every weight: the combined claims and pose are clamped after blending.
 #[test]
 fn a_limit_binds_the_param_at_every_weight() {
     for weight in [0.0f32, 0.5, 1.0] {
@@ -1032,6 +1032,156 @@ fn a_limit_binds_a_negative_pose_too() {
             other => panic!("not a spine: {other:?}"),
         };
         assert!((turned - read).abs() < 1e-6, "weight {weight}");
+    }
+}
+
+fn shared_bend(weights: [f32; 2], limits: [Option<f32>; 2]) -> (Model, [NodeId; 2], ParamId) {
+    let (mut model, first, params) = posed_chain(0.0, 1);
+    let param = params.into_iter().next().expect("one bend");
+    let root = model.root().expect("a root").clone();
+    let second = model
+        .add_node(
+            &root,
+            ModelNode::new(
+                "second",
+                ModelNodeKind::Spine(ModelSpine::new(straight(1, 60.0))),
+            ),
+            &mut SeededHex::new(71),
+        )
+        .expect("add a second spine");
+    let nodes = [first, second];
+    for (i, node) in nodes.iter().enumerate() {
+        let mut chain = ModelChain::new(1);
+        chain.gravity = 0.0;
+        chain.weight = weights[i];
+        chain.set_links(vec![catchlight_core::LinkFeel {
+            stiffness: 3.0,
+            limit: limits[i],
+            ..Default::default()
+        }]);
+        model
+            .set_spine_chain(node, Some(chain))
+            .expect("hang the chain");
+        model
+            .set_spine_targets(node, vec![Some(param.clone())])
+            .expect("share the bend");
+    }
+    (model, nodes, param)
+}
+
+#[test]
+fn shared_chains_keep_their_authored_weights() {
+    for weights in [[0.0, 1.0], [0.25, 0.75], [0.2, 0.3], [2.0, 1.0]] {
+        let (model, nodes, param) = shared_bend(weights, [None, None]);
+        let mut puppet = Puppet::new(&model);
+        let base = 0.1;
+        puppet.set_param_value(&param, base);
+        puppet.settle_physics(&model);
+        let indices = nodes.map(|node| puppet.node_idx(&node).expect("the spine baked"));
+        assert!(puppet.kick_chain(indices[1], Vec2::new(30.0, 0.0)));
+        puppet.tick(&model, DT);
+
+        let bends = indices.map(|idx| chain_bends(&puppet, idx)[0]);
+        let total = weights[0] + weights[1];
+        let sum = bends[0] * weights[0] + bends[1] * weights[1];
+        let expected = if total >= 1.0 {
+            sum / total
+        } else {
+            sum + base * (1.0 - total)
+        };
+        let actual = puppet.param_value(&param).expect("the shared bend");
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "weights {weights:?}, bends {bends:?}: expected {expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn a_shared_bend_obeys_every_limit_after_all_claims_are_blended() {
+    for limits in [
+        [Some(0.25), None],
+        [None, Some(0.25)],
+        [Some(0.125), Some(0.25)],
+    ] {
+        for weight in [0.0, 0.5, 1.0] {
+            let (model, nodes, param) = shared_bend([weight, 1.0], limits);
+            let mut puppet = Puppet::new(&model);
+            puppet.set_param_value(&param, 0.5);
+            puppet.settle_physics(&model);
+            puppet.tick(&model, DT);
+            let limit = limits.into_iter().flatten().fold(f32::INFINITY, f32::min);
+            let read = puppet.param_value(&param).expect("the shared bend");
+            assert!(
+                read.abs() <= limit + 1e-6,
+                "weight {weight}, limits {limits:?}: blended bend {read} passed {limit}"
+            );
+            for node in nodes {
+                let idx = puppet.node_idx(&node).expect("the spine baked");
+                let catchlight_core::NodeKind::Spine(spine) = &puppet.get(idx).expect("node").kind
+                else {
+                    panic!("not a spine");
+                };
+                assert_eq!(spine.bends[0], read, "the art uses the same bounded bend");
+            }
+        }
+    }
+}
+
+#[test]
+fn clearing_a_shared_target_releases_its_limit() {
+    let (mut model, nodes, param) = shared_bend([0.0, 1.0], [Some(0.25), None]);
+    let mut puppet = Puppet::new(&model);
+    puppet.set_param_value(&param, 0.5);
+    puppet.settle_physics(&model);
+    puppet.tick(&model, DT);
+    assert!((puppet.param_value(&param).expect("bend") - 0.25).abs() < 1e-6);
+    model
+        .set_spine_targets(&nodes[0], vec![None])
+        .expect("unhook the limited link");
+    puppet.tick(&model, DT);
+    assert!(
+        (puppet.param_value(&param).expect("bend") - 0.5).abs() < 1e-6,
+        "the remaining driver is no longer limited by the unhooked link"
+    );
+}
+
+#[test]
+fn links_in_one_chain_keep_all_limits_on_a_shared_param() {
+    for limits in [[Some(0.25), None], [None, Some(0.25)]] {
+        let (mut model, node, params) = posed_chain(0.0, 2);
+        let param = &params[0];
+        let mut chain = ModelChain::new(2);
+        chain.weight = 0.0;
+        chain.gravity = 0.0;
+        chain.set_links(
+            limits
+                .map(|limit| catchlight_core::LinkFeel {
+                    limit,
+                    ..Default::default()
+                })
+                .to_vec(),
+        );
+        model.set_spine_chain(&node, Some(chain)).expect("chain");
+        model
+            .set_spine_targets(&node, vec![Some(param.clone()); 2])
+            .expect("share the bend between links");
+        let mut puppet = Puppet::new(&model);
+        puppet.set_param_value(param, 0.5);
+        puppet.settle_physics(&model);
+        puppet.tick(&model, DT);
+        let read = puppet.param_value(param).expect("bend");
+        assert!(
+            (read - 0.25).abs() < 1e-6,
+            "limits {limits:?}: shared bend {read} must satisfy both links"
+        );
+
+        let targets = limits.map(|limit| limit.is_none().then(|| param.clone()));
+        model
+            .set_spine_targets(&node, targets.to_vec())
+            .expect("unhook the limited link");
+        puppet.tick(&model, DT);
+        assert!((puppet.param_value(param).expect("bend") - 0.5).abs() < 1e-6);
     }
 }
 

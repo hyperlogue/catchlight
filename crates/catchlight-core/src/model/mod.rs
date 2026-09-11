@@ -730,10 +730,10 @@ pub struct LinkFeel {
     ///
     /// A limit binds the pose as well as the physics, **at every weight**: a
     /// param posed past it moves the spring's target out there, the link still
-    /// stops at the boundary, and what the chain claims its param at is the
-    /// blend of pose and solve already held inside the wall. A limit is a
-    /// promise about the art, so a chain that only half decides its param
-    /// cannot half break it.
+    /// stops at the boundary, and the combined driver claims and pose are
+    /// clamped after blending. Drivers sharing a param must satisfy its
+    /// tightest limit, even when the chain carrying that limit has weight
+    /// zero. A limit is a promise about the art, independent of authority.
     pub limit: Option<f32>,
 }
 
