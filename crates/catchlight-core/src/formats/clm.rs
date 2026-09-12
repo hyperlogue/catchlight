@@ -130,6 +130,20 @@ pub enum TextureEncoding {
 pub struct ClmPhysics {
     pub pixels_per_meter: f32,
     pub gravity: f32,
+    /// Equal hair-chain steps per frame for every chain in this model (1..=255).
+    #[serde(
+        default = "default_chain_substeps",
+        skip_serializing_if = "default_substeps"
+    )]
+    pub chain_substeps: std::num::NonZeroU8,
+}
+
+fn default_chain_substeps() -> std::num::NonZeroU8 {
+    crate::physics::DEFAULT_CHAIN_SUBSTEPS
+}
+
+fn default_substeps(value: &std::num::NonZeroU8) -> bool {
+    *value == crate::physics::DEFAULT_CHAIN_SUBSTEPS
 }
 
 impl Default for ClmPhysics {
@@ -137,6 +151,7 @@ impl Default for ClmPhysics {
         Self {
             pixels_per_meter: 1000.0,
             gravity: 9.8,
+            chain_substeps: default_chain_substeps(),
         }
     }
 }

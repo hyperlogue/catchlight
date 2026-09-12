@@ -77,21 +77,7 @@ pub struct Manifest {
     pub params: Vec<ManifestParam>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct ManifestPhysics {
-    pub pixels_per_meter: f32,
-    pub gravity: f32,
-}
-
-impl Default for ManifestPhysics {
-    fn default() -> Self {
-        let p = ClmPhysics::default();
-        Self {
-            pixels_per_meter: p.pixels_per_meter,
-            gravity: p.gravity,
-        }
-    }
-}
+pub type ManifestPhysics = ClmPhysics;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestTexture {
@@ -226,10 +212,7 @@ impl ModelManifestExt for Model {
         // one set of Ids.
         let mut hex = SeededHex::new(IMPORT_SEED);
         let mut m = Model::new();
-        m.set_physics(ClmPhysics {
-            pixels_per_meter: manifest.physics.pixels_per_meter,
-            gravity: manifest.physics.gravity,
-        });
+        m.set_physics(manifest.physics);
 
         // Nothing is added to the model here. A texture goes to the part that
         // draws it, so this pass only decodes the dimensions the generated
@@ -442,10 +425,7 @@ impl ModelManifestExt for Model {
 
         Manifest {
             name: String::new(),
-            physics: ManifestPhysics {
-                pixels_per_meter: self.physics().pixels_per_meter,
-                gravity: self.physics().gravity,
-            },
+            physics: *self.physics(),
             textures,
             nodes,
             params,

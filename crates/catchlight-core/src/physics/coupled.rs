@@ -12,8 +12,8 @@
 //! Bend response scales rest subtree inertia, not individual modal
 //! frequencies. Rest support projects each sprung rod's resultant gravity
 //! off its drawn tangent; differences give fixed endpoint fields. Pose
-//! targets move springs, not those fields. Limp rods retain gravity, and
-//! legacy per-particle preload is unused. Static settling seeds limp rods
+//! targets move springs, not those fields. Limp rods retain gravity;
+//! static settling seeds limp rods
 //! toward gravity within their bounds, then uses relaxation.
 //!
 //! The cubic soft stop starts at 75% of max bend with zero torque and slope,
@@ -882,6 +882,7 @@ pub(super) fn tick(
     carry: Mat2,
     posed: &[f32],
     dt: f32,
+    substeps: std::num::NonZeroU8,
 ) {
     let mut job = [super::ChainTick {
         chain,
@@ -889,10 +890,14 @@ pub(super) fn tick(
         carry,
         posed: posed.iter().copied().collect(),
     }];
-    tick_chains(&mut job, dt);
+    tick_chains(&mut job, dt, substeps);
 }
 
-pub(super) fn tick_chains(jobs: &mut [super::ChainTick<'_>], dt: f32) {
+pub(super) fn tick_chains(
+    jobs: &mut [super::ChainTick<'_>],
+    dt: f32,
+    substeps: std::num::NonZeroU8,
+) {
     for job in jobs.iter_mut() {
         job.carry = super::usable_carry(job.carry);
     }
@@ -911,9 +916,7 @@ pub(super) fn tick_chains(jobs: &mut [super::ChainTick<'_>], dt: f32) {
         return;
     }
     let dt = dt.min(super::PHYSICS_MAX_DT);
-    let steps = (dt / super::CHAIN_MAX_STEP)
-        .ceil()
-        .clamp(1.0, super::PHYSICS_MAX_SUBSTEPS as f32) as u32;
+    let steps = u32::from(substeps.get());
     let h = f64::from(dt / steps as f32);
     jobs.sort_unstable_by_key(|job| job.chain.links.len());
     // Sort only independent requests after all anchors and posed targets
@@ -1060,9 +1063,9 @@ pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, p
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::physics::{ChainLink, ChainSolver};
+    use crate::physics::{ChainLink, DEFAULT_CHAIN_SUBSTEPS};
 
-    fn chain(n: usize, solver: ChainSolver) -> ParticleChainData {
+    fn chain(n: usize) -> ParticleChainData {
         let mut chain = ParticleChainData::new(vec![
             ChainLink {
                 length: 160.0 / n as f32,
@@ -1073,7 +1076,6 @@ mod tests {
             };
             n
         ]);
-        chain.solver = solver;
         chain.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
         chain
     }
@@ -1091,6 +1093,44 @@ mod tests {
                 pos: pos.as_vec2(),
                 vel: vel.as_vec2(),
             };
+        }
+    }
+
+    #[test]
+    fn configured_substeps_match_individually_swept_steps() {
+        for n in [2, 8] {
+            for count in [1, 4, 8, 16] {
+                for dt in [1.0 / 30.0, 1.0 / 60.0, 1.0 / 144.0] {
+                    let mut whole = chain(n);
+                    set_state(&mut whole, &vec![0.02; n], &vec![0.1; n]);
+                    let mut sliced = whole.clone();
+                    let anchor = Vec2::new(3.0, 1.0);
+                    let carry = Mat2::from_angle(0.03);
+                    whole.tick(
+                        anchor,
+                        carry,
+                        &[],
+                        dt,
+                        std::num::NonZeroU8::new(count).unwrap(),
+                    );
+                    for k in 1..=count {
+                        let t = f32::from(k) / f32::from(count);
+                        sliced.tick(
+                            anchor * t,
+                            super::super::lerp_carry(Mat2::IDENTITY, carry, t),
+                            &[],
+                            dt / f32::from(count),
+                            std::num::NonZeroU8::MIN,
+                        );
+                    }
+                    for (a, b) in whole.particles.iter().zip(&sliced.particles) {
+                        assert!(
+                            a.pos.distance(b.pos) < 1e-3,
+                            "{n}, {count}, {dt}: {a:?} vs {b:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1119,7 +1159,7 @@ mod tests {
     #[test]
     fn suffix_mass_assembly_matches_endpoint_kinetic_energy() {
         for n in [1, 2, 3, 8, 17, 32] {
-            let mut c = chain(n, ChainSolver::Direct);
+            let mut c = chain(n);
             for (i, l) in c.links.iter_mut().enumerate() {
                 l.length = 3.0 + ((i * 7) % 19) as f32;
                 l.drawn = Mat2::from_angle(0.17 * i as f32) * Vec2::Y;
@@ -1211,7 +1251,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, n)| {
-                let mut c = chain(n, ChainSolver::Direct);
+                let mut c = chain(n);
                 c.gravity = 9800.0;
                 for (j, l) in c.links.iter_mut().enumerate() {
                     l.stiffness = 2.0 + (i + j) as f32 * 0.2;
@@ -1245,7 +1285,7 @@ mod tests {
                 })
                 .collect();
             for (c, (anchor, carry, posed)) in scalar.iter_mut().zip(&inputs) {
-                c.tick(*anchor, *carry, posed, 1.0 / 60.0);
+                c.tick(*anchor, *carry, posed, 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
             }
             let mut jobs: Vec<_> = batched
                 .iter_mut()
@@ -1257,7 +1297,7 @@ mod tests {
                     posed: posed.clone(),
                 })
                 .collect();
-            tick_chains(&mut jobs, 1.0 / 60.0);
+            tick_chains(&mut jobs, 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
             for (a, b) in batched.iter().zip(&scalar) {
                 assert_eq!(a.anchor, b.anchor);
                 assert_eq!(a.carry, b.carry);
@@ -1277,7 +1317,7 @@ mod tests {
 
     #[test]
     fn a_failed_simd_lane_does_not_freeze_other_locks() {
-        let mut chains: Vec<_> = (0..4).map(|_| chain(8, ChainSolver::Direct)).collect();
+        let mut chains: Vec<_> = (0..4).map(|_| chain(8)).collect();
         let before = chains[1].particles.clone();
         chains[1].gravity = f32::NAN;
         let mut jobs: Vec<_> = chains
@@ -1289,7 +1329,7 @@ mod tests {
                 posed: smallvec![],
             })
             .collect();
-        tick_chains(&mut jobs, 1.0 / 60.0);
+        tick_chains(&mut jobs, 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
         assert_eq!(chains[1].particles, before);
         assert_eq!(chains[1].anchor, Vec2::ZERO);
         assert!(chains[1].moved_last_tick);
@@ -1297,14 +1337,26 @@ mod tests {
             assert_eq!(chains[i].anchor, Vec2::new(10.0, 0.0));
         }
         chains[1].gravity = 9800.0;
-        chains[1].tick(Vec2::new(10.0, 0.0), Mat2::IDENTITY, &[], 1.0 / 60.0);
+        chains[1].tick(
+            Vec2::new(10.0, 0.0),
+            Mat2::IDENTITY,
+            &[],
+            1.0 / 60.0,
+            DEFAULT_CHAIN_SUBSTEPS,
+        );
         assert_eq!(chains[1].anchor, Vec2::new(10.0, 0.0));
     }
 
     #[test]
     fn public_particle_and_geometry_edits_invalidate_cached_state() {
-        let mut c = chain(8, ChainSolver::Direct);
-        c.tick(Vec2::new(10.0, 0.0), Mat2::IDENTITY, &[], 1.0 / 60.0);
+        let mut c = chain(8);
+        c.tick(
+            Vec2::new(10.0, 0.0),
+            Mat2::IDENTITY,
+            &[],
+            1.0 / 60.0,
+            DEFAULT_CHAIN_SUBSTEPS,
+        );
         for change in 0..7 {
             match change {
                 0 => c.particles[4].pos.x += 2.0,
@@ -1317,8 +1369,14 @@ mod tests {
             }
             let mut fresh = c.clone();
             fresh.coupled = None;
-            c.tick(c.anchor, c.carry, &[], 1.0 / 60.0);
-            fresh.tick(fresh.anchor, fresh.carry, &[], 1.0 / 60.0);
+            c.tick(c.anchor, c.carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
+            fresh.tick(
+                fresh.anchor,
+                fresh.carry,
+                &[],
+                1.0 / 60.0,
+                DEFAULT_CHAIN_SUBSTEPS,
+            );
             assert_eq!(c.particles, fresh.particles, "edit {change}");
         }
     }
@@ -1396,18 +1454,18 @@ mod tests {
 
     #[test]
     fn a_failed_substep_keeps_the_last_valid_state_and_can_recover() {
-        let mut c = chain(8, ChainSolver::Direct);
+        let mut c = chain(8);
         let before = c.clone();
         c.gravity = f32::NAN;
         let target = Vec2::new(5.0, 0.0);
         let carry = Mat2::from_angle(0.1);
-        c.tick(target, carry, &[], 1.0 / 60.0);
+        c.tick(target, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
         assert_eq!(c.particles, before.particles);
         assert_eq!(c.anchor, before.anchor);
         assert_eq!(c.carry, before.carry);
         assert!(!c.is_at_rest(1e-4));
         c.gravity = before.gravity;
-        c.tick(target, carry, &[], 1.0 / 60.0);
+        c.tick(target, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
         assert_eq!(c.anchor, target);
         assert_eq!(c.carry, carry);
         assert_eq!(c.particles[0].pos, target);
@@ -1427,23 +1485,23 @@ mod tests {
 
     #[test]
     fn direct_coupling_transmits_a_distal_bend_to_the_root() {
-        for solver in [ChainSolver::OneWay, ChainSolver::Direct] {
-            let mut c = chain(2, solver);
-            c.gravity = 0.0;
-            set_state(&mut c, &[0.0, 0.1], &[0.0; 2]);
-            c.tick(Vec2::ZERO, Mat2::IDENTITY, &[], 1.0 / 240.0);
-            let root = angles(&c, &rest_rods(&c), DMat2::IDENTITY)[0];
-            if solver == ChainSolver::OneWay {
-                assert!(root.abs() < 1e-8);
-            } else {
-                assert!(root > 1e-5, "{solver:?}: {root}");
-            }
-        }
+        let mut c = chain(2);
+        c.gravity = 0.0;
+        set_state(&mut c, &[0.0, 0.1], &[0.0; 2]);
+        c.tick(
+            Vec2::ZERO,
+            Mat2::IDENTITY,
+            &[],
+            1.0 / 240.0,
+            DEFAULT_CHAIN_SUBSTEPS,
+        );
+        let root = angles(&c, &rest_rods(&c), DMat2::IDENTITY)[0];
+        assert!(root > 1e-5, "{root}");
     }
 
     #[test]
     fn free_double_pendulum_matches_instantaneous_equations() {
-        let mut c = chain(2, ChainSolver::Direct);
+        let mut c = chain(2);
         for link in &mut c.links {
             link.stiffness = 0.0;
             link.damping = 0.0;
@@ -1505,14 +1563,14 @@ mod tests {
             Mat2::from_angle(0.4),
             Mat2::from_cols(Vec2::new(-1.5, 0.2), Vec2::new(0.3, 0.8)),
         ] {
-            let mut c = chain(8, ChainSolver::Direct);
+            let mut c = chain(8);
             for (i, link) in c.links.iter_mut().enumerate() {
                 link.drawn = Mat2::from_angle(i as f32 * 0.12 - 0.4) * Vec2::Y;
                 link.gravity_scale = 0.3 + i as f32 * 0.2;
             }
             c.settle_to_rest(Vec2::new(20.0, 10.0), carry, &[]);
             for _ in 0..120 {
-                c.tick(c.anchor, carry, &[], 1.0 / 60.0);
+                c.tick(c.anchor, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
             }
             for q in angles(&c, &rest_rods(&c), usable(carry)) {
                 assert!(q.abs() < 2e-5, "{q}");
@@ -1525,7 +1583,7 @@ mod tests {
     fn settling_inverted_limp_links_finds_a_stable_pose() {
         for n in [2, 8] {
             for limit in [None, Some(14.0 / 180.0)] {
-                let mut c = chain(n, ChainSolver::Direct);
+                let mut c = chain(n);
                 c.gravity = 9800.0;
                 for link in &mut c.links {
                     link.drawn = -Vec2::Y;
@@ -1546,7 +1604,13 @@ mod tests {
                 // A tiny disturbance must not release a large inverted fall.
                 c.particles[n].pos.x += 0.1;
                 for _ in 0..1200 {
-                    c.tick(Vec2::ZERO, Mat2::IDENTITY, &[], 1.0 / 60.0);
+                    c.tick(
+                        Vec2::ZERO,
+                        Mat2::IDENTITY,
+                        &[],
+                        1.0 / 60.0,
+                        DEFAULT_CHAIN_SUBSTEPS,
+                    );
                 }
                 assert!(c.particles[n].pos.distance(tip) < 0.2, "{n}, {limit:?}");
             }
@@ -1556,7 +1620,7 @@ mod tests {
     #[test]
     fn settling_weightless_limp_links_preserves_the_pose() {
         for gravity in [0.0, 9800.0] {
-            let mut c = chain(2, ChainSolver::Direct);
+            let mut c = chain(2);
             c.gravity = gravity;
             for link in &mut c.links {
                 link.drawn = -Vec2::Y;
@@ -1578,7 +1642,7 @@ mod tests {
             Mat2::from_angle(0.4),
             Mat2::from_cols(Vec2::new(-1.5, 0.2), Vec2::new(0.3, 0.8)),
         ] {
-            let mut c = chain(2, ChainSolver::Direct);
+            let mut c = chain(2);
             for link in &mut c.links {
                 link.drawn = -Vec2::Y;
                 link.stiffness = 0.0;
@@ -1597,7 +1661,7 @@ mod tests {
     #[test]
     fn lengths_and_authored_bounds_survive_strong_driving_and_scale() {
         for n in [2, 8, 17] {
-            let mut c = chain(n, ChainSolver::Direct);
+            let mut c = chain(n);
             for (i, link) in c.links.iter_mut().enumerate() {
                 link.limit = Some((8.0 + i as f32) / 180.0);
             }
@@ -1606,7 +1670,7 @@ mod tests {
             for frame in 0..180 {
                 let t = frame as f32 / 60.0;
                 let anchor = Vec2::new(120.0 * (t * std::f32::consts::TAU).sin(), 10.0 * t);
-                c.tick(anchor, carry, &[], 1.0 / 60.0);
+                c.tick(anchor, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
                 assert_eq!(c.particles[0].pos, anchor);
                 let inverse = carry.inverse();
                 for i in 0..n {
@@ -1622,7 +1686,7 @@ mod tests {
 
     #[test]
     fn translation_at_constant_velocity_does_not_create_drag() {
-        let mut c = chain(8, ChainSolver::Direct);
+        let mut c = chain(8);
         let speed = Vec2::new(25.0, -8.0);
         for p in &mut c.particles {
             p.vel = speed;
@@ -1633,6 +1697,7 @@ mod tests {
                 Mat2::IDENTITY,
                 &[],
                 1.0 / 60.0,
+                DEFAULT_CHAIN_SUBSTEPS,
             );
         }
         for q in angles(&c, &rest_rods(&c), DMat2::IDENTITY) {
@@ -1643,11 +1708,17 @@ mod tests {
     #[test]
     fn direct_motion_settles_after_a_kick() {
         for n in [2, 8] {
-            let mut direct = chain(n, ChainSolver::Direct);
+            let mut direct = chain(n);
             let q: Vector = (0..n).map(|i| 0.1 * (i as f64 + 1.0).sin()).collect();
             set_state(&mut direct, &q, &vec![0.0; n]);
             for _ in 0..1200 {
-                direct.tick(Vec2::ZERO, Mat2::IDENTITY, &[], 1.0 / 60.0);
+                direct.tick(
+                    Vec2::ZERO,
+                    Mat2::IDENTITY,
+                    &[],
+                    1.0 / 60.0,
+                    DEFAULT_CHAIN_SUBSTEPS,
+                );
             }
             assert!(direct.is_at_rest(1e-4), "{n}: {:?}", direct.particles);
         }
@@ -1656,7 +1727,7 @@ mod tests {
     #[test]
     fn coupled_posed_equilibrium_stays_settled() {
         for n in [2, 8] {
-            let mut c = chain(n, ChainSolver::Direct);
+            let mut c = chain(n);
             c.gravity = 9800.0;
             let mut posed = vec![0.0; n];
             posed[0] = 0.04;
@@ -1664,7 +1735,13 @@ mod tests {
             c.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &posed);
             let before = c.particles.clone();
             for _ in 0..120 {
-                c.tick(Vec2::ZERO, Mat2::IDENTITY, &posed, 1.0 / 60.0);
+                c.tick(
+                    Vec2::ZERO,
+                    Mat2::IDENTITY,
+                    &posed,
+                    1.0 / 60.0,
+                    DEFAULT_CHAIN_SUBSTEPS,
+                );
             }
             assert!(c
                 .particles
@@ -1682,7 +1759,7 @@ mod tests {
 
     #[test]
     fn rotating_a_weightless_unsprung_frame_does_not_turn_the_hair() {
-        let mut c = chain(8, ChainSolver::Direct);
+        let mut c = chain(8);
         c.gravity = 0.0;
         for link in &mut c.links {
             link.stiffness = 0.0;
@@ -1692,7 +1769,13 @@ mod tests {
         let tip = c.particles[8].pos;
         for frame in 1..=120 {
             let angle = 0.3 * (frame as f32 / 60.0).sin();
-            c.tick(Vec2::ZERO, Mat2::from_angle(angle), &[], 1.0 / 60.0);
+            c.tick(
+                Vec2::ZERO,
+                Mat2::from_angle(angle),
+                &[],
+                1.0 / 60.0,
+                DEFAULT_CHAIN_SUBSTEPS,
+            );
         }
         assert!(
             c.particles[8].pos.distance(tip) < 0.2,

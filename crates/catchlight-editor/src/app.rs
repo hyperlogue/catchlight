@@ -3133,6 +3133,7 @@ impl App {
                 session,
                 gravity: Some(g),
                 pixels_per_meter: None,
+                chain_substeps: None,
             });
         }
         let mut p = ppm;
@@ -3146,6 +3147,7 @@ impl App {
                 session,
                 gravity: None,
                 pixels_per_meter: Some(p),
+                chain_substeps: None,
             });
         }
     }

@@ -357,7 +357,6 @@ pub struct Puppet {
     last_tick_mesh_group_generation: Option<u64>,
 
     physics_enabled: bool,
-    chain_solver: crate::physics::ChainSolver,
     /// Parallel to `arena.physics_node_ids`.
     physics_targets: Vec<[Option<u32>; 2]>,
     physics_update_scratch: Vec<([Option<u32>; 2], NodeIdx, Vec2)>,
@@ -424,7 +423,6 @@ impl Puppet {
             mesh_group_param_generation: 0,
             last_tick_mesh_group_generation: None,
             physics_enabled: true,
-            chain_solver: crate::physics::ChainSolver::default(),
             physics_targets: Vec::new(),
             physics_update_scratch: Vec::new(),
             spine_targets: Vec::new(),
@@ -447,20 +445,6 @@ impl Puppet {
     /// The `Model::generation` this puppet last baked against.
     pub fn baked_generation(&self) -> u64 {
         self.baked_generation
-    }
-
-    /// Select the runtime chain integrator, including for chains added later.
-    pub fn set_chain_solver(&mut self, solver: crate::physics::ChainSolver) {
-        self.chain_solver = solver;
-        for i in 0..self.arena.chain_node_ids.len() {
-            let id = self.arena.chain_node_ids[i];
-            if let Some(NodeKind::Spine(sp)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
-                if let Some(chain) = &mut sp.chain {
-                    chain.solver = solver;
-                    chain.moved_last_tick = true;
-                }
-            }
-        }
     }
 
     /// The [`Model::identity`] of the model this puppet animates.
@@ -620,7 +604,6 @@ impl Puppet {
             spine_targets,
         } = baked;
         self.arena = arena;
-        self.set_chain_solver(self.chain_solver);
         self.node_of_id = node_of_id;
         self.id_of_node = id_of_node;
         self.param_values = vec![None; params.len()];
@@ -1469,7 +1452,12 @@ impl Puppet {
     /// kinds never read each other's state — only the anchor pose, which this
     /// frame's pre-pass already built — so the split is bookkeeping, not an
     /// order that means anything.
-    fn tick_physics(&mut self, transforms: &GlobalTransforms, dt: f32) -> bool {
+    fn tick_physics(
+        &mut self,
+        transforms: &GlobalTransforms,
+        dt: f32,
+        substeps: std::num::NonZeroU8,
+    ) -> bool {
         let _span = tracing::trace_span!("tick_physics").entered();
         for i in 0..self.arena.physics_node_ids.len() {
             let id = self.arena.physics_node_ids[i];
@@ -1481,62 +1469,43 @@ impl Puppet {
             }
         }
         let mut posed = std::mem::take(&mut self.chain_posed_scratch);
-        if self.chain_solver == crate::physics::ChainSolver::Direct {
-            // Sample every anchor and target before borrowing the chains.
-            // Splitting the ordered arena slots gives disjoint mutable
-            // references without unsafe code or moving chains out of nodes.
-            type ChainInput = (NodeIdx, Vec2, crate::Mat2, smallvec::SmallVec<[f32; 8]>);
-            let mut inputs: smallvec::SmallVec<[ChainInput; 32]> = smallvec::SmallVec::new();
-            for i in 0..self.arena.chain_node_ids.len() {
-                let id = self.arena.chain_node_ids[i];
-                if let (Some(anchor), Some(carry)) = (
-                    self.arena.physics_anchor(transforms, id),
-                    self.arena.chain_carry(transforms, id),
-                ) {
-                    self.chain_posed_bends(i, &mut posed);
-                    inputs.push((id, anchor, carry, posed.iter().copied().collect()));
-                }
-            }
-            let mut jobs: smallvec::SmallVec<[crate::physics::ChainTick<'_>; 32]> =
-                smallvec::SmallVec::new();
-            let mut tail = self.arena.nodes.as_mut_slice();
-            let mut base = 0;
-            for (id, anchor, carry, posed) in inputs {
-                let index = id.0 as usize;
-                let (before, after) = tail.split_at_mut(index - base + 1);
-                tail = after;
-                base = index + 1;
-                if let Some(NodeKind::Spine(spine)) = before.last_mut().map(|n| &mut n.kind) {
-                    if let Some(chain) = &mut spine.chain {
-                        chain.solver = self.chain_solver;
-                        jobs.push(crate::physics::ChainTick {
-                            chain,
-                            anchor,
-                            carry,
-                            posed,
-                        });
-                    }
-                }
-            }
-            crate::physics::tick_chains(&mut jobs, dt);
-        } else {
-            for i in 0..self.arena.chain_node_ids.len() {
-                let id = self.arena.chain_node_ids[i];
-                let Some(anchor) = self.arena.physics_anchor(transforms, id) else {
-                    continue;
-                };
-                let Some(carry) = self.arena.chain_carry(transforms, id) else {
-                    continue;
-                };
+        // Sample every anchor and target before borrowing the chains.
+        // Splitting the ordered arena slots gives disjoint mutable
+        // references without unsafe code or moving chains out of nodes.
+        type ChainInput = (NodeIdx, Vec2, crate::Mat2, smallvec::SmallVec<[f32; 8]>);
+        let mut inputs: smallvec::SmallVec<[ChainInput; 32]> = smallvec::SmallVec::new();
+        for i in 0..self.arena.chain_node_ids.len() {
+            let id = self.arena.chain_node_ids[i];
+            if let (Some(anchor), Some(carry)) = (
+                self.arena.physics_anchor(transforms, id),
+                self.arena.chain_carry(transforms, id),
+            ) {
                 self.chain_posed_bends(i, &mut posed);
-                if let Some(NodeKind::Spine(sp)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
-                    if let Some(c) = &mut sp.chain {
-                        c.solver = self.chain_solver;
-                        c.tick(anchor, carry, &posed, dt);
-                    }
+                inputs.push((id, anchor, carry, posed.iter().copied().collect()));
+            }
+        }
+        let mut jobs: smallvec::SmallVec<[crate::physics::ChainTick<'_>; 32]> =
+            smallvec::SmallVec::new();
+        let mut tail = self.arena.nodes.as_mut_slice();
+        let mut base = 0;
+        for (id, anchor, carry, posed) in inputs {
+            let index = id.0 as usize;
+            let (before, after) = tail.split_at_mut(index - base + 1);
+            tail = after;
+            base = index + 1;
+            if let Some(NodeKind::Spine(spine)) = before.last_mut().map(|n| &mut n.kind) {
+                if let Some(chain) = &mut spine.chain {
+                    jobs.push(crate::physics::ChainTick {
+                        chain,
+                        anchor,
+                        carry,
+                        posed,
+                    });
                 }
             }
         }
+        crate::physics::tick_chains(&mut jobs, dt, substeps);
+        drop(jobs);
         self.chain_posed_scratch = posed;
         self.write_driver_param_outputs(transforms)
     }
@@ -1806,7 +1775,6 @@ impl Puppet {
                 self.chain_posed_bends(i, &mut posed);
                 if let Some(NodeKind::Spine(sp)) = self.arena.get_mut(id).map(|n| &mut n.kind) {
                     let Some(c) = &mut sp.chain else { continue };
-                    c.solver = self.chain_solver;
                     // A turned node is as much a move as a shifted one: it
                     // carries the drawn shape somewhere else, so the rest pose
                     // this pass computes is a different one.
@@ -1893,7 +1861,7 @@ impl Puppet {
                 self.arena.physics_transforms = local;
             }
             let local = std::mem::take(&mut self.arena.physics_transforms);
-            self.tick_physics(&local, dt);
+            self.tick_physics(&local, dt, model.physics().chain_substeps);
             self.arena.physics_transforms = local;
             motion.physics = self.drivers_moving();
         }
@@ -2414,6 +2382,7 @@ mod tests {
         model.set_physics(ClmPhysics {
             pixels_per_meter: 1.0,
             gravity: 1.0,
+            ..ClmPhysics::default()
         });
         let mut hex = SeededHex::new(7);
         let root = model.root().expect("a fresh model has one root").clone();
@@ -2616,6 +2585,7 @@ mod tests {
         model.set_physics(ClmPhysics {
             pixels_per_meter: 1.0,
             gravity: 1.0,
+            ..ClmPhysics::default()
         });
         let mut hex = SeededHex::new(13);
         let param = model
@@ -2707,6 +2677,7 @@ mod tests {
         model.set_physics(ClmPhysics {
             pixels_per_meter: 1.0,
             gravity: 1.0,
+            ..ClmPhysics::default()
         });
         let mut hex = SeededHex::new(23);
         let root = model.root().expect("a fresh model has one root").clone();

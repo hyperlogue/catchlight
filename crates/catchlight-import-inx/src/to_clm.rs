@@ -98,6 +98,7 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         .map(|p| ClmPhysics {
             pixels_per_meter: p.pixels_per_meter.unwrap_or(1000.0),
             gravity: p.gravity.unwrap_or(9.8),
+            ..ClmPhysics::default()
         })
         .unwrap_or_default();
 

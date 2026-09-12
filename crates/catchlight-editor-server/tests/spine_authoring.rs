@@ -1017,3 +1017,28 @@ fn a_set_can_leave_replace_or_remove_the_chain() {
     set(42, Some(None));
     assert!(chain_of().is_none(), "null takes it off");
 }
+
+#[test]
+fn model_chain_substeps_are_reported_validated_and_undoable() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let steps = || match body(&ed, 1, Command::Status { session }) {
+        ResponseBody::Status { status } => status.chain_substeps.unwrap(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(steps(), 4);
+    let edit = |count| Command::PhysicsGlobals {
+        session,
+        gravity: None,
+        pixels_per_meter: None,
+        chain_substeps: Some(count),
+    };
+    body(&ed, 2, edit(8));
+    assert_eq!(steps(), 8);
+    assert!(matches!(reply(&ed, 3, edit(0)), Reply::Err { .. }));
+    assert_eq!(steps(), 8);
+    body(&ed, 4, Command::Undo { session });
+    assert_eq!(steps(), 4);
+    body(&ed, 5, Command::Redo { session });
+    assert_eq!(steps(), 8);
+}

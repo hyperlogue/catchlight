@@ -1,7 +1,7 @@
 # Chain solver benchmark
 
-Enable coupling with `Puppet::set_chain_solver(ChainSolver::Direct)`.
-`OneWay` remains the default. Solver invariants live in
+All hair chains use two-way coupling. `ClmPhysics::chain_substeps` sets
+equal steps per frame for the whole model (default 4). Solver invariants live in
 [`physics/coupled.rs`](../src/physics/coupled.rs).
 
 ```sh
@@ -9,8 +9,8 @@ cargo bench -p catchlight-core --bench chain_coupling -- frequency
 cargo bench -p catchlight-core --bench chain_coupling -- quality
 ```
 
-`frequency [repeat]` times complete CPU puppet frames; `timing` also compares
-the one-way solver. `trace [subdivisions]` exports joint positions and
+`frequency [repeat]` times complete CPU puppet frames at 4, 8 and 16 steps;
+`timing` varies lock count and mesh work. `trace [subdivisions]` exports joint positions and
 `trace-puppet` exports driven parameters for comparisons between builds.
 
 ## Performance
@@ -31,8 +31,8 @@ are excluded. These shared-environment timings are not browser guarantees.
 Caching, angular state, quadratic matrix assembly and SIMD account for most
 of the gain. Guarded factor reuse saves another 3.8–6.1% in mild motion,
 but costs 0.6–3.1% extra in the ±120 px stress sweep. Two-link solves do not
-reuse factors. The production step limit remains 1/240 s; higher rates were
-measured in isolated builds.
+reuse factors. These historical measurements used isolated builds. The same 240/480/960 Hz
+rates at 60 FPS are now selected with 4/8/16 model substeps.
 
 ## Accuracy
 

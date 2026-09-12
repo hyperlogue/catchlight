@@ -375,15 +375,8 @@ impl Arena {
         }
     }
 
-    /// Derive every spine's rest state: the per-vertex assignment, the way
-    /// [`Self::rebuild_all_mesh_group_pins`] derives a group's pins, and the
-    /// spring offsets of the chain it carries.
-    ///
-    /// Both need the same thing and can only be had here: the transforms the
-    /// art was drawn at. The assignment needs each descendant's rest place,
-    /// and the spring fit needs the node's rest **rotation**, because the
-    /// balance that makes the drawing an equilibrium is not the same balance
-    /// at a different tilt.
+    /// Derive each spine's per-vertex assignment from the drawing's transforms,
+    /// like [`Self::rebuild_all_mesh_group_pins`] does for mesh groups.
     pub(crate) fn rebuild_spine_rest_state(&mut self) {
         self.reset_dynamic_state();
         self.reset_deforms();
@@ -395,27 +388,15 @@ impl Arena {
         let baked: Vec<_> = self
             .spine_node_ids
             .iter()
-            .map(|&id| {
-                (
-                    id,
-                    crate::spine::bake_spine_pins(self, &transforms, id),
-                    self.chain_carry(&transforms, id),
-                )
-            })
+            .map(|&id| (id, crate::spine::bake_spine_pins(self, &transforms, id)))
             .collect();
-        for (id, pins, carry) in baked {
+        for (id, pins) in baked {
             let Some(crate::NodeKind::Spine(spine)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             else {
                 continue;
             };
             spine.pins = pins;
-            if let (Some(chain), Some(carry)) = (&mut spine.chain, carry) {
-                let gravity = chain.gravity;
-                for link in chain.links.iter_mut() {
-                    link.preload = crate::physics::fitted_preload(link, gravity, carry);
-                }
-            }
         }
     }
 

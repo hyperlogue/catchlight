@@ -429,9 +429,7 @@ fn build_physics(ph: &ModelPhysics, transform: &Transform, g_scale: f32) -> Simp
 ///
 /// The particles are left un-hung — `anchor_initialized` false — because a
 /// bake has only the node-local transform, and the chain wants the world
-/// anchor its first tick sees. `preload` is left at zero for the same
-/// reason: fitting it needs the node's rest world rotation, which
-/// `Arena::rebuild_spine_rest_state` has and this does not.
+/// anchor its first tick sees.
 fn build_chain(
     chain: &crate::model::ModelChain,
     spine: &crate::spine::SpineData,
@@ -453,7 +451,6 @@ fn build_chain(
             damping: feel.damping,
             stiffness: feel.stiffness,
             limit: feel.limit,
-            preload: 0.0,
         })
         .collect();
     let mut data = ParticleChainData::new(links);

@@ -196,6 +196,10 @@ export type Command =
     session: SessionId,
     gravity: number | null,
     pixels_per_meter: number | null,
+    /**
+     * Equal steps per frame for all hair chains in the model, 1..=255.
+     */
+    chain_substeps: number | null,
   }
   | {
     "cmd": "node_delete",
@@ -1398,6 +1402,7 @@ export type StatusInfo = {
   redo_steps: number,
   gravity?: number | null,
   pixels_per_meter?: number | null,
+  chain_substeps?: number | null,
 };
 
 export type TreeNode = {

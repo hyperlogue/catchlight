@@ -5,20 +5,15 @@
 use catchlight_core::{
     formats::clm::{ClmIndices, ClmMesh, ClmPhysics},
     id::SeededHex,
-    BindingKey, BindingTarget, ChainLink, ChainSolver, LinkFeel, Mat2, Model, ModelChain,
-    ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelSpine, Name, NodeId, ParamId,
-    ParticleChainData, Puppet, ScalarTarget, Vec2,
+    BindingKey, BindingTarget, ChainLink, LinkFeel, Mat2, Model, ModelChain, ModelNode,
+    ModelNodeKind, ModelParam, ModelPart, ModelSpine, Name, NodeId, ParamId, ParticleChainData,
+    Puppet, ScalarTarget, Vec2,
 };
-use std::{f32::consts::TAU, hint::black_box, time::Instant};
+use std::{f32::consts::TAU, hint::black_box, num::NonZeroU8, time::Instant};
 
 const DT: f32 = 1.0 / 60.0;
 const FRAMES: usize = 3000;
 const WARMUP: usize = 240;
-const SOLVERS: &[(&str, ChainSolver)] = &[
-    ("one_way", ChainSolver::OneWay),
-    ("direct", ChainSolver::Direct),
-];
-
 struct Rig {
     model: Model,
     turn: ParamId,
@@ -131,23 +126,22 @@ fn rig(locks: usize, links: usize, mesh: bool, amplitude: f32) -> Rig {
 }
 
 fn timing(frequency: bool, repeat: Option<usize>) {
-    println!("timing,repeat,solver,locks,links,vertices_per_lock,drive_px,physics_hz,min_us,median_us,p90_us");
-    let solvers = if frequency { &SOLVERS[1..] } else { SOLVERS };
+    println!("timing,repeat,locks,links,vertices_per_lock,drive_px,substeps,physics_hz,min_us,median_us,p90_us");
+    let counts: &[u8] = if frequency { &[4, 8, 16] } else { &[4] };
     let lock_counts: &[usize] = if frequency { &[20] } else { &[10, 20] };
     let meshes: &[bool] = if frequency { &[true] } else { &[false, true] };
-    let physics_hz = (1.0 / catchlight_core::physics::CHAIN_MAX_STEP).round() as u32;
     for repeat in repeat.map_or(1..=3, |r| r..=r) {
         for &locks in lock_counts {
             for links in [2, 8] {
                 for &mesh in meshes {
-                    // Mild movement and a wall-heavy stress case.
                     for amplitude in [10.0, 120.0] {
-                        let rig = rig(locks, links, mesh, amplitude);
-                        for offset in 0..solvers.len() {
-                            // Rotate order between repeats to reduce thermal/order bias.
-                            let (name, solver) = solvers[(offset + repeat) % solvers.len()];
+                        let mut rig = rig(locks, links, mesh, amplitude);
+                        for offset in 0..counts.len() {
+                            let steps = counts[(offset + repeat) % counts.len()];
+                            let mut physics = *rig.model.physics();
+                            physics.chain_substeps = NonZeroU8::new(steps).unwrap();
+                            rig.model.set_physics(physics);
                             let mut puppet = Puppet::new(&rig.model);
-                            puppet.set_chain_solver(solver);
                             puppet.settle_physics(&rig.model);
                             let mut samples = Vec::with_capacity(FRAMES);
                             let mut span = (f32::INFINITY, f32::NEG_INFINITY);
@@ -162,7 +156,7 @@ fn timing(frequency: bool, repeat: Option<usize>) {
                                     span = (span.0.min(bend), span.1.max(bend));
                                 }
                             }
-                            assert!(span.1 - span.0 > 1e-5, "stationary {name}");
+                            assert!(span.1 - span.0 > 1e-5, "stationary chain");
                             if let Some(id) = &rig.part {
                                 let deform = puppet
                                     .combined_deform(puppet.node_idx(id).unwrap())
@@ -171,8 +165,8 @@ fn timing(frequency: bool, repeat: Option<usize>) {
                             }
                             samples.sort_unstable();
                             let us = |i: usize| samples[i] as f64 / 1000.0;
-                            println!("timing,{repeat},{name},{locks},{links},{},{amplitude},{physics_hz},{:.3},{:.3},{:.3}",
-                                if mesh { 20 } else { 0 }, us(0), us(FRAMES / 2), us(FRAMES * 9 / 10));
+                            println!("timing,{repeat},{locks},{links},{},{amplitude},{steps},{},{:.3},{:.3},{:.3}",
+                                if mesh { 20 } else { 0 }, u32::from(steps) * 60, us(0), us(FRAMES / 2), us(FRAMES * 9 / 10));
                         }
                     }
                 }
@@ -181,12 +175,7 @@ fn timing(frequency: bool, repeat: Option<usize>) {
     }
 }
 
-fn trajectory(
-    links: usize,
-    solver: ChainSolver,
-    amplitude: f32,
-    subdivisions: usize,
-) -> Vec<Vec<Vec2>> {
+fn trajectory(links: usize, amplitude: f32, substeps: u8) -> Vec<Vec<Vec2>> {
     let mut chain = ParticleChainData::new(vec![
         ChainLink {
             length: 160.0 / links as f32,
@@ -197,21 +186,20 @@ fn trajectory(
         };
         links
     ]);
-    chain.solver = solver;
     let gravity = ClmPhysics::default();
     chain.gravity = gravity.gravity * gravity.pixels_per_meter;
     chain.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
     let mut frames = Vec::new();
-    let mut from = Vec2::ZERO;
     for frame in 1..=600 {
-        let to = Vec2::new(amplitude * (frame as f32 * DT * TAU).sin(), 0.0);
-        // Identical piecewise-linear anchor input at every temporal resolution.
-        for k in 1..=subdivisions {
-            let anchor = from.lerp(to, k as f32 / subdivisions as f32);
-            chain.tick(anchor, Mat2::IDENTITY, &[], DT / subdivisions as f32);
-        }
+        let anchor = Vec2::new(amplitude * (frame as f32 * DT * TAU).sin(), 0.0);
+        chain.tick(
+            anchor,
+            Mat2::IDENTITY,
+            &[],
+            DT,
+            NonZeroU8::new(substeps).unwrap(),
+        );
         frames.push(chain.particles.iter().map(|p| p.pos).collect());
-        from = to;
     }
     frames
 }
@@ -230,62 +218,30 @@ fn error(a: &[Vec<Vec2>], b: &[Vec<Vec2>]) -> (f64, f32) {
 }
 
 fn quality() {
-    println!("quality,solver,links,drive_px,tip_rms_vs_direct_px,tip_max_vs_direct_px,tip_rms_vs_fine_px,tip_max_vs_fine_px,wall_percent");
+    println!("quality,links,drive_px,substeps,physics_hz,tip_rms_vs_fine_px,tip_max_vs_fine_px");
     for links in [2, 8] {
         for amplitude in [10.0, 120.0] {
-            let direct = trajectory(links, ChainSolver::Direct, amplitude, 1);
-            let fine = trajectory(links, ChainSolver::Direct, amplitude, 64);
-            let finer = trajectory(links, ChainSolver::Direct, amplitude, 128);
+            let fine = trajectory(links, amplitude, 128);
+            let finer = trajectory(links, amplitude, 255);
             let reference_error = error(&fine, &finer);
             println!(
                 "reference,{links},{amplitude},{:.6},{:.6}",
                 reference_error.0, reference_error.1
             );
-            for subdivisions in [1, 8, 16] {
-                let refined = trajectory(links, ChainSolver::Direct, amplitude, subdivisions);
-                let e = error(&refined, &fine);
+            for substeps in [4, 8, 16] {
+                let measured = trajectory(links, amplitude, substeps);
+                let e = error(&measured, &fine);
                 println!(
-                    "temporal,{links},{amplitude},{},{:.6},{:.6}",
-                    if subdivisions == 1 {
-                        240
-                    } else {
-                        subdivisions * 60
-                    },
+                    "quality,{links},{amplitude},{substeps},{},{:.6},{:.6}",
+                    u32::from(substeps) * 60,
                     e.0,
                     e.1
-                );
-            }
-            for &(name, solver) in SOLVERS {
-                let measured = trajectory(links, solver, amplitude, 1);
-                let vs_direct = error(&measured, &direct);
-                let vs_fine = error(&measured, &fine);
-                let mut walls = 0;
-                for frame in &measured {
-                    let mut previous = 0.0;
-                    for pair in frame.windows(2) {
-                        let rod = pair[1] - pair[0];
-                        let angle = rod.x.atan2(rod.y);
-                        if (angle - previous).abs() >= 13.999_f32.to_radians() {
-                            walls += 1;
-                        }
-                        previous = angle;
-                    }
-                }
-                println!(
-                    "quality,{name},{links},{amplitude},{:.6},{:.6},{:.6},{:.6},{:.3}",
-                    vs_direct.0,
-                    vs_direct.1,
-                    vs_fine.0,
-                    vs_fine.1,
-                    walls as f64 * 100.0 / (measured.len() * links) as f64
                 );
             }
         }
     }
 }
 
-// A common trace format lets isolated pre/post-optimization builds compare
-// trajectories without putting an obsolete solver into the runtime.
 fn trace(subdivisions: usize) {
     println!("links,scenario,frame,joint,x,y");
     for links in [2, 8] {
@@ -306,7 +262,6 @@ fn trace(subdivisions: usize) {
                     })
                     .collect(),
             );
-            chain.solver = ChainSolver::Direct;
             chain.gravity = 9800.0;
             chain.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
             let mut from = Vec2::ZERO;
@@ -343,6 +298,7 @@ fn trace(subdivisions: usize) {
                         ),
                         &posed,
                         DT / subdivisions as f32,
+                        NonZeroU8::MIN,
                     );
                 }
                 for (joint, p) in chain.particles.iter().enumerate().skip(1) {
@@ -364,7 +320,6 @@ fn trace_puppet() {
         for amplitude in [10.0, 120.0] {
             let rig = rig(20, links, true, amplitude);
             let mut puppet = Puppet::new(&rig.model);
-            puppet.set_chain_solver(ChainSolver::Direct);
             puppet.settle_physics(&rig.model);
             let ids: Vec<_> = puppet
                 .param_ids()
@@ -392,7 +347,7 @@ fn main() {
             std::env::args()
                 .nth(2)
                 .map(|n| n.parse().unwrap())
-                .unwrap_or(1),
+                .unwrap_or(4),
         );
         return;
     }

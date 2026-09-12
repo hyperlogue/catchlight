@@ -406,6 +406,7 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
             onCommit={(gravity) =>
               void run({
                 cmd: "physics_globals",
+                chain_substeps: null,
                 gravity,
                 pixels_per_meter: null,
               })
@@ -421,14 +422,30 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
             onCommit={(pixels_per_meter) =>
               void run({
                 cmd: "physics_globals",
+                chain_substeps: null,
                 pixels_per_meter,
                 gravity: null,
               })
             }
           />
         </Field>
+        <Field label="Hair steps per frame">
+          <NumberField
+            label="Hair physics steps per frame"
+            value={status.chain_substeps ?? 4}
+            min={1}
+            max={255}
+            step={1}
+            onCommit={(steps) => void run({
+              cmd: "physics_globals",
+              chain_substeps: Math.round(steps),
+              gravity: null,
+              pixels_per_meter: null,
+            })}
+          />
+        </Field>
         <p data-catchlight-hint="">
-          Shared by every physics driver and particle chain in this model.
+          Gravity and world scale apply to all physics. The step count applies to every hair chain in this model.
         </p>
       </fieldset>
     </Disclosure>

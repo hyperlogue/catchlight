@@ -327,6 +327,9 @@ pub enum Command {
         gravity: Option<f32>,
         #[serde(default)]
         pixels_per_meter: Option<f32>,
+        /// Equal steps per frame for all hair chains in the model, 1..=255.
+        #[serde(default)]
+        chain_substeps: Option<u8>,
     },
     NodeDelete {
         session: SessionId,
@@ -2663,6 +2666,8 @@ pub struct StatusInfo {
     pub gravity: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixels_per_meter: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_substeps: Option<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

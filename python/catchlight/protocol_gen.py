@@ -673,6 +673,8 @@ class PhysicsGlobals:
     session: SessionId
     gravity: float | None = None
     pixels_per_meter: float | None = None
+    # Equal steps per frame for all hair chains in the model, 1..=255.
+    chain_substeps: int | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -3559,6 +3561,7 @@ class StatusInfo:
     redo_steps: int = 0
     gravity: float | None = None
     pixels_per_meter: float | None = None
+    chain_substeps: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

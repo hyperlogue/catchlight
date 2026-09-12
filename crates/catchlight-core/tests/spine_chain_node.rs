@@ -66,6 +66,7 @@ impl Fixture {
         model.set_physics(ClmPhysics {
             pixels_per_meter: 1.0,
             gravity: 1.0,
+            ..ClmPhysics::default()
         });
         let params: Vec<ParamId> = (0..links)
             .map(|i| {
@@ -161,6 +162,7 @@ fn a_chain_follows_a_posed_group_the_same_frame() {
     model.set_physics(ClmPhysics {
         pixels_per_meter: 1.0,
         gravity: 1.0,
+        ..ClmPhysics::default()
     });
     let slide = model
         .add_param(
@@ -237,6 +239,7 @@ fn a_chain_anchored_on_a_driver_follows_it_one_frame_late() {
     model.set_physics(ClmPhysics {
         pixels_per_meter: 1.0,
         gravity: 1.0,
+        ..ClmPhysics::default()
     });
     let swing = model
         .add_param(
@@ -517,6 +520,7 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
     model.set_physics(ClmPhysics {
         pixels_per_meter: 1.0,
         gravity: 1.0,
+        ..ClmPhysics::default()
     });
     let root = model.root().expect("root").clone();
     let mut tilted = ModelNode::new("head", ModelNodeKind::Group);
@@ -665,6 +669,7 @@ fn posed_chain(rotation: f32, links: usize) -> (Model, NodeId, Vec<ParamId>) {
     model.set_physics(ClmPhysics {
         pixels_per_meter: 1.0,
         gravity: 1.0,
+        ..ClmPhysics::default()
     });
     let root = model.root().expect("root").clone();
     let mut group = ModelNode::new("head", ModelNodeKind::Group);
@@ -1168,7 +1173,7 @@ fn links_in_one_chain_keep_all_limits_on_a_shared_param() {
 }
 
 /// A one-joint spine under a node the transform scales, mirrors or both.
-/// `3 Hz` and weighted, so the link is held off gravity by its preload and
+/// `3 Hz` and weighted, so the link is held off gravity by its gravity support and
 /// has somewhere else to fall if the carry is wrong.
 fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
     let mut hex = SeededHex::new(9);
@@ -1176,6 +1181,7 @@ fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
     model.set_physics(ClmPhysics {
         pixels_per_meter: 1.0,
         gravity: 1.0,
+        ..ClmPhysics::default()
     });
     let param = model
         .add_param(
@@ -1280,6 +1286,7 @@ fn a_mirrored_spine_bends_the_other_way() {
         model.set_physics(ClmPhysics {
             pixels_per_meter: 1.0,
             gravity: 1.0,
+            ..ClmPhysics::default()
         });
         let params: Vec<ParamId> = (0..2)
             .map(|i| {
@@ -1359,12 +1366,10 @@ fn a_mirrored_spine_bends_the_other_way() {
 }
 
 #[test]
-fn coupled_solver_selection_survives_rebake_and_reaches_params() {
-    use catchlight_core::physics::ChainSolver;
+fn coupled_motion_survives_rebake_and_reaches_params() {
     let mut f = Fixture::new(2);
     f.wire_outputs();
     let mut puppet = f.puppet();
-    puppet.set_chain_solver(ChainSolver::Direct);
     puppet.settle_physics(&f.model);
     let idx = f.idx(&puppet);
     assert!(puppet.kick_chain(idx, Vec2::new(5.0, 0.0)));
@@ -1380,14 +1385,12 @@ fn coupled_solver_selection_survives_rebake_and_reaches_params() {
         panic!("spine")
     };
     let chain = spine.chain.as_ref().unwrap();
-    assert_eq!(chain.solver, ChainSolver::Direct);
     assert_eq!(chain.particles.last().unwrap().pos, before);
     puppet.tick(&f.model, DT);
     for bend in chain_bends(&puppet, f.idx(&puppet)) {
         assert!(bend.abs() <= 14.0 / 180.0 + 1e-5);
     }
-    // A geometry edit creates a fresh chain; the selection belongs to
-    // the puppet and applies before its first settle or kick too.
+    // A geometry edit creates a fresh coupled chain.
     f.model
         .set_spine_joints(&f.chain, straight(3, 30.0))
         .unwrap();
@@ -1396,5 +1399,36 @@ fn coupled_solver_selection_survives_rebake_and_reaches_params() {
     let catchlight_core::NodeKind::Spine(spine) = &node.kind else {
         panic!("spine")
     };
-    assert_eq!(spine.chain.as_ref().unwrap().solver, ChainSolver::Direct);
+    assert_eq!(spine.chain.as_ref().unwrap().links.len(), 3);
+}
+
+#[test]
+fn model_substeps_reach_live_chains_after_an_edit() {
+    for links in [2, 8] {
+        let mut f = Fixture::new(links);
+        f.wire_outputs();
+        let mut puppet = f.puppet();
+        puppet.settle_physics(&f.model);
+        for count in [1, 4, 8, 16] {
+            let mut physics = *f.model.physics();
+            physics.chain_substeps = std::num::NonZeroU8::new(count).unwrap();
+            f.model.set_physics(physics);
+            puppet.sync(&f.model);
+            let idx = f.idx(&puppet);
+            assert!(puppet.kick_chain(idx, Vec2::new(4.0, 0.0)));
+            let catchlight_core::NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
+                panic!("spine");
+            };
+            let mut expected = spine.chain.as_ref().unwrap().clone();
+            expected.tick(
+                expected.anchor,
+                expected.carry,
+                &[],
+                DT,
+                physics.chain_substeps,
+            );
+            puppet.tick(&f.model, DT);
+            assert!(tip(&puppet, idx).distance(expected.particles[links].pos) < 1e-3);
+        }
+    }
 }

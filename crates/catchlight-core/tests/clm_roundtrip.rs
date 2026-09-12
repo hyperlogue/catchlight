@@ -307,3 +307,30 @@ fn a_spine_round_trips_byte_for_byte() {
         "and a link with no limit still has none"
     );
 }
+
+#[test]
+fn chain_substeps_default_and_round_trip_without_rewriting_old_files() {
+    use catchlight_core::formats::clm::ClmPhysics;
+    let old = serde_json::json!({"gravity": 9.8, "pixels_per_meter": 1000.0});
+    let defaults: ClmPhysics = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(defaults.chain_substeps.get(), 4);
+    assert!(serde_json::to_value(defaults)
+        .unwrap()
+        .get("chain_substeps")
+        .is_none());
+    for invalid in [0, 256, -1] {
+        let mut value = old.clone();
+        value["chain_substeps"] = invalid.into();
+        assert!(serde_json::from_value::<ClmPhysics>(value).is_err());
+    }
+    for steps in [1, 4, 8, 16, 255] {
+        let mut model = Model::new();
+        let mut physics = *model.physics();
+        physics.chain_substeps = std::num::NonZeroU8::new(steps).unwrap();
+        model.set_physics(physics);
+        let bytes = model.to_clm_bytes().unwrap();
+        let reopened = Model::from_clm_bytes(&bytes).unwrap();
+        assert_eq!(reopened.physics().chain_substeps.get(), steps);
+        assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
+    }
+}

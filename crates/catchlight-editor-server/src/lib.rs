@@ -1190,6 +1190,7 @@ impl Editor {
                         redo_steps: s.history.redo.len() as u32,
                         gravity: Some(s.model.physics().gravity),
                         pixels_per_meter: Some(s.model.physics().pixels_per_meter),
+                        chain_substeps: Some(s.model.physics().chain_substeps.get()),
                         node_count: s.model.node_count() as u32,
                         param_count: s.model.param_ids().len() as u32,
                         texture_count: s.model.texture_ids().len() as u32,
@@ -1409,6 +1410,7 @@ impl Editor {
                 session,
                 gravity,
                 pixels_per_meter,
+                chain_substeps,
             } => self.edit_session(session, |s| {
                 let mut physics = *s.model.physics();
                 if let Some(g) = gravity {
@@ -1416,6 +1418,11 @@ impl Editor {
                 }
                 if let Some(ppm) = pixels_per_meter {
                     physics.pixels_per_meter = ppm;
+                }
+                if let Some(steps) = chain_substeps {
+                    physics.chain_substeps = std::num::NonZeroU8::new(steps).ok_or_else(|| {
+                        EditorError::BadTarget("chain_substeps must be in 1..=255".into())
+                    })?;
                 }
                 s.model.set_physics(physics);
                 s.touch();
@@ -2488,11 +2495,8 @@ fn rest_carry(model: &Model, id: &NodeId) -> catchlight_core::Mat2 {
     flip * m * flip
 }
 
-/// What a chain cannot do with the drawing it was given: one line per link
-/// that has no spring to hold it off gravity and is not drawn along gravity.
-///
-/// The physics is honest about this rather than quietly correcting it, so the
-/// fit is where a rigger hears about it.
+/// Ask the runtime where the chain settles, so authoring feedback uses the
+/// same coupled forces and limits as playback.
 fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
     let Some(ModelNodeKind::Spine(spine)) = model.node(node).map(|n| &n.kind) else {
         return Vec::new();
@@ -2510,29 +2514,41 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
             .map(|j| Vec2::new(j[0], j[1]))
             .collect(),
     );
-    data.link_geometry()
+    let links = data
+        .link_geometry()
         .zip(chain.links())
-        .enumerate()
-        .filter_map(|(i, ((length, drawn), feel))| {
-            let link = catchlight_core::physics::ChainLink {
+        .map(
+            |((length, drawn), feel)| catchlight_core::physics::ChainLink {
                 length,
                 drawn,
                 gravity_scale: feel.gravity_scale,
                 damping: feel.damping,
                 stiffness: feel.stiffness,
                 limit: feel.limit,
-                preload: 0.0,
-            };
-            (!catchlight_core::physics::link_can_rest_as_drawn(&link, gravity, carry)).then(|| {
-                // Two ways to fail, and the rigger fixes them differently:
-                // one wants a spring at all, the other a stronger one.
-                let why = if link.stiffness.is_nan() || link.stiffness <= 0.0 {
-                    "has no stiffness and is drawn off gravity"
-                } else {
-                    "is drawn upward and its spring is too weak to hold it"
-                };
-                format!("link {} {why}, so it cannot rest as drawn", i + 1)
-            })
+            },
+        )
+        .collect();
+    let mut runtime = catchlight_core::physics::ParticleChainData::new(links);
+    runtime.gravity = gravity;
+    runtime.settle_to_rest(Vec2::ZERO, carry, &[]);
+    let local = carry.inverse();
+    let inverse = Mat4::from_cols(
+        local.x_axis.extend(0.0).extend(0.0),
+        local.y_axis.extend(0.0).extend(0.0),
+        Mat4::IDENTITY.z_axis,
+        Mat4::IDENTITY.w_axis,
+    );
+    let mut bends = Vec::new();
+    runtime.link_bends(inverse, &mut bends);
+    bends
+        .iter()
+        .enumerate()
+        .filter(|(_, bend)| bend.abs() > 1e-3)
+        .map(|(i, _)| {
+            format!(
+                "link {} cannot rest as drawn under its gravity and bend response",
+                i + 1
+            )
         })
         .collect()
 }

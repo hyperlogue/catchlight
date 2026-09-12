@@ -16,7 +16,7 @@
 //!
 //! The chain's scenario drives `ParticleChainData` directly and records the
 //! bend of each link rather than a param, so that what it pins is the solver
-//! and not the node plumbing around it — `particle_chain_node` is where the
+//! and not the node plumbing around it — `spine_chain_node` is where the
 //! node is tested. Samples are therefore not all two wide, which is why the
 //! baseline's rows are plain arrays rather than pairs.
 //!
@@ -65,6 +65,7 @@ fn fixture(scenario: Scenario) -> (Model, Puppet, [ParamId; 2]) {
     model.set_physics(ClmPhysics {
         pixels_per_meter: 1.0,
         gravity: 1.0,
+        ..ClmPhysics::default()
     });
     let params = ["out.x", "out.y"].map(|name| {
         model
@@ -167,11 +168,7 @@ fn spring_stiff() -> Scenario {
     }
 }
 
-/// A three-link chain hung from the origin, then yanked 40 px sideways and
-/// held there: the anchor step excites every joint at once and the transient
-/// is the whole curve back to rest. Driven on the solver directly, since the
-/// chain has no node kind to hang off a puppet yet — so unlike the scenarios
-/// above this one fingerprints the integrator alone.
+/// Three unequal links yanked 40 px sideways, pinning the coupled transient.
 fn chain_perturbed() -> Vec<Vec<f32>> {
     let mut chain = ParticleChainData::new(
         [60.0f32, 50.0, 40.0]
@@ -187,13 +184,7 @@ fn chain_perturbed() -> Vec<Vec<f32>> {
     yank(chain)
 }
 
-/// A two-link chain with a bend spring on both joints, yanked the same way.
-/// The spring is the one force in the solver that reads a *direction* rather
-/// than only a position, so without a scenario carrying stiffness the whole
-/// of it — the tangential term, its saturation, the rest direction walking
-/// root to tip — is outside the fingerprint. Three hertz is stiff enough to
-/// dominate the swing and slack enough that the 240 Hz step resolves it, so
-/// the curve is the spring's and not the saturation's.
+/// The same displacement with bend springs, damping and two-way coupling.
 fn chain_stiff() -> Vec<Vec<f32>> {
     let mut chain = ParticleChainData::new(
         [60.0f32, 50.0]
@@ -217,7 +208,13 @@ fn yank(mut chain: ParticleChainData) -> Vec<Vec<f32>> {
     let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
     let mut bends = Vec::new();
     for f in 0..FRAMES {
-        chain.tick(anchor, Mat2::IDENTITY, &[], DT);
+        chain.tick(
+            anchor,
+            Mat2::IDENTITY,
+            &[],
+            DT,
+            catchlight_core::DEFAULT_CHAIN_SUBSTEPS,
+        );
         if f % SAMPLE_EVERY == 0 {
             chain.link_bends(Mat4::IDENTITY, &mut bends);
             samples.push(bends.clone());
