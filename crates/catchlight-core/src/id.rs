@@ -386,7 +386,7 @@ impl SlotId {
 /// The key an extension is filed under: the Id charset plus a required
 /// interior dot, vendor first (`molan.caster`).
 ///
-/// Hand-written rather than one of the [`string_id!`] types because it is the
+/// Hand-written rather than one of the `string_id!` types because it is the
 /// one Id-shaped string with a rule of its own ([`validate_extension_key`]),
 /// and because a key that fails on the way in is worth naming in the error —
 /// a file names its extensions in one flat map, so "which key" is the whole

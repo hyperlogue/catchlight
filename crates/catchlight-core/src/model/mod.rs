@@ -107,7 +107,7 @@
 //!   moved" and carries what its own rules say it carries. This is the
 //!   replica path: an editor server owns the model and pushes it after
 //!   each edit, and the client holds a model it never mutates locally. See
-//!   [`file`] for the wire shape.
+//!   `model/file.rs` for the wire shape.
 //! - **Derived values are memoized, never stored.** A binding's dense grid —
 //!   what `crate::fill` derives from its authored cells — is built on first
 //!   read and dropped the moment the cells, the key positions or the mesh it
@@ -710,19 +710,17 @@ impl ModelPhysics {
 
 /// One link's feel, when a spine carries a particle chain.
 ///
-/// No length and no clock. The length is the distance between the two joints
-/// the link spans, so a file that stored it could disagree with the drawing;
-/// a constant time scale `s` is exactly `gravity_scale * s^2`, `stiffness *
-/// s` and `damping = 1 - (1 - d)^s`, so it is a knob that says nothing the
-/// other three do not.
+/// Lengths and drawn directions come from the spine's joints. Integration
+/// accuracy is selected by the model's `chain_substeps` setting.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
-    /// Fraction of velocity shed per second, within 0..=1.
+    /// Damping strength in `0..=1`, mapped to per-second drag on relative
+    /// joint motion. Adds to spring damping; 1 gives heavy damping.
     pub damping: f32,
-    /// Bend spring frequency in Hz. Finite and at or above zero; zero is no
-    /// spring, and the link hangs on gravity alone.
+    /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
+    /// this is not each link's oscillation frequency. Zero disables the spring.
     pub stiffness: f32,
     /// The furthest this link's bend may reach either way, in half turns,
     /// within `(0, 1]`. `None` is a joint that turns as far as the forces
@@ -756,10 +754,9 @@ impl Default for LinkFeel {
 /// spine's root, one per joint, whose bends are written into the spine's
 /// params.
 ///
-/// The authored half of [`crate::physics::ParticleChainData`]. The geometry is
-/// not here — it is the spine's joints, which are the shape the chain hangs
-/// at rest in — so what a chain adds to a spine is a feel per link and three
-/// numbers about the whole strand.
+/// The authored half of [`crate::physics::ParticleChainData`]. The spine's
+/// joints define lengths and bend zero; gravity, spring targets and limits
+/// determine the settled pose. Particle positions belong to the puppet.
 ///
 /// **`links` is as long as the spine's joints, always.** [`ModelSpine`]
 /// restores the pairing whenever either can change, so no caller ever sees
@@ -772,9 +769,9 @@ pub struct ModelChain {
     /// from the model-level physics into it, so 1.0 hangs under one g.
     pub gravity: f32,
     /// The chain's authority over the params the spine names, at or above
-    /// zero: `1` decides them, `0` leaves them where they were posed while
-    /// the strand goes on simulating, and anything between blends. See
-    /// `ParticleChainData::weight`, which is where it lands at bake.
+    /// zero: `1` gives full authority, `0` contributes no simulated bend,
+    /// and intermediate values blend with the pose. Authored limits still
+    /// constrain the result at every weight.
     pub weight: f32,
     links: Vec<LinkFeel>,
 }
@@ -1374,7 +1371,7 @@ impl Model {
     /// references inside the subtree point at the copies; external ones stay
     /// shared. Each copied node also copies its param bindings, so the
     /// duplicate deforms like the original. The copy's root is renamed
-    /// "<name> copy".
+    /// `"<name> copy"`.
     pub fn duplicate_subtree(
         &mut self,
         id: &NodeId,

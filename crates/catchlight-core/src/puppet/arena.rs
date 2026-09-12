@@ -22,7 +22,7 @@ use crate::components::{Node, NodeIdx};
 use crate::node::NodeTree;
 
 /// Computed global transforms for all nodes in a puppet.
-/// Vec<Mat4> indexed by NodeIdx.0; aligns with the dense node storage so
+/// `Vec<Mat4>` indexed by `NodeIdx.0`; aligns with the dense node storage so
 /// point lookups are a bounds check + index rather than a hash probe, and
 /// the DFS walk in compute_transforms_with_root writes through contiguous
 /// memory.
@@ -610,17 +610,10 @@ impl Arena {
         Some(crate::Vec2::new(anchor.x, -anchor.y))
     }
 
-    /// The node's own rotation, as its local down taken through the world
-    /// transform and the same Y flip [`Self::physics_anchor`] applies — a unit
-    /// vector, because one is what names a rotation of the plane.
-    ///
-    /// The chain carries its drawn shape by this, so the spring and
-    /// `link_bends` agree about where the art is; the node's own down is what
-    /// a rotation of `(0, 1)` gives, which is why one vector is enough.
-    ///
-    /// The `local_only` branch integrates in the parent's frame, where the
-    /// node's own rotation has not been applied, so the shape is carried by
-    /// nothing.
+    /// The node's full linear map, including scale and mirrors, conjugated
+    /// into the physics Y-down frame. This carries the chain's rest geometry
+    /// and matches the inverse used to read its bends. `local_only` uses
+    /// identity because that simulation omits the node's linear transform.
     pub(crate) fn chain_carry(
         &self,
         transforms: &GlobalTransforms,
@@ -634,11 +627,6 @@ impl Arena {
         if chain.local_only {
             return Some(crate::Mat2::IDENTITY);
         }
-        // The node's world linear map, conjugated by the Y flip that takes
-        // model space (Y-up) into the physics frame (Y-down). The whole map
-        // and not just its rotation: a scaled or mirrored node draws its
-        // strand at a different angle and a different length, and
-        // `link_bends` reads the rods back through the full inverse.
         let world = transforms.get(id);
         let m = crate::Mat2::from_cols(
             crate::Vec2::new(world.x_axis.x, world.x_axis.y),

@@ -10,7 +10,9 @@
 //! linearized once: this is a first-order integrator, not an exact trajectory.
 //!
 //! Bend response scales rest subtree inertia, not individual modal
-//! frequencies. Rest support projects each sprung rod's resultant gravity
+//! frequencies. Authored damping d contributes drag -ln(1-d) against relative
+//! joint motion, plus a spring damping ratio of 0.1; d = 1 uses finite heavy
+//! drag. Rest support projects each sprung rod's resultant gravity
 //! off its drawn tangent; differences give fixed endpoint fields. Pose
 //! targets move springs, not those fields. Limp rods retain gravity;
 //! static settling seeds limp rods toward gravity and nudges upward sprung
@@ -42,7 +44,7 @@ use std::f64::consts::{PI, TAU};
 use glam::{DMat2, DVec2};
 use smallvec::{smallvec, SmallVec};
 
-use super::{ChainParticle, ParticleChainData, BEND_SPRING_DAMPING_RATIO};
+use super::{ChainParticle, ParticleChainData};
 use crate::{Mat2, Vec2};
 
 type Vector = SmallVec<[f64; 16]>;
@@ -51,6 +53,7 @@ type Points = SmallVec<[DVec2; 16]>;
 
 const STOP_ONSET: f64 = 0.75;
 const STOP_HZ: f64 = 8.0;
+const BEND_SPRING_DAMPING_RATIO: f32 = 0.1;
 
 fn wrap(angle: f64) -> f64 {
     (angle + PI).rem_euclid(TAU) - PI
@@ -85,12 +88,9 @@ fn stop(angle: f64, velocity: f64, limit: f64) -> (f64, f64, f64) {
     )
 }
 
-fn matrix(carry: Mat2) -> DMat2 {
-    DMat2::from_cols(carry.x_axis.as_dvec2(), carry.y_axis.as_dvec2())
-}
-
 fn usable(carry: Mat2) -> DMat2 {
-    matrix(super::usable_carry(carry))
+    let carry = super::usable_carry(carry);
+    DMat2::from_cols(carry.x_axis.as_dvec2(), carry.y_axis.as_dvec2())
 }
 
 fn rest_rods(chain: &ParticleChainData) -> Points {
@@ -269,15 +269,15 @@ struct System {
 }
 
 impl State {
-    fn system(
-        &mut self,
-        old_carry: DMat2,
-        carry: DMat2,
-        carry_rate: DMat2,
-        anchor_velocity: DVec2,
-        targets: &[f64],
-        h: f64,
-    ) -> System {
+    fn system(&mut self, step: &Step, targets: &[f64]) -> System {
+        let &Step {
+            old_carry,
+            carry,
+            carry_rate,
+            anchor_velocity,
+            h,
+            ..
+        } = step;
         self.fields(carry);
         let n = self.q.len();
         let mut a: Matrix = smallvec![0.0; n * n];
@@ -288,19 +288,19 @@ impl State {
         let mut position = DVec2::ZERO;
         let mut bias = DVec2::ZERO;
         let mut previous_omega = 0.0;
+        let cached_motion = self.motion_carry == Some(old_carry) && self.motion_rate == carry_rate;
         for k in 0..n {
             let rod = self.rods[k];
             let tangent = carry * rod.perp();
             tangents[k] = tangent;
-            let old_tangent = old_carry * rod.perp();
-            let rod_velocity = self.velocities[k + 1] - self.velocities[k] - carry_rate * rod;
-            let omega = if self.motion_carry == Some(old_carry) && self.motion_rate == carry_rate {
+            let omega = if cached_motion {
                 previous_omega + self.angular[k]
             } else {
+                let old_tangent = old_carry * rod.perp();
+                let rod_velocity = self.velocities[k + 1] - self.velocities[k] - carry_rate * rod;
                 rod_velocity.dot(old_tangent) / old_tangent.length_squared()
             };
-            velocity[k] = if self.motion_carry == Some(old_carry) && self.motion_rate == carry_rate
-            {
+            velocity[k] = if cached_motion {
                 self.angular[k]
             } else {
                 omega - previous_omega
@@ -363,30 +363,6 @@ impl State {
             initial: velocity,
         }
     }
-}
-
-// The equation tests construct a system directly from public particle state.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn system(
-    chain: &ParticleChainData,
-    _rest: &[DVec2],
-    _q: &[f64],
-    old_carry: DMat2,
-    carry: DMat2,
-    carry_rate: DMat2,
-    anchor_velocity: DVec2,
-    posed: &[f32],
-    h: f64,
-) -> System {
-    let mut state = State::new(
-        chain,
-        Mat2::from_cols(old_carry.x_axis.as_vec2(), old_carry.y_axis.as_vec2()),
-    );
-    let targets: Vector = (0..chain.links.len())
-        .map(|i| -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
-        .collect();
-    state.system(old_carry, carry, carry_rate, anchor_velocity, &targets, h)
 }
 
 /// Solve an SPD system in place. The 2-link unconstrained path is analytic.
@@ -464,6 +440,8 @@ fn solve(s: &System) -> Option<Vector> {
     }
 }
 
+/// Fix blocking velocities at their bounds, then release bounds whose
+/// reaction points inward. The budget bounds work if the active set cycles.
 fn constrained(s: &System) -> Option<Vector> {
     let mut x = s.initial.clone();
     let n = x.len();
@@ -551,6 +529,19 @@ struct Step {
     h: f64,
 }
 
+impl Step {
+    fn stationary(anchor: DVec2, carry: DMat2, h: f64) -> Self {
+        Self {
+            anchor,
+            anchor_velocity: DVec2::ZERO,
+            old_carry: carry,
+            carry,
+            carry_rate: DMat2::ZERO,
+            h,
+        }
+    }
+}
+
 impl State {
     fn advance(&mut self, step: &Step, velocity: &[f64], targets: &[f64]) -> Option<bool> {
         let mut q = self.q.clone();
@@ -620,7 +611,8 @@ impl State {
         let angular = self.angular.clone();
         self.angular.fill(0.0);
         self.velocities.fill(DVec2::ZERO);
-        let s = self.system(carry, carry, DMat2::ZERO, DVec2::ZERO, targets, h);
+        let step = Step::stationary(self.positions[0], carry, h);
+        let s = self.system(&step, targets);
         self.velocities = saved;
         self.angular = angular;
         let Some(velocity) = solve(&s) else {
@@ -641,44 +633,6 @@ impl State {
         }
         true
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn step(
-    chain: &mut ParticleChainData,
-    anchor: Vec2,
-    anchor_moved: Vec2,
-    old_carry: Mat2,
-    carry: Mat2,
-    posed: &[f32],
-    h: f32,
-) -> Option<bool> {
-    let mut state = State::take(chain, old_carry);
-    let targets: Vector = (0..chain.links.len())
-        .map(|i| -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
-        .collect();
-    let h = f64::from(h);
-    let step = Step {
-        anchor: anchor.as_dvec2(),
-        anchor_velocity: anchor_moved.as_dvec2() / h,
-        old_carry: usable(old_carry),
-        carry: usable(carry),
-        carry_rate: (usable(carry) - usable(old_carry)) * (1.0 / h),
-        h,
-    };
-    let system = state.system(
-        step.old_carry,
-        step.carry,
-        step.carry_rate,
-        step.anchor_velocity,
-        &targets,
-        h,
-    );
-    let result = solve(&system).and_then(|v| state.advance(&step, &v, &targets));
-    state.export(chain);
-    state.exported_carry = carry;
-    chain.coupled = Some(state);
-    result
 }
 
 struct Frame<'a> {
@@ -839,14 +793,7 @@ pub(super) fn tick_chains(
             let mut substeps: SmallVec<[Step; 4]> = SmallVec::new();
             for frame in &mut frames {
                 let step = frame.step(k, steps, h);
-                systems.push(frame.state.system(
-                    step.old_carry,
-                    step.carry,
-                    step.carry_rate,
-                    step.anchor_velocity,
-                    &frame.targets,
-                    h,
-                ));
+                systems.push(frame.state.system(&step, &frame.targets));
                 substeps.push(step);
             }
             let solutions = if batch_len == 4 {
@@ -871,8 +818,17 @@ pub(super) fn tick_chains(
 }
 
 fn relax(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]) -> bool {
+    let step = Step::stationary(anchor.as_dvec2(), usable(carry), f64::from(1.0 / 240.0_f32));
+    let targets: Vector = (0..chain.links.len())
+        .map(|i| -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
+        .collect();
     for _ in 0..2400 {
-        match step(chain, anchor, Vec2::ZERO, carry, carry, posed, 1.0 / 240.0) {
+        let mut state = State::take(chain, carry);
+        let system = state.system(&step, &targets);
+        let result = solve(&system).and_then(|v| state.advance(&step, &v, &targets));
+        state.export(chain);
+        chain.coupled = Some(state);
+        match result {
             Some(false) => return true,
             Some(true) => {}
             None => return false,
@@ -1070,7 +1026,8 @@ mod tests {
             );
             let mut state = State::new(&c, c.carry);
             let carry = usable(c.carry);
-            let s = state.system(carry, carry, DMat2::ZERO, DVec2::ZERO, &vec![0.0; n], 0.0);
+            let step = Step::stationary(c.anchor.as_dvec2(), carry, 0.0);
+            let s = state.system(&step, &vec![0.0; n]);
             // Compare kinetic energy directly rather than duplicate the
             // optimized matrix construction. Each endpoint moves by J v.
             for seed in 0..8 {
@@ -1365,31 +1322,14 @@ mod tests {
         let rest = rest_rods(&c);
         let q = angles(&c, &rest, DMat2::IDENTITY);
         let h = 1e-4;
-        let s = system(
-            &c,
-            &rest,
-            &q,
-            DMat2::IDENTITY,
-            DMat2::IDENTITY,
-            DMat2::ZERO,
-            DVec2::ZERO,
-            &[],
-            h,
-        );
+        let mut state = State::new(&c, c.carry);
+        let mut step = Step::stationary(c.anchor.as_dvec2(), DMat2::IDENTITY, h);
+        let s = state.system(&step, &[0.0; 2]);
         let actual = solve(&s).expect("the pendulum system solves");
         // Remove the velocity projection of f32 particle storage before
         // taking a finite difference of the acceleration.
-        let baseline = system(
-            &c,
-            &rest,
-            &q,
-            DMat2::IDENTITY,
-            DMat2::IDENTITY,
-            DMat2::ZERO,
-            DVec2::ZERO,
-            &[],
-            0.0,
-        );
+        step.h = 0.0;
+        let baseline = state.system(&step, &[0.0; 2]);
         let projected = solve(&baseline).expect("the velocity projection solves");
         let l = 80.0;
         let m = 80.0;

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Deterministic fingerprint of the SimplePhysics *driver* over time.
+//! Trajectory baselines for SimplePhysics pendulums and hair chains.
 //!
 //! The physics unit tests assert endpoints ("settles within X of rest") and
 //! the GPU visual baselines only capture the settled pose — neither pins the
@@ -14,7 +14,7 @@
 //! origin and every sampled number is the driver's: the model exists to carry
 //! the authored pendulum and the two params it writes.
 //!
-//! The chain's scenario drives `ParticleChainData` directly and records the
+//! The chain scenarios drive `ParticleChainData` directly and record the
 //! bend of each link rather than a param, so that what it pins is the solver
 //! and not the node plumbing around it — `spine_chain_node` is where the
 //! node is tested. Samples are therefore not all two wide, which is why the
@@ -34,14 +34,8 @@ use std::path::PathBuf;
 const DT: f32 = 1.0 / 60.0;
 const FRAMES: usize = 300;
 const SAMPLE_EVERY: usize = 5;
-// Per-sample absolute tolerance on the mapped param output. Cross-arch f32
-// jitter over 300 RK4 frames stays well under this; a real change to the
-// integrator, mapping, or output scaling shifts the curve by far more.
-//
-// The chain scenario is a triple pendulum and so genuinely chaotic: a 1-ulp
-// change to its starting anchor grows to ~1.3e-4 by the last sample, an order
-// of magnitude inside this tolerance but not two. Should it ever go flaky on
-// a new target, shorten that scenario rather than loosen this.
+// Absolute tolerance on each mapped param or chain bend. Allows accumulated
+// floating-point differences across targets while detecting trajectory changes.
 const TOL: f32 = 2e-3;
 
 /// The authored pendulum plus where its bob starts. The bob is a *runtime*

@@ -50,7 +50,7 @@ pub(crate) fn frac(t: f32, a: f32, b: f32) -> f32 {
     }
 }
 
-/// Uniform Catmull-Rom: the cubic Hermite from `p1`→`p2` (t in [0,1])
+/// Uniform Catmull-Rom: the cubic Hermite from `p1`→`p2` (`t` in `[0,1]`)
 /// whose endpoint tangents are the central differences of the four
 /// samples. It serves both
 /// Cubic parameter bindings and Cubic animation lanes — `AnimationLane`

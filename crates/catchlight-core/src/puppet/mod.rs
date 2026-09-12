@@ -8,7 +8,7 @@
 //!
 //! - **A tick is one pipeline, in one order.** [`Puppet::tick`] is: fold
 //!   animations → pose the physics anchors and step the drivers → fold the
-//!   bindings → compute transforms → run the mesh groups → solve welds →
+//!   bindings → compute transforms → run spines → run mesh groups → solve welds →
 //!   combine deforms. The mesh-group pass is itself ordered, outer group
 //!   first: each group shifts its `translate_children` targets and recomputes
 //!   the globals under them before pushing its deform down, so an inner group
@@ -1411,7 +1411,7 @@ impl Puppet {
     /// the kick lands on a real shape rather than on the origin a fresh bake
     /// leaves. Velocities are zeroed: this is a displacement, not a throw.
     ///
-    /// `false` when `node` is not a particle chain.
+    /// `false` when `node` is not a spine carrying a chain.
     pub fn kick_chain(&mut self, node: NodeIdx, offset: Vec2) -> bool {
         let posed = match self.arena.chain_node_ids.iter().position(|&id| id == node) {
             Some(c) => {

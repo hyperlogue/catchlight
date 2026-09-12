@@ -1,6 +1,6 @@
-//! SimplePhysics drivers: pendulums that write their state into params.
+//! Physics drivers: pendulums and hair chains that write motion into params.
 //!
-//! **Physics integrates in substeps sized by the driver, and damping is
+//! **SimplePhysics integrates in substeps sized by the driver, and damping is
 //! per-second.** `SimplePhysicsData::tick` clamps `dt` to `PHYSICS_MAX_DT` and
 //! splits it by `max_substep()`, derived from `RK4_STABILITY_LIMIT *
 //! RK4_STEP_SAFETY` and capped at `PHYSICS_MAX_SUBSTEPS`. `angle_damping` is a
@@ -14,10 +14,10 @@
 //! in that frame.
 //!
 //! Hair chains use angular two-way coupling; the solver and cache invariants
-//! live in [`coupled`]. Relative bends preserve local link lengths, and the
-//! full node map carries them into world space. Rest support cancels gravity
-//! torque on drawn sprung links, but weak upward springs can still be unstable.
-//! Posed bends move the spring targets.
+//! live in `physics/coupled.rs`. Relative bends preserve local link lengths;
+//! the full node map carries them into world space. Rest support cancels
+//! gravity torque on drawn sprung links, but weak upward springs can still
+//! be unstable. Posed bends move the spring targets.
 //!
 //! A model's `chain_substeps` selects equal steps per frame, defaulting to four.
 //! The anchor and carry interpolate across those steps. Damping is per second;
@@ -516,9 +516,8 @@ impl SimplePhysicsData {
     }
 }
 
-/// One segment of a [`ParticleChainData`]: a rigid rod from the particle
-/// above it down to its own particle, the direction that rod is drawn in, and
-/// the knobs that particle answers to.
+/// One segment of a [`ParticleChainData`]: a rigid rod between two joints,
+/// its drawn direction, and its material settings.
 ///
 /// The runtime half. What an author writes down is a
 /// [`crate::model::LinkFeel`] on a spine's chain; the length and the drawn
@@ -535,11 +534,11 @@ pub struct ChainLink {
     pub drawn: Vec2,
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
-    /// Fraction of velocity shed per **second** (0..=1), like `angle_damping`.
+    /// Damping strength in `0..=1`, mapped to per-second drag on relative
+    /// joint motion. Adds to spring damping; 1 gives heavy damping.
     pub damping: f32,
-    /// Natural frequency in **Hz** of the spring on this link's bend — how
-    /// stiff the strand is at this joint. Zero is no spring at all, and the
-    /// link hangs on gravity alone.
+    /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
+    /// this is not each link's oscillation frequency. Zero disables the spring.
     pub stiffness: f32,
     /// The furthest this link's bend may reach either way, in half turns, or
     /// `None` for a joint that turns as far as the forces take it. Within
@@ -570,10 +569,9 @@ pub struct ChainParticle {
 
 /// Rigid local links with angular two-way coupling and a prescribed anchor.
 ///
-/// [`Self::link_bends`] reads the chain out as one number per link, and the
-/// sign convention is the whole point of it: **positive bend = the link's tip
-/// displaced toward +X of the node, straight down = 0, in units of half
-/// turns.**
+/// [`Self::link_bends`] reports relative bends from the drawing in half turns.
+/// Positive bend rotates counterclockwise in the model's Y-up frame, moving
+/// a downward link toward +X. Every link on its drawn curve reads zero.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParticleChainData {
     coupled: Option<Box<coupled::State>>,
@@ -581,11 +579,10 @@ pub struct ParticleChainData {
     /// Pre-folded like `SimplePhysicsData::gravity` (pixels/s², toward +Y in
     /// the physics frame).
     pub gravity: f32,
-    /// How much authority the chain has over the params it drives, at or
-    /// above zero. The solver never reads it — `Puppet` claims each bend at
-    /// this weight and the fold blends it against the pose, so `1` is the
-    /// chain deciding its params outright, `0.5` half way, and `0` a chain
-    /// that still simulates and asserts nothing.
+    /// Weight of simulated bends when `Puppet` blends them with the pose.
+    /// The solver ignores it: 0 contributes no simulated bend, 1 gives full
+    /// authority, and intermediate values blend. Authored limits still
+    /// constrain the result at every weight.
     pub weight: f32,
     pub links: Vec<ChainLink>,
     /// `links.len() + 1` particles; `particles[0]` is the anchor. Any tick
@@ -597,22 +594,12 @@ pub struct ParticleChainData {
     /// including scale and mirrors. The solver preserves lengths before this
     /// map; `link_bends` reads the rods through its inverse.
     pub carry: Mat2,
-    /// `false` until `tick()` first sees the world-space anchor and hangs the
-    /// chain under it, for the same reason `SimplePhysicsData` defers its
-    /// snap: construction has only the node-local transform.
+    /// `false` until the chain is settled at its first sampled anchor and carry.
     pub anchor_initialized: bool,
-    /// Whether the last thing done to this chain moved a particle: every
-    /// substep of the last [`Self::tick`], or the displacement
-    /// `Puppet::kick_chain` applied. Cleared by [`Self::settle_to_rest`].
-    ///
-    /// [`Self::is_at_rest`] needs the whole tick and not just the state it
-    /// ended in, because a swinging chain passes through zero velocity at the
-    /// top of every swing. Land a frame's last substep there and every
-    /// velocity reads zero for that instant, though the next substep will
-    /// pull it back the other way — eight such frames in one measured decay,
-    /// each one a frame on which a viewport would have gone to sleep on a
-    /// chain still swinging. A turning point lasts microseconds; a frame is
-    /// sixteen milliseconds, and no turning point fills one.
+    /// Whether any substep moved a particle, or a kick displaced the chain.
+    /// Failed solves and exhausted settling also set this to keep it awake.
+    /// Successful settling clears it. Tracking the whole tick prevents a
+    /// zero-velocity turning point from being mistaken for rest.
     pub moved_last_tick: bool,
 }
 
@@ -646,10 +633,8 @@ impl Default for ParticleChainData {
 /// Default number of equal hair-physics steps per frame.
 pub const DEFAULT_CHAIN_SUBSTEPS: std::num::NonZeroU8 = std::num::NonZeroU8::MIN.saturating_add(3);
 
-/// Intrinsic damping ratio of every bend spring, in addition to authored drag.
-const BEND_SPRING_DAMPING_RATIO: f32 = 0.1;
-
-/// One independently sampled chain; batching never changes driver ordering.
+/// One independently sampled chain. Batching may reorder solves after all
+/// inputs have been sampled; `Puppet` writes their results in driver order.
 pub(crate) struct ChainTick<'a> {
     pub chain: &'a mut ParticleChainData,
     pub anchor: Vec2,
@@ -664,7 +649,7 @@ pub(crate) fn tick_chains(jobs: &mut [ChainTick<'_>], dt: f32, substeps: std::nu
 impl ParticleChainData {
     /// Advance by `dt` in exactly `substeps` equal steps, interpolating the
     /// anchor and full carry from the previous frame. `dt` is capped at
-    /// [`PHYSICS_MAX_DT`]; nonpositive or nonfinite time only repositions the
+    /// `PHYSICS_MAX_DT`; nonpositive or nonfinite time only repositions the
     /// frame. `posed` contains spring targets in half turns, missing entries 0.
     pub fn tick(
         &mut self,
@@ -674,14 +659,7 @@ impl ParticleChainData {
         dt: f32,
         substeps: std::num::NonZeroU8,
     ) {
-        coupled::tick(
-            self,
-            anchor_world,
-            usable_carry(carry_world),
-            posed,
-            dt,
-            substeps,
-        );
+        coupled::tick(self, anchor_world, carry_world, posed, dt, substeps);
     }
 
     /// Find a stationary pose with bounded damped relaxation. Unsprung links
@@ -709,7 +687,7 @@ impl ParticleChainData {
     /// `out` (cleared first). One value per link, so a chain reads out as a
     /// vector the same shape as the thing that authored it.
     ///
-    /// `world_inverse` rotates each rod out of world space and into the
+    /// `world_inverse` maps each rod out of world space and into the
     /// node's frame exactly as [`SimplePhysicsData::param_value`] does: the
     /// translation column is ignored, and the caller hands over a matrix
     /// already conjugated by the Y flip.
@@ -718,7 +696,7 @@ impl ParticleChainData {
     /// drawing.** The first link's bend is measured from its own drawn
     /// direction; every later one from the link above it turned by the angle
     /// the drawing has at that joint, wrapped into a half turn either way.
-    /// **Positive = the link's tip displaced toward +X of the node.**
+    /// Positive bend rotates counterclockwise in the model's Y-up frame.
     pub fn link_bends(&self, world_inverse: Mat4, out: &mut Vec<f32>) {
         out.clear();
         let rods = self.links.len().min(self.particles.len().saturating_sub(1));
@@ -740,9 +718,7 @@ impl ParticleChainData {
             let theta = f32::atan2(dir.x, dir.y);
             // The bearing bend zero sits at: the link's own drawn direction
             // for the first link, and for the rest the solved link above it
-            // carried by the turn the drawing makes here. A straight drawing
-            // contributes exactly zero to both, which is what keeps an
-            // unbent-shape chain reading what it always did.
+            // carried by the turn the drawing makes here.
             let reference = if i == 0 {
                 bearing(self.links[0].drawn)
             } else {
@@ -766,11 +742,8 @@ fn is_projection_noise(moved: Vec2, old: Vec2, length: f32) -> bool {
     moved.length_squared() <= floor * floor
 }
 
-/// A caller's carry, or the identity where what arrives cannot be used: a map
-/// that is not finite, or one so nearly singular that it has no direction
-/// left to give. The identity is a node that does nothing, which is what a
-/// chain that cannot read its node should behave as — the same fallback the
-/// unit orientation this replaced had.
+/// Use identity for a nonfinite or nearly singular carry. All chain paths
+/// share this policy, including validation during frame interpolation.
 fn usable_carry(carry: Mat2) -> Mat2 {
     if !carry.to_cols_array().iter().all(|v| v.is_finite()) {
         return Mat2::IDENTITY;
@@ -783,9 +756,7 @@ fn usable_carry(carry: Mat2) -> Mat2 {
     carry
 }
 
-/// Two carries mixed column by column, which is [`Vec2::lerp`] on each axis
-/// of the map — the matrix equivalent of walking the anchor across a frame's
-/// substeps, and exact at both ends.
+/// Interpolate the carry's columns alongside the anchor across a frame.
 fn lerp_carry(from: Mat2, to: Mat2, t: f32) -> Mat2 {
     Mat2::from_cols(
         from.x_axis.lerp(to.x_axis, t),

@@ -124,8 +124,7 @@ pub enum TextureEncoding {
 }
 
 /// Authored global physics; the build folds `pixels_per_meter * gravity` into
-/// each simple physics node's gravity, so the authored values stay editable
-/// here.
+/// each pendulum and hair chain's gravity. Hair substeps apply model-wide.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClmPhysics {
     pub pixels_per_meter: f32,
@@ -469,7 +468,7 @@ pub enum ClmExtension {
     /// string, a tag, a non-string map key are each an "invalid type" on the
     /// way in.
     Json(serde_json::Value),
-    /// A stand-in for bytes in the [`SECTION_EXTENSIONS`] section. The
+    /// A stand-in for bytes in the `SECTION_EXTENSIONS` section. The
     /// structure carries only the size and the hash, so a client watching a
     /// structure feed sees that a thumbnail changed without the thumbnail
     /// travelling with every unrelated edit.
@@ -615,17 +614,17 @@ pub struct ClmSimplePhysics {
 /// rather than reusing it: the file's shape is the file's to keep stable,
 /// exactly as [`ClmSimplePhysics`] mirrors the driver it describes.
 ///
-/// No length and no clock: the length is the distance between the joints the
-/// link spans, and a constant time scale is exactly a rescaling of the three
-/// knobs that are here.
+/// Lengths and drawn directions come from the spine's joints. Integration
+/// accuracy is selected by [`ClmPhysics::chain_substeps`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClmLinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
-    /// Fraction of velocity shed per second, within 0..=1.
+    /// Damping strength in `0..=1`, mapped to per-second drag on relative
+    /// joint motion. Adds to spring damping; 1 gives heavy damping.
     pub damping: f32,
-    /// Bend spring frequency in Hz. Finite and at or above zero; zero is no
-    /// spring at all.
+    /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
+    /// this is not each link's oscillation frequency. Zero disables the spring.
     pub stiffness: f32,
     /// The furthest this link's bend may reach either way, in half turns,
     /// within `(0, 1]`. Absent is a joint with no limit on it.
@@ -652,10 +651,9 @@ fn is_full_weight(weight: &f32) -> bool {
 /// spine's root, one per joint, whose bends are written into the spine's
 /// params.
 ///
-/// Only the authored half. The geometry is the spine's joints — the shape the
-/// chain hangs at rest in — so what a chain adds is a feel per link and three
-/// numbers about the whole strand. Where the particles are is runtime state a
-/// puppet owns, and a file that stored it would be storing a frame.
+/// The spine's joints define lengths and bend zero; gravity, spring targets
+/// and limits determine the settled pose. Particle positions are runtime
+/// state owned by a puppet and are not stored in the file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClmChain {
     pub local_only: bool,
@@ -666,8 +664,7 @@ pub struct ClmChain {
     /// what the caller posed. Finite and at or above zero.
     #[serde(default = "full_weight", skip_serializing_if = "is_full_weight")]
     pub weight: f32,
-    /// One per joint of the spine, in link order. Every knob is per second, so
-    /// a file describes a material rather than a frame rate.
+    /// Material settings for each joint of the spine, in link order.
     pub links: Vec<ClmLinkFeel>,
 }
 

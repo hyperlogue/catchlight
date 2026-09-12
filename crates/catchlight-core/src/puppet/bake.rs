@@ -71,7 +71,7 @@ impl BakedBinding {
     }
 }
 
-/// Everything [`Puppet::new`] derives from a model in one pass.
+/// Everything [`super::Puppet::new`] derives from a model in one pass.
 pub(super) struct Baked {
     pub(super) arena: Arena,
     pub(super) node_of_id: HashMap<NodeId, NodeIdx>,

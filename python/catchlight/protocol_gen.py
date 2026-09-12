@@ -2504,9 +2504,8 @@ class LinkFeelArg:
     from what a chain actually does; absent means "what the editor would have
     used". `{}` is a link at every default.
 
-    No length and no clock: a link spans two of the spine's joints, so its
-    length is the drawing's, and a constant time scale is exactly a rescaling
-    of the three knobs that are here.
+    Lengths and drawn directions come from the spine's joints. Integration
+    accuracy is selected by the model's `chain_substeps` setting.
 
     A reply fills every one of them in, so a client can read a chain out of
     [`SpineInfo::chain`], change one number, and send the list straight back
@@ -2515,9 +2514,11 @@ class LinkFeelArg:
 
     # Multiplier on the chain's gravity for this link's particle.
     gravity_scale: float | None = None
-    # Fraction of velocity shed per second, `0..=1`.
+    # Damping strength in `0..=1`, mapped to per-second drag on relative
+    # joint motion. Adds to spring damping; 1 gives heavy damping.
     damping: float | None = None
-    # Frequency in Hz of the spring on this link's bend; 0 is no spring.
+    # Bend response in Hz, scaled by rest subtree inertia. Coupling means
+    # this is not each link's oscillation frequency. Zero disables the spring.
     stiffness: float | None = None
     # The furthest this link's bend may reach either way, in half turns,
     # within `(0, 1]`. Absent uses the core's default (14 degrees); `null`

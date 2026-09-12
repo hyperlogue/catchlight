@@ -4,7 +4,7 @@
 //! params buy. Evaluation locates each of a binding's one or two params on its
 //! key positions, then interpolates the binding's dense grid: linearly along
 //! one param, bilinearly across two, and the same four modes the runtime folds
-//! with. `bracket` and `frac` come from [`crate::params`], so a Model and a
+//! with. `bracket` and `frac` come from `crate::interpolate`, so a Model and a
 //! puppet locate the same pose in the same place, and the grid itself is
 //! [`Model::binding_dense`]'s memo, so posing a model repeatedly derives each
 //! fill once.

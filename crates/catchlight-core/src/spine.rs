@@ -9,8 +9,8 @@
 //! **A link's bend turns at the joint above it.** `joints[i]` is the far end
 //! of link `i`, so link 0 runs from the node's own origin to `joints[0]`; the
 //! hinge link `i` turns about is the node's origin for link 0 and
-//! `joints[i - 1]` after that. Positive bend swings the tip toward the spine's
-//! +X: the turn is `bend * pi` counterclockwise in the model's Y-up frame,
+//! `joints[i - 1]` after that. Positive bend turns a downward link toward +X:
+//! the turn is `bend * pi` counterclockwise in the model's Y-up frame,
 //! which is the convention `ParticleChainData::link_bends` reports its bends
 //! in, so the chain a spine carries writes the params the spine reads.
 //!
@@ -107,8 +107,8 @@ pub struct SpineData {
     /// This frame's bend per link, in half turns. As long as `joints`.
     pub bends: Vec<f32>,
     /// The simulation hung on these joints, if the author asked for one. Its
-    /// links carry the joints' own lengths and drawn directions, so the chain
-    /// at rest *is* the drawing.
+    /// links carry the joints' lengths and drawn directions, defining bend
+    /// zero. Gravity, spring targets and limits determine the settled pose.
     pub chain: Option<crate::physics::ParticleChainData>,
     pub(crate) pins: SpinePins,
 }

@@ -1,7 +1,7 @@
 //! Playing an animation: what a clip's lanes read at a frame.
 //!
 //! There is one animation type, not two. A clip is
-//! [`ClmAnimation`](crate::formats::clm::ClmAnimation) wherever it appears —
+//! [`ClmAnimation`] wherever it appears —
 //! on the model, on the wire, and on the puppet playing it — the same way a
 //! mesh is a `ClmMesh` and a binding's cells are `ClmBindingValues`. This
 //! module is the play behaviour over that type; `formats::clm` is its shape.

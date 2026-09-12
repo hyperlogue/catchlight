@@ -1227,16 +1227,10 @@ fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
     (model, id, param)
 }
 
-/// **A chain rests on its drawing under any linear map the node applies, not
-/// just a rotation.** A spine's joints are node-local and `link_bends` reads
-/// its rods back through the node's full inverse, so the solver has to carry
-/// the drawing by the full map too. Carrying it by the rotation alone left
-/// the two disagreeing: this spine read 18.4 degrees at rest under a 2:1
-/// scale, 18.4 the other way under 1:2, and 90 degrees under a mirror.
-///
-/// A uniform scale and a double mirror read zero either way, which is why
-/// they are here: they are the two cases a rotation-only carry gets right by
-/// accident, and a test that only tried those would have passed throughout.
+/// A spring strong enough to hold this drawing must still read bend zero
+/// under scale and mirrors. The solver carries rest geometry by the full
+/// linear map that `link_bends` inverts, including nonuniform scale and
+/// single-axis mirrors that a rotation-only carry cannot represent.
 #[test]
 fn a_scaled_node_rests_on_its_drawing() {
     for on_parent in [false, true] {
