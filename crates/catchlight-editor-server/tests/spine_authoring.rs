@@ -968,6 +968,44 @@ fn a_fit_warns_about_a_link_that_cannot_rest_as_drawn() {
     );
 }
 
+#[test]
+fn a_fit_warns_when_weak_springs_cannot_hold_an_upward_drawing() {
+    let ed = Editor::new();
+    let session = session(&ed);
+    let part = node("root/hair");
+    strip_part(
+        &ed,
+        session,
+        &part,
+        [0.0; 3],
+        std::f32::consts::PI,
+        [1.0, 1.0],
+    );
+    let ResponseBody::SpineFit { warnings, .. } = body(
+        &ed,
+        30,
+        Command::SpineFit {
+            session,
+            part,
+            links: 2,
+            axis: None,
+            node: None,
+            name: None,
+            chain: Some(ChainArg {
+                links: Some(vec![LinkFeelArg {
+                    stiffness: Some(0.1),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+        },
+    ) else {
+        panic!("expected a fitted spine");
+    };
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings.iter().all(|w| w.contains("cannot rest as drawn")));
+}
+
 /// The chain is a tri-state on a set: absent leaves it, a value replaces it,
 /// `null` takes it off.
 #[test]

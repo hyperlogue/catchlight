@@ -13,8 +13,8 @@
 //! frequencies. Rest support projects each sprung rod's resultant gravity
 //! off its drawn tangent; differences give fixed endpoint fields. Pose
 //! targets move springs, not those fields. Limp rods retain gravity;
-//! static settling seeds limp rods
-//! toward gravity within their bounds, then uses relaxation.
+//! static settling seeds limp rods toward gravity and nudges upward sprung
+//! rods off unstable equilibria, then uses relaxation within their bounds.
 //!
 //! The cubic soft stop starts at 75% of max bend with zero torque and slope,
 //! an 8 Hz response, and outward damping of 2 sqrt(k I). Hard bounds remain:
@@ -33,12 +33,7 @@
 //! Other sizes, incomplete groups and targets without SIMD use scalar solves.
 //! Substep scratch is inline through eight links, with heap spill above that.
 //!
-//! Factor reuse checks the current diagonally scaled relative residual
-//! against 1e-4; this is not a trajectory-error bound. Carry, step size,
-//! soft-stop onset, bounds and residual can force refactoring. A factor may
-//! serve 15 subsequent substeps; rejection backs off for 32 substeps.
-//! Constrained solves always use the current matrix, without iterative
-//! refinement or an alternate solver.
+//! Every substep solves its current matrix, including constrained solves.
 
 mod batch;
 
@@ -95,12 +90,7 @@ fn matrix(carry: Mat2) -> DMat2 {
 }
 
 fn usable(carry: Mat2) -> DMat2 {
-    let map = matrix(carry);
-    if map.is_finite() && map.determinant().abs() > 1e-10 {
-        map
-    } else {
-        DMat2::IDENTITY
-    }
+    matrix(super::usable_carry(carry))
 }
 
 fn rest_rods(chain: &ParticleChainData) -> Points {
@@ -144,11 +134,6 @@ fn angles(chain: &ParticleChainData, rest: &[DVec2], carry: DMat2) -> Vector {
         .collect()
 }
 
-// These switches are private so the benchmark can build ablations without
-// growing the authoring interface or selecting a different physical model.
-pub(super) const BATCH_CHAINS: bool = true;
-const REUSE_FACTORS: bool = true;
-
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct State {
     links: SmallVec<[super::ChainLink; 8]>,
@@ -172,7 +157,6 @@ pub(super) struct State {
     // per tick, so kicks, rebakes and hand edits invalidate angular state.
     exported: SmallVec<[ChainParticle; 16]>,
     exported_carry: Mat2,
-    factor: Factor,
 }
 
 impl State {
@@ -217,7 +201,6 @@ impl State {
             field: Points::new(),
             inertia: Vector::new(),
             field_carry: None,
-            factor: Factor::default(),
         }
     }
 
@@ -264,7 +247,6 @@ impl State {
             }
         }
         self.field_carry = Some(carry);
-        self.factor.valid = false;
     }
 
     fn export(&mut self, chain: &mut ParticleChainData) {
@@ -279,7 +261,6 @@ impl State {
 }
 
 struct System {
-    reusable: bool,
     a: Matrix,
     rhs: Vector,
     lower: Vector,
@@ -298,7 +279,6 @@ impl State {
         h: f64,
     ) -> System {
         self.fields(carry);
-        self.factor.cooldown = self.factor.cooldown.saturating_sub(1);
         let n = self.q.len();
         let mut a: Matrix = smallvec![0.0; n * n];
         let mut rhs: Vector = smallvec![0.0; n];
@@ -361,7 +341,6 @@ impl State {
         }
         let mut lower: Vector = smallvec![0.0; n];
         let mut upper: Vector = smallvec![0.0; n];
-        let mut reusable = true;
         for i in 0..n {
             // Use one triangle to preserve exact symmetry after suffix sums.
             for j in 0..i {
@@ -369,7 +348,6 @@ impl State {
             }
             let limit = self.limits[i];
             let (force, k, d) = stop(self.q[i], velocity[i], limit);
-            reusable &= k == 0.0;
             let inertia = self.inertia[i];
             rhs[i] += h * inertia * (-self.omega2[i] * wrap(self.q[i] - targets[i]) + force);
             a[i * n + i] += inertia * (h * (self.damping[i] + d) + h * h * (self.omega2[i] + k));
@@ -378,7 +356,6 @@ impl State {
             velocity[i] = velocity[i].clamp(lower[i], upper[i]);
         }
         System {
-            reusable,
             a,
             rhs,
             lower,
@@ -468,107 +445,23 @@ fn substitute(a: &[f64], b: &mut [f64]) -> bool {
     b.iter().all(|v| v.is_finite())
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-struct Factor {
-    l: Matrix,
-    valid: bool,
-    age: u32,
-    cooldown: u32,
-    h: f64,
-}
-
 fn feasible(s: &System, x: &[f64]) -> bool {
     x.iter()
         .enumerate()
         .all(|(i, x)| x.is_finite() && *x >= s.lower[i] && *x <= s.upper[i])
 }
 
-impl Factor {
-    fn eligible(&self, s: &System, h: f64) -> bool {
-        REUSE_FACTORS
-            && s.rhs.len() > 2
-            && s.reusable
-            && self.valid
-            && self.h == h
-            && self.age < 15
-            && self.cooldown == 0
-    }
-
-    fn accepts(&mut self, s: &System, x: &[f64], residual: f64, scale: f64) -> bool {
-        if !feasible(s, x)
-            || !residual.is_finite()
-            || !scale.is_finite()
-            || residual < 0.0
-            || scale < 0.0
-            || residual > 1e-8 * scale.max(1e-20)
-        {
-            self.cooldown = 32;
-            return false;
-        }
-        self.age += 1;
-        true
-    }
-
-    fn reused(&mut self, s: &System, h: f64) -> Option<Vector> {
-        let n = s.rhs.len();
-        if !self.eligible(s, h) {
-            return None;
-        }
-        let mut x = s.rhs.clone();
-        if !substitute(&self.l, &mut x) || !feasible(s, &x) {
-            self.cooldown = 32;
-            return None;
-        }
-        // Check the CURRENT equations, not just the change in the matrix.
-        // A diagonally normalized residual limits local force imbalance;
-        // it is not a trajectory-error guarantee. Constrained solves always
-        // refactor exactly. No iterative refinement is hidden here.
-        let mut residual = 0.0;
-        let mut scale = 0.0;
-        for i in 0..n {
-            let ax = s.a[i * n..(i + 1) * n]
-                .iter()
-                .zip(&x)
-                .map(|(a, x)| a * x)
-                .sum::<f64>();
-            residual += (ax - s.rhs[i]).powi(2) / s.a[i * n + i];
-            scale += s.rhs[i].powi(2) / s.a[i * n + i];
-        }
-        self.accepts(s, &x, residual, scale).then_some(x)
-    }
-
-    fn fresh(&mut self, s: &System, h: f64) -> Option<Vector> {
-        self.valid = false;
-        self.l.clone_from(&s.a);
-        let mut x = s.rhs.clone();
-        if x.len() == 2 {
-            if !factor_solve(&mut self.l, &mut x) {
-                return None;
-            }
-        } else {
-            if !factor(&mut self.l, x.len()) || !substitute(&self.l, &mut x) {
-                return None;
-            }
-            self.valid = s.reusable;
-            self.age = 0;
-            self.h = h;
-        }
-        if feasible(s, &x) {
-            Some(x)
-        } else {
-            self.valid = false;
-            constrained(s)
-        }
-    }
-
-    fn solve(&mut self, s: &System, h: f64) -> Option<Vector> {
-        self.reused(s, h).or_else(|| self.fresh(s, h))
-    }
-}
-
-#[cfg(test)]
 fn solve(s: &System) -> Option<Vector> {
-    Factor::default().fresh(s, 0.0)
+    let mut a = s.a.clone();
+    let mut x = s.rhs.clone();
+    if !factor_solve(&mut a, &mut x) {
+        return None;
+    }
+    if feasible(s, &x) {
+        Some(x)
+    } else {
+        constrained(s)
+    }
 }
 
 fn constrained(s: &System) -> Option<Vector> {
@@ -730,7 +623,7 @@ impl State {
         let s = self.system(carry, carry, DMat2::ZERO, DVec2::ZERO, targets, h);
         self.velocities = saved;
         self.angular = angular;
-        let Some(velocity) = Factor::default().fresh(&s, h) else {
+        let Some(velocity) = solve(&s) else {
             return false;
         };
         let mut displacement = DVec2::ZERO;
@@ -781,10 +674,7 @@ pub(super) fn step(
         &targets,
         h,
     );
-    let result = state
-        .factor
-        .solve(&system, h)
-        .and_then(|v| state.advance(&step, &v, &targets));
+    let result = solve(&system).and_then(|v| state.advance(&step, &v, &targets));
     state.export(chain);
     state.exported_carry = carry;
     chain.coupled = Some(state);
@@ -924,13 +814,11 @@ pub(super) fn tick_chains(
     let mut start = 0;
     while start < jobs.len() {
         let n = jobs[start].chain.links.len();
-        let batch_len = if BATCH_CHAINS
-            && cfg!(any(
-                target_feature = "sse2",
-                all(target_arch = "aarch64", target_feature = "neon"),
-                target_feature = "simd128"
-            ))
-            && matches!(n, 2 | 8)
+        let batch_len = if cfg!(any(
+            target_feature = "sse2",
+            all(target_arch = "aarch64", target_feature = "neon"),
+            target_feature = "simd128"
+        )) && matches!(n, 2 | 8)
             && jobs[start..]
                 .iter()
                 .take(4)
@@ -962,9 +850,9 @@ pub(super) fn tick_chains(
                 substeps.push(step);
             }
             let solutions = if batch_len == 4 {
-                batch::solve(&mut frames, &systems, h)
+                batch::solve(&systems)
             } else {
-                smallvec![frames[0].state.factor.solve(&systems[0], h)]
+                smallvec![solve(&systems[0])]
             };
             for ((frame, step), velocity) in frames.iter_mut().zip(&substeps).zip(solutions) {
                 if !frame.failed {
@@ -1015,11 +903,18 @@ pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, p
         .enumerate()
         .map(|(i, link)| {
             let mut bend = -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI;
-            // Seed limp rods using their subtree's gravity, avoiding the
-            // zero-torque but unstable equilibrium of an inverted drawing.
-            if link.stiffness <= 0.0 && gravity[i].is_finite() && gravity[i] != 0.0 {
+            if gravity[i].is_finite() && gravity[i] != 0.0 {
                 let target = down * gravity[i].signum();
-                bend = wrap(rest[i].perp_dot(target).atan2(rest[i].dot(target)) - parent);
+                let toward_gravity =
+                    wrap(rest[i].perp_dot(target).atan2(rest[i].dot(target)) - parent);
+                if link.stiffness <= 0.0 {
+                    bend = toward_gravity;
+                } else if rest[i].dot(target) < 0.0 {
+                    // Break an inverted zero-torque equilibrium. Relaxation
+                    // returns strong springs to the drawing and lets weak
+                    // ones sag, without a separate stability solve.
+                    bend += toward_gravity.clamp(-1e-3, 1e-3);
+                }
             }
             bend = bend.clamp(-cap(link.limit), cap(link.limit));
             parent += bend;
@@ -1204,45 +1099,6 @@ mod tests {
     }
 
     #[test]
-    fn cached_factor_checks_current_equations_bounds_and_step_size() {
-        let mut s = System {
-            reusable: true,
-            a: smallvec![4.0, 1.0, 0.0, 1.0, 3.0, 0.5, 0.0, 0.5, 2.0],
-            rhs: smallvec![1.0, 2.0, 3.0],
-            lower: smallvec![-10.0;3],
-            upper: smallvec![10.0;3],
-            initial: smallvec![0.0;3],
-        };
-        let mut cache = Factor::default();
-        let exact = cache.fresh(&s, 0.01).expect("SPD");
-        assert_eq!(cache.reused(&s, 0.01), Some(exact.clone()));
-        assert!(cache.reused(&s, 0.02).is_none());
-        s.a[0] += 1e-6;
-        assert!(cache.reused(&s, 0.01).is_some());
-        s.a[0] += 2.0;
-        assert!(cache.reused(&s, 0.01).is_none());
-        assert_eq!(cache.cooldown, 32);
-        cache.fresh(&s, 0.01).expect("SPD");
-        assert!(
-            !cache.eligible(&s, 0.01),
-            "a fresh factor retains rejection backoff"
-        );
-        cache.cooldown = 0;
-        s.upper[2] = 0.01;
-        assert!(cache.reused(&s, 0.01).is_none());
-        let bounded = cache.solve(&s, 0.01).expect("bounded SPD");
-        assert!(kkt(&s, &bounded) < 1e-8);
-        assert!(!cache.valid);
-        s.upper[2] = 10.0;
-        cache.fresh(&s, 0.01).expect("SPD");
-        cache.cooldown = 0;
-        for _ in 0..15 {
-            assert!(cache.reused(&s, 0.01).is_some());
-        }
-        assert!(cache.reused(&s, 0.01).is_none());
-    }
-
-    #[test]
     fn batched_locks_match_independent_ticks_with_edits_and_moving_frames() {
         // Two complete SIMD batches, remainders and arbitrary-sized scalar
         // chains; every lane has different fields, poses and bound activity.
@@ -1416,7 +1272,6 @@ mod tests {
                     }
                 }
                 let s = System {
-                    reusable: true,
                     a,
                     rhs: (0..n)
                         .map(|i| ((i * 13 + seed) as f64).cos() * 10.0)
@@ -1436,7 +1291,6 @@ mod tests {
     fn direct_solve_rejects_singular_systems_and_nonfinite_forces() {
         for n in [2, 3] {
             let mut s = System {
-                reusable: true,
                 a: smallvec![0.0; n * n],
                 rhs: smallvec![1.0; n],
                 lower: smallvec![-1.0; n],
@@ -1576,6 +1430,56 @@ mod tests {
                 assert!(q.abs() < 2e-5, "{q}");
             }
             assert!(c.is_at_rest(1e-4));
+        }
+    }
+
+    #[test]
+    fn settling_and_ticking_preserve_small_valid_carries() {
+        for scale in [Vec2::new(1e-6, 5e-5), Vec2::new(-1e-6, 5e-5)] {
+            let carry = Mat2::from_diagonal(scale);
+            let mut c = chain(2);
+            c.gravity = 0.0;
+            c.settle_to_rest(Vec2::ZERO, carry, &[]);
+            let expected = carry * Vec2::new(0.0, 160.0);
+            assert!(c.particles[2].pos.distance(expected) < 1e-8);
+            for _ in 0..120 {
+                c.tick(Vec2::ZERO, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
+                assert_eq!(c.carry, carry);
+                assert!(c.particles[2].pos.distance(expected) < 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn settling_inverted_springs_finds_a_stable_pose() {
+        for n in [2, 8] {
+            for stiffness in [0.1, 16.0] {
+                let mut c = chain(n);
+                c.gravity = 9800.0;
+                for link in &mut c.links {
+                    link.drawn = -Vec2::Y;
+                    link.stiffness = stiffness;
+                }
+                c.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
+                let tip = c.particles[n].pos;
+                if stiffness == 0.1 {
+                    assert!(tip.x.abs() > 1.0, "{n}: {tip}");
+                } else {
+                    assert!(tip.distance(Vec2::new(0.0, -160.0)) < 0.02, "{n}: {tip}");
+                }
+                assert!(c.is_at_rest(1e-4), "{n}, {stiffness}");
+                c.particles[n].pos.x += 0.1;
+                for _ in 0..1200 {
+                    c.tick(
+                        Vec2::ZERO,
+                        Mat2::IDENTITY,
+                        &[],
+                        1.0 / 60.0,
+                        DEFAULT_CHAIN_SUBSTEPS,
+                    );
+                }
+                assert!(c.particles[n].pos.distance(tip) < 0.2, "{n}, {stiffness}");
+            }
         }
     }
 

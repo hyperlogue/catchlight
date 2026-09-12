@@ -15,8 +15,9 @@
 //!
 //! Hair chains use angular two-way coupling; the solver and cache invariants
 //! live in [`coupled`]. Relative bends preserve local link lengths, and the
-//! full node map carries them into world space. Gravity support holds sprung
-//! links on their drawing; posed bends move the spring targets.
+//! full node map carries them into world space. Rest support cancels gravity
+//! torque on drawn sprung links, but weak upward springs can still be unstable.
+//! Posed bends move the spring targets.
 //!
 //! A model's `chain_substeps` selects equal steps per frame, defaulting to four.
 //! The anchor and carry interpolate across those steps. Damping is per second;

@@ -21,6 +21,8 @@ sure all potential changes can be verified in a tight feedback loop.
 
 ## git commits
 
+- Commit completed, validated work before ending the task, unless the user
+  asks to leave it uncommitted.
 - Keep working on the current branch, unless you are told to create or jump to a
   branch.
 - Before you stage, check for a concurrent committer. A non-empty index you
@@ -134,13 +136,10 @@ that enforces them, not here. Add new ones there.
   rotations compose, that the joints are exact and the art between them
   stretches, where the pass runs and what its descent halts at, that the
   per-vertex assignment comes from rest geometry, and the chain it may carry
-- `crates/catchlight-core/src/physics.rs` — substeps, damping, the Y-down
-  frame, the chain's position-based form, what a link bend's sign means, why the
-  drawing is the equilibrium and the preload that makes it one is a field
-  fixed in the node's frame, what carries the drawing into the world, an
-  anchor that crosses a frame rather
-  than jumping at its first substep, what a link's damping is measured
-  against, and what a bend limit clamps
+- `crates/catchlight-core/src/physics.rs` — driver stepping and damping, the
+  Y-down frame, model-wide hair substeps, and bend readout;
+  `physics/coupled.rs` — two-way forces and rest support, full carry and
+  interpolation, bend limits, settling and sleeping, caching and batching
 - `crates/catchlight-core/src/interpolate.rs` — how a binding's grid is read
 - `crates/catchlight-core/src/texture.rs` — the whole texture strategy: decode,
   premultiply, alpha crop, the UV crop it hands back
