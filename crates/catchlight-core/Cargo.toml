@@ -44,6 +44,11 @@ name = "puppet_tick"
 harness = false
 test = false
 
+[[bench]]
+name = "chain_coupling"
+harness = false
+test = false
+
 [lints]
 workspace = true
 

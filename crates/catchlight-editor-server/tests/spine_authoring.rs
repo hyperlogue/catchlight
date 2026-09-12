@@ -458,7 +458,7 @@ fn every_chain_knob_the_file_refuses_is_refused_at_the_door() {
         (
             "limit 0",
             with_feel(LinkFeelArg {
-                limit: Some(0.0),
+                limit: Some(Some(0.0)),
                 ..Default::default()
             }),
         ),
@@ -776,7 +776,7 @@ fn a_refit_reuses_the_spine_and_keeps_the_chains_knobs() {
             weight: Some(0.25),
             links: Some(vec![LinkFeelArg {
                 stiffness: Some(3.0),
-                limit: Some(0.25),
+                limit: Some(Some(0.25)),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -798,9 +798,78 @@ fn a_refit_reuses_the_spine_and_keeps_the_chains_knobs() {
     // The one feel the caller named was repeated onto the joints it did not.
     assert!(links.iter().all(|l| l.stiffness == Some(3.0)));
     assert!(
-        links.iter().all(|l| l.limit == Some(0.25)),
+        links.iter().all(|l| l.limit == Some(Some(0.25))),
         "a bend limit reads back with the rest of the feel: {links:?}",
     );
+}
+
+#[test]
+fn new_chain_limits_default_but_explicit_choices_survive_an_edit() {
+    use serde_json::json;
+
+    for (wire, expected) in [
+        (json!({}), Some(14.0 / 180.0)),
+        (json!({"links": [{"stiffness": 2.0}]}), Some(14.0 / 180.0)),
+        (json!({"links": [{"limit": null}]}), None),
+        (json!({"links": [{"limit": 0.25}]}), Some(0.25)),
+    ] {
+        let ed = Editor::new();
+        let session = session(&ed);
+        let part = node("root/hair");
+        strip_part(&ed, session, &part, [0.0; 3], 0.0, [1.0, 1.0]);
+        let ResponseBody::SpineFit { node: made, .. } = body(
+            &ed,
+            30,
+            Command::SpineFit {
+                session,
+                part,
+                links: 2,
+                axis: None,
+                node: None,
+                name: None,
+                chain: Some(serde_json::from_value(wire.clone()).unwrap()),
+            },
+        ) else {
+            panic!("a chain can be fitted");
+        };
+        let chain = info(&ed, session, &made).spine.unwrap().chain.unwrap();
+        assert!(
+            chain
+                .links
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|l| l.limit == Some(expected)),
+            "wrong limit for {wire}: {chain:?}"
+        );
+
+        // Read, change damping, send back: null must stay explicit so an
+        // unlimited chain never acquires the default during an unrelated edit.
+        let mut read: ChainArg =
+            serde_json::from_value(serde_json::to_value(&chain).unwrap()).unwrap();
+        for feel in read.links.as_mut().unwrap() {
+            feel.damping = Some(0.8);
+        }
+        body(
+            &ed,
+            31,
+            Command::SpineSet {
+                session,
+                node: made.clone(),
+                joints: None,
+                targets: None,
+                chain: Some(Some(read)),
+            },
+        );
+        let read = info(&ed, session, &made).spine.unwrap().chain.unwrap();
+        assert!(
+            read.links
+                .unwrap()
+                .iter()
+                .all(|l| l.limit == Some(expected) && l.damping == Some(0.8)),
+            "editing damping changed the limit for {wire}"
+        );
+    }
 }
 
 /// A limit is a bend in half turns, so zero would be a joint that cannot
@@ -823,7 +892,7 @@ fn a_limit_outside_its_range_is_refused() {
         name: None,
         chain: Some(ChainArg {
             links: Some(vec![LinkFeelArg {
-                limit: Some(limit),
+                limit: Some(Some(limit)),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -854,7 +923,7 @@ fn a_limit_outside_its_range_is_refused() {
             .links
             .expect("links")
             .iter()
-            .all(|l| l.limit == Some(ok)));
+            .all(|l| l.limit == Some(Some(ok))));
     }
 }
 

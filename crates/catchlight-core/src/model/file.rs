@@ -2263,10 +2263,20 @@ mod tests {
                 links
             ],
         };
-        let (ok, _) = spine_file(|sp| sp.chain = Some(chain(2)));
+        let (ok, node) = spine_file(|sp| sp.chain = Some(chain(2)));
+        let loaded = Model::from_clm_file(&ok).expect("a well-formed chain loads");
+        let node = NodeId::new(node).unwrap();
+        let ModelNodeKind::Spine(spine) = &loaded.node(&node).unwrap().kind else {
+            panic!("a spine loads as a spine");
+        };
         assert!(
-            Model::from_clm_file(&ok).is_ok(),
-            "a well-formed chain loads"
+            spine
+                .chain()
+                .unwrap()
+                .links()
+                .iter()
+                .all(|l| l.limit.is_none()),
+            "existing unlimited links do not acquire the authoring default"
         );
 
         let (file, node) = spine_file(|sp| sp.chain = Some(chain(1)));

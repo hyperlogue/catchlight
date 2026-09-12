@@ -407,18 +407,25 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
                     <input
                       type="checkbox"
                       checked={link?.limit != null}
-                      onChange={(e) =>
-                        feel(i, {
-                          limit: e.currentTarget.checked ? 0.25 : null,
-                        })
-                      }
+                      onChange={(e) => {
+                        const links = spine.joints.map((_, j) => {
+                          const next = { ...chain.links?.[j] };
+                          if (i === j) {
+                            // Omit to restore the core's default; null is unlimited.
+                            if (e.currentTarget.checked) delete next.limit;
+                            else next.limit = null;
+                          }
+                          return next;
+                        });
+                        setChain({ ...chain, links });
+                      }}
                     />
                     Limit bend
                   </label>
                   {link?.limit != null && (
-                    <Field label="Maximum">
+                    <Field label="Max bend">
                       <NumberField
-                        label={`Link ${i + 1} limit`}
+                        label={`Link ${i + 1} max bend from rest`}
                         value={link.limit * 180}
                         min={1}
                         max={180}

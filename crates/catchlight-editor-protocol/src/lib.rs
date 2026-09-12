@@ -1438,11 +1438,17 @@ pub struct LinkFeelArg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stiffness: Option<f32>,
     /// The furthest this link's bend may reach either way, in half turns,
-    /// within `(0, 1]`. Absent is no limit at all — not "leave the one that
-    /// is there", because `links` replaces the whole list and a feel absent
-    /// from it is a feel the chain no longer has.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<f32>,
+    /// within `(0, 1]`. Absent uses the core's default (14 degrees); `null`
+    /// means unlimited. The limit measures bend from the drawn curve, not
+    /// the link's world rotation. `links` replaces the whole list, so an
+    /// absent field does not preserve a previous limit.
+    #[serde(
+        default,
+        deserialize_with = "present_as_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts", ts(as = "Option<f32>"))]
+    pub limit: Option<Option<f32>>,
 }
 
 impl LinkFeelArg {
@@ -1454,8 +1460,7 @@ impl LinkFeelArg {
             gravity_scale: self.gravity_scale.unwrap_or(d.gravity_scale),
             damping: self.damping.unwrap_or(d.damping),
             stiffness: self.stiffness.unwrap_or(d.stiffness),
-            // Absent is the default here too, and the default is no limit.
-            limit: self.limit,
+            limit: self.limit.unwrap_or(d.limit),
         }
     }
 
@@ -1466,7 +1471,7 @@ impl LinkFeelArg {
             gravity_scale: Some(feel.gravity_scale),
             damping: Some(feel.damping),
             stiffness: Some(feel.stiffness),
-            limit: feel.limit,
+            limit: Some(feel.limit),
         }
     }
 }

@@ -13,7 +13,7 @@
 //! `world_inverse` by the same flip coming out. Gravity points toward +Y
 //! in that frame.
 //!
-//! **The particle chain is position-based, not Verlet.**
+//! **The default particle chain is position-based, not Verlet.**
 //! [`ParticleChainData`] stores each particle's velocity explicitly and
 //! re-derives it from the move the rod constraint actually made. A Verlet
 //! chain encodes velocity as `pos - prev_pos`, which is a velocity only for
@@ -139,8 +139,27 @@
 //! analytic balance. `ParticleChainData::is_at_rest` therefore asks about
 //! velocity alone, and `is_projection_noise` is what makes a stopped chain's
 //! velocities exactly zero rather than a float-floor jitter.
+//!
+//! [`ChainSolver::Direct`] opts into angular two-way coupling; its invariants
+//! live in [`coupled`]. The equilibrium and preload formulas above describe
+//! the default `OneWay` solver.
 
 use crate::{Mat2, Mat4, Vec2};
+
+mod coupled;
+
+/// Runtime choice between historical one-way motion and direct two-way
+/// coupling; never stored in a model. Existing rigs keep their current
+/// motion until a host explicitly opts into direct coupling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChainSolver {
+    /// Historical root-to-tip projection, without downstream reactions.
+    #[default]
+    OneWay,
+    /// Two-way coupling with an analytic 2x2 solve or Cholesky factorization.
+    /// Active hard limits can require additional solves.
+    Direct,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PendulumKind {
@@ -840,6 +859,8 @@ pub struct ChainParticle {
 /// turns.**
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParticleChainData {
+    coupled: Option<Box<coupled::State>>,
+    pub solver: ChainSolver,
     pub local_only: bool,
     /// Pre-folded like `SimplePhysicsData::gravity` (pixels/s², toward +Y in
     /// the physics frame).
@@ -896,6 +917,8 @@ pub struct ParticleChainData {
 impl ParticleChainData {
     pub fn new(links: Vec<ChainLink>) -> Self {
         let mut chain = Self {
+            coupled: None,
+            solver: ChainSolver::default(),
             local_only: false,
             gravity: 9.8 * 100.0,
             weight: 1.0,
@@ -950,6 +973,18 @@ pub const CHAIN_MAX_STEP: f32 = 1.0 / 240.0;
 /// `damping` adds to this and can never bring it below.
 pub const BEND_SPRING_DAMPING_RATIO: f32 = 0.1;
 
+/// One independently sampled chain; batching never changes driver ordering.
+pub(crate) struct ChainTick<'a> {
+    pub chain: &'a mut ParticleChainData,
+    pub anchor: Vec2,
+    pub carry: Mat2,
+    pub posed: smallvec::SmallVec<[f32; 8]>,
+}
+
+pub(crate) fn tick_chains(jobs: &mut [ChainTick<'_>], dt: f32) {
+    coupled::tick_chains(jobs, dt);
+}
+
 impl ParticleChainData {
     /// Advance the chain by `dt` with its root pinned to `anchor_world`.
     /// The outer `dt` is clamped and split exactly the way
@@ -981,6 +1016,11 @@ impl ParticleChainData {
     /// for the links it does not reach.
     pub fn tick(&mut self, anchor_world: Vec2, carry_world: Mat2, posed: &[f32], dt: f32) {
         let carry = usable_carry(carry_world);
+        if self.solver != ChainSolver::OneWay {
+            coupled::tick(self, anchor_world, carry, posed, dt);
+            return;
+        }
+        self.coupled = None;
         if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
             self.settle_to_rest(anchor_world, carry, posed);
         }
@@ -1026,8 +1066,10 @@ impl ParticleChainData {
     /// `particles` to match `links`. `carry_world` is [`Self::tick`]'s, and
     /// is stored the same way.
     ///
-    /// This is the solver's analytic equilibrium, link by link. A springless
-    /// link hangs along gravity, which is the whole of what this used to do:
+    /// For `OneWay` this is its analytic equilibrium, link by link. Direct
+    /// coupling instead uses bounded damped relaxation of its equations, and
+    /// leaves `moved_last_tick` set on numerical failure or budget exhaustion.
+    /// A springless link hangs along gravity, which is the whole of what this used to do:
     /// gravity is parallel to every rod there, so the solver leaves it
     /// exactly alone. A sprung one balances the two torques it feels — see
     /// [`rest_pose_dir`] for the equation and why it is exact rather than
@@ -1037,6 +1079,11 @@ impl ParticleChainData {
     /// computes: the spring balances gravity around the bend the param poses,
     /// not around zero.
     pub fn settle_to_rest(&mut self, anchor_world: Vec2, carry_world: Mat2, posed: &[f32]) {
+        self.coupled = None;
+        if self.solver != ChainSolver::OneWay {
+            coupled::settle(self, anchor_world, usable_carry(carry_world), posed);
+            return;
+        }
         self.anchor = anchor_world;
         self.carry = usable_carry(carry_world);
         self.particles.clear();

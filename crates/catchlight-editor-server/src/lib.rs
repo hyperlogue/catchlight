@@ -2401,7 +2401,7 @@ fn chain_of(arg: &ChainArg, joints: usize) -> Result<ModelChain, EditorError> {
                 return Err(bad("stiffness", "is not finite and at or above zero"));
             }
         }
-        if let Some(v) = feel.limit {
+        if let Some(Some(v)) = feel.limit {
             if !v.is_finite() || v <= 0.0 || v > 1.0 {
                 return Err(bad("limit", "is outside 0 exclusive to 1"));
             }

@@ -727,6 +727,10 @@ pub struct LinkFeel {
     /// The furthest this link's bend may reach either way, in half turns,
     /// within `(0, 1]`. `None` is a joint that turns as far as the forces
     /// take it, which is every link written before there was a limit.
+    /// New links default to 14 degrees in either direction from the drawn
+    /// curve. This keeps the spine ramp's average centre-line extension below
+    /// 1%; it does not bound strain across the whole mesh. Saved links keep
+    /// their authored limit, including no limit.
     ///
     /// A limit binds the pose as well as the physics, **at every weight**: a
     /// param posed past it moves the spring's target out there, the link still
@@ -743,7 +747,7 @@ impl Default for LinkFeel {
             gravity_scale: 1.0,
             damping: 0.5,
             stiffness: 0.0,
-            limit: None,
+            limit: Some(14.0 / 180.0),
         }
     }
 }

@@ -380,6 +380,9 @@ fn a_rebake_carries_the_particles_unless_the_links_changed() {
 /// that names nothing moves no param at all.
 #[test]
 fn a_kicked_chain_writes_its_bends_and_only_where_it_is_aimed() {
+    // Stay inside the default bend limit: a displacement beyond the wall
+    // immediately starts returning, which no longer tests the kick's sign.
+    const KICK: Vec2 = Vec2::new(5.0, 0.0);
     let mut f = Fixture::new(3);
     f.wire_outputs();
     let mut puppet = f.puppet();
@@ -396,7 +399,7 @@ fn a_kicked_chain_writes_its_bends_and_only_where_it_is_aimed() {
 
     // +X in the drivers' Y-down frame is +X of the node, which is the
     // direction `link_bends` calls positive.
-    assert!(puppet.kick_chain(idx, Vec2::new(30.0, 0.0)), "kicked");
+    assert!(puppet.kick_chain(idx, KICK), "kicked");
     puppet.tick(&f.model, DT);
     let first = puppet
         .param_value(&f.params[0])
@@ -414,7 +417,7 @@ fn a_kicked_chain_writes_its_bends_and_only_where_it_is_aimed() {
     let idx = bare.idx(&puppet);
     puppet.settle_physics(&bare.model);
     puppet.tick(&bare.model, DT);
-    assert!(puppet.kick_chain(idx, Vec2::new(30.0, 0.0)), "kicked");
+    assert!(puppet.kick_chain(idx, KICK), "kicked");
     puppet.tick(&bare.model, DT);
     let moved = tip(&puppet, idx);
     assert!(moved.x.abs() > 1.0, "the chain itself moved, got {moved}");
@@ -894,34 +897,13 @@ fn a_chains_weight_is_how_much_of_the_param_it_decides() {
 /// writes is the bend the solver holds, so a kick hard enough to fling a
 /// strand right over cannot push the param past the limit its link carries.
 ///
-/// Every link is limited to an eighth of a turn here, and the kick is worth
-/// far more than that on the first link alone.
+/// The new-chain default is 14 degrees, and the kick is worth far more than
+/// that on the first link alone.
 #[test]
-fn a_limited_chain_never_writes_a_bend_past_its_limit() {
-    const LIMIT: f32 = 0.125;
+fn a_new_chain_never_writes_a_bend_past_the_default_limit() {
+    const LIMIT: f32 = 14.0 / 180.0;
     let mut f = Fixture::new(3);
     f.wire_outputs();
-    f.model
-        .update_node(&f.chain, |n| {
-            let ModelNodeKind::Spine(spine) = &mut n.kind else {
-                panic!("not a spine");
-            };
-            let mut chain = spine.chain().expect("a chain").clone();
-            chain.set_links(
-                chain
-                    .links()
-                    .iter()
-                    .map(|l| catchlight_core::LinkFeel {
-                        limit: Some(LIMIT),
-                        ..*l
-                    })
-                    .collect(),
-            );
-            spine.set_chain(Some(chain));
-            Ok::<(), ()>(())
-        })
-        .expect("limit the links")
-        .expect("a spine");
 
     let mut puppet = f.puppet();
     puppet.settle_physics(&f.model);
@@ -1374,4 +1356,45 @@ fn a_mirrored_spine_bends_the_other_way() {
     // The kick really did bend the strand, so the two are not agreeing on
     // zero for thirty frames.
     assert!(worst > 0.1, "the kick swung the strand: worst {worst}");
+}
+
+#[test]
+fn coupled_solver_selection_survives_rebake_and_reaches_params() {
+    use catchlight_core::physics::ChainSolver;
+    let mut f = Fixture::new(2);
+    f.wire_outputs();
+    let mut puppet = f.puppet();
+    puppet.set_chain_solver(ChainSolver::Direct);
+    puppet.settle_physics(&f.model);
+    let idx = f.idx(&puppet);
+    assert!(puppet.kick_chain(idx, Vec2::new(5.0, 0.0)));
+    puppet.tick(&f.model, DT);
+    let before = tip(&puppet, idx);
+    assert!(puppet.param_value(&f.params[0]).unwrap().abs() > 1e-5);
+    f.model
+        .update_node(&f.chain, |node| node.name = Name::truncated("renamed hair"))
+        .unwrap();
+    puppet.sync(&f.model);
+    let node = puppet.get(f.idx(&puppet)).unwrap();
+    let catchlight_core::NodeKind::Spine(spine) = &node.kind else {
+        panic!("spine")
+    };
+    let chain = spine.chain.as_ref().unwrap();
+    assert_eq!(chain.solver, ChainSolver::Direct);
+    assert_eq!(chain.particles.last().unwrap().pos, before);
+    puppet.tick(&f.model, DT);
+    for bend in chain_bends(&puppet, f.idx(&puppet)) {
+        assert!(bend.abs() <= 14.0 / 180.0 + 1e-5);
+    }
+    // A geometry edit creates a fresh chain; the selection belongs to
+    // the puppet and applies before its first settle or kick too.
+    f.model
+        .set_spine_joints(&f.chain, straight(3, 30.0))
+        .unwrap();
+    puppet.sync(&f.model);
+    let node = puppet.get(f.idx(&puppet)).unwrap();
+    let catchlight_core::NodeKind::Spine(spine) = &node.kind else {
+        panic!("spine")
+    };
+    assert_eq!(spine.chain.as_ref().unwrap().solver, ChainSolver::Direct);
 }

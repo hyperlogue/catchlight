@@ -895,9 +895,10 @@ export type LinkFeelArg = {
   stiffness?: number | null,
   /**
    * The furthest this link's bend may reach either way, in half turns,
-   * within `(0, 1]`. Absent is no limit at all — not "leave the one that
-   * is there", because `links` replaces the whole list and a feel absent
-   * from it is a feel the chain no longer has.
+   * within `(0, 1]`. Absent uses the core's default (14 degrees); `null`
+   * means unlimited. The limit measures bend from the drawn curve, not
+   * the link's world rotation. `links` replaces the whole list, so an
+   * absent field does not preserve a previous limit.
    */
   limit?: number | null,
 };

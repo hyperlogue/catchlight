@@ -271,6 +271,18 @@ def test_a_nested_struct_parses_back() -> None:
     assert decode(PhysicsTargets | None, None) is None
 
 
+@pytest.mark.parametrize(
+    "limit, wire", [(None, {}), (CLEAR, {"limit": None}), (0.25, {"limit": 0.25})]
+)
+def test_link_limits_distinguish_default_unlimited_and_custom(limit, wire) -> None:
+    feel = protocol_gen.LinkFeelArg(limit=limit)
+    command = protocol_gen.SpineSet(
+        session=1, node="hair", chain=protocol_gen.ChainArg(links=[feel])
+    )
+    assert command.to_wire()["chain"]["links"] == [wire]
+    assert protocol_gen._decode(protocol_gen.LinkFeelArg, wire) == feel
+
+
 def test_an_ok_reply_parses() -> None:
     reply = parse_reply({"reply": "ok", "id": 7, "rev": 4, "body": {"result": "session", "session": 3}})
     assert isinstance(reply, ReplyOk)
