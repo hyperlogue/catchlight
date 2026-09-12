@@ -13,7 +13,8 @@
 //! frequencies. Rest support projects each sprung rod's resultant gravity
 //! off its drawn tangent; differences give fixed endpoint fields. Pose
 //! targets move springs, not those fields. Limp rods retain gravity, and
-//! legacy per-particle preload is unused. Static settling uses relaxation.
+//! legacy per-particle preload is unused. Static settling seeds limp rods
+//! toward gravity within their bounds, then uses relaxation.
 //!
 //! The cubic soft stop starts at 75% of max bend with zero torque and slope,
 //! an 8 Hz response, and outward damping of 2 sqrt(k I). Hard bounds remain:
@@ -994,13 +995,32 @@ pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, p
     chain.carry = carry;
     chain.anchor_initialized = true;
     let rest = rest_rods(chain);
+    let mut gravity: Vector = chain
+        .links
+        .iter()
+        .zip(&rest)
+        .map(|(link, rod)| rod.length() * f64::from(chain.gravity * link.gravity_scale))
+        .collect();
+    for i in (1..gravity.len()).rev() {
+        gravity[i - 1] += gravity[i];
+    }
+    let down = usable(carry).transpose() * DVec2::Y;
+    let mut parent = 0.0;
     let q: Vector = chain
         .links
         .iter()
         .enumerate()
         .map(|(i, link)| {
-            (-f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
-                .clamp(-cap(link.limit), cap(link.limit))
+            let mut bend = -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI;
+            // Seed limp rods using their subtree's gravity, avoiding the
+            // zero-torque but unstable equilibrium of an inverted drawing.
+            if link.stiffness <= 0.0 && gravity[i].is_finite() && gravity[i] != 0.0 {
+                let target = down * gravity[i].signum();
+                bend = wrap(rest[i].perp_dot(target).atan2(rest[i].dot(target)) - parent);
+            }
+            bend = bend.clamp(-cap(link.limit), cap(link.limit));
+            parent += bend;
+            bend
         })
         .collect();
     let rods = rods_at(&rest, &q);
@@ -1497,6 +1517,79 @@ mod tests {
             for q in angles(&c, &rest_rods(&c), usable(carry)) {
                 assert!(q.abs() < 2e-5, "{q}");
             }
+            assert!(c.is_at_rest(1e-4));
+        }
+    }
+
+    #[test]
+    fn settling_inverted_limp_links_finds_a_stable_pose() {
+        for n in [2, 8] {
+            for limit in [None, Some(14.0 / 180.0)] {
+                let mut c = chain(n, ChainSolver::Direct);
+                c.gravity = 9800.0;
+                for link in &mut c.links {
+                    link.drawn = -Vec2::Y;
+                    link.stiffness = 0.0;
+                    link.limit = limit;
+                }
+                c.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
+                let tip = c.particles[n].pos;
+                if limit.is_none() {
+                    assert!(tip.distance(Vec2::new(0.0, 160.0)) < 0.01, "{n}: {tip}");
+                } else {
+                    assert!(tip.x.abs() > 1.0, "{n}: {tip}");
+                }
+                for q in angles(&c, &rest_rods(&c), DMat2::IDENTITY) {
+                    assert!(q.abs() <= cap(limit) + 1e-6);
+                }
+                assert!(c.is_at_rest(1e-4), "{n}, {limit:?}");
+                // A tiny disturbance must not release a large inverted fall.
+                c.particles[n].pos.x += 0.1;
+                for _ in 0..1200 {
+                    c.tick(Vec2::ZERO, Mat2::IDENTITY, &[], 1.0 / 60.0);
+                }
+                assert!(c.particles[n].pos.distance(tip) < 0.2, "{n}, {limit:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn settling_weightless_limp_links_preserves_the_pose() {
+        for gravity in [0.0, 9800.0] {
+            let mut c = chain(2, ChainSolver::Direct);
+            c.gravity = gravity;
+            for link in &mut c.links {
+                link.drawn = -Vec2::Y;
+                link.stiffness = 0.0;
+                link.gravity_scale = if gravity == 0.0 { 1.0 } else { 0.0 };
+            }
+            let posed = [0.02, -0.01];
+            let q = posed.map(|p| -f64::from(p) * PI);
+            let expected: DVec2 = rods_at(&rest_rods(&c), &q).into_iter().sum();
+            c.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &posed);
+            assert!(c.particles[2].pos.distance(expected.as_vec2()) < 1e-4);
+            assert!(c.is_at_rest(1e-4));
+        }
+    }
+
+    #[test]
+    fn settling_limp_links_accounts_for_carry_and_distal_gravity() {
+        for carry in [
+            Mat2::from_angle(0.4),
+            Mat2::from_cols(Vec2::new(-1.5, 0.2), Vec2::new(0.3, 0.8)),
+        ] {
+            let mut c = chain(2, ChainSolver::Direct);
+            for link in &mut c.links {
+                link.drawn = -Vec2::Y;
+                link.stiffness = 0.0;
+                link.limit = None;
+            }
+            c.links[0].gravity_scale = 0.0;
+            c.settle_to_rest(Vec2::ZERO, carry, &[]);
+            // Minimum potential energy with local lengths fixed: maximize
+            // each carried rod's projection onto world gravity.
+            let expected = carry * (carry.transpose() * Vec2::Y).normalize() * 160.0;
+            assert!(c.particles[2].pos.distance(expected) < 1e-4);
             assert!(c.is_at_rest(1e-4));
         }
     }
