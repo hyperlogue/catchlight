@@ -23,6 +23,8 @@
 //! (-limit - q)/h <= v_next <= (limit - q)/h. Active bounds require additional
 //! direct solves. Failure or budget exhaustion retains the last valid
 //! particles and frame and keeps the chain awake, including during settling.
+//! Nonfinite geometry or initial positions outside f32 range are rejected
+//! before replacing particle state; failed initialization is retried next tick.
 //!
 //! Rest geometry and material coefficients are cached; support and rest
 //! inertia also depend on carry. Angular state stays in f64, with f32
@@ -91,6 +93,13 @@ fn stop(angle: f64, velocity: f64, limit: f64) -> (f64, f64, f64) {
 fn usable(carry: Mat2) -> DMat2 {
     let carry = super::usable_carry(carry);
     DMat2::from_cols(carry.x_axis.as_dvec2(), carry.y_axis.as_dvec2())
+}
+
+fn finite_geometry(chain: &ParticleChainData) -> bool {
+    chain
+        .links
+        .iter()
+        .all(|link| link.length.is_finite() && link.drawn.is_finite())
 }
 
 fn rest_rods(chain: &ParticleChainData) -> Points {
@@ -649,10 +658,26 @@ struct Frame<'a> {
     failed: bool,
 }
 
+fn prepare(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]) -> bool {
+    if !anchor.is_finite() || !finite_geometry(chain) {
+        chain.moved_last_tick = true;
+        return false;
+    }
+    if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
+        chain.settle_to_rest(anchor, carry, posed);
+    }
+    chain.anchor_initialized && chain.particles.len() == chain.links.len() + 1
+}
+
 impl<'a> Frame<'a> {
-    fn new(chain: &'a mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]) -> Self {
-        if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
-            chain.settle_to_rest(anchor, carry, posed);
+    fn new(
+        chain: &'a mut ParticleChainData,
+        anchor: Vec2,
+        carry: Mat2,
+        posed: &[f32],
+    ) -> Option<Self> {
+        if !prepare(chain, anchor, carry, posed) {
+            return None;
         }
         let start_anchor = chain.anchor;
         let start_carry = chain.carry;
@@ -660,7 +685,7 @@ impl<'a> Frame<'a> {
         let targets = (0..chain.links.len())
             .map(|i| -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
             .collect();
-        Self {
+        Some(Self {
             chain,
             state,
             targets,
@@ -672,7 +697,7 @@ impl<'a> Frame<'a> {
             from_carry: start_carry,
             moved: false,
             failed: false,
-        }
+        })
     }
 
     fn step(&self, k: u32, steps: u32, h: f64) -> Step {
@@ -747,10 +772,8 @@ pub(super) fn tick_chains(
     }
     if !dt.is_finite() || dt <= 0.0 {
         for job in jobs {
-            if !job.chain.anchor_initialized
-                || job.chain.particles.len() != job.chain.links.len() + 1
-            {
-                job.chain.settle_to_rest(job.anchor, job.carry, &job.posed);
+            if !prepare(job.chain, job.anchor, job.carry, &job.posed) {
+                continue;
             }
             job.chain.anchor = job.anchor;
             job.chain.carry = job.carry;
@@ -761,7 +784,8 @@ pub(super) fn tick_chains(
     }
     let dt = dt.min(super::PHYSICS_MAX_DT);
     let steps = u32::from(substeps.get());
-    let h = f64::from(dt / steps as f32);
+    // Dividing in f32 can round a positive subnormal dt down to zero.
+    let h = f64::from(dt) / f64::from(steps);
     jobs.sort_unstable_by_key(|job| job.chain.links.len());
     // Sort only independent requests after all anchors and posed targets
     // have been sampled. A batch never reads another batch's output.
@@ -786,7 +810,7 @@ pub(super) fn tick_chains(
         };
         let mut frames: SmallVec<[Frame<'_>; 4]> = jobs[start..start + batch_len]
             .iter_mut()
-            .map(|job| Frame::new(job.chain, job.anchor, job.carry, &job.posed))
+            .filter_map(|job| Frame::new(job.chain, job.anchor, job.carry, &job.posed))
             .collect();
         for k in 1..=steps {
             let mut systems: SmallVec<[System; 4]> = SmallVec::new();
@@ -796,10 +820,10 @@ pub(super) fn tick_chains(
                 systems.push(frame.state.system(&step, &frame.targets));
                 substeps.push(step);
             }
-            let solutions = if batch_len == 4 {
+            let solutions = if frames.len() == 4 {
                 batch::solve(&systems)
             } else {
-                smallvec![solve(&systems[0])]
+                systems.iter().map(solve).collect()
             };
             for ((frame, step), velocity) in frames.iter_mut().zip(&substeps).zip(solutions) {
                 if !frame.failed {
@@ -838,9 +862,10 @@ fn relax(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]
 }
 
 pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]) {
-    chain.anchor = anchor;
-    chain.carry = carry;
-    chain.anchor_initialized = true;
+    chain.moved_last_tick = true;
+    if !anchor.is_finite() || !finite_geometry(chain) {
+        return;
+    }
     let rest = rest_rods(chain);
     let mut gravity: Vector = chain
         .links
@@ -878,19 +903,27 @@ pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, p
         })
         .collect();
     let rods = rods_at(&rest, &q);
-    chain.particles.clear();
-    chain.particles.push(ChainParticle {
+    let mut particles: SmallVec<[ChainParticle; 16]> = SmallVec::new();
+    particles.push(ChainParticle {
         pos: anchor,
         vel: Vec2::ZERO,
     });
     let mut pos = anchor.as_dvec2();
     for rod in rods {
         pos += usable(carry) * rod;
-        chain.particles.push(ChainParticle {
+        particles.push(ChainParticle {
             pos: pos.as_vec2(),
             vel: Vec2::ZERO,
         });
     }
+    if !particles.iter().all(|p| p.pos.is_finite()) {
+        return;
+    }
+    chain.anchor = anchor;
+    chain.carry = carry;
+    chain.anchor_initialized = true;
+    chain.particles.clear();
+    chain.particles.extend(particles);
     // Off the hot path. Damping is temporarily increased to settle faster,
     // never written back to authored data.
     let damping: SmallVec<[f32; 16]> = chain.links.iter().map(|l| l.damping).collect();
@@ -1292,6 +1325,147 @@ mod tests {
             c.links.iter().map(|link| link.damping).collect::<Vec<_>>(),
             damping
         );
+    }
+
+    #[test]
+    fn subnormal_frame_time_is_safe_at_bend_bounds() {
+        for n in [2, 8] {
+            for steps in [DEFAULT_CHAIN_SUBSTEPS, std::num::NonZeroU8::MAX] {
+                let mut c = chain(n);
+                let posed = vec![1.0; n];
+                c.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &posed);
+                // Anchor motion puts the cached angles exactly at a bound.
+                c.tick(Vec2::X, Mat2::IDENTITY, &posed, 1.0 / 60.0, steps);
+                c.tick(Vec2::ZERO, Mat2::IDENTITY, &posed, f32::from_bits(1), steps);
+                assert!(c
+                    .particles
+                    .iter()
+                    .all(|p| p.pos.is_finite() && p.vel.is_finite()));
+                c.tick(Vec2::ZERO, Mat2::IDENTITY, &[], 1.0 / 60.0, steps);
+                assert_eq!(c.anchor, Vec2::ZERO);
+                assert!(c
+                    .particles
+                    .iter()
+                    .all(|p| p.pos.is_finite() && p.vel.is_finite()));
+            }
+        }
+    }
+
+    #[test]
+    fn overflowed_singular_carries_fall_back_to_identity() {
+        for size in [1e20, f32::MAX] {
+            let carry = Mat2::from_cols(Vec2::splat(size), Vec2::splat(size));
+            let mut c = chain(2);
+            let mut identity = c.clone();
+            c.settle_to_rest(Vec2::ZERO, carry, &[]);
+            assert_eq!(c.carry, Mat2::IDENTITY);
+            assert_eq!(c.particles, identity.particles);
+            c.tick(Vec2::X, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
+            identity.tick(
+                Vec2::X,
+                Mat2::IDENTITY,
+                &[],
+                1.0 / 60.0,
+                DEFAULT_CHAIN_SUBSTEPS,
+            );
+            assert_eq!(c.carry, identity.carry);
+            assert_eq!(c.particles, identity.particles);
+        }
+    }
+
+    #[test]
+    fn nonfinite_geometry_preserves_state_and_can_recover() {
+        let spine = crate::spine::SpineData::new(vec![Vec2::new(0.0, 1e20)]);
+        let (length, drawn) = spine.link_geometry().next().unwrap();
+        let mut c = chain(2);
+        let before = c.clone();
+        c.links[0].length = length;
+        c.links[0].drawn = drawn;
+        let target = Vec2::new(5.0, 0.0);
+        let carry = Mat2::from_angle(0.1);
+        c.settle_to_rest(target, carry, &[]);
+        assert_eq!(c.particles, before.particles);
+        assert_eq!(c.anchor, before.anchor);
+        assert_eq!(c.carry, before.carry);
+        assert!(!c.is_at_rest(1e-4));
+        for dt in [0.0, 1.0 / 60.0] {
+            c.tick(target, carry, &[], dt, DEFAULT_CHAIN_SUBSTEPS);
+            assert_eq!(c.particles, before.particles);
+            assert_eq!(c.anchor, before.anchor);
+            assert_eq!(c.carry, before.carry);
+            assert!(!c.is_at_rest(1e-4));
+        }
+        c.links = before.links;
+        c.tick(target, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
+        assert_eq!(c.anchor, target);
+        assert_eq!(c.carry, carry);
+    }
+
+    #[test]
+    fn unrepresentable_settling_preserves_state_and_retries_initialization() {
+        for initialized in [false, true] {
+            for changed_count in [false, true] {
+                let mut c = chain(2);
+                c.anchor_initialized = initialized;
+                let before = c.clone();
+                if changed_count {
+                    c.links.push(c.links[0]);
+                }
+                c.links[0].length = f32::MAX;
+                let carry = Mat2::from_diagonal(Vec2::splat(2.0));
+                c.settle_to_rest(Vec2::X, carry, &[]);
+                assert_eq!(c.particles, before.particles);
+                assert_eq!(c.anchor, before.anchor);
+                assert_eq!(c.carry, before.carry);
+                assert_eq!(c.anchor_initialized, initialized);
+                assert!(!c.is_at_rest(1e-4));
+                c.tick(Vec2::X, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
+                assert_eq!(c.particles, before.particles);
+                assert_eq!(c.anchor, before.anchor);
+                assert_eq!(c.carry, before.carry);
+                assert!(!c.is_at_rest(1e-4));
+                c.links[0].length = 80.0;
+                c.tick(
+                    Vec2::X,
+                    Mat2::IDENTITY,
+                    &[],
+                    1.0 / 60.0,
+                    DEFAULT_CHAIN_SUBSTEPS,
+                );
+                assert_eq!(c.anchor, Vec2::X);
+                assert!(c.anchor_initialized);
+                assert_eq!(c.particles.len(), c.links.len() + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_geometry_does_not_block_other_locks_in_a_batch() {
+        for invalid_count in 1..=4 {
+            let mut chains: Vec<_> = (0..4).map(|_| chain(8)).collect();
+            for c in &mut chains[..invalid_count] {
+                c.links[0].length = f32::INFINITY;
+            }
+            let before = chains.clone();
+            let mut jobs: Vec<_> = chains
+                .iter_mut()
+                .map(|chain| super::super::ChainTick {
+                    chain,
+                    anchor: Vec2::X,
+                    carry: Mat2::IDENTITY,
+                    posed: smallvec![],
+                })
+                .collect();
+            tick_chains(&mut jobs, 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
+            for (c, before) in chains[..invalid_count].iter().zip(&before) {
+                assert_eq!(c.particles, before.particles);
+                assert_eq!(c.anchor, before.anchor);
+                assert!(!c.is_at_rest(1e-4));
+            }
+            for c in &chains[invalid_count..] {
+                assert_eq!(c.anchor, Vec2::X);
+            }
+        }
     }
 
     #[test]

@@ -586,8 +586,8 @@ pub struct ParticleChainData {
     pub weight: f32,
     pub links: Vec<ChainLink>,
     /// `links.len() + 1` particles; `particles[0]` is the anchor. Any tick
-    /// that finds the two out of step re-hangs the chain, so editing `links`
-    /// is enough to reshape it.
+    /// that finds the two out of step re-hangs the chain if the geometry is
+    /// representable, so editing `links` is enough to reshape it.
     pub particles: Vec<ChainParticle>,
     pub anchor: Vec2,
     /// The full local-to-world linear map in the physics (Y-down) frame,
@@ -665,6 +665,8 @@ impl ParticleChainData {
     /// Find a stationary pose with bounded damped relaxation. Unsprung links
     /// start toward gravity within their limits. Failure or budget exhaustion
     /// leaves the chain awake; settling is independent of the frame substeps.
+    /// Invalid geometry or an unrepresentable initial pose preserves the
+    /// previous particles and frame.
     pub fn settle_to_rest(&mut self, anchor_world: Vec2, carry_world: Mat2, posed: &[f32]) {
         self.coupled = None;
         coupled::settle(self, anchor_world, usable_carry(carry_world), posed);
@@ -748,9 +750,10 @@ fn usable_carry(carry: Mat2) -> Mat2 {
     if !carry.to_cols_array().iter().all(|v| v.is_finite()) {
         return Mat2::IDENTITY;
     }
-    // The determinant is the area a unit square maps to; near zero the map
-    // has collapsed an axis and a rod along it has no direction left.
-    if carry.determinant().abs() <= 1e-12 {
+    // Promote before multiplying: finite f32 columns can overflow their
+    // determinant. Near zero the map has collapsed an axis.
+    let determinant = carry.x_axis.as_dvec2().perp_dot(carry.y_axis.as_dvec2());
+    if !determinant.is_finite() || determinant.abs() <= 1e-12 {
         return Mat2::IDENTITY;
     }
     carry
