@@ -597,6 +597,7 @@ fn binding(
     values: ClmBindingValues,
 ) -> ClmBinding {
     ClmBinding {
+        key_positions: Vec::new(), // Filled from the fixture's axes below.
         params,
         node: nid(node),
         interpolate_mode: mode,
@@ -644,7 +645,6 @@ fn file(
             min: p.min[0],
             max: p.max[0],
             default: p.defaults[0],
-            key_positions: p.keys_x,
         });
         if p.vec2 {
             params.push(ClmParam {
@@ -653,10 +653,21 @@ fn file(
                 min: p.min[1],
                 max: p.max[1],
                 default: p.defaults[1],
-                key_positions: p.keys_y,
             });
         }
-        bindings.extend(p.bindings);
+        bindings.extend(p.bindings.into_iter().map(|mut binding| {
+            binding.key_positions = if p.vec2 {
+                vec![p.keys_x.clone(), p.keys_y.clone()]
+            } else {
+                vec![p.keys_x.clone()]
+            };
+            for axis in &mut binding.key_positions {
+                if axis.is_empty() {
+                    axis.push(0.0);
+                }
+            }
+            binding
+        }));
         slots.push(Slot {
             ids,
             min: p.min,

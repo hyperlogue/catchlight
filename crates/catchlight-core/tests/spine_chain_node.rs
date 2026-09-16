@@ -77,7 +77,6 @@ impl Fixture {
                             min: -1.0,
                             max: 1.0,
                             default: 0.0,
-                            key_positions: vec![0.0, 0.5, 1.0],
                         },
                         &mut hex,
                     )
@@ -171,7 +170,6 @@ fn a_chain_follows_a_posed_group_the_same_frame() {
                 min: -1.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: vec![0.0, 0.5, 1.0],
             },
             &mut hex,
         )
@@ -198,7 +196,10 @@ fn a_chain_follows_a_posed_group_the_same_frame() {
         group.clone(),
         BindingTarget::Scalar(ScalarTarget::Tx),
     );
-    model.add_binding(&key).expect("bind the group's tx");
+    model
+        .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]])
+        .unwrap();
+    model.reset_binding_key(&key, [1, 0]).unwrap();
     model
         .set_binding_key(&key, [2, 0], 200.0)
         .expect("the param's top key slides the group");
@@ -250,7 +251,6 @@ fn a_chain_anchored_on_a_driver_follows_it_one_frame_late() {
                 min: -1.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: vec![0.0, 0.5, 1.0],
             },
             &mut hex,
         )
@@ -279,7 +279,10 @@ fn a_chain_anchored_on_a_driver_follows_it_one_frame_late() {
         group.clone(),
         BindingTarget::Scalar(ScalarTarget::Tx),
     );
-    model.add_binding(&key).expect("bind the group's tx");
+    model
+        .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]])
+        .unwrap();
+    model.reset_binding_key(&key, [1, 0]).unwrap();
     model
         .set_binding_key(&key, [2, 0], 300.0)
         .expect("the driver's output slides the group");
@@ -545,7 +548,6 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
                             min: -1.0,
                             max: 1.0,
                             default: 0.0,
-                            key_positions: vec![0.0, 0.5, 1.0],
                         },
                         &mut hex,
                     )
@@ -685,7 +687,6 @@ fn posed_chain(rotation: f32, links: usize) -> (Model, NodeId, Vec<ParamId>) {
                         min: -1.0,
                         max: 1.0,
                         default: 0.0,
-                        key_positions: vec![0.0, 0.5, 1.0],
                     },
                     &mut hex,
                 )
@@ -1190,7 +1191,6 @@ fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
                 min: -1.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: vec![0.0, 0.5, 1.0],
             },
             &mut hex,
         )
@@ -1291,7 +1291,6 @@ fn a_mirrored_spine_bends_the_other_way() {
                             min: -1.0,
                             max: 1.0,
                             default: 0.0,
-                            key_positions: vec![0.0, 0.5, 1.0],
                         },
                         &mut hex,
                     )

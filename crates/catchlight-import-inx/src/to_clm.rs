@@ -166,7 +166,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
                     min,
                     max,
                     default: defaults[0],
-                    key_positions: axis_x.clone(),
                 });
             }
             Slot::Pair(x, y) => {
@@ -179,7 +178,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
                     min: min_x,
                     max: max_x,
                     default: defaults[0],
-                    key_positions: axis_x.clone(),
                 });
                 params.push(ClmParam {
                     id: y.clone(),
@@ -187,7 +185,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
                     min: min_y,
                     max: max_y,
                     default: defaults[1],
-                    key_positions: axis_y.clone(),
                 });
             }
         }
@@ -665,6 +662,10 @@ fn convert_binding(
     )?;
     Some(ClmBinding {
         params: slot.params(),
+        key_positions: match slot {
+            Slot::One(_) => vec![axis_x.to_vec()],
+            Slot::Pair(_, _) => vec![axis_x.to_vec(), axis_y.to_vec()],
+        },
         node: node.clone(),
         interpolate_mode: interp(b.interpolate_mode.as_deref()),
         values,

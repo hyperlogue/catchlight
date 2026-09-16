@@ -85,9 +85,6 @@ fn random_model(rng: &mut Rng) -> Model {
                     &mut hex,
                 )
                 .unwrap();
-            if rng.one_in(2) {
-                m.key_insert(&p, 0.5).unwrap();
-            }
             p
         })
         .collect();
@@ -182,6 +179,9 @@ fn random_model(rng: &mut Rng) -> Model {
         };
         if m.add_binding(&key).is_err() {
             continue;
+        }
+        if rng.one_in(2) {
+            m.key_insert(&key, key.params.x(), 0.5).unwrap();
         }
         let (w, h) = m.binding_grid(&key).unwrap();
         let cell = [rng.below(w as usize) as u32, rng.below(h as usize) as u32];
@@ -495,6 +495,7 @@ fn puppet_rig() -> (Model, Model, ParamId, NodeId) {
         BindingTarget::Scalar(ScalarTarget::Ty),
     );
     scratch.add_binding(&hat_key).unwrap();
+    scratch.reset_binding_key(&hat_key, [0, 0]).unwrap();
     scratch.set_binding_key(&hat_key, [1, 0], 7.0).unwrap();
     let addon = scratch.extract(std::slice::from_ref(&hat));
 

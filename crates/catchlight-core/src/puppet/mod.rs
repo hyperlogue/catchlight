@@ -105,7 +105,6 @@ use crate::components::{checked_affine_inverse, Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::formats::clm::ClmAnimation;
 use crate::id::{NodeId, ParamId};
-use crate::interpolate::{bracket, frac};
 use crate::model::{BindingTarget, Model, Pose, ScalarTarget};
 use crate::node::NodeTree;
 use crate::physics::{ParticleChainData, SimplePhysicsData};
@@ -278,11 +277,12 @@ impl Motion {
     }
 }
 
-/// Where a pose puts one param on its own key positions.
+/// A normalized param input, with a bracket filled for each binding axis.
 #[derive(Debug, Clone, Copy)]
 struct Located {
     /// The resolved param value, before clamping — the deform fold's memo key.
     value: f32,
+    normalized: f32,
     lo: usize,
     hi: usize,
     frac: f32,
@@ -291,6 +291,7 @@ struct Located {
 impl Located {
     const REST: Self = Self {
         value: 0.0,
+        normalized: 0.0,
         lo: 0,
         hi: 0,
         frac: 0.0,
@@ -2008,7 +2009,7 @@ impl Puppet {
     }
 
     fn apply_params_where(&mut self, include: impl Fn(BindingTarget) -> bool) {
-        // Locate every param once, not once per binding that names it.
+        // Normalize each input once; each binding locates it on its own axes.
         for slot in 0..self.params.len() {
             self.located[slot] = self.locate(slot as u32);
         }
@@ -2024,30 +2025,22 @@ impl Puppet {
         self.bindings = bindings;
     }
 
-    /// Where the current pose puts one param on its key positions.
+    /// The current resolved input and its normalized param-range position.
     fn locate(&self, slot: u32) -> Located {
         let Some(p) = self.params.get(slot as usize) else {
             return Located::REST;
         };
         let value = self.resolved(slot);
-        if p.key_positions.is_empty() {
-            return Located {
-                value,
-                ..Located::REST
-            };
-        }
         let span = p.max - p.min;
         let normed = if span.abs() > 1e-9 {
             ((value.clamp(p.min, p.max) - p.min) / span).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let (lo, hi) = bracket(&p.key_positions, normed);
         Located {
             value,
-            lo,
-            hi,
-            frac: frac(normed, p.key_positions[lo], p.key_positions[hi]),
+            normalized: normed,
+            ..Located::REST
         }
     }
 }
@@ -2220,7 +2213,6 @@ mod tests {
                     min: 0.0,
                     max: 1.0,
                     default: 0.0,
-                    key_positions: vec![0.0, 1.0],
                 },
                 &mut hex,
             )
@@ -2472,7 +2464,6 @@ mod tests {
                     min: -10.0,
                     max: 10.0,
                     default: 0.0,
-                    key_positions: vec![0.0, 1.0],
                 },
                 &mut hex,
             )
@@ -2595,7 +2586,6 @@ mod tests {
                     min: -10.0,
                     max: 10.0,
                     default: 0.0,
-                    key_positions: vec![0.0, 1.0],
                 },
                 &mut hex,
             )
@@ -2726,6 +2716,9 @@ mod tests {
                 ModelParam::new(crate::id::Name::truncated("Bend"), 0.0, 1.0, 0.0),
             )
             .expect("add the param");
+        let rest_key = BindingKey::new(bend.clone(), mg.clone(), BindingTarget::Deform);
+        model.add_binding(&rest_key).unwrap();
+        model.reset_binding_key(&rest_key, [0, 0]).unwrap();
         // Every lattice vertex moves the same way, so the warp is a pure
         // translation and the shift is `SHIFT` wherever the target sits.
         model

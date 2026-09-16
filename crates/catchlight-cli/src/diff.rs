@@ -415,17 +415,7 @@ fn param_fields(p: &ClmParam) -> Fields {
     f.insert("min".into(), p.min.to_string());
     f.insert("max".into(), p.max.to_string());
     f.insert("default".into(), p.default.to_string());
-    f.insert(
-        "key_positions".into(),
-        format!(
-            "[{}]",
-            p.key_positions
-                .iter()
-                .map(f32::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    );
+
     f
 }
 
@@ -452,6 +442,7 @@ fn binding_key(b: &ClmBinding) -> String {
 
 fn binding_fields(b: &ClmBinding) -> Fields {
     let mut f = Fields::new();
+    f.insert("key_positions".into(), format!("{:?}", b.key_positions));
     f.insert("interpolate_mode".into(), enum_name(&b.interpolate_mode));
     let cells = scalar_cells(&b.values)
         .map(<[_]>::len)

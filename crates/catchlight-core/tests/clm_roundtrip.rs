@@ -71,25 +71,34 @@ fn identity(model: &Model) -> Vec<String> {
     out
 }
 
-/// Opening a committed model and saving it without editing has to be a
-/// byte-for-byte no-op, or every one of them would be rewritten the first time
-/// the editor touched it — and the visual baselines are rendered from these
-/// exact bytes.
+/// Current-version models save byte for byte. Legacy fixtures upgrade once
+/// to binding-owned axes; their migrated bytes must then be stable, and their
+/// authored identity and assets must survive the upgrade.
 #[test]
-fn every_committed_fixture_round_trips_byte_for_byte() {
+fn every_committed_fixture_round_trips_after_any_required_migration() {
     for path in fixtures() {
         let bytes = std::fs::read(&path).expect("read fixture");
         let model =
             Model::from_clm_bytes(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 
-        assert_eq!(
-            model.to_clm_bytes().unwrap(),
-            bytes,
-            "{} is not what the writer would write",
-            path.display()
-        );
-
-        let reopened = Model::from_clm_bytes(&model.to_clm_bytes().unwrap()).unwrap();
+        let encoded = model.to_clm_bytes().unwrap();
+        let version = catchlight_core::formats::container::read(
+            &bytes,
+            &catchlight_core::formats::clm::MAGIC,
+        )
+        .unwrap()
+        .version;
+        if version == catchlight_core::formats::clm::FORMAT_VERSION {
+            assert_eq!(
+                encoded,
+                bytes,
+                "{} is not what the writer would write",
+                path.display()
+            );
+        }
+        let reopened = Model::from_clm_bytes(&encoded).unwrap();
+        assert_eq!(reopened.to_clm_bytes().unwrap(), encoded);
+        assert!(model.authored_eq(&reopened).unwrap());
         assert_eq!(
             identity(&reopened),
             identity(&model),

@@ -69,7 +69,6 @@ impl Fixture {
                             min: -1.0,
                             max: 1.0,
                             default: 0.0,
-                            key_positions: vec![0.0, 0.5, 1.0],
                         },
                         &mut hex,
                     )
@@ -391,7 +390,6 @@ fn a_mesh_group_above_a_spine_warps_what_the_spine_bent() {
                     min: 0.0,
                     max: 1.0,
                     default: 0.0,
-                    key_positions: vec![0.0, 1.0],
                 },
                 &mut hex,
             )

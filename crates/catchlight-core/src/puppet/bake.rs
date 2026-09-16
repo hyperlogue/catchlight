@@ -26,20 +26,20 @@ use crate::physics::{ParticleChainData, SimplePhysicsData};
 use super::arena::Arena;
 
 /// One param, flattened to the numbers the fold needs: where a value sits in
-/// `[min, max]` and which key positions bracket it.
+/// `[min, max]`. Each baked binding owns its own bracketing positions.
 #[derive(Clone)]
 pub(super) struct BakedParam {
     pub(super) id: ParamId,
     pub(super) min: f32,
     pub(super) max: f32,
     pub(super) default: f32,
-    pub(super) key_positions: Vec<f32>,
 }
 
 /// One binding, resolved against the arena: which slot it writes, which param
 /// slots index its grid, and the grid itself.
 #[derive(Clone)]
 pub(super) struct BakedBinding {
+    pub(super) key_positions: Vec<Vec<f32>>,
     pub(super) node: NodeIdx,
     pub(super) target: BindingTarget,
     /// Param slot along the grid's x axis, and along its y axis when the
@@ -202,7 +202,6 @@ pub(super) fn bake(model: &Model) -> Baked {
             min: p.min,
             max: p.max,
             default: p.default,
-            key_positions: p.key_positions.clone(),
         });
     }
 
@@ -296,6 +295,7 @@ fn bake_binding(
             .collect(),
     };
     Some(BakedBinding {
+        key_positions: model.binding(key)?.key_positions().to_vec(),
         node,
         target: key.target,
         x,

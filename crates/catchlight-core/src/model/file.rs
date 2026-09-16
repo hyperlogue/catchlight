@@ -120,6 +120,14 @@ pub enum ClmLoadError {
         "the binding on node {node:?} names {got} params; a binding names one or two distinct ones"
     )]
     BindingParamCount { node: String, got: usize },
+    #[error("binding on node {node:?} must carry one nonempty, finite, strictly increasing axis in 0..=1 per param, within the binding-grid budget")]
+    BindingPositions { node: String },
+    #[error("binding on node {node:?} has invalid authored cell {cell:?}: {reason}")]
+    BindingCell {
+        node: String,
+        cell: [u32; 2],
+        reason: &'static str,
+    },
     #[error("part {node:?} carries two slots named {slot:?}")]
     DuplicateSlot { node: String, slot: String },
     #[error("part {node:?} fills slot {slot:?} with vertex {vertex}, past the mesh's {vertices}")]
@@ -357,7 +365,6 @@ impl Model {
                 min: p.min,
                 max: p.max,
                 default: p.default,
-                key_positions: p.key_positions.clone(),
             });
         }
 
@@ -369,6 +376,7 @@ impl Model {
             check_deform_cells(&b.key.node, self.deform_len(&b.key.node), &b.values)?;
             bindings.push(ClmBinding {
                 params: b.key.params.iter().cloned().collect(),
+                key_positions: b.key_positions.clone(),
                 node: b.key.node.clone(),
                 interpolate_mode: b.interpolate_mode(),
                 values: b.values.to_clm(),
@@ -556,7 +564,6 @@ impl Model {
                         min: p.min,
                         max: p.max,
                         default: p.default,
-                        key_positions: p.key_positions.clone(),
                     },
                 )
                 .is_some()
@@ -749,7 +756,48 @@ impl Model {
                     .into())
                 }
             };
+            binding::validate_binding_positions(b.params.len(), &b.key_positions).map_err(
+                |_| ClmLoadError::BindingPositions {
+                    node: b.node.to_string(),
+                },
+            )?;
+            let width = b.key_positions[0].len();
+            let height = b.key_positions.get(1).map_or(1, Vec::len);
+            let mut occupied = HashSet::new();
+            let mut check = |x: u32, y: u32, finite: bool| -> Result<(), ModelError> {
+                let reason = if x as usize >= width || y as usize >= height {
+                    Some("outside the binding grid")
+                } else if !occupied.insert((x, y)) {
+                    Some("duplicate coordinates")
+                } else if !finite {
+                    Some("non-finite value")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    return Err(ClmLoadError::BindingCell {
+                        node: b.node.to_string(),
+                        cell: [x, y],
+                        reason,
+                    }
+                    .into());
+                }
+                Ok(())
+            };
+            match &b.values {
+                ClmBindingValues::Deform(cells) => {
+                    for cell in &cells.cells {
+                        check(cell.x, cell.y, cell.value.iter().all(|v| v.is_finite()))?;
+                    }
+                }
+                values => {
+                    for cell in scalar_cells(values).unwrap_or(&[]) {
+                        check(cell.x, cell.y, cell.value.is_finite())?;
+                    }
+                }
+            }
             bindings.push(ModelBinding {
+                key_positions: b.key_positions.clone(),
                 key: BindingKey {
                     params: key_params,
                     node: b.node.clone(),
@@ -2649,7 +2697,7 @@ mod tests {
                 load_err(&file),
                 ClmLoadError::DeformCellShape {
                     node: node.to_string(),
-                    cell: [0, 0],
+                    cell: [1, 1],
                     got,
                     expected: 8,
                 }

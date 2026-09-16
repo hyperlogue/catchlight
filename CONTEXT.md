@@ -164,20 +164,20 @@ _Avoid_: glue
 ### Params and posing
 
 **Param**:
-A named scalar the author exposes for posing: a range, a default value, and
-the key positions along it. Bindings read a param's current value.
+A named scalar the author exposes for posing, with a range and a default
+value. Bindings read a param's current value.
 _Avoid_: parameter, axis
 
 **Key position**:
-A position along a param, normalized 0..1 across its range, at which
-bindings may hold authored cells.
+A position owned by one binding, normalized 0..1 across a driving param's
+range, at which that binding may hold authored cells.
 _Avoid_: axis point
 
 **Binding**:
 A param's control over one property of one node — or two params' joint
-control over it. Its grid has a cell at every key position of its param, or
-at every pair of key positions of its two params, and the params' current
-values interpolate between the cells.
+control over it. Each binding owns its key positions along each driving
+param; their combinations form the grid whose cells the current values
+interpolate between.
 _Avoid_: mask binding (that's a mask), child binding (that's a pin)
 
 **Cell**:

@@ -7,7 +7,7 @@
 //! target's identity — the fold is then provably a no-op, and skipping keeps
 //! the deform source inactive so nothing downstream re-uploads it.
 //!
-//! Two params interpolate bilinearly over the product of their key positions;
+//! Two params interpolate bilinearly over the binding's own position axes;
 //! one param is the same evaluation with the second axis collapsed to a single
 //! position. That is the same arithmetic [`crate::model::Model::eval_scalar`]
 //! does, in the same four modes, over the same grid — the model evaluates one
@@ -17,7 +17,7 @@ use glam::Vec2;
 
 use crate::components::NodeKind;
 use crate::deform::DeformSource;
-use crate::interpolate::{cubic, InterpolateMode};
+use crate::interpolate::{bracket, cubic, frac, InterpolateMode};
 use crate::model::{BindingTarget, DenseGrid, ScalarTarget};
 
 use super::bake::BakedBinding;
@@ -104,12 +104,12 @@ impl Puppet {
         if b.width == 0 || b.height == 0 {
             return;
         }
-        let x = self.located_at(b.x);
+        let x = self.located_at(b.x, &b.key_positions[0]);
         let y = match b.y {
-            Some(slot) => self.located_at(slot),
+            Some(slot) => self.located_at(slot, &b.key_positions[1]),
             None => Located::REST,
         };
-        // The bracket comes from the param's key-position count; a well-formed
+        // The bracket comes from the binding's own positions; a well-formed
         // binding's grid has exactly those dimensions. Clamp to the grid's own
         // dims so a malformed model evaluates approximately instead of
         // indexing out of bounds.
@@ -139,11 +139,19 @@ impl Puppet {
         }
     }
 
-    fn located_at(&self, slot: u32) -> Located {
-        self.located
+    fn located_at(&self, slot: u32, axis: &[f32]) -> Located {
+        let input = self
+            .located
             .get(slot as usize)
             .copied()
-            .unwrap_or(Located::REST)
+            .unwrap_or(Located::REST);
+        let (lo, hi) = bracket(axis, input.normalized);
+        Located {
+            lo,
+            hi,
+            frac: frac(input.normalized, axis[lo], axis[hi]),
+            ..input
+        }
     }
 
     fn write_scalar(&mut self, b: &BakedBinding, target: ScalarTarget, value: f32) {

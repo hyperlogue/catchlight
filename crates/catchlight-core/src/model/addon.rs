@@ -424,6 +424,7 @@ impl Model {
 
         for b in &addon.bindings {
             self.bindings.push(ModelBinding {
+                key_positions: b.key_positions.clone(),
                 key: b.key.clone(),
                 interpolate_mode: b.interpolate_mode,
                 values: b.values.clone(),
@@ -610,6 +611,7 @@ impl Model {
                 .iter()
                 .filter(|b| inside(&b.key.node))
                 .map(|b| ModelBinding {
+                    key_positions: b.key_positions.clone(),
                     key: b.key.clone(),
                     interpolate_mode: b.interpolate_mode,
                     values: b.values.clone(),
@@ -1158,6 +1160,7 @@ mod tests {
         let mut addon = addon;
         let key = BindingKey::new(b.param.clone(), b.body.clone(), BindingTarget::Deform);
         addon.bindings.push(ModelBinding {
+            key_positions: vec![vec![0.0, 1.0]],
             key: key.clone(),
             interpolate_mode: InterpolateMode::Linear,
             values: deform_values(),

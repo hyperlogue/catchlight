@@ -315,7 +315,6 @@ impl Built {
                     min: -1.0,
                     max: 1.0,
                     default: 0.0,
-                    key_positions: vec![0.0, 0.5, 1.0],
                 },
                 &mut hex,
             )
@@ -334,6 +333,9 @@ impl Built {
             head.clone(),
             BindingTarget::Scalar(ScalarTarget::Tx),
         );
+        model
+            .add_binding_with_positions(&turn_key, vec![vec![0.0, 0.5, 1.0]])
+            .unwrap();
         for (cell, value) in [(0, -TURN_SHIFT), (1, 0.0), (2, TURN_SHIFT)] {
             model.set_binding_key(&turn_key, [cell, 0], value).unwrap();
         }
@@ -352,10 +354,6 @@ impl Built {
                                 min: BEND_MIN,
                                 max: BEND_MAX,
                                 default: 0.0,
-                                key_positions: BEND_KEYS
-                                    .iter()
-                                    .map(|k| (k - BEND_MIN) / (BEND_MAX - BEND_MIN))
-                                    .collect(),
                             },
                             &mut hex,
                         )
@@ -374,6 +372,15 @@ impl Built {
                 first_part.get_or_insert_with(|| part.clone());
                 for (l, param) in strand.iter().enumerate() {
                     let key = BindingKey::new(param.clone(), part.clone(), BindingTarget::Deform);
+                    model
+                        .add_binding_with_positions(
+                            &key,
+                            vec![BEND_KEYS
+                                .iter()
+                                .map(|k| (k - BEND_MIN) / (BEND_MAX - BEND_MIN))
+                                .collect()],
+                        )
+                        .unwrap();
                     for (k, &bend) in BEND_KEYS.iter().enumerate() {
                         model
                             .set_deform_vertices(

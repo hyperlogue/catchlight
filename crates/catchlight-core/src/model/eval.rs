@@ -61,7 +61,7 @@ impl FromIterator<(ParamId, f32)> for Pose {
     }
 }
 
-/// Where a pose sits on one param's key positions: the bracketing indices and
+/// Where a pose sits on one binding axis: the bracketing indices and
 /// how far between them it fell.
 struct Located {
     lo: usize,
@@ -137,10 +137,10 @@ impl Model {
         }
     }
 
-    /// Where `pose` puts a param on its own key positions.
-    fn locate(&self, param: &ParamId, pose: &Pose) -> Result<Located, ModelError> {
+    /// Where `pose` puts a param on this binding's key positions.
+    fn locate(&self, param: &ParamId, axis: &[f32], pose: &Pose) -> Result<Located, ModelError> {
         let p = self.param(param).ok_or(ModelError::UnknownParam)?;
-        if p.key_positions.is_empty() {
+        if axis.is_empty() {
             return Ok(Located {
                 lo: 0,
                 hi: 0,
@@ -154,11 +154,11 @@ impl Model {
         } else {
             0.0
         };
-        let (lo, hi) = bracket(&p.key_positions, normed);
+        let (lo, hi) = bracket(axis, normed);
         Ok(Located {
             lo,
             hi,
-            frac: frac(normed, p.key_positions[lo], p.key_positions[hi]),
+            frac: frac(normed, axis[lo], axis[hi]),
         })
     }
 
@@ -174,9 +174,10 @@ impl Model {
         if w == 0 || h == 0 || dense.len() < w * h {
             return None;
         }
-        let x = self.locate(key.params.x(), pose).ok()?;
+        let (axis_x, axis_y) = self.binding_axes(key).ok()?;
+        let x = self.locate(key.params.x(), axis_x, pose).ok()?;
         let y = match key.params.y() {
-            Some(p) => self.locate(p, pose).ok()?,
+            Some(p) => self.locate(p, axis_y, pose).ok()?,
             None => Located {
                 lo: 0,
                 hi: 0,
@@ -233,7 +234,7 @@ pub(super) mod tests {
         BindingParams, ModelNode, ModelNodeKind, ModelParam, ModelPart, ScalarTarget,
     };
 
-    /// A part driven by two params, each with key positions at 0 / 0.5 / 1 over
+    /// A part with a two-param binding, each axis at 0 / 0.5 / 1 over
     /// the range [0, 1].
     pub(super) fn fixture() -> (Model, BindingKey, ParamId, ParamId) {
         let mut hex = SeededHex::new(13);
@@ -262,7 +263,6 @@ pub(super) mod tests {
                         min: 0.0,
                         max: 1.0,
                         default: 0.0,
-                        key_positions: vec![0.0, 0.5, 1.0],
                     },
                     &mut hex,
                 )
@@ -271,6 +271,9 @@ pub(super) mod tests {
         let x = add("head.x", &mut model);
         let y = add("head.y", &mut model);
         let key = BindingKey::pair(x.clone(), y.clone(), node, BindingTarget::Deform);
+        model
+            .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]; 2])
+            .unwrap();
         (model, key, x, y)
     }
 
@@ -324,6 +327,7 @@ pub(super) mod tests {
     #[test]
     fn each_param_drives_its_own_axis() {
         let (mut model, key, x, y) = fixture();
+        model.reset_binding_key(&key, [0, 0]).unwrap();
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();
@@ -348,6 +352,9 @@ pub(super) mod tests {
             .find(|id| Some(id) != model.root())
             .unwrap();
         let key = BindingKey::new(x.clone(), node, BindingTarget::Scalar(ScalarTarget::ZOrder));
+        model
+            .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]])
+            .unwrap();
         model.set_binding_key(&key, [0, 0], -2.0).unwrap();
         model.set_binding_key(&key, [2, 0], 6.0).unwrap();
         assert!(matches!(key.params, BindingParams::One(_)));
@@ -379,6 +386,7 @@ mod memo_tests {
     #[test]
     fn the_dense_grid_is_rebuilt_when_what_it_came_from_moves() {
         let (mut model, key, x, _) = fixture();
+        model.reset_binding_key(&key, [0, 0]).unwrap();
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();
@@ -395,7 +403,7 @@ mod memo_tests {
         assert_ne!(after_cell, before, "the new keypoint reached the grid");
 
         // A key position: the cells are unchanged, their weights are not.
-        model.key_move(&x, 1, 0.9).unwrap();
+        model.key_move(&key, &x, 1, 0.9).unwrap();
         assert_ne!(at(&model).unwrap(), after_cell, "moving the key re-derived");
 
         // The mesh a deform is sized to.
@@ -423,6 +431,7 @@ mod memo_tests {
     #[test]
     fn a_snapshot_keeps_the_grid_it_was_taken_with() {
         let (mut model, key, x, _) = fixture();
+        model.reset_binding_key(&key, [0, 0]).unwrap();
         model
             .set_deform_vertices(&key, [2, 0], vec![4.0, 0.0, 0.0, 0.0])
             .unwrap();

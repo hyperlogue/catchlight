@@ -209,7 +209,21 @@ impl LoadBudget {
     }
 }
 
-pub const MAX_PARAM_GRID_CELLS: u64 = 65_536;
+pub const MAX_BINDING_GRID_CELLS: u64 = 65_536;
+
+/// Bound an individual binding grid before allocating its dense values or axes.
+pub(crate) fn binding_grid_cells(
+    mut axis_lengths: impl Iterator<Item = u64>,
+) -> Result<u64, LoadLimitError> {
+    axis_lengths
+        .try_fold(1u64, |acc, len| acc.checked_mul(len))
+        .filter(|cells| *cells <= MAX_BINDING_GRID_CELLS)
+        .ok_or(LoadLimitError {
+            resource: "binding grid",
+            limit: MAX_BINDING_GRID_CELLS,
+            got: u64::MAX,
+        })
+}
 
 /// Charge a decoded `.clm` against the shared budget before any of it is
 /// turned into a [`Model`](crate::Model): the counts and products a hostile
@@ -272,25 +286,10 @@ pub fn charge_clm_structure(
         }
     }
 
-    let keys: HashMap<&crate::id::ParamId, u64> = doc
-        .params
-        .iter()
-        .map(|p| (&p.id, p.key_positions.len().max(1) as u64))
-        .collect();
     for binding in &doc.bindings {
-        // A binding over a param the file does not carry is a load error; the
-        // reader reports it, and one key position is the safe charge here.
-        let cells = binding
-            .params
-            .iter()
-            .map(|p| keys.get(p).copied().unwrap_or(1))
-            .try_fold(1u64, |acc, k| acc.checked_mul(k))
-            .filter(|cells| *cells <= MAX_PARAM_GRID_CELLS)
-            .ok_or(LoadLimitError {
-                resource: "param grid",
-                limit: MAX_PARAM_GRID_CELLS,
-                got: u64::MAX,
-            })?;
+        // Axes travel with the binding, including fragments referencing a
+        // base param, so their allocation charge never depends on resolution.
+        let cells = binding_grid_cells(binding.key_positions.iter().map(|axis| axis.len() as u64))?;
         let authored = match &binding.values {
             ClmBindingValues::Deform(values) => values.cells.len(),
             other => crate::model::scalar_cells(other).map_or(0, <[_]>::len),

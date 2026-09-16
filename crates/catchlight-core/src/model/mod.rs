@@ -74,7 +74,7 @@
 //!   free to repeat, and never a key.
 //! - **Every param is a scalar.** Joint control over two params is a property
 //!   of the binding — a [`BindingKey`] names one or two params and its grid is
-//!   the product of their key positions — so a pose is a plain map
+//!   product of the binding's own normalized axes — so a pose is a plain map
 //!   `ParamId -> f32` and nothing else carries a second dimension.
 //! - **A weld pairs slots, never vertex indices.** A part carries named
 //!   [`Slot`]s, each filled by one of its vertices or *unfilled*; a
@@ -182,7 +182,7 @@ pub enum ModelError {
     Fragment,
     #[error("the root node cannot be {0}")]
     Root(&'static str),
-    #[error("binding cell is outside the param's key grid")]
+    #[error("invalid binding key positions, cell coordinates or value")]
     CellOutOfRange,
     #[error("no such binding")]
     UnknownBinding,
@@ -895,24 +895,19 @@ pub struct ModelParam {
     pub name: Name,
     pub min: f32,
     pub max: f32,
-    /// Rest value, in param-value space (unlike the key positions).
+    /// Rest value, in param-value space.
     pub default: f32,
-    /// The values along the param at which a binding may hold authored cells,
-    /// normalized 0..1 across `[min, max]` — the same convention `.clm` stores
-    /// and the runtime interpolates in.
-    pub key_positions: Vec<f32>,
 }
 
 impl ModelParam {
-    /// A param over `[min, max]` resting at `default`, with a key position at
-    /// each end.
+    /// A param over `[min, max]` resting at `default`. Each binding owns its
+    /// own normalized sampling positions over that range.
     pub fn new(name: Name, min: f32, max: f32, default: f32) -> Self {
         Self {
             name,
             min,
             max,
             default,
-            key_positions: vec![0.0, 1.0],
         }
     }
 }
@@ -922,6 +917,7 @@ impl ModelParam {
 #[derive(Debug, Clone)]
 pub struct ModelBinding {
     key: BindingKey,
+    key_positions: Vec<Vec<f32>>,
     interpolate_mode: InterpolateMode,
     values: ModelBindingValues,
     /// The dense grid derived from `values`, built on the first read. Shared
@@ -931,6 +927,11 @@ pub struct ModelBinding {
 }
 
 impl ModelBinding {
+    /// One normalized key-position axis per driving param, in param order.
+    pub fn key_positions(&self) -> &[Vec<f32>] {
+        &self.key_positions
+    }
+
     pub fn key(&self) -> &BindingKey {
         &self.key
     }
@@ -1436,6 +1437,7 @@ impl Model {
             .iter()
             .filter_map(|b| {
                 map.get(&b.key.node).map(|node| ModelBinding {
+                    key_positions: b.key_positions.clone(),
                     key: BindingKey {
                         params: b.key.params.clone(),
                         node: node.clone(),
@@ -2549,16 +2551,15 @@ impl Model {
         for (id, param) in &self.params {
             bytes = bytes
                 .saturating_add(id.as_str().len())
-                .saturating_add(param.name.as_str().len())
-                .saturating_add(
-                    param
-                        .key_positions
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<f32>()),
-                );
+                .saturating_add(param.name.as_str().len());
         }
         for binding in &self.bindings {
             bytes = bytes.saturating_add(binding_values_size(&binding.values));
+            bytes = bytes
+                .saturating_add(binding.key_positions.capacity() * std::mem::size_of::<Vec<f32>>());
+            for axis in &binding.key_positions {
+                bytes = bytes.saturating_add(axis.capacity() * std::mem::size_of::<f32>());
+            }
         }
         for (id, texture) in &self.textures {
             bytes = bytes
@@ -2810,7 +2811,6 @@ mod tests {
                     min: -1.0,
                     max: 1.0,
                     default: 0.0,
-                    key_positions: vec![0.0, 0.5, 1.0],
                 },
                 &mut hex,
             )
@@ -3379,25 +3379,29 @@ mod tests {
             (
                 "key_insert",
                 Box::new(|r| {
-                    r.model.key_insert(&r.param, 0.25).unwrap();
+                    r.model.key_insert(&scalar_key(r), &r.param, 0.25).unwrap();
                 }),
             ),
             (
                 "key_delete",
-                Box::new(|r| r.model.key_delete(&r.param, 1).unwrap()),
+                Box::new(|r| r.model.key_delete(&scalar_key(r), &r.param, 1).unwrap()),
             ),
             (
                 "key_move",
-                Box::new(|r| r.model.key_move(&r.param, 1, 0.6).unwrap()),
-            ),
-            (
-                "param_flip",
-                Box::new(|r| r.model.param_flip(&r.param).unwrap()),
+                Box::new(|r| r.model.key_move(&scalar_key(r), &r.param, 1, 0.6).unwrap()),
             ),
         ];
 
         for (name, edit) in edits {
             let mut r = fixture();
+            if matches!(
+                name,
+                "key_insert" | "key_delete" | "key_move" | "invert_binding" | "copy_binding_key"
+            ) {
+                r.model
+                    .add_binding_with_positions(&scalar_key(&r), vec![vec![0.0, 0.5, 1.0]])
+                    .unwrap();
+            }
             let before = r.model.generation();
             edit(&mut r);
             assert!(
@@ -4259,6 +4263,9 @@ mod tests {
         let key = deform_key(&r);
         let model = &mut r.model;
         model
+            .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]])
+            .unwrap();
+        model
             .set_deform_vertices(&key, [2, 0], vec![1.0; 8])
             .unwrap();
 
@@ -4297,7 +4304,7 @@ mod tests {
                 .iter()
                 .map(|c| (c.x, c.y, c.value.clone()))
                 .collect::<Vec<_>>(),
-            vec![(1, 0, vec![0.0; 8]), (2, 0, vec![1.0; 8])],
+            vec![(2, 0, vec![1.0; 8])],
         );
     }
 
@@ -4572,7 +4579,6 @@ mod tests_support {
                         min: -1.0,
                         max: 1.0,
                         default: 0.0,
-                        key_positions: positions.clone(),
                     },
                     &mut hex,
                 )
@@ -4603,6 +4609,9 @@ mod tests_support {
                 node,
                 BindingTarget::Deform,
             );
+            model
+                .add_binding_with_positions(&key, vec![positions.clone(), positions.clone()])
+                .unwrap();
             for y in 0..keys as u32 {
                 for x in 0..keys as u32 {
                     model

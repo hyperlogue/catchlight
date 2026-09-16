@@ -39,8 +39,8 @@
 //!   are kept sorted by `(y, x)`. Save→save is a no-op, which is what the
 //!   editor's dirty check rests on.
 //! - **Params are scalar.** A binding names one or two of them and its grid is
-//!   the product of their key positions; a physics node writes two. Nothing
-//!   here carries a second axis.
+//!   product of its own key-position axes; a physics node writes two scalar
+//!   params. Bindings carry their axes even when referencing base params.
 //! - **No vertex index outside a slot.** A part carries named slots, each
 //!   filled by one of its vertices; a weld names two parts and pairs their
 //!   slots. A slot may also be *unfilled* (`vertex: null`) — what re-authoring
@@ -316,11 +316,12 @@ pub struct ClmKeyframe {
 // ---- the file ------------------------------------------------------------
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
-/// Bumped for every breaking wire change. **2** is the only version
-/// `decode_structure` accepts; there is no migration path, no reader for the
-/// pre-public v0 arena, and none for v1, which grouped a part's slots into
-/// named seams and was never released.
-pub const FORMAT_VERSION: u16 = 2;
+/// Bumped for every breaking wire change. Writers emit version 3; both
+/// container readers also accept version 2, migrating param-owned positions into
+/// each binding; a legacy fragment missing those params requires re-export
+/// with its original base grids. Versions 0 and 1 were never public and are
+/// not read. Encoded texture and extension payloads are unchanged by migration.
+pub const FORMAT_VERSION: u16 = 3;
 
 const SECTION_STRUCTURE: u32 = 0;
 const SECTION_TEXTURES: u32 = 1;
@@ -364,6 +365,8 @@ pub enum ClmError {
     MissingSection(&'static str),
     #[error("unsupported .clm format_version {0}")]
     UnsupportedVersion(u16),
+    #[error("v2 binding on node {node:?} references param {param:?} without its key positions; re-export with the original base param grids as v3 binding axes")]
+    LegacyBindingAxisMissing { node: String, param: String },
     #[error(
         "these bytes carry a texture manifest, so they are a structure-only container rather \
          than a complete .clm; read them with decode_structure"
@@ -711,21 +714,19 @@ pub struct ClmParam {
     pub name: String,
     pub min: f32,
     pub max: f32,
-    /// Rest value, in param-value space (unlike the key positions).
+    /// Rest value, in param-value space.
     pub default: f32,
-    /// The values along the param at which a binding may hold authored cells,
-    /// normalized 0..1 across `[min, max]`.
-    #[serde(default)]
-    pub key_positions: Vec<f32>,
 }
 
 /// One or two params' control over one property of one node. `values` names
 /// the property and carries its authored cells; the grid those cells index is
-/// the product of `params`' key positions, `x` along the first param.
+/// product of this binding's `key_positions`, `x` along the first param.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClmBinding {
     /// One or two distinct params. Any other count is a load error.
     pub params: Vec<ParamId>,
+    /// One nonempty, strictly increasing normalized axis per driving param.
+    pub key_positions: Vec<Vec<f32>>,
     pub node: NodeId,
     pub interpolate_mode: InterpolateMode,
     pub values: ClmBindingValues,
@@ -912,7 +913,7 @@ pub fn decode_structure_with_budget(
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = decode_section(file.version, structure)?;
+    let doc = decode_section(file.version, structure, budget)?;
     let manifest = file
         .section(SECTION_TEXTURE_MANIFEST)
         .ok_or(ClmError::MissingSection("TextureManifest"))?;
@@ -930,7 +931,7 @@ pub fn decode_structure_with_budget(
 /// and alpha convention the fetched bytes are read with.
 pub fn structure_texture_ids(bytes: &[u8]) -> Result<Vec<ClmTextureRef>, ClmError> {
     let file = container::read(bytes, &MAGIC)?;
-    if file.version != FORMAT_VERSION {
+    if !matches!(file.version, 2 | FORMAT_VERSION) {
         return Err(ClmError::UnsupportedVersion(file.version));
     }
     let manifest = file
@@ -954,7 +955,7 @@ pub fn decode_with_budget(
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = decode_section(file.version, structure)?;
+    let doc = decode_section(file.version, structure, budget)?;
     let textures = match file.section(SECTION_TEXTURES) {
         Some(b) => cbor_from_slice(b)?,
         None => Vec::new(),
@@ -971,11 +972,135 @@ pub fn decode_with_budget(
     })
 }
 
-fn decode_section(version: u16, bytes: &[u8]) -> Result<ClmStructure, ClmError> {
-    if version != FORMAT_VERSION {
-        return Err(ClmError::UnsupportedVersion(version));
+fn decode_section(
+    version: u16,
+    bytes: &[u8],
+    budget: &crate::load_budget::LoadBudget,
+) -> Result<ClmStructure, ClmError> {
+    match version {
+        FORMAT_VERSION => cbor_from_slice(bytes),
+        2 => migrate_v2(cbor_from_slice(bytes)?, budget),
+        other => Err(ClmError::UnsupportedVersion(other)),
     }
-    cbor_from_slice(bytes)
+}
+
+// Version 2 stores positions on params. Keep its decoding shape private so
+// newly authored structure JSON and v3 containers cannot silently omit axes.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct LegacyStructure {
+    physics: ClmPhysics,
+    nodes: Vec<ClmNode>,
+    params: Vec<LegacyParam>,
+    bindings: Vec<LegacyBinding>,
+    welds: Vec<ClmWeld>,
+    animations: Vec<ClmAnimation>,
+    extensions: BTreeMap<ExtensionKey, ClmExtension>,
+}
+
+#[derive(Deserialize)]
+struct LegacyParam {
+    #[serde(flatten)]
+    param: ClmParam,
+    #[serde(default)]
+    key_positions: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+struct LegacyBinding {
+    params: Vec<ParamId>,
+    node: NodeId,
+    interpolate_mode: InterpolateMode,
+    values: ClmBindingValues,
+}
+
+fn migrate_v2(
+    legacy: LegacyStructure,
+    budget: &crate::load_budget::LoadBudget,
+) -> Result<ClmStructure, ClmError> {
+    let axes: BTreeMap<_, _> = legacy
+        .params
+        .iter()
+        .map(|p| (&p.param.id, &p.key_positions))
+        .collect();
+    // A v2 axis can be shared by many bindings. Check its expanded footprint
+    // against the caller's remaining budget before cloning any axis. This is
+    // a preflight only: model construction charges the real budget once.
+    // With at most two nonempty axes, their total length is at most twice
+    // their grid product, so the binding-cell bound also bounds axis storage.
+    let mut preflight = budget.clone();
+    for binding in &legacy.bindings {
+        if binding.params.len() > 2 {
+            return Err(crate::load_budget::LoadLimitError {
+                resource: "binding axes",
+                limit: 2,
+                got: binding.params.len() as u64,
+            }
+            .into());
+        }
+        let axis_lengths = binding
+            .params
+            .iter()
+            .map(|param| {
+                axes.get(param)
+                    .map(|axis| axis.len().max(1) as u64)
+                    .ok_or_else(|| ClmError::LegacyBindingAxisMissing {
+                        node: binding.node.to_string(),
+                        param: param.to_string(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let cells = crate::load_budget::binding_grid_cells(axis_lengths.into_iter())?;
+        let authored = match &binding.values {
+            ClmBindingValues::Deform(values) => values.cells.len(),
+            other => crate::model::scalar_cells(other).map_or(0, <[_]>::len),
+        };
+        preflight.charge(crate::load_budget::LoadResource::BindingCells, cells)?;
+        preflight.charge(
+            crate::load_budget::LoadResource::BindingCells,
+            authored as u64,
+        )?;
+    }
+    let bindings = legacy
+        .bindings
+        .into_iter()
+        .map(|binding| {
+            let key_positions = binding
+                .params
+                .iter()
+                .map(|param| {
+                    let positions =
+                        axes.get(param)
+                            .ok_or_else(|| ClmError::LegacyBindingAxisMissing {
+                                node: binding.node.to_string(),
+                                param: param.to_string(),
+                            })?;
+                    // A legacy empty axis evaluated as a one-position constant grid.
+                    Ok(if positions.is_empty() {
+                        vec![0.0]
+                    } else {
+                        (*positions).clone()
+                    })
+                })
+                .collect::<Result<_, ClmError>>()?;
+            Ok(ClmBinding {
+                params: binding.params,
+                key_positions,
+                node: binding.node,
+                interpolate_mode: binding.interpolate_mode,
+                values: binding.values,
+            })
+        })
+        .collect::<Result<Vec<_>, ClmError>>()?;
+    Ok(ClmStructure {
+        physics: legacy.physics,
+        nodes: legacy.nodes,
+        params: legacy.params.into_iter().map(|p| p.param).collect(),
+        bindings,
+        welds: legacy.welds,
+        animations: legacy.animations,
+        extensions: legacy.extensions,
+    })
 }
 
 #[cfg(test)]
@@ -1047,9 +1172,9 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: vec![0.0, 1.0],
             }],
             bindings: vec![ClmBinding {
+                key_positions: vec![vec![0.0, 1.0]],
                 params: vec![mouth.clone()],
                 node: body,
                 interpolate_mode: InterpolateMode::Linear,
@@ -1167,13 +1292,13 @@ mod tests {
 
     /// v0 is the pre-public arena format and v1 grouped a part's slots into
     /// named seams; nothing reads either any more, so a file carrying one has
-    /// to be refused by version rather than misread as v2 — they share a
+    /// to be refused by version rather than misread as v3 — they share a
     /// magic.
     #[test]
     fn an_older_or_newer_version_is_refused_not_silently_misread() {
         let (doc, textures) = sample();
         let bytes = encode(&doc, &textures, &[]).unwrap();
-        for version in [0u16, 1, 3, 0xFFFF] {
+        for version in [0u16, 1, 4, 0xFFFF] {
             let mut bytes = bytes.clone();
             bytes[8..10].copy_from_slice(&version.to_le_bytes());
             match decode(&bytes) {

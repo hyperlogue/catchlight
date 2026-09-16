@@ -83,20 +83,24 @@ fn every_fixture_carries_both_kinds_through_a_save() {
     }
 }
 
-/// A model with no extensions writes what it always wrote: the field is
-/// skipped when empty and the section is absent, so no committed fixture
-/// needs regenerating.
+/// A model with no extensions omits the field and section, including when
+/// the binding-grid format requires a one-time container migration.
 #[test]
-fn a_model_without_extensions_writes_the_bytes_it_always_did() {
+fn a_model_without_extensions_keeps_its_bytes_after_version_migration() {
     for path in fixtures() {
         let committed = std::fs::read(&path).unwrap();
         let model = Model::from_clm_bytes(&committed).unwrap();
         assert!(model.extensions().is_empty());
-        assert_eq!(
-            model.to_clm_bytes().unwrap(),
-            committed,
-            "{} would be rewritten",
-            path.display()
+        let encoded = model.to_clm_bytes().unwrap();
+        let parsed = catchlight_core::formats::container::read(&encoded, &clm::MAGIC).unwrap();
+        assert!(parsed.section(3).is_none());
+        let structure: serde_json::Value =
+            ciborium::from_reader(parsed.section(0).unwrap()).unwrap();
+        assert!(structure.get("extensions").is_none());
+        let reopened = Model::from_clm_bytes(&encoded).unwrap();
+        assert!(
+            reopened.to_clm_bytes().unwrap() == encoded,
+            "save after migration is stable"
         );
     }
 }

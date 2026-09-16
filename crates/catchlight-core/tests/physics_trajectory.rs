@@ -69,7 +69,6 @@ fn fixture(scenario: Scenario) -> (Model, Puppet, [ParamId; 2]) {
                     min: -1000.0,
                     max: 1000.0,
                     default: 0.0,
-                    key_positions: vec![0.0, 1.0],
                 },
                 &mut hex,
             )

@@ -32,7 +32,6 @@ fn rig(locks: usize, links: usize, mesh: bool, amplitude: f32) -> Rig {
                 min: -1.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: vec![0.0, 0.5, 1.0],
             },
             &mut hex,
         )
@@ -49,6 +48,9 @@ fn rig(locks: usize, links: usize, mesh: bool, amplitude: f32) -> Rig {
         head.clone(),
         BindingTarget::Scalar(ScalarTarget::Tx),
     );
+    model
+        .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]])
+        .unwrap();
     for (cell, value) in [(0, -amplitude), (1, 0.0), (2, amplitude)] {
         model.set_binding_key(&key, [cell, 0], value).unwrap();
     }
@@ -64,7 +66,6 @@ fn rig(locks: usize, links: usize, mesh: bool, amplitude: f32) -> Rig {
                         min: -0.5,
                         max: 0.5,
                         default: 0.0,
-                        key_positions: vec![0.0, 0.5, 1.0],
                     },
                     &mut hex,
                 )

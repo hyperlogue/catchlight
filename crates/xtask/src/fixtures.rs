@@ -227,13 +227,12 @@ fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
     let params = PARAMS
         .iter()
         .enumerate()
-        .map(|(i, (name, min, max, default, keys))| ClmParam {
+        .map(|(i, (name, min, max, default, _))| ClmParam {
             id: pid(i),
             name: (*name).into(),
             min: *min,
             max: *max,
             default: *default,
-            key_positions: keys.to_vec(),
         })
         .collect();
 
@@ -242,6 +241,7 @@ fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
     let (w, h) = (PARAMS[GRID_X].4.len(), PARAMS[GRID_Y].4.len());
     let joint = ClmBinding {
         params: vec![pid(GRID_X), pid(GRID_Y)],
+        key_positions: vec![PARAMS[GRID_X].4.to_vec(), PARAMS[GRID_Y].4.to_vec()],
         node: nid(driven),
         interpolate_mode: InterpolateMode::Linear,
         values: ClmBindingValues::Deform(ClmCells {
@@ -296,6 +296,7 @@ fn sweep_binding(
 ) -> ClmBinding {
     ClmBinding {
         params: vec![pid(SWEEP)],
+        key_positions: vec![PARAMS[SWEEP].4.to_vec()],
         node,
         interpolate_mode: InterpolateMode::Linear,
         values: wrap(ClmCells {
@@ -661,10 +662,10 @@ fn welded_seam() -> (ClmStructure, Vec<ClmTexture>) {
         min: 0.0,
         max: 1.0,
         default: 0.0,
-        key_positions: vec![0.0, 1.0],
     };
     let deform = ClmBinding {
         params: vec![pid(0)],
+        key_positions: vec![vec![0.0, 1.0]],
         node: nid(upper),
         interpolate_mode: InterpolateMode::Linear,
         values: ClmBindingValues::Deform(ClmCells {
@@ -920,15 +921,13 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
         min: -1.0,
         max: 1.0,
         default: 0.0,
-        // Three keys, so the default sits on an authored one and the rest
-        // pose is an explicit zero rather than an interpolated one.
-        key_positions: vec![0.0, 0.5, 1.0],
     });
 
     // One binding only: the `turn` that slides the head. A spine needs no
     // deform cells of its own.
     let bindings = vec![ClmBinding {
         params: vec![pid(TURN)],
+        key_positions: vec![vec![0.0, 0.5, 1.0]],
         node: nid(head),
         interpolate_mode: InterpolateMode::Linear,
         values: ClmBindingValues::TransformTX(ClmCells {
@@ -972,7 +971,6 @@ fn bend_param(link: usize) -> ClmParam {
         min: -1.0,
         max: 1.0,
         default: 0.0,
-        key_positions: vec![0.0, 1.0],
     }
 }
 

@@ -52,8 +52,10 @@
 //!
 //! # Params and pairs
 //!
-//! A param's `poses` run over its key positions, one per key, and a key at
-//! position `pos` is posed at `min + pos × (max − min)`.
+//! A param's `poses` sample the sorted union of positions from all bindings
+//! it drives; an unbound param samples [0,1]. This union is a discovery
+//! schedule, not shared grid ownership: each binding evaluates on its own
+//! axes. Position `pos` is posed at `min + pos × (max − min)`.
 //!
 //! `pairs` holds one entry per unordered param pair that some two-param
 //! binding spans, deduplicated across bindings and ordered with `a < b` by Id
@@ -114,7 +116,9 @@ pub struct ParamPoses {
     pub min: f32,
     pub max: f32,
     pub default: f32,
-    /// Normalised 0..1, as the model stores them.
+    /// Sorted union of normalized positions from every binding driven by
+    /// this param. A discovery/sampling schedule, not shared grid ownership.
+    /// Unbound params use [0,1].
     pub key_positions: Vec<f32>,
     pub poses: Vec<KeyPose>,
 }
@@ -205,8 +209,8 @@ pub fn build(model: &Model) -> Poses {
         .iter()
         .filter_map(|id| {
             let param = model.param(id)?;
-            let poses = param
-                .key_positions
+            let key_positions = sample_positions(model, id);
+            let poses = key_positions
                 .iter()
                 .map(|position| {
                     let value = value_at(param.min, param.max, *position);
@@ -225,7 +229,7 @@ pub fn build(model: &Model) -> Poses {
                 min: param.min,
                 max: param.max,
                 default: param.default,
-                key_positions: param.key_positions.clone(),
+                key_positions,
                 poses,
             })
         })
@@ -235,10 +239,12 @@ pub fn build(model: &Model) -> Poses {
         .into_iter()
         .filter_map(|(a, b)| {
             let (pa, pb) = (model.param(&a)?, model.param(&b)?);
-            let mut poses = Vec::with_capacity(pa.key_positions.len() * pb.key_positions.len());
+            let a_positions = sample_positions(model, &a);
+            let b_positions = sample_positions(model, &b);
+            let mut poses = Vec::with_capacity(a_positions.len() * b_positions.len());
             // `b` outer, `a` inner: a row of this grid is a sweep of `a`.
-            for bp in &pb.key_positions {
-                for ap in &pa.key_positions {
+            for bp in &b_positions {
+                for ap in &a_positions {
                     let (av, bv) = (value_at(pa.min, pa.max, *ap), value_at(pb.min, pb.max, *bp));
                     let mut pose = Pose::new();
                     pose.set(a.clone(), av);
@@ -442,4 +448,26 @@ fn pairs_of(model: &Model) -> Vec<(ParamId, ParamId)> {
         })
         .collect();
     pairs.into_iter().collect()
+}
+
+/// Binding grids remain independent; sampling their union reaches every
+/// authored knot when evaluating the whole model under this control.
+fn sample_positions(model: &Model, param: &ParamId) -> Vec<f32> {
+    let mut positions: Vec<f32> = model
+        .bindings_of_param(param)
+        .filter_map(|binding| {
+            binding
+                .params()
+                .axis_of(param)
+                .map(|axis| &binding.key_positions()[axis as usize])
+        })
+        .flatten()
+        .copied()
+        .collect();
+    if positions.is_empty() {
+        return vec![0.0, 1.0];
+    }
+    positions.sort_by(f32::total_cmp);
+    positions.dedup();
+    positions
 }
