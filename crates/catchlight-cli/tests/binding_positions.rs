@@ -34,7 +34,7 @@ fn pose_discovery_unions_independent_axes_without_reauthoring_them() {
         .add_binding_with_positions(&b, vec![vec![0.0, 0.75, 1.0]])
         .unwrap();
     let before = model.to_clm_bytes().unwrap();
-    let dump = catchlight_cli::poses::build(&model);
+    let dump = catchlight_cli::poses::build(&model).unwrap();
     assert_eq!(
         dump.params
             .iter()

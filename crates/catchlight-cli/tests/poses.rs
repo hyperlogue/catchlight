@@ -8,11 +8,15 @@
 mod common;
 
 use catchlight_cli::poses::{self, Cap, Poses};
-use catchlight_core::{Model, NodeKind, Puppet};
+use catchlight_core::formats::clm::ClmMesh;
+use catchlight_core::{
+    BindingKey, BindingTarget, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name,
+    NodeId, NodeKind, ParamId, Puppet, ScalarTarget,
+};
 
 fn dump(name: &str) -> Poses {
     let model = Model::from_clm_bytes(&common::read(&common::fixture(name))).expect("load");
-    poses::build(&model)
+    poses::build(&model).unwrap()
 }
 
 /// Every Part of `name`, in tree order, as `(id, name)`.
@@ -251,6 +255,87 @@ fn a_file_that_is_not_a_clm_is_refused() {
     ]);
     assert_eq!(code, 2, "an error exits 2");
     assert!(stderr.contains("is not a .clm"), "{stderr}");
+}
+
+fn independent_pair_model(keys: usize, vertices: usize) -> Model {
+    let mut model = Model::new();
+    let root = model.root().unwrap().clone();
+    let a = ParamId::new("a").unwrap();
+    let b = ParamId::new("b").unwrap();
+    let positions: Vec<_> = (0..keys).map(|i| i as f32 / (keys - 1) as f32).collect();
+    for (id, target) in [(&a, ScalarTarget::Tx), (&b, ScalarTarget::Ty)] {
+        model
+            .add_param_with_id(
+                id.clone(),
+                ModelParam::new(Name::new("Drive").unwrap(), 0.0, 1.0, 0.0),
+            )
+            .unwrap();
+        model
+            .add_binding_with_positions(
+                &BindingKey::new(id.clone(), root.clone(), BindingTarget::Scalar(target)),
+                vec![positions.clone()],
+            )
+            .unwrap();
+    }
+    model
+        .add_binding_with_positions(
+            &BindingKey::pair(a, b, root.clone(), BindingTarget::Scalar(ScalarTarget::Rz)),
+            vec![vec![0.0, 1.0], vec![0.0, 1.0]],
+        )
+        .unwrap();
+    model
+        .add_node_with_id(
+            NodeId::new("part").unwrap(),
+            &root,
+            ModelNode::new(
+                "Part",
+                ModelNodeKind::Part(ModelPart::new(ClmMesh {
+                    verts: vec![0.0; vertices * 2],
+                    ..Default::default()
+                })),
+            ),
+        )
+        .unwrap();
+    model
+}
+
+#[test]
+fn discovered_pair_products_are_bounded_before_capture_or_output_writes() {
+    let model = independent_pair_model(2048, 3);
+    assert!(matches!(
+        poses::build(&model),
+        Err(catchlight_cli::Error::PosesLimit {
+            budget: "samples",
+            requested: 4_198_401,
+            ..
+        })
+    ));
+    let dir = common::tmp("poses-sample-budget");
+    let input = dir.join("model.clm");
+    let output = dir.join("out.cbor");
+    std::fs::write(&input, model.to_clm_bytes().unwrap()).unwrap();
+    std::fs::write(&output, b"existing output").unwrap();
+    let (code, _, stderr) = common::run(&[
+        "poses",
+        input.to_str().unwrap(),
+        "--out",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("poses budget samples"), "{stderr}");
+    assert_eq!(common::read(&output), b"existing output");
+}
+
+#[test]
+fn pose_sample_work_includes_mesh_geometry() {
+    let model = independent_pair_model(128, 20_000);
+    assert!(matches!(
+        poses::build(&model),
+        Err(catchlight_cli::Error::PosesLimit {
+            budget: "sample_work",
+            ..
+        })
+    ));
 }
 
 fn index_of(dumped: &Poses, name: &str) -> u32 {

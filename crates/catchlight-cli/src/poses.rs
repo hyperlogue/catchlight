@@ -64,6 +64,11 @@
 //! sweep holds every other param at its default, so for a param in a pair it
 //! samples exactly one row of that grid; `pairs` is the rest of the grid,
 //! which is the part no single-param sweep can reach.
+//!
+//! Position unions are discovered once. Before allocating pose captures or
+//! creating a Puppet, the complete schedule (rest, sweeps and pair products)
+//! must fit the sample count and sample-work budgets. Sample work includes
+//! every node, parameter, binding and mesh vertex evaluated per pose.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -82,6 +87,8 @@ const VERT_EPS: f32 = 1e-3;
 const OPACITY_EPS: f32 = 1e-5;
 const Z_EPS: f32 = 1e-4;
 const ANCHOR_EPS: f32 = 1e-3;
+const MAX_SAMPLES: u64 = 100_000;
+const MAX_SAMPLE_WORK: u64 = 250_000_000;
 
 /// One row of the `parts` or `physics` table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -174,7 +181,7 @@ impl std::fmt::Display for Written {
 /// Dump `path`'s key poses to `out` as CBOR.
 pub fn run(path: &Path, out: &Path) -> Result<Written, Error> {
     let model = crate::file::load_model(path)?;
-    let poses = build(&model);
+    let poses = build(&model)?;
     let mut bytes = Vec::new();
     ciborium::into_writer(&poses, &mut bytes).map_err(|source| Error::Cbor {
         path: out.to_path_buf(),
@@ -192,7 +199,10 @@ pub fn run(path: &Path, out: &Path) -> Result<Written, Error> {
 
 /// Every key pose of `model`, without touching the filesystem — what the
 /// tests drive.
-pub fn build(model: &Model) -> Poses {
+pub fn build(model: &Model) -> Result<Poses, Error> {
+    let positions = sample_positions(model);
+    let pairs = pairs_of(model);
+    check_work(model, &positions, &pairs)?;
     let mut puppet = Puppet::new(model);
     // Never ticked, so a param a pendulum drives sweeps like any other.
     puppet.set_physics_enabled(false);
@@ -209,7 +219,7 @@ pub fn build(model: &Model) -> Poses {
         .iter()
         .filter_map(|id| {
             let param = model.param(id)?;
-            let key_positions = sample_positions(model, id);
+            let key_positions = positions.get(id)?;
             let poses = key_positions
                 .iter()
                 .map(|position| {
@@ -229,22 +239,22 @@ pub fn build(model: &Model) -> Poses {
                 min: param.min,
                 max: param.max,
                 default: param.default,
-                key_positions,
+                key_positions: key_positions.clone(),
                 poses,
             })
         })
         .collect();
 
-    let pairs = pairs_of(model)
+    let pairs = pairs
         .into_iter()
         .filter_map(|(a, b)| {
             let (pa, pb) = (model.param(&a)?, model.param(&b)?);
-            let a_positions = sample_positions(model, &a);
-            let b_positions = sample_positions(model, &b);
+            let a_positions = positions.get(&a)?;
+            let b_positions = positions.get(&b)?;
             let mut poses = Vec::with_capacity(a_positions.len() * b_positions.len());
             // `b` outer, `a` inner: a row of this grid is a sweep of `a`.
-            for bp in &b_positions {
-                for ap in &a_positions {
+            for bp in b_positions {
+                for ap in a_positions {
                     let (av, bv) = (value_at(pa.min, pa.max, *ap), value_at(pb.min, pb.max, *bp));
                     let mut pose = Pose::new();
                     pose.set(a.clone(), av);
@@ -260,13 +270,53 @@ pub fn build(model: &Model) -> Poses {
         })
         .collect();
 
-    Poses {
+    Ok(Poses {
         parts: parts.into_iter().map(|(_, entry)| entry).collect(),
         physics: physics.into_iter().map(|(_, entry)| entry).collect(),
         rest,
         params,
         pairs,
+    })
+}
+
+fn check_work(
+    model: &Model,
+    positions: &BTreeMap<&ParamId, Vec<f32>>,
+    pairs: &[(ParamId, ParamId)],
+) -> Result<(), Error> {
+    let mut samples = positions
+        .values()
+        .fold(1_u64, |total, axis| total.saturating_add(axis.len() as u64));
+    for (a, b) in pairs {
+        let a = positions.get(a).map_or(0, |axis| axis.len() as u64);
+        let b = positions.get(b).map_or(0, |axis| axis.len() as u64);
+        samples = samples.saturating_add(a.saturating_mul(b));
     }
+    let mut per_sample = (model.node_count() as u64)
+        .saturating_add(model.param_ids().len() as u64)
+        .saturating_add(model.bindings().count() as u64);
+    for id in model.nodes_in_order() {
+        if let Some(mesh) = model.node_mesh(&id) {
+            per_sample = per_sample.saturating_add(mesh.vertex_count() as u64);
+        }
+    }
+    for (budget, requested, limit) in [
+        ("samples", samples, MAX_SAMPLES),
+        (
+            "sample_work",
+            samples.saturating_mul(per_sample),
+            MAX_SAMPLE_WORK,
+        ),
+    ] {
+        if requested > limit {
+            return Err(Error::PosesLimit {
+                budget,
+                limit,
+                requested,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The param-space value a key position maps to.
@@ -452,22 +502,26 @@ fn pairs_of(model: &Model) -> Vec<(ParamId, ParamId)> {
 
 /// Binding grids remain independent; sampling their union reaches every
 /// authored knot when evaluating the whole model under this control.
-fn sample_positions(model: &Model, param: &ParamId) -> Vec<f32> {
-    let mut positions: Vec<f32> = model
-        .bindings_of_param(param)
-        .filter_map(|binding| {
-            binding
-                .params()
-                .axis_of(param)
-                .map(|axis| &binding.key_positions()[axis as usize])
-        })
-        .flatten()
-        .copied()
+fn sample_positions(model: &Model) -> BTreeMap<&ParamId, Vec<f32>> {
+    let mut positions: BTreeMap<_, Vec<f32>> = model
+        .param_ids()
+        .iter()
+        .map(|id| (id, Vec::new()))
         .collect();
-    if positions.is_empty() {
-        return vec![0.0, 1.0];
+    for binding in model.bindings() {
+        for (id, axis) in binding.params().iter().zip(binding.key_positions()) {
+            if let Some(union) = positions.get_mut(id) {
+                union.extend_from_slice(axis);
+            }
+        }
     }
-    positions.sort_by(f32::total_cmp);
-    positions.dedup();
+    for union in positions.values_mut() {
+        if union.is_empty() {
+            union.extend([0.0, 1.0]);
+        } else {
+            union.sort_by(f32::total_cmp);
+            union.dedup();
+        }
+    }
     positions
 }

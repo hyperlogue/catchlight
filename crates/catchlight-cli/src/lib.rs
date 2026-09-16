@@ -99,6 +99,12 @@ pub const EXIT_DIFFERS: i32 = 1;
 /// the file, the Id or the field that stopped it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("poses budget {budget}: requested {requested}, maximum {limit}; reduce key positions or model complexity")]
+    PosesLimit {
+        budget: &'static str,
+        limit: u64,
+        requested: u64,
+    },
     #[error("render: {0}")]
     Render(String),
     #[error("render request {request}: {source}")]
