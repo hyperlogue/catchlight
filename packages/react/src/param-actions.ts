@@ -196,7 +196,7 @@ export function useParamActions(session: Session): ParamActions {
         if (!binding) return Promise.reject(new Error("The binding no longer exists."));
         const cells: [number, number][] = binding.authored.flatMap((row, y) => row.flatMap((authored, x) => authored ? [[x, y] as [number, number]] : []));
         if (cells.length === 0) return Promise.resolve({ result: "empty" });
-        const read = readCells(session, address, cells);
+        const read = readCells(session, address, cells, false);
         return writeCells(session, address, read.map(({ cell, value }) => ({ cell, value: "scalar" in value
           ? { scalar: -value.scalar }
           : { offsets: value.offsets.map(([x, y]) => [-x, -y]) } })));
@@ -204,7 +204,7 @@ export function useParamActions(session: Session): ParamActions {
 
       copyKey(node, target, params, from, to) {
         const address = { node, target, ...params };
-        const source = readCells(session, address, [from])[0];
+        const source = readCells(session, address, [from], true)[0];
         if (!source) return Promise.reject(new Error("The source key has no value."));
         return writeCells(session, address, [{ cell: to, value: source.value }]);
       },
@@ -213,8 +213,8 @@ export function useParamActions(session: Session): ParamActions {
   );
 }
 
-function readCells(session: Session, binding: BindingAddress, cells: BindingCell[]): BindingCellWrite[] {
-  const read = session.query({ cmd: "binding_cells_get", ...binding, cells, include_derived: true, if_rev: session.getRevision() });
+function readCells(session: Session, binding: BindingAddress, cells: BindingCell[], includeDerived: boolean): BindingCellWrite[] {
+  const read = session.query({ cmd: "binding_cells_get", ...binding, cells, include_derived: includeDerived, if_rev: session.getRevision() });
   if (read.result !== "binding_cells") throw new Error("The binding cells could not be read.");
   return read.cells.flatMap((cell) => {
     const value = cell.value ?? cell.derived;
