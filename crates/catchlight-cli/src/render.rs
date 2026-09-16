@@ -14,6 +14,9 @@
 //! why the example existed at all: it names every drawable in z order with
 //! its texture, blend mode, mask count and where it landed.
 
+pub mod args;
+pub mod spec;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

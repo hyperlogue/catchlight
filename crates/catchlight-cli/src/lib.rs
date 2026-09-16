@@ -14,10 +14,10 @@
 //! The inspection subcommands are the other half, and they evaluate the model
 //! rather than editing the file. [`render`] builds the puppet, draws it on a
 //! headless device through [`catchlight_wgpu::RenderContext`] and prints the
-//! render list it drew. [`isolate`] draws a named handful of parts alone over
-//! transparency, framed to a world rect, as straight-alpha art. [`poses`]
+//! render list it drew. The same command renders selected Parts, pose batches
+//! and continuous physics sequences. [`poses`]
 //! walks every key pose on the CPU and writes what each one moves as CBOR,
-//! which is what a rig evaluator scores against. All three decode textures,
+//! which is what a rig evaluator scores against. These inspection paths decode textures,
 //! which is why the no-decode rule below is a property of the file operations
 //! rather than of the crate.
 //!
@@ -97,6 +97,21 @@ pub const EXIT_DIFFERS: i32 = 1;
 /// the file, the Id or the field that stopped it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("render: {0}")]
+    Render(String),
+    #[error("render request {request}: {source}")]
+    RenderRequest {
+        request: String,
+        #[source]
+        source: Box<Error>,
+    },
+    #[error("render budget {budget}: requested {requested}, maximum {limit}; {hint}")]
+    RenderLimit {
+        budget: &'static str,
+        limit: u64,
+        requested: u64,
+        hint: &'static str,
+    },
     #[error("{}: {source}", .path.display())]
     Io {
         path: PathBuf,
@@ -231,7 +246,7 @@ pub enum Error {
         size: usize,
         max: usize,
     },
-    /// An edit `isolate` makes to its in-memory copy of the model was
+    /// An edit `render` makes to its in-memory copy of the model was
     /// refused. Every one of them names a node this crate has already
     /// checked, so reaching this is a bug here rather than bad input.
     #[error("editing the model in memory failed: {0}")]

@@ -171,22 +171,8 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
-    /// Render the model at rest to a PNG and print the render list it drew.
-    Render {
-        /// The .clm to render.
-        file: PathBuf,
-        /// Where to write the PNG.
-        out: PathBuf,
-        /// Width in pixels.
-        #[arg(default_value_t = render::DEFAULT_WIDTH)]
-        width: u32,
-        /// Height in pixels.
-        #[arg(default_value_t = render::DEFAULT_HEIGHT)]
-        height: u32,
-        /// How many world units tall the camera frames, centred on the origin.
-        #[arg(default_value_t = render::DEFAULT_CAMERA_HEIGHT)]
-        camera_height: f32,
-    },
+    /// Render to a PNG, inspect a render plan, or discover its JSON schema.
+    Render(render::args::RenderArgs),
 }
 
 /// A key is `vendor.name`: the id charset with a required dot. `catchlight.`
@@ -364,16 +350,7 @@ fn run() -> Result<i32, Error> {
             let isolated = isolate::run(&file, &out, &request)?;
             println!("{isolated}");
         }
-        Cmd::Render {
-            file,
-            out,
-            width,
-            height,
-            camera_height,
-        } => {
-            let rendered = render::run(&file, &out, width, height, camera_height)?;
-            println!("{rendered}");
-        }
+        Cmd::Render(args) => args.run()?,
         Cmd::Extension(cmd) => return run_extension(cmd),
         Cmd::Diff { a, b } => {
             let lines = diff::run(&a, &b)?;

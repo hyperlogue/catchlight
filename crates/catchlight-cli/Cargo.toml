@@ -11,7 +11,13 @@ catchlight-core = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = "1"
 thiserror = { workspace = true }
+# Render provenance, atomic artifacts, terminal PNG transport, and cancellation.
+sha2 = "0.11"
+tempfile = "3"
+base64 = "0.22"
+ctrlc = "3"
 
 # `render` (and the rest of the inspection subcommands) draw on a headless
 # device through `catchlight_wgpu::RenderContext`. The renderer is below the
@@ -27,6 +33,10 @@ pollster = { workspace = true }
 # `.clm` with, so the workspace resolves one of each.
 ciborium = "0.2.2"
 serde_bytes = "0.11.19"
+
+[target.'cfg(unix)'.dependencies]
+# Safe terminal mode/polling for the bounded Kitty capability query.
+rustix = { version = "1", features = ["termios", "event", "stdio"] }
 
 [lints]
 workspace = true

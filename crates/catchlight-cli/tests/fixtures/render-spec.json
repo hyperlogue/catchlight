@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "animations": {
+    "pulse": {
+      "name": "Pulse",
+      "timestep": 0.016666667,
+      "length": 61,
+      "lead_in": -1,
+      "lead_out": -1,
+      "lanes": [
+        {
+          "param": "drive",
+          "interpolation": "Linear",
+          "keyframes": [
+            {"frame": 0, "value": 0},
+            {"frame": 30, "value": 0.5},
+            {"frame": 60, "value": 0}
+          ]
+        }
+      ]
+    }
+  },
+  "requests": {
+    "part": {
+      "rect": [-500, -500, 1000, 1000],
+      "scale": 0.512,
+      "background": {"srgb": [0, 0, 0], "alpha": 0},
+      "physics": {"mode": "off"},
+      "pose": {"drive": 0.5},
+      "only_parts": ["panel-a"],
+      "strip_masks": [{"node": "panel-a", "source": "mask-a"}]
+    },
+    "closed": {
+      "rect": [-500, -500, 1000, 1000],
+      "scale": 0.512,
+      "background": {"srgb": [1, 1, 1], "alpha": 1},
+      "physics": {"mode": "off"},
+      "pose": {"closure": 1}
+    },
+    "closed-hidden": {
+      "extends": "closed",
+      "hide_color": ["interior-a", "interior-b"]
+    },
+    "detail": {
+      "rect": [-500, -500, 1000, 1000],
+      "scale": 0.512,
+      "background": {"srgb": [1, 1, 1], "alpha": 1},
+      "physics": {"mode": "off"},
+      "pose": {"drive": 0.5},
+      "only_parts": ["panel-a", "panel-b"],
+      "overlay": {
+        "mesh": {
+          "parts": ["panel-a"],
+          "positions": "posed",
+          "color": [0, 0.8, 1, 1],
+          "width_px": 1
+        }
+      },
+      "geometry": ["panel-a"]
+    },
+    "pulse": {
+      "rect": [-500, -500, 1000, 1000],
+      "scale": 0.512,
+      "background": {"srgb": [1, 1, 1], "alpha": 1},
+      "physics": {"mode": "simulate", "initial": "fresh", "warmup_frames": 0},
+      "animation": {"source": "spec", "name": "pulse"},
+      "frames": {"count": 61, "every": 1},
+      "trace_params": ["drive", "response"]
+    }
+  }
+}
