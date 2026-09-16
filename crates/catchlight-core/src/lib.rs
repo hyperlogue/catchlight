@@ -3,6 +3,7 @@ pub mod components;
 pub mod deform;
 pub mod fill;
 pub mod formats;
+pub mod geometry;
 pub mod id;
 pub mod interpolate;
 pub mod load;
