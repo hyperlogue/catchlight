@@ -100,7 +100,7 @@ export function PresenceProvider({ session, children }: PresenceProviderProps): 
   const send = useCallback((): void => {
     const box = held.current;
     box.timer = undefined;
-    if (!box.session) return;
+    if (!box.session || box.session.closed) return;
     const pose = typeof box.pose === "function" ? box.pose() : box.pose;
     box.pose = pose;
     const command: SessionPresenceCommand = {

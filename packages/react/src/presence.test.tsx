@@ -126,7 +126,7 @@ describe("publishing presence", () => {
     const { editor, wasm } = await harness();
     const session = await editor.newSession();
     await run(() =>
-      session.send({ cmd: "param_add", name: "eye", min: 0, max: 1, default: 1, key_positions: [0, 1] }),
+      session.send({ cmd: "param_add", name: "eye", min: 0, max: 1, default: 1 }),
     );
     const param = session.params()[0] as ParamInfo;
     // An agent posed it and selected something before this tab attached.

@@ -74,11 +74,11 @@ try {
         [["texture", new Uint8Array(await blob.arrayBuffer())]],
       );
       await session.send({
-        cmd: "mesh_auto",
+        cmd: "mesh_generate",
         node: id,
         mode: { mode: "contour", spacing: 28, margin: 2, simplify: 2 },
       });
-      const mesh = session.nodeInfo(id)!.mesh!;
+      const mesh = session.mesh(id);
       await session.send({
         cmd: "mesh_set",
         node: id,
@@ -221,17 +221,11 @@ try {
         min: -1,
         max: 1,
         default: 0,
-        key_positions: [0, 0.5, 1],
       });
-      for (let i = 0; i < values.length; i++)
-        await session.send({
-          cmd: "binding_key",
-          param: id,
-          node,
-          target,
-          cell: [i, 0],
-          value: values[i]!,
-        });
+      await session.send({ cmd: "edit_apply", if_rev: session.getRevision(), edits: [
+        { op: "binding_add", param: id, node, target, key_positions: [[0, 0.5, 1]] },
+        { op: "binding_cells_set", param: id, node, target, cells: values.map((value, i) => ({ cell: [i, 0], value: { scalar: value } })) },
+      ] });
     }
     await control("head-tilt", "Head tilt", "head", "rz", [-0.18, 0, 0.18]);
     await control("look", "Look around", "eyes", "tx", [-10, 0, 10]);

@@ -216,6 +216,8 @@ impl CatchlightEditor {
             // Answer against the id the caller is waiting on, not against 0.
             Err(e) => (
                 Reply::Err {
+                    op_index: None,
+                    limit: None,
                     id: serde_json::from_str::<RequestId>(request_json)
                         .map(|r| r.id)
                         .unwrap_or(0),
@@ -359,7 +361,7 @@ mod tests {
     #[test]
     fn a_command_round_trips_as_json() {
         let editor = CatchlightEditor::new();
-        let reply = call(&editor, json!({"id": 1, "cmd": "session_new"}));
+        let reply = call(&editor, json!({"id": 1, "cmd": "session_create"}));
         assert_eq!(reply["id"], 1);
         assert_eq!(reply["reply"], "ok");
         assert!(reply["body"]["session"].is_number(), "reply was {reply}");
@@ -387,13 +389,13 @@ mod tests {
     #[test]
     fn a_save_leaves_bytes_the_tab_can_take_and_import_again() {
         let editor = CatchlightEditor::new();
-        let session = call(&editor, json!({"id": 1, "cmd": "session_new"}))["body"]["session"]
+        let session = call(&editor, json!({"id": 1, "cmd": "session_create"}))["body"]["session"]
             .as_u64()
             .unwrap();
 
         let saved = call(
             &editor,
-            json!({"id": 2, "cmd": "save", "session": session, "path": "akari.clm"}),
+            json!({"id": 2, "cmd": "session_save", "session": session, "path": "akari.clm"}),
         );
         assert_eq!(saved["body"]["path"], "akari.clm");
         assert_eq!(editor.written_keys(), vec!["akari.clm".to_string()]);
@@ -404,13 +406,10 @@ mod tests {
         assert!(editor.written_keys().is_empty());
 
         // And back in they go, attached to the command that reads them.
-        let fresh = call(&editor, json!({"id": 3, "cmd": "session_new"}))["body"]["session"]
-            .as_u64()
-            .unwrap();
         let mut attachments = Attachments::none();
         attachments.insert("model", bytes);
         let (reply, _) = editor.dispatch_with(
-            &json!({"id": 4, "cmd": "import_file", "session": fresh}).to_string(),
+            &json!({"id": 4, "cmd": "session_create", "source": {"format":"clm"}}).to_string(),
             attachments,
         );
         let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
@@ -422,12 +421,12 @@ mod tests {
     #[test]
     fn attachments_reach_the_command_and_a_payload_comes_back() {
         let editor = CatchlightEditor::new();
-        let session = call(&editor, json!({"id": 1, "cmd": "session_new"}))["body"]["session"]
+        let session = call(&editor, json!({"id": 1, "cmd": "session_create"}))["body"]["session"]
             .as_u64()
             .unwrap();
         let root = call(
             &editor,
-            json!({"id": 2, "cmd": "node_tree", "session": session}),
+            json!({"id": 2, "cmd": "node_tree_get", "session": session}),
         )["body"]["root"]["id"]
             .as_str()
             .unwrap()
@@ -462,12 +461,9 @@ mod tests {
     #[test]
     fn the_plain_door_still_refuses_a_byte_bearing_command() {
         let editor = CatchlightEditor::new();
-        let session = call(&editor, json!({"id": 1, "cmd": "session_new"}))["body"]["session"]
-            .as_u64()
-            .unwrap();
         let reply = call(
             &editor,
-            json!({"id": 2, "cmd": "import_manifest", "session": session}),
+            json!({"id": 2, "cmd": "session_create", "source": {"format":"manifest"}}),
         );
         assert_eq!(reply["code"], "bad_request", "reply was {reply}");
     }

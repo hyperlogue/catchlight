@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { ProtocolError } from "./backend.js";
+import { ProtocolError, readReply } from "./backend.js";
 import { ConnectedBackend } from "./connected.js";
 import type { Event } from "./protocol.gen.js";
 import {
@@ -31,23 +31,23 @@ describe("in-tab", () => {
     const order: string[] = [];
     backend.onEvent((event: Event) => order.push(event.event));
 
-    const reply = await backend.send({ cmd: "session_new", name: "akari" });
+    const reply = await backend.send({ cmd: "session_create", name: "akari" });
     order.push("resolved");
 
     // A caller about to wait on the reply's revision needs the feed that this
     // event starts to already be in flight.
     expect(order).toEqual(["sessions_changed", "resolved"]);
     expect(reply.body).toEqual({ result: "session", session: 1 });
-    expect(reply.rev).toBe(1);
+    expect(reply.rev).toBe(0);
   });
 
   test("bytes go with the command that uses them, under the name it declares", async () => {
     const editor = new FakeEditor();
     const backend = new InTabBackend(editor, new MemoryStorage());
-    await backend.send({ cmd: "session_new", name: null });
+    await backend.send({ cmd: "session_create", name: null });
     const bytes = new TextEncoder().encode("a model");
 
-    const reply = await backend.sendWith({ cmd: "import_file", session: 1, parent: null }, [
+    const reply = await backend.sendWith({ cmd: "session_create", name: null, source: { format: "clm" } }, [
       ["model", bytes],
     ]);
 
@@ -60,11 +60,11 @@ describe("in-tab", () => {
   test("a byte-bearing command sent through `send` never reaches the editor", async () => {
     const editor = new FakeEditor();
     const backend = new InTabBackend(editor, new MemoryStorage());
-    await backend.send({ cmd: "session_new", name: null });
+    await backend.send({ cmd: "session_create", name: null });
     const before = editor.requests.length;
 
     await expect(
-      backend.send({ cmd: "import_file", session: 1, parent: null }),
+      backend.send({ cmd: "session_create", name: null, source: { format: "clm" } }),
     ).rejects.toBeInstanceOf(ProtocolError);
 
     // Refused here, where the mistake is, rather than a round trip away.
@@ -84,9 +84,9 @@ describe("in-tab", () => {
     const editor = new FakeEditor();
     const storage = new MemoryStorage();
     const backend = new InTabBackend(editor, storage);
-    await backend.send({ cmd: "session_new", name: null });
+    await backend.send({ cmd: "session_create", name: null });
 
-    const reply = await backend.send({ cmd: "save", session: 1, path: "out/akari.clm" });
+    const reply = await backend.send({ cmd: "session_save", session: 1, path: "out/akari.clm" });
 
     expect(reply.body).toEqual({ result: "saved", path: "out/akari.clm" });
     expect(await storage.list()).toEqual(["out/akari.clm"]);
@@ -98,9 +98,9 @@ describe("in-tab", () => {
     const editor = new FakeEditor();
     const storage = new MemoryStorage();
     const backend = new InTabBackend(editor, storage);
-    await backend.send({ cmd: "session_new", name: null });
+    await backend.send({ cmd: "session_create", name: null });
 
-    await backend.send({ cmd: "export_manifest", session: 1, path: "out/model.json" });
+    await backend.send({ cmd: "manifest_export", session: 1, path: "out/model.json" });
 
     expect(await storage.list()).toEqual(["out/model.json", "tex0.png"]);
     expect(editor.writtenKeys()).toEqual([]);
@@ -109,24 +109,24 @@ describe("in-tab", () => {
   test("a save that staged no bytes is an error, not a silent no-op", async () => {
     const editor = new FakeEditor();
     const backend = new InTabBackend(editor, new MemoryStorage());
-    await backend.send({ cmd: "session_new", name: null });
+    await backend.send({ cmd: "session_create", name: null });
     // The shape of an editor-side bug: success reported, nothing written.
     editor.handle = ((requestJson: string) => {
       const { id } = JSON.parse(requestJson) as { id: number };
       return JSON.stringify({ reply: "ok", id, rev: 1, body: { result: "saved", path: "ghost.clm" } });
     }) as FakeEditor["handle"];
 
-    await expect(backend.send({ cmd: "save", session: 1, path: null })).rejects.toMatchObject({
+    await expect(backend.send({ cmd: "session_save", session: 1, path: null })).rejects.toMatchObject({
       code: "bad_reply",
     });
   });
 
   test("a refusal rejects as a ProtocolError carrying its code", async () => {
     const editor = new FakeEditor();
-    editor.refuse.set("undo", { code: "nothing_to_undo", message: "nothing to undo" });
+    editor.refuse.set("edit_undo", { code: "nothing_to_undo", message: "nothing to undo" });
     const backend = new InTabBackend(editor, new MemoryStorage());
 
-    const failure = backend.send({ cmd: "undo", session: 1 });
+    const failure = backend.send({ cmd: "edit_undo", session: 1, if_rev: 0 });
     await expect(failure).rejects.toBeInstanceOf(ProtocolError);
     await expect(failure).rejects.toMatchObject({ code: "nothing_to_undo" });
   });
@@ -135,12 +135,12 @@ describe("in-tab", () => {
     const editor = new FakeEditor();
     const backend = new InTabBackend(editor, new MemoryStorage());
     const replica = new FakeReplica();
-    await backend.send({ cmd: "session_new", name: null });
+    await backend.send({ cmd: "session_create", name: null });
     await backend.send({ cmd: "node_add", session: 1, parent: "root", kind: "group", name: null });
 
-    const rev = await backend.feed(replica, 1, 2);
+    const rev = await backend.feed(replica, 1, 1);
 
-    expect(rev).toBe(2);
+    expect(rev).toBe(1);
     expect(replica.syncs).toEqual([1]);
     expect(replica.doc?.root.children).toHaveLength(1);
   });
@@ -182,7 +182,7 @@ describe("connected", () => {
     const { backend, socket } = await connect();
 
     const first = backend.send({ cmd: "session_list" });
-    const second = backend.send({ cmd: "status", session: 1 });
+    const second = backend.send({ cmd: "session_get", session: 1 });
     const firstId = socket.request(0).id;
     const secondId = socket.request(1).id;
     expect(firstId).not.toBe(secondId);
@@ -196,8 +196,8 @@ describe("connected", () => {
 
   test("an err frame rejects its own request and nobody else's", async () => {
     const { backend, socket } = await connect();
-    const failing = backend.send({ cmd: "undo", session: 1 });
-    const waiting = backend.send({ cmd: "redo", session: 1 });
+    const failing = backend.send({ cmd: "edit_undo", session: 1, if_rev: 0 });
+    const waiting = backend.send({ cmd: "edit_redo", session: 1, if_rev: 0 });
 
     socket.deliver({
       reply: "err",
@@ -214,7 +214,7 @@ describe("connected", () => {
   test("a closed socket rejects everything in flight", async () => {
     const { backend, socket } = await connect();
     const first = backend.send({ cmd: "session_list" });
-    const second = backend.send({ cmd: "status", session: 1 });
+    const second = backend.send({ cmd: "session_get", session: 1 });
 
     socket.close();
 
@@ -241,8 +241,8 @@ describe("connected", () => {
   test("a feed fetches exactly the textures the structure named, and applies at the header's revision", async () => {
     const doc = emptyDoc("akari");
     doc.textures = [
-      { id: "tex-1", width: 8, height: 8 },
-      { id: "tex-2", width: 8, height: 8 },
+      { id: "tex-1", width: 8, height: 8, encoding: "png", alpha: "straight", sha256: "0".repeat(64) },
+      { id: "tex-2", width: 8, height: 8, encoding: "png", alpha: "straight", sha256: "0".repeat(64) },
     ];
     const { backend, http } = await connect({
       "/sessions/1/structure": () =>
@@ -307,7 +307,7 @@ describe("connected", () => {
 
   test("a feed that cannot be applied rejects rather than leaving the replica half fed", async () => {
     const doc = emptyDoc("akari");
-    doc.textures = [{ id: "tex-1", width: 8, height: 8 }];
+    doc.textures = [{ id: "tex-1", width: 8, height: 8, encoding: "png", alpha: "straight", sha256: "0".repeat(64) }];
     const { backend } = await connect({
       "/sessions/1/structure": () =>
         httpResponse(structureBytes(doc), { headers: { "X-Catchlight-Rev": "3" } }),
@@ -352,7 +352,7 @@ describe("connected", () => {
         httpResponse({ reply: "ok", id: 1, rev: 4, body: { result: "session", session: 1 } }),
     });
 
-    const reply = await backend.sendWith({ cmd: "import_file", session: 1, parent: null }, [
+    const reply = await backend.sendWith({ cmd: "session_create", name: null, source: { format: "clm" } }, [
       ["model", new TextEncoder().encode("a model")],
     ]);
 
@@ -362,7 +362,7 @@ describe("connected", () => {
     expect(post?.init?.method).toBe("POST");
     expect(post?.init?.headers?.Authorization).toBe("Bearer abc123");
     const form = post?.init?.body as FormData;
-    expect(form.get("request")).toContain('"cmd":"import_file"');
+    expect(form.get("request")).toContain('"cmd":"session_create"');
     expect(form.get("model")).toBeInstanceOf(Blob);
   });
 
@@ -383,7 +383,7 @@ describe("connected", () => {
     });
 
     const reply = await backend.sendWith(
-      { cmd: "preview", session: 1, pose: [], size: [8, 8], camera: null },
+      { cmd: "preview_render", session: 1, pose: [], size: [8, 8], camera: null },
       [],
     );
 
@@ -396,7 +396,7 @@ describe("connected", () => {
     const before = socket.sent.length;
 
     await expect(
-      backend.send({ cmd: "import_file", session: 1, parent: null }),
+      backend.send({ cmd: "session_create", name: null, source: { format: "clm" } }),
     ).rejects.toBeInstanceOf(ProtocolError);
 
     expect(socket.sent).toHaveLength(before);
@@ -406,4 +406,15 @@ describe("connected", () => {
     const { backend } = await connect();
     expect(await backend.readFile("project/akari.clm")).toBeUndefined();
   });
+});
+
+test("a refusal retains the revision, failing operation and structured limit", () => {
+  const limit = { resource: "reply_bytes", limit: 4096, requested: 8192 };
+  try {
+    readReply(JSON.stringify({ reply: "err", id: 1, code: "limit_exceeded", message: "reply too large", rev: 7, op_index: 2, limit }), "edit_validate");
+    throw new Error("The refusal was accepted.");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProtocolError);
+    expect(error).toMatchObject({ code: "limit_exceeded", rev: 7, op_index: 2, limit });
+  }
 });

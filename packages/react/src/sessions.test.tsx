@@ -137,8 +137,8 @@ describe("opening a file", () => {
     expect(opened).toHaveLength(1);
     // A file the page holds is a fresh session and an import into it; the name
     // is sanitized on the way, by the editor.
-    expect(wasm.requests.map((request) => request.cmd)).toContain("import_file");
-    expect(wasm.requests.find((request) => request.cmd === "session_new")).toMatchObject({
+    expect(wasm.requests.map((request) => request.cmd)).toContain("session_create");
+    expect(wasm.requests.find((request) => request.cmd === "session_create")).toMatchObject({
       name: "Akari_Final.clm",
     });
     // Reset, so picking the same file again fires again.

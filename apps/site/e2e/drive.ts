@@ -52,6 +52,7 @@
 
 import { READBACK } from "@catchlight/core";
 import { studio } from "./studio.ts";
+import { snapshots } from "./snapshots.ts";
 import { workspaces } from "./workspaces.ts";
 import { chromium } from "playwright-core";
 
@@ -517,6 +518,7 @@ async function draws(): Promise<void> {
       );
     });
   }
+  await step("snapshot bytes match their receipt and forks edit independently", () => snapshots(page));
   let before: Shot = {
     size: "",
     hash: 0,

@@ -86,8 +86,8 @@ boundaries keep future tools consistent:
 
 No component maintains a second authored model. Queries read the replica;
 edits go to the editor. Status reads provide actual undo/redo availability
-and global physics values. Commands with byte routing go through `sendWith`,
-even when their particular payload contains no bytes, such as JSON metadata.
+and global physics values. Commands carrying attachments or reply payloads go through `sendWith`. Empty
+session creation and JSON metadata use ordinary `send`.
 
 | User workflow                        | React parts                                                   | Protocol families                                                                      |
 | ------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
@@ -96,17 +96,17 @@ even when their particular payload contains no bytes, such as JSON metadata.
 | Adjust a part or group               | `PropertiesPanel`, `SelectionOverlay`                         | Node info/set, local scratch transforms                                                |
 | Bring in and replace artwork         | `AssetsPanel`, `TextureThumbnail`, `importArtwork`            | Texture list/add, grid mesh generation                                                 |
 | Edit topology on artwork             | `MeshCanvas`, `MeshInspector`, `MeshTools`, `EditingProvider` | Isolated Rust draft, one guarded mesh set with deform refitting                        |
-| Record a parameter keypoint          | `RecordingInspector`, `RecordingKeys`, `SelectionOverlay`     | Exact cell capture, scratch deform/transform, guarded deform vertices / binding keys   |
-| Define and pose controls             | `ParamsPanel`, param parts                                    | Param add/set/delete, key insert/move/delete, flip; local pose                         |
-| Author bindings                      | `BindingsPanel`, `BindingGrid`, `DeformPanel`                 | Scalar and two-param grids, interpolation, copy/reset/unset/invert, affine deform keys |
-| Clip and connect artwork             | `MaskPanel`, `SlotsPanel`, `WeldsPanel`                       | Masks, slots, weld set/weight/delete                                                   |
+| Record a parameter keypoint          | `RecordingInspector`, `RecordingKeys`, `SelectionOverlay`     | Normalized pose capture, local scratch, atomic binding/axis/cell edits   |
+| Define and pose controls             | `ParamsPanel`, param parts                                    | Param add/set/delete and continuous local pose                         |
+| Author bindings                      | `BindingsPanel`, `BindingGrid`, `DeformPanel`                 | Binding-local axes, exact cells, interpolation and composed copy/reset/unset/invert |
+| Clip and connect artwork             | `MaskPanel`, `SlotsPanel`, `WeldsPanel`                       | Masks, slots, whole weld set/delete                                                   |
 | Tune motion                          | `SpinePanel`, `PhysicsPanel`, `PhysicsSettings`               | Joint and chain settings, pendulum outputs, global constants                           |
 | Inspect model health and annotations | `ModelHealth`, `ExtensionsPanel`                              | Check, extensions, JSON metadata set/delete                                            |
 | Export the visible preview           | `usePreviewExport`                                            | Viewport readback followed by a PNG download                                           |
 
 The public protocol still supports advanced scripting operations beyond these
-visible workflows: manifest interchange, importing a model under an existing
-parent, identifier migration and binary metadata.
+visible workflows: manifest interchange, structure import under an existing
+parent, session forks, revision history, geometry reads and binary metadata.
 These remain available through the session API. The UI supports base topology,
 per-vertex recording, and scalar transform/appearance recording.
 There are no animation-authoring commands, so the shelf has a pose sweep
@@ -130,15 +130,19 @@ model edit preserves the draft and disables Apply until it is reloaded.
 A custom, non-axis-aligned texture mapping is refused instead of silently
 flattening the artwork.
 
-Record addresses one node, one parameter or existing parameter pair, and one
-exact cell. Both axes retain their original order. Hollow diamonds are derived
-cells and filled diamonds are authored cells. Scrubbing and selecting a cell
-pose the replica without authoring. Between cells, Start recording offers
-Snap & record or Add position & record; inserting a position explains that it
-expands all bindings on that parameter. Arming alone creates no key.
+Record addresses one node, one parameter or existing parameter pair, and a
+normalized pose. Both axes retain their original order. The key shelf combines
+positions from the selected properties for navigation; every property's binding
+owns its axes and authored cells. Hollow diamonds are derived and filled ones
+have authored contributions. Scrubbing and selecting a position only pose the
+replica. Recording can start at any value. Arming alone creates no key; the first
+completed gesture inserts missing positions only on the bindings it edits.
+Binding panels provide axis controls for explicit insertion, movement and removal.
 
 Each gesture captures its destination, model revision and starting pose. The
-first completed gesture authors the keypoint; subsequent gestures update it.
+first completed gesture creates the required binding, inserts its positions and
+authors exact cells in one guarded edit. An empty binding also receives an explicit
+rest identity when the destination differs from rest; subsequent gestures update it.
 Scalar keys receive only the additive delta or multiplicative ratio from that
 gesture, preserving contributions from other bindings. Vertex offsets add to
 the selected deform key. The base model is never used as a fallback recording
@@ -149,7 +153,7 @@ keeps completed edits. Physics pauses in Mesh and Record and resumes in Arrange.
 ## Verification and the starter
 
 `apps/site/e2e/workspaces.ts` verifies fixed-texture drafts, local history,
-Apply/Cancel, multi-vertex movement, recording, exact-cell gates, paired axes,
+Apply/Cancel, multi-vertex movement, recording between keys, independent binding positions, paired axes,
 stale revisions and responsive layouts. `apps/site/e2e/studio.ts` drives the
 remaining visible controls against the real wasm editor.
 It checks transform previews and cancellation, undo, numeric validation,

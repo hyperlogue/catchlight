@@ -10,7 +10,7 @@
  * the number actually differs.
  */
 
-import type { ParamInfo, Session } from "@catchlight/core";
+import type { BindingInfo, NodeId, ParamInfo, Session } from "@catchlight/core";
 import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import type { ComponentProps, PointerEvent as ReactPointerEvent } from "react";
 
@@ -64,6 +64,7 @@ interface KeyDrag {
   index: number;
   at: number;
   moved: boolean;
+  revision: number;
 }
 
 // `onError` is also a DOM event on every element; this one wins.
@@ -71,33 +72,29 @@ export interface ParamKeysRootProps extends Omit<ComponentProps<"div">, "childre
   session: Session;
   param: ParamInfo;
   onError?: ErrorSink;
+  /** Grid being edited. Without one, this is a pose-only range/default strip. */
+  binding?: BindingInfo;
+  node?: NodeId;
 }
 
-/**
- * The param's key positions, as markers along the same 0..1 track the slider
- * runs on.
- *
- * Clicking a marker poses the param exactly on that key, which is what makes a
- * grid cell and the puppet agree about which cell is being looked at. Dragging
- * one is a `param_key_move` — an edit — and it is committed on release rather
- * than per pointer move, so a drag of any length is one revision and one undo
- * entry.
- *
- * The two buttons act at the pose: insert adds a key where the slider is
- * standing, delete removes the interior key it is standing on. Both are
- * disabled when the pose is somewhere they cannot mean anything, which is also
- * what stops a client sending a command the model would refuse.
- */
-export function ParamKeysRoot({ session, param, onError, ...rest }: ParamKeysRootProps) {
+/** Binding-local key positions, or range/default pose shortcuts when no
+ * binding is selected. Clicking poses; dragging a binding marker commits once.
+ * Insert/delete affect only this binding's chosen axis. At least one position
+ * remains, and endpoints can be moved or removed like other positions. */
+export function ParamKeysRoot({ session, param, binding, node, onError, ...rest }: ParamKeysRootProps) {
   const actions = useParamActions(session);
   const value = useParamValue(session, param);
   const track = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<KeyDrag | undefined>(undefined);
+  const suppressClick = useRef(false);
 
-  const last = param.key_positions.length - 1;
+  const positions = binding?.key_positions[binding.param === param.id ? 0 : 1]
+    ?? [...new Set([0, normalizedValue(param, param.default), 1])].sort((a, b) => a - b);
+  const address = binding && node ? { node, target: binding.target, param: binding.param, param_y: binding.param_y ?? null } : undefined;
+  const last = positions.length - 1;
   const at = normalizedValue(param, value);
-  const on = keyIndexNear(param, value);
-  const interior = (index: number): boolean => index > 0 && index < last;
+  const on = keyIndexNear(param, value, positions);
+  const editable = (index: number): boolean => !!address && index >= 0 && index <= last;
 
   /** Where along the track a pointer is, on the 0..1 scale key positions use. */
   const positionOf = (event: ReactPointerEvent<HTMLElement>): number => {
@@ -107,16 +104,17 @@ export function ParamKeysRoot({ session, param, onError, ...rest }: ParamKeysRoo
   };
 
   const down = (event: ReactPointerEvent<HTMLElement>, index: number): void => {
-    if (!interior(index)) return;
+    suppressClick.current = false;
+    if (!editable(index)) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDrag({ index, at: param.key_positions[index] ?? 0, moved: false });
+    setDrag({ index, at: positions[index] ?? 0, moved: false, revision: session.getRevision() });
   };
 
   const move = (event: ReactPointerEvent<HTMLElement>, index: number): void => {
     if (!drag || drag.index !== index) return;
-    const to = between(param.key_positions, index, positionOf(event));
-    const budged = Math.abs(to - (param.key_positions[index] ?? 0)) > 1e-4;
-    setDrag({ index, at: to, moved: drag.moved || budged });
+    const to = between(positions, index, positionOf(event));
+    const budged = Math.abs(to - (positions[index] ?? 0)) > 1e-4;
+    setDrag({ ...drag, index, at: to, moved: drag.moved || budged });
   };
 
   const up = (event: ReactPointerEvent<HTMLElement>, index: number): void => {
@@ -127,10 +125,13 @@ export function ParamKeysRoot({ session, param, onError, ...rest }: ParamKeysRoo
     }
     // A press that never moved is a click, and a click is a pose.
     if (!held || held.index !== index || !held.moved) {
-      session.setParam(param.id, valueAtKey(param, index));
+      session.setParam(param.id, valueAtKey(param, index, positions));
       return;
     }
-    report(onError, actions.moveKey(param.id, index, held.at));
+    suppressClick.current = true;
+    if (address) report(onError, actions.moveKey(address, param.id, index, held.at, held.revision).then(() => {
+      session.setParam(param.id, param.min + held.at * (param.max - param.min));
+    }));
   };
 
   return (
@@ -139,48 +140,55 @@ export function ParamKeysRoot({ session, param, onError, ...rest }: ParamKeysRoo
           viewport's: where a marker sits along the track *is* the key
           position, so it is data, not decoration a theme could supply. */}
       <div ref={track} data-catchlight-param-key-track="">
-        {param.key_positions.map((position, index) => (
+        {positions.map((position, index) => (
           <button
             type="button"
             key={index}
             data-catchlight-param-key=""
             data-index={index}
-            data-interior={interior(index) ? "" : undefined}
+            data-editable={editable(index) ? "" : undefined}
             data-current={on === index ? "" : undefined}
             data-dragging={drag?.index === index ? "" : undefined}
             style={{
               left: `${(drag?.index === index ? drag.at : position) * 100}%`,
             }}
             aria-label={`${param.name} key ${index}`}
+            title={`${valueAtKey(param, index, positions)}${address ? " · Drag to move this binding’s key position" : " · Click to pose"}`}
             onPointerDown={(event) => down(event, index)}
             onPointerMove={(event) => move(event, index)}
             onPointerUp={(event) => up(event, index)}
-            onClick={() => session.setParam(param.id, valueAtKey(param, index))}
+            onPointerCancel={() => setDrag(undefined)}
+            onLostPointerCapture={() => setDrag(undefined)}
+            onClick={() => {
+              if (suppressClick.current) { suppressClick.current = false; return; }
+              session.setParam(param.id, valueAtKey(param, index, positions));
+            }}
           />
         ))}
       </div>
-      <button
+      {address && <div data-catchlight-param-key-actions=""><button
         type="button"
         data-catchlight-param-key-insert=""
-        // A key position lands strictly inside (0, 1), and never on one that
-        // is already there.
-        disabled={at <= 0 || at >= 1 || on !== undefined}
+        aria-label={`Add ${param.name} key position`}
+        // A binding may omit either endpoint; insert any missing position.
+        disabled={on !== undefined}
         title="Add a key at the current value"
-        onClick={() => report(onError, actions.insertKey(param.id, at))}
+        onClick={() => report(onError, actions.insertKey(address, param.id, at))}
       >
         +
       </button>
       <button
         type="button"
         data-catchlight-param-key-delete=""
-        disabled={on === undefined || !interior(on)}
+        aria-label={`Delete ${param.name} key position`}
+        disabled={on === undefined || positions.length < 2}
         title="Delete the key at the current value"
         onClick={() => {
-          if (on !== undefined) report(onError, actions.deleteKey(param.id, on));
+          if (on !== undefined) report(onError, actions.deleteKey(address, param.id, on));
         }}
       >
         −
-      </button>
+      </button></div>}
     </div>
   );
 }
@@ -198,8 +206,8 @@ export const ParamKeys = { Root: ParamKeysRoot };
  */
 function between(positions: number[], index: number, to: number): number {
   const gap = 1e-4;
-  const low = (positions[index - 1] ?? 0) + gap;
-  const high = (positions[index + 1] ?? 1) - gap;
+  const low = index === 0 ? 0 : positions[index - 1]! + gap;
+  const high = index === positions.length - 1 ? 1 : positions[index + 1]! - gap;
   if (low >= high) return positions[index] ?? to;
   return Math.min(high, Math.max(low, to));
 }

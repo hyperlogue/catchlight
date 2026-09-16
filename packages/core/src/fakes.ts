@@ -17,6 +17,7 @@
 
 import type {
   BindingInfo,
+  EditOp,
   BindingTarget,
   Command,
   Event,
@@ -82,10 +83,8 @@ export type FakeExtension =
  * derived.
  *
  * Sparse like the model's own, so `binding_list` has holes to report — but
- * *only* the cells a command named. The real model also authors the identity
- * at the rest cell alongside a binding's first key; that is a model rule the
- * Rust suite pins, and a fake that copied it would make these tests depend on
- * it.
+ * *only* the cells a command named. Recording, rather than raw writes, owns
+ * explicit rest identity authorship; Rust recording tests cover that policy.
  */
 export interface FakeBinding {
   node: string;
@@ -93,13 +92,14 @@ export interface FakeBinding {
   param: string;
   param_y?: string | null;
   interpolate: Interpolate;
+  key_positions: number[][];
   /** `value: null` is authored with no scalar of its own, as a deform cell is. */
   cells: { x: number; y: number; value: number | null }[];
 }
 
 export function emptyDoc(title: string): FakeDoc {
   return {
-    rev: 1,
+    rev: 0,
     title,
     file: null,
     root: {
@@ -161,7 +161,7 @@ export class FakeEditor implements WasmEditor {
     if (refusal) return JSON.stringify({ reply: "err", id, ...refusal });
 
     switch (request.cmd) {
-      case "status": {
+      case "session_get": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
         return this.#ok(
@@ -184,8 +184,8 @@ export class FakeEditor implements WasmEditor {
           doc.rev,
         );
       }
-      case "session_new":
-        return this.#opened(id, request.name ?? "untitled", null);
+      case "session_create":
+        return this.#opened(id, request.name ?? "untitled", null, !!request.source);
       case "session_open": {
         if (!this.written.has(request.path)) {
           return JSON.stringify({
@@ -196,31 +196,6 @@ export class FakeEditor implements WasmEditor {
           });
         }
         return this.#opened(id, request.path, request.path);
-      }
-      // Both imports replace an empty session's model rather than making one.
-      case "import_file":
-      case "import_manifest": {
-        const doc = this.docs.get(request.session);
-        if (!doc) return this.#noSession(id, request.session);
-        doc.root.children.push({
-          id: "imported",
-          name: "imported",
-          kind: "part",
-          z_order: 0,
-          enabled: true,
-          children: [],
-        });
-        doc.rev += 1;
-        this.#emit({
-          event: "model_changed",
-          session: request.session,
-          rev: doc.rev,
-        });
-        return this.#ok(
-          id,
-          { result: "session", session: request.session },
-          doc.rev,
-        );
       }
       case "session_list": {
         const sessions: SessionInfo[] = [...this.docs].map(
@@ -278,7 +253,7 @@ export class FakeEditor implements WasmEditor {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
         const texture = `tex-${doc.textures.length + 1}`;
-        doc.textures.push({ id: texture, width: 4, height: 4 });
+        doc.textures.push({ id: texture, width: 4, height: 4, encoding: "png", alpha: "straight", sha256: "0".repeat(64) });
         doc.albedo[request.node] = texture;
         doc.rev += 1;
         this.#emit({
@@ -302,7 +277,6 @@ export class FakeEditor implements WasmEditor {
           min: request.min,
           max: request.max,
           default: request.default,
-          key_positions: request.key_positions,
           bindings: 0,
         });
         doc.rev += 1;
@@ -328,14 +302,37 @@ export class FakeEditor implements WasmEditor {
         binding(doc, request);
         return this.#changed(id, request.session, doc);
       }
-      case "binding_key": {
+      case "binding_cells_set": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
-        const b = binding(doc, request);
-        const [x, y] = request.cell;
-        const at = b.cells.find((c) => c.x === x && c.y === y);
-        if (at) at.value = request.value;
-        else b.cells.push({ x, y, value: request.value });
+        applyEdit(doc, { ...request, op: "binding_cells_set" });
+        return this.#changed(id, request.session, doc);
+      }
+      case "edit_apply": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        if (request.if_rev !== doc.rev) return JSON.stringify({ reply: "err", id, code: "revision_conflict", message: "The model changed.", rev: doc.rev });
+        const next = structuredClone(doc);
+        for (const edit of request.edits) applyEdit(next, edit);
+        this.docs.set(request.session, next);
+        return this.#changed(id, request.session, next);
+      }
+      case "binding_cells_unset":
+      case "binding_key_insert":
+      case "binding_key_delete":
+      case "binding_key_move": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        if (request.cmd === "binding_key_insert") applyEdit(doc, { ...request, op: "binding_key_insert" });
+        else if (request.cmd === "binding_key_delete") applyEdit(doc, { ...request, op: "binding_key_delete" });
+        else if (request.cmd === "binding_key_move") applyEdit(doc, { ...request, op: "binding_key_move" });
+        else applyEdit(doc, { ...request, op: "binding_cells_unset" });
+        return this.#changed(id, request.session, doc);
+      }
+      case "binding_interpolation_set": {
+        const doc = this.docs.get(request.session);
+        if (!doc) return this.#noSession(id, request.session);
+        binding(doc, request).interpolate = request.mode;
         return this.#changed(id, request.session, doc);
       }
       case "binding_delete": {
@@ -344,7 +341,7 @@ export class FakeEditor implements WasmEditor {
         doc.bindings = doc.bindings.filter((b) => !addresses(b, request));
         return this.#changed(id, request.session, doc);
       }
-      case "save": {
+      case "session_save": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
         const key = request.path ?? doc.file ?? "untitled.clm";
@@ -352,7 +349,7 @@ export class FakeEditor implements WasmEditor {
         doc.file = key;
         return this.#ok(id, { result: "saved", path: key }, doc.rev);
       }
-      case "export_manifest": {
+      case "manifest_export": {
         const doc = this.docs.get(request.session);
         if (!doc) return this.#noSession(id, request.session);
         this.written.set(request.path, new TextEncoder().encode("{}"));
@@ -430,10 +427,11 @@ export class FakeEditor implements WasmEditor {
     this.free();
   }
 
-  #opened(id: number, title: string, file: string | null): string {
+  #opened(id: number, title: string, file: string | null, imported = false): string {
     const session = this.#nextSession++;
     const doc = emptyDoc(title);
     doc.file = file;
+    if (imported) doc.root.children.push({ id: "imported", name: "imported", kind: "part", z_order: 0, enabled: true, children: [] });
     this.docs.set(session, doc);
     this.#emit({ event: "sessions_changed" });
     return this.#ok(id, { result: "session", session }, doc.rev);
@@ -571,7 +569,7 @@ export class FakeReplica implements WasmReplica {
     if (unfetched.length > 0) {
       throw `missing extensions: ${unfetched.map((e) => e.key).join(", ")}`;
     }
-    if (rev <= this.#rev) return false;
+    if (this.doc && rev <= this.#rev) return false;
     this.doc = doc;
     this.#rev = rev;
     this.applied.push({ rev, textures: [...this.held] });
@@ -581,7 +579,7 @@ export class FakeReplica implements WasmReplica {
   syncFromEditor(editor: WasmEditor, session: number): number {
     const doc = (editor as FakeEditor).snapshot(session);
     this.syncs.push(session);
-    if (doc.rev <= this.#rev) return this.#rev;
+    if (this.doc && doc.rev <= this.#rev) return this.#rev;
     this.doc = doc;
     this.#rev = doc.rev;
     return this.#rev;
@@ -600,14 +598,14 @@ export class FakeReplica implements WasmReplica {
       });
     }
     switch (request.cmd) {
-      case "slots":
+      case "slot_list":
         return JSON.stringify({
           reply: "ok",
           id,
           rev: this.#rev,
           body: { result: "slots", node: request.node, slots: [] },
         });
-      case "node_tree":
+      case "node_tree_get":
         return JSON.stringify({
           reply: "ok",
           id,
@@ -628,6 +626,18 @@ export class FakeReplica implements WasmReplica {
           rev: this.#rev,
           body: { result: "textures", textures: doc.textures },
         });
+      case "binding_cells_get": {
+        const b = doc.bindings.find((b) => addresses(b, request));
+        if (!b) throw new Error("The fake binding is missing.");
+        const info = bindingInfo(doc, b);
+        const cells = request.cells.map((cell) => {
+          const authored = b.cells.find((c) => c.x === cell[0] && c.y === cell[1]);
+          const nearest = b.cells.reduce<typeof authored>((best, candidate) => !best || Math.abs(candidate.x - cell[0]) + Math.abs(candidate.y - cell[1]) < Math.abs(best.x - cell[0]) + Math.abs(best.y - cell[1]) ? candidate : best, undefined);
+          return { cell, authored: !!authored, value: authored ? { scalar: authored.value } : null,
+            ...(request.include_derived && !authored ? { derived: { scalar: nearest?.value ?? 0 } } : {}) };
+        });
+        return JSON.stringify({ reply: "ok", id, rev: this.#rev, body: { result: "binding_cells", node: request.node, param: b.param, param_y: b.param_y, target: b.target, width: info.width, height: info.height, interpolate: b.interpolate, cells } });
+      }
       case "binding_list": {
         if (!holds(doc.root, request.node)) {
           return JSON.stringify({
@@ -647,7 +657,7 @@ export class FakeReplica implements WasmReplica {
           body: { result: "bindings", bindings },
         });
       }
-      case "node_info": {
+      case "node_get": {
         const node = nodeInfo(doc, doc.root, request.node);
         if (!node) {
           return JSON.stringify({
@@ -853,6 +863,7 @@ function binding(
     target: BindingTarget;
     param: string;
     param_y?: string | null;
+    key_positions?: number[][] | null;
   },
 ): FakeBinding {
   const found = doc.bindings.find((b) => addresses(b, at));
@@ -863,6 +874,7 @@ function binding(
     param: at.param,
     param_y: at.param_y ?? null,
     interpolate: "linear",
+    key_positions: at.key_positions ?? (at.param_y ? [[0, 1], [0, 1]] : [[0, 1]]),
     cells: [],
   };
   doc.bindings.push(made);
@@ -870,21 +882,16 @@ function binding(
 }
 
 /**
- * A binding's grid, as `binding_list` reports it: the product of its params'
+ * A binding's grid, as `binding_list` reports it: the product of its own
  * key positions, with the cells nobody authored left null.
  *
- * Built here rather than stored, because the grid is sized by the params and
+ * Built here rather than stored, because axes determine grid size and
  * the model stores only the authored cells — a fake that stored a rectangle
  * would answer a question the real one derives.
  */
 function bindingInfo(doc: FakeDoc, b: FakeBinding): BindingInfo {
-  const keyCount = (param: string): number =>
-    Math.max(
-      1,
-      doc.params.find((p) => p.id === param)?.key_positions.length ?? 1,
-    );
-  const width = keyCount(b.param);
-  const height = b.param_y ? keyCount(b.param_y) : 1;
+  const width = b.key_positions[0]!.length;
+  const height = b.key_positions[1]?.length ?? 1;
   const keys: (number | null)[][] = [];
   const authored: boolean[][] = [];
   for (let y = 0; y < height; y++) {
@@ -899,6 +906,8 @@ function bindingInfo(doc: FakeDoc, b: FakeBinding): BindingInfo {
     flags[cell.x] = true;
   }
   return {
+    key_positions: b.key_positions,
+    identity: b.target === "deform" ? { offset: [0, 0], vertex_count: 0 } : { scalar: ["sx", "sy", "opacity", "tintr", "tintg", "tintb"].includes(b.target) ? 1 : 0 },
     target: b.target,
     param: b.param,
     param_y: b.param_y ?? null,
@@ -1043,7 +1052,7 @@ export class ScriptedBackend implements Backend {
   /** Set to make the next feed fail. */
   failFeed: string | undefined;
   /** What `send` answers, by command. */
-  replies = new Map<string, OkReply>();
+  replies = new Map<string, OkReplyWithPayload>();
 
   #listeners = new Set<(event: Event) => void>();
   #queue = new FeedQueue();
@@ -1254,4 +1263,46 @@ export class GuardedReplica extends FakeReplica {
     this.usedAfterFree.push(call);
     throw "null pointer passed to rust";
   }
+}
+
+function applyEdit(doc: FakeDoc, edit: EditOp): void {
+  if (edit.op === "binding_add") { binding(doc, edit); return; }
+  if (edit.op === "binding_cells_set") {
+    const b = binding(doc, edit);
+    for (const { cell: [x, y], value } of edit.cells) {
+      const scalar = "scalar" in value ? value.scalar : null;
+      const old = b.cells.find((cell) => cell.x === x && cell.y === y);
+      if (old) old.value = scalar; else b.cells.push({ x, y, value: scalar });
+    }
+    return;
+  }
+  if (edit.op === "binding_cells_unset") {
+    const b = binding(doc, edit);
+    b.cells = b.cells.filter((cell) => !edit.cells.some(([x, y]) => cell.x === x && cell.y === y)); return;
+  }
+  if (edit.op === "binding_key_insert" || edit.op === "binding_key_delete" || edit.op === "binding_key_move") {
+    const b = binding(doc, edit), axis = edit.axis === b.param ? 0 : 1, points = b.key_positions[axis]!;
+    if (edit.op === "binding_key_insert") {
+      let index = points.findIndex((p) => p >= edit.value);
+      if (index < 0) index = points.length;
+      if (points[index] === edit.value) return;
+      points.splice(index, 0, edit.value);
+      for (const cell of b.cells) { if (axis === 0 && cell.x >= index) cell.x++; if (axis === 1 && cell.y >= index) cell.y++; }
+    } else if (edit.op === "binding_key_move") points[edit.index] = edit.value;
+    else {
+      points.splice(edit.index, 1);
+      b.cells = b.cells.filter((cell) => (axis === 0 ? cell.x : cell.y) !== edit.index);
+      for (const cell of b.cells) { if (axis === 0 && cell.x > edit.index) cell.x--; if (axis === 1 && cell.y > edit.index) cell.y--; }
+    }
+    return;
+  }
+  if (edit.op === "node_reparent" || edit.op === "node_reorder") {
+    const find = (root: TreeNode, id: string): TreeNode | undefined => root.id === id ? root : root.children.map((child) => find(child, id)).find(Boolean);
+    const parent = (root: TreeNode, id: string): TreeNode | undefined => root.children.some((child) => child.id === id) ? root : root.children.map((child) => parent(child, id)).find(Boolean);
+    const from = parent(doc.root, edit.node), to = edit.op === "node_reparent" ? find(doc.root, edit.to) : from;
+    if (!from || !to) throw new Error("The node or parent is missing.");
+    const [node] = from.children.splice(from.children.findIndex((child) => child.id === edit.node), 1);
+    to.children.splice(edit.op === "node_reorder" ? edit.index : to.children.length, 0, node!); return;
+  }
+  throw new Error(`The fake does not implement ${edit.op}.`);
 }

@@ -34,13 +34,19 @@
  * TypeScript would otherwise write twice.
  */
 
-import type { Command, SessionId, SessionInfo } from "./protocol.gen.js";
-import type { Attachment, Backend, OkReply, Unsubscribe } from "./backend.js";
+import type { Command, ResponseBody, SessionId, SessionInfo } from "./protocol.gen.js";
+import type { Attachment, Backend, OkReply, OkReplyWithPayload, Unsubscribe } from "./backend.js";
 import { asProtocolError, expectResult, ProtocolError } from "./backend.js";
 import { Session } from "./session.js";
 import { joinKey, parentKey } from "./storage.js";
 import type { WasmGpu, WasmModule } from "./wasm.js";
 import { Viewport } from "./viewport.js";
+
+/** A model snapshot and the server's receipt for these exact bytes. */
+export type ExportedModel = Omit<Extract<ResponseBody, { result: "model_export" }>, "result"> & {
+  readonly bytes: Uint8Array;
+  readonly rev: number;
+};
 
 export class Editor {
   #wasm: WasmModule;
@@ -115,7 +121,7 @@ export class Editor {
 
   /** An empty model. */
   async newSession(name?: string): Promise<Session> {
-    return this.#adopt(await this.#backend.send({ cmd: "session_new", name: name ?? null }));
+    return this.#adopt(await this.#backend.send({ cmd: "session_create", name: name ?? null }));
   }
 
   /**
@@ -128,18 +134,38 @@ export class Editor {
     return this.#adopt(await this.#backend.send({ cmd: "session_open", path: key }));
   }
 
+  /** Copies this revision into an independent, immediately readable session. */
+  async forkSession(source: Session, name?: string): Promise<Session> {
+    const reply = await this.#backend.send({
+      cmd: "session_fork", session: source.id, if_rev: source.getRevision(), name: name ?? null,
+    });
+    const body = expectResult(reply.body, "session_fork");
+    return this.#adoptId(body.session, reply.rev ?? 0);
+  }
+
+  /** Exports this revision directly, without saving or changing its backing file. */
+  async exportSession(session: Session): Promise<ExportedModel> {
+    const rev = session.getRevision();
+    const reply = await session.queryServerWith({ cmd: "model_export", if_rev: rev });
+    const { format, byte_length, sha256 } = expectResult(reply.body, "model_export");
+    if (!reply.payload || reply.payload.byteLength !== byte_length || reply.rev !== rev) {
+      throw new ProtocolError({ code: "bad_reply", message: "model_export receipt does not match its snapshot" });
+    }
+    return { bytes: reply.payload, format, byte_length, sha256, rev };
+  }
+
   /**
    * Opens bytes the page already holds — a dropped file, a picked one, a
    * fetch — as a model named `name`.
    *
-   * A fresh session and then the file imported into it, because the two mean
-   * different things: nothing named a file of the editor's, so the session
-   * gets none and a later save has to be told where to go.
+   * The source is validated before the session becomes visible. The session
+   * has no backing store path until a save names one.
    */
   async openFile(bytes: Uint8Array, name: string): Promise<Session> {
-    const made = await this.#backend.send({ cmd: "session_new", name: fileKey(name) });
-    const session = expectResult(made.body, "session").session;
-    return this.#fill(session, { cmd: "import_file", session, parent: null }, [["model", bytes]]);
+    return this.#adopt(await this.#backend.sendWith(
+      { cmd: "session_create", name: fileKey(name), source: { format: "clm" } },
+      [["model", bytes]],
+    ));
   }
 
   /**
@@ -166,9 +192,9 @@ export class Editor {
       attachments.push([`texture:${reference}`, await this.#read(joinKey(parentKey(key), reference))]);
     }
 
-    const made = await this.#backend.send({ cmd: "session_new", name: key });
-    const session = expectResult(made.body, "session").session;
-    return this.#fill(session, { cmd: "import_manifest", session }, attachments);
+    return this.#adopt(await this.#backend.sendWith(
+      { cmd: "session_create", name: key, source: { format: "manifest" } }, attachments,
+    ));
   }
 
   /**
@@ -176,7 +202,7 @@ export class Editor {
    * from, and returns the key it landed under.
    */
   async saveSession(session: Session, key?: string): Promise<string> {
-    const body = await session.send({ cmd: "save", path: key ?? null });
+    const body = await session.send({ cmd: "session_save", path: key ?? null });
     return expectResult(body, "saved").path;
   }
 
@@ -302,6 +328,11 @@ export class Editor {
     return this.#backend.send(command);
   }
 
+  /** The direct command escape hatch with request attachments and response bytes. */
+  sendWith(command: Command, attachments: readonly Attachment[] = []): Promise<OkReplyWithPayload> {
+    return this.#backend.sendWith(command, attachments);
+  }
+
   /** Frees every replica, the device if one was ever acquired, and the backend. */
   close(): void {
     if (this.#closed) return;
@@ -335,28 +366,6 @@ export class Editor {
   async #adopt(reply: OkReply): Promise<Session> {
     const id = expectResult(reply.body, "session").session;
     return this.#sessions.get(id) ?? this.#adoptId(id, reply.rev ?? 0);
-  }
-
-  /**
-   * Runs the import that gives a just-made session its model, and adopts it at
-   * the revision that import produced.
-   *
-   * A session that stays empty is worse than none — it would sit in every
-   * list as a model nobody opened — so a refused import takes it with it.
-   */
-  async #fill(
-    session: SessionId,
-    command: Command,
-    attachments: readonly Attachment[],
-  ): Promise<Session> {
-    let reply;
-    try {
-      reply = await this.#backend.sendWith(command, attachments);
-    } catch (cause) {
-      await this.#backend.send({ cmd: "session_close", session }).catch(() => undefined);
-      throw asProtocolError(cause);
-    }
-    return this.#adoptId(session, reply.rev ?? 0);
   }
 
   async #adoptId(id: SessionId, rev: number): Promise<Session> {

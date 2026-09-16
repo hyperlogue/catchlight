@@ -320,6 +320,8 @@ impl ReplicaState {
             Ok(request) => replica_reply(&self.model, self.rev(), request),
             // Answer against the id the caller is waiting on, not against 0.
             Err(e) => Reply::Err {
+                op_index: None,
+                limit: None,
                 id: serde_json::from_str::<RequestId>(request_json)
                     .map(|r| r.id)
                     .unwrap_or(0),
@@ -358,7 +360,7 @@ impl ReplicaState {
     /// Write a node's scratch deform from a flat `[dx, dy, ...]` array. A
     /// trailing odd value is dropped rather than read as half a vertex.
     ///
-    /// Flat where the wire's `scratch_deform` carries pairs: this is not the
+    /// Flat pairs for the browser's local scratch preview: this is not the
     /// wire. A drag calls it once per pointer move from JavaScript, where the
     /// cheap thing to hand over is one `Float32Array`, and there is no parser
     /// in between for a pair to buy a check from.
@@ -568,10 +570,10 @@ impl ReplicaState {
         node: &str,
         param: &str,
         param_y: Option<&str>,
-        cell: [u32; 2],
+        position: [f32; 2],
     ) -> Result<catchlight_editor_core::Recording, String> {
         self.tick(0.0);
-        crate::authoring::capture(&self.model, &self.puppet, node, param, param_y, cell)
+        crate::authoring::capture(&self.model, &self.puppet, node, param, param_y, position)
     }
 
     // ---- gizmo math --------------------------------------------------------
@@ -1135,8 +1137,8 @@ pub(crate) mod browser {
             node: &str,
             param: &str,
             param_y: Option<String>,
-            x: u32,
-            y: u32,
+            x: f32,
+            y: f32,
         ) -> Result<crate::authoring::browser::RecordingGesture, JsValue> {
             self.inner
                 .borrow_mut()
@@ -1241,7 +1243,7 @@ mod tests {
     }
 
     fn new_session(editor: &CatchlightEditor) -> SessionId {
-        let reply = call(editor, json!({"id": 1, "cmd": "session_new"}));
+        let reply = call(editor, json!({"id": 1, "cmd": "session_create"}));
         SessionId(reply["body"]["session"].as_u64().unwrap())
     }
 
@@ -1466,7 +1468,7 @@ mod tests {
         assert_eq!(replica.sync_from_editor(editor.editor(), session), 1);
 
         let tree: Value = serde_json::from_str(
-            &replica.query(&json!({"id": 5, "cmd": "node_tree", "session": 0}).to_string()),
+            &replica.query(&json!({"id": 5, "cmd": "node_tree_get", "session": 0}).to_string()),
         )
         .unwrap();
         assert_eq!(tree["reply"], "ok", "reply was {tree}");
@@ -1500,7 +1502,7 @@ mod tests {
         let mut replica = ReplicaState::new();
         replica.sync_from_editor(editor.editor(), session);
         let info: Value = serde_json::from_str(&replica.query(
-            &json!({"id": 9, "cmd": "node_info", "session": session.0, "node": part}).to_string(),
+            &json!({"id": 9, "cmd": "node_get", "session": session.0, "node": part}).to_string(),
         ))
         .unwrap();
         assert_eq!(info["reply"], "ok", "reply was {info}");
@@ -1511,7 +1513,7 @@ mod tests {
         let group = add_node(&editor, session, ROOT, "group", "head");
         replica.sync_from_editor(editor.editor(), session);
         let info: Value = serde_json::from_str(&replica.query(
-            &json!({"id": 10, "cmd": "node_info", "session": session.0, "node": group}).to_string(),
+            &json!({"id": 10, "cmd": "node_get", "session": session.0, "node": group}).to_string(),
         ))
         .unwrap();
         assert!(
@@ -1543,7 +1545,7 @@ mod tests {
     fn drain_events_yields_what_a_command_caused_and_then_nothing() {
         let editor = CatchlightEditor::new();
         let session = new_session(&editor);
-        // session_new is a session change, not a model one.
+        // session_create is a session change, not a model one.
         let opened = editor.drain_events();
         assert!(
             opened.iter().all(|e| e.contains("sessions_changed")),
@@ -1766,7 +1768,7 @@ mod tests {
             // dimension reads must use the texture's declared encoding.
             let meshed = call(
                 &editor,
-                json!({"id": 12, "cmd": "mesh_auto", "session": session.0, "node": part}),
+                json!({"id": 12, "cmd": "mesh_generate", "session": session.0, "node": part}),
             );
             assert_eq!(meshed["reply"], "ok", "{encoding}: {meshed}");
         }
@@ -2065,25 +2067,31 @@ mod tests {
         };
         for param in ["x", "y", "other"] {
             send(json!({"cmd":"param_add", "param":param, "name":param,
-                "min":0, "max":1, "default":0, "key_positions":[0,1]}));
+                "min":0, "max":1, "default":0}));
         }
         send(json!({"cmd":"node_set", "node":face, "translate":[100,0,0], "scale":[2,2]}));
-        send(
-            json!({"cmd":"binding_keys", "node":face, "param":"x", "param_y":"y", "cell":[1,1],
-            "entries":[{"target":"tx","value":10},{"target":"sx","value":3}]}),
-        );
-        send(
-            json!({"cmd":"binding_keys", "node":face, "param":"other", "cell":[1,0],
-            "entries":[{"target":"tx","value":20},{"target":"sx","value":2}]}),
-        );
-        send(
-            json!({"cmd":"deform_vertices", "node":face, "param":"x", "param_y":"y", "cell":[1,1],
-            "offsets":[[10,0],[10,0],[10,0],[10,0]]}),
-        );
-        send(
-            json!({"cmd":"deform_vertices", "node":face, "param":"other", "cell":[1,0],
-            "offsets":[[20,0],[20,0],[20,0],[20,0]]}),
-        );
+        for (param, param_y, cell, tx, sx) in [
+            ("x", Some("y"), [1, 1], 10.0, 3.0),
+            ("other", None, [1, 0], 20.0, 2.0),
+        ] {
+            let axes = if param_y.is_some() {
+                json!([[0, 1], [0, 1]])
+            } else {
+                json!([[0, 1]])
+            };
+            for (target, value) in [
+                ("tx", json!({"scalar": tx})),
+                ("sx", json!({"scalar": sx})),
+                ("deform", json!({"offsets": [[tx,0],[tx,0],[tx,0],[tx,0]]})),
+            ] {
+                send(
+                    json!({"cmd":"edit_apply", "if_rev":editor.editor().revision(session).unwrap(), "edits":[
+                        {"op":"binding_add", "node":face, "param":param, "param_y":param_y, "target":target, "key_positions":axes},
+                        {"op":"binding_cells_set", "node":face, "param":param, "param_y":param_y, "target":target, "cells":[{"cell":cell,"value":value}]}
+                    ]}),
+                );
+            }
+        }
         let mut replica = ReplicaState::new();
         replica.sync_from_editor(editor.editor(), session);
         replica.set_editing(true);
@@ -2091,7 +2099,9 @@ mod tests {
             replica.set_param(p, 1.0);
         }
         let revision = replica.rev();
-        let recording = replica.recording(&face, "x", Some("y"), [1, 1]).unwrap();
+        let recording = replica
+            .recording(&face, "x", Some("y"), [1.0, 1.0])
+            .unwrap();
         assert_eq!(replica.rev(), revision, "arming never authors");
         assert_eq!(recording.posed.translate.unwrap()[0], 130.0);
         assert_eq!(recording.posed.scale.unwrap()[0], 12.0);
@@ -2117,7 +2127,9 @@ mod tests {
             vec![["x".to_string(), "y".to_string()]]
         );
         replica.set_param("y", 0.25);
-        assert!(replica.recording(&face, "x", Some("y"), [1, 1]).is_err());
+        assert!(replica
+            .recording(&face, "x", Some("y"), [1.0, 1.0])
+            .is_err());
         send(json!({"cmd":"node_set", "node":face, "name":"renamed"}));
         replica.sync_from_editor(editor.editor(), session);
         assert!(
@@ -2136,11 +2148,14 @@ mod tests {
         set_quad_mesh(&editor, session, &face, 1.0);
         let revision = editor.editor().revision(session).unwrap();
         let before = structure_of(&editor, session);
-        let status = call(&editor, json!({"id":80,"cmd":"status","session":session.0}));
+        let status = call(
+            &editor,
+            json!({"id":80,"cmd":"session_get","session":session.0}),
+        );
         let commands = [
             json!({"cmd":"mesh_set","verts":[[0,0],[1,0],[1,1]],"uvs":[[0,0],[1,0],[1,1]],"indices":[[0,1,2]],"origin":[0,0]}),
-            json!({"cmd":"binding_keys","param":"missing","cell":[0,0],"entries":[{"target":"tx","value":20}]}),
-            json!({"cmd":"deform_vertices","param":"missing","cell":[0,0],"offsets":[[0,0],[0,0],[0,0],[0,0]]}),
+            json!({"cmd":"binding_cells_set","param":"missing","target":"tx","cells":[{"cell":[0,0],"value":{"scalar":20}}]}),
+            json!({"cmd":"binding_cells_set","param":"missing","target":"deform","cells":[{"cell":[0,0],"value":{"offsets":[[0,0],[0,0],[0,0],[0,0]]}}]}),
         ];
         for mut command in commands {
             command["id"] = json!(81);
@@ -2153,7 +2168,10 @@ mod tests {
             assert_eq!(editor.editor().revision(session), Some(revision));
             assert_eq!(structure_of(&editor, session), before);
             assert_eq!(
-                call(&editor, json!({"id":80,"cmd":"status","session":session.0})),
+                call(
+                    &editor,
+                    json!({"id":80,"cmd":"session_get","session":session.0})
+                ),
                 status
             );
         }

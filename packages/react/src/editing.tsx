@@ -4,6 +4,8 @@
 import { MeshDraft, RecordingGesture } from "@catchlight/core";
 import type {
   MeshDraftView,
+  BindingCellValue,
+  EditOp,
   ParamId,
   RecordProperties,
   RecordingTarget,
@@ -54,8 +56,6 @@ function useEditingController(
   const [pair, setPair] = useState<[string, string]>();
   const [recordTool, setRecordTool] = useState<RecordingTool>("shape");
   const [armed, setArmed] = useState<{ address: string; pose: string }>();
-  const [gate, setGate] = useState(false);
-  const [resumeRequested, setResumeRequested] = useState(false);
   const [busy, setBusy] = useState(false);
   const [mesh, setMesh] = useState<MeshDraftView>();
   const draft = useRef<MeshDraft | undefined>(undefined);
@@ -82,40 +82,38 @@ function useEditingController(
   const yValue = secondary
     ? (session?.paramValue(secondary.id) ?? secondary.default)
     : 0;
-  const x = primary ? keyIndexNear(primary, xValue, 0.00001) : undefined;
-  const y = secondary ? keyIndexNear(secondary, yValue, 0.00001) : 0;
-  const target: RecordingTarget | undefined =
-    node && primary && x !== undefined && y !== undefined
-      ? {
-          node,
-          param: primary.id,
-          ...(secondary ? { param_y: secondary.id } : {}),
-          cell: [x, y],
-        }
-      : undefined;
-  const address = JSON.stringify([
-    session?.id,
-    node,
-    primary?.id,
-    secondary?.id,
-    x,
-    y,
-    recordTool,
-  ]);
-  const recording =
-    mode === "record" &&
-    !!target &&
-    armed?.address === address &&
-    armed.pose === pose;
   const relevant = bindings.filter(
-    (b) =>
-      b.param === primary?.id &&
-      b.param_y === secondary?.id &&
+    (b) => b.param === primary?.id && b.param_y == secondary?.id &&
       (recordTool === "shape" ? b.target === "deform" : b.target !== "deform"),
   );
-  const authored =
-    !!target &&
-    relevant.some((b) => b.authored[target.cell[1]]?.[target.cell[0]]);
+  // A shared shelf is only a navigation aid. Each property's authored cells
+  // are looked up through its own axes when recording or editing a key.
+  const axisPositions = (axis: number, parameter: typeof primary): number[] =>
+    [...new Set(relevant.flatMap((b) => b.key_positions[axis] ?? [])
+      .concat(parameter ? [0, normalizedValue(parameter, parameter.default), 1] : [0]))]
+      .sort((a, b) => a - b);
+  const xPositions = axisPositions(0, primary);
+  const yPositions = axisPositions(1, secondary);
+  const position: [number, number] = [
+    primary ? normalizedValue(primary, xValue) : 0,
+    secondary ? normalizedValue(secondary, yValue) : 0,
+  ];
+  const x = primary ? keyIndexNear(primary, xValue, xPositions, 0.00001) : undefined;
+  const y = secondary ? keyIndexNear(secondary, yValue, yPositions, 0.00001) : 0;
+  const target: RecordingTarget | undefined = node && primary
+    ? { node, param: primary.id, ...(secondary ? { param_y: secondary.id } : {}), position }
+    : undefined;
+  const address = JSON.stringify([session?.id, node, primary?.id, secondary?.id, position, recordTool]);
+  const recording = mode === "record" && !!target && armed?.address === address && armed.pose === pose;
+  const cellAt = (binding: typeof bindings[number], at: [number, number]): [number, number] | undefined => {
+    const indices = binding.key_positions.map((axis, i) => axis.findIndex((value) => Math.abs(value - at[i]!) < 0.00001));
+    return indices.every((index) => index >= 0) ? [indices[0]!, indices[1] ?? 0] : undefined;
+  };
+  const keyAuthored = (at: [number, number]) => relevant.some((binding) => {
+    const cell = cellAt(binding, at);
+    return cell && binding.authored[cell[1]]?.[cell[0]];
+  });
+  const authored = !!target && keyAuthored(position);
   const stale = !!draft.current?.stale;
   const pairChoices = useMemo(
     () => (session && node && param ? session.recordingPairs(node, param) : []),
@@ -125,8 +123,6 @@ function useEditingController(
   useEffect(() => {
     setMode("arrange");
     setArmed(undefined);
-    setGate(false);
-    setResumeRequested(false);
     setPair(undefined);
     setParam(session?.params()[0]?.id);
     setMesh(undefined);
@@ -156,7 +152,6 @@ function useEditingController(
   }, [pairChoices]);
   useEffect(() => {
     setArmed(undefined);
-    setGate(false);
     if (info && info.kind !== "part" && info.kind !== "mesh_group")
       setRecordTool("transform");
   }, [node]);
@@ -208,7 +203,6 @@ function useEditingController(
       setMeshError(undefined);
       setMode("mesh");
       setArmed(undefined);
-      setGate(false);
       setEmptiedSlots([]);
       session.setEditing(true);
     } catch (e) {
@@ -219,7 +213,6 @@ function useEditingController(
     if (next === mode) return;
     guard(() => {
       setArmed(undefined);
-      setGate(false);
       if (next === "mesh") openMesh();
       else setMode(next);
     });
@@ -296,78 +289,26 @@ function useEditingController(
   };
   const selectParam = (id: ParamId) => {
     setArmed(undefined);
-    setGate(false);
     setParam(id);
     setPair(undefined);
   };
   const selectCell = (cx: number, cy = y ?? 0) => {
     if (!session || !primary || busy) return;
     setArmed(undefined);
-    setGate(false);
-    session.setParam(primary.id, valueAtKey(primary, cx));
-    if (secondary) session.setParam(secondary.id, valueAtKey(secondary, cy));
+    session.setParam(primary.id, valueAtKey(primary, cx, xPositions));
+    if (secondary) session.setParam(secondary.id, valueAtKey(secondary, cy, yPositions));
   };
   const arm = () => {
     if (busy || !session || !info || !primary) return;
-    if (!target) {
-      setGate(true);
-      return;
-    }
+    if (!target) return;
     if (recordTool === "shape" && !info.vertex_count) return;
     try {
       // Validate with Rust before showing the armed state. This authors nothing.
       const check = new RecordingGesture(session, target);
       check.dispose();
       setArmed({ address, pose: readPose() });
-      setGate(false);
     } catch (e) {
       onError(e);
-    }
-  };
-  useEffect(() => {
-    if (!resumeRequested || busy || !target || mode !== "record") return;
-    setResumeRequested(false);
-    arm();
-  }, [resumeRequested, busy, address, pose, revision]);
-  const snap = () => {
-    if (!primary || !session) return;
-    const near = (positions: number[], value: number) =>
-      positions.reduce(
-        (best, v, i) =>
-          Math.abs(v - value) < Math.abs(positions[best]! - value) ? i : best,
-        0,
-      );
-    selectCell(
-      near(primary.key_positions, normalizedValue(primary, xValue)),
-      secondary
-        ? near(secondary.key_positions, normalizedValue(secondary, yValue))
-        : 0,
-    );
-    setResumeRequested(true);
-  };
-  const insert = async () => {
-    if (!session || !primary || busy) return;
-    setBusy(true);
-    setArmed(undefined);
-    try {
-      const axes = [
-        { p: primary, value: xValue, index: x },
-        ...(secondary ? [{ p: secondary, value: yValue, index: y }] : []),
-      ];
-      for (const { p, value, index } of axes)
-        if (index === undefined) {
-          await session.send({
-            cmd: "param_key_insert",
-            param: p.id,
-            value: normalizedValue(p, value),
-          });
-        }
-      setGate(false);
-      setResumeRequested(true);
-    } catch (e) {
-      onError(e);
-    } finally {
-      setBusy(false);
     }
   };
   const beginRecording = (): RecordingGesture | undefined => {
@@ -400,25 +341,24 @@ function useEditingController(
     if (gesture)
       await runGesture(gesture, () => gesture.patch(fields, authoredBasis));
   };
-  const keyAction = async (action: "binding_reset" | "binding_unset") => {
+  const keyAction = async (action: "neutral" | "clear") => {
     if (!session || !target || busy) return;
     setArmed(undefined);
     setBusy(true);
     try {
-      const targets =
-        recordTool === "shape"
-          ? ["deform" as const]
-          : relevant.map((b) => b.target);
-      for (const t of targets) {
-        if (action === "binding_reset")
-          await session.send({ cmd: "binding_reset", ...target, target: t });
-        else await session.send({ cmd: "binding_unset", ...target, target: t });
-      }
-    } catch (e) {
-      onError(e);
-    } finally {
-      setBusy(false);
-    }
+      const edits: EditOp[] = relevant.flatMap((binding): EditOp[] => {
+        const cell = cellAt(binding, target.position);
+        if (!cell) return [];
+        const address = { node: target.node, param: binding.param, param_y: binding.param_y ?? null, target: binding.target };
+        if (action === "clear") return [{ op: "binding_cells_unset", ...address, cells: [cell] }];
+        const identity = binding.identity;
+        const value: BindingCellValue = "scalar" in identity ? { scalar: identity.scalar }
+          : { offsets: Array.from({ length: identity.vertex_count }, () => [...identity.offset] as [number, number]) };
+        return [{ op: "binding_cells_set", ...address, cells: [{ cell, value }] }];
+      });
+      if (edits.length) await session.send({ cmd: "edit_apply", if_rev: revision, edits });
+    } catch (e) { onError(e); }
+    finally { setBusy(false); }
   };
   const posed = useMemo(() => {
     if (!session || !target) return undefined;
@@ -467,9 +407,9 @@ function useEditingController(
       setArmed(undefined);
       setRecordTool(next);
     },
-    gate,
-    snap,
-    insert,
+    xPositions,
+    yPositions,
+    keyAuthored,
     selectCell,
     beginRecording,
     runGesture,

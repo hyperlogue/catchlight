@@ -8,7 +8,7 @@ import type {
   Session,
   RecordingGesture,
 } from "@catchlight/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Point, Size } from "./camera.js";
 import { screenAt, worldAt } from "./camera.js";
@@ -48,6 +48,7 @@ export function SelectionOverlay({
 }) {
   const edit = useEditing();
   const info = useNodeInfo(session, node);
+  const meshInfo = useMemo(() => info?.vertex_count ? session.mesh(node) : undefined, [session, node, info]);
   const vertices = useSelectionVertices(session, node);
   const active = useRef<Gesture | undefined>(undefined);
   const [dragging, setDragging] = useState(false);
@@ -138,10 +139,9 @@ export function SelectionOverlay({
         at[0] - drag.from[0],
         at[1] - drag.from[1],
       );
-      const mesh = drag.info.mesh;
-      if (!delta || !mesh) return;
+      if (!delta || !drag.info.vertex_count) return;
       const index = drag.kind;
-      const offsets = new Float32Array(mesh.verts.length * 2);
+      const offsets = new Float32Array(drag.info.vertex_count * 2);
       offsets[index * 2] = delta[0]!;
       offsets[index * 2 + 1] = delta[1]!;
       drag.offsets = offsets;
@@ -214,10 +214,10 @@ export function SelectionOverlay({
     });
   };
   const editVertex = (index: number, dx: number, dy: number) => {
-    if (!info?.mesh || !edit?.recording || edit.busy) return;
+    if (!info?.vertex_count || !edit?.recording || edit.busy) return;
     const gesture = edit.beginRecording();
     if (!gesture) return;
-    const offsets = new Float32Array(info.mesh.verts.length * 2);
+    const offsets = new Float32Array(info.vertex_count * 2);
     offsets[index * 2] = dx;
     offsets[index * 2 + 1] = dy;
     void edit.runGesture(gesture, () => gesture.deform(offsets));
@@ -253,9 +253,9 @@ export function SelectionOverlay({
         width={right - left}
         height={bottom - top}
       />
-      {mesh && info?.mesh ? (
+      {mesh && meshInfo ? (
         <g data-catchlight-mesh-lines="">
-          {info.mesh?.indices.map((tri, i) => (
+          {meshInfo.indices.map((tri, i) => (
             <polygon
               key={i}
               points={tri

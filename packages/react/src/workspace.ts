@@ -69,7 +69,7 @@ export function useWorkspaceActions(
           status?.undo_steps &&
           run(async () => {
             editing?.stop();
-            await session.send({ cmd: "undo" });
+            await session.send({ cmd: "edit_undo", if_rev: session.getRevision() });
           })),
     redo: () =>
       historyAvailable &&
@@ -79,7 +79,7 @@ export function useWorkspaceActions(
           status?.redo_steps &&
           run(async () => {
             editing?.stop();
-            await session.send({ cmd: "redo" });
+            await session.send({ cmd: "edit_redo", if_rev: session.getRevision() });
           })),
     remove: () =>
       session &&

@@ -28,13 +28,14 @@ export async function studio(
       return {
         revision: session.getRevision(),
         info: session.nodeInfo(node),
+        mesh: session.nodeInfo(node)?.vertex_count ? session.mesh(node) : undefined,
         params: session.params(),
         bindings: session.bindings(node),
         tree: session.tree(),
-        status: await session.queryServer({ cmd: "status" }),
+        status: await session.queryServer({ cmd: "session_get" }),
         slots:
           session.nodeInfo(node)?.kind === "part"
-            ? session.query({ cmd: "slots", node })
+            ? session.query({ cmd: "slot_list", node })
             : undefined,
       };
     }, node);
@@ -208,7 +209,40 @@ export async function studio(
     const two = (await read("head")).bindings.find(
       (b) => b.target === "tx" && b.param_y === "look",
     );
-    assert.equal(two?.height, 3);
+    assert.equal(two?.height, 2, "a new binding owns its two endpoint positions");
+    const axesBefore = (await read("head")).bindings.find((b) => b.target === "rz")!.key_positions;
+    const tx = page.locator('[data-catchlight-binding][data-target="tx"]');
+    const firstAxis = tx.locator('[data-catchlight-param-keys][data-param="head-tilt"]');
+    const insertRevision = (await read()).revision;
+    await firstAxis.locator('[data-catchlight-param-key-insert]').click();
+    await change(insertRevision);
+    let edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    assert.deepEqual(edited.key_positions, [[0, 0.5, 1], [0, 1]]);
+    const marker = firstAxis.locator('[data-catchlight-param-key][data-index="1"]');
+    const markerBox = await marker.boundingBox(), trackBox = await firstAxis.locator('[data-catchlight-param-key-track]').boundingBox();
+    assert(markerBox && trackBox);
+    const moveRevision = (await read()).revision;
+    await page.mouse.move(markerBox.x + markerBox.width / 2, markerBox.y + markerBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(trackBox.x + trackBox.width * 0.65, markerBox.y + markerBox.height / 2, { steps: 5 });
+    assert.equal((await read()).revision, moveRevision, "key position drag remains local until release");
+    await page.mouse.up();
+    await change(moveRevision);
+    edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    assert(Math.abs(edited.key_positions[0]![1]! - 0.65) < 0.02);
+    await page.screenshot({ path: `${shots}/${tag}-binding-axes.png` });
+    const deleteRevision = (await read()).revision;
+    await firstAxis.locator('[data-catchlight-param-key-delete]').click();
+    await change(deleteRevision);
+    edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    assert.deepEqual(edited.key_positions, [[0, 1], [0, 1]]);
+    const secondAxis = tx.locator('[data-catchlight-param-keys][data-param="look"]');
+    const secondRevision = (await read()).revision;
+    await secondAxis.locator('[data-catchlight-param-key-insert]').click();
+    await change(secondRevision);
+    edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    assert.deepEqual(edited.key_positions, [[0, 1], [0, 0.5, 1]]);
+    assert.deepEqual((await read("head")).bindings.find((b) => b.target === "rz")!.key_positions, axesBefore);
     await page.getByRole("button", { name: "Params", exact: true }).click();
     await page.getByRole("button", { name: "New param", exact: true }).click();
     await page
@@ -334,9 +368,10 @@ export async function studio(
         .getByRole("button", { name: "Apply mesh", exact: true })
         .click();
       await change(imported.revision);
-      const traced = (await read(id)).info!;
+      const tracedModel = await read(id);
+      const traced = tracedModel.info!;
       assert(traced.vertex_count! >= 4 && traced.triangle_count! >= 2);
-      assert.notDeepEqual(traced.mesh?.verts, imported.info?.mesh?.verts);
+      assert.notDeepEqual(tracedModel.mesh?.verts, imported.mesh?.verts);
       await page
         .getByRole("button", { name: "Delete selected node", exact: true })
         .click();

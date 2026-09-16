@@ -175,7 +175,10 @@ export function RecordingInspector() {
     );
   const selectedBindings = edit.target
     ? edit.relevant.filter(
-        (b) => b.authored[edit.target!.cell[1]]?.[edit.target!.cell[0]],
+        (b) => {
+          const cell = b.key_positions.map((axis, index) => axis.findIndex((p) => Math.abs(p - edit.target!.position[index]!) < 0.00001));
+          return b.authored[cell[1] ?? 0]?.[cell[0]!];
+        },
       )
     : [];
   return (
@@ -288,11 +291,11 @@ export function RecordingInspector() {
             data-authored={edit.authored ? "" : undefined}
           />
           {!edit.target
-            ? "Between key positions"
+            ? "Choose a parameter"
             : edit.authored
               ? edit.recordTool === "shape"
                 ? "Authored keypoint"
-                : `${selectedBindings.length} properties keyed`
+                : `${selectedBindings.length} ${selectedBindings.length === 1 ? "property" : "properties"} keyed`
               : "Derived · no keypoint authored here"}
         </span>
       </div>
@@ -315,7 +318,7 @@ export function RecordingInspector() {
               type="button"
               data-catchlight-action=""
               disabled={!edit.target || edit.busy}
-              onClick={() => void edit.keyAction("binding_reset")}
+              onClick={() => void edit.keyAction("neutral")}
             >
               <Icon name="reset" />
               Set neutral shape
@@ -324,7 +327,7 @@ export function RecordingInspector() {
               type="button"
               data-catchlight-action=""
               disabled={!edit.target || !edit.authored || edit.busy}
-              onClick={() => void edit.keyAction("binding_unset")}
+              onClick={() => void edit.keyAction("clear")}
             >
               <Icon name="minus" />
               Clear authored keypoint
@@ -480,11 +483,11 @@ export function RecordingKeys() {
       </EmptyState>
     );
   const keyState = (x: number, y: number) =>
-    edit.relevant.some((b) => b.authored[y]?.[x]);
+    edit.keyAuthored([edit.xPositions[x]!, edit.yPositions[y]!]);
   const keyButton = (x: number, y: number, matrix = false) => {
     const authored = keyState(x, y),
       selected = edit.x === x && edit.y === y;
-    const label = `${primary.name} ${display(valueAtKey(primary, x))}${secondary ? `, ${secondary.name} ${display(valueAtKey(secondary, y))}` : ""}`;
+    const label = `${primary.name} ${display(valueAtKey(primary, x, edit.xPositions))}${secondary ? `, ${secondary.name} ${display(valueAtKey(secondary, y, edit.yPositions))}` : ""}`;
     return (
       <button
         type="button"
@@ -503,7 +506,7 @@ export function RecordingKeys() {
         <Icon name="key" width="13" height="13" />
         {!matrix && (
           <>
-            <span>{display(valueAtKey(primary, x))}</span>
+            <span>{display(valueAtKey(primary, x, edit.xPositions))}</span>
             <small>{authored ? "Authored" : "Derived"}</small>
           </>
         )}
@@ -524,39 +527,6 @@ export function RecordingKeys() {
         </span>
         <small>◇ derived &nbsp; ◆ authored</small>
       </div>
-      {edit.gate && !edit.target && (
-        <div data-catchlight-key-gate="" role="status">
-          <div>
-            <strong>This pose is between key positions</strong>
-            <p>
-              Snap to an existing keypoint, or add a position at the current
-              value{secondary ? "s" : ""}.
-            </p>
-          </div>
-          <div>
-            <button
-              type="button"
-              title="Snap to the nearest existing keypoint and start recording"
-              disabled={edit.busy}
-              onClick={edit.snap}
-            >
-              Snap & record
-            </button>
-            <button
-              type="button"
-              data-primary=""
-              disabled={edit.busy}
-              onClick={() => void edit.insert()}
-            >
-              Add position & record
-            </button>
-          </div>
-          <small>
-            New positions expand the grid for every binding driven by{" "}
-            {secondary ? "these params" : "this param"}.
-          </small>
-        </div>
-      )}
       <div data-catchlight-key-shelf-content="">
         <div data-catchlight-record-sliders="">
           {[primary, ...(secondary ? [secondary] : [])].map((p) => (
@@ -579,13 +549,13 @@ export function RecordingKeys() {
           ))}
           {!secondary && (
             <div data-catchlight-record-key-strip="">
-              {primary.key_positions.map((_, x) => keyButton(x, 0))}
+              {edit.xPositions.map((_, x) => keyButton(x, 0))}
             </div>
           )}
           <p data-catchlight-record-pose-hint="">
             {edit.recording
               ? "Recording is on. Scrubbing stops capture; completed edits are kept."
-              : "Scrub to preview. Select a keypoint, then start recording to edit it."}
+              : "Scrub to preview, then start recording at any value. Only edited properties receive a key."}
           </p>
         </div>
         {secondary && (
@@ -597,19 +567,19 @@ export function RecordingKeys() {
             <div
               data-catchlight-record-matrix=""
               style={{
-                gridTemplateColumns: `42px repeat(${primary.key_positions.length}, minmax(34px, 1fr))`,
+                gridTemplateColumns: `42px repeat(${edit.xPositions.length}, minmax(34px, 1fr))`,
               }}
             >
               <span />
-              {primary.key_positions.map((_, x) => (
-                <span key={x}>{display(valueAtKey(primary, x))}</span>
+              {edit.xPositions.map((_, x) => (
+                <span key={x}>{display(valueAtKey(primary, x, edit.xPositions))}</span>
               ))}
-              {secondary.key_positions
-                .map((_, y) => secondary.key_positions.length - 1 - y)
+              {edit.yPositions
+                .map((_, y) => edit.yPositions.length - 1 - y)
                 .map((y) => (
                   <div key={y} data-catchlight-matrix-row="">
-                    <span>{display(valueAtKey(secondary, y))}</span>
-                    {primary.key_positions.map((_, x) => keyButton(x, y, true))}
+                    <span>{display(valueAtKey(secondary, y, edit.yPositions))}</span>
+                    {edit.xPositions.map((_, x) => keyButton(x, y, true))}
                   </div>
                 ))}
             </div>

@@ -20,6 +20,7 @@
 export * from "./protocol.gen.js";
 
 export { Editor, fileKey } from "./editor.js";
+export type { ExportedModel } from "./editor.js";
 export { Session } from "./session.js";
 export { MeshDraft, RecordingGesture } from "./authoring.js";
 export type {
@@ -38,9 +39,11 @@ export type {
 export { FeedQueue, ProtocolError } from "./backend.js";
 export type {
   Backend,
+  Attachment,
   ClientErrorCode,
   FailureCode,
   OkReply,
+  OkReplyWithPayload,
   ProtocolErrorInfo,
   Request,
   Unsubscribe,

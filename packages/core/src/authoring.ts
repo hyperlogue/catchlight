@@ -3,7 +3,10 @@
  * revision it started from, so a delayed HTTP request cannot overwrite a
  * newer edit even when the replica has not received that edit yet. */
 import type {
-  BindingKeyEntry,
+  BindingCellWrite,
+  BindingTarget,
+  EditOp,
+  ParamId,
   BindingParams,
   MeshInfo,
   NodeId,
@@ -34,7 +37,7 @@ export type RecordProperties = Pick<
 >;
 export type RecordingTarget = BindingParams & {
   node: NodeId;
-  cell: [number, number];
+  position: [number, number];
 };
 
 export class MeshDraft {
@@ -93,12 +96,12 @@ export class RecordingGesture {
   constructor(session: Session, target: RecordingTarget) {
     this.#session = session;
     this.revision = session.getRevision();
-    this.target = { ...target, cell: [...target.cell] };
+    this.target = { ...target, position: [...target.position] };
     this.#handle = session.replica.recording(
       target.node,
       target.param,
       target.param_y ?? undefined,
-      ...target.cell,
+      ...target.position,
     );
     this.posed = JSON.parse(this.#handle.posed()) as RecordProperties;
   }
@@ -118,29 +121,30 @@ export class RecordingGesture {
     authoredBasis = false,
   ): Promise<void> {
     this.#check();
-    const entries = JSON.parse(
+    const writes = JSON.parse(
       this.#handle.patch(JSON.stringify(properties), authoredBasis),
-    ) as BindingKeyEntry[];
-    if (entries.length)
-      await this.#session.send({
-        cmd: "binding_keys",
-        ...this.target,
-        if_rev: this.revision,
-        entries,
-      });
+    ) as RecordingWrite[];
+    await this.#commit(writes);
   }
   async deform(deltas: Float32Array): Promise<void> {
     this.#check();
     if (!deltas.some((v) => Math.abs(v) > 1e-6)) return;
-    const values = this.#handle.deform(deltas);
-    const offsets: [number, number][] = [];
-    for (let i = 0; i < values.length; i += 2)
-      offsets.push([values[i]!, values[i + 1]!]);
-    await this.#session.send({
-      cmd: "deform_vertices",
-      ...this.target,
-      if_rev: this.revision,
-      offsets,
+    await this.#commit([JSON.parse(this.#handle.deform(deltas)) as RecordingWrite]);
+  }
+  async #commit(writes: RecordingWrite[]): Promise<void> {
+    const { node, param, param_y } = this.target;
+    const edits: EditOp[] = writes.flatMap((write) => {
+      const binding = { node, param, param_y: param_y ?? null, target: write.target };
+      return [
+        { op: "binding_add", ...binding, key_positions: write.key_positions },
+        ...write.inserts.map(({ axis, value }): EditOp => ({
+          op: "binding_key_insert", ...binding, axis, value,
+        })),
+        { op: "binding_cells_set", ...binding, cells: write.cells },
+      ];
+    });
+    if (edits.length) await this.#session.send({
+      cmd: "edit_apply", if_rev: this.revision, edits,
     });
   }
   dispose() {
@@ -149,4 +153,12 @@ export class RecordingGesture {
       this.#handle.free();
     }
   }
+}
+
+/** A Rust-owned plan for one property's independently sampled binding. */
+interface RecordingWrite {
+  target: BindingTarget;
+  key_positions: number[][];
+  inserts: { axis: ParamId; value: number }[];
+  cells: BindingCellWrite[];
 }

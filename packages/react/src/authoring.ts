@@ -30,7 +30,7 @@ export function useSessionStatus(session: Session | undefined) {
     const refresh = () => {
       const current = ++request;
       void session
-        .queryServer({ cmd: "status" })
+        .queryServer({ cmd: "session_get" })
         .then((body) => {
           if (live && current === request && body.result === "status") setStatus(body.status);
         })
@@ -134,7 +134,7 @@ export async function importArtwork(
         [["texture", new Uint8Array(await file.arrayBuffer())]],
       );
       await session.send({
-        cmd: "mesh_auto",
+        cmd: "mesh_generate",
         node: created.node,
         mode: { mode: "grid", cols: 2, rows: 2 },
       });

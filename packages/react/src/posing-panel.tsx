@@ -1,3 +1,4 @@
+import { useBindings } from "./bindings.js";
 /** Posing is preview state. Param definitions and binding cells are authored
  * only through their explicit editors, so a slider never creates undo work. */
 import type { BindingParams, NodeId, ParamId, ParamInfo, Session } from "@catchlight/core";
@@ -88,7 +89,7 @@ export function ParamsPanel({
           <ParamFieldsRoot session={session} param={edit} onError={onError} />
           <div data-catchlight-param-key-editor="">
             <p data-catchlight-hint="">
-              Pose at a key to select it. Drag an interior marker to move it.
+              Preview the range and default value. Edit key positions on each binding.
             </p>
             <ParamSliderRoot session={session} param={edit} />
             <ParamKeysRoot session={session} param={edit} onError={onError} />
@@ -180,7 +181,6 @@ function NewParamDialog({
               min,
               max,
               default: value,
-              keyPositions: [0, 0.5, 1],
             })
             .then((id) => {
               onAdded(id);
@@ -213,7 +213,7 @@ function NewParamDialog({
           />
         </Field>
         <p data-catchlight-hint="">
-          Starts with three key positions: minimum, middle, and maximum.
+          Each binding owns its key positions. Recording adds keys where you edit.
         </p>
         {min >= max || value < min || value > max ? (
           <p role="alert" data-catchlight-hint="">
@@ -286,7 +286,7 @@ export function BindingsPanel({
         param={showing}
         onError={onError}
       />
-      {showing && info?.mesh?.verts.length ? (
+      {showing && info?.vertex_count ? (
         <Disclosure title="Author a mesh deform" defaultOpen={false}>
           <p data-catchlight-hint="">
             Apply an offset, rotation, or scale to the rest mesh at a key. This replaces the deform
@@ -345,6 +345,8 @@ export function DeformPanel({
   const { run, busy } = useCommand(session, onError);
   const all = useParams(session);
   const p = all.find((p) => p.id === params.param);
+  const binding = useBindings(session, node).find((b) => b.target === "deform" && b.param === params.param && b.param_y == params.param_y);
+  const positions = binding?.key_positions[0] ?? [0, 1];
   const [cell, setCell] = useState(0);
   const [x, setX] = useState(0);
   const [y, setY] = useState(0);
@@ -360,10 +362,10 @@ export function DeformPanel({
           onChange={(e) => {
             const i = Number(e.currentTarget.value);
             setCell(i);
-            session.setParam(p.id, p.min + (p.key_positions[i] ?? 0) * (p.max - p.min));
+            session.setParam(p.id, p.min + (positions[i] ?? 0) * (p.max - p.min));
           }}
         >
-          {p.key_positions.map((k, i) => (
+          {positions.map((k, i) => (
             <option key={i} value={i}>
               {round(p.min + k * (p.max - p.min))}
             </option>
@@ -383,15 +385,19 @@ export function DeformPanel({
       <button
         type="button"
         onClick={() =>
-          void run({
-            cmd: "deform_set",
-            node,
-            ...params,
-            cell: [cell, 0],
-            translate: [x, y],
-            rotate: (rotate * Math.PI) / 180,
-            scale: [scale, scale],
-          })
+          void (() => {
+            const mesh = session.mesh(node);
+            const radians = rotate * Math.PI / 180;
+            const cosine = Math.cos(radians) * scale, sine = Math.sin(radians) * scale;
+            const offsets: [number, number][] = mesh.verts.map(([vx, vy]) => {
+              const dx = vx - mesh.origin[0], dy = vy - mesh.origin[1];
+              return [dx * cosine - dy * sine - dx + x, dx * sine + dy * cosine - dy + y];
+            });
+            return run({ cmd: "edit_apply", if_rev: session.getRevision(), edits: [
+              { op: "binding_add", node, ...params, target: "deform", key_positions: binding?.key_positions ?? (params.param_y ? [positions, [0, 1]] : [positions]) },
+              { op: "binding_cells_set", node, ...params, target: "deform", cells: [{ cell: [cell, 0], value: { offsets } }] },
+            ] });
+          })()
         }
       >
         Set deform key

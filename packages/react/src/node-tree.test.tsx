@@ -235,12 +235,12 @@ describe("dragging a row onto another", () => {
     await fire(row("root/part-2"), dragEvent("drop", 10));
     await settle();
 
-    expect(wasm.requests.filter((request) => request.cmd === "node_move")).toEqual([
+    expect(wasm.requests.filter((request) => request.cmd === "edit_apply")).toEqual([
       expect.objectContaining({
-        cmd: "node_move",
-        node: "root/part-1",
-        parent: "root/part-2",
-        index: 0,
+        cmd: "edit_apply", edits: [
+          { op: "node_reparent", node: "root/part-1", to: "root/part-2" },
+          { op: "node_reorder", node: "root/part-1", index: 0 },
+        ],
       }),
     ]);
     // The hint is gone with the drag.
@@ -259,8 +259,8 @@ describe("dragging a row onto another", () => {
     await fire(row("root/part-1"), dragEvent("drop", 2));
     await settle();
 
-    expect(wasm.requests.filter((request) => request.cmd === "node_move")).toEqual([
-      expect.objectContaining({ cmd: "node_move", node: "root/part-2", parent: "root", index: 0 }),
+    expect(wasm.requests.filter((request) => request.cmd === "edit_apply")).toEqual([
+      expect.objectContaining({ cmd: "edit_apply", edits: [{ op: "node_reparent", node: "root/part-2", to: "root" }, { op: "node_reorder", node: "root/part-2", index: 0 }] }),
     ]);
     await view.unmount();
     restore();
@@ -294,7 +294,7 @@ describe("dragging a row onto another", () => {
     await fire(row("root/part-1"), dragEvent("drop", 10));
     await settle();
 
-    expect(wasm.requests.filter((request) => request.cmd === "node_move")).toEqual([]);
+    expect(wasm.requests.filter((request) => request.cmd === "edit_apply")).toEqual([]);
     await view.unmount();
     restore();
   });

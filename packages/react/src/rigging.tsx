@@ -122,7 +122,7 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
               data-catchlight-action=""
               onClick={() =>
                 void run({
-                  cmd: "mesh_auto",
+                  cmd: "mesh_generate",
                   node: info.id,
                   mode:
                     mode === "contour"

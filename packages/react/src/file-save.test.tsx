@@ -34,7 +34,7 @@ describe("saving as", () => {
     await settle();
 
     // The name typed became a key with the extension a later open reads.
-    expect(wasm.requests.find((request) => request.cmd === "save")).toMatchObject({
+    expect(wasm.requests.find((request) => request.cmd === "session_save")).toMatchObject({
       path: "copy.clm",
     });
     expect(outcomes).toEqual([{ key: "copy.clm", downloaded: true }]);
@@ -53,8 +53,8 @@ describe("saving as", () => {
     // A backend that keeps its bytes elsewhere: the reply names a key, and
     // nothing under it is here.
     const backend = new ScriptedBackend();
-    backend.replies.set("session_new", { body: { result: "session", session: 1 }, rev: 1 });
-    backend.replies.set("save", { body: { result: "saved", path: "out/akari.clm" }, rev: 1 });
+    backend.replies.set("session_create", { body: { result: "session", session: 1 }, rev: 1 });
+    backend.replies.set("session_save", { body: { result: "saved", path: "out/akari.clm" }, rev: 1 });
     const editor = await Editor.create(fakeWasm().module, backend);
     const session = await editor.newSession();
     const download = stubDownload();

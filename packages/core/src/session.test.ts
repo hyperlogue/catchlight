@@ -298,9 +298,9 @@ describe("reads", () => {
     backend.changed(1, 1);
     await tick();
 
-    expect(() => session.query({ cmd: "welds" })).toThrow(ProtocolError);
+    expect(() => session.query({ cmd: "weld_list" })).toThrow(ProtocolError);
     try {
-      session.query({ cmd: "welds" });
+      session.query({ cmd: "weld_list" });
     } catch (error) {
       expect(error).toMatchObject({ code: "bad_request" });
     }
@@ -321,10 +321,10 @@ describe("reads", () => {
 
   test("a server query goes over the wire and changes nothing", async () => {
     const { backend, session } = open();
-    backend.replies.set("status", { body: { result: "empty" }, rev: 1 });
+    backend.replies.set("session_get", { body: { result: "empty" }, rev: 1 });
 
-    await session.queryServer({ cmd: "status" });
-    expect(backend.sent).toEqual([{ cmd: "status", session: 1 }]);
+    await session.queryServer({ cmd: "session_get" });
+    expect(backend.sent).toEqual([{ cmd: "session_get", session: 1 }]);
     expect(session.getRevision()).toBe(0);
   });
 });
@@ -380,14 +380,12 @@ describe("one method per kind of command", () => {
   test("the wrong method does not typecheck", () => {
     const { session } = open();
 
-    // @ts-expect-error — `scratch_deform` is a scratch command. Sending it
-    // through `send` would cost a round trip and a revision on every pointer
-    // move, which is the bug this split exists to prevent.
-    void (() => session.send({ cmd: "scratch_deform", node: "hair", offsets: [] }));
+    // @ts-expect-error — presence never edits the model or enters its history.
+    void (() => session.send({ cmd: "presence_set", pose: [], selection: null }));
 
-    // @ts-expect-error — `status` needs the editor's own state, so a replica
+    // @ts-expect-error — `session_get` needs the editor's own state, so a replica
     // cannot answer it.
-    void (() => session.query({ cmd: "status" }));
+    void (() => session.query({ cmd: "session_get" }));
 
     // @ts-expect-error — `node_set` changes the model, so it cannot go out
     // as presence: the panels would never learn the edit happened.
@@ -395,11 +393,11 @@ describe("one method per kind of command", () => {
 
     // @ts-expect-error — the session fills this in; a caller that could pass
     // it could address the wrong model.
-    void (() => session.queryServer({ cmd: "status", session: 2 }));
+    void (() => session.queryServer({ cmd: "session_get", session: 2 }));
 
-    // @ts-expect-error — `session_new` names no session, so it belongs on the
+    // @ts-expect-error — `session_create` names no session, so it belongs on the
     // editor rather than on one.
-    void (() => session.send({ cmd: "session_new", name: null }));
+    void (() => session.send({ cmd: "session_create", name: null }));
 
     // @ts-expect-error — `nod_add` is not a command. The union is the spelling
     // check a `{ cmd: string }` placeholder could never do.

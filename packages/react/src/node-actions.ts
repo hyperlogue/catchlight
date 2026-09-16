@@ -96,7 +96,10 @@ export function useNodeActions(session: Session): NodeActions {
 
       setEnabled: (node, enabled) => session.send({ cmd: "node_set", node, enabled }),
 
-      move: (node, parent, index) => session.send({ cmd: "node_move", node, parent, index }),
+      move: (node, parent, index) => session.send({ cmd: "edit_apply", if_rev: session.getRevision(), edits: [
+        { op: "node_reparent", node, to: parent },
+        { op: "node_reorder", node, index },
+      ] }),
 
       moveUp(node) {
         const at = siblingIndex(session.tree(), node);

@@ -29,7 +29,7 @@
  *
  * **One method per kind of command, and the type picks it.** The split is
  * generated from Rust (`CommandKind` in `catchlight-editor-protocol`), so
- * passing `scratch_deform` to [`send`] does not typecheck. An edit
+ * passing `presence_set` to [`send`] does not typecheck. An edit
  * moves the revision; a presence command publishes view state to other
  * clients and moves nothing; a replica query is answered here, synchronously,
  * with no round trip at all; a server query is the only read that has to go
@@ -54,6 +54,7 @@ import type {
   Event,
   NodeId,
   NodeInfo,
+  MeshInfo,
   ParamId,
   ParamInfo,
   PresenceCommand,
@@ -64,7 +65,7 @@ import type {
   TexInfo,
   TreeNode,
 } from "./protocol.gen.js";
-import type { Attachment, Backend, Request, Unsubscribe } from "./backend.js";
+import type { Attachment, Backend, OkReplyWithPayload, Request, Unsubscribe } from "./backend.js";
 import {
   asProtocolError,
   expectResult,
@@ -82,7 +83,7 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
  * The arms of `T` that address a session, with the `session` field removed.
  *
  * Filling it in is the session's own job, so a caller cannot address the wrong
- * model by accident — and a command that names no session (`session_new`,
+ * model by accident — and a command that names no session (`session_create`,
  * `session_list`) drops out of the union entirely, because it belongs on the
  * `Editor` rather than here.
  */
@@ -248,6 +249,11 @@ export class Session {
     return reply.body;
   }
 
+  /** A server read whose response carries bytes, with its full revision and receipt. */
+  queryServerWith(command: SessionServerQueryCommand, attachments: readonly Attachment[] = []): Promise<OkReplyWithPayload> {
+    return this.#backend.sendWith(this.#address(command), attachments);
+  }
+
   /** Every param, as the panels list them. */
   params(): ParamInfo[] {
     return expectResult(this.query({ cmd: "param_list" }), "params").params;
@@ -255,7 +261,7 @@ export class Session {
 
   /** The node tree, from the root down. */
   tree(): TreeNode {
-    return expectResult(this.query({ cmd: "node_tree" }), "tree").root;
+    return expectResult(this.query({ cmd: "node_tree_get" }), "tree").root;
   }
 
   /**
@@ -269,7 +275,7 @@ export class Session {
   nodeInfo(node: NodeId): NodeInfo | undefined {
     let body: ResponseBody;
     try {
-      body = this.query({ cmd: "node_info", node });
+      body = this.query({ cmd: "node_get", node });
     } catch (cause) {
       if (cause instanceof ProtocolError && cause.code === "no_node")
         return undefined;
@@ -298,6 +304,11 @@ export class Session {
       throw cause;
     }
     return expectResult(body, "bindings").bindings;
+  }
+
+  /** Authored mesh arrays, requested only by tools that need geometry. */
+  mesh(node: NodeId): MeshInfo {
+    return expectResult(this.query({ cmd: "mesh_get", node }), "mesh_info").mesh;
   }
 
   /** Every texture the model carries, with its dimensions. */

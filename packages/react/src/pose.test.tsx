@@ -23,7 +23,7 @@ const param = (name: string, fallback: number): SessionEditCommand => ({
   min: 0,
   max: 1,
   default: fallback,
-  key_positions: [0, 1],
+
 });
 
 function published(wasm: FakeEditor): Array<Extract<Command, { cmd: "presence_set" }>> {

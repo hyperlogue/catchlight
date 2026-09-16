@@ -29,6 +29,7 @@ export async function workspaces(
       return {
         revision: session.getRevision(),
         info: session.nodeInfo(node),
+        mesh: session.nodeInfo(node)?.vertex_count ? session.mesh(node) : undefined,
         bindings: session.bindings(node),
         params: session.params(),
       };
@@ -121,11 +122,11 @@ export async function workspaces(
     await changed(before.revision);
     const applied = await read();
     assert.equal(applied.revision, before.revision + 1);
-    assert.notDeepEqual(applied.info!.mesh!.verts, before.info!.mesh!.verts);
-    assert.notDeepEqual(applied.info!.mesh!.uvs, before.info!.mesh!.uvs);
+    assert.notDeepEqual(applied.mesh!.verts, before.mesh!.verts);
+    assert.notDeepEqual(applied.mesh!.uvs, before.mesh!.uvs);
     // Every remaining UV still follows the same original texture mapping.
-    const original = before.info!.mesh!,
-      next = applied.info!.mesh!;
+    const original = before.mesh!,
+      next = applied.mesh!;
     for (const axis of [0, 1] as const) {
       const distinct = original.verts.findIndex(
         (p) => Math.abs(p[axis] - original.verts[0]![axis]) > 1,
@@ -146,7 +147,7 @@ export async function workspaces(
     await canvas.focus();
     await page.keyboard.press("Control+z");
     await changed(applied.revision);
-    assert.deepEqual((await read()).info!.mesh, before.info!.mesh);
+    assert.deepEqual((await read()).mesh, before.mesh);
   });
 
   await step(
@@ -224,7 +225,7 @@ export async function workspaces(
       await changed(before.revision);
       const keyed = await read();
       assert.equal(keyed.revision, before.revision + 1);
-      assert.deepEqual(keyed.info!.mesh, before.info!.mesh);
+      assert.deepEqual(keyed.mesh, before.mesh);
       assert.equal(
         await page
           .locator("[data-catchlight-record-key][data-authored]")
@@ -239,31 +240,25 @@ export async function workspaces(
       await field("Head tilt recording value", 0.25);
       assert.equal(await armed(), 0);
       assert.equal((await read()).revision, keyed.revision);
-      // The gate must reveal itself even when the user left the shelf collapsed.
-      await button("Collapse posing tools").click();
+      // Arming between existing positions authors nothing. The first gesture
+      // adds a position only to its own deform binding, in the same revision.
+      const beforeInsert = await read();
       await button("Start recording").click();
-      await page
-        .locator("[data-catchlight-key-gate]")
-        .waitFor({ state: "visible" });
+      await pause();
       assert.equal((await read()).revision, keyed.revision);
-      await button("Add position & record").click();
-      await changed(keyed.revision);
-      assert.equal(
-        (await read()).params.find((p) => p.id === "head-tilt")!.key_positions
-          .length,
-        4,
-      );
       assert.equal(await armed(), 1);
-      assert.equal(
-        (await read()).bindings.find((b) => b.target === "deform")!
-          .authored[0]![2],
-        false,
-      );
+      await drag(shapeVertex, 3, 2);
+      await changed(keyed.revision);
+      const inserted = await read();
+      const deform = inserted.bindings.find((b) => b.target === "deform")!;
+      const position = deform.key_positions[0]!.indexOf(0.625);
+      assert(position >= 0);
+      assert.equal(deform.authored[0]![position], true);
+      assert.deepEqual(inserted.bindings.filter((b) => b.target !== "deform"), beforeInsert.bindings.filter((b) => b.target !== "deform"));
       await button("Stop recording").click();
       await field("Head tilt recording value", 0.1);
       const rev = (await read()).revision;
       await button("Start recording").click();
-      await button("Snap & record").click();
       await pause();
       assert.equal(await armed(), 1);
       assert.equal((await read()).revision, rev);

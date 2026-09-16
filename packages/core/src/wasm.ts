@@ -62,7 +62,7 @@ export interface WasmEditor extends WasmOwned {
    */
   drainEvents(): string[];
   /**
-   * The tab's store, outward only: what a `save` or an `export_manifest`
+   * The tab's store, outward only: what a `session_save` or a `manifest_export`
    * wrote, until a backend drains it into the browser's own storage.
    */
   takeBytes(key: string): Uint8Array | undefined;
@@ -252,7 +252,7 @@ export interface WasmMeshDraft extends WasmOwned {
 export interface WasmRecording extends WasmOwned {
   posed(): string;
   patch(json: string, authoredBasis: boolean): string;
-  deform(deltas: Float32Array): Float32Array;
+  deform(deltas: Float32Array): string;
 }
 
 /** One frame of a canvas, as the renderer copied it back off the GPU. */

@@ -30,7 +30,7 @@
  * them back beside it.
  */
 
-import type { Command, ErrorCode, Event, Reply, ResponseBody } from "./protocol.gen.js";
+import type { Command, ErrorCode, Event, LimitInfo, Reply, ResponseBody } from "./protocol.gen.js";
 import { COMMAND_BYTES } from "./protocol.gen.js";
 import type { WasmReplica } from "./wasm.js";
 
@@ -71,6 +71,9 @@ export type FailureCode = ErrorCode | ClientErrorCode;
 export interface ProtocolErrorInfo {
   readonly code: FailureCode;
   readonly message: string;
+  readonly rev?: number | null;
+  readonly op_index?: number | null;
+  readonly limit?: LimitInfo | null;
 }
 
 /**
@@ -79,11 +82,17 @@ export interface ProtocolErrorInfo {
  */
 export class ProtocolError extends Error {
   readonly code: FailureCode;
+  readonly rev: number | undefined;
+  readonly op_index: number | undefined;
+  readonly limit: LimitInfo | undefined;
 
   constructor(info: ProtocolErrorInfo) {
     super(info.message);
     this.name = "ProtocolError";
     this.code = info.code;
+    this.rev = info.rev ?? undefined;
+    this.op_index = info.op_index ?? undefined;
+    this.limit = info.limit ?? undefined;
   }
 }
 
@@ -153,6 +162,8 @@ export interface Backend {
  * down, once, for every language.
  */
 export function carriesBytes(command: Command): boolean {
+  if (command.cmd === "session_create") return command.source != null;
+  if (command.cmd === "extension_set") return command.value.kind === "bytes";
   return COMMAND_BYTES[command.cmd] !== undefined;
 }
 

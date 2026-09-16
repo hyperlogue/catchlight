@@ -24,12 +24,12 @@ const yaw = (): SessionEditCommand => ({
   min: -1,
   max: 1,
   default: 0,
-  key_positions: [0, 0.5, 1],
+
 });
 
 /** Every command the editor was sent, newest last. */
 function sent(requests: Request[]): Request[] {
-  return requests.filter((request) => request.cmd !== "session_new");
+  return requests.filter((request) => request.cmd !== "session_create");
 }
 
 function last(requests: Request[]): Request {
@@ -73,7 +73,7 @@ describe("editing params", () => {
       min: -2,
       max: 2,
       default: 0.5,
-      key_positions: [],
+
     });
     // The form empties, so the next param does not inherit this one's name.
     expect(field("name").value).toBe("");
@@ -147,9 +147,8 @@ describe("the keypoint strip", () => {
 
     const markers = [...view.container.querySelectorAll("[data-catchlight-param-key]")];
     expect(markers.length).toBe(3);
-    // Only the interior key can be moved or deleted; the endpoints are the
-    // param's range.
-    expect(markers.map((m) => m.getAttribute("data-interior"))).toEqual([null, "", null]);
+    // Without a binding selected, these shortcuts only pose the input.
+    expect(markers.map((m) => m.getAttribute("data-editable"))).toEqual([null, null, null]);
 
     const commands = sent(wasm.requests).length;
     await act(async () => {
@@ -167,10 +166,12 @@ describe("the keypoint strip", () => {
     const session = await editor.newSession();
     await run(() => session.send(yaw()));
     const param = session.params()[0] as ParamInfo;
+    await run(() => session.send({ cmd: "binding_add", node: "root", target: "tx", param: param.id, key_positions: [[0, 0.5, 1]] }));
+    const binding = session.bindings("root")[0]!;
 
     const view = await mount(
       <EditorProvider editor={editor}>
-        <ParamKeys.Root session={session} param={param} />
+        <ParamKeys.Root session={session} param={param} binding={binding} node="root" />
       </EditorProvider>,
     );
 
@@ -195,7 +196,7 @@ describe("the keypoint strip", () => {
     });
     // Normalized across [-1, 1], a pose of 0.5 is three quarters along.
     expect(last(wasm.requests)).toMatchObject({
-      cmd: "param_key_insert",
+      cmd: "binding_key_insert",
       param: param.id,
       value: 0.75,
     });
@@ -205,24 +206,26 @@ describe("the keypoint strip", () => {
       remove.click();
     });
     expect(last(wasm.requests)).toMatchObject({
-      cmd: "param_key_delete",
+      cmd: "binding_key_delete",
       param: param.id,
       index: 1,
     });
     await view.unmount();
   });
 
-  test("dragging a marker is one param_key_move, on release", async () => {
+  test("dragging a marker is one binding_key_move, on release", async () => {
     const { editor, wasm } = await harness();
     const session = await editor.newSession();
     await run(() => session.send(yaw()));
     const param = session.params()[0] as ParamInfo;
+    await run(() => session.send({ cmd: "binding_add", node: "root", target: "tx", param: param.id, key_positions: [[0, 0.5, 1]] }));
+    const binding = session.bindings("root")[0]!;
 
     const restore = stubTrack(200);
     try {
       const view = await mount(
         <EditorProvider editor={editor}>
-          <ParamKeys.Root session={session} param={param} />
+          <ParamKeys.Root session={session} param={param} binding={binding} node="root" />
         </EditorProvider>,
       );
       const marker = view.container.querySelectorAll(
@@ -238,7 +241,7 @@ describe("the keypoint strip", () => {
 
       await fire(marker, pointer("pointerup", 150));
       expect(last(wasm.requests)).toMatchObject({
-        cmd: "param_key_move",
+        cmd: "binding_key_move",
         param: param.id,
         index: 1,
         value: 0.75,

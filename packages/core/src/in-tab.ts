@@ -190,5 +190,5 @@ export class InTabBackend implements Backend {
 
 /** Whether a command leaves bytes in the editor's store for the tab to drain. */
 function writesBytes(command: Command): boolean {
-  return command.cmd === "save" || command.cmd === "export_manifest";
+  return command.cmd === "session_save" || command.cmd === "manifest_export";
 }

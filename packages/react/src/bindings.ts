@@ -1,6 +1,6 @@
 /**
  * Reading a node's bindings, the two string tables a binding panel picks from,
- * and where a pose sits among a param's key positions.
+ * and where a pose sits among a binding's key positions.
  *
  * A binding is a replica read like the tree is: `binding_list` is a pure
  * function of the model, so a panel calls it during render and re-reads when
@@ -11,8 +11,7 @@
  * unions, and each is checked against its union below, so a `<select>` built
  * from either sends a word the editor already accepts and a target added in
  * Rust fails the typecheck here. `deform` is deliberately absent from the
- * targets: a deform binding is authored by dragging vertices, and
- * `binding_add` refuses it.
+ * targets: deform offsets have their own authoring controls.
  */
 
 import type {
@@ -113,14 +112,14 @@ export function bindingsOfParam(bindings: BindingInfo[], param: string | undefin
 }
 
 /**
- * What to pose `param` at so it lands exactly on its key position `index`.
+ * What to pose `param` at so it lands on one binding's key position `index`.
  *
- * `ParamInfo.key_positions` are normalized 0..1 across `[min, max]`, so this
+ * Binding key positions are normalized 0..1 across `[min, max]`, so this
  * is that normalization read backwards. Out-of-range indices answer the
  * param's default, which is where the puppet already is.
  */
-export function valueAtKey(param: ParamInfo, index: number): number {
-  const position = param.key_positions[index];
+export function valueAtKey(param: ParamInfo, index: number, positions: readonly number[]): number {
+  const position = positions[index];
   if (position === undefined) return param.default;
   return param.min + position * (param.max - param.min);
 }
@@ -136,14 +135,14 @@ export function normalizedValue(param: ParamInfo, value: number): number {
  * The key position `value` is sitting on, or `undefined` if it is between two.
  *
  * What "sitting on" means is a tolerance rather than an equality, because the
- * value came from a continuous slider: a param is a scalar and its key
- * positions say where its bindings sample it, not where the slider may stop.
+ * value came from a continuous slider: a param is a scalar and each binding's
+ * positions say where it samples the param, not where the slider may stop.
  */
-export function keyIndexNear(param: ParamInfo, value: number, within = 0.005): number | undefined {
+export function keyIndexNear(param: ParamInfo, value: number, positions: readonly number[], within = 0.005): number | undefined {
   const at = normalizedValue(param, value);
   let best: number | undefined;
   let distance = within;
-  param.key_positions.forEach((position, index) => {
+  positions.forEach((position, index) => {
     const gap = Math.abs(position - at);
     if (gap <= distance) {
       distance = gap;

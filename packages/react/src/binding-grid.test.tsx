@@ -23,11 +23,11 @@ const yaw = (): SessionEditCommand => ({
   min: -1,
   max: 1,
   default: 0,
-  key_positions: [0, 0.5, 1],
+
 });
 
 function sent(requests: Request[]): Request[] {
-  return requests.filter((request) => request.cmd !== "session_new");
+  return requests.filter((request) => request.cmd !== "session_create");
 }
 
 function last(requests: Request[]): Request {
@@ -65,23 +65,39 @@ function mountGrid(s: Scene) {
 
 describe("the binding grid", () => {
 
+  test("inverting an entirely unset binding preserves its holes without a request", async () => {
+    const s = await scene();
+    await run(() => s.session.send({
+      cmd: "binding_add", node: s.node, target: "tx", param: s.param.id,
+      key_positions: [[0.2, 0.8]],
+    }));
+    const view = await mountGrid(s);
+    const before = s.wasm.requests.length;
+    const rev = s.session.getRevision();
+    await act(async () => {
+      (view.container.querySelector("[data-catchlight-binding-invert]") as HTMLButtonElement).click();
+    });
+    expect(s.wasm.requests.length).toBe(before);
+    expect(s.session.getRevision()).toBe(rev);
+    expect(s.session.bindings(s.node)[0]?.authored).toEqual([[false, false]]);
+    await view.unmount();
+  });
+
   test("a cell per key position, and the unset ones say so", async () => {
     const s = await scene();
     await run(() =>
       s.session.send({
-        cmd: "binding_key",
-        node: s.node,
-        target: "tx",
-        param: s.param.id,
-        cell: [2, 0],
-        value: 12,
+        cmd: "edit_apply", if_rev: s.session.getRevision(), edits: [
+          { op: "binding_add", node: s.node, target: "tx", param: s.param.id, key_positions: [[0, 0.5, 1]] },
+          { op: "binding_cells_set", node: s.node, target: "tx", param: s.param.id, cells: [{ cell: [2, 0], value: { scalar: 12 } }] },
+        ],
       }),
     );
 
     const view = await mountGrid(s);
     const cells = [...view.container.querySelectorAll("[data-catchlight-binding-cell]")];
 
-    // The grid is as wide as the param has key positions, and one row tall.
+    // The grid is as wide as the binding has key positions, and one row tall.
     expect(cells.length).toBe(3);
     expect(cells.map((cell) => cell.getAttribute("data-cell"))).toEqual(["0,0", "1,0", "2,0"]);
     expect(cells.map((cell) => cell.getAttribute("data-set"))).toEqual([null, null, ""]);
@@ -94,7 +110,7 @@ describe("the binding grid", () => {
     const s = await scene();
     await run(() =>
       s.session.send({
-        cmd: "binding_add",
+        cmd: "binding_add", key_positions: [[0, 0.5, 1]],
         node: s.node,
         target: "tx",
         param: s.param.id,
@@ -116,11 +132,11 @@ describe("the binding grid", () => {
     await view.unmount();
   });
 
-  test("typing in a cell commits one binding_key at that cell", async () => {
+  test("typing in a cell commits one atomic cell write", async () => {
     const s = await scene();
     await run(() =>
       s.session.send({
-        cmd: "binding_add",
+        cmd: "binding_add", key_positions: [[0, 0.5, 1]],
         node: s.node,
         target: "tx",
         param: s.param.id,
@@ -135,12 +151,10 @@ describe("the binding grid", () => {
     await fire(cell, new Event("focusout", { bubbles: true }));
 
     expect(last(s.wasm.requests)).toMatchObject({
-      cmd: "binding_key",
-      node: s.node,
-      target: "tx",
-      param: s.param.id,
-      cell: [1, 0],
-      value: -4.5,
+      cmd: "edit_apply", edits: [
+        { op: "binding_add", node: s.node, target: "tx", param: s.param.id },
+        { op: "binding_cells_set", node: s.node, target: "tx", param: s.param.id, cells: [{ cell: [1, 0], value: { scalar: -4.5 } }] },
+      ],
     });
     await view.unmount();
   });
@@ -181,12 +195,10 @@ describe("the binding grid", () => {
     const s = await scene();
     await run(() =>
       s.session.send({
-        cmd: "binding_key",
-        node: s.node,
-        target: "tx",
-        param: s.param.id,
-        cell: [2, 0],
-        value: 12,
+        cmd: "edit_apply", if_rev: s.session.getRevision(), edits: [
+          { op: "binding_add", node: s.node, target: "tx", param: s.param.id, key_positions: [[0, 0.5, 1]] },
+          { op: "binding_cells_set", node: s.node, target: "tx", param: s.param.id, cells: [{ cell: [2, 0], value: { scalar: 12 } }] },
+        ],
       }),
     );
     const view = await mountGrid(s);
@@ -199,7 +211,7 @@ describe("the binding grid", () => {
     mode.value = "cubic";
     await fire(mode, new Event("change", { bubbles: true }));
     expect(last(s.wasm.requests)).toMatchObject({
-      cmd: "binding_interpolate",
+      cmd: "binding_interpolation_set",
       ...addressed,
       mode: "cubic",
     });
@@ -207,7 +219,7 @@ describe("the binding grid", () => {
     await act(async () => {
       at<HTMLButtonElement>("[data-catchlight-binding-invert]").click();
     });
-    expect(last(s.wasm.requests)).toMatchObject({ cmd: "binding_invert", ...addressed });
+    expect(last(s.wasm.requests)).toMatchObject({ cmd: "binding_cells_set", ...addressed, cells: [{ cell: [2, 0], value: { scalar: -12 } }] });
 
     // The cell controls appear once a cell is picked, and address that cell.
     const cells = [...view.container.querySelectorAll("[data-catchlight-binding-cell]")];
@@ -220,18 +232,14 @@ describe("the binding grid", () => {
       at<HTMLButtonElement>("[data-catchlight-binding-reset]").click();
     });
     expect(last(s.wasm.requests)).toMatchObject({
-      cmd: "binding_reset",
-      ...addressed,
-      cell: [0, 0],
+      cmd: "binding_cells_set", ...addressed, cells: [{ cell: [0, 0], value: { scalar: 0 } }],
     });
 
     await act(async () => {
       at<HTMLButtonElement>("[data-catchlight-binding-unset]").click();
     });
     expect(last(s.wasm.requests)).toMatchObject({
-      cmd: "binding_unset",
-      ...addressed,
-      cell: [0, 0],
+      cmd: "binding_cells_unset", ...addressed, cells: [[0, 0]],
     });
 
     // A copy is armed on the selected cell and lands on the next one clicked.
@@ -245,10 +253,7 @@ describe("the binding grid", () => {
       (view.container.querySelectorAll("[data-catchlight-binding-cell]")[2] as HTMLElement).click();
     });
     expect(last(s.wasm.requests)).toMatchObject({
-      cmd: "binding_copy_key",
-      ...addressed,
-      from: [0, 0],
-      to: [2, 0],
+      cmd: "binding_cells_set", ...addressed, cells: [{ cell: [2, 0], value: { scalar: -12 } }],
     });
 
     await act(async () => {

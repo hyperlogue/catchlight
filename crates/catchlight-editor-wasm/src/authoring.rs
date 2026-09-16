@@ -3,7 +3,7 @@
 
 use catchlight_core::{BindingParams, Model, ModelNodeKind, NodeId, ParamId, Puppet};
 use catchlight_editor_core::{AlphaMask, MeshDraft, RecordProperties, Recording};
-use catchlight_editor_protocol::{BindingKeyEntry, MeshInfo};
+use catchlight_editor_protocol::MeshInfo;
 use serde::Serialize;
 
 pub struct MeshDraftState {
@@ -91,7 +91,7 @@ pub fn capture(
     node: &str,
     param: &str,
     param_y: Option<&str>,
-    cell: [u32; 2],
+    position: [f32; 2],
 ) -> Result<Recording, String> {
     let id = NodeId::new(node).map_err(|e| e.to_string())?;
     let x = ParamId::new(param).map_err(|e| e.to_string())?;
@@ -99,7 +99,7 @@ pub fn capture(
         Some(y) => BindingParams::Two(x, ParamId::new(y).map_err(|e| e.to_string())?),
         None => BindingParams::One(x),
     };
-    Recording::capture(model, puppet, &id, params, cell)
+    Recording::capture(model, puppet, &id, params, position)
 }
 
 pub fn recording_patch(
@@ -108,15 +108,8 @@ pub fn recording_patch(
     authored_basis: bool,
 ) -> Result<String, String> {
     let patch: RecordProperties = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let entries: Vec<_> = recording
-        .patch(&patch, authored_basis)?
-        .into_iter()
-        .map(|(target, value)| BindingKeyEntry {
-            target: target.into(),
-            value,
-        })
-        .collect();
-    serde_json::to_string(&entries).map_err(|e| e.to_string())
+    let writes = recording.writes(&patch, authored_basis)?;
+    serde_json::to_string(&writes).map_err(|e| e.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -219,8 +212,8 @@ pub mod browser {
         pub fn patch(&self, json: &str, authored_basis: bool) -> Result<String, JsValue> {
             recording_patch(&self.state, json, authored_basis).map_err(js)
         }
-        pub fn deform(&self, deltas: &[f32]) -> Result<Vec<f32>, JsValue> {
-            self.state.deform(deltas).map_err(js)
+        pub fn deform(&self, deltas: &[f32]) -> Result<String, JsValue> {
+            serde_json::to_string(&self.state.deform_write(deltas).map_err(js)?).map_err(js)
         }
     }
 }

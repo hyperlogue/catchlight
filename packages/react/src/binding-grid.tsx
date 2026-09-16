@@ -2,8 +2,8 @@
  * One param's bindings on one node, as grids of keypoints.
  *
  * A row per binding target, a cell per keypoint. The grid is the product of
- * the binding's params' key positions, so it is exactly as wide as the param
- * has keys and one row tall unless a second param is driving it too.
+ * the binding's own key positions, independently of other bindings on the same
+ * input. A single-param binding is one row tall.
  *
  * **A cell says whether anybody authored it.** `data-set` and `data-unset` are
  * the whole point of the read behind this: the model stores only the cells a
@@ -42,6 +42,7 @@ import {
   valueAtKey,
 } from "./bindings.js";
 import { useParamActions } from "./param-actions.js";
+import { ParamKeysRoot } from "./param-slider.js";
 import { useParams } from "./replica.js";
 
 /** What a failed edit is told to, when a host passed nothing. */
@@ -83,9 +84,9 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
   /** Poses every param this binding is keyed by at the cell's own key. */
   const pose = (binding: BindingInfo, x: number, y: number): void => {
     const along = paramInfo(binding.param);
-    if (along) session.setParam(binding.param, valueAtKey(along, x));
+    if (along) session.setParam(binding.param, valueAtKey(along, x, binding.key_positions[0]!));
     const up = binding.param_y ? paramInfo(binding.param_y) : undefined;
-    if (up && binding.param_y) session.setParam(binding.param_y, valueAtKey(up, y));
+    if (up && binding.param_y) session.setParam(binding.param_y, valueAtKey(up, y, binding.key_positions[1]!));
   };
 
   const click = (binding: BindingInfo, x: number, y: number): void => {
@@ -108,7 +109,7 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
 
   const commit = (binding: BindingInfo, x: number, y: number, text: string): void => {
     // A deform cell holds a vertex list, so there is no number to type into
-    // it and `binding_key` would refuse the target anyway.
+    // it so scalar inputs do not edit it.
     if (binding.target === "deform") return;
     const value = Number(text);
     const was = binding.keys[y]?.[x];
@@ -225,6 +226,15 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
                 ×
               </button>
             </div>
+            {[binding.param, ...(binding.param_y ? [binding.param_y] : [])].map((axis) => {
+              const parameter = paramInfo(axis);
+              return parameter && (
+                <div key={axis} data-catchlight-binding-axis="">
+                  <span>{parameter.name}</span>
+                  <ParamKeysRoot session={session} param={parameter} binding={binding} node={node} onError={onError} />
+                </div>
+              );
+            })}
             {binding.keys.map((row, y) => (
               <div data-catchlight-binding-row="" data-y={y} key={y}>
                 {row.map((value, x) => {
@@ -244,10 +254,10 @@ export function BindingGridRoot({ session, node, param, onError, ...rest }: Bind
                       data-unset={authored ? undefined : ""}
                       data-selected={isSelected ? "" : undefined}
                       aria-label={`${binding.target} cell ${x},${y}`}
-                      title={`${paramInfo(binding.param)?.name ?? binding.param}: ${valueAtKey(paramInfo(binding.param)!, x)}${binding.param_y ? ` · ${paramInfo(binding.param_y)?.name}: ${valueAtKey(paramInfo(binding.param_y)!, y)}` : ""}${binding.target.startsWith("r") ? " · radians" : ""}${authored ? " · authored key" : " · interpolated"}`}
+                      title={`${paramInfo(binding.param)?.name ?? binding.param}: ${valueAtKey(paramInfo(binding.param)!, x, binding.key_positions[0]!)}${binding.param_y ? ` · ${paramInfo(binding.param_y)?.name}: ${valueAtKey(paramInfo(binding.param_y)!, y, binding.key_positions[1]!)}` : ""}${binding.target.startsWith("r") ? " · radians" : ""}${authored ? " · authored key" : " · interpolated"}`}
                       placeholder={binding.target === "deform" ? (authored ? "Set" : "—") : "Auto"}
                       // A deform cell holds a vertex list; there is no number
-                      // to type into it, and `binding_key` refuses the target.
+                      // to type into it, and scalar inputs cannot represent it.
                       readOnly={binding.target === "deform"}
                       defaultValue={value === null ? "" : String(value)}
                       onClick={() => click(binding, x, y)}

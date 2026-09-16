@@ -71,7 +71,6 @@ describe("the assembled editor", () => {
       min: -1,
       max: 1,
       default: 0,
-      key_positions: [-1, 0, 1],
     });
 
     const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
@@ -163,7 +162,7 @@ describe("the assembled editor", () => {
 
     // The command named the key, the bytes came back out as a file of that
     // name, and the status line says so.
-    expect(wasm.requests.find((request) => request.cmd === "save")).toMatchObject({
+    expect(wasm.requests.find((request) => request.cmd === "session_save")).toMatchObject({
       path: "copy.clm",
     });
     expect(download.names).toEqual(["copy.clm"]);

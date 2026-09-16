@@ -120,6 +120,7 @@ export {
 export { useParamActions } from "./param-actions.js";
 export type {
   BindingCell,
+  BindingAddress,
   NewParam,
   ParamActions,
   ParamPatch,

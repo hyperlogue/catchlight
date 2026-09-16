@@ -17,7 +17,7 @@ const eyeOpen = (name = "eye_open"): SessionEditCommand => ({
   min: 0,
   max: 1,
   default: 1,
-  key_positions: [0, 1],
+
 });
 
 describe("posing a param", () => {

@@ -26,12 +26,12 @@ describe("reading the replica", () => {
         <Rev />
       </EditorProvider>,
     );
-    expect(view.container.textContent).toBe("1");
+    expect(view.container.textContent).toBe("0");
     const before = renders;
 
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
 
-    expect(view.container.textContent).toBe("2");
+    expect(view.container.textContent).toBe("1");
     expect(renders).toBeGreaterThan(before);
     await view.unmount();
   });
@@ -62,7 +62,7 @@ describe("reading the replica", () => {
         min: 0,
         max: 1,
         default: 1,
-        key_positions: [0, 1],
+
       }),
     );
 
@@ -131,7 +131,7 @@ describe("reading the replica", () => {
       min: 0,
       max: 1,
       default: 1,
-      key_positions: [0, 1],
+
     });
     const param = body.result === "param" ? body.param : "";
 

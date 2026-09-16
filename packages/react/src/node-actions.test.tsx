@@ -106,7 +106,7 @@ describe("the tree edits on the wire", () => {
       { cmd: "node_set", session: 1, node: "root/b", name: "brow" },
       { cmd: "node_set", session: 1, node: "root/b", enabled: false },
       { cmd: "node_duplicate", session: 1, node: "root/b" },
-      { cmd: "node_move", session: 1, parent: "root/a", node: "root/b", index: 0 },
+      { cmd: "edit_apply", session: 1, if_rev: 1, edits: [{ op: "node_reparent", node: "root/b", to: "root/a" }, { op: "node_reorder", node: "root/b", index: 0 }] },
     ]);
     await unmount();
   });

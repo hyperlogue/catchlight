@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { Editor, fileKey } from "./editor.js";
-import { FakeEditor, fakeWasm, readStructure } from "./fakes.js";
+import { FakeEditor, fakeWasm, readStructure, ScriptedBackend } from "./fakes.js";
 import { InTabBackend } from "./in-tab.js";
 import { MemoryStorage } from "./storage.js";
 
@@ -23,6 +23,49 @@ async function inTab(): Promise<{
   return { editor, wasm, storage, module };
 }
 
+describe("snapshot utilities", () => {
+  async function sourceSession() {
+    const backend = new ScriptedBackend();
+    const editor = await Editor.create(fakeWasm().module, backend);
+    const source = await editor.attachSession({ session: 1, title: "source", file: null, dirty: true, rev: 7, node_count: 1 });
+    return { editor, backend, source };
+  }
+
+  test("fork is guarded by the source revision and has an independent replica at zero", async () => {
+    const { editor, backend, source } = await sourceSession();
+    backend.replies.set("session_fork", { body: { result: "session_fork", session: 2, source: { session: 1, rev: 7 } }, rev: 0 });
+    const fork = await editor.forkSession(source, "candidate");
+    expect(backend.sent.at(-1)).toEqual({ cmd: "session_fork", session: 1, if_rev: 7, name: "candidate" });
+    expect(fork.id).toBe(2);
+    expect(fork.getRevision()).toBe(0);
+    expect(fork.tree().id).toBe("root");
+    expect(fork.replica).not.toBe(source.replica);
+    expect(source.getRevision()).toBe(7);
+    expect(editor.session(2)).toBe(fork);
+    editor.close();
+  });
+
+  test("export preserves bytes and receipt without saving or advancing the source", async () => {
+    const { editor, backend, source } = await sourceSession();
+    const bytes = new Uint8Array([1, 2, 3]);
+    backend.replies.set("model_export", { body: { result: "model_export", format: "clm", byte_length: 3, sha256: "a".repeat(64) }, rev: 7, payload: bytes });
+    const exported = await editor.exportSession(source);
+    expect(exported).toEqual({ bytes, format: "clm", byte_length: 3, sha256: "a".repeat(64), rev: 7 });
+    expect(backend.sent).toEqual([{ cmd: "model_export", session: 1, if_rev: 7 }]);
+    expect(backend.attached).toEqual([[]]);
+    expect(source.getRevision()).toBe(7);
+    expect(backend.feeds).toHaveLength(1);
+    editor.close();
+  });
+
+  test("export refuses a truncated payload instead of handing out an incomplete model", async () => {
+    const { editor, backend, source } = await sourceSession();
+    backend.replies.set("model_export", { body: { result: "model_export", format: "clm", byte_length: 3, sha256: "a".repeat(64) }, rev: 7, payload: new Uint8Array([1]) });
+    await expect(editor.exportSession(source)).rejects.toMatchObject({ code: "bad_reply" });
+    editor.close();
+  });
+});
+
 describe("opening models", () => {
   test("a new session is already readable when it is handed over", async () => {
     const { editor } = await inTab();
@@ -33,7 +76,7 @@ describe("opening models", () => {
     // read, and a read that answers "nothing loaded yet" is a bug a host
     // would have to work around forever.
     expect(session.tree().id).toBe("root");
-    expect(session.getRevision()).toBe(1);
+    expect(session.getRevision()).toBe(0);
     expect(editor.session(session.id)).toBe(session);
   });
 
@@ -48,7 +91,7 @@ describe("opening models", () => {
     // resolves in the very next line, with no poll and no second round trip.
     const children = session.tree().children.map((child) => child.id);
     expect(children).toEqual([node]);
-    expect(session.getRevision()).toBe(2);
+    expect(session.getRevision()).toBe(1);
   });
 
   test("opening reads the store", async () => {
@@ -63,17 +106,17 @@ describe("opening models", () => {
     expect(wasm.requests.map((request) => request.cmd)).toEqual(["session_open"]);
   });
 
-  test("a file the page holds is a fresh session and an import into it", async () => {
+  test("a file the page holds creates its populated session atomically", async () => {
     const { editor, storage, wasm } = await inTab();
     const bytes = new TextEncoder().encode("a model");
 
     const session = await editor.openFile(bytes, "Akari Final.clm");
 
     expect(session.id).toBe(1);
-    expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_new", "import_file"]);
-    expect(wasm.requests[0]).toMatchObject({ cmd: "session_new", name: "Akari_Final.clm" });
+    expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_create"]);
+    expect(wasm.requests[0]).toMatchObject({ cmd: "session_create", name: "Akari_Final.clm" });
     // The bytes went with the command that reads them, not under a key.
-    expect(wasm.attached[1]).toEqual({ model: bytes });
+    expect(wasm.attached[0]).toEqual({ model: bytes });
     expect(wasm.writtenKeys()).toEqual([]);
     // A dropped file is not written to the store until somebody saves it.
     expect(await storage.list()).toEqual([]);
@@ -95,10 +138,10 @@ describe("opening models", () => {
     expect(session.id).toBe(1);
     // No round trip to ask what it needs: the manifest says, and reading it is
     // a pure function.
-    expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_new", "import_manifest"]);
+    expect(wasm.requests.map((r) => r.cmd)).toEqual(["session_create"]);
     // Each reference resolved against the manifest's own key, and attached
     // under the name the import matches it by.
-    expect(wasm.attached[1]).toEqual({
+    expect(wasm.attached[0]).toEqual({
       manifest,
       "texture:tex0.png": tex0,
       "texture:tex1.png": tex1,
@@ -155,7 +198,7 @@ describe("opening models", () => {
 
     await editor.closeSession(session.id);
 
-    expect(wasm.requests.map((request) => request.cmd)).toEqual(["session_new", "session_close"]);
+    expect(wasm.requests.map((request) => request.cmd)).toEqual(["session_create", "session_close"]);
     expect(await editor.listSessions()).toEqual([]);
     expect(editor.session(session.id)).toBeUndefined();
     expect(module.replicas[0]?.freed).toBe(true);
@@ -163,7 +206,7 @@ describe("opening models", () => {
     off();
 
     // A session this tab never attached — one an agent opened — closes too.
-    wasm.handle(JSON.stringify({ id: 99, cmd: "session_new", name: "from an agent" }));
+    wasm.handle(JSON.stringify({ id: 99, cmd: "session_create", name: "from an agent" }));
     wasm.drainEvents();
     const [info] = await editor.listSessions();
     if (!info) throw new Error("the editor listed no sessions");
@@ -190,7 +233,7 @@ describe("opening models", () => {
   test("a session an agent opened can be followed by id", async () => {
     const { editor, wasm } = await inTab();
     // Something else opened it: the editor knows, this tab does not.
-    wasm.handle(JSON.stringify({ id: 99, cmd: "session_new", name: "from an agent" }));
+    wasm.handle(JSON.stringify({ id: 99, cmd: "session_create", name: "from an agent" }));
     wasm.drainEvents();
 
     const [info] = await editor.listSessions();

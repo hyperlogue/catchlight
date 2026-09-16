@@ -350,12 +350,6 @@ function Workspace({
       setDockOpen(true);
     } else if (editing.mode === "arrange") setDock("params");
   }, [editing.mode]);
-  useEffect(() => {
-    if (editing.gate) {
-      setDock("bindings");
-      setDockOpen(true);
-    }
-  }, [editing.gate]);
   const saved = useCallback(
     (outcome: SaveOutcome) => {
       onNotice(

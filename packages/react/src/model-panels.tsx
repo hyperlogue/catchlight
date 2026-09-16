@@ -45,10 +45,12 @@ export function MaskPanel({
               value={mask.mode}
               onChange={(e) =>
                 void run({
-                  cmd: "mask_set",
-                  node: info.id,
-                  index: i,
-                  mode: e.currentTarget.value as "mask" | "dodge",
+                  cmd: "edit_apply",
+                  if_rev: session.getRevision(),
+                  edits: [
+                    ...masks.map((_, index) => ({ op: "mask_delete" as const, node: info.id, index: masks.length - index - 1 })),
+                    ...masks.map((item, index) => ({ op: "mask_add" as const, node: info.id, source: item.source, mode: index === i ? e.currentTarget.value as "mask" | "dodge" : item.mode })),
+                  ],
                 })
               }
             >
@@ -106,7 +108,7 @@ export function SlotsPanel({
   info: NodeInfo;
   onError: ErrorHandler;
 }) {
-  const { slots } = useModelQuery(session, { cmd: "slots", node: info.id }, "slots");
+  const { slots } = useModelQuery(session, { cmd: "slot_list", node: info.id }, "slots");
   const { run, busy } = useCommand(session, onError);
   return (
     <Disclosure
@@ -177,7 +179,7 @@ export function SlotsPanel({
 }
 
 export function WeldsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
-  const { welds } = useModelQuery(session, { cmd: "welds" }, "welds");
+  const { welds } = useModelQuery(session, { cmd: "weld_list" }, "welds");
   const parts = flattenTree(useTree(session)).filter((n) => n.kind === "part");
   const { run, busy } = useCommand(session, onError);
   const [adding, setAdding] = useState(false);
@@ -201,11 +203,14 @@ export function WeldsPanel({ session, onError }: { session: Session; onError: Er
                 step={0.05}
                 onCommit={(weight) =>
                   void run({
-                    cmd: "weld_weight",
-                    a: w.a,
-                    b: w.b,
-                    slot: pair.a,
-                    weight,
+                    cmd: "edit_apply",
+                    if_rev: session.getRevision(),
+                    edits: [{
+                      op: "weld_set",
+                      a: w.a,
+                      b: w.b,
+                      pairs: w.pairs.map((item) => item.a === pair.a ? { ...item, weight } : item),
+                    }],
                   })
                 }
               />
@@ -249,8 +254,8 @@ function WeldDialog({
   const [a, setA] = useState(parts[0]?.id ?? "");
   const [b, setB] = useState(parts[1]?.id ?? "");
   const [pairs, setPairs] = useState<SlotPair[]>([]);
-  const left = useModelQuery(session, { cmd: "slots", node: a }, "slots").slots;
-  const right = useModelQuery(session, { cmd: "slots", node: b }, "slots").slots;
+  const left = useModelQuery(session, { cmd: "slot_list", node: a }, "slots").slots;
+  const right = useModelQuery(session, { cmd: "slot_list", node: b }, "slots").slots;
   const { run, busy } = useCommand(session, onError);
   return (
     <Modal title="Connect two parts" onClose={onClose}>
@@ -344,7 +349,7 @@ function WeldDialog({
 }
 
 export function ModelHealth({ session }: { session: Session }) {
-  const { warnings } = useModelQuery(session, { cmd: "check" }, "warnings");
+  const { warnings } = useModelQuery(session, { cmd: "model_check" }, "warnings");
   const tree = useTree(session);
   const count = flattenTree(tree).length;
   const params = useReplica(session, (s) => s.params());
@@ -405,7 +410,7 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
             unit="m/s²"
             onCommit={(gravity) =>
               void run({
-                cmd: "physics_globals",
+                cmd: "physics_globals_set",
                 chain_substeps: null,
                 gravity,
                 pixels_per_meter: null,
@@ -421,7 +426,7 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
             unit="px/m"
             onCommit={(pixels_per_meter) =>
               void run({
-                cmd: "physics_globals",
+                cmd: "physics_globals_set",
                 chain_substeps: null,
                 pixels_per_meter,
                 gravity: null,
@@ -437,7 +442,7 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
             max={255}
             step={1}
             onCommit={(steps) => void run({
-              cmd: "physics_globals",
+              cmd: "physics_globals_set",
               chain_substeps: Math.round(steps),
               gravity: null,
               pixels_per_meter: null,
@@ -453,7 +458,7 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
 }
 
 export function ExtensionsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
-  const { extensions } = useModelQuery(session, { cmd: "extensions" }, "extensions");
+  const { extensions } = useModelQuery(session, { cmd: "extension_list" }, "extensions");
   const { run, busy } = useCommand(session, onError);
   const [editing, setEditing] = useState(false);
   const [key, setKey] = useState("");

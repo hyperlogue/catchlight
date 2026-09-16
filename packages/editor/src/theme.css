@@ -1560,6 +1560,36 @@
     flex: 1;
     width: 65px;
   }
+  .catchlight [data-catchlight-binding-axis] {
+    display: grid;
+    grid-template-columns: minmax(70px, 96px) minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid var(--cl-border);
+  }
+  .catchlight [data-catchlight-binding-axis] [data-catchlight-param-keys] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+  }
+  .catchlight [data-catchlight-binding-axis] [data-catchlight-param-key-track] {
+    height: 14px;
+    margin: 14px 8px 0;
+  }
+  .catchlight [data-catchlight-binding-axis] [data-catchlight-param-key-actions] button {
+    min-height: 26px;
+    width: 26px;
+    padding: 0;
+  }
+  .catchlight [data-catchlight-binding-axis] > span {
+    font-size: 11px;
+    color: var(--cl-text-dim);
+  }
+  .catchlight [data-catchlight-param-key][data-editable] {
+    cursor: ew-resize;
+  }
   .catchlight [data-catchlight-param-key-editor] {
     margin-top: 20px;
   }
