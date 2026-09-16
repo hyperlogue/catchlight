@@ -390,14 +390,28 @@ pub struct Puppet {
 
     animations: Vec<ClmAnimation>,
     play_state: Option<AnimationPlayState>,
+    sampled_animation: Option<(AnimationPlayState, f32)>,
 
     /// Live node edits, re-applied by every fold. Sparse rather than one entry
     /// per node: a drag holds one or two, and every fold pays for a lookup per
     /// entry, not per node.
     scratch_transforms: HashMap<NodeIdx, ScratchTransform>,
 
-    /// Reused by the fold: where each param slot sits on its key positions.
+    /// Reused by the fold: resolved and normalized inputs by param slot.
     located: Vec<Located>,
+}
+
+/// The actual fractional clip position sampled by one completed animation tick.
+/// `time` is the runtime's f32 playback clock in seconds; it can wrap while an
+/// export frame index continues increasing. `index` addresses Puppet::animations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimationSample<'a> {
+    pub index: usize,
+    pub name: &'a str,
+    pub timestep: f32,
+    pub time: f32,
+    pub frame: f32,
+    pub looping: bool,
 }
 
 impl Puppet {
@@ -436,6 +450,7 @@ impl Puppet {
             last_anchor_pose_generation: None,
             animations: Vec::new(),
             play_state: None,
+            sampled_animation: None,
             scratch_transforms: HashMap::new(),
             located: Vec::new(),
         };
@@ -1210,6 +1225,7 @@ impl Puppet {
         self.animations = animations;
         // Any play state indexes into the old list.
         self.play_state = None;
+        self.sampled_animation = None;
     }
 
     /// Take the model's own animations. A rebake does not do this: the clips
@@ -1223,6 +1239,7 @@ impl Puppet {
     /// animation has it.
     pub fn play_animation(&mut self, name: &str) -> bool {
         if let Some(index) = self.animations.iter().position(|a| a.name == name) {
+            self.sampled_animation = None;
             self.play_state = Some(AnimationPlayState {
                 index,
                 time: 0.0,
@@ -1236,6 +1253,25 @@ impl Puppet {
 
     pub fn stop_animation(&mut self) {
         self.play_state = None;
+        self.sampled_animation = None;
+    }
+
+    /// The clip sample used by the most recent animation tick, after native
+    /// loop/lead-region wrapping and clamping. Reading never advances playback.
+    /// Starting, stopping or replacing playback clears this until a tick samples
+    /// the new selection, so callers cannot mistake a scheduled clip for a frame
+    /// already evaluated. A zero-dt tick records frame zero normally.
+    pub fn animation_sample(&self) -> Option<AnimationSample<'_>> {
+        let (state, frame) = self.sampled_animation?;
+        let clip = self.animations.get(state.index)?;
+        Some(AnimationSample {
+            index: state.index,
+            name: &clip.name,
+            timestep: clip.timestep,
+            time: state.time,
+            frame,
+            looping: state.looping,
+        })
     }
 
     pub fn has_playing_animation(&self) -> bool {
@@ -1282,6 +1318,7 @@ impl Puppet {
         } else {
             0.0
         };
+        self.sampled_animation = Some((state, frame));
         // Move the list out so the writes below can take `&mut self`; nothing
         // here can early-return before it is put back.
         let animations = std::mem::take(&mut self.animations);
@@ -1301,8 +1338,9 @@ impl Puppet {
     }
 
     /// The value posed for a param, ignoring driver claims — what a lane
-    /// compares against before writing.
-    fn param_value_posed(&self, param: &ParamId) -> Option<f32> {
+    /// compares against before writing. `None` means use the model default.
+    /// This observes requested controls without reconstructing animation lanes.
+    pub fn param_value_posed(&self, param: &ParamId) -> Option<f32> {
         match self.slot_of_param.get(param) {
             Some(&slot) => self.param_values.get(slot as usize).copied().flatten(),
             None => self.param_values_overflow.get(param).copied(),
