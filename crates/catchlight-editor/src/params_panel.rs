@@ -8,8 +8,8 @@
 //! - **A param is a scalar, so a controller is a track.** The two-axis pad is
 //!   a view over a *binding* that names two params ([`Armed::Two`]), not a
 //!   property of either: any two params can be posed together on it, and what
-//!   it records is one binding whose grid is the product of their key
-//!   positions. Nothing here can make a param two-dimensional.
+//!   it records is a binding with its own grid. Display ticks union each
+//!   binding's positions; no parameter owns them.
 //!
 //! - **A row addresses its own binding.** [`BindingRow`] carries the params
 //!   and the cell of the binding it lists, because arming one param of a pair
@@ -118,7 +118,7 @@ pub(crate) struct ArmedInfo {
     pub armed: Armed,
     /// The cell the current pose lands on, in the armed grid.
     pub cell: [u32; 2],
-    /// The armed grid: the x param's key positions by the y param's (or 1).
+    /// Controller grid over discovered binding-local positions (or one row).
     pub grid: (usize, usize),
     pub cell_states: Vec<u8>,
     pub bindings: Vec<BindingRow>,
@@ -138,6 +138,8 @@ pub(crate) struct BindingRow {
 
 pub(crate) struct ParamsPanel<'a> {
     pub params: &'a [ParamInfo],
+    /// Union of binding-local positions, for display and snapping only.
+    pub positions: &'a std::collections::HashMap<ParamId, Vec<f32>>,
     pub pose: &'a dyn Fn(&ParamId) -> f32,
     pub armed: Option<&'a ArmedInfo>,
     pub snap: &'a mut bool,
@@ -305,6 +307,11 @@ impl ParamsPanel<'_> {
     }
 
     fn param_menu(&mut self, ui: &mut egui::Ui, p: &ParamInfo) {
+        let positions = self
+            .positions
+            .get(&p.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[0.0, 1.0]);
         let id = ui.id().with(("rename", p.id.as_str()));
         let mut name: String = ui
             .ctx()
@@ -335,7 +342,10 @@ impl ParamsPanel<'_> {
         let value = (self.pose)(&p.id);
         // Menu labels speak param values; the wire speaks normalized 0..1.
         if ui
-            .button(format!("insert key position at {value:.3}"))
+            .add_enabled(
+                p.bindings > 0,
+                egui::Button::new(format!("insert {value:.3} in all bindings")),
+            )
             .clicked()
         {
             self.actions.push(ParamAction::KeyInsert {
@@ -345,11 +355,11 @@ impl ParamsPanel<'_> {
             ui.close();
         }
         let denorm = |t: f32| p.min + t * (p.max - p.min);
-        if let Some(i) = nearest_interior(&p.key_positions, norm(value, p.min, p.max)) {
+        if let Some(i) = nearest_interior(positions, norm(value, p.min, p.max)) {
             if ui
                 .button(format!(
-                    "delete key position {:.3}",
-                    denorm(p.key_positions[i])
+                    "delete position {:.3} from all bindings",
+                    denorm(positions[i])
                 ))
                 .clicked()
             {
@@ -361,7 +371,7 @@ impl ParamsPanel<'_> {
             }
         }
         ui.separator();
-        if ui.button("flip (mirror keypoints)").clicked() {
+        if ui.button("flip all driven bindings").clicked() {
             self.actions.push(ParamAction::Flip {
                 param: p.id.clone(),
             });
@@ -377,6 +387,11 @@ impl ParamsPanel<'_> {
     /// Full-width track: key-position ticks and a draggable value handle.
     /// When armed, ticks become authored-state dots.
     fn line_1d(&mut self, ui: &mut egui::Ui, p: &ParamInfo, armed: Option<&ArmedInfo>) {
+        let positions = self
+            .positions
+            .get(&p.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[0.0, 1.0]);
         let value = (self.pose)(&p.id);
         let (rect, resp) = ui.allocate_exact_size(
             egui::vec2(ui.available_width().max(120.0), 24.0),
@@ -394,7 +409,7 @@ impl ParamsPanel<'_> {
         );
         // `t` is normalized 0..1 — the space key positions live in.
         let at = |t: f32| egui::pos2(track.left() + t.clamp(0.0, 1.0) * track.width(), cy);
-        for (xi, &ax) in p.key_positions.iter().enumerate() {
+        for (xi, &ax) in positions.iter().enumerate() {
             let pos = at(ax);
             match armed {
                 Some(a) => dot(
@@ -416,7 +431,7 @@ impl ParamsPanel<'_> {
         handle(&paint, at(norm(value, p.min, p.max)));
         if let Some(pos) = drag_pos(&resp) {
             let t = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
-            let t = self.maybe_snap(t, &p.key_positions);
+            let t = self.maybe_snap(t, positions);
             self.actions.push(ParamAction::Pose {
                 param: p.id.clone(),
                 value: p.min + t * (p.max - p.min),
@@ -424,10 +439,19 @@ impl ParamsPanel<'_> {
         }
     }
 
-    /// The pad: two params posed together, over the grid their key positions
-    /// make. Dragging it poses both, so a gesture records into one cell of one
-    /// two-param binding.
+    /// The pad poses two inputs over their discovered position unions. Recording
+    /// resolves the destination separately on each binding's own axes.
     fn pad_2d(&mut self, ui: &mut egui::Ui, px: &ParamInfo, py: &ParamInfo, armed: &ArmedInfo) {
+        let xs = self
+            .positions
+            .get(&px.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[0.0, 1.0]);
+        let ys = self
+            .positions
+            .get(&py.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[0.0, 1.0]);
         let side = ui.available_width().clamp(120.0, 320.0);
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click_and_drag());
@@ -448,8 +472,8 @@ impl ParamsPanel<'_> {
             )
         };
         let (w, _) = armed.grid;
-        for (yi, &ay) in py.key_positions.iter().enumerate() {
-            for (xi, &ax) in px.key_positions.iter().enumerate() {
+        for (yi, &ay) in ys.iter().enumerate() {
+            for (xi, &ax) in xs.iter().enumerate() {
                 dot(
                     &paint,
                     at(ax, ay),
@@ -468,8 +492,8 @@ impl ParamsPanel<'_> {
         if let Some(pos) = drag_pos(&resp) {
             let tx = ((pos.x - field.left()) / field.width()).clamp(0.0, 1.0);
             let ty = ((field.bottom() - pos.y) / field.height()).clamp(0.0, 1.0);
-            let tx = self.maybe_snap(tx, &px.key_positions);
-            let ty = self.maybe_snap(ty, &py.key_positions);
+            let tx = self.maybe_snap(tx, xs);
+            let ty = self.maybe_snap(ty, ys);
             self.actions.push(ParamAction::Pose {
                 param: px.id.clone(),
                 value: px.min + tx * (px.max - px.min),

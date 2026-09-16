@@ -61,8 +61,8 @@ fn first_meshed_node(editor: &Editor, session: SessionId) -> NodeId {
 }
 
 /// The gesture split, end to end through the app: every pointer move sends a
-/// scratch deform (presence — no revision, no snapshot), the release sends one
-/// `DeformVertices`. A drag that snapshotted per move would bury every earlier
+/// local scratch deform (no revision or snapshot); release sends one
+/// guarded batch of binding writes. A drag that snapshotted per move would bury every earlier
 /// edit under a hundred indistinguishable undo entries.
 #[test]
 fn a_drag_of_any_length_and_its_release_leave_one_undo_entry() {
@@ -116,7 +116,10 @@ fn a_drag_of_any_length_and_its_release_leave_one_undo_entry() {
         "the release is the one undo entry the gesture costs",
     );
     // One Undo takes the whole gesture back.
-    app.send(Command::Undo { session });
+    app.send(Command::Undo {
+        session,
+        if_rev: editor.revision(session).unwrap(),
+    });
     assert_eq!(editor.history(session).unwrap(), (0, 1));
 }
 
@@ -307,7 +310,6 @@ fn add_param(app: &mut App, session: SessionId, name: &str) -> ParamId {
         min: 0.0,
         max: 1.0,
         default: 0.0,
-        key_positions: Vec::new(),
         param: None,
     }) {
         Reply::Ok {
@@ -327,7 +329,8 @@ fn split_pair(app: &mut App, session: SessionId, node: &NodeId) -> (ParamId, Par
         session,
         params: BindingParams::two(x.clone(), y.clone()),
         node: node.clone(),
-        target: ScalarTarget::Tx,
+        target: ScalarTarget::Tx.into(),
+        key_positions: None,
     });
     (x, y)
 }
@@ -427,7 +430,7 @@ fn a_paired_param_records_as_a_pair_even_on_a_target_it_does_not_drive_yet() {
 }
 
 /// The pad is a view over a two-param binding: arming a pair records into a
-/// grid that spans both params' key positions.
+/// grid with one binding-owned position axis for each input.
 #[test]
 fn arming_a_pair_records_into_the_pairs_grid() {
     let (editor, session, mut app) = app_on(&welded_seam());
@@ -945,4 +948,199 @@ fn a_held_texture_drop_does_not_survive_a_session_change() {
             .unwrap(),
         "and the old session's model is untouched"
     );
+}
+
+#[test]
+fn recording_resolves_each_property_grid_at_the_same_input_position() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let node = first_meshed_node(&editor, session);
+    let param = add_param(&mut app, session, "independent");
+    let params = BindingParams::one(param.clone());
+    app.compose(session, |_| {
+        let mut edits = Vec::new();
+        for (target, positions) in [
+            (BindingTarget::Tx, vec![0.0, 1.0]),
+            (BindingTarget::Ty, vec![0.0, 0.2, 0.5, 0.8, 1.0]),
+        ] {
+            edits.push(EditOp::BindingAdd {
+                node: node.clone(),
+                params: params.clone(),
+                target,
+                key_positions: Some(vec![positions.clone()]),
+            });
+            edits.push(EditOp::BindingCellsSet {
+                node: node.clone(),
+                params: params.clone(),
+                target,
+                cells: positions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| BindingCellWrite {
+                        cell: [i as u32, 0],
+                        value: BindingCellValue::Scalar(p * 10.0),
+                    })
+                    .collect(),
+            });
+        }
+        Ok(edits)
+    });
+    app.armed = Some(Armed::One(param.clone()));
+    app.pose.insert(param.clone(), 0.6);
+    let snapshot = editor.doc_snapshot(session).unwrap();
+    let info = app.armed_info(&snapshot).unwrap();
+    let cells: HashMap<_, _> = info
+        .bindings
+        .iter()
+        .filter(|b| b.params == params)
+        .map(|b| (b.target.wire_name(), b.cell))
+        .collect();
+    assert_eq!(cells["tx"], [1, 0]);
+    assert_eq!(cells["ty"], [2, 0]);
+    let before = editor.revision(session).unwrap();
+    app.commit_patch(
+        node.clone(),
+        NodePatch {
+            translate: Some([8.0, 9.0, 0.0]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(editor.revision(session), Some(before + 1), "{}", app.status);
+    editor
+        .with_model(session, |m| {
+            let tx = binding_key(
+                &params,
+                &node,
+                CoreBindingTarget::Scalar(catchlight_core::ScalarTarget::Tx),
+            );
+            let ty = binding_key(
+                &params,
+                &node,
+                CoreBindingTarget::Scalar(catchlight_core::ScalarTarget::Ty),
+            );
+            assert_eq!(
+                m.binding(&tx).unwrap().key_positions(),
+                &[vec![0.0, 0.6, 1.0]]
+            );
+            assert_eq!(
+                m.binding(&ty).unwrap().key_positions(),
+                &[vec![0.0, 0.2, 0.5, 0.6, 0.8, 1.0]]
+            );
+            assert!((m.scalar_value_at(&tx, [1, 0]).unwrap() - 8.0).abs() < 1e-5);
+            assert!((m.scalar_value_at(&ty, [3, 0]).unwrap() - 9.0).abs() < 1e-5);
+        })
+        .unwrap();
+}
+
+#[test]
+fn flip_preserves_binding_order_interpolation_and_sparse_holes() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let node = first_meshed_node(&editor, session);
+    let drive = add_param(&mut app, session, "mirror");
+    let other = add_param(&mut app, session, "unrelated");
+    app.compose(session, |_| {
+        let mut edits = Vec::new();
+        for (param, target) in [
+            (&drive, BindingTarget::Tx),
+            (&other, BindingTarget::Ty),
+            (&drive, BindingTarget::Rz),
+        ] {
+            let params = BindingParams::one(param.clone());
+            edits.push(EditOp::BindingAdd {
+                node: node.clone(),
+                params: params.clone(),
+                target,
+                key_positions: Some(vec![vec![0.1, 0.25, 0.6]]),
+            });
+            edits.push(EditOp::BindingInterpolationSet {
+                node: node.clone(),
+                params: params.clone(),
+                target,
+                mode: catchlight_editor_protocol::Interpolate::Cubic,
+            });
+            edits.push(EditOp::BindingCellsSet {
+                node: node.clone(),
+                params,
+                target,
+                cells: vec![
+                    BindingCellWrite {
+                        cell: [0, 0],
+                        value: BindingCellValue::Scalar(0.2),
+                    },
+                    BindingCellWrite {
+                        cell: [2, 0],
+                        value: BindingCellValue::Scalar(0.9),
+                    },
+                ],
+            });
+        }
+        edits.push(EditOp::BindingAdd {
+            node: node.clone(),
+            params: BindingParams::one(drive.clone()),
+            target: BindingTarget::Opacity,
+            key_positions: Some(vec![vec![0.2]]),
+        });
+        Ok(edits)
+    });
+    let identities = |m: &Model| {
+        m.bindings()
+            .map(|b| (b.node().clone(), b.params().clone(), b.target()))
+            .collect::<Vec<_>>()
+    };
+    let before = editor.with_model(session, identities).unwrap();
+    let revision = editor.revision(session).unwrap();
+    app.edit_param_positions(session, &drive, None, None, true);
+    assert_eq!(
+        editor.revision(session),
+        Some(revision + 1),
+        "{}",
+        app.status
+    );
+    editor
+        .with_model(session, |m| {
+            assert_eq!(identities(m), before);
+            let single = binding_key(
+                &BindingParams::one(drive.clone()),
+                &node,
+                BindingTarget::Opacity.into(),
+            );
+            assert_eq!(m.binding(&single).unwrap().key_positions(), &[vec![0.8]]);
+            assert!(
+                catchlight_core::scalar_cells(m.binding(&single).unwrap().values())
+                    .unwrap()
+                    .is_empty()
+            );
+            for (param, target) in [
+                (&drive, BindingTarget::Tx),
+                (&other, BindingTarget::Ty),
+                (&drive, BindingTarget::Rz),
+            ] {
+                let key = binding_key(&BindingParams::one(param.clone()), &node, target.into());
+                let binding = m.binding(&key).unwrap();
+                assert_eq!(
+                    binding.interpolate_mode(),
+                    catchlight_core::interpolate::InterpolateMode::Cubic
+                );
+                let mirrored = param == &drive;
+                assert_eq!(
+                    binding.key_positions(),
+                    &[if mirrored {
+                        vec![1.0 - 0.6, 0.75, 1.0 - 0.1]
+                    } else {
+                        vec![0.1, 0.25, 0.6]
+                    }]
+                );
+                let cells = catchlight_core::scalar_cells(binding.values()).unwrap();
+                assert_eq!(cells.len(), 2);
+                assert!(!cells.iter().any(|c| c.x == 1));
+                assert_eq!(
+                    m.scalar_value_at(&key, [0, 0]).unwrap(),
+                    if mirrored { 0.9 } else { 0.2 }
+                );
+                assert_eq!(
+                    m.scalar_value_at(&key, [2, 0]).unwrap(),
+                    if mirrored { 0.2 } else { 0.9 }
+                );
+            }
+        })
+        .unwrap();
 }

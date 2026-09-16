@@ -8,7 +8,7 @@
 //! GPU contents.
 //!
 //! The live edit in progress is *not* passed in: a vertex drag is a scratch
-//! deform on the session's puppet, written through `Command::ScratchDeform`
+//! deform on the session's puppet, written through its in-process scratch API
 //! and held there until the gesture ends, so a render just draws whatever the
 //! puppet currently carries. Node previews are the exception, and only because
 //! nothing holds them: they are re-applied after each fold.
