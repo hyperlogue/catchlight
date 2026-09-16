@@ -47,12 +47,15 @@
 //!   proof is a test whose texture payload is not a decodable image at all
 //!   (`patching_a_file_whose_textures_are_not_images`): anything that decoded
 //!   would fail there.
-//! - **Nothing changed means the same bytes.** Decoding and re-encoding a
+//! - **Nothing changed means the same current-format bytes.** Decoding and re-encoding a
 //!   structure is byte-identical (`ciborium` writes fields in declaration
 //!   order, the container lays sections out in order), so setting a field to
 //!   the value it already has rewrites the file unchanged. Callers rest on
 //!   that: it is how `diff` on a round-tripped file is empty, and it is what
 //!   makes "did this tool touch anything?" answerable with `cmp`.
+//!   Historical `.clm` versions upgrade to the current format on the first
+//!   write, preserving encoded texture bytes. Compare against that canonical
+//!   serialization when testing a historical input's round trip.
 //! - **A write is atomic and never leaves an unopenable file.** Output goes
 //!   to a temporary file beside the destination and is renamed over it, and
 //!   `patch` rebuilds a [`Model`](catchlight_core::Model) from the edited
@@ -75,7 +78,6 @@ pub mod diff;
 pub mod extension;
 pub mod file;
 pub mod fragment;
-pub mod isolate;
 pub mod patch;
 pub mod poses;
 pub mod render;

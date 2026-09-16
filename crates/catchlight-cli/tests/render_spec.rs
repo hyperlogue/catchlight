@@ -138,6 +138,20 @@ fn inheritance_reports_missing_bases_cycles_and_does_not_use_call_stack() {
 }
 
 #[test]
+fn single_request_discovery_uses_inheritance_without_charging_other_render_work() {
+    let document = parse(json!({"schema":1,"requests":{
+        "base":{"rect":[0,0,4096,4096],"scale":1,"physics":{"mode":"off"}},
+        "detail":{"extends":"base","rect":[0,0,32,32]},
+        "unrelated":{"rect":[0,0,8192,8192],"scale":1}
+    }}));
+    assert!(document.resolve(&model()).is_err());
+    let detail = document.resolve_one(&model(), "detail").unwrap();
+    assert_eq!(detail.framing.size, [32, 32]);
+    assert_eq!(detail.physics, Physics::Off {});
+    assert!(document.resolve_one(&model(), "missing").is_err());
+}
+
+#[test]
 fn framing_rounds_positive_halves_up_and_preserves_scale_and_center() {
     let f = Framing::resolve([1.0, 2.0, 2.5, 3.5], 1.0).unwrap();
     assert_eq!(f.size, [3, 4]);
@@ -479,7 +493,7 @@ fn cli_schema_and_validate_do_not_need_a_gpu_or_create_artifacts() {
             "--scale",
             "1",
         ],
-        vec!["render", "--schema", "geometry"],
+        vec!["render", "--schema", "unknown"],
     ] {
         let (code, _, _) = common::run(&args);
         assert_eq!(code, 2);

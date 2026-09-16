@@ -2,7 +2,7 @@
 //! needs, a camera and a readback, held together and reused across frames.
 //!
 //! Everything that renders without a window goes through [`RenderContext`]:
-//! `catchlight-cli`'s `render` and `isolate`, and the editor server's
+//! `catchlight-cli`'s `render`, and the editor server's
 //! preview. That is the point of it being one type. A second
 //! hand-rolled copy of "make a target, size the stencil and the two pools,
 //! set the camera, submit, read back" is exactly how two callers drift apart

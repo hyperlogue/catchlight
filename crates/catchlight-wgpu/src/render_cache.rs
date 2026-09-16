@@ -382,6 +382,31 @@ impl RenderCache {
         self.collector = collector;
     }
 
+    /// Retain color draws from selected authored Parts, without changing
+    /// enabled ancestry, composites or any direct/composite mask contribution.
+    /// Selection interprets GPU mesh slots here, where their owning Ids live.
+    /// Apply after collection; every new collection restores the full list.
+    pub fn retain_part_colors(
+        &self,
+        render_list: &mut RenderList,
+        mut keep: impl FnMut(&NodeId) -> bool,
+    ) {
+        let retained: std::collections::HashSet<u32> = self
+            .node_ids
+            .iter()
+            .zip(&self.mesh_of_node)
+            .filter_map(|(id, mesh)| mesh.filter(|_| keep(id)).map(|slot| slot.0))
+            .collect();
+        let retain = |drawable: &crate::DrawableInfo| match drawable {
+            crate::DrawableInfo::Part { mesh_id, .. } => retained.contains(mesh_id),
+            crate::DrawableInfo::Composite { .. } => true,
+        };
+        render_list.root_drawables.retain(retain);
+        for children in render_list.composite_children.values_mut() {
+            children.retain(retain);
+        }
+    }
+
     /// The texture slot a baked part's albedo names, if this cache holds it.
     ///
     /// Identity, not a lookup: a baked albedo is already a position in

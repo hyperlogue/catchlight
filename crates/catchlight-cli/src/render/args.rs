@@ -12,6 +12,9 @@ use std::path::PathBuf;
 pub enum SchemaKind {
     Spec,
     Resolved,
+    Geometry,
+    Trace,
+    Run,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -146,15 +149,14 @@ impl ImageArgs {
     }
 }
 
-/// Render planning entry points. Positional rendering remains usable while
-/// subsequent rendering slices share this normalizer and replace execution.
+/// Unified render entry points: every image flag lowers to the spec normalizer.
 #[derive(Debug, Args)]
 pub struct RenderArgs {
     /// Input .clm model. Schema discovery needs no file.
     #[arg(required_unless_present = "schema")]
     pub file: Option<PathBuf>,
     /// Compatibility output: model.clm out.png [width height camera_height].
-    #[arg(conflicts_with_all = ["schema", "validate", "spec", "image_settings"])]
+    #[arg(conflicts_with_all = ["schema", "validate", "spec", "image_settings", "out", "out_dir"])]
     pub legacy_out: Option<PathBuf>,
     #[arg(requires = "legacy_out")]
     pub width: Option<u32>,
@@ -162,56 +164,172 @@ pub struct RenderArgs {
     pub height: Option<u32>,
     #[arg(requires = "height")]
     pub camera_height: Option<f32>,
-    /// Named render requests JSON. Planning currently requires --validate.
-    #[arg(long, requires = "validate", conflicts_with = "image_settings")]
+    /// Named render requests JSON; rendering requires --out-dir.
+    #[arg(long, conflicts_with_all = ["image_settings", "out"])]
     pub spec: Option<PathBuf>,
     /// Expand settings and validate model references/work without GPU or writes.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["out", "out_dir"])]
     pub validate: bool,
+    /// Write one PNG atomically.
+    #[arg(short, long, conflicts_with = "out_dir")]
+    pub out: Option<PathBuf>,
+    /// Write flat named artifacts and a run manifest.
+    #[arg(long)]
+    pub out_dir: Option<PathBuf>,
     /// Discover authoring or resolved planning schema, without a model or GPU.
     #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "spec",
-        conflicts_with_all = ["file", "legacy_out", "spec", "validate", "image_settings"])]
+        conflicts_with_all = ["file", "legacy_out", "spec", "validate", "image_settings", "out", "out_dir"])]
     pub schema: Option<SchemaKind>,
     #[command(flatten)]
     pub image: ImageArgs,
 }
 impl RenderArgs {
     pub fn run(self) -> Result<(), Error> {
-        if let Some(schema) = self.schema {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&spec::schema(matches!(schema, SchemaKind::Resolved)))
-                    .map_err(|e| spec::bad(e.to_string()))?
-            );
+        if let Some(kind) = self.schema {
+            let schema = match kind {
+                SchemaKind::Spec => spec::schema(false),
+                SchemaKind::Resolved => spec::schema(true),
+                SchemaKind::Geometry => super::artifacts::json_schema("geometry"),
+                SchemaKind::Trace => super::artifacts::json_schema("trace"),
+                SchemaKind::Run => super::artifacts::json_schema("run"),
+            };
+            print_json(&schema)?;
             return Ok(());
         }
         let file = self
             .file
             .as_ref()
             .ok_or_else(|| spec::bad("render requires a .clm model"))?;
-        if let Some(out) = &self.legacy_out {
-            let width = self.width.unwrap_or(super::DEFAULT_WIDTH);
-            let height = self.height.unwrap_or(super::DEFAULT_HEIGHT);
-            let camera_height = self.camera_height.unwrap_or(super::DEFAULT_CAMERA_HEIGHT);
-            spec::Framing::legacy(width, height, camera_height)?;
-            println!("{}", super::run(file, out, width, height, camera_height)?);
-            return Ok(());
-        }
-        if !self.validate {
+        if self.spec.is_some() && !self.validate && self.out_dir.is_none() {
             return Err(spec::bad(
-                "use --validate to inspect a request, or provide a positional PNG output",
+                "render --spec requires --out-dir, or use --validate",
             ));
         }
-        let model = crate::file::load_model(file)?;
-        let document = match &self.spec {
-            Some(path) => Document::read(path)?,
-            None => Document::single(self.image.request(&model)?),
+        let directory = self.out_dir.is_some();
+        let loaded = super::execute::load(file, directory)?;
+        let (document, spec_hash) = if let Some(path) = &self.spec {
+            let bytes = spec::read_json(path)?;
+            (
+                Document::parse(&bytes)?,
+                directory.then(|| super::execute::hash(&bytes)),
+            )
+        } else if self.legacy_out.is_some() {
+            let framing = spec::Framing::legacy(
+                self.width.unwrap_or(super::DEFAULT_WIDTH),
+                self.height.unwrap_or(super::DEFAULT_HEIGHT),
+                self.camera_height.unwrap_or(super::DEFAULT_CAMERA_HEIGHT),
+            )?;
+            (
+                Document::single(Request {
+                    rect: Setting::Value(framing.rect),
+                    scale: Setting::Value(framing.scale),
+                    ..Default::default()
+                }),
+                None,
+            )
+        } else {
+            (Document::single(self.image.request(&loaded.model)?), None)
         };
-        let resolved = document.resolve(&model)?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&resolved).map_err(|e| spec::bad(e.to_string()))?
-        );
+        let plan = document.resolve(&loaded.model)?;
+        if self.validate {
+            return print_json(&plan);
+        }
+        let output = self.out.or(self.legacy_out);
+        if let Some(output) = &output {
+            super::execute::check_output_path(file, output)?;
+        }
+        let destination = match (&output, &self.out_dir) {
+            (Some(path), _) => super::execute::Destination::Png(path.clone()),
+            (_, Some(path)) => super::execute::Destination::Directory(path.clone()),
+            _ => super::execute::Destination::Terminal,
+        };
+        let input = loaded
+            .hash
+            .map(|model_sha256| super::artifacts::InputIdentity {
+                model_sha256,
+                spec_sha256: spec_hash,
+            });
+        let cancel = super::execute::Cancellation::default();
+        cancel.install()?;
+        let result = super::execute::run(&loaded.model, plan, destination, input, &cancel)?;
+        for listing in result.listings {
+            println!("{listing}");
+        }
+        if let Some(path) = output {
+            println!("wrote {}", path.display());
+        }
+        if let Some(dir) = self.out_dir {
+            println!("wrote {}", dir.join("run.json").display());
+        }
         Ok(())
     }
+}
+
+/// Bounds observes the same initialized/ticked request without creating a GPU.
+#[derive(Debug, Args)]
+pub struct BoundsArgs {
+    #[arg(required_unless_present = "schema")]
+    pub file: Option<PathBuf>,
+    /// Print the bounds output JSON Schema without loading a model.
+    #[arg(long, conflicts_with_all = ["file", "spec", "request", "frame", "image_settings"])]
+    pub schema: bool,
+    #[arg(long, requires = "request", conflicts_with = "image_settings")]
+    pub spec: Option<PathBuf>,
+    /// Resolve exactly this named request, including inheritance.
+    #[arg(long, requires = "spec")]
+    pub request: Option<String>,
+    /// Required export frame index when the selected request is animated.
+    #[arg(long, requires = "request")]
+    pub frame: Option<u32>,
+    #[command(flatten)]
+    pub image: ImageArgs,
+}
+impl BoundsArgs {
+    pub fn run(self) -> Result<(), Error> {
+        if self.schema {
+            return print_json(&super::artifacts::json_schema("bounds"));
+        }
+        let file = self
+            .file
+            .as_ref()
+            .ok_or_else(|| spec::bad("bounds requires a .clm model"))?;
+        let loaded = super::execute::load(file, false)?;
+        let document = match &self.spec {
+            Some(path) => Document::read(path)?,
+            None => Document::single(self.image.request(&loaded.model)?),
+        };
+        let name = self.request.as_deref().unwrap_or("default");
+        let request = document.resolve_one(&loaded.model, name)?;
+        let frame = match (&request.animation, self.frame) {
+            (Some(animation), Some(frame)) if frame < animation.frames.count => frame,
+            (Some(_), Some(_)) => {
+                return Err(spec::bad("--frame is outside the request's export range"))
+            }
+            (Some(_), None) => return Err(spec::bad("animated bounds requires --frame")),
+            (None, Some(_)) => return Err(spec::bad("--frame requires an animated request")),
+            (None, None) => 0,
+        };
+        let cancel = super::execute::Cancellation::default();
+        cancel.install()?;
+        let mut runtime =
+            super::frame::FrameRuntime::new(&loaded.model, &request, || cancel.is_cancelled())?;
+        for _ in 0..frame {
+            if cancel.is_cancelled() {
+                return Err(spec::bad("bounds cancelled"));
+            }
+            runtime.advance(&loaded.model);
+        }
+        print_json(&super::artifacts::BoundsOutput::observe(
+            &request,
+            &loaded.model,
+            &runtime,
+        )?)
+    }
+}
+fn print_json(value: &impl serde::Serialize) -> Result<(), Error> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).map_err(|e| spec::bad(e.to_string()))?
+    );
+    Ok(())
 }

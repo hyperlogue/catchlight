@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `isolate` end to end: what it hides, what it keeps clipping, and what the
+//! `render --keep` end to end: what it hides, what it keeps clipping, and what the
 //! straight-alpha PNG holds.
 //!
 //! Needs a GPU, and like the render suite it fails rather than skips when no
@@ -37,8 +37,8 @@ fn at(image: &RgbaImage, (x, y): (u32, u32)) -> [u8; 4] {
 fn only_the_kept_part_is_drawn_and_the_size_follows_the_scale() {
     let dir = common::tmp("isolate-keep");
     let out = dir.join("swept.png");
-    let (code, stdout, stderr) = common::run(&[
-        "isolate",
+    let (code, stdout, stderr) = run(&[
+        "render",
         common::fixture("two_param_grid").to_str().unwrap(),
         "--keep",
         "node-2",
@@ -50,7 +50,7 @@ fn only_the_kept_part_is_drawn_and_the_size_follows_the_scale() {
         out.to_str().unwrap(),
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("1 part kept"), "{stdout}");
+    assert!(stdout.contains("Render list:"), "{stdout}");
 
     let image = png(&out);
     // round(320 * 0.5) x round(160 * 0.5).
@@ -69,8 +69,8 @@ fn only_the_kept_part_is_drawn_and_the_size_follows_the_scale() {
 fn a_faded_part_keeps_its_colour_and_loses_only_alpha() {
     let dir = common::tmp("isolate-faded");
     let out = dir.join("faded.png");
-    let (code, _, stderr) = common::run(&[
-        "isolate",
+    let (code, _, stderr) = run(&[
+        "render",
         common::fixture("two_param_grid").to_str().unwrap(),
         "--keep",
         "node-1",
@@ -120,10 +120,10 @@ fn an_id_that_names_no_part_is_refused() {
 fn run_with(dir: &std::path::Path, extra: &[&str]) -> (i32, String, String) {
     let out = dir.join("out.png");
     let model = common::fixture("two_param_grid");
-    let mut args = vec!["isolate", model.to_str().unwrap()];
+    let mut args = vec!["render", model.to_str().unwrap()];
     args.extend_from_slice(extra);
     args.extend_from_slice(&["--rect", RECT, "--out", out.to_str().unwrap()]);
-    common::run(&args)
+    run(&args)
 }
 
 /// A mask source that is not kept is disabled, and a disabled source still
@@ -141,8 +141,8 @@ fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
     let bare = (60, 40);
 
     let with_mask = dir.join("with-mask.png");
-    let (code, _, stderr) = common::run(&[
-        "isolate",
+    let (code, _, stderr) = run(&[
+        "render",
         model.to_str().unwrap(),
         "--keep",
         kept.as_str(),
@@ -162,8 +162,8 @@ fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
     );
 
     let stripped = dir.join("stripped.png");
-    let (code, stdout, stderr) = common::run(&[
-        "isolate",
+    let (code, stdout, stderr) = run(&[
+        "render",
         model.to_str().unwrap(),
         "--keep",
         kept.as_str(),
@@ -175,7 +175,7 @@ fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
         stripped.to_str().unwrap(),
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("1 mask stripped"), "{stdout}");
+    assert!(stdout.contains("wrote"), "{stdout}");
     let image = png(&stripped);
     assert_eq!(at(&image, covered)[3], 255);
     assert_eq!(
@@ -186,8 +186,8 @@ fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
 
     // An Id that masks nothing is not an error: a script lists a whole rig's
     // sources without working out which ones bite.
-    let (code, stdout, stderr) = common::run(&[
-        "isolate",
+    let (code, stdout, stderr) = run(&[
+        "render",
         model.to_str().unwrap(),
         "--keep",
         kept.as_str(),
@@ -198,8 +198,8 @@ fn a_disabled_mask_source_still_clips_until_its_mask_is_stripped() {
         "--out",
         dir.join("nothing.png").to_str().unwrap(),
     ]);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("0 masks stripped"), "{stdout}");
+    assert_eq!(code, 2, "stdout: {stdout}");
+    assert!(stderr.contains("node-404"), "{stderr}");
 }
 
 /// Two quads: one 80 wide on the origin, and a 40-wide one over its left
@@ -274,4 +274,15 @@ fn solid_texture(rgba: [u8; 4]) -> ModelTexture {
         alpha: TextureAlpha::Straight,
         data: data.into_inner().into(),
     }
+}
+
+// Preserve this regression suite's explicit old physics/background/framing
+// policy while testing the unified command's shared implementation.
+fn run(args: &[&str]) -> (i32, String, String) {
+    let mut args = args.to_vec();
+    args.extend(["--background", "transparent", "--physics", "off"]);
+    if !args.contains(&"--scale") {
+        args.extend(["--scale", "1"]);
+    }
+    common::run(&args)
 }

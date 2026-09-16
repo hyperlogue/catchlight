@@ -43,6 +43,9 @@ pub const MAX_DIMENSION: u32 = 8192;
 pub const MAX_PIXELS: u64 = 16_777_216;
 pub const MAX_RUN_PIXELS: u64 = 2_000_000_000;
 pub const MAX_OUTPUTS: u64 = 100_000;
+pub const MAX_GEOMETRY_VERTICES: u64 = 10_000_000;
+pub const MAX_TRACE_VALUES: u64 = 10_000_000;
+pub const MAX_OVERLAY_WORK: u64 = 250_000_000;
 pub const MAX_NAME_BYTES: usize = 100;
 pub const DEFAULT_RECT: [f32; 4] = [-1500.0, -2500.0, 3000.0, 5000.0];
 pub const DEFAULT_SCALE: f32 = 0.32;
@@ -61,6 +64,10 @@ pub struct Limits {
     pub image_pixels: u64,
     pub run_pixels: u64,
     pub output_files: u64,
+    pub geometry_vertices: u64,
+    pub trace_values: u64,
+    /// Conservative triangle-edge × image-span × line-width estimate.
+    pub overlay_work: u64,
     pub name_bytes: usize,
 }
 impl Default for Limits {
@@ -75,6 +82,9 @@ impl Default for Limits {
             image_pixels: MAX_PIXELS,
             run_pixels: MAX_RUN_PIXELS,
             output_files: MAX_OUTPUTS,
+            geometry_vertices: MAX_GEOMETRY_VERTICES,
+            trace_values: MAX_TRACE_VALUES,
+            overlay_work: MAX_OVERLAY_WORK,
             name_bytes: MAX_NAME_BYTES,
         }
     }
@@ -378,7 +388,9 @@ impl Framing {
         let size = dimensions.map(|v| v as u32);
         let pixels = u64::from(size[0]) * u64::from(size[1]);
         check_limit("image_pixels", pixels, MAX_PIXELS, "reduce rect or scale")?;
-        let center = [x + w * 0.5, y + h * 0.5];
+        // The camera consumes f32 coordinates. Record the same representable
+        // center in the mapping rather than a different f64-only midpoint.
+        let center = [x + w * 0.5, y + h * 0.5].map(|v| f64::from(v as f32));
         let span = [f64::from(size[0]) / s, f64::from(size[1]) / s];
         let effective_rect = [
             center[0] - span[0] * 0.5,
@@ -493,7 +505,28 @@ impl Document {
             MAX_JSON_BYTES,
             "split the spec",
         )?;
-        let doc: Self = decode_json(bytes)?;
+        let value: serde_json::Value = decode_json(bytes)?;
+        if let Some(requests) = value.get("requests").and_then(serde_json::Value::as_object) {
+            check_limit(
+                "requests",
+                requests.len() as u64,
+                MAX_REQUESTS as u64,
+                "split the spec",
+            )?;
+        }
+        if let Some(animations) = value
+            .get("animations")
+            .and_then(serde_json::Value::as_object)
+        {
+            check_limit(
+                "animations",
+                animations.len() as u64,
+                MAX_ANIMATIONS as u64,
+                "split the spec",
+            )?;
+        }
+        let doc: Self =
+            serde_json::from_value(value).map_err(|e| bad(format!("invalid render spec: {e}")))?;
         if doc.schema != 1 {
             return Err(bad("unsupported render schema; expected 1"));
         }
@@ -508,6 +541,31 @@ impl Document {
             requests: BTreeMap::from([("default".into(), request)]),
             animations: BTreeMap::new(),
         }
+    }
+
+    /// Resolve one discovery request without charging the work of unrelated
+    /// requests. Its inheritance still resolves against the complete document.
+    pub fn resolve_one(&self, model: &Model, name: &str) -> Result<ResolvedRequest, Error> {
+        check_limit(
+            "requests",
+            self.requests.len() as u64,
+            MAX_REQUESTS as u64,
+            "split the spec",
+        )?;
+        let mut inherited = self.resolve_inheritance()?;
+        let request = inherited
+            .remove(name)
+            .ok_or_else(|| bad(format!("unknown request {name}")))?;
+        let single = Self {
+            schema: self.schema,
+            requests: BTreeMap::from([(name.to_owned(), request)]),
+            animations: self.animations.clone(),
+        };
+        single
+            .resolve(model)?
+            .requests
+            .remove(name)
+            .ok_or_else(|| bad("resolved request disappeared"))
     }
 
     pub fn resolve(&self, model: &Model) -> Result<ResolvedSpec, Error> {
@@ -554,6 +612,9 @@ impl Document {
         };
         let mut filenames = BTreeSet::from(["run.json".to_string()]);
         let mut resolved_bytes = 0;
+        let mut geometry_vertices = 0_u64;
+        let mut trace_values = 0_u64;
+        let mut overlay_work = 0_u64;
         for (name, request) in inherited {
             let mut request =
                 self.resolve_request(model, request)
@@ -601,6 +662,55 @@ impl Document {
                 MAX_OUTPUTS,
                 "reduce captures or split the spec",
             )?;
+            let vertices: u64 = request
+                .geometry
+                .iter()
+                .filter_map(|id| model.node_mesh(id))
+                .map(|mesh| mesh.vertex_count() as u64)
+                .sum();
+            geometry_vertices = geometry_vertices.saturating_add(vertices.saturating_mul(captures));
+            check_limit(
+                "geometry_vertices",
+                geometry_vertices,
+                MAX_GEOMETRY_VERTICES,
+                "reduce geometry selections/captures or split the spec",
+            )?;
+            if let Some(animation) = &request.animation {
+                trace_values = trace_values.saturating_add(
+                    u64::from(animation.frames.count)
+                        .saturating_mul(request.trace_params.len() as u64)
+                        .saturating_mul(2),
+                );
+                check_limit(
+                    "trace_values",
+                    trace_values,
+                    MAX_TRACE_VALUES,
+                    "reduce trace params/frames or split the spec",
+                )?;
+            }
+            if let Some(overlay) = &request.overlay {
+                let triangles: u64 = overlay
+                    .mesh
+                    .parts
+                    .iter()
+                    .filter_map(|id| model.node_mesh(id))
+                    .map(|mesh| mesh.triangle_count() as u64)
+                    .sum();
+                let span = u64::from(request.framing.size[0]) + u64::from(request.framing.size[1]);
+                overlay_work = overlay_work.saturating_add(
+                    triangles
+                        .saturating_mul(3)
+                        .saturating_mul(span)
+                        .saturating_mul((overlay.mesh.width_px + 2.0).ceil() as u64)
+                        .saturating_mul(captures),
+                );
+                check_limit(
+                    "overlay_work",
+                    overlay_work,
+                    MAX_OVERLAY_WORK,
+                    "reduce overlay selections, scale or captures",
+                )?;
+            }
             request.outputs = plan_outputs(&name, &request);
             for filename in &request.outputs {
                 if !filenames.insert(filename.to_ascii_lowercase()) {
@@ -710,10 +820,7 @@ impl Document {
                     }
                 };
                 animation::validate(model, &clip.0)?;
-                let frames = request.frames.clone().value().unwrap_or_else(|| Frames {
-                    count: None,
-                    every: 1,
-                });
+                let frames = request.frames.clone().value().unwrap_or_default();
                 let count = frames.count.unwrap_or(clip.0.length as u32);
                 if count == 0 || frames.every == 0 {
                     return Err(bad("frame count and every must be positive"));
