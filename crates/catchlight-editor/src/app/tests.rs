@@ -108,7 +108,7 @@ fn a_drag_of_any_length_and_its_release_leave_one_undo_entry() {
     let snapshot = editor.doc_snapshot(session);
     app.clear_scratch_deform();
     let deltas = HashMap::from([(0usize, glam::vec2(9.9, 1.0))]);
-    app.commit_deform_deltas(session, core, &deltas, &snapshot);
+    app.commit_deform_deltas(session, core, rev_before, &deltas, &snapshot);
 
     assert_eq!(
         editor.history(session).unwrap(),
@@ -1143,4 +1143,125 @@ fn flip_preserves_binding_order_interpolation_and_sparse_holes() {
             }
         })
         .unwrap();
+}
+
+#[test]
+fn stale_deform_drag_cannot_reinterpret_same_count_topology() {
+    // Exercise both a refreshed UI snapshot and one captured before the other
+    // writer: neither may replace the starting guard with the latest revision.
+    for refreshed_snapshot in [false, true] {
+        let (editor, session, mut app) = app_on(&welded_seam());
+        let node = first_meshed_node(&editor, session);
+        let core = app.core_of_ref(&node).unwrap();
+        app.armed = Some(Armed::One(param_named(&editor, session, "pull")));
+        let original_snapshot = editor.doc_snapshot(session);
+        let revision = original_snapshot.as_ref().unwrap().rev;
+        let deltas = HashMap::from([(0usize, glam::vec2(10.0, 3.0))]);
+        app.set_scratch_deform(session, &node, &deltas);
+        app.deform_drag = Some(DeformDrag {
+            revision,
+            core,
+            verts: vec![(0, 1.0)],
+            start_world: glam::Vec2::ZERO,
+            last_world: glam::Vec2::ZERO,
+            node_inv: glam::Mat4::IDENTITY,
+            flow: false,
+            pending: deltas.clone(),
+        });
+        let Reply::Ok {
+            body: ResponseBody::MeshInfo { mut mesh, .. },
+            ..
+        } = editor.handle(Request {
+            id: 1,
+            command: Command::MeshGet {
+                session,
+                node: node.clone(),
+                if_rev: Some(revision),
+            },
+        })
+        else {
+            panic!("mesh read failed")
+        };
+        mesh.verts.swap(0, 1);
+        let response = editor.handle(Request {
+            id: 2,
+            command: Command::MeshSet {
+                session,
+                node,
+                verts: mesh.verts,
+                uvs: mesh.uvs,
+                indices: mesh.indices,
+                origin: mesh.origin,
+                deform_mapping: None,
+                if_rev: Some(revision),
+            },
+        });
+        assert!(matches!(response, Reply::Ok { .. }), "{response:?}");
+        let other_writer = editor
+            .with_model(session, |m| m.to_clm_bytes().unwrap())
+            .unwrap();
+        let after_revision = editor.revision(session).unwrap();
+        let after_history = editor.history(session).unwrap();
+        let snapshot = if refreshed_snapshot {
+            editor.doc_snapshot(session)
+        } else {
+            original_snapshot
+        };
+        app.commit_deform_deltas(session, core, revision, &deltas, &snapshot);
+        assert_eq!(editor.revision(session), Some(after_revision));
+        assert_eq!(editor.history(session).unwrap(), after_history);
+        assert_eq!(
+            editor
+                .with_model(session, |m| m.to_clm_bytes().unwrap())
+                .unwrap(),
+            other_writer
+        );
+        assert!(app.status.contains("model changed"), "{}", app.status);
+        assert!(app.deform_drag.is_none());
+        assert!(app.scratch.is_none());
+    }
+}
+
+#[test]
+fn stale_transform_gesture_keeps_another_writers_transform_and_recording() {
+    for record in [false, true] {
+        let (editor, session, mut app) = app_on(&welded_seam());
+        let node = first_meshed_node(&editor, session);
+        app.selection = vec![node.clone()];
+        if record {
+            app.armed = Some(Armed::One(param_named(&editor, session, "pull")));
+        }
+        app.gizmo_revision = editor.revision(session);
+        let response = editor.handle(Request {
+            id: 1,
+            command: Command::NodeSet {
+                session,
+                node,
+                patch: NodePatch {
+                    translate: Some([4.0, 5.0, 0.0]),
+                    ..Default::default()
+                },
+            },
+        });
+        assert!(matches!(response, Reply::Ok { .. }));
+        let before = editor
+            .with_model(session, |m| m.to_clm_bytes().unwrap())
+            .unwrap();
+        let revision = editor.revision(session);
+        app.apply_gizmo_event(GizmoEvent::Commit {
+            translation: Some([20.0, 30.0, 0.0]),
+            rotation: None,
+            scale: None,
+        });
+        assert_eq!(editor.revision(session), revision);
+        assert_eq!(
+            editor
+                .with_model(session, |m| m.to_clm_bytes().unwrap())
+                .unwrap(),
+            before
+        );
+        assert!(app.status.contains("model changed"), "{}", app.status);
+        assert!(app.gizmo_revision.is_none());
+        assert!(app.previews.is_empty());
+    }
 }

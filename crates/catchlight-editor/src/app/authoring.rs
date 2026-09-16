@@ -10,10 +10,24 @@ impl App {
         session: SessionId,
         build: impl FnOnce(&Model) -> Result<Vec<EditOp>, String>,
     ) {
-        match self
-            .editor
-            .with_model_revision(session, |model, rev| (rev, build(model)))
-        {
+        self.compose_guarded(session, None, build);
+    }
+
+    /// A gesture keeps its original guard through both capture and publication.
+    pub(super) fn compose_guarded(
+        &mut self,
+        session: SessionId,
+        expected: Option<u64>,
+        build: impl FnOnce(&Model) -> Result<Vec<EditOp>, String>,
+    ) {
+        match self.editor.with_model_revision(session, |model, rev| {
+            let edits = if expected.is_some_and(|expected| expected != rev) {
+                Err("edit cancelled: the model changed; start the gesture again".into())
+            } else {
+                build(model)
+            };
+            (expected.unwrap_or(rev), edits)
+        }) {
             Ok((rev, Ok(edits))) if !edits.is_empty() => {
                 self.send(Command::EditApply {
                     session,

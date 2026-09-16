@@ -84,6 +84,10 @@ impl Gizmo {
         self.drag.is_some()
     }
 
+    pub(crate) fn cancel(&mut self) {
+        self.drag = None;
+    }
+
     /// Returns true when the pointer at `pos` would grab a handle — the app
     /// uses this to give the gizmo priority over click-select.
     pub(crate) fn hit_test(

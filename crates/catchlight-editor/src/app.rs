@@ -9,7 +9,8 @@
 //! Invariants this module carries:
 //!
 //! - A drag writes only the in-process Puppet scratch; release publishes one
-//!   guarded edit batch. Scratch has no transport command, revision or history.
+//!   edit batch guarded by the gesture's starting revision. A changed model
+//!   cancels the gesture. Scratch has no transport command, revision or history.
 //! - Recording uses editor-core's per-binding grid and rest-key policy. The
 //!   parameter controller's union of key positions is display/snap data only.
 
@@ -70,6 +71,8 @@ pub struct App {
 
     camera: EditorCamera,
     gizmo: Gizmo,
+    /// The authored frame from which the transform gesture captured its inputs.
+    gizmo_revision: Option<u64>,
     /// The pan tool is active: primary drags pan the camera and clicks don't
     /// select. Mutually exclusive with the gizmo tools and `deform_mode`;
     /// every tool-switch site clears the others.
@@ -225,6 +228,7 @@ enum DeformKind {
 }
 
 struct DeformDrag {
+    revision: u64,
     core: u32,
     /// Captured vertices with their falloff weights.
     verts: Vec<(usize, f32)>,
@@ -252,6 +256,7 @@ impl App {
             rendered_rev: u64::MAX,
             camera: EditorCamera::default(),
             gizmo: Gizmo::default(),
+            gizmo_revision: None,
             pan_mode: false,
             selection: Vec::new(),
             collapsed: HashSet::new(),
@@ -321,6 +326,8 @@ impl App {
         self.copied_cell = None;
         self.deform_mode = false;
         self.deform_drag = None;
+        self.gizmo.cancel();
+        self.gizmo_revision = None;
         self.scratch = None;
         self.scratch_rev = 0;
         self.deform_selection.clear();
@@ -715,24 +722,38 @@ impl App {
 
     /// Record through editor-core's per-binding plan and publish one guarded edit.
     fn commit_patch(&mut self, node: NodeId, patch: NodePatch) {
+        self.commit_patch_guarded(node, patch, None);
+    }
+
+    fn commit_patch_guarded(&mut self, node: NodeId, patch: NodePatch, revision: Option<u64>) {
         let Some(session) = self.session else { return };
         if self.armed.is_none() {
-            self.send(Command::NodeSet {
-                session,
-                node,
-                patch,
-            });
+            if revision.is_some() {
+                self.compose_guarded(session, revision, |_| {
+                    Ok(vec![EditOp::NodeSet { node, patch }])
+                });
+            } else {
+                self.send(Command::NodeSet {
+                    session,
+                    node,
+                    patch,
+                });
+            }
             return;
         }
         let Some(snap) = self.editor.doc_snapshot(session) else {
             return;
         };
+        if revision.is_some_and(|revision| revision != snap.rev) {
+            self.status = "edit cancelled: the model changed; start the gesture again".into();
+            return;
+        }
         let Some((params, _)) = self.record_target(&snap, &node) else {
             self.status = "recording target is unavailable".into();
             return;
         };
         let pose = self.pose.clone();
-        self.compose(session, |model| {
+        self.compose_guarded(session, revision, |model| {
             let recording = authoring::capture(model, &node, &params, &pose)?;
             let props = catchlight_editor_core::RecordProperties {
                 translate: patch.translate,
@@ -1889,6 +1910,7 @@ impl App {
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
         slot_view: &SlotView,
     ) {
+        self.cancel_stale_gestures(rev);
         let avail = ui.available_size();
         let (rect, resp) = ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
         self.last_viewport_rect = Some(rect);
@@ -1997,7 +2019,12 @@ impl App {
             gizmo_target = self.gizmo_target();
             if let Some(target) = &gizmo_target {
                 let snap = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
-                if let Some(event) = self.gizmo.update(rect, &self.camera, target, &resp, snap) {
+                let was_dragging = self.gizmo.is_dragging();
+                let event = self.gizmo.update(rect, &self.camera, target, &resp, snap);
+                if !was_dragging && self.gizmo.is_dragging() {
+                    self.gizmo_revision = Some(rev);
+                }
+                if let Some(event) = event {
                     gizmo_consumed = true;
                     self.apply_gizmo_event(event);
                     // Re-resolve after a commit so the overlay tracks the new pose.
@@ -2160,6 +2187,22 @@ impl App {
             || self.mesh_edit.as_ref().is_some_and(|m| m.is_dragging())
     }
 
+    fn cancel_stale_gestures(&mut self, revision: u64) {
+        let stale_deform = self
+            .deform_drag
+            .as_ref()
+            .is_some_and(|drag| drag.revision != revision);
+        let stale_transform = self.gizmo_revision.is_some_and(|base| base != revision);
+        if stale_deform || stale_transform {
+            self.deform_drag = None;
+            self.clear_scratch_deform();
+            self.gizmo.cancel();
+            self.gizmo_revision = None;
+            self.previews.clear();
+            self.status = "edit cancelled: the model changed; start the gesture again".into();
+        }
+    }
+
     fn apply_gizmo_event(&mut self, event: GizmoEvent) {
         let Some(primary) = self.primary() else {
             return;
@@ -2187,7 +2230,10 @@ impl App {
                 scale,
             } => {
                 self.previews.clear();
-                self.commit_patch(
+                let Some(revision) = self.gizmo_revision.take() else {
+                    return;
+                };
+                self.commit_patch_guarded(
                     primary,
                     NodePatch {
                         translate: translation,
@@ -2195,6 +2241,7 @@ impl App {
                         scale,
                         ..Default::default()
                     },
+                    Some(revision),
                 );
             }
         }
@@ -2440,6 +2487,7 @@ impl App {
             };
             let world = self.camera.screen_to_world(rect, pos);
             self.deform_drag = Some(DeformDrag {
+                revision: self.rendered_rev,
                 core,
                 verts: captured,
                 start_world: world,
@@ -2481,10 +2529,11 @@ impl App {
         }
         if resp.drag_stopped_by(egui::PointerButton::Primary) {
             let core = drag.core;
+            let revision = drag.revision;
             let deltas = std::mem::take(&mut drag.pending);
             self.deform_drag = None;
             self.clear_scratch_deform();
-            self.commit_deform_deltas(session, core, &deltas, snapshot);
+            self.commit_deform_deltas(session, core, revision, &deltas, snapshot);
         } else {
             let deltas = drag.pending.clone();
             if let Some(node) = self.ref_of_core(core) {
@@ -2556,19 +2605,27 @@ impl App {
         &mut self,
         session: SessionId,
         core: u32,
+        revision: u64,
         deltas: &HashMap<usize, glam::Vec2>,
         snapshot: &Option<Arc<catchlight_editor_server::DocSnapshot>>,
     ) {
+        self.deform_drag = None;
+        self.clear_scratch_deform();
+        if snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.rev != revision)
+        {
+            self.status = "edit cancelled: the model changed; start the gesture again".into();
+            return;
+        }
         let Some(node) = self.ref_of_core(core) else {
             return;
         };
-        let Some((params, cell)) = snapshot.as_ref().and_then(|s| self.record_target(s, &node))
-        else {
+        let Some((params, _)) = snapshot.as_ref().and_then(|s| self.record_target(s, &node)) else {
             return;
         };
-        let _ = cell;
         let pose = self.pose.clone();
-        self.compose(session, |model| {
+        self.compose_guarded(session, Some(revision), |model| {
             let recording = authoring::capture(model, &node, &params, &pose)?;
             let mut offsets = vec![0.0; model.deform_len(&node)];
             for (&vertex, delta) in deltas {
