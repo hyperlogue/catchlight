@@ -8,15 +8,19 @@
 //! defined in another crate. [`fit_strand`] is the third:
 //! pure geometry over one mesh, measuring where a strand of hair hangs from
 //! and how long each of its links is.
+//! [`ModelHistory`] retains bounded branching snapshots for authoring sessions;
+//! the caller supplies publication revisions and owns locking and notifications.
 //!
 //! Pure and wasm-safe: no GPU, no async, no filesystem.
 
+mod history;
 mod manifest;
 mod mesh;
 mod mesh_draft;
 mod recording;
 mod strand;
 
+pub use history::*;
 pub use manifest::*;
 pub use mesh::*;
 pub use mesh_draft::MeshDraft;
