@@ -1,9 +1,8 @@
 //! Model-only execution shared by standalone commands and atomic batches.
 //!
-//! The caller owns a private model and publication. No operation reads session
-//! state, allocates an ID, performs IO, or publishes a partial result. Selections
-//! validate completely before writing. A batch stops at the first error and its
-//! caller discards the candidate; final authored equality decides publication.
+//! The caller owns rollback and publication. Operations only mutate the supplied
+//! model; selections validate before writing. A batch stops at its first error,
+//! and the caller restores the snapshot. Final authored equality decides publication.
 
 use std::collections::HashSet;
 

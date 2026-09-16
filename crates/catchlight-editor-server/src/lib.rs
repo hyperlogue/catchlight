@@ -419,12 +419,6 @@ impl Session {
         }
     }
 
-    fn touch(&mut self) {
-        // Legacy handlers signal a write here. The publication seam compares
-        // final authored content and assigns the single actual next revision.
-        self.rev = self.rev.saturating_add(1);
-    }
-
     fn ensure_open(&self, id: SessionId) -> Result<(), EditorError> {
         if self.closed {
             return Err(EditorError::NoSession(id));
@@ -902,7 +896,6 @@ impl Editor {
                     data: bytes.into(),
                 },
             )?;
-            s.touch();
             Ok(added)
         })
     }
@@ -1267,15 +1260,16 @@ impl Editor {
                 edits,
             } => {
                 edit::check_batch(&edits)?;
-                self.edit_session_captured(session, |s| {
+                let captured = self.edit_session_captured(session, |s| {
                     s.check_revision(Some(if_rev))?;
-                    let mut candidate = s.model.clone();
-                    let results = edit::execute(&mut candidate, edits)?;
-                    let changed = !s.model.authored_eq(&candidate)?;
-                    if changed {
-                        s.model.replace_from(&candidate);
-                    }
-                    Ok(ResponseBody::EditResults { changed, results })
+                    edit::execute(&mut s.model, edits)
+                })?;
+                Ok(Captured {
+                    value: ResponseBody::EditResults {
+                        changed: captured.rev != Some(if_rev),
+                        results: captured.value,
+                    },
+                    rev: captured.rev,
                 })
             }
             Command::EditValidate {
@@ -1345,7 +1339,6 @@ impl Editor {
             }),
             Command::NodeDuplicate { session, node } => self.edit_session_captured(session, |s| {
                 let copy = s.duplicate_subtree(&node)?;
-                s.touch();
                 Ok(ResponseBody::Node {
                     node: copy,
                     dropped: Vec::new(),
@@ -1358,7 +1351,6 @@ impl Editor {
                     Rename::Texture { from, to } => s.model.rename_tex_id(&from, to)?,
                     Rename::Slot { node, from, to } => s.model.rename_slot(&node, &from, to)?,
                 }
-                s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::MaskAdd {
@@ -1427,7 +1419,6 @@ impl Editor {
                     }
                     Ok(())
                 })??;
-                s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::PhysicsGlobals {
@@ -1449,13 +1440,11 @@ impl Editor {
                     })?;
                 }
                 s.model.set_physics(physics);
-                s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDelete { session, node } => self.edit_session_captured(session, |s| {
                 let dropped = s.model.textures_dropped_by_deleting(&node);
                 s.model.delete_node(&node)?;
-                s.touch();
                 Ok(ResponseBody::Node { node, dropped })
             }),
             Command::TextureAdd {
@@ -1479,7 +1468,6 @@ impl Editor {
                             data: bytes.into(),
                         },
                     )?;
-                    s.touch();
                     Ok(ResponseBody::Texture { texture, dropped })
                 })
             }
@@ -1503,7 +1491,6 @@ impl Editor {
                         default,
                     },
                 )?;
-                s.touch();
                 Ok(ResponseBody::Param { param })
             }),
             Command::ParamSet {
@@ -1525,12 +1512,10 @@ impl Editor {
                 if let Some(d) = default {
                     s.model.set_param_default(&param, d)?;
                 }
-                s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::ParamDelete { session, param } => self.edit_session_captured(session, |s| {
                 s.model.delete_param(&param)?;
-                s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::BindingKeyInsert {
@@ -1677,7 +1662,6 @@ impl Editor {
             } => self.edit_session_captured(session, |s| {
                 let mesh = automesh(&s.model, &node, mode)?;
                 let emptied = s.model.set_mesh_with_refit(&node, mesh)?;
-                s.touch();
                 Ok(emptied_reply(node, emptied))
             }),
             Command::SlotAdd {
@@ -1795,7 +1779,6 @@ impl Editor {
                 );
                 let node = s.add_node(&parent, id, node)?;
                 s.model.set_physics_targets(&node, targets)?;
-                s.touch();
                 Ok(ResponseBody::Node {
                     node,
                     dropped: Vec::new(),
@@ -1824,7 +1807,6 @@ impl Editor {
                     s.model
                         .set_spine_chain(&node, Some(chain_of(&chain, count)?))?;
                 }
-                s.touch();
                 Ok(ResponseBody::Node {
                     node,
                     dropped: Vec::new(),
@@ -1851,7 +1833,6 @@ impl Editor {
                     let chain = chain.map(|c| chain_of(&c, count)).transpose()?;
                     s.model.set_spine_chain(&node, chain)?;
                 }
-                s.touch();
                 Ok(ResponseBody::Empty)
             }),
             Command::SpineFit {
@@ -1883,9 +1864,7 @@ impl Editor {
                 size,
                 camera,
             } => self.run_preview(session, pose, size, camera, payload),
-            // Preview is the one command that stays native: it needs the
-            // headless renderer, not just bytes. Everything else that used to
-            // be native-only now resolves its key through `storage`.
+            // Preview requires the native headless renderer.
             #[cfg(target_arch = "wasm32")]
             Command::Preview { .. } => Err(EditorError::NativeOnly),
             Command::ExtensionSet {
@@ -1915,14 +1894,12 @@ impl Editor {
                 };
                 self.edit_session_captured(session, move |s| {
                     s.model.set_extension(key.clone(), value)?;
-                    s.touch();
                     Ok(ResponseBody::Empty)
                 })
             }
             Command::ExtensionDelete { session, key } => {
                 self.edit_session_captured(session, move |s| {
                     s.model.delete_extension(&key)?;
-                    s.touch();
                     Ok(ResponseBody::Empty)
                 })
             }
@@ -2430,7 +2407,6 @@ fn spine_fit(
     }
 
     let warnings = chain_warnings(&s.model, &node);
-    s.touch();
     Ok(ResponseBody::SpineFit {
         node,
         params,

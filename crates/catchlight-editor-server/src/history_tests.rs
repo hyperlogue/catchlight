@@ -184,7 +184,6 @@ fn noops_and_failures_preserve_revision_history_notifications_and_model() {
         .edit_session_captured(session, |s| {
             rename_model(&mut s.model, "temporary");
             rename_model(&mut s.model, "A");
-            s.touch();
             Ok(())
         })
         .unwrap();
@@ -192,7 +191,6 @@ fn noops_and_failures_preserve_revision_history_notifications_and_model() {
     assert!(editor
         .edit_session_captured(session, |s| -> Result<(), EditorError> {
             rename_model(&mut s.model, "partial");
-            s.touch();
             Err(EditorError::BadTarget("refused second operation".into()))
         })
         .is_err());
