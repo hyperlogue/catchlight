@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Binding-owned sampling grids preserve independent authoring over shared
-//! inputs. The old v2 container is exercised as bytes, not a current struct
-//! with a changed version number.
+//! inputs. Version-2 container fixtures exercise binding positions and asset
+//! preservation through decoding.
 
 use catchlight_core::formats::{clm, container};
 use catchlight_core::id::SeededHex;

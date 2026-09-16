@@ -83,8 +83,7 @@ fn every_fixture_carries_both_kinds_through_a_save() {
     }
 }
 
-/// A model with no extensions omits the field and section, including when
-/// the binding-grid format requires a one-time container migration.
+/// A model with no extensions omits the field and section on save.
 #[test]
 fn a_model_without_extensions_keeps_its_bytes_after_version_migration() {
     for path in fixtures() {

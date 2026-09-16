@@ -3,8 +3,8 @@
 //! [`read`] decodes the container and the structure section and hands back the
 //! [`ClmFile`] — the structure to edit and the texture table as verbatim bytes.
 //! [`write`] encodes it again and replaces the destination atomically.
-//! Decoding historical containers migrates their structure; the next encode
-//! writes the current `.clm` version with the same encoded texture bytes.
+//! Reads accept supported `.clm` versions; writes emit the current version
+//! with the same encoded texture bytes.
 //!
 //! The one thing that needs deciding before anything else is the file's
 //! **shape**: a complete model has exactly one node whose `parent` is absent,

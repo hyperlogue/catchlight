@@ -316,11 +316,9 @@ pub struct ClmKeyframe {
 // ---- the file ------------------------------------------------------------
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
-/// Bumped for every breaking wire change. Writers emit version 3; both
-/// container readers also accept version 2, migrating param-owned positions into
-/// each binding; a legacy fragment missing those params requires re-export
-/// with its original base grids. Versions 0 and 1 were never public and are
-/// not read. Encoded texture and extension payloads are unchanged by migration.
+/// Writers emit version 3. Readers also accept version 2, copying each driving
+/// param's positions into its bindings without changing asset bytes. Version-2
+/// fragments that omit those params are rejected.
 pub const FORMAT_VERSION: u16 = 3;
 
 const SECTION_STRUCTURE: u32 = 0;
@@ -1075,7 +1073,7 @@ fn migrate_v2(
                                 node: binding.node.to_string(),
                                 param: param.to_string(),
                             })?;
-                    // A legacy empty axis evaluated as a one-position constant grid.
+                    // Version 2 defines an empty axis as a constant grid.
                     Ok(if positions.is_empty() {
                         vec![0.0]
                     } else {

@@ -71,9 +71,8 @@ fn identity(model: &Model) -> Vec<String> {
     out
 }
 
-/// Current-version models save byte for byte. Legacy fixtures upgrade once
-/// to binding-owned axes; their migrated bytes must then be stable, and their
-/// authored identity and assets must survive the upgrade.
+/// Every supported fixture preserves authored identity and assets, and has
+/// a stable canonical encoding. Version-3 files are already canonical.
 #[test]
 fn every_committed_fixture_round_trips_after_any_required_migration() {
     for path in fixtures() {
