@@ -75,8 +75,8 @@ pub enum BindingTarget {
 
 /// The one or two params a binding's grid spans. Two params are jointly
 /// authored — "head left *and* up" is its own shape, not left plus up — so the
-/// grid is the product of their key positions and the pair belongs to the
-/// binding, not to either param.
+/// grid is the product of the binding's two position axes. The axes and the
+/// param pair belong to the binding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BindingParams {
     /// One param. The grid is a row: every cell's `y` is 0.
@@ -768,6 +768,71 @@ impl Model {
         }
     }
 
+    /// Read a contiguous vertex page of one authored or derived deform cell.
+    ///
+    /// Each vertex contributes two flat values. Authored cells are sliced
+    /// directly; holes run the same component-wise fill over sliced authored
+    /// arrays. This never initializes the full mesh-by-grid dense cache. A
+    /// caller accepting untrusted read sizes must budget grid cells times page
+    /// vertices before requesting a derived hole (and account for repeated
+    /// calls); limiting only the returned page would not bound fill work.
+    pub fn deform_value_at_range(
+        &self,
+        key: &BindingKey,
+        cell: [u32; 2],
+        vertices: std::ops::Range<usize>,
+    ) -> Result<Vec<f32>, ModelError> {
+        if key.target != BindingTarget::Deform {
+            return Err(ModelError::WrongTarget);
+        }
+        self.check_cell(key, cell)?;
+        let mesh = self.node_mesh(&key.node).ok_or_else(|| {
+            if self.node(&key.node).is_some() {
+                ModelError::NotMeshed
+            } else {
+                ModelError::UnknownNode
+            }
+        })?;
+        if vertices.start > vertices.end || vertices.end > mesh.vertex_count() {
+            return Err(ModelError::CellOutOfRange);
+        }
+        let flat = vertices.start * 2..vertices.end * 2;
+        let identity = vec![0.0; flat.len()];
+        let Some(binding) = self.binding(key) else {
+            return Ok(identity);
+        };
+        let Some(cells) = deform_cells(binding.values()) else {
+            return Err(ModelError::WrongTarget);
+        };
+        if let Some(authored) = cells.iter().find(|entry| [entry.x, entry.y] == cell) {
+            return authored
+                .value
+                .get(flat)
+                .map(<[f32]>::to_vec)
+                .ok_or(ModelError::CellOutOfRange);
+        }
+        if flat.is_empty() || cells.is_empty() {
+            return Ok(identity);
+        }
+        let authored: Vec<_> = cells
+            .iter()
+            .map(|entry| {
+                entry
+                    .value
+                    .get(flat.clone())
+                    .map(|page| ((entry.x, entry.y), page.to_vec()))
+                    .ok_or(ModelError::CellOutOfRange)
+            })
+            .collect::<Result<_, _>>()?;
+        let (x, y) = self.binding_axes(key)?;
+        let mut values = derive_dense(x.len(), y.len(), x, y, &authored, &identity);
+        let at = cell[1] as usize * x.len() + cell[0] as usize;
+        values
+            .get_mut(at)
+            .map(std::mem::take)
+            .ok_or(ModelError::CellOutOfRange)
+    }
+
     /// Copy the (derived-or-authored) value at `from` and author it at `to`.
     pub fn copy_binding_key(
         &mut self,
@@ -1135,6 +1200,75 @@ mod tests {
             .iter()
             .map(|c| (c.x, c.value))
             .collect()
+    }
+
+    #[test]
+    fn deform_pages_equal_full_derivation_without_populating_the_dense_cache() {
+        let mut r = fixture();
+        let second = ParamId::new("second").unwrap();
+        r.m.add_param_with_id(
+            second.clone(),
+            ModelParam::new(Name::truncated("Second"), 0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let key = BindingKey::pair(
+            r.param.clone(),
+            second,
+            r.part.clone(),
+            BindingTarget::Deform,
+        );
+        r.m.add_binding_with_positions(&key, vec![vec![0.0, 0.25, 1.0], vec![0.0, 0.75, 1.0]])
+            .unwrap();
+        for (cell, factor) in [([0, 0], 1.0), ([2, 0], 3.0), ([0, 2], -2.0)] {
+            r.m.set_deform_vertices(&key, cell, (0..8).map(|v| v as f32 * factor).collect())
+                .unwrap();
+        }
+        let mut pages = Vec::new();
+        for y in 0..3 {
+            for x in 0..3 {
+                pages.push((
+                    [x, y],
+                    r.m.deform_value_at_range(&key, [x, y], 1..3).unwrap(),
+                ));
+            }
+        }
+        assert!(r.m.binding(&key).unwrap().dense.get().is_none());
+        for (cell, page) in pages {
+            assert_eq!(page, r.m.deform_value_at(&key, cell).unwrap()[2..6]);
+        }
+        assert!(r
+            .m
+            .deform_value_at_range(&key, [0, 0], 4..4)
+            .unwrap()
+            .is_empty());
+        assert!(r.m.deform_value_at_range(&key, [0, 0], 0..5).is_err());
+    }
+
+    #[test]
+    fn tiny_deform_page_does_not_expand_a_large_sparse_grid_over_the_full_mesh() {
+        let mut r = fixture();
+        let mesh = ClmMesh {
+            verts: vec![0.0; 4096 * 2],
+            uvs: vec![],
+            indices: ClmIndices::U16(vec![]),
+            origin: [0.0; 2],
+        };
+        r.m.set_node_mesh_with(&r.part.clone(), mesh, |_, _, _| unreachable!())
+            .unwrap();
+        let key = r.deform(&r.part);
+        r.m.add_binding_with_positions(
+            &key,
+            vec![(0..65_536).map(|i| i as f32 / 65_535.0).collect()],
+        )
+        .unwrap();
+        r.m.set_deform_vertices(&key, [0, 0], vec![2.0; 4096 * 2])
+            .unwrap();
+        assert_eq!(
+            r.m.deform_value_at_range(&key, [65_535, 0], 4095..4096)
+                .unwrap(),
+            vec![2.0, 2.0]
+        );
+        assert!(r.m.binding(&key).unwrap().dense.get().is_none());
     }
 
     #[test]
