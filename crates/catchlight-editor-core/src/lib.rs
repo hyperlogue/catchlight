@@ -24,7 +24,9 @@ pub use history::*;
 pub use manifest::*;
 pub use mesh::*;
 pub use mesh_draft::MeshDraft;
-pub use recording::{RecordProperties, Recording};
+pub use recording::{
+    RecordProperties, Recording, RecordingCell, RecordingKeyInsert, RecordingValue, RecordingWrite,
+};
 pub use strand::*;
 
 /// Picking and selection bounds against the evaluated puppet.

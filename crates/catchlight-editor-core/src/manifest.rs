@@ -140,10 +140,6 @@ pub struct ManifestParam {
     pub max: [f32; 2],
     #[serde(default)]
     pub defaults: [f32; 2],
-    #[serde(default)]
-    pub axis_x: Vec<f32>,
-    #[serde(default)]
-    pub axis_y: Vec<f32>,
 }
 
 fn unit2() -> [f32; 2] {
@@ -303,23 +299,6 @@ impl ModelManifestExt for Model {
         }
 
         for mp in &manifest.params {
-            // Key positions are normalized 0..1 across [min, max] (see
-            // ModelParam::key_positions), not param-value space.
-            let axis_x = if mp.axis_x.is_empty() {
-                vec![0.0, 1.0]
-            } else {
-                mp.axis_x.clone()
-            };
-            let axis_y = if mp.axis_y.is_empty() {
-                vec![0.0, 1.0]
-            } else {
-                mp.axis_y.clone()
-            };
-            budget.charge_product(
-                LoadResource::BindingCells,
-                axis_x.len() as u64,
-                if mp.vec2 { axis_y.len() as u64 } else { 1 },
-            )?;
             // Params are scalars; a manifest asking for a 2-D one gets the two
             // halves a binding over the pair would span.
             let (name_x, name_y) = if mp.vec2 {
@@ -333,7 +312,6 @@ impl ModelManifestExt for Model {
                     min: mp.min[0],
                     max: mp.max[0],
                     default: mp.defaults[0],
-                    key_positions: axis_x,
                 },
                 &mut hex,
             )?;
@@ -344,7 +322,6 @@ impl ModelManifestExt for Model {
                         min: mp.min[1],
                         max: mp.max[1],
                         default: mp.defaults[1],
-                        key_positions: axis_y,
                     },
                     &mut hex,
                 )?;
@@ -418,8 +395,6 @@ impl ModelManifestExt for Model {
                 min: [p.min, 0.0],
                 max: [p.max, 0.0],
                 defaults: [p.default, 0.0],
-                axis_x: p.key_positions.clone(),
-                axis_y: Vec::new(),
             })
             .collect();
 

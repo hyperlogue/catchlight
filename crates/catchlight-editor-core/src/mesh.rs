@@ -1648,8 +1648,14 @@ mod tests {
 
         let b = m.binding(&key).unwrap();
         let cells = catchlight_core::deform_cells(b.values()).unwrap();
+        assert_eq!(
+            cells.len(),
+            1,
+            "refitting preserves the unauthored rest cell"
+        );
+        assert_eq!([cells[0].x, cells[0].y], [1, 0]);
         assert_eq!(cells[0].value.len(), 10);
         // Old corners keep the uniform offset; the new center interpolates it.
-        assert!((cells[1].value[8] - 10.0).abs() < 1e-4);
+        assert!((cells[0].value[8] - 10.0).abs() < 1e-4);
     }
 }

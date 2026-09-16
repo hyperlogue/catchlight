@@ -1,10 +1,13 @@
 //! A gesture records only its delta onto one binding cell. Other bindings'
 //! contributions belong to the preview, never to the key being authored.
-//! Capture before scratch is applied and keep the destination for the gesture.
+//! Capture before scratch is applied and keep the normalized input position for
+//! the gesture. Each destination binding owns its grid, so a recording resolves
+//! or inserts keys independently. An empty binding receives an explicit identity
+//! rest cell before the changed cell; raw writes retain exact caller data.
 
 use catchlight_core::{
-    BindingKey, BindingParams, BindingTarget, Model, ModelNodeKind, NodeId, NodeKind, Puppet,
-    ScalarTarget,
+    deform_cells, scalar_cells, BindingKey, BindingParams, BindingTarget, Model, ModelNodeKind,
+    NodeId, NodeKind, Pose, Puppet, ScalarTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -53,11 +56,40 @@ impl RecordProperties {
     }
 }
 
+/// A recording plan, translated by a frontend into one atomic edit request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingWrite {
+    pub target: String,
+    pub key_positions: Vec<Vec<f32>>,
+    pub inserts: Vec<RecordingKeyInsert>,
+    pub cells: Vec<RecordingCell>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingKeyInsert {
+    pub axis: catchlight_core::ParamId,
+    pub value: f32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingCell {
+    pub cell: [u32; 2],
+    pub value: RecordingValue,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingValue {
+    Scalar(f32),
+    Offsets(Vec<[f32; 2]>),
+}
+
 pub struct Recording {
     pub posed: RecordProperties,
     base: RecordProperties,
     keys: Vec<(ScalarTarget, f32)>,
     deform: Vec<f32>,
+    model: Model,
+    node: NodeId,
+    params: BindingParams,
+    position: [f32; 2],
 }
 
 impl Recording {
@@ -66,7 +98,7 @@ impl Recording {
         puppet: &Puppet,
         node: &NodeId,
         params: BindingParams,
-        cell: [u32; 2],
+        position: [f32; 2],
     ) -> Result<Self, String> {
         let base = model
             .node(node)
@@ -79,10 +111,10 @@ impl Recording {
             let p = model
                 .param(id)
                 .ok_or("The selected param no longer exists.")?;
-            let at = p
-                .key_positions
-                .get(cell[axis] as usize)
-                .ok_or("Choose an existing key position.")?;
+            let at = position[axis];
+            if !at.is_finite() || !(0.0..=1.0).contains(&at) {
+                return Err("Choose a normalized recording position within 0..1.".into());
+            }
             let wanted = p.min + at * (p.max - p.min);
             if (puppet.param_value(id).unwrap_or(p.default) - wanted).abs()
                 > (p.max - p.min).abs().max(1.0) * 1e-5
@@ -90,7 +122,7 @@ impl Recording {
                 return Err("The pose moved away from the recording keypoint.".into());
             }
         }
-        if params.y().is_none() && cell[1] != 0 {
+        if params.y().is_none() && position[1] != 0.0 {
             return Err("A one-param binding has one row.".into());
         }
         let mut base_values = RecordProperties {
@@ -134,20 +166,29 @@ impl Recording {
             node: node.clone(),
             target,
         };
+        let pose: Pose = params
+            .iter()
+            .enumerate()
+            .filter_map(|(axis, id)| {
+                model
+                    .param(id)
+                    .map(|p| (id.clone(), p.min + position[axis] * (p.max - p.min)))
+            })
+            .collect();
         let keys = base_values
             .scalars()
             .into_iter()
             .map(|(target, _)| {
                 let value = model
-                    .scalar_value_at(&key(BindingTarget::Scalar(target)), cell)
+                    .eval_scalar(&key(BindingTarget::Scalar(target)), &pose)
                     .unwrap_or(target.identity());
                 (target, value)
             })
             .collect();
         let deform = if model.node_mesh(node).is_some() {
             model
-                .deform_value_at(&key(BindingTarget::Deform), cell)
-                .map_err(|e| e.to_string())?
+                .eval_deform(&key(BindingTarget::Deform), &pose)
+                .unwrap_or_else(|| vec![0.0; model.node_mesh(node).map_or(0, |m| m.verts.len())])
         } else {
             Vec::new()
         };
@@ -156,6 +197,10 @@ impl Recording {
             base: base_values,
             keys,
             deform,
+            model: model.clone(),
+            node: node.clone(),
+            params,
+            position,
         })
     }
 
@@ -207,6 +252,123 @@ impl Recording {
         Ok(result)
     }
 
+    /// Plan exact writes on each property's own grid. The identity rest cell
+    /// is an explicit recording policy, never a side effect of a model setter.
+    pub fn writes(
+        &self,
+        patch: &RecordProperties,
+        authored_basis: bool,
+    ) -> Result<Vec<RecordingWrite>, String> {
+        self.patch(patch, authored_basis)?
+            .into_iter()
+            .map(|(target, value)| {
+                self.write(BindingTarget::Scalar(target), RecordingValue::Scalar(value))
+            })
+            .collect()
+    }
+
+    pub fn deform_write(&self, deltas: &[f32]) -> Result<RecordingWrite, String> {
+        let offsets = self.deform(deltas)?.as_chunks::<2>().0.to_vec();
+        self.write(BindingTarget::Deform, RecordingValue::Offsets(offsets))
+    }
+
+    fn write(
+        &self,
+        target: BindingTarget,
+        value: RecordingValue,
+    ) -> Result<RecordingWrite, String> {
+        let key = BindingKey {
+            params: self.params.clone(),
+            node: self.node.clone(),
+            target,
+        };
+        let unauthored = self.model.binding(&key).is_none_or(|b| {
+            scalar_cells(b.values()).map_or_else(
+                || deform_cells(b.values()).is_none_or(|c| c.is_empty()),
+                |c| c.is_empty(),
+            )
+        });
+        let mut model = self.model.clone();
+        model.add_binding(&key).map_err(|e| e.to_string())?;
+        let key_positions = model
+            .binding(&key)
+            .ok_or("Missing recording binding.")?
+            .key_positions()
+            .to_vec();
+        let mut inserts = Vec::new();
+        let mut rest = [0.0; 2];
+        for (axis, param) in self.params.iter().enumerate() {
+            let p = model.param(param).ok_or("Missing recording param.")?;
+            rest[axis] = if p.max > p.min {
+                ((p.default - p.min) / (p.max - p.min)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let positions = if unauthored {
+                vec![rest[axis], self.position[axis]]
+            } else {
+                vec![self.position[axis]]
+            };
+            for value in positions {
+                if !model
+                    .binding(&key)
+                    .ok_or("Missing recording binding.")?
+                    .key_positions()[axis]
+                    .contains(&value)
+                {
+                    model
+                        .key_insert(&key, param, value)
+                        .map_err(|e| e.to_string())?;
+                    inserts.push(RecordingKeyInsert {
+                        axis: param.clone(),
+                        value,
+                    });
+                }
+            }
+        }
+        let locate = |position: [f32; 2]| -> Result<[u32; 2], String> {
+            let axes = model
+                .binding(&key)
+                .ok_or("Missing recording binding.")?
+                .key_positions();
+            let mut cell = [0; 2];
+            for (axis, values) in axes.iter().enumerate() {
+                cell[axis] = values
+                    .iter()
+                    .position(|v| *v == position[axis])
+                    .ok_or("Missing recording position.")? as u32;
+            }
+            Ok(cell)
+        };
+        let destination = locate(self.position)?;
+        let mut cells = Vec::new();
+        if unauthored {
+            let rest_cell = locate(rest)?;
+            if rest_cell != destination {
+                let identity = match target {
+                    BindingTarget::Scalar(t) => RecordingValue::Scalar(t.identity()),
+                    BindingTarget::Deform => {
+                        RecordingValue::Offsets(vec![[0.0; 2]; self.deform.len() / 2])
+                    }
+                };
+                cells.push(RecordingCell {
+                    cell: rest_cell,
+                    value: identity,
+                });
+            }
+        }
+        cells.push(RecordingCell {
+            cell: destination,
+            value,
+        });
+        Ok(RecordingWrite {
+            target: target.name().to_owned(),
+            key_positions,
+            inserts,
+            cells,
+        })
+    }
+
     pub fn deform(&self, deltas: &[f32]) -> Result<Vec<f32>, String> {
         if deltas.len() != self.deform.len() || deltas.iter().any(|v| !v.is_finite()) {
             return Err("The mesh changed during this gesture. Start the gesture again.".into());
@@ -239,6 +401,172 @@ fn record_value(target: ScalarTarget, key: f32, before: f32, after: f32) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture(default: f32) -> (Model, catchlight_core::ParamId, NodeId) {
+        use catchlight_core::{ModelNode, ModelParam, ModelPart, Name};
+        let mut model = Model::new();
+        let param = catchlight_core::ParamId::new("drive").unwrap();
+        model
+            .add_param_with_id(
+                param.clone(),
+                ModelParam::new(Name::new("Drive").unwrap(), 0.0, 1.0, default),
+            )
+            .unwrap();
+        let node = NodeId::new("panel").unwrap();
+        model
+            .add_node_with_id(
+                node.clone(),
+                &model.root().unwrap().clone(),
+                ModelNode::new(
+                    "Panel",
+                    ModelNodeKind::Part(ModelPart::new(
+                        catchlight_core::formats::clm::ClmMesh::default(),
+                    )),
+                ),
+            )
+            .unwrap();
+        (model, param, node)
+    }
+
+    fn at(
+        model: &Model,
+        param: &catchlight_core::ParamId,
+        node: &NodeId,
+        position: f32,
+    ) -> Recording {
+        let mut puppet = Puppet::new(model);
+        puppet.set_physics_enabled(false);
+        puppet.set_param_value(param, position);
+        puppet.tick(model, 0.0);
+        Recording::capture(
+            model,
+            &puppet,
+            node,
+            BindingParams::One(param.clone()),
+            [position, 0.0],
+        )
+        .unwrap()
+    }
+
+    fn apply(
+        model: &mut Model,
+        param: &catchlight_core::ParamId,
+        node: &NodeId,
+        write: &RecordingWrite,
+    ) {
+        let target = BindingTarget::parse(&write.target).unwrap();
+        let key = BindingKey::new(param.clone(), node.clone(), target);
+        model
+            .add_binding_with_positions(&key, write.key_positions.clone())
+            .unwrap();
+        for insert in &write.inserts {
+            model.key_insert(&key, &insert.axis, insert.value).unwrap();
+        }
+        for cell in &write.cells {
+            match &cell.value {
+                RecordingValue::Scalar(value) => {
+                    model.set_binding_key(&key, cell.cell, *value).unwrap()
+                }
+                RecordingValue::Offsets(value) => model
+                    .set_deform_vertices(&key, cell.cell, value.concat())
+                    .unwrap(),
+            }
+        }
+    }
+
+    #[test]
+    fn first_recording_explicitly_seeds_the_default_and_the_between_key_pose() {
+        let (mut model, param, node) = fixture(0.4);
+        let captured = at(&model, &param, &node, 0.7);
+        let writes = captured
+            .writes(
+                &RecordProperties {
+                    translate: Some([10.0, 0.0, 0.0]),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0]
+                .inserts
+                .iter()
+                .map(|i| i.value)
+                .collect::<Vec<_>>(),
+            vec![0.4, 0.7]
+        );
+        assert_eq!(
+            writes[0].cells.iter().map(|c| c.cell).collect::<Vec<_>>(),
+            vec![[1, 0], [2, 0]]
+        );
+        assert!(
+            model.bindings().next().is_none(),
+            "planning does not mutate the model"
+        );
+        apply(&mut model, &param, &node, &writes[0]);
+        let key = BindingKey::new(
+            param.clone(),
+            node.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
+        for (position, expected) in [(0.4, 0.0), (0.7, 10.0)] {
+            let pose = [(param.clone(), position)].into_iter().collect();
+            assert_eq!(model.eval_scalar(&key, &pose), Some(expected));
+        }
+    }
+
+    #[test]
+    fn recording_resolves_each_property_on_its_own_grid_and_preserves_existing_cells() {
+        let (mut model, param, node) = fixture(0.0);
+        for (target, positions) in [
+            (ScalarTarget::Tx, vec![0.0, 0.25, 1.0]),
+            (ScalarTarget::Ty, vec![0.0, 0.75, 1.0]),
+        ] {
+            let key = BindingKey::new(param.clone(), node.clone(), BindingTarget::Scalar(target));
+            model
+                .add_binding_with_positions(&key, vec![positions])
+                .unwrap();
+            model.set_binding_key(&key, [0, 0], 0.0).unwrap();
+            model.set_binding_key(&key, [2, 0], 20.0).unwrap();
+        }
+        let captured = at(&model, &param, &node, 0.5);
+        let before = captured.posed.translate.unwrap();
+        let writes = captured
+            .writes(
+                &RecordProperties {
+                    translate: Some([before[0] + 3.0, before[1] + 7.0, before[2]]),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            writes.iter().map(|w| w.cells[0].cell).collect::<Vec<_>>(),
+            vec![[2, 0], [1, 0]]
+        );
+        assert!(writes.iter().all(|w| w.cells.len() == 1));
+        for write in &writes {
+            apply(&mut model, &param, &node, write);
+        }
+        for (target, value) in [(ScalarTarget::Tx, 13.0), (ScalarTarget::Ty, 17.0)] {
+            let key = BindingKey::new(param.clone(), node.clone(), BindingTarget::Scalar(target));
+            assert_eq!(model.scalar_value_at(&key, [3, 0]).unwrap(), 20.0);
+            let pose = [(param.clone(), 0.5)].into_iter().collect();
+            assert_eq!(model.eval_scalar(&key, &pose), Some(value));
+        }
+    }
+
+    #[test]
+    fn an_empty_mesh_records_authored_empty_deform_cells() {
+        let (model, param, node) = fixture(0.0);
+        let write = at(&model, &param, &node, 1.0).deform_write(&[]).unwrap();
+        assert_eq!(write.cells.len(), 2);
+        assert!(write
+            .cells
+            .iter()
+            .all(|c| matches!(&c.value, RecordingValue::Offsets(v) if v.is_empty())));
+    }
+
     #[test]
     fn records_only_the_gesture_delta_beside_other_bindings() {
         assert_eq!(
