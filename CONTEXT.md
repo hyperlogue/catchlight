@@ -205,10 +205,10 @@ The state of a puppet whose params are all at their defaults and whose
 drivers have all settled.
 
 **Key pose**:
-A pose holding one param at one of its key positions — or two params that
-some binding spans together at a pair of theirs — with every other param at
-its default and no driver running. Together a model's key poses visit every
-authored cell.
+A pose holding a binding's driving inputs at one of that binding's grid
+positions, with every other param at its default and no driver running.
+A sampler may visit the union of positions across bindings; that union does
+not own or change any binding's grid.
 _Avoid_: keyframe (that's animation), sweep
 
 **Authored**:

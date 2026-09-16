@@ -1,6 +1,6 @@
 //! How a value is read between the cells of a binding's grid.
 //!
-//! A binding holds a value at each of its params' key positions; a pose lands
+//! A binding holds a value at each of its own grid positions; a pose lands
 //! between them. [`InterpolateMode`] is the rule the author picked for that,
 //! and the free functions here are the one implementation of it — shared by
 //! [`Model::eval_scalar`](crate::Model::eval_scalar) (what a model reports at

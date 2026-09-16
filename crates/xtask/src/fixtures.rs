@@ -142,7 +142,7 @@ const GRID_Y: usize = 1;
 /// The param every one-param binding hangs off.
 const SWEEP: usize = 2;
 
-/// Every param this fixture carries: name, range, default, key positions.
+/// Fixture controls and the position axes copied into their bindings.
 /// `x` is three keys wide and `y` two, so a grid pose's order is readable
 /// from its length alone; every default sits at key position 0, which puts
 /// the all-defaults pose on the grid's `(0, 0)` cell.

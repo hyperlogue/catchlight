@@ -602,7 +602,7 @@ mod tests {
             "textures": [{"id": "face", "path": "face.png"}],
             "nodes": [{"id": "face", "kind": "part", "texture": "face",
                        "mesh": {"auto": "grid", "cols": 2, "rows": 2}}],
-            "params": [{"name": "ht", "min": [-1, 0], "max": [1, 0], "axis_x": [-1, 0, 1]}]
+            "params": [{"name": "ht", "min": [-1, 0], "max": [1, 0]}]
         }"#;
         let manifest = Manifest::from_json(json).unwrap();
         let m = Model::from_manifest(&manifest, &data("face", 16, 16)).unwrap();
