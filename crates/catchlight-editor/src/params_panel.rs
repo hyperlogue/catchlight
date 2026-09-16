@@ -81,9 +81,7 @@ pub(crate) enum ParamAction {
     AddParam {
         name: String,
     },
-    /// Two scalar params, `<name>.x` and `<name>.y`, armed together on the
-    /// pad — what authoring "left *and* up" as one shape takes now that a
-    /// param has one axis.
+    /// Two scalar params, `<name>.x` and `<name>.y`, armed together on the pad.
     AddParamPair {
         name: String,
     },
@@ -112,6 +110,9 @@ pub(crate) enum ParamAction {
     },
 }
 
+/// Maximum displayed union cells; larger controllers retain posing and snapping.
+pub(crate) const MAX_CONTROLLER_CELLS: usize = 4096;
+
 /// Authored-state of each cell of the armed grid: 0 = none of the bindings
 /// author it, 1 = some, 2 = all.
 pub(crate) struct ArmedInfo {
@@ -120,7 +121,8 @@ pub(crate) struct ArmedInfo {
     pub cell: [u32; 2],
     /// Controller grid over discovered binding-local positions (or one row).
     pub grid: (usize, usize),
-    pub cell_states: Vec<u8>,
+    /// Omitted when the discovered grid exceeds the display limit.
+    pub cell_states: Option<Vec<u8>>,
     pub bindings: Vec<BindingRow>,
 }
 
@@ -409,17 +411,25 @@ impl ParamsPanel<'_> {
         );
         // `t` is normalized 0..1 — the space key positions live in.
         let at = |t: f32| egui::pos2(track.left() + t.clamp(0.0, 1.0) * track.width(), cy);
-        for (xi, &ax) in positions.iter().enumerate() {
+        for (xi, &ax) in positions
+            .iter()
+            .enumerate()
+            .step_by(positions.len().div_ceil(MAX_CONTROLLER_CELLS).max(1))
+        {
             let pos = at(ax);
             match armed {
-                Some(a) => dot(
+                Some(a) if a.cell_states.is_some() => dot(
                     &paint,
                     pos,
-                    a.cell_states.get(xi).copied().unwrap_or(0),
+                    a.cell_states
+                        .as_ref()
+                        .and_then(|cells| cells.get(xi))
+                        .copied()
+                        .unwrap_or(0),
                     a.cell[0] == xi as u32,
                     vis,
                 ),
-                None => {
+                _ => {
                     paint.vline(
                         pos.x,
                         (cy - 4.0)..=(cy + 4.0),
@@ -471,17 +481,23 @@ impl ParamsPanel<'_> {
                 field.bottom() - ty.clamp(0.0, 1.0) * field.height(),
             )
         };
-        let (w, _) = armed.grid;
-        for (yi, &ay) in ys.iter().enumerate() {
-            for (xi, &ax) in xs.iter().enumerate() {
-                dot(
-                    &paint,
-                    at(ax, ay),
-                    armed.cell_states.get(yi * w + xi).copied().unwrap_or(0),
-                    armed.cell == [xi as u32, yi as u32],
-                    vis,
-                );
+        if let Some(states) = &armed.cell_states {
+            let (w, _) = armed.grid;
+            for (yi, &ay) in ys.iter().enumerate() {
+                for (xi, &ax) in xs.iter().enumerate() {
+                    dot(
+                        &paint,
+                        at(ax, ay),
+                        states.get(yi * w + xi).copied().unwrap_or(0),
+                        armed.cell == [xi as u32, yi as u32],
+                        vis,
+                    );
+                }
             }
+        } else {
+            ui.weak(
+                "Key grid is too dense to display. Drag the pad or edit parameter values to pose.",
+            );
         }
         let vx = (self.pose)(&px.id);
         let vy = (self.pose)(&py.id);

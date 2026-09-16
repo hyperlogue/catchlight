@@ -335,10 +335,8 @@ fn split_pair(app: &mut App, session: SessionId, node: &NodeId) -> (ParamId, Par
     (x, y)
 }
 
-/// Arming one param of an imported pair and recording must join the pair's
-/// binding, filling the partner's cell from the pose. A one-param binding
-/// beside the two-param one is what the v0 flatten refuses as unpairable, and
-/// nothing in the GUI would tell the author why their save broke.
+/// Recording through one armed input uses the node's existing pair and the
+/// partner's current pose.
 #[test]
 fn recording_on_half_a_pair_joins_its_binding_instead_of_starting_a_rival() {
     let (editor, session, mut app) = app_on(&welded_seam());
@@ -347,8 +345,7 @@ fn recording_on_half_a_pair_joins_its_binding_instead_of_starting_a_rival() {
 
     app.armed = Some(Armed::One(x.clone()));
     app.selection = vec![node.clone()];
-    // Pose both: the partner's cell comes from the pose, which only the GUI
-    // holds — the server has none.
+    // Both cells are selected from the client's local pose.
     app.pose.insert(x.clone(), 1.0);
     app.pose.insert(y.clone(), 1.0);
     app.commit_patch(
@@ -397,9 +394,7 @@ fn recording_on_half_a_pair_joins_its_binding_instead_of_starting_a_rival() {
     );
 }
 
-/// The same rule reaches a target the pair does not drive yet: a param that
-/// is half of a pair anywhere in the model is half of a pair everywhere, or
-/// the model stops being flattenable the moment the second key is recorded.
+/// A new target uses the armed input's existing pair when one is available.
 #[test]
 fn a_paired_param_records_as_a_pair_even_on_a_target_it_does_not_drive_yet() {
     let (editor, session, mut app) = app_on(&welded_seam());
@@ -474,7 +469,7 @@ fn arming_a_pair_records_into_the_pairs_grid() {
     let info = app.armed_info(&snap).expect("armed info");
     assert_eq!(info.grid, (2, 2));
     assert_eq!(info.cell, [1, 0]);
-    assert_eq!(info.cell_states.len(), 4);
+    assert_eq!(info.cell_states.as_ref().map(Vec::len), Some(4));
     assert!(
         info.bindings
             .iter()
@@ -1264,4 +1259,96 @@ fn stale_transform_gesture_keeps_another_writers_transform_and_recording() {
         assert!(app.gizmo_revision.is_none());
         assert!(app.previews.is_empty());
     }
+}
+
+#[test]
+fn controller_positions_are_shared_until_the_session_revision_changes() {
+    let (_, session, mut app) = app_on(&welded_seam());
+    let before = app.discovered_positions();
+    assert!(Arc::ptr_eq(&before, &app.discovered_positions()));
+    let param = add_param(&mut app, session, "new-controller");
+    let after = app.discovered_positions();
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert!(!before.contains_key(&param));
+    assert_eq!(after.get(&param), Some(&vec![0.0, 1.0]));
+    assert!(Arc::ptr_eq(&after, &app.discovered_positions()));
+}
+
+#[test]
+fn a_large_discovered_grid_keeps_recording_without_expanding_controller_cells() {
+    let (editor, session, mut app) = app_on(&welded_seam());
+    let node = first_meshed_node(&editor, session);
+    let (x, y) = split_pair(&mut app, session, &node);
+    let axis: Vec<f32> = (0..65).map(|i| i as f32 / 64.0).collect();
+    for (param, target) in [
+        (x.clone(), ScalarTarget::Ty),
+        (y.clone(), ScalarTarget::ZOrder),
+    ] {
+        assert!(matches!(
+            app.send(Command::BindingAdd {
+                session,
+                params: BindingParams::one(param),
+                node: node.clone(),
+                target: target.into(),
+                key_positions: Some(vec![axis.clone()]),
+            }),
+            Reply::Ok { .. }
+        ));
+    }
+    app.armed = Some(Armed::Two(x.clone(), y.clone()));
+    app.pose.insert(x.clone(), 0.5);
+    app.pose.insert(y.clone(), 0.5);
+    let rest_translation = editor
+        .with_model(session, |model| {
+            model.node(&node).unwrap().transform.translation
+        })
+        .unwrap();
+    let snapshot = editor.doc_snapshot(session).unwrap();
+    app.refresh_armed_cache(&snapshot);
+    let (_, info) = app.armed_cache.as_ref().unwrap();
+    assert_eq!(info.grid, (65, 65));
+    assert!(info.cell_states.is_none());
+    assert_eq!(info.cell, [32, 32]);
+    assert_eq!(info.bindings.len(), 3);
+    let before = snapshot.rev;
+    app.commit_patch(
+        node.clone(),
+        NodePatch {
+            translate: Some([
+                rest_translation[0] + 3.0,
+                rest_translation[1],
+                rest_translation[2],
+            ]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        editor.doc_snapshot(session).unwrap().rev,
+        before + 1,
+        "{}",
+        app.status
+    );
+    editor
+        .with_model(session, |model| {
+            assert_eq!(
+                model.node(&node).unwrap().transform.translation,
+                rest_translation
+            );
+            let key = BindingKey::pair(
+                x,
+                y,
+                node,
+                CoreBindingTarget::Scalar(catchlight_core::ScalarTarget::Tx),
+            );
+            let binding = model.binding(&key).unwrap();
+            assert_eq!(
+                binding.key_positions(),
+                &[vec![0.0, 0.5, 1.0], vec![0.0, 0.5, 1.0]]
+            );
+            assert!(catchlight_core::scalar_cells(binding.values())
+                .unwrap()
+                .iter()
+                .any(|cell| [cell.x, cell.y] == [1, 1]));
+        })
+        .unwrap();
 }

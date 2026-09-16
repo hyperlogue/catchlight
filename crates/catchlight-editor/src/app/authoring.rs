@@ -4,6 +4,12 @@ use super::*;
 use catchlight_editor_core::{Recording, RecordingValue, RecordingWrite};
 use catchlight_editor_protocol::{MaskMode, SlotId, SlotPair};
 
+#[derive(Default)]
+pub(super) struct PositionCache {
+    key: Option<(SessionId, u64)>,
+    positions: Arc<HashMap<ParamId, Vec<f32>>>,
+}
+
 impl App {
     pub(super) fn compose(
         &mut self,
@@ -43,16 +49,23 @@ impl App {
 
     /// The union is a controller discovery aid. It never defines ownership or
     /// supplies a binding's cell index; each row resolves its own grid.
-    pub(super) fn discovered_positions(&self) -> HashMap<ParamId, Vec<f32>> {
+    pub(super) fn discovered_positions(&self) -> Arc<HashMap<ParamId, Vec<f32>>> {
         self.session
-            .and_then(|s| {
+            .and_then(|session| {
                 self.editor
-                    .with_model(s, |model| {
-                        model
-                            .param_ids()
-                            .iter()
-                            .map(|id| (id.clone(), positions(model, id)))
-                            .collect()
+                    .with_model_revision(session, |model, rev| {
+                        let mut cache = self.position_cache.borrow_mut();
+                        if cache.key != Some((session, rev)) {
+                            cache.positions = Arc::new(
+                                model
+                                    .param_ids()
+                                    .iter()
+                                    .map(|id| (id.clone(), positions(model, id)))
+                                    .collect(),
+                            );
+                            cache.key = Some((session, rev));
+                        }
+                        cache.positions.clone()
                     })
                     .ok()
             })

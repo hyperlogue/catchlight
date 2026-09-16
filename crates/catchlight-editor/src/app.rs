@@ -14,6 +14,7 @@
 //! - Recording uses editor-core's per-binding grid and rest-key policy. The
 //!   parameter controller's union of key positions is display/snap data only.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -137,6 +138,8 @@ pub struct App {
     warnings: Option<(u64, Vec<String>)>,
     /// Rev-gated cache of the armed param's panel data.
     armed_cache: Option<(ArmedCacheKey, ArmedInfo)>,
+    /// Shared controller positions, rebuilt only when the model revision changes.
+    position_cache: RefCell<authoring::PositionCache>,
 }
 
 /// (doc rev, armed params, exact local pose) — ArmedInfo dependencies.
@@ -288,6 +291,7 @@ impl App {
             emptied: Vec::new(),
             warnings: None,
             armed_cache: None,
+            position_cache: RefCell::default(),
         }
     }
 
@@ -563,20 +567,15 @@ impl App {
     /// Rebuild the armed panel data only when (rev, params, pose) moved — it
     /// walks every binding of the armed params, too heavy for every frame.
     fn refresh_armed_cache(&mut self, snap: &Arc<catchlight_editor_server::DocSnapshot>) {
-        let Some(key) = self
-            .armed
-            .clone()
-            .zip(self.armed_cell(snap))
-            .map(|(armed, _)| {
-                let mut pose: Vec<_> = self
-                    .pose
-                    .iter()
-                    .map(|(id, value)| (id.clone(), value.to_bits()))
-                    .collect();
-                pose.sort_by(|a, b| a.0.cmp(&b.0));
-                (snap.rev, armed, pose)
-            })
-        else {
+        let Some(key) = self.armed.clone().map(|armed| {
+            let mut pose: Vec<_> = self
+                .pose
+                .iter()
+                .map(|(id, value)| (id.clone(), value.to_bits()))
+                .collect();
+            pose.sort_by(|a, b| a.0.cmp(&b.0));
+            (snap.rev, armed, pose)
+        }) else {
             self.armed_cache = None;
             return;
         };
@@ -628,7 +627,10 @@ impl App {
                 for param in armed_for_model.iter() {
                     m.param(param)?;
                 }
-                let mut authored_count = vec![0u32; w * h];
+                let mut authored_count = w
+                    .checked_mul(h)
+                    .filter(|n| *n <= crate::params_panel::MAX_CONTROLLER_CELLS)
+                    .map(|n| vec![0u32; n]);
                 let mut rows = Vec::new();
                 for b in m
                     .bindings()
@@ -650,6 +652,9 @@ impl App {
                         row_cell[axis] = nearest_index(&b.key_positions()[axis], normalized);
                     }
                     let mut mark = |c: (u32, u32)| {
+                        let Some(authored_count) = &mut authored_count else {
+                            return;
+                        };
                         for x in cells_of(b, armed_for_model.x(), ax, c, w) {
                             for y in cells_of(
                                 b,
@@ -695,18 +700,20 @@ impl App {
                     });
                 }
                 let total = rows.len() as u32;
-                let states = authored_count
-                    .into_iter()
-                    .map(|n| {
-                        if n == 0 {
-                            0
-                        } else if n < total {
-                            1
-                        } else {
-                            2
-                        }
-                    })
-                    .collect();
+                let states = authored_count.map(|counts| {
+                    counts
+                        .into_iter()
+                        .map(|n| {
+                            if n == 0 {
+                                0
+                            } else if n < total {
+                                1
+                            } else {
+                                2
+                            }
+                        })
+                        .collect()
+                });
                 Some((states, rows))
             })
             .ok()
