@@ -13,7 +13,7 @@ use crate::Error;
 use catchlight_core::{Model, ModelFormat};
 use catchlight_wgpu::{PrepareOptions, RenderCache, RenderContext, RenderList};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -56,7 +56,23 @@ pub fn load(path: &Path, hash_input: bool) -> Result<LoadedModel, Error> {
     let format = ModelFormat::from_path(path).ok_or_else(|| Error::NotAClm {
         path: path.to_path_buf(),
     })?;
-    let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
+    // Bound the encoded input before allocating it, not just while decoding.
+    // Metadata rejects regular oversized files immediately; the bounded read
+    // also covers files that grow after the check or do not report a size.
+    let limit = catchlight_core::load_budget::LoadLimits::default().encoded_bytes;
+    let file = std::fs::File::open(path).map_err(|e| Error::io(path, e))?;
+    let reported_size = file.metadata().map_err(|e| Error::io(path, e))?.len();
+    super::spec::check_limit("model_bytes", reported_size, limit, "use a smaller model")?;
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::io(path, e))?;
+    super::spec::check_limit(
+        "model_bytes",
+        bytes.len() as u64,
+        limit,
+        "use a smaller model",
+    )?;
     let model = catchlight_core::load_model(&bytes, format).map_err(|source| Error::NotAModel {
         path: path.to_path_buf(),
         source,

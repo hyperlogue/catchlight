@@ -54,6 +54,8 @@ pub const DEFAULT_SCALE: f32 = 0.32;
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
+    /// Maximum encoded model-file bytes, shared with core's loading budget.
+    pub model_bytes: u64,
     pub spec_bytes: u64,
     /// Bound expanded inheritance and fully resolved JSON independently.
     pub resolved_bytes: u64,
@@ -73,6 +75,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            model_bytes: catchlight_core::load_budget::LoadLimits::default().encoded_bytes,
             spec_bytes: MAX_JSON_BYTES,
             resolved_bytes: MAX_RESOLVED_BYTES,
             requests: MAX_REQUESTS,
@@ -1047,7 +1050,7 @@ fn limit(budget: &'static str, limit: u64, requested: u64, hint: &'static str) -
         hint,
     }
 }
-fn check_limit(
+pub(super) fn check_limit(
     budget: &'static str,
     requested: u64,
     max: u64,

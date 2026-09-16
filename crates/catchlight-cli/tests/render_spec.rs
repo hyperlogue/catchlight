@@ -499,3 +499,28 @@ fn cli_schema_and_validate_do_not_need_a_gpu_or_create_artifacts() {
         assert_eq!(code, 2);
     }
 }
+
+#[test]
+fn cli_rejects_oversized_model_before_reading_or_gpu_validation() {
+    let dir = common::tmp("render-oversized-model");
+    let model_path = dir.join("oversized.clm");
+    let limit = catchlight_core::load_budget::LoadLimits::default().encoded_bytes;
+    // A sparse file exercises preflight rejection without materializing a
+    // model-sized buffer in the test or decoding deliberately invalid bytes.
+    std::fs::File::create(&model_path)
+        .unwrap()
+        .set_len(limit + 1)
+        .unwrap();
+    for command in ["render", "bounds"] {
+        let mut args = vec![command, model_path.to_str().unwrap()];
+        if command == "render" {
+            args.push("--validate");
+        }
+        let (code, stdout, stderr) = common::run(&args);
+        assert_ne!(code, 0);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("render budget model_bytes"), "{stderr}");
+        assert!(stderr.contains(&format!("maximum {limit}")), "{stderr}");
+    }
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+}

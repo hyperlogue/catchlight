@@ -321,8 +321,7 @@ const PHYSICS_FIELDS: &[&str] = &[
 /// shape. A spine
 /// carrying no chain accepts none of them.
 const SPINE_FIELDS: &[&str] = &["chain.gravity", "chain.local_only", "chain.weight"];
-/// The fields a param has. `key_positions` is a list, not a scalar, so it is
-/// not patchable here.
+/// Scalar param fields. Key positions belong to bindings.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
 
 /// Every field this node accepts, sorted — what an unknown field is reported
