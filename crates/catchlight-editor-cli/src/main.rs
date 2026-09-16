@@ -20,6 +20,8 @@ use anyhow::{anyhow, bail, Result};
 use catchlight_editor_protocol::*;
 use clap::{Parser, Subcommand};
 
+const MAX_COMMAND_BYTES: usize = 1024 * 1024;
+
 /// The Id rules, repeated in `--help` because every command takes one.
 const ID_HELP: &str = "\
 Nodes, params, textures and slots are named by their Id: one or more of
@@ -1422,12 +1424,21 @@ fn parse_vec2(s: &str) -> Result<[f32; 2]> {
 
 fn read_json(path: &str) -> Result<String> {
     if path == "-" {
-        let mut text = String::new();
-        std::io::stdin().read_to_string(&mut text)?;
-        Ok(text)
+        read_command_json(std::io::stdin().lock())
     } else {
-        Ok(std::fs::read_to_string(path)?)
+        read_command_json(std::fs::File::open(path)?)
     }
+}
+
+fn read_command_json(reader: impl Read) -> Result<String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_COMMAND_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_COMMAND_BYTES {
+        bail!("JSON input exceeds the 1 MiB command limit; split independent edits into explicit batches");
+    }
+    Ok(String::from_utf8(bytes)?)
 }
 
 fn parse_cell(s: &str) -> Result<[u32; 2]> {
@@ -1604,7 +1615,7 @@ fn call(
         value => serde_json::to_string(&value)?,
     };
     line.push('\n');
-    if line.len() > 1024 * 1024 {
+    if line.len() > MAX_COMMAND_BYTES {
         bail!("request exceeds the 1 MiB command limit; split independent edits into explicit batches");
     }
     stream.write_all(line.as_bytes())?;
@@ -1956,6 +1967,17 @@ fn write_current(session: SessionId) -> Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn command_json_stops_reading_at_the_input_limit() {
+        let mut source = std::io::repeat(b' ').take(u64::MAX);
+        let error = read_command_json(&mut source).unwrap_err();
+        assert!(error.to_string().contains("1 MiB command limit"));
+        assert_eq!(source.limit(), u64::MAX - MAX_COMMAND_BYTES as u64 - 1);
+        let exact = std::io::repeat(b' ').take(MAX_COMMAND_BYTES as u64);
+        assert_eq!(read_command_json(exact).unwrap().len(), MAX_COMMAND_BYTES);
+        assert!(read_command_json(&[0xff][..]).is_err());
+    }
 
     #[test]
     fn the_cli_definition_is_well_formed() {
