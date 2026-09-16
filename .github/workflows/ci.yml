@@ -106,8 +106,8 @@ jobs:
     name: nix packages
     runs-on: ubuntu-latest
     steps:
-      # No `lfs: true`: the flake's source filter keeps only what a build
-      # reads, and nothing under `tests/` is that.
+      # No `lfs: true`: the flake's source filter keeps compile-time assets,
+      # including the CLI schema example, but excludes the LFS model fixtures.
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14

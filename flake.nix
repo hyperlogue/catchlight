@@ -58,15 +58,17 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Crane's Cargo filter keeps only Rust and Cargo files; the wgpu crate
-        # `include_str!`s its shaders, so those have to survive it too. Nothing
-        # a build reads lives under `tests/`, so the Git LFS objects there stay
-        # out and a plain clone is enough to `nix build`.
+        # Crane's Cargo filter omits non-Rust assets. Keep the shaders and the
+        # JSON example embedded by `catchlight-cli render --schema`, even
+        # though that example lives under `tests/`. The Git LFS model fixtures
+        # stay out, so a plain clone is enough to `nix build`.
         src = lib.cleanSourceWith {
           src = ./.;
           name = "catchlight-source";
           filter = path: type:
-            lib.hasSuffix ".wgsl" path || craneLib.filterCargoSources path type;
+            lib.hasSuffix ".wgsl" path
+            || path == toString ./crates/catchlight-cli/tests/fixtures/render-spec.json
+            || craneLib.filterCargoSources path type;
         };
 
         commonArgs = {
