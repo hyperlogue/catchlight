@@ -89,12 +89,12 @@ fn every_advertised_field_can_be_set() {
 }
 
 /// A field that already holds the value it is being set to still rewrites the
-/// file — byte for byte the file it was.
+/// file — byte for byte its canonical current-format serialization.
 #[test]
 fn setting_a_field_to_what_it_already_holds_rewrites_the_same_bytes() {
     let dir = tmp("patch-byte-stable");
     let file = copy_fixture("composite_masks", &dir);
-    let before = read(&file);
+    let before = catchlight_cli::file::encode(&decode(&file), &file).unwrap();
 
     let change = patch::run(&file, "node-1", "z_order", "-10", None, None).unwrap();
     assert!(!change.changed(), "{change}");
@@ -580,7 +580,6 @@ fn kitchen_sink() -> ClmFile {
         min: 0.0,
         max: 1.0,
         default: 0.0,
-        key_positions: vec![0.0, 1.0],
     });
     clm
 }

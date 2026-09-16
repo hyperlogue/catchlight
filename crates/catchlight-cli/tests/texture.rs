@@ -138,7 +138,7 @@ fn an_unknown_texture_id_is_refused() {
 fn writing_the_same_bytes_back_rewrites_the_same_file() {
     let dir = tmp("texture-byte-stable");
     let file = copy_fixture("welded_seam", &dir);
-    let before = read(&file);
+    let before = catchlight_cli::file::encode(&decode(&file), &file).unwrap();
 
     let image = dir.join("same.png");
     std::fs::write(&image, &decode(&file).textures[0].data).unwrap();

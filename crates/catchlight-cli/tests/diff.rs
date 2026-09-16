@@ -2,7 +2,7 @@
 //! operation rests on.
 //!
 //! Two properties are pinned here because everything else assumes them:
-//! decoding a `.clm` and encoding it again gives the same bytes back, and
+//! encoding a current-format `.clm` twice gives the same bytes back, and
 //! `diff` is empty exactly when two files are equal. Once those hold, `diff`
 //! is a trustworthy way to ask what a `patch` or a `merge` actually did.
 
@@ -18,16 +18,22 @@ use catchlight_core::id::NodeId;
 use common::{copy_fixture, decode, fixtures, read, tmp, write_clm};
 
 #[test]
-fn decoding_and_re_encoding_a_fixture_gives_the_same_bytes() {
+fn decoding_and_re_encoding_a_fixture_is_stable_after_format_upgrade() {
     for path in fixtures() {
-        let original = read(&path);
         let file = decode(&path);
-        let again =
+        let canonical =
             catchlight_core::formats::clm::encode(&file.doc, &file.textures, &file.extensions)
                 .unwrap();
-        assert_eq!(
-            again,
-            original,
+        let reloaded = catchlight_core::formats::clm::decode(&canonical).unwrap();
+        assert!(diff(&file, &reloaded).is_empty());
+        let again = catchlight_core::formats::clm::encode(
+            &reloaded.doc,
+            &reloaded.textures,
+            &reloaded.extensions,
+        )
+        .unwrap();
+        assert!(
+            again == canonical,
             "{} is not byte-stable through a decode/encode round trip",
             path.display()
         );

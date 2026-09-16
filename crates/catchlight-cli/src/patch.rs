@@ -67,7 +67,8 @@ pub struct Change {
 
 impl Change {
     /// Whether the value actually moved. A patch that sets a field to what it
-    /// already held still rewrites the file — byte for byte the same file.
+    /// already held still rewrites the file in the current `.clm` format;
+    /// after a historical container's first upgrade the bytes stay identical.
     pub fn changed(&self) -> bool {
         self.before != self.after
     }
@@ -317,7 +318,7 @@ const PHYSICS_FIELDS: &[&str] = &[
 /// A spine's own scalars — the three the chain it may carry holds. Its
 /// `joints` are a list of points, its `targets` a list of Ids and its links a
 /// list of structs, and none of those fits this command's `field=value`
-/// shape, for the same reason `key_positions` is missing below. A spine
+/// shape. A spine
 /// carrying no chain accepts none of them.
 const SPINE_FIELDS: &[&str] = &["chain.gravity", "chain.local_only", "chain.weight"];
 /// The fields a param has. `key_positions` is a list, not a scalar, so it is
@@ -619,7 +620,6 @@ mod tests {
             min: 0.0,
             max: 1.0,
             default: 0.0,
-            key_positions: vec![0.0, 1.0],
         };
         for field in PARAM_FIELDS {
             assert!(param_slot(&mut param, field).is_some(), "{field}");
