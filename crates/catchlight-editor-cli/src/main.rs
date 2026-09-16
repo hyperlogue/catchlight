@@ -1,7 +1,8 @@
 //! `catchlight-editor-cli` — a thin client for the editor server.
 //!
-//! Each invocation builds one [`Command`], connects to the canonical socket
-//! exposed by an editor or standalone server, sends it, and prints the reply.
+//! Direct commands send one typed request. Convenience edits compose captured
+//! model reads and one guarded atomic write through `compose`, then print the
+//! reply. `request` exposes every protocol command with local attachments.
 //! The "current session" is remembered in a small local file so most commands
 //! need no `--session`. Unix-only by design.
 //!
@@ -9,7 +10,9 @@
 //! string the `.clm` stores — so a command written against one session is
 //! replayable against another that opened the same file.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+
+mod compose;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -38,12 +41,37 @@ struct Cli {
     /// Target session id (defaults to the remembered current session).
     #[arg(long, global = true)]
     session: Option<u64>,
+    /// Expected revision for guarded edits and composed read/write operations.
+    #[arg(long, global = true)]
+    if_rev: Option<u64>,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Send any typed protocol command from JSON; use `-` for stdin.
+    Request {
+        file: String,
+        /// Attach local bytes as NAME=PATH (repeatable).
+        #[arg(long = "attachment")]
+        attachments: Vec<String>,
+        /// File for a binary reply, such as model_export or preview_render.
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Apply an atomic JSON array of EditOp values, or validate it only.
+    Edit {
+        file: String,
+        #[arg(long)]
+        validate: bool,
+    },
+    /// Inspect retained branches and activation revisions.
+    History,
+    /// Navigate to a retained creation or activation revision.
+    Goto { revision: u64 },
+    /// Export a guarded CLM snapshot without changing save state.
+    Export { out: String },
     /// Session lifecycle.
     Session {
         #[command(subcommand)]
@@ -107,7 +135,8 @@ enum Cmd {
         #[command(subcommand)]
         action: WeldCmd,
     },
-    /// Author a deform keypoint from an affine on the part's rest mesh.
+    /// Author exact deform offsets; affine input is
+    /// evaluated around the rest mesh origin, independent of the posed model.
     Deform {
         #[command(subcommand)]
         action: DeformCmd,
@@ -148,6 +177,14 @@ enum Cmd {
 enum SessionCmd {
     /// Start a new empty model.
     New {
+        #[arg(long)]
+        name: Option<String>,
+        /// Initialize from a complete local CLM in one request.
+        #[arg(long)]
+        clm: Option<String>,
+    },
+    /// Fork the captured model into a clean session with independent history.
+    Fork {
         #[arg(long)]
         name: Option<String>,
     },
@@ -420,8 +457,7 @@ enum TextureCmd {
 
 #[derive(Subcommand)]
 enum ParamCmd {
-    /// Create a scalar param. `--keys a,b,c` sets key positions (defaults to
-    /// the two endpoints).
+    /// Create a scalar input parameter. Key positions belong to bindings.
     Add {
         name: String,
         #[arg(long, allow_hyphen_values = true)]
@@ -430,13 +466,11 @@ enum ParamCmd {
         max: Option<f32>,
         #[arg(long, allow_hyphen_values = true)]
         default: Option<f32>,
-        #[arg(long = "keys", allow_hyphen_values = true)]
-        key_positions: Option<String>,
         /// The Id to create it under; without one the editor draws a free one.
         #[arg(long)]
         id: Option<ParamId>,
     },
-    /// List params (with key positions + binding counts).
+    /// List inputs, ranges, defaults and binding counts.
     List,
     /// Change param metadata (key positions are normalized, so a range change
     /// does not move them).
@@ -453,28 +487,6 @@ enum ParamCmd {
     },
     /// Delete a param (and its bindings).
     Delete { param: ParamId },
-    /// Insert a key position, strictly inside (0, 1).
-    KeyInsert {
-        param: ParamId,
-        #[arg(long, allow_hyphen_values = true)]
-        value: f32,
-    },
-    /// Remove an interior key position by index.
-    KeyDelete {
-        param: ParamId,
-        #[arg(long)]
-        index: u32,
-    },
-    /// Move an interior key position.
-    KeyMove {
-        param: ParamId,
-        #[arg(long)]
-        index: u32,
-        #[arg(long, allow_hyphen_values = true)]
-        value: f32,
-    },
-    /// Mirror the param (values untouched).
-    Flip { param: ParamId },
 }
 
 /// The param, or pair of params, every binding command is keyed by.
@@ -497,18 +509,67 @@ impl BindingParamsArg {
     }
 }
 
+#[derive(clap::Args)]
+struct BindingSelection {
+    #[command(flatten)]
+    params: BindingParamsArg,
+    #[arg(long)]
+    node: NodeId,
+    #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+    target: BindingTarget,
+}
+
 #[derive(Subcommand)]
 enum BindingCmd {
-    /// Create an identity binding: `--target tx|ty|sx|sy|rx|ry|rz|z_order|opacity|tint{r,g,b}|…`.
+    /// Insert a normalized key on one binding-owned axis.
+    KeyInsert {
+        #[command(flatten)]
+        selection: BindingSelection,
+        #[arg(long)]
+        axis: ParamId,
+        #[arg(long)]
+        value: f32,
+    },
+    /// Delete one key and its authored row or column; retain at least one key.
+    KeyDelete {
+        #[command(flatten)]
+        selection: BindingSelection,
+        #[arg(long)]
+        axis: ParamId,
+        #[arg(long)]
+        index: u32,
+    },
+    /// Move one normalized key without changing authored cell values.
+    KeyMove {
+        #[command(flatten)]
+        selection: BindingSelection,
+        #[arg(long)]
+        axis: ParamId,
+        #[arg(long)]
+        index: u32,
+        #[arg(long)]
+        value: f32,
+    },
+    /// Mirror one binding grid axis and its authored cells.
+    Flip {
+        #[command(flatten)]
+        selection: BindingSelection,
+        #[arg(long)]
+        axis: ParamId,
+    },
+    /// Create an un-authored binding, including deform. Axes default to endpoints.
     Add {
         #[command(flatten)]
         params: BindingParamsArg,
         #[arg(long)]
         node: NodeId,
-        #[arg(long, value_parser = wire_enum::<ScalarTarget>)]
-        target: ScalarTarget,
+        #[arg(long, value_parser = wire_enum::<BindingTarget>)]
+        target: BindingTarget,
+        /// JSON array of normalized axes, for example [[0,0.5,1]].
+        #[arg(long)]
+        keys: Option<String>,
     },
-    /// Set one keypoint of a binding (auto-creates it). `--cell x,y`.
+    /// Write one exact scalar cell; an absent binding gets default endpoint axes.
     Key {
         #[command(flatten)]
         params: BindingParamsArg,
@@ -577,7 +638,7 @@ enum BindingCmd {
         #[arg(long)]
         node: NodeId,
     },
-    /// Author the value evaluated at `--from` into `--to`.
+    /// Copy an authored cell verbatim; use --derived to accept a derived hole.
     CopyKey {
         #[command(flatten)]
         params: BindingParamsArg,
@@ -589,6 +650,8 @@ enum BindingCmd {
         from: String,
         #[arg(long)]
         to: String,
+        #[arg(long)]
+        derived: bool,
     },
 }
 
@@ -717,22 +780,12 @@ enum PresenceCmd {
     },
     /// Read the current shared presence.
     Get,
-    /// Show a deform on the session's puppet without authoring it — the live
-    /// half of a vertex drag. Never bumps the revision, never records undo.
-    Scratch {
-        node: NodeId,
-        /// A JSON array of `[dx, dy]` pairs, one per mesh vertex.
-        #[arg(long)]
-        file: Option<String>,
-        /// Drop the scratch deform instead.
-        #[arg(long)]
-        clear: bool,
-    },
 }
 
 #[derive(Subcommand)]
 enum DeformCmd {
-    /// Set a deform keypoint at `--cell x,y` from an affine.
+    /// Write a raw deform contribution computed from rest vertices around
+    /// the mesh origin. An absent binding gets default endpoint axes.
     Set {
         #[command(flatten)]
         params: BindingParamsArg,
@@ -749,7 +802,7 @@ enum DeformCmd {
         #[arg(long, allow_hyphen_values = true)]
         scale: Option<String>,
     },
-    /// Author per-vertex offsets from a JSON array — what commits a drag.
+    /// Write exact per-vertex offsets from a JSON array; no pose conversion.
     Vertices {
         #[command(flatten)]
         params: BindingParamsArg,
@@ -775,20 +828,45 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let command = build_command(&cli)?;
+    let mut stream = connect()?;
+    let composed = match compose::execute(&cli, &mut stream)? {
+        Some(compose::Output::Reply(reply)) => Some(reply),
+        Some(compose::Output::Unfilled { revision, slots }) => {
+            if cli.json {
+                println!("{}", serde_json::json!({"rev": revision, "slots": slots}));
+            } else if slots.is_empty() {
+                println!("every slot is filled");
+            } else {
+                for slot in slots {
+                    println!("unfilled {}:{}", slot.node, slot.slot);
+                }
+            }
+            return Ok(());
+        }
+        None => None,
+    };
     let persist = matches!(
         cli.cmd,
         Cmd::Session {
-            action: SessionCmd::New { .. } | SessionCmd::Open { .. }
+            action: SessionCmd::New { .. } | SessionCmd::Open { .. } | SessionCmd::Fork { .. }
         }
     );
 
-    let mut stream = connect()?;
-    let reply = call(&mut stream, Request { id: 1, command }, siblings(&cli)?)?;
+    let reply = match composed {
+        Some(reply) => reply,
+        None => call(
+            &mut stream,
+            Request {
+                id: 1,
+                command: build_command(&cli)?,
+            },
+            siblings(&cli)?,
+        )?,
+    };
 
     if persist {
         if let Reply::Ok {
-            body: ResponseBody::Session { session },
+            body: ResponseBody::Session { session } | ResponseBody::SessionFork { session, .. },
             ..
         } = &reply
         {
@@ -805,8 +883,16 @@ fn main() -> Result<()> {
 
 fn build_command(cli: &Cli) -> Result<Command> {
     Ok(match &cli.cmd {
+        Cmd::Request { file, .. } => serde_json::from_str(&read_json(file)?)?,
+        Cmd::Edit { .. } | Cmd::History | Cmd::Goto { .. } | Cmd::Export { .. } => {
+            unreachable!("composed before building")
+        }
         Cmd::Session { action } => match action {
-            SessionCmd::New { name } => Command::SessionNew { name: name.clone() },
+            SessionCmd::New { name, clm } => Command::SessionNew {
+                name: name.clone(),
+                source: clm.as_ref().map(|_| SessionSource::Clm {}),
+            },
+            SessionCmd::Fork { .. } => unreachable!("composed before building"),
             SessionCmd::Open { path } => Command::SessionOpen { path: path.clone() },
             SessionCmd::List => Command::SessionList,
             SessionCmd::Close => Command::SessionClose {
@@ -854,7 +940,6 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     min,
                     max,
                     default,
-                    key_positions,
                     id,
                 } => Command::ParamAdd {
                     session,
@@ -862,11 +947,6 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     min: min.unwrap_or(0.0),
                     max: max.unwrap_or(1.0),
                     default: default.unwrap_or(0.0),
-                    key_positions: key_positions
-                        .as_deref()
-                        .map(parse_f32_vec)
-                        .transpose()?
-                        .unwrap_or_default(),
                     param: id.clone(),
                 },
                 ParamCmd::List => Command::ParamList { session },
@@ -888,30 +968,6 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     param: param.clone(),
                 },
-                ParamCmd::KeyInsert { param, value } => Command::ParamKeyInsert {
-                    session,
-                    param: param.clone(),
-                    value: *value,
-                },
-                ParamCmd::KeyDelete { param, index } => Command::ParamKeyDelete {
-                    session,
-                    param: param.clone(),
-                    index: *index,
-                },
-                ParamCmd::KeyMove {
-                    param,
-                    index,
-                    value,
-                } => Command::ParamKeyMove {
-                    session,
-                    param: param.clone(),
-                    index: *index,
-                    value: *value,
-                },
-                ParamCmd::Flip { param } => Command::ParamFlip {
-                    session,
-                    param: param.clone(),
-                },
             }
         }
         Cmd::Binding { action } => {
@@ -921,50 +977,24 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     params,
                     node,
                     target,
+                    keys,
                 } => Command::BindingAdd {
+                    key_positions: keys
+                        .as_ref()
+                        .map(|keys| serde_json::from_str(keys))
+                        .transpose()?,
                     session,
                     params: params.wire(),
                     node: node.clone(),
                     target: *target,
                 },
-                BindingCmd::Key {
-                    params,
-                    node,
-                    target,
-                    cell,
-                    value,
-                } => Command::BindingKey {
-                    session,
-                    params: params.wire(),
-                    node: node.clone(),
-                    target: *target,
-                    cell: parse_cell(cell)?,
-                    value: *value,
-                },
-                BindingCmd::Unset {
-                    params,
-                    node,
-                    target,
-                    cell,
-                } => Command::BindingUnset {
-                    session,
-                    params: params.wire(),
-                    node: node.clone(),
-                    target: *target,
-                    cell: parse_cell(cell)?,
-                },
-                BindingCmd::Reset {
-                    params,
-                    node,
-                    target,
-                    cell,
-                } => Command::BindingReset {
-                    session,
-                    params: params.wire(),
-                    node: node.clone(),
-                    target: *target,
-                    cell: parse_cell(cell)?,
-                },
+                BindingCmd::Key { .. }
+                | BindingCmd::Unset { .. }
+                | BindingCmd::Reset { .. }
+                | BindingCmd::KeyInsert { .. }
+                | BindingCmd::KeyDelete { .. }
+                | BindingCmd::KeyMove { .. }
+                | BindingCmd::Flip { .. } => unreachable!("composed before building"),
                 BindingCmd::Delete {
                     params,
                     node,
@@ -987,34 +1017,12 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     target: *target,
                     mode: *mode,
                 },
-                BindingCmd::Invert {
-                    params,
-                    node,
-                    target,
-                } => Command::BindingInvert {
-                    session,
-                    params: params.wire(),
-                    node: node.clone(),
-                    target: *target,
-                },
+                BindingCmd::Invert { .. } => unreachable!("composed before building"),
                 BindingCmd::List { node } => Command::BindingList {
                     session,
                     node: node.clone(),
                 },
-                BindingCmd::CopyKey {
-                    params,
-                    node,
-                    target,
-                    from,
-                    to,
-                } => Command::BindingCopyKey {
-                    session,
-                    params: params.wire(),
-                    node: node.clone(),
-                    target: *target,
-                    from: parse_cell(from)?,
-                    to: parse_cell(to)?,
-                },
+                BindingCmd::CopyKey { .. } => unreachable!("composed before building"),
             }
         }
         Cmd::Physics { action } => {
@@ -1108,7 +1116,8 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     }
                     let m: MeshJson = serde_json::from_str(&std::fs::read_to_string(file)?)?;
                     Command::MeshSet {
-                        if_rev: None,
+                        if_rev: cli.if_rev,
+                        deform_mapping: None,
                         session,
                         node: node.clone(),
                         verts: m.verts,
@@ -1117,11 +1126,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                         origin: m.origin,
                     }
                 }
-                MeshCmd::Copy { node, from } => Command::MeshCopy {
-                    session,
-                    from: from.clone(),
-                    to: node.clone(),
-                },
+                MeshCmd::Copy { .. } => unreachable!("composed before building"),
                 MeshCmd::Auto {
                     node,
                     grid,
@@ -1193,7 +1198,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     session,
                     node: node.clone(),
                 },
-                SlotCmd::Unfilled => Command::UnfilledSlots { session },
+                SlotCmd::Unfilled => unreachable!("composed before building"),
             }
         }
         Cmd::Weld { action } => {
@@ -1205,13 +1210,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     b: b.clone(),
                     pairs: pairs.iter().map(|p| parse_pair(p)).collect::<Result<_>>()?,
                 },
-                WeldCmd::Weight { a, b, slot, weight } => Command::WeldWeight {
-                    session,
-                    a: a.clone(),
-                    b: b.clone(),
-                    slot: slot.clone(),
-                    weight: *weight,
-                },
+                WeldCmd::Weight { .. } => unreachable!("composed before building"),
                 WeldCmd::Delete { a, b } => Command::WeldDelete {
                     session,
                     a: a.clone(),
@@ -1229,18 +1228,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     source: source.clone(),
                     mode: *mode,
                 },
-                MaskCmd::Set { node, index, mode } => Command::MaskSet {
-                    session,
-                    node: node.clone(),
-                    index: *index,
-                    mode: *mode,
-                },
-                MaskCmd::Reorder { node, index, to } => Command::MaskReorder {
-                    session,
-                    node: node.clone(),
-                    index: *index,
-                    to: *to,
-                },
+                MaskCmd::Set { .. } | MaskCmd::Reorder { .. } => {
+                    unreachable!("composed before building")
+                }
                 MaskCmd::Delete { node, index } => Command::MaskDelete {
                     session,
                     node: node.clone(),
@@ -1248,40 +1238,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 },
             }
         }
-        Cmd::Deform { action } => {
-            let session = resolve_session(cli)?;
-            match action {
-                DeformCmd::Set {
-                    params,
-                    node,
-                    cell,
-                    translate,
-                    rotate,
-                    scale,
-                } => Command::DeformSet {
-                    session,
-                    params: params.wire(),
-                    node: node.clone(),
-                    cell: parse_cell(cell)?,
-                    translate: translate.as_deref().map(parse_vec2).transpose()?,
-                    rotate: *rotate,
-                    scale: scale.as_deref().map(parse_vec2).transpose()?,
-                },
-                DeformCmd::Vertices {
-                    params,
-                    node,
-                    cell,
-                    file,
-                } => Command::DeformVertices {
-                    if_rev: None,
-                    session,
-                    params: params.wire(),
-                    node: node.clone(),
-                    cell: parse_cell(cell)?,
-                    offsets: read_offsets(file)?,
-                },
-            }
-        }
+        Cmd::Deform { .. } => unreachable!("composed before building"),
         Cmd::Presence { action } => {
             let session = resolve_session(cli)?;
             match action {
@@ -1297,22 +1254,9 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     },
                 },
                 PresenceCmd::Get => Command::PresenceGet { session },
-                PresenceCmd::Scratch { node, file, clear } => Command::ScratchDeform {
-                    session,
-                    node: node.clone(),
-                    offsets: match (clear, file) {
-                        (true, _) | (false, None) => Vec::new(),
-                        (false, Some(file)) => read_offsets(file)?,
-                    },
-                },
             }
         }
-        Cmd::Undo => Command::Undo {
-            session: resolve_session(cli)?,
-        },
-        Cmd::Redo => Command::Redo {
-            session: resolve_session(cli)?,
-        },
+        Cmd::Undo | Cmd::Redo => unreachable!("composed before building"),
         Cmd::Texture { action } => match action {
             TextureCmd::Add { node, path, id } => Command::TextureAdd {
                 session: resolve_session(cli)?,
@@ -1428,16 +1372,7 @@ fn build_node_command(cli: &Cli, action: &NodeCmd) -> Result<Command> {
             node: node.clone(),
             index: *index,
         },
-        NodeCmd::Move {
-            node,
-            parent,
-            index,
-        } => Command::NodeMove {
-            session,
-            node: node.clone(),
-            parent: parent.clone(),
-            index: *index,
-        },
+        NodeCmd::Move { .. } => unreachable!("composed before building"),
         NodeCmd::Duplicate { node } => Command::NodeDuplicate {
             session,
             node: node.clone(),
@@ -1485,14 +1420,14 @@ fn parse_vec2(s: &str) -> Result<[f32; 2]> {
     parse_floats::<2>(s)
 }
 
-fn parse_f32_vec(s: &str) -> Result<Vec<f32>> {
-    s.split(',')
-        .map(|p| {
-            p.trim()
-                .parse::<f32>()
-                .map_err(|e| anyhow!("bad number {p:?}: {e}"))
-        })
-        .collect()
+fn read_json(path: &str) -> Result<String> {
+    if path == "-" {
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        Ok(text)
+    } else {
+        Ok(std::fs::read_to_string(path)?)
+    }
 }
 
 fn parse_cell(s: &str) -> Result<[u32; 2]> {
@@ -1599,7 +1534,38 @@ fn connect() -> Result<UnixStream> {
 fn siblings(cli: &Cli) -> Result<serde_json::Map<String, serde_json::Value>> {
     let mut out = serde_json::Map::new();
     match &cli.cmd {
-        Cmd::Preview { out: path, .. } => {
+        Cmd::Session {
+            action: SessionCmd::New {
+                clm: Some(path), ..
+            },
+        } => {
+            out.insert(
+                "files".into(),
+                serde_json::json!({"model": absolute(path)?}),
+            );
+        }
+        Cmd::Request {
+            attachments,
+            out: path,
+            ..
+        } => {
+            let mut files = serde_json::Map::new();
+            for attachment in attachments {
+                let (name, path) = attachment
+                    .split_once('=')
+                    .ok_or_else(|| anyhow!("attachment must be NAME=PATH"))?;
+                if name.is_empty() || files.insert(name.into(), absolute(path)?.into()).is_some() {
+                    bail!("attachment names must be nonempty and unique");
+                }
+            }
+            if !files.is_empty() {
+                out.insert("files".into(), files.into());
+            }
+            if let Some(path) = path {
+                out.insert("out".into(), absolute(path)?.into());
+            }
+        }
+        Cmd::Preview { out: path, .. } | Cmd::Export { out: path } => {
             out.insert("out".into(), absolute(path)?.into());
         }
         Cmd::Texture {
@@ -1638,6 +1604,9 @@ fn call(
         value => serde_json::to_string(&value)?,
     };
     line.push('\n');
+    if line.len() > 1024 * 1024 {
+        bail!("request exceeds the 1 MiB command limit; split independent edits into explicit batches");
+    }
     stream.write_all(line.as_bytes())?;
     let mut reader = BufReader::new(stream.try_clone()?);
     loop {
@@ -1682,6 +1651,16 @@ fn code_name(code: ErrorCode) -> String {
 
 fn print_body(body: &ResponseBody) {
     match body {
+        ResponseBody::MeshInfo { .. }
+        | ResponseBody::ModelStructure { .. }
+        | ResponseBody::GeometrySample { .. }
+        | ResponseBody::EditHistory { .. }
+        | ResponseBody::EditResults { .. }
+        | ResponseBody::BindingCells { .. }
+        | ResponseBody::SessionFork { .. }
+        | ResponseBody::ModelExport { .. } => {
+            println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
+        }
         ResponseBody::Empty => println!("ok"),
         ResponseBody::Session { session } => println!("session {}", session.0),
         ResponseBody::Sessions { sessions } => {
@@ -1722,14 +1701,8 @@ fn print_body(body: &ResponseBody) {
             }
             for p in params {
                 println!(
-                    "param {}  {}  [{}, {}] default={} keys={} bindings={}",
-                    p.id,
-                    p.name,
-                    p.min,
-                    p.max,
-                    p.default,
-                    p.key_positions.len(),
-                    p.bindings
+                    "param {}  {}  [{}, {}] default={} bindings={}",
+                    p.id, p.name, p.min, p.max, p.default, p.bindings
                 );
             }
         }
@@ -1746,6 +1719,7 @@ fn print_body(body: &ResponseBody) {
                     "binding {}  {}  {}  {}x{}",
                     b.target, params, b.interpolate, b.width, b.height
                 );
+                println!("  axes={:?}", b.key_positions);
                 for (y, row) in b.keys.iter().enumerate() {
                     let cells: Vec<String> = row
                         .iter()
@@ -1835,14 +1809,6 @@ fn print_body(body: &ResponseBody) {
                     .map(|p| format!("{}:{}={}", p.a, p.b, p.weight))
                     .collect();
                 println!("weld {} <-> {}  [{}]", w.a, w.b, pairs.join(" "));
-            }
-        }
-        ResponseBody::UnfilledSlots { slots } => {
-            if slots.is_empty() {
-                println!("every slot is filled");
-            }
-            for s in slots {
-                println!("unfilled {}:{}", s.node, s.slot);
             }
         }
         ResponseBody::Emptied { node, slots } => {
