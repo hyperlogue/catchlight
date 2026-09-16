@@ -121,3 +121,80 @@ def _names(node: TreeNode) -> list[str]:
     return [child.name for child in node.children] + [
         name for child in node.children for name in _names(child)
     ]
+
+
+def test_reads_refresh_the_captured_revision_and_stale_writes_are_not_retried(
+    server,
+) -> None:
+    from catchlight import EditOpNodeSet, UnixSocketTransport
+
+    first = server.client()
+    second = Client(UnixSocketTransport(server.socket_path))
+    session = first.new()
+    second.send(Status(session=session))
+    first.add_part(session, name="Body")
+    with pytest.raises(ProtocolError) as conflict:
+        second.apply(session, [EditOpNodeSet(node="root", name="stale")])
+    assert conflict.value.code is ErrorCode.REVISION_CONFLICT
+    assert second.revision(session) == 0
+
+    second.send(NodeTree(session=session))
+    assert second.revision(session) == first.revision(session) == 1
+    result = second.apply(session, [EditOpNodeSet(node="root", name="fresh")])
+    assert result.changed
+    assert second.revision(session) == 2
+    second.close()
+
+
+def test_forks_and_branch_navigation_keep_their_own_revisions(client: Client) -> None:
+    from catchlight import EditOpNodeSet
+
+    source = client.new()
+    client.add_part(source, name="Body")
+    fork = client.fork(source, name="Candidate")
+    assert client.revision(source) == 1
+    assert client.revision(fork) == 0
+    client.apply(fork, [EditOpNodeSet(node="root", name="A")])
+    a = client.revision(fork)
+    client.undo(fork)
+    client.apply(fork, [EditOpNodeSet(node="root", name="B")])
+    history = client.history(fork)
+    assert [entry.revision for entry in history.entries] == [0, 1, 3]
+    client.goto(fork, a)
+    assert client.revision(fork) == 4
+    assert client.history(fork).current == a
+    client.goto(fork, a)
+    assert client.revision(fork) == 4
+    assert client.revision(source) == 1
+
+
+def test_atomic_failures_keep_operation_and_limit_metadata(client: Client) -> None:
+    from catchlight import EditOpNodeSet
+
+    session = client.new()
+    with pytest.raises(ProtocolError) as failure:
+        client.apply(session, [
+            EditOpNodeSet(node="root", name="never installed"),
+            EditOpNodeSet(node="missing", name="bad"),
+        ])
+    assert failure.value.op_index == 1
+    assert failure.value.code is ErrorCode.NO_NODE
+    assert client.revision(session) == 0
+    assert len(client.history(session).entries) == 1
+
+    with pytest.raises(ProtocolError) as limit:
+        client.apply(session, [EditOpNodeSet(node="root", name="many")] * 1025)
+    assert limit.value.code is ErrorCode.LIMIT_EXCEEDED
+    assert limit.value.limit is not None
+    assert limit.value.limit.limit == 1024
+    assert limit.value.limit.requested == 1025
+
+
+def test_validation_returns_results_without_publishing(client: Client) -> None:
+    from catchlight import EditOpNodeSet
+
+    session = client.new()
+    result = client.apply(session, [EditOpNodeSet(node="root", name="Candidate")], validate=True)
+    assert result.changed
+    assert client.revision(session) == 0
+    assert len(client.history(session).entries) == 1

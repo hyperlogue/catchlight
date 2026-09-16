@@ -21,10 +21,10 @@ Invariants this module enforces:
   mesh.
 
 - **A binding's keys are param values, not cell indices.** The wire keys a
-  binding by the index of a param's key position, and the position a script
-  means is the param value it read off a reference. So [`Builder.bind`] inserts
-  the key positions the values need and then indexes them, and a caller never
-  computes a cell.
+  binding by the index of its own normalized key positions. [`Builder.bind`]
+  inserts positions only on that binding, then writes exact cell values in
+  one guarded atomic edit. Other bindings driven by the same input keep their
+  grids. A refused edit leaves no half-created binding.
 
 - **`check` reports and never raises.** The editor's own lints are what a model
   is graded against, and every one of them is a state the model can be in —
@@ -46,12 +46,21 @@ from .client import Client, ProtocolError
 from .layers import Layer, Placement, read_layers
 from .protocol_gen import (
     AutoMesh,
-    BindingAdd,
-    BindingKey,
+    BindingInfo,
+    BindingList,
+    BindingTarget,
+    BindingCellWrite,
+    BindingCellValueScalar,
+    BindingCellValueOffsets,
+    EditOp,
+    EditOpBindingAdd,
+    EditOpBindingKeyInsert,
+    EditOpBindingCellsSet,
+    ErrorCode,
+    ResponseBodyBindings,
     ChainArg,
     Check,
     CommandNodeInfo,
-    DeformVertices,
     MeshAuto,
     NodeAdd,
     NodeId,
@@ -61,7 +70,6 @@ from .protocol_gen import (
     ParamAdd,
     ParamId,
     ParamInfo,
-    ParamKeyInsert,
     ParamList,
     ResponseBodyNode,
     ResponseBodyNodeInfo,
@@ -276,41 +284,50 @@ class Builder:
         target: ScalarTarget,
         keys: Sequence[tuple[float, float]] = (),
     ) -> None:
-        """Make `param` drive `target` on `node`, keyed at `keys`.
+        """Author scalar keys in one atomic edit on this binding's own grid.
 
-        `ScalarTarget` is a `StrEnum`, so its own wire word does just as well.
-
-        Each key is a param value and the value the target takes there. The
-        param values are in the param's own range and this inserts the key
-        positions they need, so two keys closer together than the wire's `f32`
-        can tell apart are one key, and the later one wins.
+        Key positions are values in the input parameter's range. Existing
+        cells are preserved; near-equal positions share a cell and the last
+        supplied value wins. Sibling bindings never change their grids.
         """
-        if not keys:
-            self.client.send(
-                BindingAdd(session=self.session, param=param, node=node, target=target)
-            )
-            return
-
         info = self._param(param)
-        positions = [self._normalize(info, at) for at, _ in keys]
-        for position in positions:
-            near = (abs(position - held) <= _KEY_EPSILON for held in info.key_positions)
-            if not any(near):
-                self.client.send(
-                    ParamKeyInsert(session=self.session, param=param, value=position)
-                )
-                info = self._param(param)
-        for position, (_, value) in zip(positions, keys, strict=True):
-            self.client.send(
-                BindingKey(
-                    session=self.session,
-                    param=param,
-                    node=node,
-                    target=target,
-                    cell=(self._cell(info, position), 0),
-                    value=value,
-                )
+        captured = self.client.require_revision(self.session)
+        target = BindingTarget(target)
+        binding = self._binding(param, node, target)
+        if self.client.revision(self.session) != captured:
+            raise ProtocolError(
+                ErrorCode.REVISION_CONFLICT,
+                "model changed between parameter and binding reads; read again",
             )
+        axis = list(binding.key_positions[0]) if binding else [0.0, 1.0]
+        positions = [self._normalize(info, at) for at, _ in keys]
+        edits: list[EditOp] = []
+        if binding is None:
+            edits.append(EditOpBindingAdd(
+                node=node, param=param, target=target, key_positions=[axis.copy()],
+            ))
+        for position in positions:
+            if not any(abs(position - held) <= _KEY_EPSILON for held in axis):
+                edits.append(EditOpBindingKeyInsert(
+                    node=node, param=param, target=target, axis=param, value=position,
+                ))
+                axis.append(position)
+                axis.sort()
+        # Duplicate writes are rejected by the exact-cell primitive, so fold
+        # caller duplicates before composing the one atomic operation.
+        values = {
+            self._cell(axis, position): value
+            for position, (_, value) in zip(positions, keys, strict=True)
+        }
+        if values:
+            edits.append(EditOpBindingCellsSet(
+                node=node, param=param, target=target,
+                cells=[BindingCellWrite(
+                    cell=(index, 0), value=BindingCellValueScalar(scalar=value),
+                ) for index, value in values.items()],
+            ))
+        if edits:
+            self.client.apply(self.session, edits, if_rev=captured)
 
     def bind_deform(
         self,
@@ -318,36 +335,61 @@ class Builder:
         node: NodeId,
         cells: Mapping[tuple[int, int] | int, Sequence[tuple[float, float]]],
         param_y: ParamId | None = None,
+        *,
+        key_positions: Sequence[Sequence[float]] | None = None,
     ) -> None:
-        """Make `param` deform `node`'s mesh, one authored cell at a time.
+        """Create or update a deform binding and exact cells atomically.
 
-        A deform binding's grid is the product of its params' key positions,
-        and `cells` is keyed by *key index* rather than by param value — `2`
-        or `(2, 0)` is the third key of `param`, and `(2, 1)` is that key
-        crossed with the second key of `param_y`. Unlike `bind`, this inserts
-        no key positions: a deform grid is sized by the keys the param already
-        has, so add them first if you need them.
+        `key_positions` belongs to this binding: one normalized axis per
+        driving input. A new binding defaults to endpoints [0, 1]. On an
+        existing binding, omitted positions preserve its grid; supplied
+        positions must match it. Use binding-key operations to reshape it.
 
-        Each value is the whole deformed mesh: one `(dx, dy)` per vertex, in
-        the mesh's own order, and every cell has to carry the same count the
-        node's mesh does. Offsets are from the rest pose, so an all-zero cell
-        is the rest pose spelled out.
-
-        The binding is created by the first cell authored, so there is no
-        separate call to make one.
+        Cell coordinates index that grid. Values are offsets from rest, one
+        `(dx, dy)` per vertex; an explicit zero cell is authored rest, while
+        omitted cells remain untouched or un-authored.
         """
-        for cell, offsets in cells.items():
-            at = (cell, 0) if isinstance(cell, int) else cell
-            self.client.send(
-                DeformVertices(
-                    session=self.session,
-                    param=param,
-                    param_y=param_y,
-                    node=node,
-                    cell=at,
-                    offsets=[tuple(offset) for offset in offsets],
-                )
-            )
+        binding = self._binding(param, node, BindingTarget.DEFORM, param_y)
+        captured = self.client.require_revision(self.session)
+        positions = None if key_positions is None else [list(axis) for axis in key_positions]
+        if binding is not None and positions is not None:
+            if len(positions) != len(binding.key_positions) or any(
+                len(wanted) != len(held) or any(
+                    abs(a - b) > _KEY_EPSILON for a, b in zip(wanted, held)
+                ) for wanted, held in zip(positions, binding.key_positions)
+            ):
+                raise BuilderError("binding grid already exists; use binding-key operations to reshape it")
+        edits: list[EditOp] = []
+        if binding is None:
+            edits.append(EditOpBindingAdd(
+                node=node, param=param, param_y=param_y,
+                target=BindingTarget.DEFORM,
+                key_positions=positions if positions is not None else [[0.0, 1.0] for _ in range(1 if param_y is None else 2)],
+            ))
+        values = {
+            (cell, 0) if isinstance(cell, int) else cell: list(map(tuple, offsets))
+            for cell, offsets in cells.items()
+        }
+        if values:
+            edits.append(EditOpBindingCellsSet(
+                node=node, param=param, param_y=param_y, target=BindingTarget.DEFORM,
+                cells=[BindingCellWrite(
+                    cell=at, value=BindingCellValueOffsets(offsets=offsets),
+                ) for at, offsets in values.items()],
+            ))
+        if edits:
+            self.client.apply(self.session, edits, if_rev=captured)
+
+    def _binding(
+        self, param: ParamId, node: NodeId, target: BindingTarget,
+        param_y: ParamId | None = None,
+    ) -> BindingInfo | None:
+        body = self.client.send(BindingList(session=self.session, node=node))
+        if not isinstance(body, ResponseBodyBindings):
+            raise BuilderError(f"binding_list answered {body!r}")
+        return next((binding for binding in body.bindings if
+            (binding.param, binding.param_y, binding.target) == (param, param_y, target)
+        ), None)
 
     def _param(self, param: ParamId) -> ParamInfo:
         body = self.client.send(ParamList(session=self.session))
@@ -375,15 +417,11 @@ class Builder:
         return position
 
     @staticmethod
-    def _cell(info: ParamInfo, position: float) -> int:
-        """The index of the key position at `position`, which must be there."""
-        for index, held in enumerate(info.key_positions):
+    def _cell(axis: Sequence[float], position: float) -> int:
+        for index, held in enumerate(axis):
             if abs(position - held) <= _KEY_EPSILON:
                 return index
-        raise BuilderError(
-            f"param {info.id!r} has no key position at {position}, "
-            f"only {info.key_positions}"
-        )
+        raise BuilderError(f"binding grid has no key at {position}")
 
     # -- reading and writing
 

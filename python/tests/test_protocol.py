@@ -25,7 +25,6 @@ from catchlight import (
     ErrorCode,
     EventModelChanged,
     MeshAuto,
-    MeshCopy,
     MeshSet,
     NodeAdd,
     NodeKindArg,
@@ -41,7 +40,6 @@ from catchlight import (
     ReplyOk,
     ResponseBodySession,
     ResponseBodyTree,
-    ScratchDeform,
     Status,
     TreeNode,
     parse_event,
@@ -78,7 +76,6 @@ def test_every_command_is_reachable_through_its_kind() -> None:
         alias = {
             CommandKind.EDIT: protocol_gen.EditCommand,
             CommandKind.PRESENCE: protocol_gen.PresenceCommand,
-            CommandKind.SCRATCH: protocol_gen.ScratchCommand,
             CommandKind.REPLICA_QUERY: protocol_gen.ReplicaQueryCommand,
             CommandKind.SERVER_QUERY: protocol_gen.ServerQueryCommand,
         }[kind]
@@ -117,16 +114,6 @@ ROUND_TRIPS: list[tuple[CommandKind, object, dict]] = [
         },
     ),
     (
-        CommandKind.SCRATCH,
-        ScratchDeform(session=3, node="root/part-1", offsets=[(0.5, -0.5)]),
-        {
-            "cmd": "scratch_deform",
-            "session": 3,
-            "node": "root/part-1",
-            "offsets": [[0.5, -0.5]],
-        },
-    ),
-    (
         CommandKind.REPLICA_QUERY,
         BindingList(session=4, node="root/part-1"),
         {"cmd": "binding_list", "session": 4, "node": "root/part-1"},
@@ -134,7 +121,7 @@ ROUND_TRIPS: list[tuple[CommandKind, object, dict]] = [
     (
         CommandKind.SERVER_QUERY,
         Status(session=5),
-        {"cmd": "status", "session": 5},
+        {"cmd": "session_get", "session": 5},
     ),
 ]
 
@@ -158,7 +145,7 @@ def test_an_absent_option_is_left_off_rather_than_sent_as_null() -> None:
 
 def test_a_flattened_struct_is_flat_on_the_wire() -> None:
     """`NodeSet` carries a `NodePatch` under `#[serde(flatten)]`, and
-    `BindingKey` carries its params the same way, so both are one level deep."""
+    exact binding-cell commands carry their params the same way."""
     assert NodeSet(session=1, node="hair", opacity=0.5, texture="tex-1").to_wire() == {
         "cmd": "node_set",
         "session": 1,
@@ -214,14 +201,8 @@ def test_a_mesh_travels_as_lists_of_points() -> None:
 
 
 def test_a_python_keyword_still_travels_under_its_real_name() -> None:
-    assert MeshCopy(session=1, from_="a", to="b").to_wire() == {
-        "cmd": "mesh_copy",
-        "session": 1,
-        "from": "a",
-        "to": "b",
-    }
     assert RenameId(session=1, rename=RenameParam(from_="old", to="new")).to_wire() == {
-        "cmd": "rename_id",
+        "cmd": "id_rename",
         "session": 1,
         "rename": {"kind": "param", "from": "old", "to": "new"},
     }
@@ -229,7 +210,7 @@ def test_a_python_keyword_still_travels_under_its_real_name() -> None:
 
 def test_a_nested_tagged_enum_carries_its_own_tag() -> None:
     assert MeshAuto(session=1, node="hair", mode=AutoMeshGrid(cols=4, rows=3)).to_wire() == {
-        "cmd": "mesh_auto",
+        "cmd": "mesh_generate",
         "session": 1,
         "node": "hair",
         "mode": {"mode": "grid", "cols": 4, "rows": 3},
@@ -371,3 +352,46 @@ def test_a_command_is_frozen_and_keyword_only() -> None:
         command.session = 2  # type: ignore[misc]
     with pytest.raises(TypeError):
         Status(1)  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("annotation,value,wire", [
+    (protocol_gen.BindingCellValue,
+     protocol_gen.BindingCellValueScalar(scalar=0.25), {"scalar": 0.25}),
+    (protocol_gen.BindingCellValue,
+     protocol_gen.BindingCellValueOffsets(offsets=[(2.0, -3.0)]),
+     {"offsets": [[2.0, -3.0]]}),
+    (protocol_gen.BindingIdentity,
+     protocol_gen.BindingIdentityScalar(scalar=1.0), {"scalar": 1.0}),
+    (protocol_gen.BindingIdentity,
+     protocol_gen.BindingIdentityDeform(offset=(0.0, 0.0), vertex_count=12),
+     {"offset": [0.0, 0.0], "vertex_count": 12}),
+])
+def test_exact_cell_values_and_compact_identities_round_trip(annotation, value, wire) -> None:
+    assert protocol_gen._wire(value) == wire
+    assert protocol_gen._decode(annotation, wire) == value
+
+
+def test_exact_cell_writes_keep_payload_tags_and_holes_distinct() -> None:
+    command = protocol_gen.BindingCellsSet(
+        session=1, if_rev=8, node="panel", param="drive",
+        target=protocol_gen.BindingTarget.DEFORM,
+        cells=[protocol_gen.BindingCellWrite(
+            cell=(1, 0), value=protocol_gen.BindingCellValueOffsets(offsets=[(0.0, 0.0)]),
+        )],
+    )
+    assert command.to_wire()["cells"] == [
+        {"cell": [1, 0], "value": {"offsets": [[0.0, 0.0]]}},
+    ]
+    wire = {
+        "reply": "ok", "id": 1, "rev": 8,
+        "body": {"result": "binding_cells", "node": "panel", "param": "drive",
+                 "target": "deform", "width": 2, "height": 1,
+                 "interpolate": "linear", "vertex_count": 1,
+                 "cells": [{"cell": [0, 0], "authored": False},
+                           {"cell": [1, 0], "authored": True,
+                            "value": {"offsets": [[0.0, 0.0]]}}]},
+    }
+    reply = parse_reply(wire)
+    assert reply.body.cells[0].value is None
+    assert reply.body.cells[1].value == protocol_gen.BindingCellValueOffsets(offsets=[(0.0, 0.0)])
+    assert reply.to_wire() == wire

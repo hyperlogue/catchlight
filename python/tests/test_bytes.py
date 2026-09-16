@@ -55,9 +55,7 @@ def test_a_camera_is_the_commands_and_nobody_elses(
 ) -> None:
     """Two heights are two pictures, and neither depends on what a tab is
     looking at."""
-    session = either.new()
-    # A manifest import, so the part has a mesh and there is something to see.
-    either.import_manifest(session, write_manifest(tmp_path))
+    session = either.from_manifest(write_manifest(tmp_path))
     near = either.preview(
         session, size=(64, 64), camera=Camera(center=(0.0, 0.0), height=48.0)
     )
@@ -76,25 +74,20 @@ def test_a_model_imports_into_a_fresh_session(
     either.add_part(authored, name="Body")
     source = Path(served.client().save(authored, str(tmp_path / "authored.clm")))
 
-    into = either.new()
-    either.import_file(into, source)
+    into = either.from_file(source)
     body = either.send(NodeTree(session=into))
     assert isinstance(body, ResponseBodyTree)
     assert [child.name for child in body.root.children] == ["Body"]
 
 
-def test_a_second_import_into_the_same_session_is_refused(
-    either: Client, served: LaunchedServer, tmp_path: Path
-) -> None:
-    authored = either.new()
-    either.add_part(authored, name="Body")
-    source = Path(served.client().save(authored, str(tmp_path / "authored.clm")))
-
-    into = either.new()
-    either.import_file(into, source)
-    with pytest.raises(ProtocolError) as raised:
-        either.import_file(into, source)
-    assert raised.value.code is ErrorCode.NOT_EMPTY
+def test_a_failed_source_creates_no_session(either: Client, tmp_path: Path) -> None:
+    from catchlight import SessionList
+    before = either.send(SessionList()).sessions
+    source = tmp_path / "invalid.clm"
+    source.write_bytes(b"not a model")
+    with pytest.raises(ProtocolError):
+        either.from_file(source)
+    assert either.send(SessionList()).sessions == before
 
 
 def test_a_json_structure_and_its_images_import_over_either_door(
@@ -102,9 +95,7 @@ def test_a_json_structure_and_its_images_import_over_either_door(
 ) -> None:
     """A client that authored a structure sends it with its images, and never
     builds a container to do it."""
-    into = either.new()
-    either.import_json(
-        into,
+    into = either.from_json(
         minimal_structure(),
         {"tex-0": write_png(tmp_path / "face.png")},
     )
@@ -120,7 +111,7 @@ def test_a_json_import_that_leaves_out_a_texture_is_refused(
     """The structure names a texture nobody attached, so the model never
     builds — and the refusal says which one."""
     with pytest.raises(ProtocolError) as raised:
-        either.import_json(either.new(), minimal_structure(), {})
+        either.from_json(minimal_structure(), {})
     assert "tex-0" in str(raised.value)
 
 
@@ -128,9 +119,7 @@ def test_a_json_structure_installs_under_a_parent(
     either: Client, tmp_path: Path
 ) -> None:
     """`parent` present is the install path, the same one a file takes."""
-    into = either.new()
-    either.import_json(
-        into,
+    into = either.from_json(
         minimal_structure(),
         {"tex-0": write_png(tmp_path / "face.png")},
     )
@@ -161,8 +150,7 @@ def test_a_manifest_and_its_images_travel_with_the_command(
     """The texture reference has a separator in it, and the attachment name
     carries it verbatim."""
     manifest = write_manifest(tmp_path)
-    session = either.new()
-    either.import_manifest(session, manifest)
+    session = either.from_manifest(manifest)
 
     body = either.send(NodeTree(session=session))
     assert isinstance(body, ResponseBodyTree)
@@ -190,3 +178,16 @@ def test_a_texture_travels_with_the_command_over_either_door(
     reader = HttpTransport(served.http_url or "", served.token or "")
     with Client(reader):
         assert reader.get_texture(session, texture) == source.read_bytes()
+
+
+def test_guarded_export_round_trips_without_saving(either: Client) -> None:
+    from catchlight import SessionList
+    session = either.new("Export")
+    either.add_part(session, name="Body")
+    before = either.revision(session)
+    exported = either.export_model(session)
+    assert exported
+    assert either.revision(session) == before
+    info = next(item for item in either.send(SessionList()).sessions if item.session == session)
+    assert info.dirty
+    assert info.file is None

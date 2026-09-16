@@ -81,13 +81,12 @@ def test_a_fitted_spine_reopens_as_what_was_fitted(
     saved = built.save_to(tmp_path / "doll.clm")
     reopened = client.open(saved)
 
-    # Three params, named after the part, in half turns with a key at each end.
+    # Three input params, named after the part, with half-turn ranges.
     params = _params(client, reopened).params
     assert [p.id for p in params] == fit.params
     assert [p.name for p in params] == ["Hair bend 1", "Hair bend 2", "Hair bend 3"]
     for param in params:
         assert (param.min, param.max, param.default) == (-1.0, 1.0, 0.0)
-        assert list(param.key_positions) == [0.0, 1.0]
         assert param.bindings == 0, "a spine keys nothing"
 
     # No bindings at all on the part.

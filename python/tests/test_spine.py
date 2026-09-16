@@ -31,7 +31,6 @@ def _param(client: Client, session: SessionId, name: str) -> str:
             min=-1.0,
             max=1.0,
             default=0.0,
-            key_positions=[],
         )
     )
     assert isinstance(body, ResponseBodyParam)

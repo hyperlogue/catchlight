@@ -102,7 +102,6 @@ def test_a_built_model_reopens_as_what_was_built(client: Client, tmp_path: Path)
     (param,) = params.params
     assert (param.id, param.name) == (tilt, "Tilt")
     assert (param.min, param.max, param.default) == (-1.0, 1.0, 0.0)
-    assert param.key_positions == [0.0, 0.5, 1.0]
     assert param.bindings == 1
 
     bindings = client.send(BindingList(session=reopened, node=front))
@@ -110,6 +109,7 @@ def test_a_built_model_reopens_as_what_was_built(client: Client, tmp_path: Path)
     (binding,) = bindings.bindings
     assert (binding.target, binding.param, binding.param_y) == ("ty", tilt, None)
     assert (binding.width, binding.height) == (3, 1)
+    assert binding.key_positions == [[0.0, 0.5, 1.0]]
     assert binding.keys[0] == pytest.approx([-0.2, 0.0, 0.2])
     assert binding.authored == [[True, True, True]]
 
@@ -281,3 +281,34 @@ def test_a_placement_whose_image_is_missing_fails_naming_the_layer(
     with pytest.raises(LayersError) as raised:
         build_from_layers(client, where)
     assert "'Hair'" in str(raised.value) and "hair.png" in str(raised.value)
+
+
+def test_binding_local_keys_preserve_siblings_and_commit_once(client: Client) -> None:
+    built = Builder.new(client)
+    group = built.group("Panel")
+    param = built.param("Drive", min=0.0, max=1.0)
+    built.bind(param, group, ScalarTarget.TY, [(0.5, 10.0)])
+    before = built.revision
+    built.bind(param, group, ScalarTarget.TX, [(0.25, 2.0), (0.25, 4.0)])
+    assert built.revision == before + 1
+    bindings = client.send(BindingList(session=built.session, node=group)).bindings
+    by_target = {binding.target: binding for binding in bindings}
+    assert by_target["ty"].key_positions == [[0.0, 0.5, 1.0]]
+    assert by_target["tx"].key_positions == [[0.0, 0.25, 1.0]]
+    assert by_target["tx"].keys == [[None, 4.0, None]]
+    built.bind(param, group, ScalarTarget.TX, [(0.75, 8.0)])
+    bindings = client.send(BindingList(session=built.session, node=group)).bindings
+    tx = next(binding for binding in bindings if binding.target == "tx")
+    assert tx.keys == [[None, 4.0, 8.0, None]]
+
+
+def test_bad_deform_cell_rolls_back_its_binding_creation(client: Client, tmp_path: Path) -> None:
+    built = Builder.new(client)
+    part = built.part("Body", write_png(tmp_path / "body.png"))
+    param = built.param("Pull")
+    before = built.revision
+    with pytest.raises(ProtocolError) as failure:
+        built.bind_deform(param, part, {1: [(1.0, 0.0)]})
+    assert failure.value.op_index == 1
+    assert built.revision == before
+    assert client.send(BindingList(session=built.session, node=part)).bindings == []

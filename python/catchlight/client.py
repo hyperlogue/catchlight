@@ -8,10 +8,9 @@ offering a method per kind that a caller could pick wrong.
 Invariants this module enforces:
 
 - **One send, routed by kind.** An `edit` command moves the session's
-  revision and the reply says what it moved to; a `presence` or `scratch`
-  command publishes view state and moves nothing; the two query kinds read.
-  `send` returns the reply's body for all of them, and records a revision for
-  the first.
+  revision when authored content changes. Presence publishes view state,
+  while the query kinds read. `send` records each captured reply revision,
+  including reads, without inferring a newer revision from another request.
 
 - **A refused command raises, a broken connection raises differently.** An
   editor that answered `err` is working — the command was wrong — so that is a
@@ -49,15 +48,24 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from .protocol_gen import (
     Camera,
     Command,
-    CommandKind,
     ErrorCode,
+    EditApply,
+    EditValidate,
+    EditOp,
+    EditGoto,
+    EditHistoryGet,
+    LimitInfo,
+    ModelExport,
+    Undo,
+    Redo,
+    Status,
     ExtensionDelete,
     ExtensionGet,
     ExtensionInfo,
@@ -66,9 +74,7 @@ from .protocol_gen import (
     ExtensionSetJson,
     Extensions,
     CommandExtensionSet,
-    ImportFile,
     ImportJson,
-    ImportManifest,
     ImportTexture,
     NodeAdd,
     NodeKindArg,
@@ -86,11 +92,19 @@ from .protocol_gen import (
     ResponseBodyPreview,
     ResponseBodySaved,
     ResponseBodySession,
+    ResponseBodySessionFork,
+    ResponseBodyModelExport,
+    ResponseBodyEditResults,
+    ResponseBodyEditHistory,
     ResponseBodyTexture,
     Save,
     SessionClose,
     SessionId,
     SessionNew,
+    SessionFork,
+    SessionSourceClm,
+    SessionSourceJson,
+    SessionSourceManifest,
     SessionOpen,
     TexId,
     TextureAdd,
@@ -106,10 +120,15 @@ __all__ = ["Client", "ProtocolError"]
 class ProtocolError(RuntimeError):
     """The editor refused a command. `code` is what to branch on."""
 
-    def __init__(self, code: ErrorCode, message: str) -> None:
+    def __init__(
+        self, code: ErrorCode, message: str, *,
+        op_index: int | None = None, limit: LimitInfo | None = None,
+    ) -> None:
         super().__init__(f"{code.value}: {message}")
         self.code = code
         self.message = message
+        self.op_index = op_index
+        self.limit = limit
 
 
 class Client:
@@ -137,7 +156,9 @@ class Client:
         """
         reply = parse_reply(self._transport.request(command.to_wire()))
         if isinstance(reply, ReplyErr):
-            raise ProtocolError(reply.code, reply.message)
+            raise ProtocolError(
+                reply.code, reply.message, op_index=reply.op_index, limit=reply.limit
+            )
         if not isinstance(reply, ReplyOk):
             raise ProtocolError(
                 ErrorCode.BAD_REQUEST,
@@ -160,7 +181,9 @@ class Client:
         wire, payload = self._transport.request_with(command.to_wire(), attachments)
         reply = parse_reply(wire)
         if isinstance(reply, ReplyErr):
-            raise ProtocolError(reply.code, reply.message)
+            raise ProtocolError(
+                reply.code, reply.message, op_index=reply.op_index, limit=reply.limit
+            )
         if not isinstance(reply, ReplyOk):
             raise ProtocolError(
                 ErrorCode.BAD_REQUEST,
@@ -174,22 +197,41 @@ class Client:
         return self._revisions.get(session)
 
     def _record(self, command: Command, reply: ReplyOk) -> None:
-        """An edit's reply names the revision it produced.
+        """Remember the exact captured revision on every successful model read.
 
-        A `session_close` is the one that names none — its session is gone —
-        so it drops the entry instead of moving it.
+        A fork's outer revision belongs to its new session; its source remains
+        at the independently captured revision named in the response body.
         """
         if isinstance(command, SessionClose):
             self._revisions.pop(command.session, None)
             return
-        if type(command).KIND is not CommandKind.EDIT or reply.rev is None:
+        if reply.rev is None:
+            return
+        if isinstance(reply.body, ResponseBodySessionFork):
+            self._revisions[reply.body.session] = reply.rev
+            self._revisions[reply.body.source.session] = reply.body.source.rev
             return
         session = getattr(command, "session", None)
         if session is None and isinstance(reply.body, ResponseBodySession):
-            # The create/open/import commands name no session; they make one.
             session = reply.body.session
         if session is not None:
             self._revisions[session] = reply.rev
+
+    def require_revision(self, session: SessionId, if_rev: int | None = None) -> int:
+        """Choose an explicit guard or the last captured revision.
+
+        A session this client has not read is queried once. A stale known
+        revision is preserved so the server refuses the write; no command is
+        automatically retried against someone else's newer work.
+        """
+        if if_rev is not None:
+            return if_rev
+        if session not in self._revisions:
+            self.send(Status(session=session))
+        revision = self.revision(session)
+        if revision is None:
+            raise ProtocolError(ErrorCode.BAD_REQUEST, "reply omitted session revision")
+        return revision
 
     # -- sessions
 
@@ -230,7 +272,7 @@ class Client:
         target = _absolute(path)
         transport = self._transport
         if isinstance(transport, ByteTransport):
-            Path(target).write_bytes(transport.get_clm(session))
+            Path(target).write_bytes(self.export_model(session))
             return target
         return _saved(self.send(Save(session=session, path=target)))
 
@@ -276,24 +318,56 @@ class Client:
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"texture_add answered {body!r}")
         return body.texture
 
-    # -- import
+    # -- complete session sources and subtree installation
 
-    def import_file(
-        self,
-        session: SessionId,
-        path: str | os.PathLike[str],
-        parent: NodeId | None = None,
-    ) -> None:
-        """Import the `.clm` at `path` into `session`.
+    def from_file(
+        self, path: str | os.PathLike[str], *, name: str | None = None,
+    ) -> SessionId:
+        """Create a clean revision-zero session from local `.clm` bytes.
 
-        `parent` absent replaces the session's whole model, which needs a
-        session that is still empty — `new()` and then this. `parent` present
-        installs the imported roots under that node instead.
+        The new session has no save path. `open` instead reads a store-owned
+        file and remembers that path for later saves.
         """
-        self.send_with(
-            ImportFile(session=session, parent=parent),
+        body, _ = self.send_with(
+            SessionNew(name=name, source=SessionSourceClm()),
             {"model": Path(_absolute(path)).read_bytes()},
         )
+        return _session(body)
+
+    def from_json(
+        self,
+        structure: Mapping[str, Any] | str,
+        textures: Mapping[str, str | os.PathLike[str]]
+        | Iterable[tuple[str, str | os.PathLike[str]]] = (),
+        *,
+        name: str | None = None,
+        alpha: TextureAlpha = TextureAlpha.STRAIGHT,
+    ) -> SessionId:
+        """Create a session from a complete CLM structure and local images.
+
+        Binary extensions need a CLM source, because JSON contains their
+        markers without their payloads. Construction failure creates no session.
+        """
+        declared, attachments = _structure_attachments(structure, textures, alpha)
+        body, _ = self.send_with(
+            SessionNew(name=name, source=SessionSourceJson(textures=declared)),
+            attachments,
+        )
+        return _session(body)
+
+    def from_manifest(
+        self, manifest_path: str | os.PathLike[str], *, name: str | None = None,
+    ) -> SessionId:
+        """Create a session from a manifest and its images in one request."""
+        source = Path(_absolute(manifest_path))
+        manifest = source.read_bytes()
+        attachments: dict[str, bytes] = {"manifest": manifest}
+        for reference in _texture_references(manifest, source):
+            attachments[f"texture:{reference}"] = (source.parent / reference).read_bytes()
+        body, _ = self.send_with(
+            SessionNew(name=name, source=SessionSourceManifest()), attachments
+        )
+        return _session(body)
 
     def import_json(
         self,
@@ -301,65 +375,87 @@ class Client:
         structure: Mapping[str, Any] | str,
         textures: Mapping[str, str | os.PathLike[str]]
         | Iterable[tuple[str, str | os.PathLike[str]]] = (),
-        parent: NodeId | None = None,
+        *,
+        parent: NodeId,
+        if_rev: int | None = None,
         alpha: TextureAlpha = TextureAlpha.STRAIGHT,
     ) -> None:
-        """Import a `.clm` structure as JSON, with its images.
+        """Install structure roots beneath `parent` as one guarded edit.
 
-        `structure` is the structure as the format's serde spells it, either a
-        dict this encodes or a string already encoded. `textures` maps each
-        texture Id the structure names to the image file holding it; the
-        encoding comes from each file's suffix the way `add_texture` decides
-        it, and `alpha` says what every one of them means by its alpha channel
-        (straight, which is what an editor writes).
-
-        `parent` absent replaces the session's whole model, which needs a
-        session that is still empty. `parent` present installs the imported
-        roots under that node instead.
-
-        A byte extension has nowhere to travel here — its payload lives in a
-        container section JSON has none of — so set one after the import
-        rather than in the structure.
+        Existing IDs must not collide. Use `from_json` for a complete new
+        session; this operation always installs into an existing model.
         """
-        body = structure if isinstance(structure, str) else json.dumps(structure)
-        pairs = textures.items() if isinstance(textures, Mapping) else list(textures)
-
-        declared: list[ImportTexture] = []
-        attachments: dict[str, bytes] = {"structure": body.encode()}
-        for texture, path in pairs:
-            source = Path(_absolute(path))
-            declared.append(
-                ImportTexture(
-                    texture=TexId(texture),
-                    encoding=_encoding_of(source),
-                    alpha=alpha,
-                )
-            )
-            attachments[f"texture:{texture}"] = source.read_bytes()
-
+        declared, attachments = _structure_attachments(structure, textures, alpha)
         self.send_with(
-            ImportJson(session=session, parent=parent, textures=declared),
+            ImportJson(
+                session=session, parent=parent,
+                if_rev=self.require_revision(session, if_rev), textures=declared,
+            ),
             attachments,
         )
 
-    def import_manifest(
-        self,
-        session: SessionId,
-        manifest_path: str | os.PathLike[str],
-    ) -> None:
-        """Build `session`'s model from the manifest at `manifest_path`.
+    def fork(
+        self, session: SessionId, *, name: str | None = None,
+        if_rev: int | None = None,
+    ) -> SessionId:
+        """Copy one captured authored state into an independent clean session."""
+        body = self.send(SessionFork(
+            session=session, if_rev=self.require_revision(session, if_rev), name=name,
+        ))
+        if not isinstance(body, ResponseBodySessionFork):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"session_fork answered {body!r}")
+        return body.session
 
-        The manifest and every image it names travel with the command. A
-        texture reference is resolved against the manifest's own directory —
-        which is what the reference means — and attached under `texture:<ref>`,
-        spelled exactly as the manifest spells it.
+    def export_model(self, session: SessionId, *, if_rev: int | None = None) -> bytes:
+        """Return a guarded CLM snapshot without changing save state or history."""
+        body, payload = self.send_with(ModelExport(
+            session=session, if_rev=self.require_revision(session, if_rev),
+        ))
+        if not isinstance(body, ResponseBodyModelExport) or payload is None:
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"model_export answered {body!r}")
+        if len(payload) != body.byte_length:
+            raise ProtocolError(ErrorCode.BAD_REQUEST, "model_export byte length mismatch")
+        return payload
+
+    # -- atomic edits and branching history
+
+    def apply(
+        self, session: SessionId, edits: Sequence[EditOp], *,
+        if_rev: int | None = None, validate: bool = False,
+    ) -> ResponseBodyEditResults:
+        """Apply one atomic edit list, or validate it without publication.
+
+        `ProtocolError.op_index` identifies a failed operation. No preceding
+        operation in a refused list is published.
         """
-        source = Path(_absolute(manifest_path))
-        manifest = source.read_bytes()
-        attachments: dict[str, bytes] = {"manifest": manifest}
-        for reference in _texture_references(manifest, source):
-            attachments[f"texture:{reference}"] = (source.parent / reference).read_bytes()
-        self.send_with(ImportManifest(session=session), attachments)
+        command = EditValidate if validate else EditApply
+        body = self.send(command(
+            session=session, if_rev=self.require_revision(session, if_rev),
+            edits=list(edits),
+        ))
+        if not isinstance(body, ResponseBodyEditResults):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"{command.CMD} answered {body!r}")
+        return body
+
+    def undo(self, session: SessionId, *, if_rev: int | None = None) -> None:
+        self.send(Undo(session=session, if_rev=self.require_revision(session, if_rev)))
+
+    def redo(self, session: SessionId, *, if_rev: int | None = None) -> None:
+        self.send(Redo(session=session, if_rev=self.require_revision(session, if_rev)))
+
+    def goto(
+        self, session: SessionId, revision: int, *, if_rev: int | None = None,
+    ) -> None:
+        self.send(EditGoto(
+            session=session, revision=revision,
+            if_rev=self.require_revision(session, if_rev),
+        ))
+
+    def history(self, session: SessionId) -> ResponseBodyEditHistory:
+        body = self.send(EditHistoryGet(session=session))
+        if not isinstance(body, ResponseBodyEditHistory):
+            raise ProtocolError(ErrorCode.BAD_REQUEST, f"edit_history_get answered {body!r}")
+        return body
 
     # -- rendering
 
@@ -449,6 +545,25 @@ class Client:
         if not isinstance(body, ResponseBodyExtensions):
             raise ProtocolError(ErrorCode.BAD_REQUEST, f"extensions answered {body!r}")
         return body.extensions
+
+
+def _structure_attachments(
+    structure: Mapping[str, Any] | str,
+    textures: Mapping[str, str | os.PathLike[str]]
+    | Iterable[tuple[str, str | os.PathLike[str]]],
+    alpha: TextureAlpha,
+) -> tuple[list[ImportTexture], dict[str, bytes]]:
+    body = structure if isinstance(structure, str) else json.dumps(structure)
+    pairs = textures.items() if isinstance(textures, Mapping) else textures
+    declared: list[ImportTexture] = []
+    attachments: dict[str, bytes] = {"structure": body.encode()}
+    for texture, path in pairs:
+        source = Path(_absolute(path))
+        declared.append(ImportTexture(
+            texture=TexId(texture), encoding=_encoding_of(source), alpha=alpha,
+        ))
+        attachments[f"texture:{texture}"] = source.read_bytes()
+    return declared, attachments
 
 
 def _encoding_of(path: Path) -> TextureEncoding:
