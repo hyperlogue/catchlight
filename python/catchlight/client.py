@@ -300,10 +300,7 @@ class Client:
     ) -> TexId:
         """Give `node` the image at `path`, and return the texture's Id.
 
-        The bytes are read here and travel with the command, over either door.
-        The encoding is decided here too, from the file's suffix, because it is
-        a field on the command now rather than something the editor sniffs off
-        a key.
+        Sends the file bytes with an explicit encoding selected from its suffix.
         """
         source = Path(_absolute(path))
         body, _ = self.send_with(

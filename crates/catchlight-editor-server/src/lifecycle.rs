@@ -126,9 +126,7 @@ impl Editor {
             Ok((source.model.clone(), source.title.clone()))
         })?;
         let (model, source_title) = capture.value;
-        // A snapshot clone keeps source identity for source-side caches. A
-        // fork is a different authored model and needs its own cache identity,
-        // while replace_from still shares immutable payload allocations.
+        // Forks get a fresh model identity while sharing immutable payloads.
         let mut independent = Model::new();
         independent.replace_from(&model);
         self.publish_session(

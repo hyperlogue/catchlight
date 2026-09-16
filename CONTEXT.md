@@ -284,10 +284,9 @@ _Avoid_: keypoint (that's an authored binding cell)
 ### Authoring
 
 **Import**:
-Producing a session's model from what a client supplies — an inochi2d
-export, a manifest, a structure with its images, or a model file — rather
-than opening one from the store. Into a pristine session it becomes the
-session's model; under a parent it is installed as an addon.
+Creating a model from supplied artwork, a manifest, a structure with its
+images, or a model file. The editor opens a complete imported model in a
+new session; an imported addon is installed into an existing model.
 
 **Manifest**:
 A hand-written description of a model assembled from loose textures, with
@@ -344,14 +343,10 @@ _Avoid_: server (that's one place it runs), backend
 One open model in the editor, with its history and its revision.
 
 **Revision**:
-The count of edits a session has taken. Every reply and every feed names the
-revision the session is at, and a replica only ever moves to a higher one.
+A session's increasing publication number, advanced by a changed edit or
+history navigation. Session replies and feeds identify the revision they
+capture; failed and no-op edits leave it unchanged.
 _Avoid_: version, generation
-
-**Pristine**:
-A session that has never been edited: a bare root and nothing else. The one
-state an import may replace whole.
-_Avoid_: empty, blank
 
 **Store**:
 Where the editor's own files live. A path on the wire names a file in the
@@ -381,10 +376,9 @@ and never go backwards.
 _Avoid_: sync, push
 
 **Command**:
-One request to the editor. An edit changes the session's model and moves
-the revision; a presence command publishes view state and changes nothing;
-a scratch command is served by the local puppet; a replica query is
-answered from a replica; a server query needs the editor itself.
+One request to the editor: an edit authors model data, presence shares view
+state, and a query reads captured facts. Replica queries can be answered
+locally; server queries require the owning editor.
 _Avoid_: request (that's the envelope), action, document command
 
 **Attachment**:
@@ -394,12 +388,13 @@ inside the command that uses them.
 _Avoid_: upload, blob, staged file
 
 **Payload**:
-Bytes that leave beside a reply — a preview's image, an extension's bytes.
+Bytes that leave beside a reply — an exported model, a preview's image or
+an extension's bytes.
 _Avoid_: attachment (that's the way in), body
 
 **Presence**:
-What one client shows the others about itself — its selection, for now.
-Published, never saved, never undone.
+A client's shared pose, camera and selection. Published, never saved,
+never undone.
 
 **Preview**:
 A rendered image of a session's model at a given pose, through a camera.

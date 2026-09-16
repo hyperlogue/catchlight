@@ -112,8 +112,7 @@ pub(super) fn validate(model: &Model, clip: &ClmAnimation) -> Result<(), Error> 
     {
         return Err(bad("animation keyframe values must be finite"));
     }
-    // The same lane-reference and ordering invariants used for model loading
-    // and authoring, rather than a subtly different CLI validation policy.
+    // Reuse core's lane-reference and ordering validation.
     let mut checked = model.clone();
     checked.set_animations(vec![clip.clone()])?;
     Ok(())

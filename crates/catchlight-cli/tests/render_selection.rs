@@ -276,8 +276,7 @@ fn solid_texture(rgba: [u8; 4]) -> ModelTexture {
     }
 }
 
-// Preserve this regression suite's explicit old physics/background/framing
-// policy while testing the unified command's shared implementation.
+// Fix physics, background and framing so selection tests compare the same view.
 fn run(args: &[&str]) -> (i32, String, String) {
     let mut args = args.to_vec();
     args.extend(["--background", "transparent", "--physics", "off"]);
