@@ -126,6 +126,8 @@
 pub mod addon;
 mod binding;
 mod check;
+mod correspondence;
+mod equality;
 mod eval;
 mod file;
 
@@ -135,6 +137,7 @@ pub use binding::{
     BindingParams, BindingTarget, DenseGrid, ScalarTarget,
 };
 pub use check::CheckWarning;
+pub use correspondence::{DeformMapping, MeshMappingError, VertexWeight, MAX_MAPPING_ENTRIES};
 pub use eval::Pose;
 pub use file::ClmLoadError;
 
