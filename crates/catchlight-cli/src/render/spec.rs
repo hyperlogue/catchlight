@@ -1065,7 +1065,7 @@ pub(super) fn check_limit(
 
 /// Schema is generated from the same Rust types used for parsing and output.
 /// Semantic checks requiring model state run in Document::resolve.
-pub fn schema(resolved: bool) -> serde_json::Value {
+pub fn schema(resolved: bool) -> Result<serde_json::Value, Error> {
     let schema = if resolved {
         schemars::schema_for!(ResolvedSpec)
     } else {
@@ -1073,15 +1073,16 @@ pub fn schema(resolved: bool) -> serde_json::Value {
     };
     let mut value = schema.to_value();
     value["x-catchlight-limits"] = serde_json::json!(Limits::default());
-    if !resolved {
-        // An installed binary carries complete examples alongside its schema.
-        if let Ok(example) = serde_json::from_str::<serde_json::Value>(include_str!(
+    if resolved {
+        value["examples"] = serde_json::json!([super::artifacts::schema_example("resolved")?]);
+    } else {
+        let example = serde_json::from_str::<serde_json::Value>(include_str!(
             "../../tests/fixtures/render-spec.json"
-        )) {
-            value["examples"] = serde_json::json!([example]);
-        }
+        ))
+        .map_err(|e| bad(format!("schema example: {e}")))?;
+        value["examples"] = serde_json::json!([example]);
     }
-    value
+    Ok(value)
 }
 
 fn named_requests(schema: &mut schemars::Schema) {

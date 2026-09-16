@@ -524,3 +524,56 @@ fn cli_rejects_oversized_model_before_reading_or_gpu_validation() {
     }
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 }
+
+#[test]
+fn output_schema_examples_are_complete_and_share_evaluated_model_facts() {
+    use catchlight_cli::render::artifacts;
+    let mut examples = BTreeMap::new();
+    for kind in ["resolved", "geometry", "trace", "run", "bounds"] {
+        let schema = if kind == "resolved" {
+            schema(true).unwrap()
+        } else {
+            artifacts::json_schema(kind).unwrap()
+        };
+        let example = schema["examples"][0].clone();
+        let object = example.as_object().expect("complete example object");
+        for required in schema["required"].as_array().unwrap() {
+            assert!(
+                object.contains_key(required.as_str().unwrap()),
+                "{kind}: missing {required}"
+            );
+        }
+        assert!(object
+            .keys()
+            .all(|key| schema["properties"].get(key).is_some()));
+        examples.insert(kind, example);
+    }
+    let plan = &examples["resolved"];
+    assert_eq!(examples["run"]["plan"], *plan);
+    assert_eq!(examples["run"]["complete"], true);
+    assert_eq!(
+        examples["geometry"]["framing"],
+        plan["requests"]["detail"]["framing"]
+    );
+    assert_eq!(
+        examples["geometry"]["nodes"]["panel-a"]["world"][0],
+        json!([6.0, 0.0, 0.0])
+    );
+    assert_eq!(
+        examples["bounds"]["overall"],
+        json!({"min":[6.0,0.0],"max":[106.0,100.0]})
+    );
+    assert_eq!(examples["trace"]["frame"], 1);
+    assert_eq!(examples["trace"]["clip"]["frame"], 1.0);
+    assert_eq!(examples["trace"]["requested"]["drive"], 1.0);
+    assert_eq!(examples["trace"]["effective"]["drive"], 1.0);
+    for (name, request) in plan["requests"].as_object().unwrap() {
+        let recorded: Vec<_> = examples["run"]["requests"][name]["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|output| output["file"].clone())
+            .collect();
+        assert_eq!(json!(recorded), request["outputs"]);
+    }
+}

@@ -192,7 +192,7 @@ impl RenderArgs {
                 SchemaKind::Geometry => super::artifacts::json_schema("geometry"),
                 SchemaKind::Trace => super::artifacts::json_schema("trace"),
                 SchemaKind::Run => super::artifacts::json_schema("run"),
-            };
+            }?;
             print_json(&schema)?;
             return Ok(());
         }
@@ -287,7 +287,7 @@ pub struct BoundsArgs {
 impl BoundsArgs {
     pub fn run(self) -> Result<(), Error> {
         if self.schema {
-            return print_json(&super::artifacts::json_schema("bounds"));
+            return print_json(&super::artifacts::json_schema("bounds")?);
         }
         let file = self
             .file

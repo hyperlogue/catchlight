@@ -353,14 +353,154 @@ impl RunManifest {
     }
 }
 
-pub fn json_schema(kind: &str) -> serde_json::Value {
+pub fn json_schema(kind: &str) -> Result<serde_json::Value, Error> {
     let schema = match kind {
         "geometry" => schemars::schema_for!(GeometryOutput),
         "trace" => schemars::schema_for!(TraceFrame),
         "run" => schemars::schema_for!(RunManifest),
         _ => schemars::schema_for!(BoundsOutput),
     };
-    schema.to_value()
+    let mut schema = schema.to_value();
+    schema["examples"] = serde_json::json!([schema_example(kind)?]);
+    Ok(schema)
+}
+
+/// Complete discovery examples share one synthetic model and the production
+/// normalizer/evaluator. This performs no filesystem or GPU work. The run
+/// example illustrates completed records; schema discovery creates no images.
+pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
+    use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
+    use catchlight_core::{
+        BindingKey, BindingTarget, ModelNode, ModelParam, ModelPart, Name, NodeId, ParamId,
+        ScalarTarget,
+    };
+    let fail = |e: &dyn std::fmt::Display| bad(format!("schema example: {e}"));
+    let mut model = Model::new();
+    let root = model
+        .root()
+        .cloned()
+        .ok_or_else(|| bad("schema example has no root"))?;
+    let node = NodeId::new("panel-a").map_err(|e| fail(&e))?;
+    let param = ParamId::new("drive").map_err(|e| fail(&e))?;
+    model
+        .add_node_with_id(
+            node.clone(),
+            &root,
+            ModelNode::new(
+                "Panel",
+                ModelNodeKind::Part(ModelPart::new(ClmMesh {
+                    verts: vec![0.0, 0.0, 100.0, 0.0, 0.0, 100.0],
+                    uvs: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+                    indices: ClmIndices::U16(vec![0, 1, 2]),
+                    origin: [0.0, 0.0],
+                })),
+            ),
+        )
+        .map_err(|e| fail(&e))?;
+    model
+        .add_param_with_id(
+            param.clone(),
+            ModelParam::new(Name::truncated("Drive"), 0.0, 1.0, 0.0),
+        )
+        .map_err(|e| fail(&e))?;
+    let key = BindingKey::new(param, node, BindingTarget::Scalar(ScalarTarget::Tx));
+    model
+        .set_binding_key(&key, [0, 0], 0.0)
+        .map_err(|e| fail(&e))?;
+    model
+        .set_binding_key(&key, [1, 0], 12.0)
+        .map_err(|e| fail(&e))?;
+    let authored = serde_json::json!({
+        "schema":1,
+        "requests":{
+            "detail":{"rect":[-10,-10,120,120],"scale":2,"physics":{"mode":"off"},
+                      "pose":{"drive":0.5},"geometry":["panel-a"]},
+            "pulse":{"extends":"detail","animation":{"source":"spec","name":"pulse"},
+                     "trace_params":["drive"]}
+        },
+        "animations":{"pulse":{"name":"Pulse","timestep":0.016666667,"length":2,
+            "lead_in":-1,"lead_out":-1,"lanes":[{"param":"drive","interpolation":"Linear",
+                "keyframes":[{"frame":0,"value":0},{"frame":1,"value":1}]}]}}
+    });
+    let spec_bytes = serde_json::to_vec(&authored).map_err(|e| fail(&e))?;
+    let plan = super::spec::Document::parse(&spec_bytes)?.resolve(&model)?;
+    if kind == "resolved" {
+        return serde_json::to_value(plan).map_err(|e| fail(&e));
+    }
+    let detail = &plan.requests["detail"];
+    let runtime = FrameRuntime::new(&model, detail, || false)?;
+    match kind {
+        "geometry" => {
+            serde_json::to_value(GeometryOutput::observe("detail", detail, &model, &runtime)?)
+        }
+        "bounds" => serde_json::to_value(BoundsOutput::observe(detail, &model, &runtime)?),
+        "trace" => {
+            let pulse = &plan.requests["pulse"];
+            let mut runtime = FrameRuntime::new(&model, pulse, || false)?;
+            runtime.advance(&model);
+            serde_json::to_value(TraceFrame::observe("pulse", pulse, &model, &runtime)?)
+        }
+        "run" => {
+            let mut manifest = RunManifest::new(
+                plan,
+                InputIdentity {
+                    model_sha256: super::execute::hash(
+                        &model.to_clm_bytes().map_err(|e| fail(&e))?,
+                    ),
+                    spec_sha256: Some(super::execute::hash(&spec_bytes)),
+                },
+            );
+            manifest.complete = true;
+            manifest.renderer = Some(RendererIdentity {
+                backend: "Vulkan".into(),
+                format: "rgba8unorm-srgb".into(),
+            });
+            for (name, request) in &manifest.plan.requests {
+                let frames: Vec<_> = request.animation.as_ref().map_or_else(
+                    || vec![None],
+                    |a| a.frames.captured_indices().map(Some).collect(),
+                );
+                let mut outputs = Vec::new();
+                for frame in frames {
+                    let base = frame.map_or_else(|| name.clone(), |i| format!("{name}--{i:06}"));
+                    outputs.extend([
+                        OutputRecord {
+                            file: format!("{base}.png"),
+                            frame,
+                            kind: OutputKind::Image,
+                        },
+                        OutputRecord {
+                            file: format!("{base}--geometry.json"),
+                            frame,
+                            kind: OutputKind::Geometry,
+                        },
+                    ]);
+                }
+                if request.animation.is_some() {
+                    outputs.push(OutputRecord {
+                        file: format!("{name}--trace.jsonl"),
+                        frame: None,
+                        kind: OutputKind::Trace,
+                    });
+                }
+                manifest.requests.insert(
+                    name.clone(),
+                    RequestResult {
+                        complete: true,
+                        outputs,
+                        pose: if request.animation.is_none() {
+                            Some(effective_pose(&model, &runtime.puppet)?)
+                        } else {
+                            None
+                        },
+                    },
+                );
+            }
+            serde_json::to_value(manifest)
+        }
+        _ => return Err(bad("unknown output schema example")),
+    }
+    .map_err(|e| fail(&e))
 }
 
 /// Commit a single completed artifact beside its destination. Existing PNGs
