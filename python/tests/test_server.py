@@ -8,6 +8,7 @@ that failed halfway has no object left to ask.
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -67,6 +68,36 @@ def test_a_model_that_is_not_there_raises_with_what_the_server_printed(tmp_path:
     message = str(raised.value)
     assert "could not open" in message, message
     assert str(missing) in message, message
+    assert launched_directories() == before
+
+
+def test_an_exited_server_drains_pending_stderr_before_reporting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from catchlight import server
+
+    release = threading.Event()
+    original_drain = server._StderrTail._drain
+    original_stop = server._StderrTail.stop
+
+    def delayed_drain(tail, stream):
+        release.wait()
+        original_drain(tail, stream)
+
+    def finish_pending_output(tail):
+        release.set()
+        original_stop(tail)
+
+    # Hold the reader until its owner joins it. The actual child has already
+    # printed and exited; process exit alone cannot guarantee the reader ran.
+    monkeypatch.setattr(server._StderrTail, "_drain", delayed_drain)
+    monkeypatch.setattr(server._StderrTail, "stop", finish_pending_output)
+    before = launched_directories()
+    try:
+        with pytest.raises(ServerError, match="could not open"):
+            launch(store=tmp_path, model=tmp_path / "missing.clm")
+    finally:
+        release.set()
     assert launched_directories() == before
 
 

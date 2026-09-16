@@ -249,6 +249,10 @@ class LaunchedServer:
         while True:
             code = self._process.poll() if self._process else None
             if code is not None:
+                # Exit closes the child's pipe, but its reader may still be
+                # scheduled behind this thread. Collect its final diagnostic
+                # before freezing the startup error message.
+                self._stderr.stop()
                 raise ServerError(self._died(f"exited with status {code}"))
             if _answers(self.socket_path):
                 return
