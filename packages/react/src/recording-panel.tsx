@@ -1,5 +1,7 @@
 /** Recording controls share one explicit destination with canvas gestures.
- * Hollow keypoints are derived; clicking or scrubbing a param never authors. */
+ * Hollow keypoints are derived; clicking or scrubbing a param never authors.
+ * A shelf displays at most 256 combined cells. Larger unions retain continuous
+ * pose controls and step through each axis without expanding their product. */
 import { useRef } from "react";
 import { useEditing } from "./editing.js";
 import {
@@ -11,13 +13,15 @@ import {
   NumberField,
 } from "./controls.js";
 import { ParamSliderRoot } from "./param-slider.js";
-import { valueAtKey } from "./bindings.js";
+import { bindingCellAt, valueAtKey } from "./bindings.js";
 
 const display = (n: number) =>
   new Intl.NumberFormat("en", {
     maximumFractionDigits: 5,
     signDisplay: "exceptZero",
   }).format(n);
+
+const MAX_SHELF_CELLS = 256;
 
 export function WorkspaceModes() {
   const edit = useEditing()!;
@@ -176,8 +180,8 @@ export function RecordingInspector() {
   const selectedBindings = edit.target
     ? edit.relevant.filter(
         (b) => {
-          const cell = b.key_positions.map((axis, index) => axis.findIndex((p) => Math.abs(p - edit.target!.position[index]!) < 0.00001));
-          return b.authored[cell[1] ?? 0]?.[cell[0]!];
+          const cell = bindingCellAt(b, edit.target!.position);
+          return cell && b.authored[cell[1]]?.[cell[0]];
         },
       )
     : [];
@@ -482,6 +486,7 @@ export function RecordingKeys() {
         Params connect your artwork to movement. Add one in the Params tab.
       </EmptyState>
     );
+  const compact = edit.xPositions.length * edit.yPositions.length > MAX_SHELF_CELLS;
   const keyState = (x: number, y: number) =>
     edit.keyAuthored([edit.xPositions[x]!, edit.yPositions[y]!]);
   const keyButton = (x: number, y: number, matrix = false) => {
@@ -547,10 +552,40 @@ export function RecordingKeys() {
               />
             </div>
           ))}
-          {!secondary && (
+          {!secondary && !compact && (
             <div data-catchlight-record-key-strip="">
               {edit.xPositions.map((_, x) => keyButton(x, 0))}
             </div>
+          )}
+          {compact && (
+            <>
+              <p data-catchlight-record-pose-hint="">
+                Too many key positions to show together. Use the sliders or step through each param’s key positions.
+              </p>
+              {[primary, ...(secondary ? [secondary] : [])].map((p, axis) => {
+                const positions = axis === 0 ? edit.xPositions : edit.yPositions;
+                const current = axis === 0 ? edit.x : edit.y;
+                const at = edit.target?.position[axis] ?? 0;
+                const next = current === undefined ? positions.findIndex((value) => value > at) : current + 1;
+                const previous = current === undefined ? (next < 0 ? positions.length : next) - 1 : current - 1;
+                return (
+                  <div key={p.id} data-catchlight-record-key-strip="" role="group" aria-label={`${p.name} key positions`}>
+                    <span>{p.name} · {positions.length} positions</span>
+                    {([["Previous", previous], ["Next", next]] as const).map(([label, index]) => (
+                      <button
+                        key={label}
+                        type="button"
+                        aria-label={`${label} ${p.name} key position`}
+                        disabled={edit.busy || index < 0 || index >= positions.length}
+                        onClick={() => session.setParam(p.id, valueAtKey(p, index, positions))}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })}
+            </>
           )}
           <p data-catchlight-record-pose-hint="">
             {edit.recording
@@ -558,7 +593,7 @@ export function RecordingKeys() {
               : "Scrub to preview, then start recording at any value. Only edited properties receive a key."}
           </p>
         </div>
-        {secondary && (
+        {secondary && !compact && (
           <div data-catchlight-record-matrix-scroll="">
             <div data-catchlight-record-matrix-label="">
               <span>{secondary.name} ↑</span>

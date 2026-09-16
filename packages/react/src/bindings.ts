@@ -151,3 +151,22 @@ export function keyIndexNear(param: ParamInfo, value: number, positions: readonl
   });
   return best;
 }
+
+/** Resolve a recording pose on this binding's own grid. As in Rust recording,
+ * the nearest key within 1e-5 normalized units absorbs pose round-trip error;
+ * an exact key always wins over another explicit key within that tolerance. */
+export function bindingCellAt(binding: Pick<BindingInfo, "key_positions">, position: readonly [number, number]): [number, number] | undefined {
+  const indices = binding.key_positions.map((axis, i) => {
+    let nearest = -1;
+    let distance = Infinity;
+    axis.forEach((value, index) => {
+      const gap = Math.abs(value - position[i]!);
+      if (gap <= 0.00001 && gap < distance) {
+        nearest = index;
+        distance = gap;
+      }
+    });
+    return nearest;
+  });
+  return indices.every((index) => index >= 0) ? [indices[0]!, indices[1] ?? 0] : undefined;
+}

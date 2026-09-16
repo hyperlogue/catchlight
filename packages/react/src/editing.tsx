@@ -23,7 +23,7 @@ import {
 } from "react";
 import type { ReactNode } from "react";
 import { useSelection } from "./selection.js";
-import { keyIndexNear, normalizedValue, valueAtKey } from "./bindings.js";
+import { bindingCellAt, keyIndexNear, normalizedValue, valueAtKey } from "./bindings.js";
 import { Modal } from "./controls.js";
 import type { ErrorHandler } from "./authoring.js";
 
@@ -105,12 +105,8 @@ function useEditingController(
     : undefined;
   const address = JSON.stringify([session?.id, node, primary?.id, secondary?.id, position, recordTool]);
   const recording = mode === "record" && !!target && armed?.address === address && armed.pose === pose;
-  const cellAt = (binding: typeof bindings[number], at: [number, number]): [number, number] | undefined => {
-    const indices = binding.key_positions.map((axis, i) => axis.findIndex((value) => Math.abs(value - at[i]!) < 0.00001));
-    return indices.every((index) => index >= 0) ? [indices[0]!, indices[1] ?? 0] : undefined;
-  };
   const keyAuthored = (at: [number, number]) => relevant.some((binding) => {
-    const cell = cellAt(binding, at);
+    const cell = bindingCellAt(binding, at);
     return cell && binding.authored[cell[1]]?.[cell[0]];
   });
   const authored = !!target && keyAuthored(position);
@@ -347,7 +343,7 @@ function useEditingController(
     setBusy(true);
     try {
       const edits: EditOp[] = relevant.flatMap((binding): EditOp[] => {
-        const cell = cellAt(binding, target.position);
+        const cell = bindingCellAt(binding, target.position);
         if (!cell) return [];
         const address = { node: target.node, param: binding.param, param_y: binding.param_y ?? null, target: binding.target };
         if (action === "clear") return [{ op: "binding_cells_unset", ...address, cells: [cell] }];
