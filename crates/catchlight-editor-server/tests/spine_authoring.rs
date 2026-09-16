@@ -43,7 +43,14 @@ fn node(id: &str) -> NodeId {
 }
 
 fn session(ed: &Editor) -> SessionId {
-    match body(ed, 1, Command::SessionNew { name: None }) {
+    match body(
+        ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ) {
         ResponseBody::Session { session } => session,
         other => panic!("{other:?}"),
     }
@@ -73,7 +80,6 @@ fn param(ed: &Editor, session: SessionId, id: u64, name: &str) -> ParamId {
             min: -1.0,
             max: 1.0,
             default: 0.0,
-            key_positions: Vec::new(),
             param: Some(ParamId::new(name).unwrap()),
         },
     ) {
@@ -564,6 +570,7 @@ fn strip_part(
         ed,
         21,
         Command::MeshSet {
+            deform_mapping: None,
             if_rev: None,
             session,
             node: at.clone(),
@@ -1075,8 +1082,22 @@ fn model_chain_substeps_are_reported_validated_and_undoable() {
     assert_eq!(steps(), 8);
     assert!(matches!(reply(&ed, 3, edit(0)), Reply::Err { .. }));
     assert_eq!(steps(), 8);
-    body(&ed, 4, Command::Undo { session });
+    body(
+        &ed,
+        4,
+        Command::Undo {
+            session,
+            if_rev: ed.revision(session).unwrap(),
+        },
+    );
     assert_eq!(steps(), 4);
-    body(&ed, 5, Command::Redo { session });
+    body(
+        &ed,
+        5,
+        Command::Redo {
+            session,
+            if_rev: ed.revision(session).unwrap(),
+        },
+    );
     assert_eq!(steps(), 8);
 }

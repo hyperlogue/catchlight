@@ -264,7 +264,10 @@ fn new_session(socket: &mut Socket, id: u64) -> (SessionId, u64) {
         socket,
         Request {
             id,
-            command: Command::SessionNew { name: None },
+            command: Command::SessionNew {
+                source: None,
+                name: None,
+            },
         },
     );
     let reply = reply_to(socket, id);
@@ -336,7 +339,10 @@ fn clm_bytes() -> Vec<u8> {
     let editor = Editor::with_storage(store.clone());
     let session = match editor.handle(Request {
         id: 1,
-        command: Command::SessionNew { name: None },
+        command: Command::SessionNew {
+            source: None,
+            name: None,
+        },
     }) {
         Reply::Ok {
             body: ResponseBody::Session { session },
@@ -458,7 +464,10 @@ fn a_command_over_post_answers_with_its_revision() {
         server.addr,
         &Request {
             id: 1,
-            command: Command::SessionNew { name: None },
+            command: Command::SessionNew {
+                source: None,
+                name: None,
+            },
         },
     ));
     assert_eq!(rev_of(&reply), 0);
@@ -561,7 +570,10 @@ fn a_post_without_a_token_is_refused_before_its_body() {
         &[("Authorization", "Bearer not-the-token")],
         &serde_json::to_vec(&Request {
             id: 1,
-            command: Command::SessionNew { name: None },
+            command: Command::SessionNew {
+                source: None,
+                name: None,
+            },
         })
         .unwrap(),
     );
@@ -610,7 +622,10 @@ fn an_edit_made_over_post_reaches_a_websocket_subscriber() {
         server.addr,
         &Request {
             id: 1,
-            command: Command::SessionNew { name: None },
+            command: Command::SessionNew {
+                source: None,
+                name: None,
+            },
         },
     ))) {
         ResponseBody::Session { session } => session,
@@ -776,27 +791,28 @@ fn a_session_opened_from_the_store_saves_back_to_it() {
     catchlight_core::Model::from_clm_bytes(&written).expect("the saved bytes load as a model");
 }
 
-/// Bytes a client holds are a fresh session and an import, and that session
+/// Bytes a client holds construct a new session, and that session
 /// has no file — so a bare save refuses rather than writing into the server's
 /// working directory.
 #[test]
 fn a_session_imported_from_bytes_has_nowhere_to_save_until_it_is_told() {
     let server = start();
     let mut socket = connect(server.addr, TOKEN, None).unwrap();
-    let (session, _) = new_session(&mut socket, 1);
 
     let response = post_multipart(
         server.addr,
         &Request {
             id: 2,
-            command: Command::ImportFile {
-                session,
-                parent: None,
+            command: Command::SessionNew {
+                name: None,
+                source: Some(catchlight_editor_protocol::SessionSource::Clm {}),
             },
         },
         &[("model", &clm_bytes())],
     );
-    posted(&response);
+    let ResponseBody::Session { session } = body_of(posted(&response)) else {
+        panic!("session")
+    };
     assert_eq!(session_info(&mut socket, 3, session).file, None);
 
     send(
@@ -1201,6 +1217,7 @@ fn post_multipart(
         "POST",
         "/request",
         &[
+            ("Origin", ALLOWED_ORIGIN),
             ("Authorization", &bearer()),
             ("Content-Type", &content_type),
         ],
@@ -1280,6 +1297,11 @@ fn a_payload_is_the_body_and_the_reply_is_a_header() {
     assert_eq!(response.status, 200);
     assert_eq!(response.header("content-type"), Some("image/png"));
     let decoded = image::load_from_memory(&response.body).expect("the body is the png");
+    assert!(response
+        .header("access-control-expose-headers")
+        .expect("the browser must be able to read the binary reply receipt")
+        .split(',')
+        .any(|name| name.trim().eq_ignore_ascii_case("X-Catchlight-Reply")));
     assert_eq!((decoded.width(), decoded.height()), (48, 32));
 
     let header = response
@@ -1467,7 +1489,13 @@ fn a_byte_bearing_command_over_the_websocket_is_refused() {
     let (session, _) = new_session(&mut socket, 1);
 
     for (id, command) in [
-        (2, Command::ImportManifest { session }),
+        (
+            2,
+            Command::SessionNew {
+                name: None,
+                source: Some(catchlight_editor_protocol::SessionSource::Manifest {}),
+            },
+        ),
         (
             3,
             Command::Preview {

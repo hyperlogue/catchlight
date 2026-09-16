@@ -7,8 +7,9 @@
 //! following command must use.
 
 use catchlight_editor_protocol::{
-    BindingParams, BindingTarget, Command, ErrorCode, NodeId, NodeKindArg, NodePatch, ParamId,
-    Rename, Reply, Request, ResponseBody, ScalarTarget, SlotAddr, SlotId, SlotPair,
+    BindingCellValue, BindingCellWrite, BindingParams, BindingTarget, Command, ErrorCode, NodeId,
+    NodeKindArg, NodePatch, ParamId, Rename, Reply, Request, ResponseBody, SlotAddr, SlotId,
+    SlotPair,
 };
 use catchlight_editor_server::Editor;
 
@@ -52,8 +53,43 @@ fn root(ed: &Editor, id: u64, session: catchlight_editor_protocol::SessionId) ->
 }
 
 /// A quad, so a part has vertices for its slots to point at.
+/// A client composes tree and slot reads to discover empty slots.
+fn unfilled(ed: &Editor, session: catchlight_editor_protocol::SessionId) -> Vec<SlotAddr> {
+    let ResponseBody::Tree { root } = body(ed, 1000, Command::NodeTree { session }) else {
+        panic!("tree")
+    };
+    let mut stack = vec![root];
+    let mut result = Vec::new();
+    while let Some(node) = stack.pop() {
+        if node.kind == catchlight_editor_protocol::NodeKind::Part {
+            let ResponseBody::Slots { slots } = body(
+                ed,
+                1001,
+                Command::Slots {
+                    session,
+                    node: node.id.clone(),
+                },
+            ) else {
+                panic!("slots")
+            };
+            result.extend(
+                slots
+                    .into_iter()
+                    .filter(|s| s.vertex.is_none())
+                    .map(|s| SlotAddr {
+                        node: node.id.clone(),
+                        slot: s.id,
+                    }),
+            );
+        }
+        stack.extend(node.children);
+    }
+    result
+}
+
 fn quad(session: catchlight_editor_protocol::SessionId, node: NodeId) -> Command {
     Command::MeshSet {
+        deform_mapping: None,
         if_rev: None,
         session,
         node,
@@ -67,7 +103,14 @@ fn quad(session: catchlight_editor_protocol::SessionId, node: NodeId) -> Command
 #[test]
 fn a_renamed_node_answers_to_its_new_id_and_not_its_old_one() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
     let generated = node_of(body(
         &ed,
@@ -153,7 +196,14 @@ fn a_renamed_node_answers_to_its_new_id_and_not_its_old_one() {
 #[test]
 fn a_renamed_param_keeps_the_binding_that_named_it() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
     let node = node_of(body(
         &ed,
@@ -175,20 +225,22 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
             min: 0.0,
             max: 1.0,
             default: 0.0,
-            key_positions: Vec::new(),
             param: None,
         },
     ));
     body(
         &ed,
         5,
-        Command::BindingKey {
+        Command::BindingCellsSet {
+            if_rev: ed.revision(session).unwrap(),
             session,
             params: BindingParams::one(generated.clone()),
             node: node.clone(),
-            target: ScalarTarget::Tx,
-            cell: [1, 0],
-            value: 25.0,
+            target: BindingTarget::Tx,
+            cells: vec![BindingCellWrite {
+                cell: [1, 0],
+                value: BindingCellValue::Scalar(25.0),
+            }],
         },
     );
 
@@ -225,12 +277,13 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
         reply(
             &ed,
             8,
-            Command::BindingUnset {
+            Command::BindingCellsUnset {
+                if_rev: ed.revision(session).unwrap(),
                 session,
                 params: BindingParams::one(pull.clone()),
                 node,
                 target: BindingTarget::Tx,
-                cell: [1, 0],
+                cells: vec![[1, 0]],
             },
         ),
         Reply::Ok { .. }
@@ -260,12 +313,19 @@ fn a_renamed_param_keeps_the_binding_that_named_it() {
 
 /// The slot surface end to end: give a part slots, fill them from its own
 /// vertices, weld two parts pair by pair, then re-author a mesh and watch the
-/// slots it emptied come back in the reply and in `UnfilledSlots` — which is
+/// slots it emptied come back in the reply and in composed slot reads — which is
 /// what a commit gate reads.
 #[test]
 fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
     let mut next = 3;
     let mut step = |cmd: Command| -> ResponseBody {
@@ -327,10 +387,7 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(matches!(
-        step(Command::UnfilledSlots { session }),
-        ResponseBody::UnfilledSlots { slots } if slots.is_empty()
-    ));
+    assert!(unfilled(&ed, session).is_empty());
 
     // Weld them, a pair at a time.
     let pairs = |weight: f32| {
@@ -387,13 +444,9 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
         }
         other => panic!("{other:?}"),
     }
-    match step(Command::UnfilledSlots { session }) {
-        ResponseBody::UnfilledSlots { slots } => {
-            assert_eq!(slots.len(), 2, "the commit gate sees both");
-            assert!(slots.iter().all(|s| s.node == body_part));
-        }
-        other => panic!("{other:?}"),
-    }
+    let slots = unfilled(&ed, session);
+    assert_eq!(slots.len(), 2);
+    assert!(slots.iter().all(|s| s.node == body_part));
     assert!(matches!(
         step(Command::Welds { session }),
         ResponseBody::Welds { welds } if welds.len() == 1 && welds[0].pairs.len() == 2
@@ -408,10 +461,7 @@ fn a_slot_survives_a_mesh_edit_and_says_what_it_lost() {
             vertex: i as u32,
         });
     }
-    assert!(matches!(
-        step(Command::UnfilledSlots { session }),
-        ResponseBody::UnfilledSlots { slots } if slots.is_empty()
-    ));
+    assert!(unfilled(&ed, session).is_empty());
 
     // Deleting a slot takes the pairs that named it; the weld itself stays.
     for slot in [&left, &right] {
@@ -443,7 +493,14 @@ fn slot_of(b: ResponseBody) -> SlotAddr {
 #[test]
 fn a_slot_can_be_added_without_naming_one() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
 
     let mut next = 3;
@@ -522,7 +579,14 @@ fn a_slot_can_be_added_without_naming_one() {
 #[test]
 fn renaming_a_slot_carries_its_weld_pairs_and_refuses_a_name_in_use() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
 
     let mut next = 3;
@@ -624,9 +688,16 @@ fn renaming_a_slot_carries_its_weld_pairs_and_refuses_a_name_in_use() {
 /// rewrite a weld whole, so moving one weight through it means reading every
 /// other one back and sending it again unchanged.
 #[test]
-fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
+fn replacing_a_weld_preserves_other_pairs_and_explicit_orientation() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
 
     let mut next = 3;
@@ -677,62 +748,71 @@ fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
         other => panic!("{other:?}"),
     };
 
-    step(Command::WeldWeight {
+    step(Command::WeldSet {
         session,
         a: a.clone(),
         b: b.clone(),
-        slot: left.clone(),
-        weight: 0.25,
+        pairs: vec![
+            SlotPair {
+                a: left.clone(),
+                b: left.clone(),
+                weight: 0.25,
+            },
+            SlotPair {
+                a: right.clone(),
+                b: right.clone(),
+                weight: 0.5,
+            },
+        ],
     });
     assert_eq!(
         weights(&ed, 900),
-        vec![("left".into(), 0.25), ("right".into(), 0.5)],
-        "the pair nobody named kept its weight",
+        vec![("left".into(), 0.25), ("right".into(), 0.5)]
     );
 
-    // Named the other way round the same number is B's share, so A's is 0.75.
-    step(Command::WeldWeight {
+    // A caller changing orientation supplies the desired share of its new A.
+    step(Command::WeldSet {
         session,
         a: b.clone(),
         b: a.clone(),
-        slot: left.clone(),
-        weight: 0.25,
+        pairs: vec![
+            SlotPair {
+                a: left.clone(),
+                b: left.clone(),
+                weight: 0.75,
+            },
+            SlotPair {
+                a: right.clone(),
+                b: right.clone(),
+                weight: 0.5,
+            },
+        ],
     });
     assert_eq!(
         weights(&ed, 901),
         vec![("left".into(), 0.75), ("right".into(), 0.5)]
     );
-
-    // A pair nothing welds, and a share that is not one.
-    next += 1;
-    assert!(matches!(
-        reply(
-            &ed,
-            next,
-            Command::WeldWeight {
-                session,
-                a: a.clone(),
-                b: a.clone(),
-                slot: left.clone(),
-                weight: 0.5,
-            }
-        ),
-        Reply::Err {
-            code: ErrorCode::UnknownWeld,
-            ..
+    match body(&ed, 902, Command::Welds { session }) {
+        ResponseBody::Welds { welds } => {
+            assert_eq!(welds.len(), 1);
+            assert_eq!(welds[0].a, b);
+            assert_eq!(welds[0].b, a);
         }
-    ));
-    next += 1;
+        other => panic!("{other:?}"),
+    }
     assert!(matches!(
         reply(
             &ed,
-            next,
-            Command::WeldWeight {
+            903,
+            Command::WeldSet {
                 session,
                 a,
                 b,
-                slot: left,
-                weight: 1.5,
+                pairs: vec![SlotPair {
+                    a: left.clone(),
+                    b: left,
+                    weight: 1.5
+                }],
             }
         ),
         Reply::Err {
@@ -753,7 +833,14 @@ fn a_slot_weight_moves_on_its_own_and_means_the_end_it_names() {
 #[test]
 fn a_weld_is_unmade_without_taking_the_parts_with_it() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
 
     let mut next = 3;
@@ -834,13 +921,13 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
             other => panic!("{other:?}"),
         }
     }
-    assert!(matches!(
-        step(Command::UnfilledSlots { session }),
-        ResponseBody::UnfilledSlots { slots } if slots.is_empty()
-    ));
+    assert!(unfilled(&ed, session).is_empty());
 
     // Undo brings the weld back, so this is one ordinary edit.
-    step(Command::Undo { session });
+    step(Command::Undo {
+        session,
+        if_rev: ed.revision(session).unwrap(),
+    });
     assert!(matches!(
         step(Command::Welds { session }),
         ResponseBody::Welds { welds } if welds.len() == 1
@@ -877,7 +964,14 @@ fn a_weld_is_unmade_without_taking_the_parts_with_it() {
 #[test]
 fn the_slot_errors_a_client_reacts_to_have_their_own_codes() {
     let ed = Editor::new();
-    let session = session_of(body(&ed, 1, Command::SessionNew { name: None }));
+    let session = session_of(body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ));
     let root = root(&ed, 2, session);
     let part = node_of(body(
         &ed,

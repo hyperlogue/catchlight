@@ -30,7 +30,14 @@ fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
 /// An editor with one session and two params to drive.
 fn fixture() -> (Editor, SessionId, ParamId, ParamId) {
     let ed = Editor::new();
-    let session = match body(&ed, 1, Command::SessionNew { name: None }) {
+    let session = match body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ) {
         ResponseBody::Session { session } => session,
         other => panic!("{other:?}"),
     };
@@ -45,7 +52,6 @@ fn fixture() -> (Editor, SessionId, ParamId, ParamId) {
                 min: -1.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: Vec::new(),
                 param: Some(want.clone()),
             },
         ) {

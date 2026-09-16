@@ -55,6 +55,8 @@ pub fn serve_unix(editor: Arc<Editor>, path: &Path) -> std::io::Result<()> {
             let _ = write_reply(
                 &mut stream,
                 &Reply::Err {
+                    op_index: None,
+                    limit: None,
                     id: 0,
                     code: ErrorCode::Io,
                     message: "too many editor connections".into(),
@@ -190,6 +192,8 @@ pub(super) fn serve_connection(editor: &Editor, stream: UnixStream) {
                 let _ = write_reply(
                     &mut writer,
                     &Reply::Err {
+                        op_index: None,
+                        limit: None,
                         id: 0,
                         code: ErrorCode::BadRequest,
                         message: err.to_string(),
@@ -220,6 +224,8 @@ fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
     // waiting for its own reply waits forever.
     let id = || serde_json::from_slice::<RequestId>(line).map_or(0, |r| r.id);
     let bad = |message: String| Reply::Err {
+        op_index: None,
+        limit: None,
         id: id(),
         code: ErrorCode::BadRequest,
         message,
@@ -256,6 +262,8 @@ fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
             return match reply {
                 FilesError::Bad(message) => bad(message),
                 FilesError::Io(message) => Reply::Err {
+                    op_index: None,
+                    limit: None,
                     id: request.id,
                     code: ErrorCode::Io,
                     message,
@@ -271,6 +279,8 @@ fn answer_line(editor: &Editor, line: &[u8]) -> Reply {
             // The command ran; only the handoff failed. Every payload command
             // is a read, so there is no edit stranded behind this.
             Err(e) => Reply::Err {
+                op_index: None,
+                limit: None,
                 id: match &reply {
                     Reply::Ok { id, .. } | Reply::Err { id, .. } => *id,
                     Reply::Event(_) => 0,

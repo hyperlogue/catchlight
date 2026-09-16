@@ -1,11 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! A live vertex drag rides the presence path and the commit rides the
-//! edit path. That split is what keeps the undo history usable: dragging
-//! a vertex emits a `ScratchDeform` per mouse move, and if those touched the
-//! model, one gesture would bury every earlier edit under a hundred
-//! indistinguishable snapshots (and blow the 256 MiB budget on any model with
-//! real textures).
+//! Local Puppet scratch previews a drag without publishing an editor revision.
+//! The final exact-cell write is one undoable model edit.
 
 use catchlight_editor_protocol::{
     BindingParams, Command, NodeId, ParamId, Reply, Request, ResponseBody, SessionId,
@@ -59,17 +55,18 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
         let offsets: Vec<[f32; 2]> = (0..vertices)
             .map(|v| [nudge + v as f32 * 0.001, nudge - v as f32 * 0.001])
             .collect();
-        assert!(matches!(
-            ed.handle(Request {
-                id: 100 + i as u64,
-                command: Command::ScratchDeform {
-                    session,
-                    node: node.clone(),
-                    offsets,
-                },
-            }),
-            Reply::Ok { .. }
-        ));
+        ed.with_puppet(session, |model, puppet| {
+            let index = puppet.node_idx(&node).unwrap();
+            assert!(puppet.set_scratch_deform(
+                index,
+                &offsets
+                    .into_iter()
+                    .map(glam::Vec2::from)
+                    .collect::<Vec<_>>()
+            ));
+            puppet.tick(model, 0.0);
+        })
+        .unwrap();
     }
 
     assert_eq!(
@@ -92,13 +89,16 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
         body(
             &ed,
             4,
-            Command::DeformVertices {
-                if_rev: None,
+            Command::BindingCellsSet {
+                if_rev: ed.revision(session).unwrap(),
                 session,
                 params: BindingParams::one(param),
                 node: node.clone(),
-                cell: [0, 0],
-                offsets,
+                target: catchlight_editor_protocol::BindingTarget::Deform,
+                cells: vec![catchlight_editor_protocol::BindingCellWrite {
+                    cell: [0, 0],
+                    value: catchlight_editor_protocol::BindingCellValue::Offsets(offsets),
+                }],
             },
         ),
         ResponseBody::Empty
@@ -116,7 +116,10 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     assert!(matches!(
         ed.handle(Request {
             id: 7,
-            command: Command::Undo { session }
+            command: Command::Undo {
+                session,
+                if_rev: ed.revision(session).unwrap()
+            }
         }),
         Reply::Ok { .. }
     ));
@@ -124,106 +127,45 @@ fn a_hundred_drag_events_and_one_commit_leave_one_undo_entry() {
     assert!(matches!(
         ed.handle(Request {
             id: 8,
-            command: Command::Undo { session }
+            command: Command::Undo {
+                session,
+                if_rev: ed.revision(session).unwrap()
+            }
         }),
         Reply::Err { .. }
     ));
 }
 
-/// A scratch deform has to name a node the model carries, and to carry one
-/// offset per vertex of that node's mesh. Serde already refuses an offset with
-/// a coordinate missing; how many of them there are is what is left to check,
-/// and the puppet would otherwise be handed the wrong count.
 #[test]
-fn a_scratch_deform_is_checked_against_the_node_it_names() {
-    use catchlight_editor_protocol::ErrorCode;
-
-    let ed = Editor::new();
-    let session = open_bytes(&ed, "welded_seam", welded_seam());
-    let node = ed
-        .with_model(session, |model| {
-            model
-                .node_ids()
-                .find(|id| model.node_mesh(id).is_some_and(|m| !m.verts.is_empty()))
-                .cloned()
-                .expect("a meshed node")
-        })
-        .unwrap();
-
-    assert!(matches!(
-        ed.handle(Request {
-            id: 1,
-            command: Command::ScratchDeform {
-                session,
-                node: NodeId::new("no-such-node").unwrap(),
-                offsets: vec![[0.0, 0.0]],
-            },
-        }),
-        Reply::Err {
-            code: ErrorCode::NoNode,
-            ..
-        }
-    ));
-    assert!(matches!(
-        ed.handle(Request {
-            id: 2,
-            command: Command::ScratchDeform {
-                session,
-                node: node.clone(),
-                offsets: vec![[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
-            },
-        }),
-        Reply::Err {
-            code: ErrorCode::BadTarget,
-            ..
-        }
-    ));
-    // An empty list is how a drag ends: drop the scratch deform.
-    assert!(matches!(
-        ed.handle(Request {
-            id: 3,
-            command: Command::ScratchDeform {
-                session,
-                node,
-                offsets: Vec::new(),
-            },
-        }),
-        Reply::Ok { .. }
-    ));
-    assert_eq!(ed.history(session).unwrap(), (0, 0));
+fn scratch_is_not_a_server_command() {
+    assert!(serde_json::from_value::<Request>(serde_json::json!({
+        "id": 1, "cmd": "scratch_deform", "session": 1,
+        "node": "panel", "offsets": [[0, 0]]
+    }))
+    .is_err());
 }
 
-/// A session holding `bytes`: a fresh one, then the file imported into it.
-///
-/// The one way bytes a caller holds become a session's model — no side door
-/// that takes them, so a test opens a model exactly as a client does.
+/// Session construction validates the supplied model before publishing it.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
-    let reply = editor.handle(Request {
-        id: 0,
-        command: Command::SessionNew {
-            name: Some(title.to_string()),
-        },
-    });
-    let session = match reply {
+    let mut attachments = Attachments::none();
+    attachments.insert("model", bytes);
+    match editor
+        .handle_with(
+            Request {
+                id: 0,
+                command: Command::SessionNew {
+                    name: Some(title.to_string()),
+                    source: Some(catchlight_editor_protocol::SessionSource::Clm {}),
+                },
+            },
+            attachments,
+        )
+        .0
+    {
         Reply::Ok {
             body: ResponseBody::Session { session },
             ..
         } => session,
-        other => panic!("expected a session, got {other:?}"),
-    };
-    let mut attachments = Attachments::none();
-    attachments.insert("model", bytes);
-    match editor.handle_with(
-        Request {
-            id: 0,
-            command: Command::ImportFile {
-                session,
-                parent: None,
-            },
-        },
-        attachments,
-    ) {
-        (Reply::Ok { .. }, _) => session,
-        (other, _) => panic!("import_file: {other:?}"),
+        other => panic!("session_create: {other:?}"),
     }
 }

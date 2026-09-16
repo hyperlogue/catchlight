@@ -99,7 +99,10 @@ impl Fixture {
             session: SessionId(0),
             next: 0,
         };
-        f.session = match f.body(Command::SessionNew { name: None }) {
+        f.session = match f.body(Command::SessionNew {
+            source: None,
+            name: None,
+        }) {
             ResponseBody::Session { session } => session,
             other => panic!("{other:?}"),
         };
@@ -374,6 +377,7 @@ fn a_part_that_already_has_a_mesh_keeps_its_mapping() {
     // A 64×64 quad on the centered convention, v increasing downward: exactly
     // what `from_texture_size` describes, so the fit has to recover it.
     f.body(Command::MeshSet {
+        deform_mapping: None,
         if_rev: None,
         session,
         node: part.clone(),
@@ -395,6 +399,7 @@ fn a_trace_is_one_undoable_edit() {
     let part = f.part("blob.png");
     let session = f.session;
     f.body(Command::MeshSet {
+        deform_mapping: None,
         if_rev: None,
         session,
         node: part.clone(),
@@ -408,7 +413,10 @@ fn a_trace_is_one_undoable_edit() {
     f.auto(&part, AutoMesh::default());
     assert_ne!(f.mesh(&part).verts, before.verts);
 
-    f.body(Command::Undo { session });
+    f.body(Command::Undo {
+        session,
+        if_rev: f.editor.revision(session).unwrap(),
+    });
     assert_eq!(f.mesh(&part).verts, before.verts);
 }
 

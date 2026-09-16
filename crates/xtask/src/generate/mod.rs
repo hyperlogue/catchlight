@@ -136,8 +136,22 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::ChainArg,
         proto::AutoMesh,
         proto::Rename,
+        proto::EditOp,
+        proto::EditHistoryEntry,
+        proto::IndexRange,
+        proto::BindingCellValue,
+        proto::BindingCellWrite,
+        proto::BindingCellRead,
+        proto::BindingIdentity,
+        proto::VertexWeight,
+        proto::GeometryField,
+        proto::GeometryNode,
+        proto::ModelTextureHeader,
+        proto::SessionSource,
+        proto::ModelFormat,
+        proto::SessionOrigin,
+        proto::LimitInfo,
         proto::BindingParams,
-        proto::BindingKeyEntry,
         proto::ParamPose,
         proto::ImportTexture,
         proto::SlotAddr,
@@ -224,9 +238,9 @@ pub fn command_tags(decls: &[Decl]) -> Result<Vec<String>> {
 /// Holds the tags one emitter found against `COMMAND_KINDS`, both directions.
 ///
 /// This is the whole reason `COMMAND_KINDS` exists. Neither TypeScript nor
-/// Python can see that `scratch_deform` leaves the model alone and
-/// `node_set` does not, or that `node_tree` is answerable from a local replica
-/// and `status` is not, so a client that took one `Command` would have to
+/// Python can see that `presence_set` leaves the model alone and
+/// `node_set` does not, or that `node_tree_get` is answerable from a local replica
+/// and `session_get` is not, so a client that took one `Command` would have to
 /// remember which of its calls are quiet and which can be served without a
 /// round trip — exactly the thing nobody remembers.
 ///
@@ -371,17 +385,6 @@ pub const KINDS: &[Kind] = &[
             "",
             "It goes to the editor because other clients read it back, and it changes no",
             "model: no revision, no undo entry, invisible to a panel.",
-        ],
-    },
-    Kind {
-        kind: proto::CommandKind::Scratch,
-        name: "ScratchCommand",
-        doc: &[
-            "A command that shows a live edit on a puppet without authoring it.",
-            "",
-            "The drag path. Whoever owns the puppet being drawn serves it — a client",
-            "with a local replica serves its own, and never asks the editor. A gesture",
-            "of any length repaints the canvas and re-renders nothing.",
         ],
     },
     Kind {

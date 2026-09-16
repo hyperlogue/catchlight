@@ -1,12 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Regression for the GUI recording flow: add a param, record a key via
-//! BindingKeys at a keypoint, then pose the param on the rebaked puppet and
+//! an explicit rest/key batch at a keypoint, then pose the param on the rebaked puppet and
 //! check the node actually moves (and returns to rest at the other keypoint).
 
 use catchlight_editor_protocol::{
-    BindingKeyEntry, BindingParams, BindingTarget, Command, NodeKindArg, Reply, Request,
-    ResponseBody, ScalarTarget, SessionId,
+    BindingCellValue, BindingCellWrite, BindingParams, BindingTarget, Command, NodeKindArg, Reply,
+    Request, ResponseBody, SessionId,
 };
 use catchlight_editor_server::{Attachments, Editor};
 
@@ -57,7 +57,6 @@ fn recorded_binding_moves_the_rebaked_puppet() {
             min: 0.0,
             max: 1.0,
             default: 0.0,
-            key_positions: Vec::new(),
             param: None,
         },
     ) {
@@ -69,16 +68,22 @@ fn recorded_binding_moves_the_rebaked_puppet() {
     body(
         &ed,
         4,
-        Command::BindingKeys {
-            if_rev: None,
+        Command::BindingCellsSet {
+            if_rev: ed.revision(session).unwrap(),
             session,
             params: BindingParams::one(param.clone()),
             node: node.clone(),
-            cell: [1, 0],
-            entries: vec![BindingKeyEntry {
-                target: ScalarTarget::Tx,
-                value: 25.0,
-            }],
+            target: BindingTarget::Tx,
+            cells: vec![
+                BindingCellWrite {
+                    cell: [0, 0],
+                    value: BindingCellValue::Scalar(0.0),
+                },
+                BindingCellWrite {
+                    cell: [1, 0],
+                    value: BindingCellValue::Scalar(25.0),
+                },
+            ],
         },
     );
 
@@ -114,12 +119,13 @@ fn recorded_binding_moves_the_rebaked_puppet() {
     body(
         &ed,
         5,
-        Command::BindingUnset {
+        Command::BindingCellsUnset {
+            if_rev: ed.revision(session).unwrap(),
             session,
             params: BindingParams::one(param.clone()),
             node: node.clone(),
             target: BindingTarget::Tx,
-            cell: [1, 0],
+            cells: vec![[1, 0]],
         },
     );
     let after_unset = x_at(1.0);
@@ -129,37 +135,27 @@ fn recorded_binding_moves_the_rebaked_puppet() {
     );
 }
 
-/// A session holding `bytes`: a fresh one, then the file imported into it.
-///
-/// The one way bytes a caller holds become a session's model — no side door
-/// that takes them, so a test opens a model exactly as a client does.
+/// Session construction validates the supplied model before publishing it.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
-    let reply = editor.handle(Request {
-        id: 0,
-        command: Command::SessionNew {
-            name: Some(title.to_string()),
-        },
-    });
-    let session = match reply {
+    let mut attachments = Attachments::none();
+    attachments.insert("model", bytes);
+    match editor
+        .handle_with(
+            Request {
+                id: 0,
+                command: Command::SessionNew {
+                    name: Some(title.to_string()),
+                    source: Some(catchlight_editor_protocol::SessionSource::Clm {}),
+                },
+            },
+            attachments,
+        )
+        .0
+    {
         Reply::Ok {
             body: ResponseBody::Session { session },
             ..
         } => session,
-        other => panic!("expected a session, got {other:?}"),
-    };
-    let mut attachments = Attachments::none();
-    attachments.insert("model", bytes);
-    match editor.handle_with(
-        Request {
-            id: 0,
-            command: Command::ImportFile {
-                session,
-                parent: None,
-            },
-        },
-        attachments,
-    ) {
-        (Reply::Ok { .. }, _) => session,
-        (other, _) => panic!("import_file: {other:?}"),
+        other => panic!("session_create: {other:?}"),
     }
 }

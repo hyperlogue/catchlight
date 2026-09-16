@@ -77,7 +77,13 @@ fn ok(reply: &Reply) -> &ResponseBody {
 }
 
 fn new_session(editor: &Editor) -> SessionId {
-    match ok(&editor.handle(req(1, Command::SessionNew { name: None }))) {
+    match ok(&editor.handle(req(
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ))) {
         ResponseBody::Session { session } => *session,
         other => panic!("expected Session, got {other:?}"),
     }

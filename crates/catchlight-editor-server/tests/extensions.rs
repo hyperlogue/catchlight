@@ -59,7 +59,13 @@ impl Fixture {
             session: SessionId(0),
             next: 1,
         };
-        f.session = match f.ok(Command::SessionNew { name: None }, Attachments::none()) {
+        f.session = match f.ok(
+            Command::SessionNew {
+                source: None,
+                name: None,
+            },
+            Attachments::none(),
+        ) {
             (ResponseBody::Session { session }, _) => session,
             (other, _) => panic!("expected Session, got {other:?}"),
         };
@@ -309,7 +315,13 @@ fn a_set_is_an_edit_and_undo_covers_it() {
     f.set_json("molan.caster", json!("first"));
     f.set_json("molan.caster", json!("second"));
 
-    f.ok(Command::Undo { session: f.session }, Attachments::none());
+    f.ok(
+        Command::Undo {
+            session: f.session,
+            if_rev: f.editor.revision(f.session).unwrap(),
+        },
+        Attachments::none(),
+    );
     match f.get("molan.caster") {
         (
             ResponseBody::Extension {
@@ -322,7 +334,13 @@ fn a_set_is_an_edit_and_undo_covers_it() {
     }
 
     // And once more takes the key away entirely.
-    f.ok(Command::Undo { session: f.session }, Attachments::none());
+    f.ok(
+        Command::Undo {
+            session: f.session,
+            if_rev: f.editor.revision(f.session).unwrap(),
+        },
+        Attachments::none(),
+    );
     assert!(f.list().is_empty());
 }
 
@@ -339,7 +357,13 @@ fn a_delete_is_undoable_too() {
     );
     assert!(f.list().is_empty());
 
-    f.ok(Command::Undo { session: f.session }, Attachments::none());
+    f.ok(
+        Command::Undo {
+            session: f.session,
+            if_rev: f.editor.revision(f.session).unwrap(),
+        },
+        Attachments::none(),
+    );
     assert_eq!(f.get("molan.thumb").1.expect("bytes").bytes, b"held");
 }
 

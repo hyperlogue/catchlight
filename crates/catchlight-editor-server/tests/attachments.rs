@@ -13,8 +13,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
-    BindingParams, Camera, Command, ErrorCode, Event, NodeId, NodeKindArg, ParamId, Reply, Request,
-    ResponseBody, ScalarTarget, SessionId, TexId, TextureEncoding,
+    BindingParams, Camera, Command, ErrorCode, ImportTexture, NodeId, NodeKindArg, ParamId, Reply,
+    Request, ResponseBody, SessionId, SessionSource, TexId, TextureEncoding,
 };
 use catchlight_editor_server::{Attachments, Editor, Payload, Storage};
 
@@ -71,6 +71,44 @@ fn ok(reply: Reply) -> ResponseBody {
     }
 }
 
+fn session_of(reply: Reply) -> SessionId {
+    match ok(reply) {
+        ResponseBody::Session { session } => session,
+        other => panic!("expected session, got {other:?}"),
+    }
+}
+
+fn install(ed: &Editor, session: SessionId, parent: NodeId, bytes: Vec<u8>) -> Reply {
+    let file = catchlight_core::formats::clm::decode(&bytes).unwrap();
+    let mut attachments = Attachments::none();
+    attachments.insert("structure", serde_json::to_vec(&file.doc).unwrap());
+    let textures = file
+        .textures
+        .iter()
+        .map(|texture| {
+            attachments.insert(format!("texture:{}", texture.id), texture.data.clone());
+            ImportTexture {
+                texture: texture.id.clone(),
+                encoding: texture.encoding.into(),
+                alpha: texture.alpha.into(),
+            }
+        })
+        .collect();
+    ed.handle_with(
+        req(
+            10,
+            Command::ImportJson {
+                session,
+                parent,
+                if_rev: ed.revision(session).unwrap(),
+                textures,
+            },
+        ),
+        attachments,
+    )
+    .0
+}
+
 fn rev_of(reply: &Reply) -> u64 {
     match reply {
         Reply::Ok { rev, .. } => rev.expect("a session command reports its revision"),
@@ -86,7 +124,13 @@ fn code(reply: Reply) -> ErrorCode {
 }
 
 fn new_session(ed: &Editor, id: u64) -> SessionId {
-    match ok(ed.handle(req(id, Command::SessionNew { name: None }))) {
+    match ok(ed.handle(req(
+        id,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ))) {
         ResponseBody::Session { session } => session,
         other => panic!("expected Session, got {other:?}"),
     }
@@ -179,17 +223,17 @@ fn a_fragment_needing(param: &str) -> Vec<u8> {
             min: 0.0,
             max: 1.0,
             default: 0.0,
-            key_positions: Vec::new(),
             param: Some(ParamId::new(param).unwrap()),
         },
     )));
     ok(ed.handle(req(
         5,
         Command::BindingAdd {
+            key_positions: None,
             session: s,
             params: BindingParams::one(ParamId::new(param).unwrap()),
             node: hat.clone(),
-            target: ScalarTarget::Tx,
+            target: catchlight_editor_protocol::BindingTarget::Tx,
         },
     )));
     ed.with_model(s, |m| m.extract(&[hat]).to_clm_bytes().unwrap())
@@ -276,9 +320,9 @@ fn an_attachment_the_command_did_not_declare_is_refused() {
     let (reply, _) = send(
         &ed,
         3,
-        Command::ImportFile {
-            session: s,
-            parent: None,
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Clm {}),
         },
         with(vec![("structure", a_model())]),
     );
@@ -288,13 +332,12 @@ fn an_attachment_the_command_did_not_declare_is_refused() {
 #[test]
 fn a_fixed_attachment_that_did_not_arrive_is_refused() {
     let ed = editor();
-    let s = new_session(&ed, 1);
     let (reply, _) = send(
         &ed,
         2,
-        Command::ImportFile {
-            session: s,
-            parent: None,
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Clm {}),
         },
         Attachments::none(),
     );
@@ -306,57 +349,21 @@ fn a_fixed_attachment_that_did_not_arrive_is_refused() {
 #[test]
 fn handle_alone_cannot_carry_a_byte_bearing_command() {
     let ed = editor();
-    let s = new_session(&ed, 1);
     assert_eq!(
-        code(ed.handle(req(2, Command::ImportManifest { session: s }))),
+        code(ed.handle(req(
+            2,
+            Command::SessionNew {
+                name: None,
+                source: Some(SessionSource::Manifest {})
+            }
+        ))),
         ErrorCode::BadRequest,
     );
 }
 
-// ------------------------------------------------------------- import_file
+// -------------------------------------------------------- model sources
 
-#[test]
-fn an_import_replaces_a_pristine_session_keeping_its_identity() {
-    let ed = editor();
-    let s = new_session(&ed, 1);
-    let before = ed.with_model(s, |m| m.identity()).unwrap();
-
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let heard = seen.clone();
-    ed.subscribe(Box::new(move |event: &Event| {
-        if let Event::ModelChanged { session, rev } = event {
-            heard.lock().unwrap().push((*session, *rev));
-        }
-    }));
-
-    let (reply, _) = send(
-        &ed,
-        2,
-        Command::ImportFile {
-            session: s,
-            parent: None,
-        },
-        with(vec![("model", a_model())]),
-    );
-    assert_eq!(rev_of(&reply), 1, "one import is one revision");
-    ok(reply);
-    assert_eq!(node_count(&ed, 3, s), 2, "the imported model landed");
-    assert_eq!(
-        ed.with_model(s, |m| m.identity()).unwrap(),
-        before,
-        "the session's model is the same model in a new state",
-    );
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![(s, 1)],
-        "an import is a model change like any other",
-    );
-
-    // And it leaves what an open leaves: a model nobody has edited.
-    assert_clean_and_unundoable(&ed, 4, s);
-}
-
-/// A pristine replace is an open, so the session it leaves is clean with
+/// A source factory publishes a clean session with
 /// nothing behind it. Anything else and a tab warns about unsaved changes the
 /// moment a file is opened, and one undo empties the model.
 fn assert_clean_and_unundoable(ed: &Editor, id: u64, session: SessionId) {
@@ -367,46 +374,32 @@ fn assert_clean_and_unundoable(ed: &Editor, id: u64, session: SessionId) {
         other => panic!("expected Status, got {other:?}"),
     }
     assert_eq!(
-        code(ed.handle(req(id + 1, Command::Undo { session }))),
+        code(ed.handle(req(
+            id + 1,
+            Command::Undo {
+                session,
+                if_rev: ed.revision(session).unwrap()
+            }
+        ))),
         ErrorCode::NothingToUndo,
         "an import is not an edit to undo",
     );
 }
 
 #[test]
-fn an_import_over_a_session_that_holds_a_model_is_refused() {
-    let ed = editor();
-    let s = new_session(&ed, 1);
-    let root = root_of(&ed, 2, s);
-    add_part(&ed, 3, s, &root, "torso");
-
-    let (reply, _) = send(
-        &ed,
-        4,
-        Command::ImportFile {
-            session: s,
-            parent: None,
-        },
-        with(vec![("model", a_model())]),
-    );
-    assert_eq!(code(reply), ErrorCode::NotEmpty);
-    assert_eq!(node_count(&ed, 5, s), 2, "a refusal changes nothing");
-}
-
-#[test]
-fn a_fragment_cannot_replace_a_model() {
+fn a_fragment_cannot_construct_a_complete_model() {
     let ed = editor();
     let s = new_session(&ed, 1);
     let (reply, _) = send(
         &ed,
         2,
-        Command::ImportFile {
-            session: s,
-            parent: None,
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Clm {}),
         },
         with(vec![("model", a_fragment())]),
     );
-    // Whole-model replacement reads the bytes as a complete model, and a
+    // Session creation reads the bytes as a complete model, and a
     // fragment's roots name a parent, so the reader refuses it.
     assert_eq!(code(reply), ErrorCode::Edit);
     assert_eq!(node_count(&ed, 3, s), 1);
@@ -420,15 +413,7 @@ fn a_fragment_installs_under_the_parent_the_command_names() {
     let head = add_part(&ed, 3, s, &root, "head");
 
     // The fragment's own root names `head` as its parent; so does the command.
-    let (reply, _) = send(
-        &ed,
-        4,
-        Command::ImportFile {
-            session: s,
-            parent: Some(head.clone()),
-        },
-        with(vec![("model", a_fragment())]),
-    );
+    let reply = install(&ed, s, head.clone(), a_fragment());
     ok(reply);
 
     // Ids travel verbatim, and the subtree hangs where the command said.
@@ -445,13 +430,19 @@ fn a_fragment_installs_under_the_parent_the_command_names() {
         other => panic!("expected NodeInfo, got {other:?}"),
     }
 
-    // A subtree install is an ordinary edit, unlike a pristine replace: it
+    // A subtree install is an ordinary edit: it
     // dirties the session and one undo takes exactly it back.
     match ok(ed.handle(req(6, Command::Status { session: s }))) {
         ResponseBody::Status { status } => assert!(status.dirty),
         other => panic!("expected Status, got {other:?}"),
     }
-    ok(ed.handle(req(7, Command::Undo { session: s })));
+    ok(ed.handle(req(
+        7,
+        Command::Undo {
+            session: s,
+            if_rev: ed.revision(s).unwrap(),
+        },
+    )));
     assert_eq!(node_count(&ed, 8, s), 2);
 }
 
@@ -463,17 +454,7 @@ fn a_fragment_is_re_parented_onto_the_node_the_command_names() {
     let root = root_of(&ed, 2, s);
     let elsewhere = add_part(&ed, 3, s, &root, "belt");
 
-    let (reply, _) = send(
-        &ed,
-        4,
-        Command::ImportFile {
-            session: s,
-            // The fragment's root names `head`, which this model does not
-            // have at all.
-            parent: Some(elsewhere),
-        },
-        with(vec![("model", a_fragment())]),
-    );
+    let reply = install(&ed, s, elsewhere, a_fragment());
     ok(reply);
     match ok(ed.handle(req(
         5,
@@ -497,15 +478,7 @@ fn an_id_the_session_already_carries_refuses_the_install() {
     let head = add_part(&ed, 3, s, &root, "head");
     add_part(&ed, 4, s, &head, "hat");
 
-    let (reply, _) = send(
-        &ed,
-        5,
-        Command::ImportFile {
-            session: s,
-            parent: Some(head),
-        },
-        with(vec![("model", a_fragment())]),
-    );
+    let reply = install(&ed, s, head, a_fragment());
     assert_eq!(code(reply), ErrorCode::DuplicateId);
     assert_eq!(node_count(&ed, 6, s), 3, "a refused install moves nothing");
 }
@@ -516,15 +489,7 @@ fn a_requirement_the_session_does_not_have_refuses_the_install() {
     let s = new_session(&ed, 1);
     let root = root_of(&ed, 2, s);
 
-    let (reply, _) = send(
-        &ed,
-        3,
-        Command::ImportFile {
-            session: s,
-            parent: Some(root),
-        },
-        with(vec![("model", a_fragment_needing("tilt"))]),
-    );
+    let reply = install(&ed, s, root, a_fragment_needing("tilt"));
     assert_eq!(code(reply), ErrorCode::NoParam);
     assert_eq!(node_count(&ed, 4, s), 1);
 }
@@ -533,19 +498,11 @@ fn a_requirement_the_session_does_not_have_refuses_the_install() {
 fn a_parent_the_session_does_not_carry_refuses_the_install() {
     let ed = editor();
     let s = new_session(&ed, 1);
-    let (reply, _) = send(
-        &ed,
-        2,
-        Command::ImportFile {
-            session: s,
-            parent: Some(NodeId::new("nowhere").unwrap()),
-        },
-        with(vec![("model", a_fragment())]),
-    );
+    let reply = install(&ed, s, NodeId::new("nowhere").unwrap(), a_fragment());
     assert_eq!(code(reply), ErrorCode::NoNode);
 }
 
-// ----------------------------------------------------------- import_manifest
+// ---------------------------------------------------------- manifest sources
 
 const MANIFEST: &str = r#"{"name":"akari",
     "textures":[{"id":"face","path":"images/face.png"}],
@@ -554,17 +511,19 @@ const MANIFEST: &str = r#"{"name":"akari",
 #[test]
 fn a_manifest_and_its_images_build_the_model_they_describe() {
     let ed = editor();
-    let s = new_session(&ed, 1);
     let (reply, _) = send(
         &ed,
         2,
-        Command::ImportManifest { session: s },
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Manifest {}),
+        },
         with(vec![
             ("manifest", MANIFEST.as_bytes().to_vec()),
             ("texture:images/face.png", png([200, 30, 30, 255])),
         ]),
     );
-    ok(reply);
+    let s = session_of(reply);
 
     // The part the manifest names is there, drawing the image that came with
     // it, and the title came off the manifest.
@@ -582,17 +541,19 @@ fn a_manifest_and_its_images_build_the_model_they_describe() {
 
     // Two imports of one manifest are one model, whoever ran them.
     let again = editor();
-    let t = new_session(&again, 1);
     let (reply, _) = send(
         &again,
         2,
-        Command::ImportManifest { session: t },
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Manifest {}),
+        },
         with(vec![
             ("manifest", MANIFEST.as_bytes().to_vec()),
             ("texture:images/face.png", png([200, 30, 30, 255])),
         ]),
     );
-    ok(reply);
+    let t = session_of(reply);
     assert_eq!(
         ed.with_model(s, |m| m.to_clm_bytes().unwrap()).unwrap(),
         again.with_model(t, |m| m.to_clm_bytes().unwrap()).unwrap(),
@@ -602,16 +563,18 @@ fn a_manifest_and_its_images_build_the_model_they_describe() {
 #[test]
 fn a_manifest_reference_with_no_attachment_is_refused_naming_it() {
     let ed = editor();
-    let s = new_session(&ed, 1);
     let (reply, _) = send(
         &ed,
         2,
-        Command::ImportManifest { session: s },
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Manifest {}),
+        },
         with(vec![("manifest", MANIFEST.as_bytes().to_vec())]),
     );
     match reply {
         Reply::Err { code, message, .. } => {
-            assert_eq!(code, ErrorCode::Manifest);
+            assert_eq!(code, ErrorCode::BadRequest);
             assert!(
                 message.contains("images/face.png"),
                 "the refusal names the reference: {message:?}",
@@ -621,41 +584,21 @@ fn a_manifest_reference_with_no_attachment_is_refused_naming_it() {
     }
 }
 
-#[test]
-fn a_manifest_import_needs_a_pristine_session_too() {
-    let ed = editor();
-    let s = new_session(&ed, 1);
-    let root = root_of(&ed, 2, s);
-    add_part(&ed, 3, s, &root, "torso");
-
-    let (reply, _) = send(
-        &ed,
-        4,
-        Command::ImportManifest { session: s },
-        with(vec![
-            ("manifest", MANIFEST.as_bytes().to_vec()),
-            ("texture:images/face.png", png([1, 1, 1, 255])),
-        ]),
-    );
-    assert_eq!(code(reply), ErrorCode::NotEmpty);
-}
-
 /// An imported model is not a file on disk, so a bare save still has nowhere
 /// to go — exactly as it did when the bytes came through a staged upload.
 #[test]
 fn an_import_leaves_the_session_with_no_file_to_save_to() {
     let ed = editor();
-    let s = new_session(&ed, 1);
     let (reply, _) = send(
         &ed,
         2,
-        Command::ImportFile {
-            session: s,
-            parent: None,
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Clm {}),
         },
         with(vec![("model", a_model())]),
     );
-    ok(reply);
+    let s = session_of(reply);
     assert_eq!(
         code(ed.handle(req(
             3,
@@ -673,18 +616,20 @@ fn an_import_leaves_the_session_with_no_file_to_save_to() {
 #[test]
 fn a_preview_answers_with_the_png_it_rendered() {
     let ed = editor();
-    let s = new_session(&ed, 1);
     // 64 units across, so it is a shape a camera can be near or far from.
     let (reply, _) = send(
         &ed,
         2,
-        Command::ImportManifest { session: s },
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Manifest {}),
+        },
         with(vec![
             ("manifest", MANIFEST.as_bytes().to_vec()),
             ("texture:images/face.png", png_of(64, [200, 30, 30, 255])),
         ]),
     );
-    ok(reply);
+    let s = session_of(reply);
 
     let shot = |id: u64, camera| -> Vec<u8> {
         let (reply, payload) = send(
@@ -730,18 +675,17 @@ fn a_preview_answers_with_the_png_it_rendered() {
 #[test]
 fn a_preview_is_still_a_read() {
     let ed = editor();
-    let s = new_session(&ed, 1);
     let (reply, _) = send(
         &ed,
         2,
-        Command::ImportFile {
-            session: s,
-            parent: None,
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Clm {}),
         },
         with(vec![("model", a_model())]),
     );
     let rev = rev_of(&reply);
-    ok(reply);
+    let s = session_of(reply);
     let (reply, _) = send(
         &ed,
         3,

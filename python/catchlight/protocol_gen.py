@@ -51,13 +51,6 @@ class CommandKind(StrEnum):
     # model: no revision, no undo entry, invisible to a panel.
     PRESENCE = "presence"
 
-    # A command that shows a live edit on a puppet without authoring it.
-    #
-    # The drag path. Whoever owns the puppet being drawn serves it — a client
-    # with a local replica serves its own, and never asks the editor. A gesture
-    # of any length repaints the canvas and re-renders nothing.
-    SCRATCH = "scratch"
-
     # A read that is a pure function of the model.
     #
     # A client holding a replica answers it locally, with no round trip. The
@@ -184,6 +177,15 @@ def _decode(annotation: Any, value: Any) -> Any:
                 and value.get(tag_field) == arm.TAG
             ):
                 return _decode_class(arm, value)
+        # Untagged structs and externally tagged newtypes have disjoint
+        # required wire fields. Decode in declaration order like serde.
+        if isinstance(value, Mapping):
+            for arm in arms:
+                if dataclasses.is_dataclass(arm) and getattr(arm, "TAG_FIELD", None) is None:
+                    try:
+                        return _decode_class(arm, value)
+                    except (ValueError, TypeError):
+                        continue
         raise ValueError(f"no variant of {annotation} matches {value!r}")
     if origin is list:
         (arm,) = get_args(annotation)
@@ -251,11 +253,12 @@ SlotId = str
 @dataclass(frozen=True, kw_only=True)
 class SessionNew:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "session_new"
+    TAG: ClassVar[str] = "session_create"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     name: str | None = None
+    source: SessionSource | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -267,9 +270,8 @@ class SessionOpen:
     """Open the `.clm` the server's store holds at `path`.
 
     A file of the server's, and the session can save back over it. Bytes a
-    client holds are not this command: those are [`Command::SessionNew`]
-    followed by [`Command::ImportFile`], which leaves the session with no
-    file to save to, because there is none.
+    client holds use [`Command::SessionNew`] with a source and attachments.
+    That session has no storage path to save back to.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -278,6 +280,37 @@ class SessionOpen:
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     path: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SessionFork:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "session_fork"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    if_rev: int
+    name: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelExport:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "model_export"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+    if_rev: int
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -313,7 +346,7 @@ class SessionClose:
 @dataclass(frozen=True, kw_only=True)
 class Save:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "save"
+    TAG: ClassVar[str] = "session_save"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
@@ -328,7 +361,7 @@ class Save:
 @dataclass(frozen=True, kw_only=True)
 class ExportManifest:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "export_manifest"
+    TAG: ClassVar[str] = "manifest_export"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
 
@@ -343,7 +376,7 @@ class ExportManifest:
 @dataclass(frozen=True, kw_only=True)
 class Status:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "status"
+    TAG: ClassVar[str] = "session_get"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
 
@@ -357,7 +390,7 @@ class Status:
 @dataclass(frozen=True, kw_only=True)
 class Check:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "check"
+    TAG: ClassVar[str] = "model_check"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
 
@@ -371,7 +404,7 @@ class Check:
 @dataclass(frozen=True, kw_only=True)
 class NodeTree:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "node_tree"
+    TAG: ClassVar[str] = "node_tree_get"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
 
@@ -391,12 +424,63 @@ class CommandNodeInfo:
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "node_info"
+    TAG: ClassVar[str] = "node_get"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
 
     session: SessionId
     node: NodeId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MeshGet:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "mesh_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+    node: NodeId
+    if_rev: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelGet:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "model_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+    if_rev: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class GeometryGet:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "geometry_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+    if_rev: int | None = None
+    pose: list[ParamPose] = field(default_factory=list)
+    nodes: list[NodeId]
+    fields: list[GeometryField]
+    vertices: IndexRange | None = None
+    triangles: IndexRange | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -494,27 +578,6 @@ class NodeReorder:
 
 
 @dataclass(frozen=True, kw_only=True)
-class NodeMove:
-    """Reparent + position in one undoable step: `node` becomes `parent`'s
-    child at `index` (clamped).
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "node_move"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    node: NodeId
-    parent: NodeId
-    index: int
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class NodeDuplicate:
     """Deep-copy a node's subtree as its next sibling (bindings and
     subtree-internal mask references come along). The copies get fresh
@@ -545,7 +608,7 @@ class RenameId:
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "rename_id"
+    TAG: ClassVar[str] = "id_rename"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
@@ -570,44 +633,6 @@ class MaskAdd:
     node: NodeId
     source: NodeId
     mode: MaskMode
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class MaskSet:
-    """Change the mode of the mask at `index`."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "mask_set"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    node: NodeId
-    index: int
-    mode: MaskMode
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class MaskReorder:
-    """Move the mask at `index` to position `to` (clamped)."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "mask_reorder"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    node: NodeId
-    index: int
-    to: int
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -666,7 +691,7 @@ class PhysicsGlobals:
     """Model-level physics constants."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "physics_globals"
+    TAG: ClassVar[str] = "physics_globals_set"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
@@ -741,9 +766,7 @@ class TextureList:
 
 @dataclass(frozen=True, kw_only=True)
 class ParamAdd:
-    """Create a scalar param. `key_positions` are normalized 0..1 (empty =
-    the two endpoints).
-    """
+    """Create a scalar input with a range and default value."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "param_add"
@@ -755,7 +778,6 @@ class ParamAdd:
     min: float = 0.0
     max: float = 1.0
     default: float = 0.0
-    key_positions: list[float] = field(default_factory=list)
     # The Id to create it under. Absent generates one; an Id the model
     # already carries is [`ErrorCode::DuplicateId`].
     param: ParamId | None = None
@@ -818,18 +840,24 @@ class ParamDelete:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ParamKeyInsert:
-    """Insert a key position at normalized `value`, strictly inside (0, 1).
+class BindingKeyInsert:
+    """Insert a distinct key position at normalized `value` in [0, 1].
     Authored cells shift; the new row/column derives.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "param_key_insert"
+    TAG: ClassVar[str] = "binding_key_insert"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    if_rev: int | None = None
     param: ParamId
+    param_y: ParamId | None = None
+    node: NodeId
+    target: BindingTarget
+    # Driving param whose binding-local axis changes.
+    axis: ParamId
     value: float
 
     def to_wire(self) -> dict[str, Any]:
@@ -838,16 +866,24 @@ class ParamKeyInsert:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ParamKeyDelete:
-    """Remove an interior key position; its authored cells are dropped."""
+class BindingKeyDelete:
+    """Remove a key position while retaining at least one position on the axis.
+    Its authored cells are dropped.
+    """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "param_key_delete"
+    TAG: ClassVar[str] = "binding_key_delete"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    if_rev: int | None = None
     param: ParamId
+    param_y: ParamId | None = None
+    node: NodeId
+    target: BindingTarget
+    # Driving param whose binding-local axis changes.
+    axis: ParamId
     index: int
 
     def to_wire(self) -> dict[str, Any]:
@@ -856,18 +892,24 @@ class ParamKeyDelete:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ParamKeyMove:
-    """Move an interior key position to normalized `value` (must stay
-    strictly between its neighbors).
+class BindingKeyMove:
+    """Move a key position to normalized `value` in [0, 1], preserving
+    strict ordering with its neighbors.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "param_key_move"
+    TAG: ClassVar[str] = "binding_key_move"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    if_rev: int | None = None
     param: ParamId
+    param_y: ParamId | None = None
+    node: NodeId
+    target: BindingTarget
+    # Driving param whose binding-local axis changes.
+    axis: ParamId
     index: int
     value: float
 
@@ -877,18 +919,98 @@ class ParamKeyMove:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ParamFlip:
-    """Mirror the param (key positions reflect, cells move to the mirrored
-    index; values untouched — compose with BindingInvert).
-    """
+class EditApply:
+    """Atomically execute a bounded list against one revision of the model."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "param_flip"
+    TAG: ClassVar[str] = "edit_apply"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    if_rev: int
+    edits: list[EditOp]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditValidate:
+    """Evaluate the same list on a captured clone without publishing it."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "edit_validate"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+    if_rev: int
+    edits: list[EditOp]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingCellsGet:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "binding_cells_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
+
+    session: SessionId
+    if_rev: int | None = None
     param: ParamId
+    param_y: ParamId | None = None
+    node: NodeId
+    target: BindingTarget
+    cells: list[tuple[int, int]]
+    include_derived: bool = False
+    # Optional page of each deform array; scalar reads reject this field.
+    vertices: IndexRange | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingCellsSet:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "binding_cells_set"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    if_rev: int
+    param: ParamId
+    param_y: ParamId | None = None
+    node: NodeId
+    target: BindingTarget
+    cells: list[BindingCellWrite]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingCellsUnset:
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "binding_cells_unset"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    if_rev: int
+    param: ParamId
+    param_y: ParamId | None = None
+    node: NodeId
+    target: BindingTarget
+    cells: list[tuple[int, int]]
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -906,98 +1028,8 @@ class BindingAdd:
     param: ParamId
     param_y: ParamId | None = None
     node: NodeId
-    target: ScalarTarget
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class BindingKey:
-    """Author one scalar keypoint (auto-creates the binding)."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "binding_key"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
-    target: ScalarTarget
-    # `[x, y]` index into the binding's key grid; `y` is 0 for a
-    # one-param binding.
-    cell: tuple[int, int]
-    value: float
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class BindingKeys:
-    """Author several scalar keypoints at one cell in one undoable step (a
-    gizmo drag commits tx+ty together).
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "binding_keys"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    # Refuse a stale draft or gesture while holding the session lock.
-    if_rev: int | None = None
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
-    cell: tuple[int, int]
-    entries: list[BindingKeyEntry]
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class BindingUnset:
-    """Un-author a keypoint (back to derived)."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "binding_unset"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
     target: BindingTarget
-    cell: tuple[int, int]
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class BindingReset:
-    """Author the identity value at a keypoint."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "binding_reset"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
-    target: BindingTarget
-    cell: tuple[int, int]
+    key_positions: list[list[float]] | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1025,7 +1057,7 @@ class BindingDelete:
 @dataclass(frozen=True, kw_only=True)
 class BindingInterpolate:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "binding_interpolate"
+    TAG: ClassVar[str] = "binding_interpolation_set"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
@@ -1035,51 +1067,6 @@ class BindingInterpolate:
     node: NodeId
     target: BindingTarget
     mode: Interpolate
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class BindingInvert:
-    """Negate every authored value."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "binding_invert"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
-    target: BindingTarget
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class BindingCopyKey:
-    """Author the value evaluated at `from` into cell `to`."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "binding_copy_key"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-    WIRE: ClassVar[Mapping[str, str]] = {
-        "from_": "from",
-    }
-
-    session: SessionId
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
-    target: BindingTarget
-    from_: tuple[int, int]
-    to: tuple[int, int]
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1109,54 +1096,6 @@ class BindingList:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeformSet:
-    """Author a deform keypoint from an affine applied to the part's rest mesh."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "deform_set"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
-    cell: tuple[int, int]
-    translate: tuple[float, float] | None = None
-    rotate: float | None = None
-    scale: tuple[float, float] | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class DeformVertices:
-    """Author per-vertex deform offsets, one `[dx, dy]` per mesh vertex and in
-    the mesh's own order. This is what commits a live drag.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "deform_vertices"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    # Refuse a stale draft or gesture while holding the session lock.
-    if_rev: int | None = None
-    param: ParamId
-    param_y: ParamId | None = None
-    node: NodeId
-    cell: tuple[int, int]
-    offsets: list[tuple[float, float]]
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class MeshSet:
     """Replace a Part/MeshGroup mesh; every deform binding on the node is
     re-fitted onto the new topology in the same undoable step. Answers
@@ -1179,6 +1118,7 @@ class MeshSet:
     # One `[a, b, c]` per triangle, each a `verts` index.
     indices: list[tuple[int, int, int]]
     origin: tuple[float, float]
+    deform_mapping: list[list[VertexWeight]] | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1198,7 +1138,7 @@ class MeshAuto:
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "mesh_auto"
+    TAG: ClassVar[str] = "mesh_generate"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
@@ -1206,29 +1146,6 @@ class MeshAuto:
     node: NodeId
     # Absent is [`AutoMesh::Contour`] with every knob at its default.
     mode: AutoMesh | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class MeshCopy:
-    """Copy `from`'s mesh onto `to` (with the same deform re-fit and the same
-    emptied-slot reply).
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "mesh_copy"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-    WIRE: ClassVar[Mapping[str, str]] = {
-        "from_": "from",
-    }
-
-    session: SessionId
-    from_: NodeId
-    to: NodeId
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1321,7 +1238,7 @@ class Slots:
     """The slots a part carries, with what fills each."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "slots"
+    TAG: ClassVar[str] = "slot_list"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
 
@@ -1338,57 +1255,11 @@ class Welds:
     """Every weld in the model."""
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "welds"
+    TAG: ClassVar[str] = "weld_list"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
 
     session: SessionId
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class UnfilledSlots:
-    """Every slot in the model no vertex fills. A re-meshed part empties its
-    slots, so this is what a commit gate reads.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "unfilled_slots"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
-
-    session: SessionId
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class WeldWeight:
-    """Move one pair's share of one weld's meeting point, leaving every other
-    weight where it is — what a slider sends. [`Command::WeldSet`] can only
-    rewrite a weld whole, so moving one weight through it means reading the
-    rest back and sending them again unchanged.
-
-    `slot` is a slot on `a`. `weight` is the share of the part named `a`,
-    whichever way round the weld happens to be stored, and it has to be
-    within `0..=1` — a share outside that has no meaning to flip.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "weld_weight"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    a: NodeId
-    b: NodeId
-    slot: SlotId
-    weight: float
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1586,11 +1457,12 @@ class SpineFit:
 @dataclass(frozen=True, kw_only=True)
 class Undo:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "undo"
+    TAG: ClassVar[str] = "edit_undo"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    if_rev: int
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1600,11 +1472,47 @@ class Undo:
 @dataclass(frozen=True, kw_only=True)
 class Redo:
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "redo"
+    TAG: ClassVar[str] = "edit_redo"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
+    if_rev: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditGoto:
+    """Restore a retained authored state and publish a new live revision."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "edit_goto"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    if_rev: int
+    revision: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditHistoryGet:
+    """Session-owned tree metadata, captured with its live revision."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "edit_history_get"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
+
+    session: SessionId
+    if_rev: int | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1649,32 +1557,6 @@ class PresenceGet:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ScratchDeform:
-    """Show a deform on the session's puppet without authoring it: the live
-    half of a vertex drag. A [`CommandKind::Scratch`], so a drag of any
-    length produces no revision and no undo entry; committing it is
-    [`Command::DeformVertices`], which produces exactly one.
-
-    `offsets` is one `[dx, dy]` per mesh vertex, in the mesh's own order;
-    an empty list clears the scratch deform. It is dropped the next time
-    the model changes, because the puppet rebakes.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "scratch_deform"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.SCRATCH
-
-    session: SessionId
-    node: NodeId
-    offsets: list[tuple[float, float]]
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class Preview:
     """Render one frame of a session and answer with the PNG as the reply's
     payload.
@@ -1685,7 +1567,7 @@ class Preview:
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "preview"
+    TAG: ClassVar[str] = "preview_render"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.SERVER_QUERY
 
@@ -1700,42 +1582,13 @@ class Preview:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ImportFile:
-    """Import a `.clm` — complete or fragment, textures inside — from
-    attachment `model` into an open session.
-
-    `parent` absent replaces the session's whole model, and needs a
-    pristine one (what [`Command::SessionNew`] makes) and a complete
-    model: anything else is [`ErrorCode::NotEmpty`]. `parent` present
-    installs the imported roots under that node, overriding whatever
-    parent those roots name; Ids travel verbatim, and a
-    collision or a missing requirement is refused whole.
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "import_file"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    parent: NodeId | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class ImportJson:
     """Import a `.clm` **structure as JSON**, with its textures
     attached separately, into an open session.
 
-    The same operation as [`Command::ImportFile`] and the same two paths —
-    `parent` absent replaces a pristine session's model, `parent` present
-    installs the imported roots under that node — differing only in how
-    the model arrives. A client that is authoring a model rather than
-    forwarding a file has the structure in hand and the images beside it,
-    and this saves it building a container.
+    Installs imported roots under the required parent after checking the
+    required revision. It publishes one undoable edit. To construct a new
+    model, use `session_create` with its JSON source instead.
 
     Attachment `structure` is the structure as JSON, spelled exactly as
     the `.clm` format's serde spells it. Each entry of `textures` names an
@@ -1752,12 +1605,13 @@ class ImportJson:
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "import_json"
+    TAG: ClassVar[str] = "structure_json_import"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.EDIT
 
     session: SessionId
-    parent: NodeId | None = None
+    parent: NodeId
+    if_rev: int
     # Every texture the attachments carry, in any order.
     textures: list[ImportTexture] = field(default_factory=list)
 
@@ -1822,7 +1676,7 @@ class Extensions:
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "extensions"
+    TAG: ClassVar[str] = "extension_list"
     CMD: ClassVar[str] = TAG
     KIND: ClassVar[CommandKind] = CommandKind.REPLICA_QUERY
 
@@ -1855,33 +1709,11 @@ class ExtensionGet:
         return _wire_fields(self)
 
 
-@dataclass(frozen=True, kw_only=True)
-class ImportManifest:
-    """Build a model from a manifest and its images and replace the session's
-    model with it.
-
-    The manifest arrives as attachment `manifest`; each texture it names
-    arrives as `texture:<ref>`, where `<ref>` is the path string the
-    manifest spells, verbatim. A reference with no attachment is
-    [`ErrorCode::Manifest`] naming it. The session has to be pristine, on
-    the same rule as [`Command::ImportFile`].
-    """
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "import_manifest"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
 Command = (
     SessionNew
     | SessionOpen
+    | SessionFork
+    | ModelExport
     | SessionList
     | SessionClose
     | Save
@@ -1890,16 +1722,16 @@ Command = (
     | Check
     | NodeTree
     | CommandNodeInfo
+    | MeshGet
+    | ModelGet
+    | GeometryGet
     | NodeAdd
     | NodeSet
     | NodeReparent
     | NodeReorder
-    | NodeMove
     | NodeDuplicate
     | RenameId
     | MaskAdd
-    | MaskSet
-    | MaskReorder
     | MaskDelete
     | PhysicsSet
     | PhysicsGlobals
@@ -1910,33 +1742,26 @@ Command = (
     | ParamList
     | ParamSet
     | ParamDelete
-    | ParamKeyInsert
-    | ParamKeyDelete
-    | ParamKeyMove
-    | ParamFlip
+    | BindingKeyInsert
+    | BindingKeyDelete
+    | BindingKeyMove
+    | EditApply
+    | EditValidate
+    | BindingCellsGet
+    | BindingCellsSet
+    | BindingCellsUnset
     | BindingAdd
-    | BindingKey
-    | BindingKeys
-    | BindingUnset
-    | BindingReset
     | BindingDelete
     | BindingInterpolate
-    | BindingInvert
-    | BindingCopyKey
     | BindingList
-    | DeformSet
-    | DeformVertices
     | MeshSet
     | MeshAuto
-    | MeshCopy
     | SlotAdd
     | SlotFill
     | SlotClear
     | SlotDelete
     | Slots
     | Welds
-    | UnfilledSlots
-    | WeldWeight
     | WeldSet
     | WeldDelete
     | PhysicsAdd
@@ -1945,43 +1770,44 @@ Command = (
     | SpineFit
     | Undo
     | Redo
+    | EditGoto
+    | EditHistoryGet
     | PresenceSet
     | PresenceGet
-    | ScratchDeform
     | Preview
-    | ImportFile
     | ImportJson
     | CommandExtensionSet
     | ExtensionDelete
     | Extensions
     | ExtensionGet
-    | ImportManifest
 )
 
 COMMAND_VARIANTS: dict[str, type[Command]] = {
-    "session_new": SessionNew,
+    "session_create": SessionNew,
     "session_open": SessionOpen,
+    "session_fork": SessionFork,
+    "model_export": ModelExport,
     "session_list": SessionList,
     "session_close": SessionClose,
-    "save": Save,
-    "export_manifest": ExportManifest,
-    "status": Status,
-    "check": Check,
-    "node_tree": NodeTree,
-    "node_info": CommandNodeInfo,
+    "session_save": Save,
+    "manifest_export": ExportManifest,
+    "session_get": Status,
+    "model_check": Check,
+    "node_tree_get": NodeTree,
+    "node_get": CommandNodeInfo,
+    "mesh_get": MeshGet,
+    "model_get": ModelGet,
+    "geometry_get": GeometryGet,
     "node_add": NodeAdd,
     "node_set": NodeSet,
     "node_reparent": NodeReparent,
     "node_reorder": NodeReorder,
-    "node_move": NodeMove,
     "node_duplicate": NodeDuplicate,
-    "rename_id": RenameId,
+    "id_rename": RenameId,
     "mask_add": MaskAdd,
-    "mask_set": MaskSet,
-    "mask_reorder": MaskReorder,
     "mask_delete": MaskDelete,
     "physics_set": PhysicsSet,
-    "physics_globals": PhysicsGlobals,
+    "physics_globals_set": PhysicsGlobals,
     "node_delete": NodeDelete,
     "texture_add": TextureAdd,
     "texture_list": TextureList,
@@ -1989,52 +1815,44 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "param_list": ParamList,
     "param_set": ParamSet,
     "param_delete": ParamDelete,
-    "param_key_insert": ParamKeyInsert,
-    "param_key_delete": ParamKeyDelete,
-    "param_key_move": ParamKeyMove,
-    "param_flip": ParamFlip,
+    "binding_key_insert": BindingKeyInsert,
+    "binding_key_delete": BindingKeyDelete,
+    "binding_key_move": BindingKeyMove,
+    "edit_apply": EditApply,
+    "edit_validate": EditValidate,
+    "binding_cells_get": BindingCellsGet,
+    "binding_cells_set": BindingCellsSet,
+    "binding_cells_unset": BindingCellsUnset,
     "binding_add": BindingAdd,
-    "binding_key": BindingKey,
-    "binding_keys": BindingKeys,
-    "binding_unset": BindingUnset,
-    "binding_reset": BindingReset,
     "binding_delete": BindingDelete,
-    "binding_interpolate": BindingInterpolate,
-    "binding_invert": BindingInvert,
-    "binding_copy_key": BindingCopyKey,
+    "binding_interpolation_set": BindingInterpolate,
     "binding_list": BindingList,
-    "deform_set": DeformSet,
-    "deform_vertices": DeformVertices,
     "mesh_set": MeshSet,
-    "mesh_auto": MeshAuto,
-    "mesh_copy": MeshCopy,
+    "mesh_generate": MeshAuto,
     "slot_add": SlotAdd,
     "slot_fill": SlotFill,
     "slot_clear": SlotClear,
     "slot_delete": SlotDelete,
-    "slots": Slots,
-    "welds": Welds,
-    "unfilled_slots": UnfilledSlots,
-    "weld_weight": WeldWeight,
+    "slot_list": Slots,
+    "weld_list": Welds,
     "weld_set": WeldSet,
     "weld_delete": WeldDelete,
     "physics_add": PhysicsAdd,
     "spine_add": SpineAdd,
     "spine_set": SpineSet,
     "spine_fit": SpineFit,
-    "undo": Undo,
-    "redo": Redo,
+    "edit_undo": Undo,
+    "edit_redo": Redo,
+    "edit_goto": EditGoto,
+    "edit_history_get": EditHistoryGet,
     "presence_set": PresenceSet,
     "presence_get": PresenceGet,
-    "scratch_deform": ScratchDeform,
-    "preview": Preview,
-    "import_file": ImportFile,
-    "import_json": ImportJson,
+    "preview_render": Preview,
+    "structure_json_import": ImportJson,
     "extension_set": CommandExtensionSet,
     "extension_delete": ExtensionDelete,
-    "extensions": Extensions,
+    "extension_list": Extensions,
     "extension_get": ExtensionGet,
-    "import_manifest": ImportManifest,
 }
 
 
@@ -2051,29 +1869,31 @@ def parse_command(message: Mapping[str, Any]) -> Command:
 # down once in Rust, in `COMMAND_KINDS`; a command missing from it fails the
 # build rather than reaching a client unclassified.
 COMMAND_KINDS: dict[str, CommandKind] = {
-    "session_new": CommandKind.EDIT,
+    "session_create": CommandKind.EDIT,
     "session_open": CommandKind.EDIT,
+    "session_fork": CommandKind.EDIT,
+    "model_export": CommandKind.SERVER_QUERY,
     "session_list": CommandKind.SERVER_QUERY,
     "session_close": CommandKind.EDIT,
-    "save": CommandKind.EDIT,
-    "export_manifest": CommandKind.SERVER_QUERY,
-    "status": CommandKind.SERVER_QUERY,
-    "check": CommandKind.REPLICA_QUERY,
-    "node_tree": CommandKind.REPLICA_QUERY,
-    "node_info": CommandKind.REPLICA_QUERY,
+    "session_save": CommandKind.EDIT,
+    "manifest_export": CommandKind.SERVER_QUERY,
+    "session_get": CommandKind.SERVER_QUERY,
+    "model_check": CommandKind.REPLICA_QUERY,
+    "node_tree_get": CommandKind.REPLICA_QUERY,
+    "node_get": CommandKind.REPLICA_QUERY,
+    "mesh_get": CommandKind.REPLICA_QUERY,
+    "model_get": CommandKind.REPLICA_QUERY,
+    "geometry_get": CommandKind.REPLICA_QUERY,
     "node_add": CommandKind.EDIT,
     "node_set": CommandKind.EDIT,
     "node_reparent": CommandKind.EDIT,
     "node_reorder": CommandKind.EDIT,
-    "node_move": CommandKind.EDIT,
     "node_duplicate": CommandKind.EDIT,
-    "rename_id": CommandKind.EDIT,
+    "id_rename": CommandKind.EDIT,
     "mask_add": CommandKind.EDIT,
-    "mask_set": CommandKind.EDIT,
-    "mask_reorder": CommandKind.EDIT,
     "mask_delete": CommandKind.EDIT,
     "physics_set": CommandKind.EDIT,
-    "physics_globals": CommandKind.EDIT,
+    "physics_globals_set": CommandKind.EDIT,
     "node_delete": CommandKind.EDIT,
     "texture_add": CommandKind.EDIT,
     "texture_list": CommandKind.REPLICA_QUERY,
@@ -2081,52 +1901,44 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "param_list": CommandKind.REPLICA_QUERY,
     "param_set": CommandKind.EDIT,
     "param_delete": CommandKind.EDIT,
-    "param_key_insert": CommandKind.EDIT,
-    "param_key_delete": CommandKind.EDIT,
-    "param_key_move": CommandKind.EDIT,
-    "param_flip": CommandKind.EDIT,
+    "binding_key_insert": CommandKind.EDIT,
+    "binding_key_delete": CommandKind.EDIT,
+    "binding_key_move": CommandKind.EDIT,
+    "edit_apply": CommandKind.EDIT,
+    "edit_validate": CommandKind.SERVER_QUERY,
+    "binding_cells_get": CommandKind.REPLICA_QUERY,
+    "binding_cells_set": CommandKind.EDIT,
+    "binding_cells_unset": CommandKind.EDIT,
     "binding_add": CommandKind.EDIT,
-    "binding_key": CommandKind.EDIT,
-    "binding_keys": CommandKind.EDIT,
-    "binding_unset": CommandKind.EDIT,
-    "binding_reset": CommandKind.EDIT,
     "binding_delete": CommandKind.EDIT,
-    "binding_interpolate": CommandKind.EDIT,
-    "binding_invert": CommandKind.EDIT,
-    "binding_copy_key": CommandKind.EDIT,
+    "binding_interpolation_set": CommandKind.EDIT,
     "binding_list": CommandKind.REPLICA_QUERY,
-    "deform_set": CommandKind.EDIT,
-    "deform_vertices": CommandKind.EDIT,
     "mesh_set": CommandKind.EDIT,
-    "mesh_auto": CommandKind.EDIT,
-    "mesh_copy": CommandKind.EDIT,
+    "mesh_generate": CommandKind.EDIT,
     "slot_add": CommandKind.EDIT,
     "slot_fill": CommandKind.EDIT,
     "slot_clear": CommandKind.EDIT,
     "slot_delete": CommandKind.EDIT,
-    "slots": CommandKind.REPLICA_QUERY,
-    "welds": CommandKind.REPLICA_QUERY,
-    "unfilled_slots": CommandKind.REPLICA_QUERY,
-    "weld_weight": CommandKind.EDIT,
+    "slot_list": CommandKind.REPLICA_QUERY,
+    "weld_list": CommandKind.REPLICA_QUERY,
     "weld_set": CommandKind.EDIT,
     "weld_delete": CommandKind.EDIT,
     "physics_add": CommandKind.EDIT,
     "spine_add": CommandKind.EDIT,
     "spine_set": CommandKind.EDIT,
     "spine_fit": CommandKind.EDIT,
-    "undo": CommandKind.EDIT,
-    "redo": CommandKind.EDIT,
+    "edit_undo": CommandKind.EDIT,
+    "edit_redo": CommandKind.EDIT,
+    "edit_goto": CommandKind.EDIT,
+    "edit_history_get": CommandKind.SERVER_QUERY,
     "presence_set": CommandKind.PRESENCE,
     "presence_get": CommandKind.SERVER_QUERY,
-    "scratch_deform": CommandKind.SCRATCH,
-    "preview": CommandKind.SERVER_QUERY,
-    "import_file": CommandKind.EDIT,
-    "import_json": CommandKind.EDIT,
+    "preview_render": CommandKind.SERVER_QUERY,
+    "structure_json_import": CommandKind.EDIT,
     "extension_set": CommandKind.EDIT,
     "extension_delete": CommandKind.EDIT,
-    "extensions": CommandKind.REPLICA_QUERY,
+    "extension_list": CommandKind.REPLICA_QUERY,
     "extension_get": CommandKind.SERVER_QUERY,
-    "import_manifest": CommandKind.EDIT,
 }
 
 
@@ -2144,27 +1956,27 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
         ),
         False,
     ),
-    "import_file": CommandBytes(
+    "session_create": CommandBytes(
         (
-            Attachment(AttachmentKind.FIXED, "model"),
+            Attachment(AttachmentKind.OPTIONAL, "model"),
+            Attachment(AttachmentKind.OPTIONAL, "structure"),
+            Attachment(AttachmentKind.OPTIONAL, "manifest"),
+            Attachment(AttachmentKind.FAMILY, "texture"),
         ),
         False,
     ),
-    "import_json": CommandBytes(
+    "structure_json_import": CommandBytes(
         (
             Attachment(AttachmentKind.FIXED, "structure"),
             Attachment(AttachmentKind.FAMILY, "texture"),
         ),
         False,
     ),
-    "import_manifest": CommandBytes(
-        (
-            Attachment(AttachmentKind.FIXED, "manifest"),
-            Attachment(AttachmentKind.FAMILY, "texture"),
-        ),
-        False,
+    "preview_render": CommandBytes(
+        (),
+        True,
     ),
-    "preview": CommandBytes(
+    "model_export": CommandBytes(
         (),
         True,
     ),
@@ -2188,18 +2000,16 @@ COMMAND_BYTES: dict[str, CommandBytes] = {
 EditCommand = (
     SessionNew
     | SessionOpen
+    | SessionFork
     | SessionClose
     | Save
     | NodeAdd
     | NodeSet
     | NodeReparent
     | NodeReorder
-    | NodeMove
     | NodeDuplicate
     | RenameId
     | MaskAdd
-    | MaskSet
-    | MaskReorder
     | MaskDelete
     | PhysicsSet
     | PhysicsGlobals
@@ -2208,29 +2018,21 @@ EditCommand = (
     | ParamAdd
     | ParamSet
     | ParamDelete
-    | ParamKeyInsert
-    | ParamKeyDelete
-    | ParamKeyMove
-    | ParamFlip
+    | BindingKeyInsert
+    | BindingKeyDelete
+    | BindingKeyMove
+    | EditApply
+    | BindingCellsSet
+    | BindingCellsUnset
     | BindingAdd
-    | BindingKey
-    | BindingKeys
-    | BindingUnset
-    | BindingReset
     | BindingDelete
     | BindingInterpolate
-    | BindingInvert
-    | BindingCopyKey
-    | DeformSet
-    | DeformVertices
     | MeshSet
     | MeshAuto
-    | MeshCopy
     | SlotAdd
     | SlotFill
     | SlotClear
     | SlotDelete
-    | WeldWeight
     | WeldSet
     | WeldDelete
     | PhysicsAdd
@@ -2239,11 +2041,10 @@ EditCommand = (
     | SpineFit
     | Undo
     | Redo
-    | ImportFile
+    | EditGoto
     | ImportJson
     | CommandExtensionSet
     | ExtensionDelete
-    | ImportManifest
 )
 
 # A command that publishes shared view state: pose, camera, selection.
@@ -2251,13 +2052,6 @@ EditCommand = (
 # It goes to the editor because other clients read it back, and it changes no
 # model: no revision, no undo entry, invisible to a panel.
 PresenceCommand = PresenceSet
-
-# A command that shows a live edit on a puppet without authoring it.
-#
-# The drag path. Whoever owns the puppet being drawn serves it — a client
-# with a local replica serves its own, and never asks the editor. A gesture
-# of any length repaints the canvas and re-renders nothing.
-ScratchCommand = ScratchDeform
 
 # A read that is a pure function of the model.
 #
@@ -2267,12 +2061,15 @@ ReplicaQueryCommand = (
     Check
     | NodeTree
     | CommandNodeInfo
+    | MeshGet
+    | ModelGet
+    | GeometryGet
     | TextureList
     | ParamList
+    | BindingCellsGet
     | BindingList
     | Slots
     | Welds
-    | UnfilledSlots
     | Extensions
 )
 
@@ -2281,9 +2078,12 @@ ReplicaQueryCommand = (
 #
 # A replica cannot answer one, so these always go over the wire.
 ServerQueryCommand = (
-    SessionList
+    ModelExport
+    | SessionList
     | ExportManifest
     | Status
+    | EditValidate
+    | EditHistoryGet
     | PresenceGet
     | Preview
     | ExtensionGet
@@ -2741,20 +2541,590 @@ def parse_rename(message: Mapping[str, Any]) -> Rename:
 
 
 @dataclass(frozen=True, kw_only=True)
+class EditOpNodeAdd:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "node_add"
+
+    parent: NodeId
+    kind: NodeKindArg
+    name: str | None = None
+    node: NodeId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpNodeSet:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "node_set"
+
+    node: NodeId
+    # The label a person reads. Free to repeat; nothing is addressed by it.
+    name: str | None = None
+    translate: tuple[float, float, float] | None = None
+    rotate: tuple[float, float, float] | None = None
+    scale: tuple[float, float] | None = None
+    z_order: float | None = None
+    opacity: float | None = None
+    enabled: bool | None = None
+    # The texture the part draws, in three states: absent leaves it as it
+    # is, `null` draws none, an Id draws that one. Ignored on a node that is
+    # not a part. Dropping the last part drawing a texture takes the texture
+    # with it — see [`ResponseBody::Node::dropped`].
+    texture: TexId | Clear | None = None
+    lock_to_root: bool | None = None
+    blend_mode: BlendMode | None = None
+    tint: tuple[float, float, float] | None = None
+    screen_tint: tuple[float, float, float] | None = None
+    mask_threshold: float | None = None
+    # Composite: forward mesh-group deformation to children.
+    propagate_meshgroup: bool | None = None
+    mg_translate_children: bool | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpNodeReparent:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "node_reparent"
+
+    node: NodeId
+    to: NodeId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpNodeReorder:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "node_reorder"
+
+    node: NodeId
+    index: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpMeshSet:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "mesh_set"
+
+    node: NodeId
+    verts: list[tuple[float, float]]
+    uvs: list[tuple[float, float]]
+    indices: list[tuple[int, int, int]]
+    origin: tuple[float, float]
+    deform_mapping: list[list[VertexWeight]] | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingKeyInsert:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_key_insert"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    axis: ParamId
+    value: float
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingKeyDelete:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_key_delete"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    axis: ParamId
+    index: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingKeyMove:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_key_move"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    axis: ParamId
+    index: int
+    value: float
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingAdd:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_add"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    key_positions: list[list[float]] | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingCellsSet:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_cells_set"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    cells: list[BindingCellWrite]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingCellsUnset:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_cells_unset"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    cells: list[tuple[int, int]]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingDelete:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_delete"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpBindingInterpolationSet:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "binding_interpolation_set"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    mode: Interpolate
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpMaskAdd:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "mask_add"
+
+    node: NodeId
+    source: NodeId
+    mode: MaskMode
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpMaskDelete:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "mask_delete"
+
+    node: NodeId
+    index: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpSlotAdd:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "slot_add"
+
+    node: NodeId
+    slot: SlotId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpSlotFill:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "slot_fill"
+
+    node: NodeId
+    slot: SlotId
+    vertex: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpSlotClear:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "slot_clear"
+
+    node: NodeId
+    slot: SlotId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpSlotDelete:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "slot_delete"
+
+    node: NodeId
+    slot: SlotId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpWeldSet:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "weld_set"
+
+    a: NodeId
+    b: NodeId
+    pairs: list[SlotPair]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditOpWeldDelete:
+    TAG_FIELD: ClassVar[str] = "op"
+    TAG: ClassVar[str] = "weld_delete"
+
+    a: NodeId
+    b: NodeId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+# Model edits accepted by an atomic batch. Created IDs are always explicit.
+# Every operation uses the same executor as its standalone command.
+EditOp = (
+    EditOpNodeAdd
+    | EditOpNodeSet
+    | EditOpNodeReparent
+    | EditOpNodeReorder
+    | EditOpMeshSet
+    | EditOpBindingKeyInsert
+    | EditOpBindingKeyDelete
+    | EditOpBindingKeyMove
+    | EditOpBindingAdd
+    | EditOpBindingCellsSet
+    | EditOpBindingCellsUnset
+    | EditOpBindingDelete
+    | EditOpBindingInterpolationSet
+    | EditOpMaskAdd
+    | EditOpMaskDelete
+    | EditOpSlotAdd
+    | EditOpSlotFill
+    | EditOpSlotClear
+    | EditOpSlotDelete
+    | EditOpWeldSet
+    | EditOpWeldDelete
+)
+
+EDIT_OP_VARIANTS: dict[str, type[EditOp]] = {
+    "node_add": EditOpNodeAdd,
+    "node_set": EditOpNodeSet,
+    "node_reparent": EditOpNodeReparent,
+    "node_reorder": EditOpNodeReorder,
+    "mesh_set": EditOpMeshSet,
+    "binding_key_insert": EditOpBindingKeyInsert,
+    "binding_key_delete": EditOpBindingKeyDelete,
+    "binding_key_move": EditOpBindingKeyMove,
+    "binding_add": EditOpBindingAdd,
+    "binding_cells_set": EditOpBindingCellsSet,
+    "binding_cells_unset": EditOpBindingCellsUnset,
+    "binding_delete": EditOpBindingDelete,
+    "binding_interpolation_set": EditOpBindingInterpolationSet,
+    "mask_add": EditOpMaskAdd,
+    "mask_delete": EditOpMaskDelete,
+    "slot_add": EditOpSlotAdd,
+    "slot_fill": EditOpSlotFill,
+    "slot_clear": EditOpSlotClear,
+    "slot_delete": EditOpSlotDelete,
+    "weld_set": EditOpWeldSet,
+    "weld_delete": EditOpWeldDelete,
+}
+
+
+def parse_edit_op(message: Mapping[str, Any]) -> EditOp:
+    """One JSON object as the EditOp it is, by its "op" tag."""
+    tag = message.get("op")
+    found = EDIT_OP_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no EditOp carries the op {tag!r}")
+    return _decode_class(found, message)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EditHistoryEntry:
+    """A retained authored state, identified by its creation revision."""
+
+    revision: int
+    parent: int | None = None
+    redo: int | None = None
+    # Retained publication aliases, including the entry's creation revision.
+    revisions: list[int]
+
+
+@dataclass(frozen=True, kw_only=True)
+class IndexRange:
+    """A half-open page in authored order. Counts never imply truncation."""
+
+    start: int
+    count: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingCellValueScalar:
+    scalar: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingCellValueOffsets:
+    offsets: list[tuple[float, float]]
+
+
+# Exact stored cell payload, shared by reads and writes.
+BindingCellValue = (
+    BindingCellValueScalar
+    | BindingCellValueOffsets
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingCellWrite:
+    cell: tuple[int, int]
+    value: BindingCellValue
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingCellRead:
+    cell: tuple[int, int]
+    authored: bool
+    value: BindingCellValue | None = None
+    derived: BindingCellValue | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingIdentityScalar:
+    scalar: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class BindingIdentityDeform:
+    offset: tuple[float, float]
+    vertex_count: int
+
+
+# Compact identity contribution; deform identity does not repeat vertex zeros.
+BindingIdentity = (
+    BindingIdentityScalar
+    | BindingIdentityDeform
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VertexWeight:
+    """One convex source contribution to a new mesh vertex's authored deformation."""
+
+    vertex: int
+    weight: float
+
+
+class GeometryField(StrEnum):
+    REST = "rest"
+    LOCAL = "local"
+    WORLD = "world"
+    UVS = "uvs"
+    TRIANGLES = "triangles"
+
+
+@dataclass(frozen=True, kw_only=True)
+class GeometryNode:
+    """Selected arrays retain their authored indices; range starts identify pages."""
+
+    node: NodeId
+    origin: tuple[float, float]
+    # Column-major matrix, including the evaluated ancestors.
+    local_to_world: tuple[float, float, float, float, float, float, float, float, float, float, float, float, float, float, float, float]
+    vertex_count: int
+    triangle_count: int
+    vertices: IndexRange
+    triangle_range: IndexRange
+    rest: list[tuple[float, float]] | None = None
+    local: list[tuple[float, float]] | None = None
+    world: list[tuple[float, float, float]] | None = None
+    uvs: list[tuple[float, float]] | None = None
+    triangles: list[tuple[int, int, int]] | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelTextureHeader:
+    id: TexId
+    encoding: TextureEncoding
+    alpha: TextureAlpha
+
+
+@dataclass(frozen=True, kw_only=True)
+class SessionSourceClm:
+    TAG_FIELD: ClassVar[str] = "format"
+    TAG: ClassVar[str] = "clm"
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SessionSourceJson:
+    TAG_FIELD: ClassVar[str] = "format"
+    TAG: ClassVar[str] = "json"
+
+    textures: list[ImportTexture] = field(default_factory=list)
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SessionSourceManifest:
+    TAG_FIELD: ClassVar[str] = "format"
+    TAG: ClassVar[str] = "manifest"
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+# Exactly one source and its declared attachments initialize a new session.
+SessionSource = (
+    SessionSourceClm
+    | SessionSourceJson
+    | SessionSourceManifest
+)
+
+SESSION_SOURCE_VARIANTS: dict[str, type[SessionSource]] = {
+    "clm": SessionSourceClm,
+    "json": SessionSourceJson,
+    "manifest": SessionSourceManifest,
+}
+
+
+def parse_session_source(message: Mapping[str, Any]) -> SessionSource:
+    """One JSON object as the SessionSource it is, by its "format" tag."""
+    tag = message.get("format")
+    found = SESSION_SOURCE_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no SessionSource carries the format {tag!r}")
+    return _decode_class(found, message)
+
+
+class ModelFormat(StrEnum):
+    CLM = "clm"
+
+
+@dataclass(frozen=True, kw_only=True)
+class SessionOrigin:
+    session: SessionId
+    rev: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class LimitInfo:
+    """A machine-readable resource budget refusal."""
+
+    # Stable budget name, such as request_bytes or derived_cell_vertices.
+    resource: str
+    # Maximum permitted count in the resource's units.
+    limit: int
+    # Observed count; byte counting may stop at the first excess.
+    requested: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class BindingParams:
     """The param, or the pair of params, a binding is keyed by. With `param_y`
-    the binding's grid spans both params' key positions and `cell` indexes
-    both; without it the grid is one row and `cell[1]` is 0.
+    the binding owns two position axes and `cell` indexes both; without it
+    the grid is one row and `cell[1]` is 0.
     """
 
     param: ParamId
     param_y: ParamId | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class BindingKeyEntry:
-    target: ScalarTarget
-    value: float
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2823,7 +3193,7 @@ class Camera:
 # The key an extension is filed under: the Id charset plus a required
 # interior dot, vendor first (`molan.caster`).
 #
-# Hand-written rather than one of the [`string_id!`] types because it is the
+# Hand-written rather than one of the `string_id!` types because it is the
 # one Id-shaped string with a rule of its own ([`validate_extension_key`]),
 # and because a key that fails on the way in is worth naming in the error —
 # a file names its extensions in one flat map, so "which key" is the whole
@@ -2974,6 +3344,8 @@ class ReplyErr:
     id: int
     code: ErrorCode
     message: str
+    op_index: int | None = None
+    limit: LimitInfo | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -3042,6 +3414,9 @@ class ErrorCode(StrEnum):
     BAD_TARGET = "bad_target"
     NOTHING_TO_UNDO = "nothing_to_undo"
     NOTHING_TO_REDO = "nothing_to_redo"
+    REVISION_UNAVAILABLE = "revision_unavailable"
+    REVISION_EXHAUSTED = "revision_exhausted"
+    LIMIT_EXCEEDED = "limit_exceeded"
     # A save with no path, on a session that has no file of its own.
     NO_SAVE_PATH = "no_save_path"
     # The part carries no such slot.
@@ -3083,14 +3458,100 @@ class ErrorCode(StrEnum):
     # A command carrying bytes was sent over a transport that cannot carry
     # them; send it over one that can.
     BULK_OVER_HTTP = "bulk_over_http"
-    # An import that would replace the whole model was asked of a session
-    # that already holds one; import into a fresh session instead.
-    NOT_EMPTY = "not_empty"
     # The model carries no extension under that key.
     NO_EXTENSION = "no_extension"
     # `catchlight.` is the format's own prefix: a reader accepts a key under
     # it, and nothing outside the format may author one.
     RESERVED_EXTENSION = "reserved_extension"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyMeshInfo:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "mesh_info"
+
+    node: NodeId
+    mesh: MeshInfo
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyModelStructure:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "model_structure"
+
+    # The current core ClmStructure JSON, including authored cells and extension markers.
+    structure: Any
+    textures: list[ModelTextureHeader]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyGeometrySample:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "geometry_sample"
+
+    pose: list[ParamPose]
+    nodes: list[GeometryNode]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyEditHistory:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "edit_history"
+
+    root: int
+    current: int
+    pruned: bool
+    entries: list[EditHistoryEntry]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyEditResults:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "edit_results"
+
+    changed: bool
+    results: list[ResponseBody]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyBindingCells:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "binding_cells"
+
+    node: NodeId
+    param: ParamId
+    param_y: ParamId | None = None
+    target: BindingTarget
+    width: int
+    height: int
+    interpolate: Interpolate
+    vertex_count: int | None = None
+    vertices: IndexRange | None = None
+    cells: list[BindingCellRead]
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3109,6 +3570,33 @@ class ResponseBodySession:
     TAG: ClassVar[str] = "session"
 
     session: SessionId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodySessionFork:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "session_fork"
+
+    session: SessionId
+    source: SessionOrigin
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ResponseBodyModelExport:
+    TAG_FIELD: ClassVar[str] = "result"
+    TAG: ClassVar[str] = "model_export"
+
+    format: ModelFormat
+    byte_length: int
+    sha256: str
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -3340,20 +3828,6 @@ class ResponseBodyWelds:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ResponseBodyUnfilledSlots:
-    """Slots nothing fills, across the whole model."""
-
-    TAG_FIELD: ClassVar[str] = "result"
-    TAG: ClassVar[str] = "unfilled_slots"
-
-    slots: list[SlotAddr]
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class ResponseBodyEmptied:
     """The slots a mesh edit emptied on `node`, in the part's slot order."""
 
@@ -3423,8 +3897,16 @@ class ResponseBodyExtension:
 
 
 ResponseBody = (
-    ResponseBodyEmpty
+    ResponseBodyMeshInfo
+    | ResponseBodyModelStructure
+    | ResponseBodyGeometrySample
+    | ResponseBodyEditHistory
+    | ResponseBodyEditResults
+    | ResponseBodyBindingCells
+    | ResponseBodyEmpty
     | ResponseBodySession
+    | ResponseBodySessionFork
+    | ResponseBodyModelExport
     | ResponseBodySessions
     | ResponseBodyNode
     | ResponseBodyParam
@@ -3442,7 +3924,6 @@ ResponseBody = (
     | ResponseBodyPresence
     | ResponseBodySlots
     | ResponseBodyWelds
-    | ResponseBodyUnfilledSlots
     | ResponseBodyEmptied
     | ResponseBodySpineFit
     | ResponseBodyExtensions
@@ -3450,8 +3931,16 @@ ResponseBody = (
 )
 
 RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
+    "mesh_info": ResponseBodyMeshInfo,
+    "model_structure": ResponseBodyModelStructure,
+    "geometry_sample": ResponseBodyGeometrySample,
+    "edit_history": ResponseBodyEditHistory,
+    "edit_results": ResponseBodyEditResults,
+    "binding_cells": ResponseBodyBindingCells,
     "empty": ResponseBodyEmpty,
     "session": ResponseBodySession,
+    "session_fork": ResponseBodySessionFork,
+    "model_export": ResponseBodyModelExport,
     "sessions": ResponseBodySessions,
     "node": ResponseBodyNode,
     "param": ResponseBodyParam,
@@ -3469,7 +3958,6 @@ RESPONSE_BODY_VARIANTS: dict[str, type[ResponseBody]] = {
     "presence": ResponseBodyPresence,
     "slots": ResponseBodySlots,
     "welds": ResponseBodyWelds,
-    "unfilled_slots": ResponseBodyUnfilledSlots,
     "emptied": ResponseBodyEmptied,
     "spine_fit": ResponseBodySpineFit,
     "extensions": ResponseBodyExtensions,
@@ -3640,8 +4128,6 @@ class NodeInfo:
     physics: PhysicsInfo | None = None
     # A spine's settings, absent on every other kind.
     spine: SpineInfo | None = None
-    # Authored geometry, in the same coordinates accepted by `mesh_set`.
-    mesh: MeshInfo | None = None
     # Ordered clipping rules. Empty on nodes that do not draw.
     masks: list[MaskInfo] = field(default_factory=list)
 
@@ -3705,6 +4191,9 @@ class SpineInfo:
 
 @dataclass(frozen=True, kw_only=True)
 class TexInfo:
+    encoding: TextureEncoding
+    alpha: TextureAlpha
+    sha256: str
     id: TexId
     width: int
     height: int
@@ -3719,10 +4208,8 @@ class ParamInfo:
     min: float
     max: float
     default: float = 0.0
-    # Key positions, normalized 0..1 across `[min, max]`. Always at least
-    # the two endpoints, so a binding's grid is `key_positions.len()` wide.
-    key_positions: list[float] = field(default_factory=list)
-    bindings: int
+    # Number of bindings driven by this input.
+    bindings: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3732,8 +4219,8 @@ class BindingInfo:
 
     **The grid is `[y][x]`** — the transpose of the `cell: [x, y]` every
     binding command takes, so `keys[cell[1]][cell[0]]` is the cell
-    [`Command::BindingKey`] would write. It is the full product of the params'
-    key positions, [`Self::width`] by [`Self::height`], with one row when
+    [`Command::BindingCellsSet`] would write. It is the full product of this
+    binding's key positions, [`Self::width`] by [`Self::height`], with one row when
     there is no `param_y`.
 
     **A `null` in `keys` is a cell nobody authored.** The model stores only the
@@ -3745,6 +4232,9 @@ class BindingInfo:
     `keys[y][x] != null`.
     """
 
+    # One ordered normalized axis per input, owned only by this binding.
+    key_positions: list[list[float]]
+    identity: BindingIdentity
     # The property driven — plus `deform`, which only the deform commands
     # author.
     target: BindingTarget
@@ -3755,9 +4245,9 @@ class BindingInfo:
     # How it reads between cells, as [`Command::BindingInterpolate`] takes
     # it back.
     interpolate: Interpolate
-    # How many key positions `param` has, so how wide the grid is.
+    # Number of positions on this binding's `param` axis.
     width: int
-    # How many key positions `param_y` has, or 1.
+    # Number of positions on this binding's `param_y` axis, or 1.
     height: int
     # The authored value at each cell, `[y][x]`, `null` where nothing was
     # authored.
@@ -3808,6 +4298,8 @@ __all__ = [
     "SlotId",
     "SessionNew",
     "SessionOpen",
+    "SessionFork",
+    "ModelExport",
     "SessionList",
     "SessionClose",
     "Save",
@@ -3816,16 +4308,16 @@ __all__ = [
     "Check",
     "NodeTree",
     "CommandNodeInfo",
+    "MeshGet",
+    "ModelGet",
+    "GeometryGet",
     "NodeAdd",
     "NodeSet",
     "NodeReparent",
     "NodeReorder",
-    "NodeMove",
     "NodeDuplicate",
     "RenameId",
     "MaskAdd",
-    "MaskSet",
-    "MaskReorder",
     "MaskDelete",
     "PhysicsSet",
     "PhysicsGlobals",
@@ -3836,33 +4328,26 @@ __all__ = [
     "ParamList",
     "ParamSet",
     "ParamDelete",
-    "ParamKeyInsert",
-    "ParamKeyDelete",
-    "ParamKeyMove",
-    "ParamFlip",
+    "BindingKeyInsert",
+    "BindingKeyDelete",
+    "BindingKeyMove",
+    "EditApply",
+    "EditValidate",
+    "BindingCellsGet",
+    "BindingCellsSet",
+    "BindingCellsUnset",
     "BindingAdd",
-    "BindingKey",
-    "BindingKeys",
-    "BindingUnset",
-    "BindingReset",
     "BindingDelete",
     "BindingInterpolate",
-    "BindingInvert",
-    "BindingCopyKey",
     "BindingList",
-    "DeformSet",
-    "DeformVertices",
     "MeshSet",
     "MeshAuto",
-    "MeshCopy",
     "SlotAdd",
     "SlotFill",
     "SlotClear",
     "SlotDelete",
     "Slots",
     "Welds",
-    "UnfilledSlots",
-    "WeldWeight",
     "WeldSet",
     "WeldDelete",
     "PhysicsAdd",
@@ -3871,17 +4356,16 @@ __all__ = [
     "SpineFit",
     "Undo",
     "Redo",
+    "EditGoto",
+    "EditHistoryGet",
     "PresenceSet",
     "PresenceGet",
-    "ScratchDeform",
     "Preview",
-    "ImportFile",
     "ImportJson",
     "CommandExtensionSet",
     "ExtensionDelete",
     "Extensions",
     "ExtensionGet",
-    "ImportManifest",
     "Command",
     "COMMAND_VARIANTS",
     "parse_command",
@@ -3889,7 +4373,6 @@ __all__ = [
     "COMMAND_BYTES",
     "EditCommand",
     "PresenceCommand",
-    "ScratchCommand",
     "ReplicaQueryCommand",
     "ServerQueryCommand",
     "QueryCommand",
@@ -3920,8 +4403,54 @@ __all__ = [
     "Rename",
     "RENAME_VARIANTS",
     "parse_rename",
+    "EditOpNodeAdd",
+    "EditOpNodeSet",
+    "EditOpNodeReparent",
+    "EditOpNodeReorder",
+    "EditOpMeshSet",
+    "EditOpBindingKeyInsert",
+    "EditOpBindingKeyDelete",
+    "EditOpBindingKeyMove",
+    "EditOpBindingAdd",
+    "EditOpBindingCellsSet",
+    "EditOpBindingCellsUnset",
+    "EditOpBindingDelete",
+    "EditOpBindingInterpolationSet",
+    "EditOpMaskAdd",
+    "EditOpMaskDelete",
+    "EditOpSlotAdd",
+    "EditOpSlotFill",
+    "EditOpSlotClear",
+    "EditOpSlotDelete",
+    "EditOpWeldSet",
+    "EditOpWeldDelete",
+    "EditOp",
+    "EDIT_OP_VARIANTS",
+    "parse_edit_op",
+    "EditHistoryEntry",
+    "IndexRange",
+    "BindingCellValueScalar",
+    "BindingCellValueOffsets",
+    "BindingCellValue",
+    "BindingCellWrite",
+    "BindingCellRead",
+    "BindingIdentityScalar",
+    "BindingIdentityDeform",
+    "BindingIdentity",
+    "VertexWeight",
+    "GeometryField",
+    "GeometryNode",
+    "ModelTextureHeader",
+    "SessionSourceClm",
+    "SessionSourceJson",
+    "SessionSourceManifest",
+    "SessionSource",
+    "SESSION_SOURCE_VARIANTS",
+    "parse_session_source",
+    "ModelFormat",
+    "SessionOrigin",
+    "LimitInfo",
     "BindingParams",
-    "BindingKeyEntry",
     "ParamPose",
     "ImportTexture",
     "SlotAddr",
@@ -3947,8 +4476,16 @@ __all__ = [
     "REPLY_VARIANTS",
     "parse_reply",
     "ErrorCode",
+    "ResponseBodyMeshInfo",
+    "ResponseBodyModelStructure",
+    "ResponseBodyGeometrySample",
+    "ResponseBodyEditHistory",
+    "ResponseBodyEditResults",
+    "ResponseBodyBindingCells",
     "ResponseBodyEmpty",
     "ResponseBodySession",
+    "ResponseBodySessionFork",
+    "ResponseBodyModelExport",
     "ResponseBodySessions",
     "ResponseBodyNode",
     "ResponseBodyParam",
@@ -3966,7 +4503,6 @@ __all__ = [
     "ResponseBodyPresence",
     "ResponseBodySlots",
     "ResponseBodyWelds",
-    "ResponseBodyUnfilledSlots",
     "ResponseBodyEmptied",
     "ResponseBodySpineFit",
     "ResponseBodyExtensions",

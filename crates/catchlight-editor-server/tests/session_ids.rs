@@ -25,7 +25,14 @@ fn body(ed: &Editor, id: u64, command: Command) -> ResponseBody {
 }
 
 fn new_session(ed: &Editor, id: u64) -> SessionId {
-    match body(ed, id, Command::SessionNew { name: None }) {
+    match body(
+        ed,
+        id,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ) {
         ResponseBody::Session { session } => session,
         other => panic!("{other:?}"),
     }
@@ -57,7 +64,6 @@ fn drawn(ed: &Editor, base: u64, session: SessionId) -> Vec<String> {
             min: 0.0,
             max: 1.0,
             default: 0.0,
-            key_positions: Vec::new(),
             param: None,
         },
     ) {

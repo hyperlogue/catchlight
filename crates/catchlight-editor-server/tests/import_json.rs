@@ -1,11 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! `import_json`: a structure as JSON, its images beside it.
-//!
-//! The property that matters is that this is not a second importer. It is the
-//! same two paths `import_file` takes, reached from a different envelope, so
-//! the tests here mostly assert that the two agree — on the model they build,
-//! on the pristine rule, and on what installing under a parent leaves behind.
+//! JSON session construction and guarded subtree import share core validation.
+//! Models round-trip through structures and exact texture attachments; subtree
+//! installation is one undoable edit against an explicitly selected parent.
 
 use std::collections::HashMap;
 use std::io;
@@ -15,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use catchlight_core::formats::clm::{self, ClmFile};
 use catchlight_editor_protocol::{
     Command, ErrorCode, ImportTexture, NodeId, Reply, Request, ResponseBody, SessionId,
+    SessionSource,
 };
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
@@ -48,16 +46,6 @@ fn editor() -> Editor {
 
 fn req(id: u64, command: Command) -> Request {
     Request { id, command }
-}
-
-fn new_session(ed: &Editor) -> SessionId {
-    match ed.handle(req(1, Command::SessionNew { name: None })) {
-        Reply::Ok {
-            body: ResponseBody::Session { session },
-            ..
-        } => session,
-        other => panic!("expected a session, got {other:?}"),
-    }
 }
 
 fn models_dir() -> PathBuf {
@@ -108,24 +96,36 @@ fn as_json(file: &ClmFile) -> AsJson {
     }
 }
 
-fn send_json(ed: &Editor, session: SessionId, parent: Option<NodeId>, sent: &AsJson) -> Reply {
+fn send_json(ed: &Editor, command: Command, sent: &AsJson) -> Reply {
     let mut attachments = Attachments::none();
     attachments.insert("structure", sent.structure.clone());
     for (name, bytes) in &sent.attachments {
         attachments.insert(name.clone(), bytes.clone());
     }
-    ed.handle_with(
-        req(
-            2,
-            Command::ImportJson {
-                session,
-                parent,
+    ed.handle_with(req(2, command), attachments).0
+}
+
+fn create_json(ed: &Editor, sent: &AsJson) -> Reply {
+    send_json(
+        ed,
+        Command::SessionNew {
+            name: None,
+            source: Some(SessionSource::Json {
                 textures: sent.textures.clone(),
-            },
-        ),
-        attachments,
+            }),
+        },
+        sent,
     )
-    .0
+}
+
+fn session(reply: Reply) -> SessionId {
+    match reply {
+        Reply::Ok {
+            body: ResponseBody::Session { session },
+            ..
+        } => session,
+        other => panic!("expected a session, got {other:?}"),
+    }
 }
 
 /// The session's model, written back out.
@@ -149,38 +149,28 @@ fn ok(reply: Reply) {
 
 // -------------------------------------------------------------------- tests
 
-/// The two imports are one operation in two envelopes, so they have to land
-/// on the same model, byte for byte.
 #[test]
-fn a_json_import_builds_what_the_same_file_would() {
+fn json_and_clm_sources_construct_the_same_model() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
     let file = clm::decode(&bytes).unwrap();
-
     let ed = editor();
-    let from_file = new_session(&ed);
     let mut attachments = Attachments::none();
-    attachments.insert("model", bytes.clone());
-    ok(ed
-        .handle_with(
+    attachments.insert("model", bytes);
+    let from_file = session(
+        ed.handle_with(
             req(
-                2,
-                Command::ImportFile {
-                    session: from_file,
-                    parent: None,
+                1,
+                Command::SessionNew {
+                    name: None,
+                    source: Some(SessionSource::Clm {}),
                 },
             ),
             attachments,
         )
-        .0);
-
-    let from_json = new_session(&ed);
-    ok(send_json(&ed, from_json, None, &as_json(&file)));
-
-    assert_eq!(
-        session_bytes(&ed, from_json),
-        session_bytes(&ed, from_file),
-        "the two imports disagree about the model"
+        .0,
     );
+    let from_json = session(create_json(&ed, &as_json(&file)));
+    assert_eq!(session_bytes(&ed, from_json), session_bytes(&ed, from_file));
 }
 
 /// Every committed fixture survives the trip out through JSON and back, which
@@ -198,13 +188,12 @@ fn every_fixture_round_trips_through_json() {
             .unwrap();
 
         let ed = editor();
-        let session = new_session(&ed);
-        let reply = send_json(&ed, session, None, &as_json(&file));
+        let reply = create_json(&ed, &as_json(&file));
         if let Reply::Err { code, message, .. } = &reply {
             panic!("{name}: {code:?}: {message}");
         }
         assert_eq!(
-            session_bytes(&ed, session),
+            session_bytes(&ed, session(reply)),
             want,
             "{name} did not survive the json round trip"
         );
@@ -219,8 +208,7 @@ fn a_declared_texture_with_no_attachment_is_refused_naming_it() {
     let dropped = sent.attachments.remove(0).0;
 
     let ed = editor();
-    let session = new_session(&ed);
-    let (code, message) = err(send_json(&ed, session, None, &sent));
+    let (code, message) = err(create_json(&ed, &sent));
     assert_eq!(code, ErrorCode::BadRequest);
     let id = dropped.strip_prefix("texture:").unwrap();
     assert!(
@@ -238,8 +226,7 @@ fn an_attachment_no_texture_declares_is_refused_naming_it() {
         .push(("texture:tex-stray".into(), vec![1, 2, 3]));
 
     let ed = editor();
-    let session = new_session(&ed);
-    let (code, message) = err(send_json(&ed, session, None, &sent));
+    let (code, message) = err(create_json(&ed, &sent));
     assert_eq!(code, ErrorCode::BadRequest);
     assert!(message.contains("tex-stray"), "{message}");
 }
@@ -256,22 +243,18 @@ fn a_texture_the_structure_references_but_nobody_sent_is_refused_by_the_reader()
         .retain(|(name, _)| name != &format!("texture:{gone}"));
 
     let ed = editor();
-    let session = new_session(&ed);
-    let (_, message) = err(send_json(&ed, session, None, &sent));
+    let (_, message) = err(create_json(&ed, &sent));
     assert!(message.contains(gone.as_str()), "{message}");
 }
 
-/// `parent` present installs the structure's roots under that node, the same
-/// way a file does, and it is an ordinary edit: dirty, and undoable.
+/// The structure's roots install under the named parent as one undoable edit.
 #[test]
 fn a_structure_installs_under_the_parent_the_command_names() {
     let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
     let file = clm::decode(&bytes).unwrap();
 
     let ed = editor();
-    let session = new_session(&ed);
-    // A base to hang it off: the same model, imported whole first.
-    ok(send_json(&ed, session, None, &as_json(&file)));
+    let session = session(create_json(&ed, &as_json(&file)));
     let before = ed
         .with_model(session, |m| m.node_count())
         .expect("the session is open");
@@ -283,15 +266,31 @@ fn a_structure_installs_under_the_parent_the_command_names() {
         .with_model(session, |m| m.root().cloned())
         .expect("the session is open")
         .expect("a complete model has a root");
-    ok(send_json(&ed, session, Some(root), &as_json(&addon)));
+    let sent = as_json(&addon);
+    ok(send_json(
+        &ed,
+        Command::ImportJson {
+            session,
+            parent: root,
+            if_rev: ed.revision(session).unwrap(),
+            textures: sent.textures.clone(),
+        },
+        &sent,
+    ));
 
     let after = ed
         .with_model(session, |m| m.node_count())
         .expect("the session is open");
     assert!(after > before, "the subtree landed: {before} -> {after}");
 
-    // An install is an ordinary edit, unlike a pristine replace.
-    ok(ed.handle(req(9, Command::Undo { session })));
+    // One Undo restores the model before the installation.
+    ok(ed.handle(req(
+        9,
+        Command::Undo {
+            session,
+            if_rev: ed.revision(session).unwrap(),
+        },
+    )));
     assert_eq!(
         ed.with_model(session, |m| m.node_count()).unwrap(),
         before,
@@ -299,19 +298,17 @@ fn a_structure_installs_under_the_parent_the_command_names() {
     );
 }
 
-/// The pristine rule is the same rule, whichever envelope the model arrived
-/// in: a session that already holds a model refuses a whole-model import.
 #[test]
-fn importing_over_a_session_that_holds_a_model_is_refused() {
-    let bytes = std::fs::read(models_dir().join("welded_seam.clm")).unwrap();
-    let file = clm::decode(&bytes).unwrap();
-    let sent = as_json(&file);
-
+fn repeated_factory_calls_publish_independent_sessions() {
+    let file = clm::decode(&std::fs::read(models_dir().join("welded_seam.clm")).unwrap()).unwrap();
     let ed = editor();
-    let session = new_session(&ed);
-    ok(send_json(&ed, session, None, &sent));
-    let (code, _) = err(send_json(&ed, session, None, &sent));
-    assert_eq!(code, ErrorCode::NotEmpty);
+    let sent = as_json(&file);
+    let a = session(create_json(&ed, &sent));
+    let b = session(create_json(&ed, &sent));
+    assert_ne!(a, b);
+    assert_eq!(session_bytes(&ed, a), session_bytes(&ed, b));
+    assert_eq!(ed.revision(a), Some(0));
+    assert_eq!(ed.revision(b), Some(0));
 }
 
 /// A byte extension's payload has no room in a JSON structure, so a marker in
@@ -331,8 +328,7 @@ fn a_byte_extension_marker_is_refused_by_key() {
     );
 
     let ed = editor();
-    let session = new_session(&ed);
-    let (_, message) = err(send_json(&ed, session, None, &as_json(&file)));
+    let (_, message) = err(create_json(&ed, &as_json(&file)));
     assert!(message.contains("molan.thumb"), "{message}");
 }
 

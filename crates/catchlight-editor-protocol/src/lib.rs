@@ -76,15 +76,14 @@
 //!   a label a person reads; two nodes may share one. Commands that carry a
 //!   `name` are setting or reporting that label.
 //!
-//! - **Params are scalar.** A param has one range and one list of key
-//!   positions. A binding is keyed by *one or two* params ([`BindingParams`])
-//!   and its grid is the product of their key positions, so `cell` stays
+//! - **Params are scalar inputs; bindings own positions.** A param has one
+//!   range and default. A binding names *one or two* params ([`BindingParams`])
+//!   and owns one normalized axis per input; their product is its grid. `cell` stays
 //!   `[x, y]` — the y index is 0 for a one-param binding. An XY pad is a view
 //!   over any two params, not a property of either.
 //!
 //! - **A session's model is always complete.** A fragment enters one way and
-//!   one way only: an import naming a `parent` ([`Command::ImportFile`] or
-//!   [`Command::ImportJson`]), which installs it under that node in a single
+//!   one way only: [`Command::ImportJson`] naming a required `parent`, which installs it under that node in a single
 //!   atomic edit and leaves a complete model behind. It never *becomes* the
 //!   session's model, there is no extract command to match it, and no reply
 //!   carries a multi-root tree — so every tree reply, the inspector and the
@@ -126,15 +125,17 @@
 //! - **Every command says what it does, in one place.** [`COMMAND_KINDS`]
 //!   gives each one a [`CommandKind`], and that is what a client routes by.
 //!   `Edit` moves the session's revision, records undo and is saved.
-//!   `Presence` publishes shared view state and moves nothing. `Scratch` shows
-//!   a live edit on a puppet and never authors it. `ReplicaQuery` is a pure
+//!   `Presence` publishes shared view state and moves nothing. Scratch lives
+//!   on the local Puppet and has no wire command. `ReplicaQuery` is a pure
 //!   function of the [`Model`](catchlight_core::Model), so a client holding a
 //!   replica answers it without asking the editor. `ServerQuery` needs the
 //!   editor's own state, its store or its renderer, so only the editor can.
 //!
 //! - **A reply says which revision it reflects.** [`Reply::Ok`] carries the
-//!   addressed session's `rev` *after* the command, so a client can tell a
-//!   stale read from a fresh one without a second round trip.
+//!   revision captured under the addressed session's lock. New guarded reads
+//!   reject a mismatched `if_rev`; edits reject it before mutation. Clients
+//!   retain this revision with the data they read, then submit one guarded
+//!   edit or batch. A stale edit is never retried blindly.
 
 use serde::{Deserialize, Serialize};
 
@@ -169,38 +170,55 @@ pub struct RequestId {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Command {
+    #[serde(rename = "session_create")]
     SessionNew {
         #[serde(default)]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SessionSource>,
     },
     /// Open the `.clm` the server's store holds at `path`.
     ///
     /// A file of the server's, and the session can save back over it. Bytes a
-    /// client holds are not this command: those are [`Command::SessionNew`]
-    /// followed by [`Command::ImportFile`], which leaves the session with no
-    /// file to save to, because there is none.
+    /// client holds use [`Command::SessionNew`] with a source and attachments.
+    /// That session has no storage path to save back to.
     SessionOpen {
         path: String,
+    },
+    SessionFork {
+        session: SessionId,
+        if_rev: u64,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    ModelExport {
+        session: SessionId,
+        if_rev: u64,
     },
     SessionList,
     SessionClose {
         session: SessionId,
     },
+    #[serde(rename = "session_save")]
     Save {
         session: SessionId,
         #[serde(default)]
         path: Option<String>,
     },
+    #[serde(rename = "manifest_export")]
     ExportManifest {
         session: SessionId,
         path: String,
     },
+    #[serde(rename = "session_get")]
     Status {
         session: SessionId,
     },
+    #[serde(rename = "model_check")]
     Check {
         session: SessionId,
     },
+    #[serde(rename = "node_tree_get")]
     NodeTree {
         session: SessionId,
     },
@@ -208,9 +226,34 @@ pub enum Command {
     /// under the same field names, plus the node's kind, its parent, its Id
     /// and the size of the mesh it holds. What [`Command::NodeTree`] carries
     /// is what a tree row draws; this is the rest.
+    #[serde(rename = "node_get")]
     NodeInfo {
         session: SessionId,
         node: NodeId,
+    },
+    MeshGet {
+        session: SessionId,
+        node: NodeId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+    },
+    ModelGet {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+    },
+    GeometryGet {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+        #[serde(default)]
+        pose: Vec<ParamPose>,
+        nodes: Vec<NodeId>,
+        fields: Vec<GeometryField>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vertices: Option<IndexRange>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        triangles: Option<IndexRange>,
     },
     NodeAdd {
         session: SessionId,
@@ -240,14 +283,7 @@ pub enum Command {
         node: NodeId,
         index: u32,
     },
-    /// Reparent + position in one undoable step: `node` becomes `parent`'s
-    /// child at `index` (clamped).
-    NodeMove {
-        session: SessionId,
-        node: NodeId,
-        parent: NodeId,
-        index: u32,
-    },
+
     /// Deep-copy a node's subtree as its next sibling (bindings and
     /// subtree-internal mask references come along). The copies get fresh
     /// generated Ids.
@@ -261,6 +297,7 @@ pub enum Command {
     /// **Breaking for addons.** An addon reaches into a base model by Id, so
     /// renaming one is exactly as breaking as deleting it: nothing outside
     /// this model is rewritten and there is no alias left behind.
+    #[serde(rename = "id_rename")]
     RenameId {
         session: SessionId,
         rename: Rename,
@@ -272,20 +309,7 @@ pub enum Command {
         source: NodeId,
         mode: MaskMode,
     },
-    /// Change the mode of the mask at `index`.
-    MaskSet {
-        session: SessionId,
-        node: NodeId,
-        index: u32,
-        mode: MaskMode,
-    },
-    /// Move the mask at `index` to position `to` (clamped).
-    MaskReorder {
-        session: SessionId,
-        node: NodeId,
-        index: u32,
-        to: u32,
-    },
+
     MaskDelete {
         session: SessionId,
         node: NodeId,
@@ -321,6 +345,7 @@ pub enum Command {
         output_scale: Option<[f32; 2]>,
     },
     /// Model-level physics constants.
+    #[serde(rename = "physics_globals_set")]
     PhysicsGlobals {
         session: SessionId,
         #[serde(default)]
@@ -356,8 +381,7 @@ pub enum Command {
     TextureList {
         session: SessionId,
     },
-    /// Create a scalar param. `key_positions` are normalized 0..1 (empty =
-    /// the two endpoints).
+    /// Create a scalar input with a range and default value.
     ParamAdd {
         session: SessionId,
         name: String,
@@ -367,8 +391,6 @@ pub enum Command {
         max: f32,
         #[serde(default)]
         default: f32,
-        #[serde(default)]
-        key_positions: Vec<f32>,
         /// The Id to create it under. Absent generates one; an Id the model
         /// already carries is [`ErrorCode::DuplicateId`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,83 +417,105 @@ pub enum Command {
         session: SessionId,
         param: ParamId,
     },
-    /// Insert a key position at normalized `value`, strictly inside (0, 1).
+    /// Insert a distinct key position at normalized `value` in [0, 1].
     /// Authored cells shift; the new row/column derives.
-    ParamKeyInsert {
+    BindingKeyInsert {
         session: SessionId,
-        param: ParamId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+        #[serde(flatten)]
+        params: BindingParams,
+        node: NodeId,
+        target: BindingTarget,
+        /// Driving param whose binding-local axis changes.
+        axis: ParamId,
         value: f32,
     },
-    /// Remove an interior key position; its authored cells are dropped.
-    ParamKeyDelete {
+    /// Remove a key position while retaining at least one position on the axis.
+    /// Its authored cells are dropped.
+    BindingKeyDelete {
         session: SessionId,
-        param: ParamId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+        #[serde(flatten)]
+        params: BindingParams,
+        node: NodeId,
+        target: BindingTarget,
+        /// Driving param whose binding-local axis changes.
+        axis: ParamId,
         index: u32,
     },
-    /// Move an interior key position to normalized `value` (must stay
-    /// strictly between its neighbors).
-    ParamKeyMove {
+    /// Move a key position to normalized `value` in [0, 1], preserving
+    /// strict ordering with its neighbors.
+    BindingKeyMove {
         session: SessionId,
-        param: ParamId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+        #[serde(flatten)]
+        params: BindingParams,
+        node: NodeId,
+        target: BindingTarget,
+        /// Driving param whose binding-local axis changes.
+        axis: ParamId,
         index: u32,
         value: f32,
     },
-    /// Mirror the param (key positions reflect, cells move to the mirrored
-    /// index; values untouched — compose with BindingInvert).
-    ParamFlip {
+
+    /// Atomically execute a bounded list against one revision of the model.
+    EditApply {
         session: SessionId,
-        param: ParamId,
+        if_rev: u64,
+        edits: Vec<EditOp>,
+    },
+    /// Evaluate the same list on a captured clone without publishing it.
+    EditValidate {
+        session: SessionId,
+        if_rev: u64,
+        edits: Vec<EditOp>,
+    },
+    BindingCellsGet {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
+        #[serde(flatten)]
+        params: BindingParams,
+        node: NodeId,
+        target: BindingTarget,
+        cells: Vec<[u32; 2]>,
+        #[serde(default)]
+        include_derived: bool,
+        /// Optional page of each deform array; scalar reads reject this field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vertices: Option<IndexRange>,
+    },
+    BindingCellsSet {
+        session: SessionId,
+        if_rev: u64,
+        #[serde(flatten)]
+        params: BindingParams,
+        node: NodeId,
+        target: BindingTarget,
+        cells: Vec<BindingCellWrite>,
+    },
+    BindingCellsUnset {
+        session: SessionId,
+        if_rev: u64,
+        #[serde(flatten)]
+        params: BindingParams,
+        node: NodeId,
+        target: BindingTarget,
+        cells: Vec<[u32; 2]>,
     },
     BindingAdd {
         session: SessionId,
         #[serde(flatten)]
         params: BindingParams,
         node: NodeId,
-        target: ScalarTarget,
-    },
-    /// Author one scalar keypoint (auto-creates the binding).
-    BindingKey {
-        session: SessionId,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        target: ScalarTarget,
-        /// `[x, y]` index into the binding's key grid; `y` is 0 for a
-        /// one-param binding.
-        cell: [u32; 2],
-        value: f32,
-    },
-    /// Author several scalar keypoints at one cell in one undoable step (a
-    /// gizmo drag commits tx+ty together).
-    BindingKeys {
-        session: SessionId,
-        /// Refuse a stale draft or gesture while holding the session lock.
+        target: BindingTarget,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        if_rev: Option<u64>,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        cell: [u32; 2],
-        entries: Vec<BindingKeyEntry>,
+        key_positions: Option<Vec<Vec<f32>>>,
     },
-    /// Un-author a keypoint (back to derived).
-    BindingUnset {
-        session: SessionId,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        cell: [u32; 2],
-    },
-    /// Author the identity value at a keypoint.
-    BindingReset {
-        session: SessionId,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        cell: [u32; 2],
-    },
+
     BindingDelete {
         session: SessionId,
         #[serde(flatten)]
@@ -479,6 +523,7 @@ pub enum Command {
         node: NodeId,
         target: BindingTarget,
     },
+    #[serde(rename = "binding_interpolation_set")]
     BindingInterpolate {
         session: SessionId,
         #[serde(flatten)]
@@ -487,24 +532,7 @@ pub enum Command {
         target: BindingTarget,
         mode: Interpolate,
     },
-    /// Negate every authored value.
-    BindingInvert {
-        session: SessionId,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-    },
-    /// Author the value evaluated at `from` into cell `to`.
-    BindingCopyKey {
-        session: SessionId,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        target: BindingTarget,
-        from: [u32; 2],
-        to: [u32; 2],
-    },
+
     /// Every binding on one node: what drives it, how it reads between its
     /// cells, and the grid the author keyed.
     ///
@@ -514,33 +542,7 @@ pub enum Command {
         session: SessionId,
         node: NodeId,
     },
-    /// Author a deform keypoint from an affine applied to the part's rest mesh.
-    DeformSet {
-        session: SessionId,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        cell: [u32; 2],
-        #[serde(default)]
-        translate: Option<[f32; 2]>,
-        #[serde(default)]
-        rotate: Option<f32>,
-        #[serde(default)]
-        scale: Option<[f32; 2]>,
-    },
-    /// Author per-vertex deform offsets, one `[dx, dy]` per mesh vertex and in
-    /// the mesh's own order. This is what commits a live drag.
-    DeformVertices {
-        session: SessionId,
-        /// Refuse a stale draft or gesture while holding the session lock.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        if_rev: Option<u64>,
-        #[serde(flatten)]
-        params: BindingParams,
-        node: NodeId,
-        cell: [u32; 2],
-        offsets: Vec<[f32; 2]>,
-    },
+
     /// Replace a Part/MeshGroup mesh; every deform binding on the node is
     /// re-fitted onto the new topology in the same undoable step. Answers
     /// with the slots the new mesh emptied.
@@ -557,6 +559,8 @@ pub enum Command {
         /// One `[a, b, c]` per triangle, each a `verts` index.
         indices: Vec<[u32; 3]>,
         origin: [f32; 2],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deform_mapping: Option<Vec<Vec<VertexWeight>>>,
     },
     /// Derive a part's mesh from its own texture's alpha and apply it, with
     /// the same deform re-fit and the same emptied-slot reply as
@@ -566,6 +570,7 @@ pub enum Command {
     /// that traced them itself would have to decode an image, agree on the
     /// UV mapping, and send back a mesh — three chances to disagree with the
     /// editor about what the part looks like.
+    #[serde(rename = "mesh_generate")]
     MeshAuto {
         session: SessionId,
         node: NodeId,
@@ -573,13 +578,7 @@ pub enum Command {
         #[serde(default)]
         mode: AutoMesh,
     },
-    /// Copy `from`'s mesh onto `to` (with the same deform re-fit and the same
-    /// emptied-slot reply).
-    MeshCopy {
-        session: SessionId,
-        from: NodeId,
-        to: NodeId,
-    },
+
     /// Add a slot to a part. The slot lands unfilled and pairs nothing: a
     /// weld is what pairs it with a slot on another part.
     SlotAdd {
@@ -612,34 +611,17 @@ pub enum Command {
         slot: SlotId,
     },
     /// The slots a part carries, with what fills each.
+    #[serde(rename = "slot_list")]
     Slots {
         session: SessionId,
         node: NodeId,
     },
     /// Every weld in the model.
+    #[serde(rename = "weld_list")]
     Welds {
         session: SessionId,
     },
-    /// Every slot in the model no vertex fills. A re-meshed part empties its
-    /// slots, so this is what a commit gate reads.
-    UnfilledSlots {
-        session: SessionId,
-    },
-    /// Move one pair's share of one weld's meeting point, leaving every other
-    /// weight where it is — what a slider sends. [`Command::WeldSet`] can only
-    /// rewrite a weld whole, so moving one weight through it means reading the
-    /// rest back and sending them again unchanged.
-    ///
-    /// `slot` is a slot on `a`. `weight` is the share of the part named `a`,
-    /// whichever way round the weld happens to be stored, and it has to be
-    /// within `0..=1` — a share outside that has no meaning to flip.
-    WeldWeight {
-        session: SessionId,
-        a: NodeId,
-        b: NodeId,
-        slot: SlotId,
-        weight: f32,
-    },
+
     /// Weld two parts together, replacing any weld already pairing them. Each
     /// pair names a slot on `a` and a slot on `b`; empty `pairs` records the
     /// two parts as welded and joins nothing yet.
@@ -776,11 +758,27 @@ pub enum Command {
         #[serde(default)]
         chain: Option<ChainArg>,
     },
+    #[serde(rename = "edit_undo")]
     Undo {
         session: SessionId,
+        if_rev: u64,
     },
+    #[serde(rename = "edit_redo")]
     Redo {
         session: SessionId,
+        if_rev: u64,
+    },
+    /// Restore a retained authored state and publish a new live revision.
+    EditGoto {
+        session: SessionId,
+        if_rev: u64,
+        revision: u64,
+    },
+    /// Session-owned tree metadata, captured with its live revision.
+    EditHistoryGet {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_rev: Option<u64>,
     },
     /// Publish ephemeral view state (pose / camera / selection) — a separate
     /// path from the model: never bumps rev, never undone, never saved.
@@ -793,25 +791,14 @@ pub enum Command {
     PresenceGet {
         session: SessionId,
     },
-    /// Show a deform on the session's puppet without authoring it: the live
-    /// half of a vertex drag. A [`CommandKind::Scratch`], so a drag of any
-    /// length produces no revision and no undo entry; committing it is
-    /// [`Command::DeformVertices`], which produces exactly one.
-    ///
-    /// `offsets` is one `[dx, dy]` per mesh vertex, in the mesh's own order;
-    /// an empty list clears the scratch deform. It is dropped the next time
-    /// the model changes, because the puppet rebakes.
-    ScratchDeform {
-        session: SessionId,
-        node: NodeId,
-        offsets: Vec<[f32; 2]>,
-    },
+
     /// Render one frame of a session and answer with the PNG as the reply's
     /// payload.
     ///
     /// The camera is explicit: absent it is the default height at the origin,
     /// and what a tab last looked at is never consulted, so a script's output
     /// does not depend on anyone else's view.
+    #[serde(rename = "preview_render")]
     Preview {
         session: SessionId,
         #[serde(default)]
@@ -821,29 +808,13 @@ pub enum Command {
         #[serde(default)]
         camera: Option<Camera>,
     },
-    /// Import a `.clm` — complete or fragment, textures inside — from
-    /// attachment `model` into an open session.
-    ///
-    /// `parent` absent replaces the session's whole model, and needs a
-    /// pristine one (what [`Command::SessionNew`] makes) and a complete
-    /// model: anything else is [`ErrorCode::NotEmpty`]. `parent` present
-    /// installs the imported roots under that node, overriding whatever
-    /// parent those roots name; Ids travel verbatim, and a
-    /// collision or a missing requirement is refused whole.
-    ImportFile {
-        session: SessionId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent: Option<NodeId>,
-    },
+
     /// Import a `.clm` **structure as JSON**, with its textures
     /// attached separately, into an open session.
     ///
-    /// The same operation as [`Command::ImportFile`] and the same two paths —
-    /// `parent` absent replaces a pristine session's model, `parent` present
-    /// installs the imported roots under that node — differing only in how
-    /// the model arrives. A client that is authoring a model rather than
-    /// forwarding a file has the structure in hand and the images beside it,
-    /// and this saves it building a container.
+    /// Installs imported roots under the required parent after checking the
+    /// required revision. It publishes one undoable edit. To construct a new
+    /// model, use `session_create` with its JSON source instead.
     ///
     /// Attachment `structure` is the structure as JSON, spelled exactly as
     /// the `.clm` format's serde spells it. Each entry of `textures` names an
@@ -857,10 +828,11 @@ pub enum Command {
     /// `{size, hash}` marker in the structure and its payload lives in a
     /// section JSON has no room for, so a marker here is refused by key.
     /// Import the structure, then set the extension.
+    #[serde(rename = "structure_json_import")]
     ImportJson {
         session: SessionId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent: Option<NodeId>,
+        parent: NodeId,
+        if_rev: u64,
         /// Every texture the attachments carry, in any order.
         #[serde(default)]
         textures: Vec<ImportTexture>,
@@ -890,6 +862,7 @@ pub enum Command {
     /// `ReplicaQuery`: a pure read, so a tab holding a replica answers it
     /// without asking. A byte value is reported as its size and hash, never
     /// its bytes — [`Command::ExtensionGet`] is what fetches those.
+    #[serde(rename = "extension_list")]
     Extensions {
         session: SessionId,
     },
@@ -901,17 +874,6 @@ pub enum Command {
     ExtensionGet {
         session: SessionId,
         key: ExtensionKey,
-    },
-    /// Build a model from a manifest and its images and replace the session's
-    /// model with it.
-    ///
-    /// The manifest arrives as attachment `manifest`; each texture it names
-    /// arrives as `texture:<ref>`, where `<ref>` is the path string the
-    /// manifest spells, verbatim. A reference with no attachment is
-    /// [`ErrorCode::Manifest`] naming it. The session has to be pristine, on
-    /// the same rule as [`Command::ImportFile`].
-    ImportManifest {
-        session: SessionId,
     },
 }
 
@@ -931,11 +893,6 @@ pub enum CommandKind {
     /// Publishes shared view state: pose, camera, selection. It goes to the
     /// editor because other clients read it back, and it changes no model.
     Presence,
-    /// Shows a live edit on a puppet without authoring it — the drag path.
-    /// No revision, no undo entry, and nothing to read back: whoever owns the
-    /// puppet being drawn serves it. A client with a local replica serves its
-    /// own; a client on the socket gets the editor's.
-    Scratch,
     /// A read that is a pure function of the model. A client holding a replica
     /// of the model answers it without a round trip; the editor answers it the
     /// same way, from the same bytes.
@@ -956,29 +913,36 @@ pub enum CommandKind {
 /// through here, so a tag missing from the list panics the first time it is
 /// dispatched.
 pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
-    ("session_new", CommandKind::Edit),
+    ("model_export", CommandKind::ServerQuery),
+    ("session_fork", CommandKind::Edit),
+    ("geometry_get", CommandKind::ReplicaQuery),
+    ("model_get", CommandKind::ReplicaQuery),
+    ("mesh_get", CommandKind::ReplicaQuery),
+    ("binding_cells_unset", CommandKind::Edit),
+    ("binding_cells_set", CommandKind::Edit),
+    ("binding_cells_get", CommandKind::ReplicaQuery),
+    ("edit_validate", CommandKind::ServerQuery),
+    ("edit_apply", CommandKind::Edit),
+    ("session_create", CommandKind::Edit),
     ("session_open", CommandKind::Edit),
     ("session_list", CommandKind::ServerQuery),
     ("session_close", CommandKind::Edit),
-    ("save", CommandKind::Edit),
-    ("export_manifest", CommandKind::ServerQuery),
-    ("status", CommandKind::ServerQuery),
-    ("check", CommandKind::ReplicaQuery),
-    ("node_tree", CommandKind::ReplicaQuery),
-    ("node_info", CommandKind::ReplicaQuery),
+    ("session_save", CommandKind::Edit),
+    ("manifest_export", CommandKind::ServerQuery),
+    ("session_get", CommandKind::ServerQuery),
+    ("model_check", CommandKind::ReplicaQuery),
+    ("node_tree_get", CommandKind::ReplicaQuery),
+    ("node_get", CommandKind::ReplicaQuery),
     ("node_add", CommandKind::Edit),
     ("node_set", CommandKind::Edit),
     ("node_reparent", CommandKind::Edit),
     ("node_reorder", CommandKind::Edit),
-    ("node_move", CommandKind::Edit),
     ("node_duplicate", CommandKind::Edit),
-    ("rename_id", CommandKind::Edit),
+    ("id_rename", CommandKind::Edit),
     ("mask_add", CommandKind::Edit),
-    ("mask_set", CommandKind::Edit),
-    ("mask_reorder", CommandKind::Edit),
     ("mask_delete", CommandKind::Edit),
     ("physics_set", CommandKind::Edit),
-    ("physics_globals", CommandKind::Edit),
+    ("physics_globals_set", CommandKind::Edit),
     ("node_delete", CommandKind::Edit),
     ("texture_add", CommandKind::Edit),
     ("texture_list", CommandKind::ReplicaQuery),
@@ -986,51 +950,38 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("param_list", CommandKind::ReplicaQuery),
     ("param_set", CommandKind::Edit),
     ("param_delete", CommandKind::Edit),
-    ("param_key_insert", CommandKind::Edit),
-    ("param_key_delete", CommandKind::Edit),
-    ("param_key_move", CommandKind::Edit),
-    ("param_flip", CommandKind::Edit),
+    ("binding_key_insert", CommandKind::Edit),
+    ("binding_key_delete", CommandKind::Edit),
+    ("binding_key_move", CommandKind::Edit),
     ("binding_add", CommandKind::Edit),
-    ("binding_key", CommandKind::Edit),
-    ("binding_keys", CommandKind::Edit),
-    ("binding_unset", CommandKind::Edit),
-    ("binding_reset", CommandKind::Edit),
     ("binding_delete", CommandKind::Edit),
-    ("binding_interpolate", CommandKind::Edit),
-    ("binding_invert", CommandKind::Edit),
-    ("binding_copy_key", CommandKind::Edit),
+    ("binding_interpolation_set", CommandKind::Edit),
     ("binding_list", CommandKind::ReplicaQuery),
-    ("deform_set", CommandKind::Edit),
-    ("deform_vertices", CommandKind::Edit),
     ("mesh_set", CommandKind::Edit),
-    ("mesh_auto", CommandKind::Edit),
-    ("mesh_copy", CommandKind::Edit),
+    ("mesh_generate", CommandKind::Edit),
     ("slot_add", CommandKind::Edit),
     ("slot_fill", CommandKind::Edit),
     ("slot_clear", CommandKind::Edit),
     ("slot_delete", CommandKind::Edit),
-    ("slots", CommandKind::ReplicaQuery),
-    ("welds", CommandKind::ReplicaQuery),
-    ("unfilled_slots", CommandKind::ReplicaQuery),
+    ("slot_list", CommandKind::ReplicaQuery),
+    ("weld_list", CommandKind::ReplicaQuery),
     ("weld_set", CommandKind::Edit),
-    ("weld_weight", CommandKind::Edit),
     ("weld_delete", CommandKind::Edit),
     ("physics_add", CommandKind::Edit),
     ("spine_add", CommandKind::Edit),
     ("spine_set", CommandKind::Edit),
     ("spine_fit", CommandKind::Edit),
-    ("undo", CommandKind::Edit),
-    ("redo", CommandKind::Edit),
+    ("edit_undo", CommandKind::Edit),
+    ("edit_redo", CommandKind::Edit),
+    ("edit_goto", CommandKind::Edit),
+    ("edit_history_get", CommandKind::ServerQuery),
     ("presence_set", CommandKind::Presence),
     ("presence_get", CommandKind::ServerQuery),
-    ("scratch_deform", CommandKind::Scratch),
-    ("preview", CommandKind::ServerQuery),
-    ("import_file", CommandKind::Edit),
-    ("import_json", CommandKind::Edit),
-    ("import_manifest", CommandKind::Edit),
+    ("preview_render", CommandKind::ServerQuery),
+    ("structure_json_import", CommandKind::Edit),
     ("extension_set", CommandKind::Edit),
     ("extension_delete", CommandKind::Edit),
-    ("extensions", CommandKind::ReplicaQuery),
+    ("extension_list", CommandKind::ReplicaQuery),
     ("extension_get", CommandKind::ServerQuery),
 ];
 
@@ -1087,14 +1038,19 @@ pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
         },
     ),
     (
-        "import_file",
+        "session_create",
         Bytes {
-            attachments: &[Attachment::Fixed("model")],
+            attachments: &[
+                Attachment::Optional("model"),
+                Attachment::Optional("structure"),
+                Attachment::Optional("manifest"),
+                Attachment::Family("texture"),
+            ],
             payload: false,
         },
     ),
     (
-        "import_json",
+        "structure_json_import",
         Bytes {
             attachments: &[
                 Attachment::Fixed("structure"),
@@ -1104,14 +1060,14 @@ pub const COMMAND_BYTES: &[(&str, Bytes)] = &[
         },
     ),
     (
-        "import_manifest",
+        "preview_render",
         Bytes {
-            attachments: &[Attachment::Fixed("manifest"), Attachment::Family("texture")],
-            payload: false,
+            attachments: &[],
+            payload: true,
         },
     ),
     (
-        "preview",
+        "model_export",
         Bytes {
             attachments: &[],
             payload: true,
@@ -1140,29 +1096,36 @@ impl Command {
     /// named here, which is what makes [`COMMAND_KINDS`] checkable.
     pub fn tag(&self) -> &'static str {
         match self {
-            Command::SessionNew { .. } => "session_new",
+            Command::EditApply { .. } => "edit_apply",
+            Command::EditValidate { .. } => "edit_validate",
+            Command::BindingCellsGet { .. } => "binding_cells_get",
+            Command::BindingCellsSet { .. } => "binding_cells_set",
+            Command::BindingCellsUnset { .. } => "binding_cells_unset",
+            Command::MeshGet { .. } => "mesh_get",
+            Command::ModelGet { .. } => "model_get",
+            Command::GeometryGet { .. } => "geometry_get",
+            Command::SessionFork { .. } => "session_fork",
+            Command::ModelExport { .. } => "model_export",
+            Command::SessionNew { .. } => "session_create",
             Command::SessionOpen { .. } => "session_open",
             Command::SessionList => "session_list",
             Command::SessionClose { .. } => "session_close",
-            Command::Save { .. } => "save",
-            Command::ExportManifest { .. } => "export_manifest",
-            Command::Status { .. } => "status",
-            Command::Check { .. } => "check",
-            Command::NodeTree { .. } => "node_tree",
-            Command::NodeInfo { .. } => "node_info",
+            Command::Save { .. } => "session_save",
+            Command::ExportManifest { .. } => "manifest_export",
+            Command::Status { .. } => "session_get",
+            Command::Check { .. } => "model_check",
+            Command::NodeTree { .. } => "node_tree_get",
+            Command::NodeInfo { .. } => "node_get",
             Command::NodeAdd { .. } => "node_add",
             Command::NodeSet { .. } => "node_set",
             Command::NodeReparent { .. } => "node_reparent",
             Command::NodeReorder { .. } => "node_reorder",
-            Command::NodeMove { .. } => "node_move",
             Command::NodeDuplicate { .. } => "node_duplicate",
-            Command::RenameId { .. } => "rename_id",
+            Command::RenameId { .. } => "id_rename",
             Command::MaskAdd { .. } => "mask_add",
-            Command::MaskSet { .. } => "mask_set",
-            Command::MaskReorder { .. } => "mask_reorder",
             Command::MaskDelete { .. } => "mask_delete",
             Command::PhysicsSet { .. } => "physics_set",
-            Command::PhysicsGlobals { .. } => "physics_globals",
+            Command::PhysicsGlobals { .. } => "physics_globals_set",
             Command::NodeDelete { .. } => "node_delete",
             Command::TextureAdd { .. } => "texture_add",
             Command::TextureList { .. } => "texture_list",
@@ -1170,51 +1133,38 @@ impl Command {
             Command::ParamList { .. } => "param_list",
             Command::ParamSet { .. } => "param_set",
             Command::ParamDelete { .. } => "param_delete",
-            Command::ParamKeyInsert { .. } => "param_key_insert",
-            Command::ParamKeyDelete { .. } => "param_key_delete",
-            Command::ParamKeyMove { .. } => "param_key_move",
-            Command::ParamFlip { .. } => "param_flip",
+            Command::BindingKeyInsert { .. } => "binding_key_insert",
+            Command::BindingKeyDelete { .. } => "binding_key_delete",
+            Command::BindingKeyMove { .. } => "binding_key_move",
             Command::BindingAdd { .. } => "binding_add",
-            Command::BindingKey { .. } => "binding_key",
-            Command::BindingKeys { .. } => "binding_keys",
-            Command::BindingUnset { .. } => "binding_unset",
-            Command::BindingReset { .. } => "binding_reset",
             Command::BindingDelete { .. } => "binding_delete",
-            Command::BindingInterpolate { .. } => "binding_interpolate",
-            Command::BindingInvert { .. } => "binding_invert",
-            Command::BindingCopyKey { .. } => "binding_copy_key",
+            Command::BindingInterpolate { .. } => "binding_interpolation_set",
             Command::BindingList { .. } => "binding_list",
-            Command::DeformSet { .. } => "deform_set",
-            Command::DeformVertices { .. } => "deform_vertices",
             Command::MeshSet { .. } => "mesh_set",
-            Command::MeshAuto { .. } => "mesh_auto",
-            Command::MeshCopy { .. } => "mesh_copy",
+            Command::MeshAuto { .. } => "mesh_generate",
             Command::SlotAdd { .. } => "slot_add",
             Command::SlotFill { .. } => "slot_fill",
             Command::SlotClear { .. } => "slot_clear",
             Command::SlotDelete { .. } => "slot_delete",
-            Command::Slots { .. } => "slots",
-            Command::Welds { .. } => "welds",
-            Command::UnfilledSlots { .. } => "unfilled_slots",
-            Command::WeldWeight { .. } => "weld_weight",
+            Command::Slots { .. } => "slot_list",
+            Command::Welds { .. } => "weld_list",
             Command::WeldSet { .. } => "weld_set",
             Command::WeldDelete { .. } => "weld_delete",
             Command::PhysicsAdd { .. } => "physics_add",
             Command::SpineAdd { .. } => "spine_add",
             Command::SpineSet { .. } => "spine_set",
             Command::SpineFit { .. } => "spine_fit",
-            Command::Undo { .. } => "undo",
-            Command::Redo { .. } => "redo",
+            Command::Undo { .. } => "edit_undo",
+            Command::Redo { .. } => "edit_redo",
+            Command::EditGoto { .. } => "edit_goto",
+            Command::EditHistoryGet { .. } => "edit_history_get",
             Command::PresenceSet { .. } => "presence_set",
             Command::PresenceGet { .. } => "presence_get",
-            Command::ScratchDeform { .. } => "scratch_deform",
-            Command::Preview { .. } => "preview",
-            Command::ImportFile { .. } => "import_file",
-            Command::ImportJson { .. } => "import_json",
-            Command::ImportManifest { .. } => "import_manifest",
+            Command::Preview { .. } => "preview_render",
+            Command::ImportJson { .. } => "structure_json_import",
             Command::ExtensionSet { .. } => "extension_set",
             Command::ExtensionDelete { .. } => "extension_delete",
-            Command::Extensions { .. } => "extensions",
+            Command::Extensions { .. } => "extension_list",
             Command::ExtensionGet { .. } => "extension_get",
         }
     }
@@ -1259,6 +1209,7 @@ impl Command {
     /// have. Every other command carries exactly what it declares.
     pub fn carries_bytes(&self) -> Option<&'static Bytes> {
         let carrying = match self {
+            Command::SessionNew { source, .. } => source.is_some(),
             Command::ExtensionSet { value, .. } => matches!(value, ExtensionSet::Bytes),
             _ => true,
         };
@@ -1277,6 +1228,16 @@ impl Command {
         match self {
             Command::SessionNew { .. } | Command::SessionOpen { .. } | Command::SessionList => None,
             Command::SessionClose { session }
+            | Command::EditApply { session, .. }
+            | Command::EditValidate { session, .. }
+            | Command::BindingCellsGet { session, .. }
+            | Command::BindingCellsSet { session, .. }
+            | Command::BindingCellsUnset { session, .. }
+            | Command::MeshGet { session, .. }
+            | Command::ModelGet { session, .. }
+            | Command::GeometryGet { session, .. }
+            | Command::SessionFork { session, .. }
+            | Command::ModelExport { session, .. }
             | Command::Save { session, .. }
             | Command::ExportManifest { session, .. }
             | Command::Status { session }
@@ -1287,12 +1248,9 @@ impl Command {
             | Command::NodeSet { session, .. }
             | Command::NodeReparent { session, .. }
             | Command::NodeReorder { session, .. }
-            | Command::NodeMove { session, .. }
             | Command::NodeDuplicate { session, .. }
             | Command::RenameId { session, .. }
             | Command::MaskAdd { session, .. }
-            | Command::MaskSet { session, .. }
-            | Command::MaskReorder { session, .. }
             | Command::MaskDelete { session, .. }
             | Command::PhysicsSet { session, .. }
             | Command::PhysicsGlobals { session, .. }
@@ -1303,48 +1261,35 @@ impl Command {
             | Command::ParamList { session }
             | Command::ParamSet { session, .. }
             | Command::ParamDelete { session, .. }
-            | Command::ParamKeyInsert { session, .. }
-            | Command::ParamKeyDelete { session, .. }
-            | Command::ParamKeyMove { session, .. }
-            | Command::ParamFlip { session, .. }
+            | Command::BindingKeyInsert { session, .. }
+            | Command::BindingKeyDelete { session, .. }
+            | Command::BindingKeyMove { session, .. }
             | Command::BindingAdd { session, .. }
-            | Command::BindingKey { session, .. }
-            | Command::BindingKeys { session, .. }
-            | Command::BindingUnset { session, .. }
-            | Command::BindingReset { session, .. }
             | Command::BindingDelete { session, .. }
             | Command::BindingInterpolate { session, .. }
-            | Command::BindingInvert { session, .. }
-            | Command::BindingCopyKey { session, .. }
             | Command::BindingList { session, .. }
-            | Command::DeformSet { session, .. }
-            | Command::DeformVertices { session, .. }
             | Command::MeshSet { session, .. }
             | Command::MeshAuto { session, .. }
-            | Command::MeshCopy { session, .. }
             | Command::SlotAdd { session, .. }
             | Command::SlotFill { session, .. }
             | Command::SlotClear { session, .. }
             | Command::SlotDelete { session, .. }
             | Command::Slots { session, .. }
             | Command::Welds { session }
-            | Command::UnfilledSlots { session }
-            | Command::WeldWeight { session, .. }
             | Command::WeldSet { session, .. }
             | Command::WeldDelete { session, .. }
             | Command::PhysicsAdd { session, .. }
             | Command::SpineAdd { session, .. }
             | Command::SpineSet { session, .. }
             | Command::SpineFit { session, .. }
-            | Command::Undo { session }
-            | Command::Redo { session }
+            | Command::Undo { session, .. }
+            | Command::Redo { session, .. }
+            | Command::EditGoto { session, .. }
+            | Command::EditHistoryGet { session, .. }
             | Command::PresenceSet { session, .. }
             | Command::PresenceGet { session }
-            | Command::ScratchDeform { session, .. }
             | Command::Preview { session, .. }
-            | Command::ImportFile { session, .. }
             | Command::ImportJson { session, .. }
-            | Command::ImportManifest { session }
             | Command::ExtensionSet { session, .. }
             | Command::ExtensionDelete { session, .. }
             | Command::Extensions { session }
@@ -1379,9 +1324,256 @@ pub enum Rename {
     },
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum GeometryField {
+    Rest,
+    Local,
+    World,
+    Uvs,
+    Triangles,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ModelTextureHeader {
+    pub id: TexId,
+    pub encoding: TextureEncoding,
+    pub alpha: TextureAlpha,
+}
+
+/// Selected arrays retain their authored indices; range starts identify pages.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GeometryNode {
+    pub node: NodeId,
+    pub origin: [f32; 2],
+    /// Column-major matrix, including the evaluated ancestors.
+    pub local_to_world: [f32; 16],
+    pub vertex_count: u32,
+    pub triangle_count: u32,
+    pub vertices: IndexRange,
+    pub triangle_range: IndexRange,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest: Option<Vec<[f32; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<Vec<[f32; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world: Option<Vec<[f32; 3]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uvs: Option<Vec<[f32; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triangles: Option<Vec<[u32; 3]>>,
+}
+
+/// A half-open page in authored order. Counts never imply truncation.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct IndexRange {
+    pub start: u32,
+    pub count: u32,
+}
+
+/// Exact stored cell payload, shared by reads and writes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum BindingCellValue {
+    Scalar(f32),
+    Offsets(Vec<[f32; 2]>),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingCellWrite {
+    pub cell: [u32; 2],
+    pub value: BindingCellValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BindingCellRead {
+    pub cell: [u32; 2],
+    pub authored: bool,
+    pub value: Option<BindingCellValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<BindingCellValue>,
+}
+
+/// One convex source contribution to a new mesh vertex's authored deformation.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VertexWeight {
+    pub vertex: u32,
+    pub weight: f32,
+}
+
+/// Model edits accepted by an atomic batch. Created IDs are always explicit.
+/// Every operation uses the same executor as its standalone command.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "op", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum EditOp {
+    NodeAdd {
+        parent: NodeId,
+        kind: NodeKindArg,
+        #[serde(default)]
+        name: Option<String>,
+        node: NodeId,
+    },
+    NodeSet {
+        node: NodeId,
+        #[serde(flatten)]
+        patch: NodePatch,
+    },
+    NodeReparent {
+        node: NodeId,
+        to: NodeId,
+    },
+    NodeReorder {
+        node: NodeId,
+        index: u32,
+    },
+    MeshSet {
+        node: NodeId,
+        verts: Vec<[f32; 2]>,
+        uvs: Vec<[f32; 2]>,
+        indices: Vec<[u32; 3]>,
+        origin: [f32; 2],
+        #[serde(default)]
+        deform_mapping: Option<Vec<Vec<VertexWeight>>>,
+    },
+    BindingKeyInsert {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        axis: ParamId,
+        value: f32,
+    },
+    BindingKeyDelete {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        axis: ParamId,
+        index: u32,
+    },
+    BindingKeyMove {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        axis: ParamId,
+        index: u32,
+        value: f32,
+    },
+    BindingAdd {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        #[serde(default)]
+        key_positions: Option<Vec<Vec<f32>>>,
+    },
+    BindingCellsSet {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        cells: Vec<BindingCellWrite>,
+    },
+    BindingCellsUnset {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        cells: Vec<[u32; 2]>,
+    },
+    BindingDelete {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+    },
+    BindingInterpolationSet {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        mode: Interpolate,
+    },
+    MaskAdd {
+        node: NodeId,
+        source: NodeId,
+        mode: MaskMode,
+    },
+    MaskDelete {
+        node: NodeId,
+        index: u32,
+    },
+    SlotAdd {
+        node: NodeId,
+        slot: SlotId,
+    },
+    SlotFill {
+        node: NodeId,
+        slot: SlotId,
+        vertex: u32,
+    },
+    SlotClear {
+        node: NodeId,
+        slot: SlotId,
+    },
+    SlotDelete {
+        node: NodeId,
+        slot: SlotId,
+    },
+    WeldSet {
+        a: NodeId,
+        b: NodeId,
+        pairs: Vec<SlotPair>,
+    },
+    WeldDelete {
+        a: NodeId,
+        b: NodeId,
+    },
+}
+
+/// Exactly one source and its declared attachments initialize a new session.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum SessionSource {
+    Clm {},
+    Json {
+        #[serde(default)]
+        textures: Vec<ImportTexture>,
+    },
+    Manifest {},
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SessionOrigin {
+    pub session: SessionId,
+    pub rev: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum ModelFormat {
+    Clm,
+}
+
 /// The param, or the pair of params, a binding is keyed by. With `param_y`
-/// the binding's grid spans both params' key positions and `cell` indexes
-/// both; without it the grid is one row and `cell[1]` is 0.
+/// the binding owns two position axes and `cell` indexes both; without it
+/// the grid is one row and `cell[1]` is 0.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BindingParams {
@@ -2304,13 +2496,6 @@ pub struct NodePatch {
     pub mg_translate_children: Option<bool>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct BindingKeyEntry {
-    pub target: ScalarTarget,
-    pub value: f32,
-}
-
 /// One param at one value — a pose is a list of these. Params are scalar, so
 /// there is one number.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -2362,6 +2547,10 @@ pub enum Reply {
         id: u64,
         code: ErrorCode,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        op_index: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<LimitInfo>,
     },
     Event(Event),
 }
@@ -2392,6 +2581,9 @@ pub enum ErrorCode {
     BadTarget,
     NothingToUndo,
     NothingToRedo,
+    RevisionUnavailable,
+    RevisionExhausted,
+    LimitExceeded,
     /// A save with no path, on a session that has no file of its own.
     NoSavePath,
     /// The part carries no such slot.
@@ -2433,9 +2625,6 @@ pub enum ErrorCode {
     /// A command carrying bytes was sent over a transport that cannot carry
     /// them; send it over one that can.
     BulkOverHttp,
-    /// An import that would replace the whole model was asked of a session
-    /// that already holds one; import into a fresh session instead.
-    NotEmpty,
     /// The model carries no extension under that key.
     NoExtension,
     /// `catchlight.` is the format's own prefix: a reader accepts a key under
@@ -2447,9 +2636,56 @@ pub enum ErrorCode {
 #[serde(tag = "result", rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum ResponseBody {
+    MeshInfo {
+        node: NodeId,
+        mesh: MeshInfo,
+    },
+    ModelStructure {
+        /// The current core ClmStructure JSON, including authored cells and extension markers.
+        #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+        structure: serde_json::Value,
+        textures: Vec<ModelTextureHeader>,
+    },
+    GeometrySample {
+        pose: Vec<ParamPose>,
+        nodes: Vec<GeometryNode>,
+    },
+    EditHistory {
+        root: u64,
+        current: u64,
+        pruned: bool,
+        entries: Vec<EditHistoryEntry>,
+    },
+    EditResults {
+        changed: bool,
+        results: Vec<ResponseBody>,
+    },
+    BindingCells {
+        node: NodeId,
+        #[serde(flatten)]
+        params: BindingParams,
+        target: BindingTarget,
+        width: u32,
+        height: u32,
+        interpolate: Interpolate,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vertex_count: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vertices: Option<IndexRange>,
+        cells: Vec<BindingCellRead>,
+    },
     Empty,
     Session {
         session: SessionId,
+    },
+    SessionFork {
+        session: SessionId,
+        source: SessionOrigin,
+    },
+    ModelExport {
+        format: ModelFormat,
+        byte_length: u64,
+        sha256: String,
     },
     Sessions {
         sessions: Vec<SessionInfo>,
@@ -2519,10 +2755,6 @@ pub enum ResponseBody {
     Welds {
         welds: Vec<WeldInfo>,
     },
-    /// Slots nothing fills, across the whole model.
-    UnfilledSlots {
-        slots: Vec<SlotAddr>,
-    },
     /// The slots a mesh edit emptied on `node`, in the part's slot order.
     Emptied {
         node: NodeId,
@@ -2552,6 +2784,29 @@ pub enum ResponseBody {
         key: ExtensionKey,
         value: ExtensionValueInfo,
     },
+}
+
+/// A retained authored state, identified by its creation revision.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct EditHistoryEntry {
+    pub revision: u64,
+    pub parent: Option<u64>,
+    pub redo: Option<u64>,
+    /// Retained publication aliases, including the entry's creation revision.
+    pub revisions: Vec<u64>,
+}
+
+/// A machine-readable resource budget refusal.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct LimitInfo {
+    /// Stable budget name, such as request_bytes or derived_cell_vertices.
+    pub resource: String,
+    /// Maximum permitted count in the resource's units.
+    pub limit: u64,
+    /// Observed count; byte counting may stop at the first excess.
+    pub requested: u64,
 }
 
 /// Ephemeral shared view state. Rides its own path — decoupled from the model
@@ -2674,6 +2929,9 @@ pub struct StatusInfo {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TexInfo {
+    pub encoding: TextureEncoding,
+    pub alpha: TextureAlpha,
+    pub sha256: String,
     pub id: TexId,
     pub width: u32,
     pub height: u32,
@@ -2690,11 +2948,18 @@ pub struct ParamInfo {
     pub max: f32,
     #[serde(default)]
     pub default: f32,
-    /// Key positions, normalized 0..1 across `[min, max]`. Always at least
-    /// the two endpoints, so a binding's grid is `key_positions.len()` wide.
+    /// Number of bindings driven by this input.
     #[serde(default)]
-    pub key_positions: Vec<f32>,
     pub bindings: u32,
+}
+
+/// Compact identity contribution; deform identity does not repeat vertex zeros.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum BindingIdentity {
+    Scalar { scalar: f32 },
+    Deform { offset: [f32; 2], vertex_count: u32 },
 }
 
 /// One binding, as a panel draws it: the params driving it, the property it
@@ -2702,8 +2967,8 @@ pub struct ParamInfo {
 ///
 /// **The grid is `[y][x]`** — the transpose of the `cell: [x, y]` every
 /// binding command takes, so `keys[cell[1]][cell[0]]` is the cell
-/// [`Command::BindingKey`] would write. It is the full product of the params'
-/// key positions, [`Self::width`] by [`Self::height`], with one row when
+/// [`Command::BindingCellsSet`] would write. It is the full product of this
+/// binding's key positions, [`Self::width`] by [`Self::height`], with one row when
 /// there is no `param_y`.
 ///
 /// **A `null` in `keys` is a cell nobody authored.** The model stores only the
@@ -2716,6 +2981,9 @@ pub struct ParamInfo {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BindingInfo {
+    /// One ordered normalized axis per input, owned only by this binding.
+    pub key_positions: Vec<Vec<f32>>,
+    pub identity: BindingIdentity,
     /// The property driven — plus `deform`, which only the deform commands
     /// author.
     pub target: BindingTarget,
@@ -2727,9 +2995,9 @@ pub struct BindingInfo {
     /// How it reads between cells, as [`Command::BindingInterpolate`] takes
     /// it back.
     pub interpolate: Interpolate,
-    /// How many key positions `param` has, so how wide the grid is.
+    /// Number of positions on this binding's `param` axis.
     pub width: u32,
-    /// How many key positions `param_y` has, or 1.
+    /// Number of positions on this binding's `param_y` axis, or 1.
     pub height: u32,
     /// The authored value at each cell, `[y][x]`, `null` where nothing was
     /// authored.
@@ -2854,9 +3122,6 @@ pub struct NodeInfo {
     /// A spine's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spine: Option<SpineInfo>,
-    /// Authored geometry, in the same coordinates accepted by `mesh_set`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mesh: Option<MeshInfo>,
     /// Ordered clipping rules. Empty on nodes that do not draw.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<MaskInfo>,
@@ -2981,7 +3246,8 @@ mod tests {
     fn the_new_refusals_travel_as_their_own_words() {
         for (code, word) in [
             (ErrorCode::BulkOverHttp, "\"bulk_over_http\""),
-            (ErrorCode::NotEmpty, "\"not_empty\""),
+            (ErrorCode::RevisionUnavailable, "\"revision_unavailable\""),
+            (ErrorCode::LimitExceeded, "\"limit_exceeded\""),
         ] {
             let json = serde_json::to_string(&code).expect("a code serializes");
             assert_eq!(json, word);
@@ -3031,13 +3297,16 @@ mod tests {
     fn ids_travel_as_the_plain_strings_a_model_file_stores() {
         let req = Request {
             id: 1,
-            command: Command::BindingKey {
+            command: Command::BindingCellsSet {
                 session: SessionId(2),
                 params: BindingParams::two(param("head.x"), param("head.y")),
                 node: node("root/part-3f9a2c1e"),
-                target: ScalarTarget::Tx,
-                cell: [1, 2],
-                value: 0.5,
+                target: BindingTarget::Tx,
+                if_rev: 0,
+                cells: vec![BindingCellWrite {
+                    cell: [1, 2],
+                    value: BindingCellValue::Scalar(0.5),
+                }],
             },
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -3046,10 +3315,10 @@ mod tests {
         assert!(line.contains("\"node\":\"root/part-3f9a2c1e\""), "{line}");
         let back: Request = serde_json::from_str(&line).unwrap();
         match back.command {
-            Command::BindingKey { params, cell, .. } => {
+            Command::BindingCellsSet { params, cells, .. } => {
                 assert_eq!(params.param.as_str(), "head.x");
                 assert_eq!(params.param_y.unwrap().as_str(), "head.y");
-                assert_eq!(cell, [1, 2]);
+                assert_eq!(cells[0].cell, [1, 2]);
             }
             other => panic!("{other:?}"),
         }
@@ -3064,8 +3333,9 @@ mod tests {
             command: Command::BindingAdd {
                 session: SessionId(1),
                 params: BindingParams::one(param("pull")),
+                key_positions: None,
                 node: node("body"),
-                target: ScalarTarget::Tx,
+                target: BindingTarget::Tx,
             },
         })
         .unwrap();
@@ -3114,7 +3384,6 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: Vec::new(),
                 param: None,
             },
         })
@@ -3164,6 +3433,8 @@ mod tests {
             id: 3,
             code: ErrorCode::UnknownSlot,
             message: "part carries no such slot".into(),
+            op_index: None,
+            limit: None,
         })
         .unwrap();
         assert!(s.contains("\"code\":\"unknown_slot\""), "{s}");
@@ -3208,15 +3479,10 @@ mod tests {
             Command::PresenceGet { session }.kind(),
             CommandKind::ServerQuery
         );
-        assert_eq!(
-            Command::ScratchDeform {
-                session,
-                node: node("hair"),
-                offsets: Vec::new(),
-            }
-            .kind(),
-            CommandKind::Scratch
-        );
+        assert!(serde_json::from_str::<Command>(
+            r#"{"cmd":"scratch_deform","session":1,"node":"hair","offsets":[]}"#
+        )
+        .is_err());
     }
 
     /// `Reply::rev` is filled from here, so a session-addressing command that
@@ -3225,7 +3491,8 @@ mod tests {
     fn a_command_names_the_session_it_addresses() {
         assert_eq!(
             Command::Undo {
-                session: SessionId(5)
+                session: SessionId(5),
+                if_rev: 0,
             }
             .session(),
             Some(SessionId(5))
@@ -3270,7 +3537,6 @@ mod tests {
             mg_translate_children: None,
             physics: None,
             spine: None,
-            mesh: None,
             masks: Vec::new(),
         };
         let line = serde_json::to_string(&info).unwrap();
@@ -3336,7 +3602,6 @@ mod tests {
                 texture: None,
                 physics: None,
                 spine: None,
-                mesh: None,
                 masks: Vec::new(),
                 vertex_count: Some(0),
                 triangle_count: Some(0),

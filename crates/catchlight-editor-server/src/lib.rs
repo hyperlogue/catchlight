@@ -17,14 +17,11 @@
 //!   session that produced it, and [`Command::RenameId`] is the one thing
 //!   that invalidates one.
 //!
-//! - **A drag never snapshots the model; a commit does.**
-//!   [`Command::ScratchDeform`] writes the session puppet's scratch deform and
-//!   returns without touching `rev`, so a drag of any length costs no undo
-//!   entries. It is the only command a client with its own puppet may serve
-//!   itself instead of sending here. [`Command::DeformVertices`] authors the same offsets into the
-//!   model and costs exactly one. Everything that edits the model goes
-//!   through [`Editor::edit_session`], which is the single place an undo
-//!   snapshot is taken.
+//! - **Scratch stays local; a commit publishes once.** Browser and native
+//!   frontends preview on their own Puppet. Exact cell writes and batches
+//!   author model data through [`Editor::edit_session_captured`], the single
+//!   revision/history publication path. Raw writes never seed a rest key;
+//!   recording supplies that policy explicitly in one atomic edit batch.
 //!
 //! - **An observer never runs under a lock.** [`Editor::subscribe`] registers
 //!   a callback for every [`Event`], and a callback's whole reason to exist is
@@ -32,8 +29,20 @@
 //!   collects what to say, drops the sessions map and the session guard, and
 //!   only then calls out. Re-entering [`Editor`] from an observer is expected.
 //!
-//! - **The undo budget counts shared bytes once.** See [`History`]: 64
-//!   snapshots of one model hold its textures once, not 64 times.
+//! - **History branches keep their creation revisions.** [`ModelHistory`]
+//!   retains authored snapshots and navigation aliases within bounded storage,
+//!   counting shared texture and binary-extension allocations once. A changed
+//!   edit or navigation publishes a fresh live revision; final-content no-ops
+//!   and failures leave the model, history and revision unchanged.
+//!
+//! - **A reply keeps the revision it captured.** [`Captured`] is stamped under
+//!   the same session lock that reads or publishes its contents. Rendering,
+//!   output IO and reentrant observers cannot replace that revision afterward.
+//!
+//! - **Close waits without holding the registry.** A session handle is cloned
+//!   out of the registry before waiting on its mutex. Closing marks that handle
+//!   closed under the same mutex before unregistering it, so queued operations
+//!   cannot publish against a handle that has left the editor.
 //!
 //! - **Each session draws its own Ids.** See [`session_hex`]: the seed comes
 //!   from the [`SessionId`], so two sessions open at once and edited the same
@@ -92,8 +101,13 @@
 //!   origin can reach that port — so a random per-launch token gates every
 //!   door, and `GET /token` is readable only from an allowlisted origin.
 
+mod edit;
+#[cfg(test)]
+mod history_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod http;
+mod lifecycle;
+mod limits;
 #[cfg(not(target_arch = "wasm32"))]
 mod preview;
 mod query;
@@ -125,23 +139,18 @@ use catchlight_core::Vec2;
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Mat4, Model,
     ModelChain, ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam,
-    ModelPart, ModelPhysics, ModelSpine, ModelTexture, ModelWeld, Puppet, Required, Vec3,
+    ModelPart, ModelPhysics, ModelSpine, ModelTexture, ModelWeld, Pose, Puppet, Required, Vec3,
 };
-// Only the headless preview builds one; the browser GUI poses its own puppet.
-#[cfg(not(target_arch = "wasm32"))]
-use catchlight_core::Pose;
 // The wire's camera and the renderer's framing are the same shape and not the
 // same type; the conversion happens here, at the edge.
 use catchlight_editor_core::{
-    contour_automesh, fit_strand, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, Manifest,
-    ManifestError, MeshError, ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
+    contour_automesh, fit_strand, grid_automesh, AlphaMask, ContourKnobs, GridKnobs, HistoryError,
+    HistoryLimits, HistoryNavigation, Manifest, ManifestError, MeshError, ModelHistory,
+    ModelManifestExt as _, ModelMeshExt as _, TextureData, UvMap,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use catchlight_wgpu::Framing;
 
-/// Per-session undo history depth.
-const UNDO_DEPTH: usize = 64;
-const UNDO_BYTES: usize = 256 * 1024 * 1024;
 use catchlight_editor_protocol::*;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -154,6 +163,17 @@ const DEFAULT_CAMERA_HEIGHT: f32 = 2000.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EditorError {
+    #[error("operation {index}: {source}")]
+    Operation {
+        index: u32,
+        source: Box<EditorError>,
+    },
+    #[error("{resource} requires {requested}, exceeding the limit {limit}")]
+    Limit {
+        resource: &'static str,
+        limit: u64,
+        requested: u64,
+    },
     #[error("The model changed during this edit. Reload the draft or start the gesture again.")]
     RevisionConflict,
     #[error("no session {}", .0.0)]
@@ -177,6 +197,10 @@ pub enum EditorError {
     NothingToUndo,
     #[error("nothing to redo")]
     NothingToRedo,
+    #[error("revision {0} is not retained")]
+    RevisionUnavailable(u64),
+    #[error("the session publication revision is exhausted")]
+    RevisionExhausted,
     #[error("session has no file; pass a path to save")]
     NoSavePath,
     /// The command needs a part and was given something else.
@@ -201,10 +225,6 @@ pub enum EditorError {
     Preview(String),
     #[error("command is native-only (path IO / headless preview)")]
     NativeOnly,
-    /// An import that replaces the whole model, asked of a session that
-    /// already holds one.
-    #[error("{0}")]
-    NotEmpty(String),
     /// Installing a fragment under a parent was refused — a colliding Id, a
     /// requirement the base does not have.
     #[error("install: {0}")]
@@ -215,10 +235,42 @@ pub enum EditorError {
 }
 
 impl EditorError {
+    fn limit_info(&self) -> Option<LimitInfo> {
+        match self {
+            Self::Operation { source, .. } => source.limit_info(),
+            Self::Limit {
+                resource,
+                limit,
+                requested,
+            } => Some(LimitInfo {
+                resource: (*resource).into(),
+                limit: *limit,
+                requested: *requested,
+            }),
+            Self::Edit(ModelError::LoadLimit(limit))
+            | Self::Edit(ModelError::Clm(clm::ClmError::LoadLimit(limit)))
+            | Self::Manifest(ManifestError::LoadLimit(limit))
+            | Self::Manifest(ManifestError::Model(ModelError::LoadLimit(limit)))
+            | Self::Manifest(ManifestError::Model(ModelError::Clm(clm::ClmError::LoadLimit(
+                limit,
+            )))) => Some(LimitInfo {
+                resource: limit.resource.into(),
+                limit: limit.limit,
+                requested: limit.got,
+            }),
+            _ => None,
+        }
+    }
+
     /// The wire code a client branches on. The message stays for a person;
     /// this is what a commit gate or a mesh editor reacts to.
     pub fn code(&self) -> ErrorCode {
+        if self.limit_info().is_some() {
+            return ErrorCode::LimitExceeded;
+        }
         match self {
+            Self::Operation { source, .. } => source.code(),
+            Self::Limit { .. } => ErrorCode::LimitExceeded,
             Self::RevisionConflict => ErrorCode::RevisionConflict,
             Self::NoSession(_) => ErrorCode::NoSession,
             Self::NoNode(_) => ErrorCode::NoNode,
@@ -237,13 +289,14 @@ impl EditorError {
             Self::Mesh(_) => ErrorCode::Edit,
             Self::NothingToUndo => ErrorCode::NothingToUndo,
             Self::NothingToRedo => ErrorCode::NothingToRedo,
+            Self::RevisionUnavailable(_) => ErrorCode::RevisionUnavailable,
+            Self::RevisionExhausted => ErrorCode::RevisionExhausted,
             Self::NoSavePath => ErrorCode::NoSavePath,
             Self::Manifest(_) => ErrorCode::Manifest,
             Self::Io(_) => ErrorCode::Io,
             Self::Image(_) => ErrorCode::Image,
             Self::Preview(_) => ErrorCode::Preview,
             Self::NativeOnly => ErrorCode::NativeOnly,
-            Self::NotEmpty(_) => ErrorCode::NotEmpty,
             Self::NoExtension(_) => ErrorCode::NoExtension,
             // Install's refusals are the model's refusals under other names,
             // so they answer with the codes the equivalent edit answers with
@@ -331,148 +384,25 @@ struct Session {
     file: Option<String>,
     rev: u64,
     saved_rev: u64,
-    history: History,
+    history: ModelHistory,
+    /// Set while holding this handle before removing it from the registry.
+    closed: bool,
     /// Lazily baked from `model` for preview. Rebaked by its own generation
     /// gate on the next use after an edit, so nothing has to invalidate it.
     puppet: Option<Puppet>,
+    /// Navigation discards scratch and physics, but carries the preview pose
+    /// into the next lazy runtime. Also held while a renderer owns the Puppet
+    /// outside the session lock, so navigation cannot lose that captured pose.
+    pending_preview_pose: Option<Pose>,
     /// rev-gated model view for in-process observers (the GUI).
     snapshot: Option<Arc<DocSnapshot>>,
     /// Latest shared view state — its own path, never touches the model/rev.
     presence: Option<Presence>,
 }
 
-/// The undo and redo stacks, and the budget that bounds them.
-///
-/// A snapshot is a shallow clone: texture payloads, meshes and binding grids
-/// ride behind an `Arc` and are copied only when something edits them. So a
-/// budget that charged every snapshot [`Model::estimated_size_bytes`] would
-/// bill one model's textures once per undo step and collapse the history of any
-/// model bigger than a fraction of the cap.
-///
-/// **Each distinct texture payload is therefore counted once for the whole
-/// history.** `Arc::as_ptr` identifies the allocation and the ledger below
-/// counts how many snapshots hold it. Everything else is charged per
-/// snapshot: a `Model` does not expose the sharing of its meshes and binding
-/// grids, so those are over-counted. Over-counting is the safe side — the
-/// history trims sooner than it strictly must, never later.
-#[derive(Default)]
-struct History {
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
-    /// Every texture payload held anywhere in the two stacks:
-    /// allocation address -> (bytes, how many snapshots hold it).
-    textures: HashMap<usize, (usize, usize)>,
-    /// The sum of every snapshot's `own_bytes`.
-    own_bytes: usize,
-}
-
-struct Snapshot {
-    model: Model,
-    /// What this snapshot holds that is not a texture payload.
-    own_bytes: usize,
-}
-
-/// One entry per distinct texture payload: its allocation and its bytes.
-fn texture_payloads(model: &Model) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    for id in model.texture_ids() {
-        if let Some(texture) = model.texture(id) {
-            // The payload's address inside its own `Arc` allocation, so
-            // one address per payload: an empty payload still owns an
-            // allocation, unlike an empty `Vec`'s dangling buffer.
-            let at = Arc::as_ptr(&texture.data) as *const u8 as usize;
-            if !out.iter().any(|&(seen, _)| seen == at) {
-                out.push((at, texture.data.len()));
-            }
-        }
-    }
-    out
-}
-
-impl History {
-    fn snapshot(model: Model) -> Snapshot {
-        let shared: usize = texture_payloads(&model)
-            .iter()
-            .fold(0, |bytes, &(_, len)| bytes.saturating_add(len));
-        let own_bytes = model.estimated_size_bytes().saturating_sub(shared);
-        Snapshot { model, own_bytes }
-    }
-
-    /// What the history holds, shared payloads counted once.
-    fn bytes(&self) -> usize {
-        self.textures
-            .values()
-            .fold(self.own_bytes, |bytes, &(len, _)| bytes.saturating_add(len))
-    }
-
-    fn hold(&mut self, snapshot: &Snapshot) {
-        self.own_bytes = self.own_bytes.saturating_add(snapshot.own_bytes);
-        for (at, len) in texture_payloads(&snapshot.model) {
-            let entry = self.textures.entry(at).or_insert((len, 0));
-            entry.1 += 1;
-        }
-    }
-
-    fn release(&mut self, snapshot: &Snapshot) {
-        self.own_bytes = self.own_bytes.saturating_sub(snapshot.own_bytes);
-        for (at, _) in texture_payloads(&snapshot.model) {
-            if let std::collections::hash_map::Entry::Occupied(mut held) = self.textures.entry(at) {
-                held.get_mut().1 -= 1;
-                if held.get().1 == 0 {
-                    held.remove();
-                }
-            }
-        }
-    }
-
-    fn push_undo(&mut self, model: Model) {
-        while let Some(dropped) = self.redo.pop() {
-            self.release(&dropped);
-        }
-        let snapshot = Self::snapshot(model);
-        self.hold(&snapshot);
-        self.undo.push(snapshot);
-    }
-
-    /// Swap `current` for the newest undo snapshot, pushing what it replaced
-    /// onto the redo stack.
-    fn undo(&mut self, current: &mut Model) -> Result<(), EditorError> {
-        let previous = self.undo.pop().ok_or(EditorError::NothingToUndo)?;
-        self.release(&previous);
-        let replaced = Self::snapshot(std::mem::replace(current, previous.model));
-        self.hold(&replaced);
-        self.redo.push(replaced);
-        Ok(())
-    }
-
-    fn redo(&mut self, current: &mut Model) -> Result<(), EditorError> {
-        let next = self.redo.pop().ok_or(EditorError::NothingToRedo)?;
-        self.release(&next);
-        let replaced = Self::snapshot(std::mem::replace(current, next.model));
-        self.hold(&replaced);
-        self.undo.push(replaced);
-        Ok(())
-    }
-
-    /// Drop the oldest snapshots until the history fits. The newest is always
-    /// kept: an editor that cannot undo the last edit is worse than one that
-    /// remembers nothing.
-    fn trim(&mut self, max_depth: usize, max_bytes: usize) {
-        while self.undo.len() > max_depth
-            || (self.bytes() > max_bytes && self.undo.len() + self.redo.len() > 1)
-        {
-            let removed = if self.undo.is_empty() {
-                self.redo.remove(0)
-            } else {
-                self.undo.remove(0)
-            };
-            self.release(&removed);
-        }
-    }
-}
-
 impl Session {
     fn new(id: SessionId, model: Model, title: String, file: Option<String>) -> Self {
+        let history = ModelHistory::new(model.clone(), HistoryLimits::default());
         Self {
             model,
             hex: session_hex(id),
@@ -480,15 +410,39 @@ impl Session {
             file,
             rev: 0,
             saved_rev: 0,
-            history: History::default(),
+            history,
+            closed: false,
             puppet: None,
+            pending_preview_pose: None,
             snapshot: None,
             presence: None,
         }
     }
 
     fn touch(&mut self) {
-        self.rev += 1;
+        // Legacy handlers signal a write here. The publication seam compares
+        // final authored content and assigns the single actual next revision.
+        self.rev = self.rev.saturating_add(1);
+    }
+
+    fn ensure_open(&self, id: SessionId) -> Result<(), EditorError> {
+        if self.closed {
+            return Err(EditorError::NoSession(id));
+        }
+        Ok(())
+    }
+
+    fn next_revision(&self) -> Result<u64, EditorError> {
+        self.rev
+            .checked_add(1)
+            .ok_or(EditorError::RevisionExhausted)
+    }
+
+    fn check_revision(&self, expected: Option<u64>) -> Result<(), EditorError> {
+        if expected.is_some_and(|expected| expected != self.rev) {
+            return Err(EditorError::RevisionConflict);
+        }
+        Ok(())
     }
 
     /// Creation splits the borrow between the model and its Id source.
@@ -562,25 +516,6 @@ impl Session {
         Ok(model.duplicate_subtree(node, hex)?)
     }
 
-    fn push_undo(&mut self, snapshot: Model) {
-        self.history.push_undo(snapshot);
-        self.history.trim(UNDO_DEPTH, UNDO_BYTES);
-    }
-
-    fn undo(&mut self) -> Result<(), EditorError> {
-        self.history.undo(&mut self.model)?;
-        self.history.trim(UNDO_DEPTH, UNDO_BYTES);
-        self.touch();
-        Ok(())
-    }
-
-    fn redo(&mut self) -> Result<(), EditorError> {
-        self.history.redo(&mut self.model)?;
-        self.history.trim(UNDO_DEPTH, UNDO_BYTES);
-        self.touch();
-        Ok(())
-    }
-
     fn dirty(&self) -> bool {
         self.rev != self.saved_rev
     }
@@ -590,17 +525,70 @@ impl Session {
     fn puppet(&mut self) -> (&Model, &mut Puppet) {
         // Destructured so the model and the puppet are two borrows of two
         // fields rather than one of the session.
-        let Self { model, puppet, .. } = self;
+        let Self {
+            model,
+            puppet,
+            pending_preview_pose,
+            ..
+        } = self;
         let puppet = puppet.get_or_insert_with(|| {
             let mut built = Puppet::new(model);
             // Frozen physics keeps the authoring preview deterministic (the
             // dt=0 tick can't integrate anyway) and lets physics-driven
             // params be posed by hand.
             built.set_physics_enabled(false);
+            if let Some(pose) = pending_preview_pose.take() {
+                built.apply_pose(&pose);
+            }
             built
         });
         puppet.sync(model);
         (model, puppet)
+    }
+
+    /// A renderer may hold the runtime after releasing the session lock.
+    /// Retain its pose so navigation can rebuild without awaiting the render.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_preview_puppet(&mut self) -> Result<Puppet, EditorError> {
+        self.puppet();
+        let puppet = self
+            .puppet
+            .take()
+            .ok_or_else(|| EditorError::Preview("puppet build failed".into()))?;
+        self.pending_preview_pose = Some(puppet.pose());
+        Ok(puppet)
+    }
+}
+
+impl From<HistoryError> for EditorError {
+    fn from(error: HistoryError) -> Self {
+        match error {
+            HistoryError::NothingToUndo => Self::NothingToUndo,
+            HistoryError::NothingToRedo => Self::NothingToRedo,
+            HistoryError::RevisionUnavailable(revision) => Self::RevisionUnavailable(revision),
+            HistoryError::InvalidPublicationRevision { .. } => Self::RevisionConflict,
+        }
+    }
+}
+
+/// A result stamped while its addressed session is still locked. Never recover
+/// this revision by looking up the session after running callbacks or IO.
+#[derive(Debug)]
+struct Captured<T> {
+    value: T,
+    rev: Option<u64>,
+}
+
+impl<T> Captured<T> {
+    fn at(value: T, rev: u64) -> Self {
+        Self {
+            value,
+            rev: Some(rev),
+        }
+    }
+
+    fn unscoped(value: T) -> Self {
+        Self { value, rev: None }
     }
 }
 
@@ -741,53 +729,29 @@ impl Editor {
     /// two halves: how `attachments` were framed on the way in, and how the
     /// [`Payload`] is framed on the way out.
     pub fn handle_with(&self, req: Request, attachments: Attachments) -> (Reply, Option<Payload>) {
-        // `Edit` is the one kind that may move a session's revision.
-        // That classification is what a client picks its send method by — a
-        // presence or scratch command that quietly bumped `rev` would
-        // re-render every panel on every pointer move, and a query that did
-        // would skip the re-render entirely. Checked here rather than per arm
-        // so it holds for commands nobody thought to test.
-        #[cfg(debug_assertions)]
-        let kind = req.command.kind();
-        #[cfg(debug_assertions)]
-        let revs_before = self.revs();
-
-        // Read before dispatch consumes the command. A create/open/import
-        // names its session only in the reply, so the body has the last word.
-        let addressed = req.command.session();
-
         let mut attachments = attachments;
         let mut payload = None;
-        let dispatched = check_attachments(&req.command, &attachments)
+        let dispatched = limits::json_size(&req, "request_bytes", limits::MAX_REQUEST_JSON_BYTES)
+            .and_then(|()| check_attachments(&req.command, &attachments))
             .and_then(|()| self.dispatch(req.command, &mut attachments, &mut payload));
         let reply = match dispatched {
-            Ok(body) => {
-                let session = match &body {
-                    ResponseBody::Session { session } => Some(*session),
-                    _ => addressed,
-                };
-                Reply::Ok {
-                    id: req.id,
-                    rev: session.and_then(|id| self.rev(id)),
-                    body,
-                }
-            }
+            Ok(captured) => Reply::Ok {
+                id: req.id,
+                rev: captured.rev,
+                body: captured.value,
+            },
             Err(e) => Reply::Err {
                 id: req.id,
                 code: e.code(),
                 message: e.to_string(),
+                op_index: match &e {
+                    EditorError::Operation { index, .. } => Some(*index),
+                    _ => None,
+                },
+                limit: e.limit_info(),
             },
         };
 
-        #[cfg(debug_assertions)]
-        if kind != CommandKind::Edit {
-            debug_assert_eq!(
-                self.revs(),
-                revs_before,
-                "a {kind:?} command moved a session revision; either it belongs \
-                 in CommandKind::Edit or it should not be editing",
-            );
-        }
         debug_assert!(
             payload.is_none() || matches!(&reply, Reply::Ok { .. }),
             "a refused command answered with a payload",
@@ -798,13 +762,11 @@ impl Editor {
     /// One session's revision, or `None` if it is not open — which is what a
     /// `session_close` reply reports, its session having just gone.
     fn rev(&self, id: SessionId) -> Option<u64> {
-        let session = self.session(id).ok()?;
-        let rev = lock(&session).rev;
-        Some(rev)
+        self.with_session(id, |s| Ok(s.rev)).ok()
     }
 
-    /// [`Self::rev`] for a caller outside this crate: what an in-process
-    /// replica stamps on the model it just took through [`Self::with_model`].
+    /// The current live revision. To stamp model data coherently, use
+    /// [`Self::with_model_revision`] instead of reading the counter separately.
     pub fn revision(&self, id: SessionId) -> Option<u64> {
         self.rev(id)
     }
@@ -854,23 +816,6 @@ impl Editor {
         self.notify(Event::SessionsChanged);
     }
 
-    /// Every open session's revision, for the debug check in [`Self::handle`].
-    /// Sessions are few and this only exists in a debug build, so the walk is
-    /// cheaper than threading the addressed session out of every command.
-    #[cfg(debug_assertions)]
-    fn revs(&self) -> Vec<(SessionId, u64)> {
-        let handles: Vec<_> = lock(&self.sessions)
-            .iter()
-            .map(|(&id, session)| (id, session.clone()))
-            .collect();
-        let mut revs: Vec<_> = handles
-            .into_iter()
-            .map(|(id, handle)| (id, lock(&handle).rev))
-            .collect();
-        revs.sort_by_key(|(id, _)| id.0);
-        revs
-    }
-
     fn alloc_id(&self) -> SessionId {
         SessionId(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
@@ -909,16 +854,12 @@ impl Editor {
 
     /// Undo/redo stack depths — the history panel's scrub range.
     pub fn history(&self, id: SessionId) -> Result<(usize, usize), EditorError> {
-        let session = self.session(id)?;
-        let s = lock(&session);
-        Ok((s.history.undo.len(), s.history.redo.len()))
+        self.with_session(id, |s| Ok(s.history.depths()))
     }
 
     /// Is the session dirty (unsaved edits since the last save/save_bytes)?
     pub fn is_dirty(&self, id: SessionId) -> Result<bool, EditorError> {
-        let session = self.session(id)?;
-        let s = lock(&session);
-        Ok(s.dirty())
+        self.with_session(id, |s| Ok(s.dirty()))
     }
 
     /// Read the session's model directly — the in-process observer path for
@@ -929,9 +870,16 @@ impl Editor {
         id: SessionId,
         f: impl FnOnce(&Model) -> R,
     ) -> Result<R, EditorError> {
-        let session = self.session(id)?;
-        let s = lock(&session);
-        Ok(f(&s.model))
+        self.with_session(id, |s| Ok(f(&s.model)))
+    }
+
+    /// Read model data and its live revision inside one session lock.
+    pub fn with_model_revision<R>(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&Model, u64) -> R,
+    ) -> Result<R, EditorError> {
+        self.with_session(id, |s| Ok(f(&s.model, s.rev)))
     }
 
     /// Register an already-encoded PNG/TGA texture from bytes (the browser
@@ -959,68 +907,111 @@ impl Editor {
         })
     }
 
-    /// Run `f` against a session. No undo snapshot is taken, so `f` must not
-    /// edit the model (session metadata like `file`/`saved_rev` is fine);
-    /// model edits go through `edit_session`. The signature can't express
-    /// this — both hand out `&mut Session` because metadata mutation is allowed
-    /// — so a debug assert catches a stray model edit (any edit bumps `rev`,
-    /// which is exactly what `edit_session` snapshots on).
+    /// Read session state without publishing a model edit. The captured helper
+    /// also carries the revision for protocol replies and asynchronous output.
     fn with_session<R>(
         &self,
         id: SessionId,
         f: impl FnOnce(&mut Session) -> Result<R, EditorError>,
     ) -> Result<R, EditorError> {
-        let session = self.session(id)?;
-        let mut session = lock(&session);
-        let rev_before = session.rev;
-        let result = f(&mut session);
-        debug_assert_eq!(
-            session.rev, rev_before,
-            "with_session edited the model (rev bumped) without an undo snapshot; use edit_session",
-        );
-        result
+        self.with_session_captured(id, f)
+            .map(|captured| captured.value)
     }
 
-    /// Run an edit `f` against a session, auto-capturing a pre-edit undo
-    /// snapshot that is pushed only when the edit succeeds and actually changed
-    /// the model (rev bumped). The snapshot is a shallow clone — meshes,
-    /// binding grids and texture payloads all ride behind an `Arc` and are
-    /// copied only when something edits them (see [`History`]) — but it still
-    /// walks and copies the whole tree, which is why read-only commands stay
-    /// on `with_session`.
+    fn with_session_captured<R>(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&mut Session) -> Result<R, EditorError>,
+    ) -> Result<Captured<R>, EditorError> {
+        let handle = self.session(id)?;
+        let mut session = lock(&handle);
+        session.ensure_open(id)?;
+        let rev = session.rev;
+        let result = f(&mut session);
+        debug_assert_eq!(session.rev, rev, "read helper published a model edit");
+        result.map(|value| Captured::at(value, rev))
+    }
+
     fn edit_session<R>(
         &self,
         id: SessionId,
         f: impl FnOnce(&mut Session) -> Result<R, EditorError>,
     ) -> Result<R, EditorError> {
+        self.edit_session_captured(id, f)
+            .map(|captured| captured.value)
+    }
+
+    /// The single publication seam for authored edits. The same exclusive
+    /// lock covers guards inside `f`, snapshot, execution, content comparison,
+    /// history and revision publication. Callbacks run only after unlocking.
+    /// A failed or final-content no-op edit restores its original model/rev.
+    fn edit_session_captured<R>(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&mut Session) -> Result<R, EditorError>,
+    ) -> Result<Captured<R>, EditorError> {
         let handle = self.session(id)?;
         let (result, moved) = {
             let mut session = lock(&handle);
+            session.ensure_open(id)?;
             let before = session.rev;
             let snapshot = session.model.clone();
-            let result = f(&mut session);
-            let mut moved = None;
-            match &result {
-                Ok(_) if session.rev != before => {
-                    session.push_undo(snapshot);
-                    moved = Some(session.rev);
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    // A failed command must leave no partial edit behind —
-                    // multi-step commands can fail midway through mutating.
-                    session.model = snapshot;
+            let result = f(&mut session).and_then(|value| {
+                if snapshot.authored_eq(&session.model)? {
+                    session.model = snapshot.clone();
                     session.rev = before;
-                    session.puppet = None;
+                } else {
+                    let next = before
+                        .checked_add(1)
+                        .ok_or(EditorError::RevisionExhausted)?;
+                    let model = session.model.clone();
+                    session.history.record(model, next)?;
+                    session.rev = next;
+                    session.snapshot = None;
                 }
+                Ok(Captured::at(value, session.rev))
+            });
+            if result.is_err() {
+                session.model = snapshot;
+                session.rev = before;
             }
+            let moved = (session.rev != before).then_some(session.rev);
             (result, moved)
         };
-        // Outside the guard: an observer reads the session it was told about.
         if let Some(rev) = moved {
             self.notify_model_changed(id, rev);
         }
         result
+    }
+
+    fn navigate_history(
+        &self,
+        id: SessionId,
+        if_rev: u64,
+        action: HistoryNavigation,
+    ) -> Result<Captured<ResponseBody>, EditorError> {
+        let handle = self.session(id)?;
+        let (captured, changed) = {
+            let mut session = lock(&handle);
+            session.ensure_open(id)?;
+            session.check_revision(Some(if_rev))?;
+            let next = session.next_revision()?;
+            let restored = session.history.navigate(action, next)?;
+            let changed = restored.is_some();
+            if let Some(restored) = restored {
+                session.model.replace_from(&restored);
+                session.rev = next;
+                if let Some(puppet) = session.puppet.take() {
+                    session.pending_preview_pose = Some(puppet.pose());
+                }
+                session.snapshot = None;
+            }
+            (Captured::at(ResponseBody::Empty, session.rev), changed)
+        };
+        if changed {
+            self.notify_model_changed(id, captured.rev.unwrap_or(if_rev));
+        }
+        Ok(captured)
     }
 
     /// Current model view for an in-process observer (the GUI), rebuilt only
@@ -1028,6 +1019,7 @@ impl Editor {
     pub fn doc_snapshot(&self, id: SessionId) -> Option<Arc<DocSnapshot>> {
         let session = self.session(id).ok()?;
         let mut session = lock(&session);
+        session.ensure_open(id).ok()?;
         if let Some(cached) = &session.snapshot {
             if cached.rev == session.rev {
                 return Some(cached.clone());
@@ -1049,17 +1041,17 @@ impl Editor {
 
     /// In-process shared-view read/write (the presence path) for the GUI.
     pub fn set_presence(&self, id: SessionId, presence: Presence) -> bool {
-        let Ok(session) = self.session(id) else {
-            return false;
-        };
-        lock(&session).presence = Some(presence);
-        true
+        self.with_session(id, |s| {
+            s.presence = Some(presence);
+            Ok(())
+        })
+        .is_ok()
     }
 
     pub fn presence(&self, id: SessionId) -> Option<Presence> {
-        let session = self.session(id).ok()?;
-        let presence = lock(&session).presence.clone();
-        presence
+        self.with_session(id, |s| Ok(s.presence.clone()))
+            .ok()
+            .flatten()
     }
 
     /// Run `f` with the session's model and the puppet animating it, baking
@@ -1073,6 +1065,7 @@ impl Editor {
     ) -> Result<R, EditorError> {
         let session = self.session(id)?;
         let mut s = lock(&session);
+        s.ensure_open(id)?;
         let (model, puppet) = s.puppet();
         Ok(f(model, puppet))
     }
@@ -1084,26 +1077,18 @@ impl Editor {
         &self,
         cmd: Command,
         attachments: &mut Attachments,
-        // Preview is the only arm that answers with bytes, and it is native.
-        #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] payload: &mut Option<Payload>,
-    ) -> Result<ResponseBody, EditorError> {
+        // Export and extension reads are portable; preview rendering is native.
+        payload: &mut Option<Payload>,
+    ) -> Result<Captured<ResponseBody>, EditorError> {
         match cmd {
-            Command::SessionNew { name } => {
-                let id = self.alloc_id();
-                let title = name.unwrap_or_else(|| format!("untitled-{}", id.0));
-                self.insert_session(id, Session::new(id, Model::new(), title, None));
-                Ok(ResponseBody::Session { session: id })
-            }
-            Command::SessionOpen { path } => {
-                let model = Model::from_clm_bytes(&self.storage.read(&path)?)?;
-                let id = self.alloc_id();
-                let title = key_stem(&path);
-                // A key names a file of the server's, so the session can save
-                // back over it. Bytes a client holds arrive as an attachment
-                // on `import_file` instead, and that session has no file.
-                self.insert_session(id, Session::new(id, model, title, Some(path)));
-                Ok(ResponseBody::Session { session: id })
-            }
+            Command::SessionNew { name, source } => self.create_session(name, source, attachments),
+            Command::SessionOpen { path } => self.open_session(path),
+            Command::SessionFork {
+                session,
+                if_rev,
+                name,
+            } => self.fork_session(session, if_rev, name),
+            Command::ModelExport { session, if_rev } => self.export_model(session, if_rev, payload),
             Command::SessionList => {
                 let handles: Vec<_> = lock(&self.sessions)
                     .iter()
@@ -1112,6 +1097,9 @@ impl Editor {
                 let mut sessions = Vec::with_capacity(handles.len());
                 for (id, handle) in handles {
                     let s = lock(&handle);
+                    if s.closed {
+                        continue;
+                    }
                     sessions.push(SessionInfo {
                         session: id,
                         title: s.title.clone(),
@@ -1122,40 +1110,50 @@ impl Editor {
                     });
                 }
                 sessions.sort_by_key(|s| s.session.0);
-                Ok(ResponseBody::Sessions { sessions })
+                Ok(Captured::unscoped(ResponseBody::Sessions { sessions }))
             }
             Command::SessionClose { session } => {
-                let removed = lock(&self.sessions).remove(&session);
-                removed.ok_or(EditorError::NoSession(session))?;
+                // Never hold the registry lock while waiting for this handle.
+                // Queued operations may already own an Arc; the closed marker
+                // makes those handles fail after this publication wins the lock.
+                let handle = self.session(session)?;
+                {
+                    let mut state = lock(&handle);
+                    state.ensure_open(session)?;
+                    state.closed = true;
+                    lock(&self.sessions).remove(&session);
+                }
                 self.notify_sessions();
-                Ok(ResponseBody::Empty)
+                Ok(Captured::unscoped(ResponseBody::Empty))
             }
             Command::Save { session, path } => {
                 let handle = self.session(session)?;
-                let (key, bytes, rev) = {
-                    let s = lock(&handle);
+                let (key, rev) = {
+                    let mut s = lock(&handle);
+                    s.ensure_open(session)?;
                     let key = match path {
                         Some(p) => p,
                         None => s.file.clone().ok_or(EditorError::NoSavePath)?,
                     };
-                    (key, s.model.to_clm_bytes()?, s.rev)
-                };
-                // The store owns write atomicity; see `storage`.
-                self.storage.write(&key, &bytes)?;
-                {
-                    let mut s = lock(&handle);
+                    let bytes = s.model.to_clm_bytes()?;
+                    // Save publication includes its persistent write. Closing
+                    // and later saves wait; failure leaves session metadata
+                    // untouched. Other sessions retain their independent locks.
+                    self.storage.write(&key, &bytes)?;
                     s.file = Some(key.clone());
-                    s.saved_rev = rev;
-                }
+                    s.saved_rev = s.rev;
+                    (key, s.rev)
+                };
                 // A save moves no revision but does flip `dirty`, which a
                 // title bar reads the same way it reads the tree.
                 self.notify_model_changed(session, rev);
-                Ok(ResponseBody::Saved { path: key })
+                Ok(Captured::at(ResponseBody::Saved { path: key }, rev))
             }
             Command::ExportManifest { session, path } => {
                 let handle = self.session(session)?;
-                let (manifest, textures) = {
+                let (manifest, textures, rev) = {
                     let s = lock(&handle);
+                    s.ensure_open(session)?;
                     let manifest = s.model.to_manifest().to_json()?;
                     let textures = s
                         .model
@@ -1171,7 +1169,7 @@ impl Editor {
                             Some((format!("tex{i}.{ext}"), texture.data.clone()))
                         })
                         .collect::<Vec<_>>();
-                    (manifest, textures)
+                    (manifest, textures, s.rev)
                 };
                 self.storage.write(&path, manifest.as_bytes())?;
                 // Textures land beside the manifest, as its own references
@@ -1180,14 +1178,14 @@ impl Editor {
                 for (name, data) in textures {
                     self.storage.write(&join_key(&base, &name), &data)?;
                 }
-                Ok(ResponseBody::Saved { path })
+                Ok(Captured::at(ResponseBody::Saved { path }, rev))
             }
-            Command::Status { session } => self.with_session(session, |s| {
+            Command::Status { session } => self.with_session_captured(session, |s| {
                 Ok(ResponseBody::Status {
                     status: StatusInfo {
                         title: s.title.clone(),
-                        undo_steps: s.history.undo.len() as u32,
-                        redo_steps: s.history.redo.len() as u32,
+                        undo_steps: s.history.depths().0 as u32,
+                        redo_steps: s.history.depths().1 as u32,
                         gravity: Some(s.model.physics().gravity),
                         pixels_per_meter: Some(s.model.physics().pixels_per_meter),
                         chain_substeps: Some(s.model.physics().chain_substeps.get()),
@@ -1202,7 +1200,11 @@ impl Editor {
             // The model-only reads. A browser tab answers these against its
             // own replica, so they live in `query` and the editor runs the
             // very same code against the session's model.
-            Command::Check { session }
+            Command::MeshGet { session, .. }
+            | Command::ModelGet { session, .. }
+            | Command::GeometryGet { session, .. }
+            | Command::BindingCellsGet { session, .. }
+            | Command::Check { session }
             | Command::NodeTree { session }
             | Command::NodeInfo { session, .. }
             | Command::TextureList { session }
@@ -1210,92 +1212,138 @@ impl Editor {
             | Command::BindingList { session, .. }
             | Command::Slots { session, .. }
             | Command::Welds { session }
-            | Command::UnfilledSlots { session }
             | Command::Extensions { session } => {
-                self.with_model(session, |model| query::replica_query(model, &cmd))?
+                let captured = self.with_session_captured(session, |s| {
+                    query::check_revision(&cmd, s.rev)?;
+                    Ok(s.model.clone())
+                })?;
+                let body = query::replica_query(&captured.value, &cmd)?;
+                Ok(Captured {
+                    value: body,
+                    rev: captured.rev,
+                })
+            }
+            Command::BindingCellsSet {
+                session,
+                if_rev,
+                node,
+                params,
+                target,
+                cells,
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(Some(if_rev))?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingCellsSet {
+                        node,
+                        params,
+                        target,
+                        cells,
+                    },
+                )
+            }),
+            Command::BindingCellsUnset {
+                session,
+                if_rev,
+                node,
+                params,
+                target,
+                cells,
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(Some(if_rev))?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingCellsUnset {
+                        node,
+                        params,
+                        target,
+                        cells,
+                    },
+                )
+            }),
+            Command::EditApply {
+                session,
+                if_rev,
+                edits,
+            } => {
+                edit::check_batch(&edits)?;
+                self.edit_session_captured(session, |s| {
+                    s.check_revision(Some(if_rev))?;
+                    let mut candidate = s.model.clone();
+                    let results = edit::execute(&mut candidate, edits)?;
+                    let changed = !s.model.authored_eq(&candidate)?;
+                    if changed {
+                        s.model.replace_from(&candidate);
+                    }
+                    Ok(ResponseBody::EditResults { changed, results })
+                })
+            }
+            Command::EditValidate {
+                session,
+                if_rev,
+                edits,
+            } => {
+                edit::check_batch(&edits)?;
+                let captured = self.with_session_captured(session, |s| {
+                    s.check_revision(Some(if_rev))?;
+                    Ok(s.model.clone())
+                })?;
+                let mut candidate = captured.value.clone();
+                let results = edit::execute(&mut candidate, edits)?;
+                let changed = !captured.value.authored_eq(&candidate)?;
+                Ok(Captured {
+                    value: ResponseBody::EditResults { changed, results },
+                    rev: captured.rev,
+                })
             }
             Command::NodeAdd {
                 session,
                 parent,
                 kind,
                 name,
-                node: id,
-            } => self.edit_session(session, |s| {
-                let node =
-                    ModelNode::new(name.unwrap_or_else(|| default_name(kind)), make_kind(kind));
-                let node = s.add_node(&parent, id, node)?;
-                s.touch();
-                Ok(ResponseBody::Node {
-                    node,
-                    dropped: Vec::new(),
-                })
+                node,
+            } => self.edit_session_captured(session, |s| {
+                if let Some(node) = node {
+                    edit::apply(
+                        &mut s.model,
+                        EditOp::NodeAdd {
+                            parent,
+                            kind,
+                            name,
+                            node,
+                        },
+                    )
+                } else {
+                    let node = s.add_node(
+                        &parent,
+                        None,
+                        ModelNode::new(name.unwrap_or_else(|| default_name(kind)), make_kind(kind)),
+                    )?;
+                    Ok(ResponseBody::Node {
+                        node,
+                        dropped: Vec::new(),
+                    })
+                }
             }),
             Command::NodeSet {
                 session,
                 node,
                 patch,
-            } => self.edit_session(session, |s| {
-                let mut dropped = Vec::new();
-                // Absent leaves the part drawing what it drew; `null` is the
-                // whole of "draw none", so the patch says which of the three
-                // it means and nothing here has to break a tie.
-                let albedo = match &patch.texture {
-                    Some(Some(tex)) => {
-                        if s.model.texture(tex).is_none() {
-                            return Err(EditorError::NoTexture(tex.clone()));
-                        }
-                        Some(Some(tex.clone()))
-                    }
-                    Some(None) => Some(None),
-                    None => None,
-                };
-                if let Some(albedo) = albedo {
-                    if matches!(
-                        s.model.node(&node).map(|n| &n.kind),
-                        Some(ModelNodeKind::Part(_))
-                    ) {
-                        // Repointing the last part drawing a texture deletes
-                        // it; the reply says so, because nothing downstream
-                        // of this session gets it back.
-                        dropped.extend(
-                            s.model
-                                .texture_dropped_by_repointing(&node, albedo.as_ref()),
-                        );
-                        s.model.set_part_albedo(&node, albedo)?;
-                    }
-                }
-                s.model.update_node(&node, |n| apply_patch(n, &patch))??;
-                s.touch();
-                Ok(ResponseBody::Node { node, dropped })
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::NodeSet { node, patch })
             }),
-            Command::NodeReparent { session, node, to } => self.edit_session(session, |s| {
-                s.model.reparent(&node, &to)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
+            Command::NodeReparent { session, node, to } => self
+                .edit_session_captured(session, |s| {
+                    edit::apply(&mut s.model, EditOp::NodeReparent { node, to })
+                }),
             Command::NodeReorder {
                 session,
                 node,
                 index,
-            } => self.edit_session(session, |s| {
-                s.model.reorder(&node, index as usize)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::NodeReorder { node, index })
             }),
-            Command::NodeMove {
-                session,
-                node,
-                parent,
-                index,
-            } => self.edit_session(session, |s| {
-                s.model.reparent(&node, &parent)?;
-                // reorder can only fail on unknown/root, both excluded by the
-                // successful reparent — the combined edit stays atomic.
-                s.model.reorder(&node, index as usize)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::NodeDuplicate { session, node } => self.edit_session(session, |s| {
+            Command::NodeDuplicate { session, node } => self.edit_session_captured(session, |s| {
                 let copy = s.duplicate_subtree(&node)?;
                 s.touch();
                 Ok(ResponseBody::Node {
@@ -1303,7 +1351,7 @@ impl Editor {
                     dropped: Vec::new(),
                 })
             }),
-            Command::RenameId { session, rename } => self.edit_session(session, |s| {
+            Command::RenameId { session, rename } => self.edit_session_captured(session, |s| {
                 match rename {
                     Rename::Node { from, to } => s.model.rename_node_id(&from, to)?,
                     Rename::Param { from, to } => s.model.rename_param_id(&from, to)?,
@@ -1318,39 +1366,15 @@ impl Editor {
                 node,
                 source,
                 mode,
-            } => self.edit_session(session, |s| {
-                s.model.mask_add(&node, &source, mode.into())?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::MaskSet {
-                session,
-                node,
-                index,
-                mode,
-            } => self.edit_session(session, |s| {
-                s.model.mask_set_mode(&node, index as usize, mode.into())?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::MaskReorder {
-                session,
-                node,
-                index,
-                to,
-            } => self.edit_session(session, |s| {
-                s.model.mask_reorder(&node, index as usize, to as usize)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::MaskAdd { node, source, mode })
             }),
             Command::MaskDelete {
                 session,
                 node,
                 index,
-            } => self.edit_session(session, |s| {
-                s.model.mask_delete(&node, index as usize)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::MaskDelete { node, index })
             }),
             Command::PhysicsSet {
                 session,
@@ -1365,7 +1389,7 @@ impl Editor {
                 angle_damping,
                 length_damping,
                 output_scale,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 if let Some(t) = target_params {
                     let targets = physics_targets(&s.model, t)?;
                     s.model.set_physics_targets(&node, targets)?;
@@ -1411,7 +1435,7 @@ impl Editor {
                 gravity,
                 pixels_per_meter,
                 chain_substeps,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 let mut physics = *s.model.physics();
                 if let Some(g) = gravity {
                     physics.gravity = g;
@@ -1428,7 +1452,7 @@ impl Editor {
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
-            Command::NodeDelete { session, node } => self.edit_session(session, |s| {
+            Command::NodeDelete { session, node } => self.edit_session_captured(session, |s| {
                 let dropped = s.model.textures_dropped_by_deleting(&node);
                 s.model.delete_node(&node)?;
                 s.touch();
@@ -1444,7 +1468,7 @@ impl Editor {
                 // attached, so this is the bytes the caller sent.
                 let bytes = attachments.take("texture").unwrap_or_default();
                 let encoding = encoding.into();
-                self.edit_session(session, move |s| {
+                self.edit_session_captured(session, move |s| {
                     image_dims(&bytes, encoding)?;
                     let (texture, dropped) = s.add_texture(
                         &node,
@@ -1465,9 +1489,8 @@ impl Editor {
                 min,
                 max,
                 default,
-                key_positions,
                 param: id,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 if !catchlight_core::param_range_is_valid(min, max) {
                     return Err(ModelError::CellOutOfRange.into());
                 }
@@ -1478,11 +1501,6 @@ impl Editor {
                         min,
                         max,
                         default,
-                        key_positions: if key_positions.is_empty() {
-                            vec![0.0, 1.0]
-                        } else {
-                            key_positions
-                        },
                     },
                 )?;
                 s.touch();
@@ -1495,7 +1513,7 @@ impl Editor {
                 min,
                 max,
                 default,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 if let Some(n) = name {
                     s.model.set_param_name(&param, Name::truncated(n))?;
                 }
@@ -1510,337 +1528,236 @@ impl Editor {
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
-            Command::ParamDelete { session, param } => self.edit_session(session, |s| {
+            Command::ParamDelete { session, param } => self.edit_session_captured(session, |s| {
                 s.model.delete_param(&param)?;
                 s.touch();
                 Ok(ResponseBody::Empty)
             }),
-            Command::ParamKeyInsert {
+            Command::BindingKeyInsert {
                 session,
-                param,
+                if_rev,
+                node,
+                params,
+                target,
+                axis,
                 value,
-            } => self.edit_session(session, |s| {
-                s.model.key_insert(&param, value)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(if_rev)?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingKeyInsert {
+                        node,
+                        params,
+                        target,
+                        axis,
+                        value,
+                    },
+                )
             }),
-            Command::ParamKeyDelete {
+            Command::BindingKeyDelete {
                 session,
-                param,
+                if_rev,
+                node,
+                params,
+                target,
+                axis,
                 index,
-            } => self.edit_session(session, |s| {
-                s.model.key_delete(&param, index as usize)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(if_rev)?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingKeyDelete {
+                        node,
+                        params,
+                        target,
+                        axis,
+                        index,
+                    },
+                )
             }),
-            Command::ParamKeyMove {
+            Command::BindingKeyMove {
                 session,
-                param,
+                if_rev,
+                node,
+                params,
+                target,
+                axis,
                 index,
                 value,
-            } => self.edit_session(session, |s| {
-                s.model.key_move(&param, index as usize, value)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::ParamFlip { session, param } => self.edit_session(session, |s| {
-                s.model.param_flip(&param)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(if_rev)?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingKeyMove {
+                        node,
+                        params,
+                        target,
+                        axis,
+                        index,
+                        value,
+                    },
+                )
             }),
             Command::BindingAdd {
                 session,
-                params,
                 node,
+                params,
                 target,
-            } => self.edit_session(session, |s| {
-                s.model.add_binding(&binding_key(params, node, target)?)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::BindingKey {
-                session,
-                params,
-                node,
-                target,
-                cell,
-                value,
-            } => self.edit_session(session, |s| {
-                let key = binding_key(params, node, target)?;
-                s.model.set_binding_key(&key, cell, value)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::BindingKeys {
-                if_rev,
-                session,
-                params,
-                node,
-                cell,
-                entries,
-            } => self.edit_session(session, |s| {
-                if if_rev.is_some_and(|rev| rev != s.rev) {
-                    return Err(EditorError::RevisionConflict);
-                }
-                for e in entries {
-                    let key = binding_key(params.clone(), node.clone(), e.target)?;
-                    s.model.set_binding_key(&key, cell, e.value)?;
-                }
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::BindingUnset {
-                session,
-                params,
-                node,
-                target,
-                cell,
-            } => self.edit_session(session, |s| {
-                s.model
-                    .unset_binding_key(&binding_key(params, node, target)?, cell)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::BindingReset {
-                session,
-                params,
-                node,
-                target,
-                cell,
-            } => self.edit_session(session, |s| {
-                s.model
-                    .reset_binding_key(&binding_key(params, node, target)?, cell)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+                key_positions,
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingAdd {
+                        node,
+                        params,
+                        target,
+                        key_positions,
+                    },
+                )
             }),
             Command::BindingDelete {
                 session,
-                params,
                 node,
+                params,
                 target,
-            } => self.edit_session(session, |s| {
-                s.model
-                    .delete_binding(&binding_key(params, node, target)?)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingDelete {
+                        node,
+                        params,
+                        target,
+                    },
+                )
             }),
             Command::BindingInterpolate {
                 session,
-                params,
                 node,
+                params,
                 target,
                 mode,
-            } => self.edit_session(session, |s| {
-                s.model
-                    .set_binding_interpolate(&binding_key(params, node, target)?, mode.into())?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::BindingInvert {
-                session,
-                params,
-                node,
-                target,
-            } => self.edit_session(session, |s| {
-                s.model
-                    .invert_binding(&binding_key(params, node, target)?)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::BindingCopyKey {
-                session,
-                params,
-                node,
-                target,
-                from,
-                to,
-            } => self.edit_session(session, |s| {
-                s.model
-                    .copy_binding_key(&binding_key(params, node, target)?, from, to)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::DeformSet {
-                session,
-                params,
-                node,
-                cell,
-                translate,
-                rotate,
-                scale,
-            } => self.edit_session(session, |s| {
-                let key = binding_key(params, node, BindingTarget::Deform)?;
-                s.model.set_deform_from_transform(
-                    &key,
-                    cell,
-                    translate.unwrap_or([0.0, 0.0]),
-                    rotate.unwrap_or(0.0),
-                    scale.unwrap_or([1.0, 1.0]),
-                )?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::DeformVertices {
-                if_rev,
-                session,
-                params,
-                node,
-                cell,
-                offsets,
-            } => self.edit_session(session, |s| {
-                if if_rev.is_some_and(|rev| rev != s.rev) {
-                    return Err(EditorError::RevisionConflict);
-                }
-                let key = binding_key(params, node, BindingTarget::Deform)?;
-                s.model.set_deform_vertices(&key, cell, offsets.concat())?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(
+                    &mut s.model,
+                    EditOp::BindingInterpolationSet {
+                        node,
+                        params,
+                        target,
+                        mode,
+                    },
+                )
             }),
             Command::MeshSet {
-                if_rev,
                 session,
+                if_rev,
                 node,
                 verts,
                 uvs,
                 indices,
                 origin,
-            } => self.edit_session(session, |s| {
-                if if_rev.is_some_and(|rev| rev != s.rev) {
-                    return Err(EditorError::RevisionConflict);
-                }
-                let mesh = build_mesh(verts, uvs, indices, origin)?;
-                let emptied = s.model.set_mesh_with_refit(&node, mesh)?;
-                s.touch();
-                Ok(emptied_reply(node, emptied))
+                deform_mapping,
+            } => self.edit_session_captured(session, |s| {
+                s.check_revision(if_rev)?;
+                edit::apply(
+                    &mut s.model,
+                    EditOp::MeshSet {
+                        node,
+                        verts,
+                        uvs,
+                        indices,
+                        origin,
+                        deform_mapping,
+                    },
+                )
             }),
             Command::MeshAuto {
                 session,
                 node,
                 mode,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 let mesh = automesh(&s.model, &node, mode)?;
                 let emptied = s.model.set_mesh_with_refit(&node, mesh)?;
                 s.touch();
                 Ok(emptied_reply(node, emptied))
             }),
-            Command::MeshCopy { session, from, to } => self.edit_session(session, |s| {
-                let mesh = match s.model.node_mesh(&from) {
-                    Some(mesh) => mesh.clone(),
-                    None if s.model.node(&from).is_some() => {
-                        return Err(EditorError::BadTarget("not a meshed node".into()))
-                    }
-                    None => return Err(EditorError::NoNode(from)),
-                };
-                let emptied = s.model.set_mesh_with_refit(&to, mesh)?;
-                s.touch();
-                Ok(emptied_reply(to, emptied))
-            }),
             Command::SlotAdd {
                 session,
                 node,
                 slot,
-            } => self.edit_session(session, |s| {
-                let slot = match slot {
-                    Some(slot) => {
-                        s.model.slot_add(&node, slot.clone())?;
-                        slot
-                    }
-                    None => s.slot_add_generated(&node)?,
-                };
-                s.touch();
-                Ok(ResponseBody::Slot {
-                    slot: SlotAddr { node, slot },
-                })
+            } => self.edit_session_captured(session, |s| {
+                if let Some(slot) = slot {
+                    edit::apply(&mut s.model, EditOp::SlotAdd { node, slot })
+                } else {
+                    let slot = s.slot_add_generated(&node)?;
+                    Ok(ResponseBody::Slot {
+                        slot: SlotAddr { node, slot },
+                    })
+                }
             }),
             Command::SlotFill {
                 session,
                 node,
                 slot,
                 vertex,
-            } => self.edit_session(session, |s| {
-                s.model.slot_fill(&node, &slot, vertex)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::SlotFill { node, slot, vertex })
             }),
             Command::SlotClear {
                 session,
                 node,
                 slot,
-            } => self.edit_session(session, |s| {
-                s.model.slot_clear(&node, &slot)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::SlotClear { node, slot })
             }),
             Command::SlotDelete {
                 session,
                 node,
                 slot,
-            } => self.edit_session(session, |s| {
-                s.model.slot_delete(&node, &slot)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::SlotDelete { node, slot })
             }),
             Command::WeldSet {
                 session,
                 a,
                 b,
                 pairs,
-            } => self.edit_session(session, |s| {
-                let weld = build_weld(a, b, pairs);
-                let mut welds = s.model.welds().to_vec();
-                // One weld per pair of parts: setting a pair that is already
-                // welded replaces it rather than stacking a second weld the
-                // model would refuse.
-                welds.retain(|w| !pairs_the_same_parts(w, &weld));
-                welds.push(weld);
-                s.model.set_welds(welds)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::WeldSet { a, b, pairs })
             }),
-            Command::WeldWeight {
-                session,
-                a,
-                b,
-                slot,
-                weight,
-            } => self.edit_session(session, |s| {
-                s.model.set_weld_slot_weight(&a, &b, &slot, weight)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
+            Command::WeldDelete { session, a, b } => self.edit_session_captured(session, |s| {
+                edit::apply(&mut s.model, EditOp::WeldDelete { a, b })
             }),
-            Command::WeldDelete { session, a, b } => self.edit_session(session, |s| {
-                // Deleting either part already unmakes a weld, by taking one
-                // of its ends with it. This is the edit that leaves both parts
-                // and their slots exactly where they are.
-                let mut welds = s.model.welds().to_vec();
-                let before = welds.len();
-                welds.retain(|w| !joins(w, &a, &b));
-                if welds.len() == before {
-                    return Err(EditorError::UnknownWeld);
-                }
-                s.model.set_welds(welds)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
-            Command::Undo { session } => {
-                let handle = self.session(session)?;
-                let rev = {
-                    let mut s = lock(&handle);
-                    s.undo()?;
-                    s.rev
-                };
-                self.notify_model_changed(session, rev);
-                Ok(ResponseBody::Empty)
+            Command::Undo { session, if_rev } => {
+                self.navigate_history(session, if_rev, HistoryNavigation::Undo)
             }
-            Command::Redo { session } => {
-                let handle = self.session(session)?;
-                let rev = {
-                    let mut s = lock(&handle);
-                    s.redo()?;
-                    s.rev
-                };
-                self.notify_model_changed(session, rev);
-                Ok(ResponseBody::Empty)
+            Command::Redo { session, if_rev } => {
+                self.navigate_history(session, if_rev, HistoryNavigation::Redo)
+            }
+            Command::EditGoto {
+                session,
+                if_rev,
+                revision,
+            } => self.navigate_history(session, if_rev, HistoryNavigation::Goto(revision)),
+            Command::EditHistoryGet { session, if_rev } => {
+                self.with_session_captured(session, |s| {
+                    s.check_revision(if_rev)?;
+                    let metadata = s.history.metadata();
+                    Ok(ResponseBody::EditHistory {
+                        root: metadata.root,
+                        current: metadata.current,
+                        pruned: metadata.pruned,
+                        entries: metadata
+                            .entries
+                            .into_iter()
+                            .map(|entry| EditHistoryEntry {
+                                revision: entry.revision,
+                                parent: entry.parent,
+                                redo: entry.redo,
+                                revisions: entry.revisions,
+                            })
+                            .collect(),
+                    })
+                })
             }
             Command::PhysicsAdd {
                 session,
@@ -1854,7 +1771,7 @@ impl Editor {
                 angle_damping,
                 length_damping,
                 node: id,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 let targets = physics_targets(&s.model, target_params)?;
                 let mut phys = ModelPhysics::new(kind.into());
                 if let Some(v) = gravity {
@@ -1892,7 +1809,7 @@ impl Editor {
                 targets,
                 chain,
                 node: id,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 let joints = spine_joints(joints)?;
                 let count = joints.len();
                 let node = ModelNode::new(
@@ -1919,7 +1836,7 @@ impl Editor {
                 joints,
                 targets,
                 chain,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 // Joints first: a set that reshapes and re-aims in one command
                 // has its `targets` and its chain measured against the length
                 // it just asked for rather than the one it replaced.
@@ -1945,49 +1862,20 @@ impl Editor {
                 node: id,
                 name,
                 chain,
-            } => self.edit_session(session, |s| {
+            } => self.edit_session_captured(session, |s| {
                 spine_fit(s, &part, links, axis, id, name, chain.as_ref())
             }),
             Command::PresenceSet { session, presence } => {
-                // Deliberately not via with_session: presence must not bump rev,
-                // snapshot, or record undo — it is not the model.
-                let handle = self.session(session)?;
-                lock(&handle).presence = Some(presence);
-                Ok(ResponseBody::Empty)
+                self.with_session_captured(session, |s| {
+                    s.presence = Some(presence);
+                    Ok(ResponseBody::Empty)
+                })
             }
-            Command::PresenceGet { session } => {
-                let handle = self.session(session)?;
-                let presence = lock(&handle).presence.clone();
-                Ok(ResponseBody::Presence { presence })
-            }
-            Command::ScratchDeform {
-                session,
-                node,
-                offsets,
-            } => {
-                // The scratch path: a drag shows on the puppet and leaves the
-                // model, its revision and its undo history alone.
-                let handle = self.session(session)?;
-                let mut s = lock(&handle);
-                let (model, puppet) = s.puppet();
-                let idx = model
-                    .node(&node)
-                    .and_then(|_| puppet.node_idx(&node))
-                    .ok_or_else(|| EditorError::NoNode(node.clone()))?;
-                if offsets.is_empty() {
-                    puppet.clear_scratch_deform(idx);
-                } else {
-                    if offsets.len() * 2 != model.deform_len(&node) {
-                        return Err(EditorError::BadTarget(
-                            "one deform offset per mesh vertex".into(),
-                        ));
-                    }
-                    let deform: Vec<Vec2> = offsets.iter().map(|&[x, y]| Vec2::new(x, y)).collect();
-                    puppet.set_scratch_deform(idx, &deform);
-                }
-                puppet.combine_deforms();
-                Ok(ResponseBody::Empty)
-            }
+            Command::PresenceGet { session } => self.with_session_captured(session, |s| {
+                Ok(ResponseBody::Presence {
+                    presence: s.presence.clone(),
+                })
+            }),
             #[cfg(not(target_arch = "wasm32"))]
             Command::Preview {
                 session,
@@ -2025,24 +1913,27 @@ impl Editor {
                         ))
                     }
                 };
-                self.edit_session(session, move |s| {
+                self.edit_session_captured(session, move |s| {
                     s.model.set_extension(key.clone(), value)?;
                     s.touch();
                     Ok(ResponseBody::Empty)
                 })
             }
-            Command::ExtensionDelete { session, key } => self.edit_session(session, move |s| {
-                s.model.delete_extension(&key)?;
-                s.touch();
-                Ok(ResponseBody::Empty)
-            }),
+            Command::ExtensionDelete { session, key } => {
+                self.edit_session_captured(session, move |s| {
+                    s.model.delete_extension(&key)?;
+                    s.touch();
+                    Ok(ResponseBody::Empty)
+                })
+            }
             Command::ExtensionGet { session, key } => {
-                let (info, bytes) = self.with_model(session, |model| {
-                    model
+                let captured = self.with_session_captured(session, |s| {
+                    s.model
                         .extension(&key)
                         .map(|value| (extension_value_info(value), value.bytes().cloned()))
                         .ok_or_else(|| EditorError::NoExtension(key.to_string()))
-                })??;
+                })?;
+                let (info, bytes) = captured.value;
                 if let Some(bytes) = bytes {
                     // Bytes are the reply's payload, the way a preview's PNG
                     // is: what a `.clm` holds opaquely leaves the same way.
@@ -2051,193 +1942,18 @@ impl Editor {
                         bytes: bytes.to_vec(),
                     });
                 }
-                Ok(ResponseBody::Extension { key, value: info })
-            }
-            Command::ImportFile { session, parent } => {
-                let bytes = attachments.take("model").unwrap_or_default();
-                self.import_file(session, parent, bytes)
+                Ok(Captured {
+                    value: ResponseBody::Extension { key, value: info },
+                    rev: captured.rev,
+                })
             }
             Command::ImportJson {
                 session,
                 parent,
+                if_rev,
                 textures,
-            } => {
-                let structure = attachments.take("structure").unwrap_or_default();
-                let images = attachments.take_family("texture");
-                self.import_json(session, parent, textures, structure, images)
-            }
-            Command::ImportManifest { session } => {
-                let manifest = attachments.take("manifest").unwrap_or_default();
-                let textures = attachments.take_family("texture");
-                self.import_manifest(session, manifest, textures)
-            }
+            } => self.import_structure(session, parent, if_rev, textures, attachments),
         }
-    }
-
-    /// [`Command::ImportFile`]: a `.clm` from bytes into an open session.
-    ///
-    /// Two shapes, one operation. Without a `parent` the bytes have to be a
-    /// complete model and the session's has to be pristine, and the session's
-    /// model is *replaced* — keeping its identity, so the puppet and the
-    /// render cache built on it rebake rather than refuse. With a `parent`
-    /// every imported root is re-parented onto that node and the whole
-    /// thing goes through [`Model::install`], which is atomic: Ids verbatim,
-    /// a collision or a missing requirement refused with nothing moved.
-    ///
-    /// The session's `file` stays whatever it was. Imported bytes are not a
-    /// file on disk, so a bare `save` on a session that only ever imported
-    /// still refuses with [`EditorError::NoSavePath`].
-    fn import_file(
-        &self,
-        session: SessionId,
-        parent: Option<NodeId>,
-        bytes: Vec<u8>,
-    ) -> Result<ResponseBody, EditorError> {
-        // One budget across the decode and the read, as `from_clm_bytes` has
-        // always had: the two halves of reading one file are charged together.
-        let mut budget = LoadBudget::default();
-        let file = clm::decode_with_budget(&bytes, &mut budget).map_err(ModelError::from)?;
-        self.import_clm(session, parent, file, &mut budget)
-    }
-
-    /// [`Command::ImportJson`]: a structure as JSON, its textures attached
-    /// beside it.
-    ///
-    /// The same two paths [`Self::import_file`] takes, reached from a
-    /// different envelope. Everything specific to this command happens before
-    /// they start: parse the structure, pair each declared texture with the
-    /// attachment carrying it, and refuse either side naming what is missing.
-    fn import_json(
-        &self,
-        session: SessionId,
-        parent: Option<NodeId>,
-        textures: Vec<ImportTexture>,
-        structure: Vec<u8>,
-        images: Vec<(String, Vec<u8>)>,
-    ) -> Result<ResponseBody, EditorError> {
-        let file = clm_file_from_json(&structure, &textures, images)?;
-        self.import_clm(session, parent, file, &mut LoadBudget::default())
-    }
-
-    /// The whole of what an import does once the model is a [`ClmFile`],
-    /// however it arrived.
-    ///
-    /// Without a `parent` the bytes have to be a complete model and the
-    /// session's has to be pristine, and the session's model is *replaced* —
-    /// keeping its identity, so the puppet and the render cache built on it
-    /// rebake rather than refuse. With a `parent` every imported root
-    /// is re-parented onto that node and the whole thing goes through
-    /// [`Model::install`], which is atomic: Ids verbatim, a collision or a
-    /// missing requirement refused with nothing moved.
-    ///
-    /// The session's `file` stays whatever it was. Imported bytes are not a
-    /// file on disk, so a bare `save` on a session that only ever imported
-    /// still refuses with [`EditorError::NoSavePath`].
-    fn import_clm(
-        &self,
-        session: SessionId,
-        parent: Option<NodeId>,
-        file: clm::ClmFile,
-        budget: &mut LoadBudget,
-    ) -> Result<ResponseBody, EditorError> {
-        match parent {
-            None => {
-                let incoming = Model::from_clm_file_with_budget(&file, budget)?;
-                self.replace_pristine(session, incoming, None)
-            }
-            Some(parent) => {
-                // A parent the session does not carry needs no check here:
-                // install reports it as the requirement it is.
-                let addon = fragment_under(file, &parent)?;
-                self.edit_session(session, |s| {
-                    s.model.install(&addon)?;
-                    s.touch();
-                    Ok(ResponseBody::Session { session })
-                })
-            }
-        }
-    }
-
-    /// [`Command::ImportManifest`]: a manifest and its images, into an open
-    /// session.
-    ///
-    /// The same model [`Command::SessionImport`] builds from a store, from
-    /// the bytes that came with the command instead. Each `texture:<ref>`
-    /// attachment is matched against the reference the manifest spells, and
-    /// one the manifest names with nothing attached is refused naming it.
-    fn import_manifest(
-        &self,
-        session: SessionId,
-        manifest: Vec<u8>,
-        textures: Vec<(String, Vec<u8>)>,
-    ) -> Result<ResponseBody, EditorError> {
-        let json = String::from_utf8(manifest).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("manifest is not UTF-8: {e}"),
-            )
-        })?;
-        let manifest = Manifest::from_json(&json)?;
-        let mut attached: HashMap<String, Vec<u8>> = textures.into_iter().collect();
-        let model = model_from_manifest(&manifest, |_, reference| {
-            attached
-                .remove(reference)
-                .ok_or_else(|| ManifestError::MissingTextureData(reference.to_string()).into())
-        })?;
-        let title = (!manifest.name.is_empty()).then(|| manifest.name.clone());
-        self.replace_pristine(session, model, title)
-    }
-
-    /// Replace a pristine session's model with `incoming`, keeping the
-    /// session's identity and its place in every observer's bookkeeping.
-    ///
-    /// **A pristine replace is an open in all but name**, and what it leaves
-    /// is what [`Command::SessionOpen`] leaves minus the file: the revision
-    /// moves and `model_changed` fires, so every view re-reads — but the
-    /// session is *clean*, with nothing to undo. This is the one edit
-    /// command that takes no snapshot, and it has to be: `session_new` plus
-    /// this is how a client opens bytes it holds, and an opened model that
-    /// warned about unsaved changes, or whose one undo emptied it back to a
-    /// bare root, would be a worse open than the one it replaced. Installing
-    /// a fragment under a parent ([`Command::ImportFile`] with one) is an
-    /// ordinary edit and keeps both.
-    ///
-    /// Pristine is what [`Command::SessionNew`] makes: a bare root and nothing
-    /// else. A session that holds anything is [`ErrorCode::NotEmpty`] — a
-    /// client imports into a fresh session rather than having the editor
-    /// decide what to throw away. (A complete model always has exactly one
-    /// root and `delete_node` refuses it, so "empty it first" is not
-    /// available; this is its equivalent.)
-    fn replace_pristine(
-        &self,
-        session: SessionId,
-        incoming: Model,
-        title: Option<String>,
-    ) -> Result<ResponseBody, EditorError> {
-        let handle = self.session(session)?;
-        // Not `edit_session`: that is the one place a snapshot is taken, and
-        // this is the one edit that must not take one. Nothing is mutated
-        // before the check, so there is also nothing for it to roll back.
-        let rev = {
-            let mut s = lock(&handle);
-            if !is_pristine(&s.model) {
-                return Err(EditorError::NotEmpty(
-                    "this session already holds a model; import into a new one".into(),
-                ));
-            }
-            s.model.replace_from(&incoming);
-            if let Some(title) = title {
-                s.title = title;
-            }
-            s.touch();
-            // What an open leaves behind: clean, and nothing before it.
-            s.saved_rev = s.rev;
-            s.history = History::default();
-            s.rev
-        };
-        // Outside the guard: an observer reads the session it was told about.
-        self.notify_model_changed(session, rev);
-        Ok(ResponseBody::Session { session })
     }
 
     /// Render one frame and hand back the PNG as the reply's payload.
@@ -2253,7 +1969,7 @@ impl Editor {
         size: Option<[u32; 2]>,
         camera: Option<Camera>,
         payload: &mut Option<Payload>,
-    ) -> Result<ResponseBody, EditorError> {
+    ) -> Result<Captured<ResponseBody>, EditorError> {
         let [width, height] = size.unwrap_or([512, 512]);
         // Explicit or the default, never the presence: a script's output must
         // not depend on what some tab last looked at.
@@ -2268,11 +1984,8 @@ impl Editor {
         // puppet and the cache accept it as the model they were built from.
         let (model, mut puppet, rev) = {
             let mut s = lock(&handle);
-            s.puppet();
-            let puppet = s
-                .puppet
-                .take()
-                .ok_or_else(|| EditorError::Preview("puppet build failed".into()))?;
+            s.ensure_open(session)?;
+            let puppet = s.take_preview_puppet()?;
             (s.model.clone(), puppet, s.rev)
         };
         // Params are scalar and the wire names them by Id, so a pose is
@@ -2294,17 +2007,21 @@ impl Editor {
 
         {
             let mut s = lock(&handle);
-            if s.rev == rev && s.puppet.is_none() {
+            if !s.closed && s.rev == rev && s.puppet.is_none() {
                 s.puppet = Some(puppet);
+                s.pending_preview_pose = None;
             }
         }
         *payload = Some(Payload {
             content_type: "image/png",
             bytes: render_result?,
         });
-        Ok(ResponseBody::Preview {
-            preview: PreviewInfo { width, height },
-        })
+        Ok(Captured::at(
+            ResponseBody::Preview {
+                preview: PreviewInfo { width, height },
+            },
+            rev,
+        ))
     }
 }
 
@@ -2329,7 +2046,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// The binding one request names. A `param_y` makes it a two-param binding
-/// whose grid spans both params' key positions.
+/// whose grid spans its two binding-owned position axes.
 fn binding_key(
     params: BindingParams,
     node: NodeId,
@@ -2670,7 +2387,6 @@ fn spine_fit(
                         min: -1.0,
                         max: 1.0,
                         default: 0.0,
-                        key_positions: vec![0.0, 1.0],
                     },
                 )?;
                 params.push(param);
@@ -2735,7 +2451,7 @@ fn build_mesh(
     origin: [f32; 2],
 ) -> Result<ClmMesh, EditorError> {
     let vcount = verts.len();
-    if uvs.len() != vcount
+    if (!uvs.is_empty() && uvs.len() != vcount)
         || indices
             .iter()
             .any(|tri| tri.iter().any(|&i| i as usize >= vcount))
@@ -3076,46 +2792,6 @@ fn fragment_under(mut file: clm::ClmFile, parent: &NodeId) -> Result<Model, Edit
     Ok(Model::from_clm_file_fragment(&file)?)
 }
 
-/// Is this the model [`Command::SessionNew`] makes — a bare root and nothing
-/// else?
-fn is_pristine(model: &Model) -> bool {
-    model.root().is_some()
-        && model.node_count() == 1
-        && model.param_ids().is_empty()
-        && model.texture_ids().is_empty()
-        && model.bindings().next().is_none()
-        && model.welds().is_empty()
-        && model.animations().is_empty()
-}
-
-/// Build a model from a manifest, taking each texture's bytes from `supply`.
-///
-/// The one place a manifest becomes a model. `supply` is handed a texture's
-/// position in the manifest and the reference exactly as the manifest spells
-/// it: [`Command::SessionImport`] resolves that against the manifest's own
-/// storage key, [`Command::ImportManifest`] looks it up among the attachments
-/// that came with the command, and neither decides anything else.
-fn model_from_manifest(
-    manifest: &Manifest,
-    mut supply: impl FnMut(usize, &str) -> Result<Vec<u8>, EditorError>,
-) -> Result<Model, EditorError> {
-    let mut data = HashMap::new();
-    for (at, t) in manifest.textures.iter().enumerate() {
-        let bytes = supply(at, &t.path)?;
-        data.insert(
-            t.id.clone(),
-            TextureData {
-                // The encoding still comes off the reference's tail: a
-                // manifest names files, and this is the one key whose shape
-                // is read. See [`encoding_from_path`].
-                encoding: encoding_from_path(&t.path),
-                bytes: bytes.into(),
-            },
-        );
-    }
-    Ok(Model::from_manifest(manifest, &data)?)
-}
-
 /// Hold one command's attachments to what it declared in [`COMMAND_BYTES`].
 ///
 /// Two refusals, both before the command runs: a name the command does not
@@ -3282,7 +2958,7 @@ mod tests {
 
         assert!(matches!(
             reply,
-            Reply::Err { id: 0, code: ErrorCode::BadRequest, message }
+            Reply::Err { id: 0, code: ErrorCode::BadRequest, message, .. }
                 if message.contains("request exceeds")
         ));
         server_thread.join().unwrap();
@@ -3317,7 +2993,9 @@ mod tests {
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
             match serde_json::from_str::<Reply>(&line).unwrap() {
-                Reply::Err { id, code, message } => {
+                Reply::Err {
+                    id, code, message, ..
+                } => {
                     assert_eq!(id, want, "the reply correlates to the request");
                     assert_eq!(code, ErrorCode::BadRequest);
                     assert!(message.starts_with("bad request:"), "{message}");
@@ -3333,7 +3011,13 @@ mod tests {
     #[test]
     fn a_well_formed_id_the_model_lacks_is_a_no_node_error() {
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         assert!(matches!(
             ed.handle(req(
                 2,
@@ -3369,7 +3053,13 @@ mod tests {
             lock(&sink).push(event.clone());
         }));
 
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         assert!(
             matches!(lock(&seen).as_slice(), [Event::SessionsChanged]),
             "a new session changes the set of open sessions",
@@ -3400,7 +3090,13 @@ mod tests {
         lock(&seen).clear();
 
         ed.unsubscribe(handle);
-        let s = session_of(body(ed.handle(req(4, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            4,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         body(ed.handle(req(
             5,
             Command::NodeAdd {
@@ -3422,7 +3118,13 @@ mod tests {
     #[test]
     fn a_reply_carries_the_revision_it_reflects() {
         let ed = Editor::new();
-        let (s, rev) = match ed.handle(req(1, Command::SessionNew { name: None })) {
+        let (s, rev) = match ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        )) {
             Reply::Ok { body, rev, .. } => (session_of(body), rev),
             other => panic!("{other:?}"),
         };
@@ -3481,12 +3183,20 @@ mod tests {
     #[test]
     fn independent_sessions_do_not_share_a_command_lock() {
         let editor = Arc::new(Editor::new());
-        let first = session_of(body(
-            editor.handle(req(1, Command::SessionNew { name: None })),
-        ));
-        let second = session_of(body(
-            editor.handle(req(2, Command::SessionNew { name: None })),
-        ));
+        let first = session_of(body(editor.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
+        let second = session_of(body(editor.handle(req(
+            2,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let blocking_editor = editor.clone();
@@ -3513,189 +3223,6 @@ mod tests {
         assert!(!result.unwrap().unwrap());
     }
 
-    fn named_model(name: &str) -> Model {
-        let mut model = Model::new();
-        let root = model.root().unwrap().clone();
-        model
-            .update_node(&root, |n| n.name = Name::truncated(name))
-            .unwrap();
-        model
-    }
-
-    fn root_name(model: &Model) -> String {
-        model
-            .node(model.root().unwrap())
-            .unwrap()
-            .name
-            .as_str()
-            .to_string()
-    }
-
-    #[test]
-    fn history_byte_budget_keeps_the_newest_snapshot() {
-        let mut history = History::default();
-        for name in ["first", "second", "third"] {
-            history.push_undo(named_model(name));
-        }
-        let newest_bytes = history.undo.last().unwrap().own_bytes;
-
-        history.trim(UNDO_DEPTH, newest_bytes);
-
-        assert_eq!(history.undo.len(), 1);
-        assert_eq!(root_name(&history.undo[0].model), "third");
-        assert_eq!(history.bytes(), newest_bytes);
-    }
-
-    /// An undo snapshot is a shallow clone, so 64 of them hold one model's
-    /// textures once, not 64 times. Charging each snapshot the full
-    /// `estimated_size_bytes` would bill them 64 times and collapse the
-    /// history of any model whose textures approach the cap.
-    #[test]
-    fn a_texture_shared_by_every_snapshot_is_counted_once() {
-        let mut model = Model::new();
-        let mut hex = SeededHex::new(7);
-        let root = model.root().unwrap().clone();
-        let part = model
-            .add_node(
-                &root,
-                ModelNode::new(
-                    "part",
-                    ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
-                ),
-                &mut hex,
-            )
-            .unwrap();
-        model
-            .add_texture(
-                &part,
-                ModelTexture {
-                    encoding: CoreTextureEncoding::Png,
-                    alpha: TextureAlpha::Straight,
-                    data: vec![0u8; 4 * 1024 * 1024].into(),
-                },
-                &mut hex,
-            )
-            .unwrap();
-        let one = History::snapshot(model.clone());
-        let payload = one
-            .model
-            .texture(&model.texture_ids()[0])
-            .unwrap()
-            .data
-            .len();
-        assert!(one.own_bytes < payload, "the payload is not charged twice");
-
-        let mut history = History::default();
-        for _ in 0..8 {
-            history.push_undo(model.clone());
-        }
-
-        let bytes = history.bytes();
-        assert!(
-            bytes > payload,
-            "the shared payload is counted: {bytes} <= {payload}"
-        );
-        assert!(
-            bytes < payload + 8 * one.own_bytes + payload,
-            "the shared payload is counted once, not eight times: {bytes}"
-        );
-
-        // One snapshot still holds the payload, so it is still counted...
-        history.trim(1, usize::MAX);
-        assert_eq!(history.undo.len(), 1);
-        assert!(history.bytes() > payload);
-
-        // ...and once none does, it stops being counted at all.
-        history.trim(0, usize::MAX);
-        assert!(history.undo.is_empty());
-        assert_eq!(history.bytes(), 0);
-    }
-
-    /// A delete that cascades into a texture leaves the payload in the older
-    /// snapshots and nowhere else. The ledger counts a payload while any
-    /// snapshot holds it, so it stays billed until the last one holding it is
-    /// trimmed — and an edit that frees megabytes does not make the history
-    /// look free while undo can still bring them back.
-    #[test]
-    fn a_cascaded_texture_delete_is_billed_until_the_last_snapshot_holding_it_goes() {
-        let mut model = Model::new();
-        let mut hex = SeededHex::new(7);
-        let root = model.root().unwrap().clone();
-        let part = model
-            .add_node(
-                &root,
-                ModelNode::new(
-                    "part",
-                    ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
-                ),
-                &mut hex,
-            )
-            .unwrap();
-        model
-            .add_texture(
-                &part,
-                ModelTexture {
-                    encoding: CoreTextureEncoding::Png,
-                    alpha: TextureAlpha::Straight,
-                    data: vec![0u8; 4 * 1024 * 1024].into(),
-                },
-                &mut hex,
-            )
-            .unwrap();
-        let payload = model.texture(&model.texture_ids()[0]).unwrap().data.len();
-
-        let mut history = History::default();
-        history.push_undo(model.clone());
-
-        // Deleting the only part drawing it takes the texture with it.
-        model.delete_node(&part).unwrap();
-        assert!(model.texture_ids().is_empty());
-        history.push_undo(model.clone());
-
-        assert!(
-            history.bytes() > payload,
-            "the snapshot that can undo the delete still holds the bytes"
-        );
-        history.trim(1, usize::MAX);
-        assert!(
-            history.bytes() < payload,
-            "nothing holds the payload once that snapshot is gone: {}",
-            history.bytes()
-        );
-    }
-
-    /// Undo, redo and trimming all move snapshots between the stacks; the
-    /// ledger has to follow them or it drifts.
-    #[test]
-    fn the_history_budget_tracks_undo_and_redo() {
-        // Same-length names so the three snapshots weigh the same and the
-        // totals below are exact rather than approximate.
-        let mut history = History::default();
-        let mut current = named_model("ccc");
-        history.push_undo(named_model("aaa"));
-        history.push_undo(named_model("bbb"));
-        let full = history.bytes();
-
-        history.undo(&mut current).unwrap();
-        assert_eq!(root_name(&current), "bbb");
-        assert_eq!(history.bytes(), full, "a snapshot moved, none was created");
-
-        history.redo(&mut current).unwrap();
-        assert_eq!(root_name(&current), "ccc");
-        assert_eq!(history.bytes(), full);
-
-        // A fresh edit discards the redo stack and stops counting it.
-        history.undo(&mut current).unwrap();
-        assert_eq!(history.redo.len(), 1);
-        history.push_undo(named_model("ddd"));
-        assert!(history.redo.is_empty());
-        assert_eq!(history.bytes(), full);
-
-        history.trim(1, usize::MAX);
-        assert_eq!(history.undo.len(), 1);
-        assert_eq!(history.bytes(), history.undo[0].own_bytes);
-    }
-
     #[test]
     fn session_node_save_reopen_lifecycle() {
         let ed = Editor::new();
@@ -3703,6 +3230,7 @@ mod tests {
             1,
             Command::SessionNew {
                 name: Some("t".into()),
+                source: None,
             },
         ))));
 
@@ -3815,7 +3343,13 @@ mod tests {
     #[test]
     fn an_upload_adds_the_texture_and_assigns_it_in_one_edit() {
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         let part = new_part(&ed, s, 2);
         let rev = ed.doc_snapshot(s).expect("a snapshot").rev;
 
@@ -3846,7 +3380,13 @@ mod tests {
     #[test]
     fn a_reply_names_the_textures_the_edit_deleted() {
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         let part = new_part(&ed, s, 2);
         let (first, _) = ed
             .add_texture_bytes(s, &part, CoreTextureEncoding::Png, one_pixel_png([1; 4]))
@@ -3899,7 +3439,13 @@ mod tests {
     #[test]
     fn delete_then_save_drops_the_node() {
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         let root = match body(ed.handle(req(2, Command::NodeTree { session: s }))) {
             ResponseBody::Tree { root } => root.id,
             other => panic!("{other:?}"),
@@ -3952,7 +3498,13 @@ mod tests {
     #[test]
     fn undo_redo_round_trips() {
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         let root = match body(ed.handle(req(2, Command::NodeTree { session: s }))) {
             ResponseBody::Tree { root } => root.id,
             other => panic!("{other:?}"),
@@ -3971,20 +3523,44 @@ mod tests {
         }
         assert_eq!(node_count(&ed, s, 5), 3);
         assert!(matches!(
-            ed.handle(req(6, Command::Undo { session: s })),
+            ed.handle(req(
+                6,
+                Command::Undo {
+                    session: s,
+                    if_rev: 2
+                }
+            )),
             Reply::Ok { .. }
         ));
         assert!(matches!(
-            ed.handle(req(7, Command::Undo { session: s })),
+            ed.handle(req(
+                7,
+                Command::Undo {
+                    session: s,
+                    if_rev: 3
+                }
+            )),
             Reply::Ok { .. }
         ));
         assert_eq!(node_count(&ed, s, 8), 1);
         assert!(matches!(
-            ed.handle(req(9, Command::Undo { session: s })),
+            ed.handle(req(
+                9,
+                Command::Undo {
+                    session: s,
+                    if_rev: 4
+                }
+            )),
             Reply::Err { .. }
         ));
         assert!(matches!(
-            ed.handle(req(10, Command::Redo { session: s })),
+            ed.handle(req(
+                10,
+                Command::Redo {
+                    session: s,
+                    if_rev: 4
+                }
+            )),
             Reply::Ok { .. }
         ));
         assert_eq!(node_count(&ed, s, 11), 2);
@@ -3993,7 +3569,13 @@ mod tests {
     #[test]
     fn doc_snapshot_is_rev_gated() {
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         let a = ed.doc_snapshot(s).unwrap();
         let b = ed.doc_snapshot(s).unwrap();
         assert!(
@@ -4018,7 +3600,13 @@ mod tests {
     #[test]
     fn presence_is_off_the_model_path() {
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
+        let s = session_of(body(ed.handle(req(
+            1,
+            Command::SessionNew {
+                name: None,
+                source: None,
+            },
+        ))));
         let snap0 = ed.doc_snapshot(s).unwrap();
         let presence = Presence {
             pose: vec![ParamPose {
@@ -4068,7 +3656,6 @@ mod tests {
             .unwrap();
 
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
         let mut attachments = Attachments::none();
         attachments.insert(
             "manifest",
@@ -4077,10 +3664,18 @@ mod tests {
                 .to_vec(),
         );
         attachments.insert("texture:face.png", png.into_inner());
-        assert!(matches!(
-            ed.handle_with(req(2, Command::ImportManifest { session: s }), attachments)
-                .0,
-            Reply::Ok { .. }
+        let s = session_of(body(
+            ed.handle_with(
+                req(
+                    2,
+                    Command::SessionNew {
+                        name: None,
+                        source: Some(SessionSource::Manifest {}),
+                    },
+                ),
+                attachments,
+            )
+            .0,
         ));
         let (reply, payload) = ed.handle_with(
             req(
@@ -4120,22 +3715,20 @@ mod tests {
         ))
         .unwrap();
         let ed = Editor::new();
-        let s = session_of(body(ed.handle(req(1, Command::SessionNew { name: None }))));
         let mut attachments = Attachments::none();
         attachments.insert("model", bytes);
-        assert!(matches!(
+        let s = session_of(body(
             ed.handle_with(
                 req(
                     2,
-                    Command::ImportFile {
-                        session: s,
-                        parent: None
-                    }
+                    Command::SessionNew {
+                        name: None,
+                        source: Some(SessionSource::Clm {}),
+                    },
                 ),
-                attachments
+                attachments,
             )
             .0,
-            Reply::Ok { .. }
         ));
         let shot = |id: u64, pose: Vec<ParamPose>| -> Vec<u8> {
             let (reply, payload) = ed.handle_with(

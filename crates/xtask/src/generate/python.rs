@@ -71,8 +71,9 @@ const OUT: &str = "python/catchlight/protocol_gen.py";
 /// still distinct, and the serde attributes that say which fields may be
 /// absent. What it assumes about that file is small and checked — every type
 /// [`declarations`](super::declarations) lists is a struct or an enum found
-/// here (or a plain string alias `ts-rs` can vouch for), every enum with
-/// variants that carry fields is internally tagged, and a `#[serde(default =
+/// here (or a plain string alias `ts-rs` can vouch for). Enums may carry
+/// internally tagged data, externally tagged newtypes, or untagged named
+/// structs. A `#[serde(default =
 /// "f")]` names a function in the same file whose body is one literal.
 /// Anything else is a build error naming the type.
 const SOURCE: &str = "crates/catchlight-editor-protocol/src/lib.rs";
@@ -99,7 +100,10 @@ enum Shape {
     /// A frozen dataclass.
     Class(Vec<Field>),
     /// A tagged union: one dataclass per variant, then an alias over them.
-    Union { tag: String, variants: Vec<Variant> },
+    Union {
+        tag: Option<String>,
+        variants: Vec<Variant>,
+    },
 }
 
 struct Wire {
@@ -187,6 +191,7 @@ struct Serde {
     rename: Option<String>,
     rename_all: Option<String>,
     transparent: bool,
+    untagged: bool,
     flatten: bool,
     /// `Some(None)` is `#[serde(default)]`; `Some(Some(f))` is
     /// `#[serde(default = "f")]`.
@@ -206,6 +211,8 @@ fn serde_attrs(attrs: &[Attribute]) -> Result<Serde> {
                 found.rename = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("rename_all") {
                 found.rename_all = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+            } else if meta.path.is_ident("untagged") {
+                found.untagged = true;
             } else if meta.path.is_ident("transparent") {
                 found.transparent = true;
             } else if meta.path.is_ident("flatten") {
@@ -402,13 +409,7 @@ fn build(decls: &[Decl], source: &Source) -> Result<Vec<Wire>> {
                     }
                     Shape::Choice(choices)
                 } else {
-                    let tag = attrs.tag.clone().ok_or_else(|| {
-                        anyhow!(
-                            "`{}` carries data and is not internally tagged; this generator \
-                             reads only `#[serde(tag = \"…\")]` enums",
-                            decl.ident
-                        )
-                    })?;
+                    let tag = attrs.tag.clone();
                     let mut variants = Vec::new();
                     for variant in &e.variants {
                         let wire = variant_wire(variant, rename_all)?;
@@ -416,8 +417,28 @@ fn build(decls: &[Decl], source: &Source) -> Result<Vec<Wire>> {
                             .get(&(decl.ident.clone(), variant.ident.to_string()))
                             .cloned()
                             .context("every variant was named")?;
-                        let (fields, flatten) =
-                            variant_fields(&decl.ident, variant, source, &known)?;
+                        let (fields, flatten) = if tag.is_none() && !attrs.untagged {
+                            // Externally tagged newtypes are one-field JSON objects.
+                            let Fields::Unnamed(unnamed) = &variant.fields else {
+                                bail!("external enum `{}` needs newtype variants", decl.ident);
+                            };
+                            let [only] = unnamed.unnamed.iter().collect::<Vec<_>>()[..] else {
+                                bail!("external enum `{}` needs one value per variant", decl.ident);
+                            };
+                            (
+                                vec![Field {
+                                    py: escape_keyword(&wire),
+                                    wire: wire.clone(),
+                                    ty: py_type(&only.ty, &known)?,
+                                    default: None,
+                                    docs: Vec::new(),
+                                    flatten: false,
+                                }],
+                                Vec::new(),
+                            )
+                        } else {
+                            variant_fields(&decl.ident, variant, source, &known)?
+                        };
                         variants.push(Variant {
                             class,
                             wire,
@@ -790,7 +811,8 @@ fn render_wire(wire: &Wire, tags: &[String], exports: &mut Vec<String>) -> Resul
                     &variant.class,
                     &variant.docs,
                     &variant.fields,
-                    Some((tag.as_str(), variant.wire.as_str(), kind)),
+                    tag.as_ref()
+                        .map(|tag| (tag.as_str(), variant.wire.as_str(), kind)),
                     &variant.flatten,
                 )?);
                 exports.push(variant.class.clone());
@@ -806,22 +828,24 @@ fn render_wire(wire: &Wire, tags: &[String], exports: &mut Vec<String>) -> Resul
             ));
             exports.push(wire.name.clone());
 
-            out.push_str(&format!(
-                "\n{}_VARIANTS: dict[str, type[{}]] = {{\n",
-                snake_case(&wire.name).to_uppercase(),
-                wire.name
-            ));
-            for variant in variants {
-                out.push_str(&format!("    {:?}: {},\n", variant.wire, variant.class));
-            }
-            out.push_str("}\n");
-            exports.push(format!(
-                "{}_VARIANTS",
-                snake_case(&wire.name).to_uppercase()
-            ));
+            if let Some(tag) = tag {
+                out.push_str(&format!(
+                    "\n{}_VARIANTS: dict[str, type[{}]] = {{\n",
+                    snake_case(&wire.name).to_uppercase(),
+                    wire.name
+                ));
+                for variant in variants {
+                    out.push_str(&format!("    {:?}: {},\n", variant.wire, variant.class));
+                }
+                out.push_str("}\n");
+                exports.push(format!(
+                    "{}_VARIANTS",
+                    snake_case(&wire.name).to_uppercase()
+                ));
 
-            out.push_str(&render_parse(&wire.name, tag));
-            exports.push(format!("parse_{}", snake_case(&wire.name)));
+                out.push_str(&render_parse(&wire.name, tag));
+                exports.push(format!("parse_{}", snake_case(&wire.name)));
+            }
 
             if is_command {
                 out.push_str(&render_command_kinds(variants)?);
@@ -852,7 +876,6 @@ fn command_kind(tag: &str) -> Result<&'static str> {
     Ok(match kind {
         proto::CommandKind::Edit => "EDIT",
         proto::CommandKind::Presence => "PRESENCE",
-        proto::CommandKind::Scratch => "SCRATCH",
         proto::CommandKind::ReplicaQuery => "REPLICA_QUERY",
         proto::CommandKind::ServerQuery => "SERVER_QUERY",
     })
@@ -1224,6 +1247,15 @@ def _decode(annotation: Any, value: Any) -> Any:
                 and value.get(tag_field) == arm.TAG
             ):
                 return _decode_class(arm, value)
+        # Untagged structs and externally tagged newtypes have disjoint
+        # required wire fields. Decode in declaration order like serde.
+        if isinstance(value, Mapping):
+            for arm in arms:
+                if dataclasses.is_dataclass(arm) and getattr(arm, "TAG_FIELD", None) is None:
+                    try:
+                        return _decode_class(arm, value)
+                    except (ValueError, TypeError):
+                        continue
         raise ValueError(f"no variant of {annotation} matches {value!r}")
     if origin is list:
         (arm,) = get_args(annotation)
@@ -1388,8 +1420,8 @@ mod tests {
 #[cfg(test)]
 mod wire_shapes {
     use catchlight_editor_protocol::{
-        AutoMesh, Camera, Command, NodeKindArg, NodePatch, ParamId, ParamPose, PhysicsTargets,
-        Presence, Rename, SessionId, TexId,
+        AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, NodeKindArg, NodePatch,
+        ParamId, ParamPose, PhysicsTargets, Presence, Rename, SessionId, TexId,
     };
     use serde_json::{json, Value};
 
@@ -1456,14 +1488,6 @@ mod wire_shapes {
             }),
         );
         assert_wire(
-            Command::ScratchDeform {
-                session: SessionId(3),
-                node: id("root/part-1"),
-                offsets: vec![[0.5, -0.5]],
-            },
-            json!({"cmd": "scratch_deform", "session": 3, "node": "root/part-1", "offsets": [[0.5, -0.5]]}),
-        );
-        assert_wire(
             Command::BindingList {
                 session: SessionId(4),
                 node: id("root/part-1"),
@@ -1474,7 +1498,31 @@ mod wire_shapes {
             Command::Status {
                 session: SessionId(5),
             },
-            json!({"cmd": "status", "session": 5}),
+            json!({"cmd": "session_get", "session": 5}),
+        );
+    }
+
+    #[test]
+    fn exact_cell_values_and_compact_identities_match_the_wire() {
+        assert_eq!(
+            serde_json::to_value(BindingCellValue::Scalar(2.0)).unwrap(),
+            json!({"scalar": 2.0})
+        );
+        assert_eq!(
+            serde_json::to_value(BindingCellValue::Offsets(vec![[1.0, -2.0]])).unwrap(),
+            json!({"offsets": [[1.0, -2.0]]})
+        );
+        assert_eq!(
+            serde_json::to_value(BindingIdentity::Scalar { scalar: 1.0 }).unwrap(),
+            json!({"scalar": 1.0})
+        );
+        assert_eq!(
+            serde_json::to_value(BindingIdentity::Deform {
+                offset: [0.0, 0.0],
+                vertex_count: 3
+            })
+            .unwrap(),
+            json!({"offset": [0.0, 0.0], "vertex_count": 3})
         );
     }
 
@@ -1525,14 +1573,6 @@ mod wire_shapes {
     #[test]
     fn a_python_keyword_still_travels_under_its_real_name() {
         assert_wire(
-            Command::MeshCopy {
-                session: SessionId(1),
-                from: id("a"),
-                to: id("b"),
-            },
-            json!({"cmd": "mesh_copy", "session": 1, "from": "a", "to": "b"}),
-        );
-        assert_wire(
             Command::RenameId {
                 session: SessionId(1),
                 rename: Rename::Param {
@@ -1540,7 +1580,7 @@ mod wire_shapes {
                     to: id("new"),
                 },
             },
-            json!({"cmd": "rename_id", "session": 1, "rename": {"kind": "param", "from": "old", "to": "new"}}),
+            json!({"cmd": "id_rename", "session": 1, "rename": {"kind": "param", "from": "old", "to": "new"}}),
         );
     }
 
@@ -1559,7 +1599,7 @@ mod wire_shapes {
                     margin: None,
                 },
             },
-            json!({"cmd": "mesh_auto", "session": 1, "node": "hair", "mode": {"mode": "grid", "cols": 4, "rows": 3}}),
+            json!({"cmd": "mesh_generate", "session": 1, "node": "hair", "mode": {"mode": "grid", "cols": 4, "rows": 3}}),
         );
     }
 
@@ -1570,6 +1610,7 @@ mod wire_shapes {
     fn a_mesh_travels_as_lists_of_points() {
         assert_wire(
             Command::MeshSet {
+                deform_mapping: None,
                 if_rev: None,
                 session: SessionId(1),
                 node: id("hair"),

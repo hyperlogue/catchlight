@@ -29,12 +29,24 @@ export type SlotId = string;
 
 export type Command =
   | {
-    "cmd": "session_new",
+    "cmd": "session_create",
     name: string | null,
+    source?: SessionSource | null,
   }
   | {
     "cmd": "session_open",
     path: string,
+  }
+  | {
+    "cmd": "session_fork",
+    session: SessionId,
+    if_rev: number,
+    name: string | null,
+  }
+  | {
+    "cmd": "model_export",
+    session: SessionId,
+    if_rev: number,
   }
   | {
     "cmd": "session_list"
@@ -44,31 +56,52 @@ export type Command =
     session: SessionId,
   }
   | {
-    "cmd": "save",
+    "cmd": "session_save",
     session: SessionId,
     path: string | null,
   }
   | {
-    "cmd": "export_manifest",
+    "cmd": "manifest_export",
     session: SessionId,
     path: string,
   }
   | {
-    "cmd": "status",
+    "cmd": "session_get",
     session: SessionId,
   }
   | {
-    "cmd": "check",
+    "cmd": "model_check",
     session: SessionId,
   }
   | {
-    "cmd": "node_tree",
+    "cmd": "node_tree_get",
     session: SessionId,
   }
   | {
-    "cmd": "node_info",
+    "cmd": "node_get",
     session: SessionId,
     node: NodeId,
+  }
+  | {
+    "cmd": "mesh_get",
+    session: SessionId,
+    node: NodeId,
+    if_rev?: number | null,
+  }
+  | {
+    "cmd": "model_get",
+    session: SessionId,
+    if_rev?: number | null,
+  }
+  | {
+    "cmd": "geometry_get",
+    session: SessionId,
+    if_rev?: number | null,
+    pose: Array<ParamPose>,
+    nodes: Array<NodeId>,
+    fields: Array<GeometryField>,
+    vertices?: IndexRange | null,
+    triangles?: IndexRange | null,
   }
   | {
     "cmd": "node_add",
@@ -127,19 +160,12 @@ export type Command =
     index: number,
   }
   | {
-    "cmd": "node_move",
-    session: SessionId,
-    node: NodeId,
-    parent: NodeId,
-    index: number,
-  }
-  | {
     "cmd": "node_duplicate",
     session: SessionId,
     node: NodeId,
   }
   | {
-    "cmd": "rename_id",
+    "cmd": "id_rename",
     session: SessionId,
     rename: Rename,
   }
@@ -149,20 +175,6 @@ export type Command =
     node: NodeId,
     source: NodeId,
     mode: MaskMode,
-  }
-  | {
-    "cmd": "mask_set",
-    session: SessionId,
-    node: NodeId,
-    index: number,
-    mode: MaskMode,
-  }
-  | {
-    "cmd": "mask_reorder",
-    session: SessionId,
-    node: NodeId,
-    index: number,
-    to: number,
   }
   | {
     "cmd": "mask_delete",
@@ -192,7 +204,7 @@ export type Command =
     output_scale: [number, number] | null,
   }
   | {
-    "cmd": "physics_globals",
+    "cmd": "physics_globals_set",
     session: SessionId,
     gravity: number | null,
     pixels_per_meter: number | null,
@@ -231,7 +243,6 @@ export type Command =
     min: number,
     max: number,
     default: number,
-    key_positions: Array<number>,
     /**
      * The Id to create it under. Absent generates one; an Id the model
      * already carries is [`ErrorCode::DuplicateId`].
@@ -257,79 +268,101 @@ export type Command =
     param: ParamId,
   }
   | {
-    "cmd": "param_key_insert",
+    "cmd": "binding_key_insert",
     session: SessionId,
-    param: ParamId,
+    if_rev?: number | null,
+    node: NodeId,
+    target: BindingTarget,
+    /**
+     * Driving param whose binding-local axis changes.
+     */
+    axis: ParamId,
     value: number,
+    param: ParamId,
+    param_y?: ParamId | null,
   }
   | {
-    "cmd": "param_key_delete",
+    "cmd": "binding_key_delete",
     session: SessionId,
-    param: ParamId,
+    if_rev?: number | null,
+    node: NodeId,
+    target: BindingTarget,
+    /**
+     * Driving param whose binding-local axis changes.
+     */
+    axis: ParamId,
     index: number,
+    param: ParamId,
+    param_y?: ParamId | null,
   }
   | {
-    "cmd": "param_key_move",
+    "cmd": "binding_key_move",
     session: SessionId,
-    param: ParamId,
+    if_rev?: number | null,
+    node: NodeId,
+    target: BindingTarget,
+    /**
+     * Driving param whose binding-local axis changes.
+     */
+    axis: ParamId,
     index: number,
     value: number,
+    param: ParamId,
+    param_y?: ParamId | null,
   }
   | {
-    "cmd": "param_flip",
+    "cmd": "edit_apply",
     session: SessionId,
+    if_rev: number,
+    edits: Array<EditOp>,
+  }
+  | {
+    "cmd": "edit_validate",
+    session: SessionId,
+    if_rev: number,
+    edits: Array<EditOp>,
+  }
+  | {
+    "cmd": "binding_cells_get",
+    session: SessionId,
+    if_rev?: number | null,
+    node: NodeId,
+    target: BindingTarget,
+    cells: Array<[number, number]>,
+    include_derived: boolean,
+    /**
+     * Optional page of each deform array; scalar reads reject this field.
+     */
+    vertices?: IndexRange | null,
     param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "cmd": "binding_cells_set",
+    session: SessionId,
+    if_rev: number,
+    node: NodeId,
+    target: BindingTarget,
+    cells: Array<BindingCellWrite>,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "cmd": "binding_cells_unset",
+    session: SessionId,
+    if_rev: number,
+    node: NodeId,
+    target: BindingTarget,
+    cells: Array<[number, number]>,
+    param: ParamId,
+    param_y?: ParamId | null,
   }
   | {
     "cmd": "binding_add",
     session: SessionId,
     node: NodeId,
-    target: ScalarTarget,
-    param: ParamId,
-    param_y?: ParamId | null,
-  }
-  | {
-    "cmd": "binding_key",
-    session: SessionId,
-    node: NodeId,
-    target: ScalarTarget,
-    /**
-     * `[x, y]` index into the binding's key grid; `y` is 0 for a
-     * one-param binding.
-     */
-    cell: [number, number],
-    value: number,
-    param: ParamId,
-    param_y?: ParamId | null,
-  }
-  | {
-    "cmd": "binding_keys",
-    session: SessionId,
-    /**
-     * Refuse a stale draft or gesture while holding the session lock.
-     */
-    if_rev?: number | null,
-    node: NodeId,
-    cell: [number, number],
-    entries: Array<BindingKeyEntry>,
-    param: ParamId,
-    param_y?: ParamId | null,
-  }
-  | {
-    "cmd": "binding_unset",
-    session: SessionId,
-    node: NodeId,
     target: BindingTarget,
-    cell: [number, number],
-    param: ParamId,
-    param_y?: ParamId | null,
-  }
-  | {
-    "cmd": "binding_reset",
-    session: SessionId,
-    node: NodeId,
-    target: BindingTarget,
-    cell: [number, number],
+    key_positions?: Array<Array<number>> | null,
     param: ParamId,
     param_y?: ParamId | null,
   }
@@ -342,7 +375,7 @@ export type Command =
     param_y?: ParamId | null,
   }
   | {
-    "cmd": "binding_interpolate",
+    "cmd": "binding_interpolation_set",
     session: SessionId,
     node: NodeId,
     target: BindingTarget,
@@ -351,51 +384,9 @@ export type Command =
     param_y?: ParamId | null,
   }
   | {
-    "cmd": "binding_invert",
-    session: SessionId,
-    node: NodeId,
-    target: BindingTarget,
-    param: ParamId,
-    param_y?: ParamId | null,
-  }
-  | {
-    "cmd": "binding_copy_key",
-    session: SessionId,
-    node: NodeId,
-    target: BindingTarget,
-    from: [number, number],
-    to: [number, number],
-    param: ParamId,
-    param_y?: ParamId | null,
-  }
-  | {
     "cmd": "binding_list",
     session: SessionId,
     node: NodeId,
-  }
-  | {
-    "cmd": "deform_set",
-    session: SessionId,
-    node: NodeId,
-    cell: [number, number],
-    translate: [number, number] | null,
-    rotate: number | null,
-    scale: [number, number] | null,
-    param: ParamId,
-    param_y?: ParamId | null,
-  }
-  | {
-    "cmd": "deform_vertices",
-    session: SessionId,
-    /**
-     * Refuse a stale draft or gesture while holding the session lock.
-     */
-    if_rev?: number | null,
-    node: NodeId,
-    cell: [number, number],
-    offsets: Array<[number, number]>,
-    param: ParamId,
-    param_y?: ParamId | null,
   }
   | {
     "cmd": "mesh_set",
@@ -418,21 +409,16 @@ export type Command =
      */
     indices: Array<[number, number, number]>,
     origin: [number, number],
+    deform_mapping?: Array<Array<VertexWeight>> | null,
   }
   | {
-    "cmd": "mesh_auto",
+    "cmd": "mesh_generate",
     session: SessionId,
     node: NodeId,
     /**
      * Absent is [`AutoMesh::Contour`] with every knob at its default.
      */
     mode: AutoMesh,
-  }
-  | {
-    "cmd": "mesh_copy",
-    session: SessionId,
-    from: NodeId,
-    to: NodeId,
   }
   | {
     "cmd": "slot_add",
@@ -464,25 +450,13 @@ export type Command =
     slot: SlotId,
   }
   | {
-    "cmd": "slots",
+    "cmd": "slot_list",
     session: SessionId,
     node: NodeId,
   }
   | {
-    "cmd": "welds",
+    "cmd": "weld_list",
     session: SessionId,
-  }
-  | {
-    "cmd": "unfilled_slots",
-    session: SessionId,
-  }
-  | {
-    "cmd": "weld_weight",
-    session: SessionId,
-    a: NodeId,
-    b: NodeId,
-    slot: SlotId,
-    weight: number,
   }
   | {
     "cmd": "weld_set",
@@ -597,12 +571,25 @@ export type Command =
     chain: ChainArg | null,
   }
   | {
-    "cmd": "undo",
+    "cmd": "edit_undo",
     session: SessionId,
+    if_rev: number,
   }
   | {
-    "cmd": "redo",
+    "cmd": "edit_redo",
     session: SessionId,
+    if_rev: number,
+  }
+  | {
+    "cmd": "edit_goto",
+    session: SessionId,
+    if_rev: number,
+    revision: number,
+  }
+  | {
+    "cmd": "edit_history_get",
+    session: SessionId,
+    if_rev?: number | null,
   }
   | {
     "cmd": "presence_set",
@@ -616,27 +603,17 @@ export type Command =
     session: SessionId,
   }
   | {
-    "cmd": "scratch_deform",
-    session: SessionId,
-    node: NodeId,
-    offsets: Array<[number, number]>,
-  }
-  | {
-    "cmd": "preview",
+    "cmd": "preview_render",
     session: SessionId,
     pose: Array<ParamPose>,
     size: [number, number] | null,
     camera: Camera | null,
   }
   | {
-    "cmd": "import_file",
+    "cmd": "structure_json_import",
     session: SessionId,
-    parent?: NodeId | null,
-  }
-  | {
-    "cmd": "import_json",
-    session: SessionId,
-    parent?: NodeId | null,
+    parent: NodeId,
+    if_rev: number,
     /**
      * Every texture the attachments carry, in any order.
      */
@@ -654,17 +631,13 @@ export type Command =
     key: ExtensionKey,
   }
   | {
-    "cmd": "extensions",
+    "cmd": "extension_list",
     session: SessionId,
   }
   | {
     "cmd": "extension_get",
     session: SessionId,
     key: ExtensionKey,
-  }
-  | {
-    "cmd": "import_manifest",
-    session: SessionId,
   };
 
 export type NodeKindArg =
@@ -1043,18 +1016,324 @@ export type Rename =
   };
 
 /**
+ * Model edits accepted by an atomic batch. Created IDs are always explicit.
+ * Every operation uses the same executor as its standalone command.
+ */
+export type EditOp =
+  | {
+    "op": "node_add",
+    parent: NodeId,
+    kind: NodeKindArg,
+    name: string | null,
+    node: NodeId,
+  }
+  | {
+    "op": "node_set",
+    node: NodeId,
+    /**
+     * The label a person reads. Free to repeat; nothing is addressed by it.
+     */
+    name?: string | null,
+    translate?: [number, number, number] | null,
+    rotate?: [number, number, number] | null,
+    scale?: [number, number] | null,
+    z_order?: number | null,
+    opacity?: number | null,
+    enabled?: boolean | null,
+    /**
+     * The texture the part draws, in three states: absent leaves it as it
+     * is, `null` draws none, an Id draws that one. Ignored on a node that is
+     * not a part. Dropping the last part drawing a texture takes the texture
+     * with it — see [`ResponseBody::Node::dropped`].
+     */
+    texture?: TexId | null,
+    lock_to_root?: boolean | null,
+    blend_mode?: BlendMode | null,
+    tint?: [number, number, number] | null,
+    screen_tint?: [number, number, number] | null,
+    mask_threshold?: number | null,
+    /**
+     * Composite: forward mesh-group deformation to children.
+     */
+    propagate_meshgroup?: boolean | null,
+    mg_translate_children?: boolean | null,
+  }
+  | {
+    "op": "node_reparent",
+    node: NodeId,
+    to: NodeId,
+  }
+  | {
+    "op": "node_reorder",
+    node: NodeId,
+    index: number,
+  }
+  | {
+    "op": "mesh_set",
+    node: NodeId,
+    verts: Array<[number, number]>,
+    uvs: Array<[number, number]>,
+    indices: Array<[number, number, number]>,
+    origin: [number, number],
+    deform_mapping: Array<Array<VertexWeight>> | null,
+  }
+  | {
+    "op": "binding_key_insert",
+    node: NodeId,
+    target: BindingTarget,
+    axis: ParamId,
+    value: number,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "binding_key_delete",
+    node: NodeId,
+    target: BindingTarget,
+    axis: ParamId,
+    index: number,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "binding_key_move",
+    node: NodeId,
+    target: BindingTarget,
+    axis: ParamId,
+    index: number,
+    value: number,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "binding_add",
+    node: NodeId,
+    target: BindingTarget,
+    key_positions: Array<Array<number>> | null,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "binding_cells_set",
+    node: NodeId,
+    target: BindingTarget,
+    cells: Array<BindingCellWrite>,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "binding_cells_unset",
+    node: NodeId,
+    target: BindingTarget,
+    cells: Array<[number, number]>,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "binding_delete",
+    node: NodeId,
+    target: BindingTarget,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "binding_interpolation_set",
+    node: NodeId,
+    target: BindingTarget,
+    mode: Interpolate,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
+  | {
+    "op": "mask_add",
+    node: NodeId,
+    source: NodeId,
+    mode: MaskMode,
+  }
+  | {
+    "op": "mask_delete",
+    node: NodeId,
+    index: number,
+  }
+  | {
+    "op": "slot_add",
+    node: NodeId,
+    slot: SlotId,
+  }
+  | {
+    "op": "slot_fill",
+    node: NodeId,
+    slot: SlotId,
+    vertex: number,
+  }
+  | {
+    "op": "slot_clear",
+    node: NodeId,
+    slot: SlotId,
+  }
+  | {
+    "op": "slot_delete",
+    node: NodeId,
+    slot: SlotId,
+  }
+  | {
+    "op": "weld_set",
+    a: NodeId,
+    b: NodeId,
+    pairs: Array<SlotPair>,
+  }
+  | {
+    "op": "weld_delete",
+    a: NodeId,
+    b: NodeId,
+  };
+
+/**
+ * A retained authored state, identified by its creation revision.
+ */
+export type EditHistoryEntry = {
+  revision: number,
+  parent: number | null,
+  redo: number | null,
+  /**
+   * Retained publication aliases, including the entry's creation revision.
+   */
+  revisions: Array<number>,
+};
+
+/**
+ * A half-open page in authored order. Counts never imply truncation.
+ */
+export type IndexRange = {
+  start: number,
+  count: number,
+};
+
+/**
+ * Exact stored cell payload, shared by reads and writes.
+ */
+export type BindingCellValue =
+  | {
+    "scalar": number
+  }
+  | {
+    "offsets": Array<[number, number]>
+  };
+
+export type BindingCellWrite = {
+  cell: [number, number],
+  value: BindingCellValue,
+};
+
+export type BindingCellRead = {
+  cell: [number, number],
+  authored: boolean,
+  value: BindingCellValue | null,
+  derived?: BindingCellValue | null,
+};
+
+/**
+ * Compact identity contribution; deform identity does not repeat vertex zeros.
+ */
+export type BindingIdentity =
+  | {
+    scalar: number,
+  }
+  | {
+    offset: [number, number],
+    vertex_count: number,
+  };
+
+/**
+ * One convex source contribution to a new mesh vertex's authored deformation.
+ */
+export type VertexWeight = {
+  vertex: number,
+  weight: number,
+};
+
+export type GeometryField =
+  | "rest"
+  | "local"
+  | "world"
+  | "uvs"
+  | "triangles";
+
+/**
+ * Selected arrays retain their authored indices; range starts identify pages.
+ */
+export type GeometryNode = {
+  node: NodeId,
+  origin: [number, number],
+  /**
+   * Column-major matrix, including the evaluated ancestors.
+   */
+  local_to_world: [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number],
+  vertex_count: number,
+  triangle_count: number,
+  vertices: IndexRange,
+  triangle_range: IndexRange,
+  rest?: Array<[number, number]> | null,
+  local?: Array<[number, number]> | null,
+  world?: Array<[number, number, number]> | null,
+  uvs?: Array<[number, number]> | null,
+  triangles?: Array<[number, number, number]> | null,
+};
+
+export type ModelTextureHeader = {
+  id: TexId,
+  encoding: TextureEncoding,
+  alpha: TextureAlpha,
+};
+
+/**
+ * Exactly one source and its declared attachments initialize a new session.
+ */
+export type SessionSource =
+  | {
+    "format": "clm",
+  }
+  | {
+    "format": "json",
+    textures: Array<ImportTexture>,
+  }
+  | {
+    "format": "manifest",
+  };
+
+export type ModelFormat = "clm";
+
+export type SessionOrigin = {
+  session: SessionId,
+  rev: number,
+};
+
+/**
+ * A machine-readable resource budget refusal.
+ */
+export type LimitInfo = {
+  /**
+   * Stable budget name, such as request_bytes or derived_cell_vertices.
+   */
+  resource: string,
+  /**
+   * Maximum permitted count in the resource's units.
+   */
+  limit: number,
+  /**
+   * Observed count; byte counting may stop at the first excess.
+   */
+  requested: number,
+};
+
+/**
  * The param, or the pair of params, a binding is keyed by. With `param_y`
- * the binding's grid spans both params' key positions and `cell` indexes
- * both; without it the grid is one row and `cell[1]` is 0.
+ * the binding owns two position axes and `cell` indexes both; without it
+ * the grid is one row and `cell[1]` is 0.
  */
 export type BindingParams = {
   param: ParamId,
   param_y?: ParamId | null,
-};
-
-export type BindingKeyEntry = {
-  target: ScalarTarget,
-  value: number,
 };
 
 /**
@@ -1119,7 +1398,7 @@ export type Camera = {
  * The key an extension is filed under: the Id charset plus a required
  * interior dot, vendor first (`molan.caster`).
  *
- * Hand-written rather than one of the [`string_id!`] types because it is the
+ * Hand-written rather than one of the `string_id!` types because it is the
  * one Id-shaped string with a rule of its own ([`validate_extension_key`]),
  * and because a key that fails on the way in is worth naming in the error —
  * a file names its extensions in one flat map, so "which key" is the whole
@@ -1207,6 +1486,8 @@ export type Reply =
     id: number,
     code: ErrorCode,
     message: string,
+    op_index?: number | null,
+    limit?: LimitInfo | null,
   }
   | {
     "reply": "event"
@@ -1227,6 +1508,9 @@ export type ErrorCode =
   | "bad_target"
   | "nothing_to_undo"
   | "nothing_to_redo"
+  | "revision_unavailable"
+  | "revision_exhausted"
+  | "limit_exceeded"
   | "no_save_path"
   | "unknown_slot"
   | "duplicate_id"
@@ -1246,17 +1530,70 @@ export type ErrorCode =
   | "preview"
   | "native_only"
   | "bulk_over_http"
-  | "not_empty"
   | "no_extension"
   | "reserved_extension";
 
 export type ResponseBody =
+  | {
+    "result": "mesh_info",
+    node: NodeId,
+    mesh: MeshInfo,
+  }
+  | {
+    "result": "model_structure",
+    /**
+     * The current core ClmStructure JSON, including authored cells and extension markers.
+     */
+    structure: unknown,
+    textures: Array<ModelTextureHeader>,
+  }
+  | {
+    "result": "geometry_sample",
+    pose: Array<ParamPose>,
+    nodes: Array<GeometryNode>,
+  }
+  | {
+    "result": "edit_history",
+    root: number,
+    current: number,
+    pruned: boolean,
+    entries: Array<EditHistoryEntry>,
+  }
+  | {
+    "result": "edit_results",
+    changed: boolean,
+    results: Array<ResponseBody>,
+  }
+  | {
+    "result": "binding_cells",
+    node: NodeId,
+    target: BindingTarget,
+    width: number,
+    height: number,
+    interpolate: Interpolate,
+    vertex_count?: number | null,
+    vertices?: IndexRange | null,
+    cells: Array<BindingCellRead>,
+    param: ParamId,
+    param_y?: ParamId | null,
+  }
   | {
     "result": "empty"
   }
   | {
     "result": "session",
     session: SessionId,
+  }
+  | {
+    "result": "session_fork",
+    session: SessionId,
+    source: SessionOrigin,
+  }
+  | {
+    "result": "model_export",
+    format: ModelFormat,
+    byte_length: number,
+    sha256: string,
   }
   | {
     "result": "sessions",
@@ -1338,10 +1675,6 @@ export type ResponseBody =
   | {
     "result": "welds",
     welds: Array<WeldInfo>,
-  }
-  | {
-    "result": "unfilled_slots",
-    slots: Array<SlotAddr>,
   }
   | {
     "result": "emptied",
@@ -1504,10 +1837,6 @@ export type NodeInfo = {
    */
   spine?: SpineInfo | null,
   /**
-   * Authored geometry, in the same coordinates accepted by `mesh_set`.
-   */
-  mesh?: MeshInfo | null,
-  /**
    * Ordered clipping rules. Empty on nodes that do not draw.
    */
   masks?: Array<MaskInfo>,
@@ -1572,6 +1901,9 @@ export type SpineInfo = {
 };
 
 export type TexInfo = {
+  encoding: TextureEncoding,
+  alpha: TextureAlpha,
+  sha256: string,
   id: TexId,
   width: number,
   height: number,
@@ -1590,10 +1922,8 @@ export type ParamInfo = {
   max: number,
   default: number,
   /**
-   * Key positions, normalized 0..1 across `[min, max]`. Always at least
-   * the two endpoints, so a binding's grid is `key_positions.len()` wide.
+   * Number of bindings driven by this input.
    */
-  key_positions: Array<number>,
   bindings: number,
 };
 
@@ -1603,8 +1933,8 @@ export type ParamInfo = {
  *
  * **The grid is `[y][x]`** — the transpose of the `cell: [x, y]` every
  * binding command takes, so `keys[cell[1]][cell[0]]` is the cell
- * [`Command::BindingKey`] would write. It is the full product of the params'
- * key positions, [`Self::width`] by [`Self::height`], with one row when
+ * [`Command::BindingCellsSet`] would write. It is the full product of this
+ * binding's key positions, [`Self::width`] by [`Self::height`], with one row when
  * there is no `param_y`.
  *
  * **A `null` in `keys` is a cell nobody authored.** The model stores only the
@@ -1616,6 +1946,11 @@ export type ParamInfo = {
  * `keys[y][x] != null`.
  */
 export type BindingInfo = {
+  /**
+   * One ordered normalized axis per input, owned only by this binding.
+   */
+  key_positions: Array<Array<number>>,
+  identity: BindingIdentity,
   /**
    * The property driven — plus `deform`, which only the deform commands
    * author.
@@ -1635,11 +1970,11 @@ export type BindingInfo = {
    */
   interpolate: Interpolate,
   /**
-   * How many key positions `param` has, so how wide the grid is.
+   * Number of positions on this binding's `param` axis.
    */
   width: number,
   /**
-   * How many key positions `param_y` has, or 1.
+   * Number of positions on this binding's `param_y` axis, or 1.
    */
   height: number,
   /**
@@ -1688,64 +2023,53 @@ export type PreviewInfo = {
  * that must reach the editor that owns the model.
  */
 export type EditCommandTag =
-  | "session_new"
+  | "session_create"
   | "session_open"
+  | "session_fork"
   | "session_close"
-  | "save"
+  | "session_save"
   | "node_add"
   | "node_set"
   | "node_reparent"
   | "node_reorder"
-  | "node_move"
   | "node_duplicate"
-  | "rename_id"
+  | "id_rename"
   | "mask_add"
-  | "mask_set"
-  | "mask_reorder"
   | "mask_delete"
   | "physics_set"
-  | "physics_globals"
+  | "physics_globals_set"
   | "node_delete"
   | "texture_add"
   | "param_add"
   | "param_set"
   | "param_delete"
-  | "param_key_insert"
-  | "param_key_delete"
-  | "param_key_move"
-  | "param_flip"
+  | "binding_key_insert"
+  | "binding_key_delete"
+  | "binding_key_move"
+  | "edit_apply"
+  | "binding_cells_set"
+  | "binding_cells_unset"
   | "binding_add"
-  | "binding_key"
-  | "binding_keys"
-  | "binding_unset"
-  | "binding_reset"
   | "binding_delete"
-  | "binding_interpolate"
-  | "binding_invert"
-  | "binding_copy_key"
-  | "deform_set"
-  | "deform_vertices"
+  | "binding_interpolation_set"
   | "mesh_set"
-  | "mesh_auto"
-  | "mesh_copy"
+  | "mesh_generate"
   | "slot_add"
   | "slot_fill"
   | "slot_clear"
   | "slot_delete"
-  | "weld_weight"
   | "weld_set"
   | "weld_delete"
   | "physics_add"
   | "spine_add"
   | "spine_set"
   | "spine_fit"
-  | "undo"
-  | "redo"
-  | "import_file"
-  | "import_json"
+  | "edit_undo"
+  | "edit_redo"
+  | "edit_goto"
+  | "structure_json_import"
   | "extension_set"
-  | "extension_delete"
-  | "import_manifest";
+  | "extension_delete";
 export type EditCommand = Extract<Command, { cmd: EditCommandTag }>;
 
 /**
@@ -1759,33 +2083,25 @@ export type PresenceCommandTag =
 export type PresenceCommand = Extract<Command, { cmd: PresenceCommandTag }>;
 
 /**
- * A command that shows a live edit on a puppet without authoring it.
- *
- * The drag path. Whoever owns the puppet being drawn serves it — a client
- * with a local replica serves its own, and never asks the editor. A gesture
- * of any length repaints the canvas and re-renders nothing.
- */
-export type ScratchCommandTag =
-  | "scratch_deform";
-export type ScratchCommand = Extract<Command, { cmd: ScratchCommandTag }>;
-
-/**
  * A read that is a pure function of the model.
  *
  * A client holding a replica answers it locally, with no round trip. The
  * editor answers it the same way, from the same bytes.
  */
 export type ReplicaQueryCommandTag =
-  | "check"
-  | "node_tree"
-  | "node_info"
+  | "model_check"
+  | "node_tree_get"
+  | "node_get"
+  | "mesh_get"
+  | "model_get"
+  | "geometry_get"
   | "texture_list"
   | "param_list"
+  | "binding_cells_get"
   | "binding_list"
-  | "slots"
-  | "welds"
-  | "unfilled_slots"
-  | "extensions";
+  | "slot_list"
+  | "weld_list"
+  | "extension_list";
 export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag }>;
 
 /**
@@ -1795,11 +2111,14 @@ export type ReplicaQueryCommand = Extract<Command, { cmd: ReplicaQueryCommandTag
  * A replica cannot answer one, so these always go over the wire.
  */
 export type ServerQueryCommandTag =
+  | "model_export"
   | "session_list"
-  | "export_manifest"
-  | "status"
+  | "manifest_export"
+  | "session_get"
+  | "edit_validate"
+  | "edit_history_get"
   | "presence_get"
-  | "preview"
+  | "preview_render"
   | "extension_get";
 export type ServerQueryCommand = Extract<Command, { cmd: ServerQueryCommandTag }>;
 
@@ -1837,27 +2156,27 @@ export const COMMAND_BYTES: Record<
     ],
     payload: false,
   },
-  import_file: {
+  session_create: {
     attachments: [
-      { kind: "fixed", name: "model" },
+      { kind: "optional", name: "model" },
+      { kind: "optional", name: "structure" },
+      { kind: "optional", name: "manifest" },
+      { kind: "family", name: "texture" },
     ],
     payload: false,
   },
-  import_json: {
+  structure_json_import: {
     attachments: [
       { kind: "fixed", name: "structure" },
       { kind: "family", name: "texture" },
     ],
     payload: false,
   },
-  import_manifest: {
-    attachments: [
-      { kind: "fixed", name: "manifest" },
-      { kind: "family", name: "texture" },
-    ],
-    payload: false,
+  preview_render: {
+    attachments: [],
+    payload: true,
   },
-  preview: {
+  model_export: {
     attachments: [],
     payload: true,
   },

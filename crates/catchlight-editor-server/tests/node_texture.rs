@@ -65,7 +65,10 @@ impl Fixture {
             session: catchlight_editor_protocol::SessionId(0),
             next: 1,
         };
-        fixture.session = match fixture.body(Command::SessionNew { name: None }) {
+        fixture.session = match fixture.body(Command::SessionNew {
+            source: None,
+            name: None,
+        }) {
             ResponseBody::Session { session } => session,
             other => panic!("{other:?}"),
         };
@@ -206,7 +209,10 @@ fn clearing_a_texture_is_one_undoable_edit() {
     );
 
     let session = f.session;
-    f.body(Command::Undo { session });
+    f.body(Command::Undo {
+        session,
+        if_rev: f.editor.revision(session).unwrap(),
+    });
 
     assert_eq!(f.drawn(&part), Some(texture));
 }

@@ -54,7 +54,14 @@ const PIXEL_PNG: &[u8] = &[
 fn editor() -> (Editor, SessionId) {
     // The store holds nothing: an image arrives with the command that uses it.
     let ed = Editor::with_storage(Arc::new(MemStorage::default()));
-    let session = match body(&ed, 1, Command::SessionNew { name: None }) {
+    let session = match body(
+        &ed,
+        1,
+        Command::SessionNew {
+            source: None,
+            name: None,
+        },
+    ) {
         ResponseBody::Session { session } => session,
         other => panic!("{other:?}"),
     };
@@ -119,7 +126,6 @@ fn an_add_creates_under_the_id_it_was_given() {
                 min: 0.0,
                 max: 1.0,
                 default: 0.0,
-                key_positions: Vec::new(),
                 param: Some(pull.clone()),
             }
         ),
@@ -208,7 +214,6 @@ fn an_id_the_model_already_carries_is_refused_under_its_own_code() {
         min: 0.0,
         max: 1.0,
         default: 0.0,
-        key_positions: Vec::new(),
         param: Some(pull.clone()),
     };
     let texture = || Command::TextureAdd {

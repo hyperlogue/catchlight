@@ -63,37 +63,27 @@ fn state_signature(puppet: &catchlight_core::Puppet) -> Vec<[i64; 2]> {
     sig
 }
 
-/// A session holding `bytes`: a fresh one, then the file imported into it.
-///
-/// The one way bytes a caller holds become a session's model — no side door
-/// that takes them, so a test opens a model exactly as a client does.
+/// Session construction validates the supplied model before publishing it.
 fn open_bytes(editor: &Editor, title: &str, bytes: Vec<u8>) -> SessionId {
-    let reply = editor.handle(Request {
-        id: 0,
-        command: Command::SessionNew {
-            name: Some(title.to_string()),
-        },
-    });
-    let session = match reply {
+    let mut attachments = Attachments::none();
+    attachments.insert("model", bytes);
+    match editor
+        .handle_with(
+            Request {
+                id: 0,
+                command: Command::SessionNew {
+                    name: Some(title.to_string()),
+                    source: Some(catchlight_editor_protocol::SessionSource::Clm {}),
+                },
+            },
+            attachments,
+        )
+        .0
+    {
         Reply::Ok {
             body: ResponseBody::Session { session },
             ..
         } => session,
-        other => panic!("expected a session, got {other:?}"),
-    };
-    let mut attachments = Attachments::none();
-    attachments.insert("model", bytes);
-    match editor.handle_with(
-        Request {
-            id: 0,
-            command: Command::ImportFile {
-                session,
-                parent: None,
-            },
-        },
-        attachments,
-    ) {
-        (Reply::Ok { .. }, _) => session,
-        (other, _) => panic!("import_file: {other:?}"),
+        other => panic!("session_create: {other:?}"),
     }
 }

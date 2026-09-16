@@ -129,13 +129,18 @@ fn ok(reply: Reply) -> ResponseBody {
 
 fn err(reply: Reply) -> (u64, ErrorCode, String) {
     match reply {
-        Reply::Err { id, code, message } => (id, code, message),
+        Reply::Err {
+            id, code, message, ..
+        } => (id, code, message),
         other => panic!("expected Err, got {other:?}"),
     }
 }
 
 fn new_session(fixture: &mut Fixture) -> SessionId {
-    match ok(fixture.send(Command::SessionNew { name: None })) {
+    match ok(fixture.send(Command::SessionNew {
+        source: None,
+        name: None,
+    })) {
         ResponseBody::Session { session } => session,
         other => panic!("expected Session, got {other:?}"),
     }

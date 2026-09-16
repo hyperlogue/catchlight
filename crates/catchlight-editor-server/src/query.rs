@@ -20,6 +20,8 @@
 //!   revision it is; the replica that holds it does. So [`replica_reply`]
 //!   takes the `rev` it stamps on the envelope rather than inventing one.
 
+mod geometry;
+
 use catchlight_core::formats::clm::extension_hash;
 use catchlight_core::{
     deform_cells, scalar_cells, ExtensionValue, Model, ModelBinding, ModelError, ModelNode,
@@ -52,7 +54,45 @@ pub fn extension_value_info(value: &ExtensionValue) -> ExtensionValueInfo {
 /// Any other command is [`ErrorCode::BadRequest`] naming the tag that was
 /// sent, never a panic.
 pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, EditorError> {
-    match command {
+    let body = match command {
+        Command::MeshGet { node, .. } => {
+            let mesh = model.node_mesh(node).ok_or_else(|| {
+                if model.node(node).is_some() {
+                    EditorError::BadTarget("node has no mesh".into())
+                } else {
+                    EditorError::NoNode(node.clone())
+                }
+            })?;
+            check_count("mesh_vertices", mesh.vertex_count(), MAX_QUERY_ITEMS)?;
+            check_count("mesh_triangles", mesh.triangle_count(), MAX_QUERY_ITEMS)?;
+            Ok(ResponseBody::MeshInfo {
+                node: node.clone(),
+                mesh: mesh_info(mesh),
+            })
+        }
+        Command::ModelGet { .. } => {
+            let structure = model.to_clm_structure()?;
+            crate::limits::json_size(&structure, "reply_bytes", MAX_QUERY_BYTES)?;
+            let structure = serde_json::to_value(structure)
+                .map_err(|e| EditorError::BadTarget(e.to_string()))?;
+            let textures = model
+                .texture_ids()
+                .iter()
+                .filter_map(|id| {
+                    model.texture(id).map(|t| ModelTextureHeader {
+                        id: id.clone(),
+                        encoding: t.encoding.into(),
+                        alpha: t.alpha.into(),
+                    })
+                })
+                .collect();
+            Ok(ResponseBody::ModelStructure {
+                structure,
+                textures,
+            })
+        }
+        Command::GeometryGet { .. } => geometry::sample(model, command),
+        Command::BindingCellsGet { .. } => binding_cells(model, command),
         Command::Check { .. } => Ok(ResponseBody::Warnings {
             warnings: model.check().into_iter().map(|w| w.message).collect(),
         }),
@@ -89,6 +129,9 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
                     let (width, height) = image_dims(&t.data, t.encoding).unwrap_or((0, 0));
                     textures.push(TexInfo {
                         id: tid.clone(),
+                        encoding: t.encoding.into(),
+                        alpha: t.alpha.into(),
+                        sha256: super::lifecycle::sha256(&t.data),
                         width,
                         height,
                     });
@@ -126,18 +169,13 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
         Command::Welds { .. } => Ok(ResponseBody::Welds {
             welds: model.welds().iter().map(weld_info).collect(),
         }),
-        Command::UnfilledSlots { .. } => Ok(ResponseBody::UnfilledSlots {
-            slots: model
-                .unfilled_slots()
-                .into_iter()
-                .map(|(node, slot)| SlotAddr { node, slot })
-                .collect(),
-        }),
         other => Err(EditorError::BadRequest(format!(
             "{} is not a model-only query",
             other.tag()
         ))),
-    }
+    }?;
+    check_reply_size(&body)?;
+    Ok(body)
 }
 
 /// The whole reply envelope, as `Editor::handle` would build it for the same
@@ -146,7 +184,14 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
 /// `rev` is the replica's own revision: the model does not carry one, and the
 /// client that holds it knows which one it last accepted.
 pub fn replica_reply(model: &Model, rev: u64, request: Request) -> Reply {
-    match replica_query(model, &request.command) {
+    let answer = crate::limits::json_size(
+        &request,
+        "request_bytes",
+        crate::limits::MAX_REQUEST_JSON_BYTES,
+    )
+    .and_then(|()| check_revision(&request.command, rev))
+    .and_then(|()| replica_query(model, &request.command));
+    match answer {
         Ok(body) => Reply::Ok {
             id: request.id,
             rev: Some(rev),
@@ -156,8 +201,200 @@ pub fn replica_reply(model: &Model, rev: u64, request: Request) -> Reply {
             id: request.id,
             code: e.code(),
             message: e.to_string(),
+            op_index: None,
+            limit: e.limit_info(),
         },
     }
+}
+
+/// Reply payload budget shared by server and synchronous browser replica reads.
+pub const MAX_QUERY_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_QUERY_ITEMS: usize = 262_144;
+
+pub(crate) fn check_revision(command: &Command, rev: u64) -> Result<(), EditorError> {
+    let expected = match command {
+        Command::MeshGet { if_rev, .. }
+        | Command::ModelGet { if_rev, .. }
+        | Command::GeometryGet { if_rev, .. }
+        | Command::BindingCellsGet { if_rev, .. } => *if_rev,
+        _ => None,
+    };
+    if expected.is_some_and(|wanted| wanted != rev) {
+        Err(EditorError::RevisionConflict)
+    } else {
+        Ok(())
+    }
+}
+
+fn check_count(
+    resource: &'static str,
+    requested: usize,
+    maximum: usize,
+) -> Result<(), EditorError> {
+    if requested > maximum {
+        Err(EditorError::Limit {
+            resource,
+            requested: requested as u64,
+            limit: maximum as u64,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn check_reply_size(body: &ResponseBody) -> Result<(), EditorError> {
+    crate::limits::json_size(body, "reply_bytes", MAX_QUERY_BYTES)
+}
+
+fn page(range: Option<IndexRange>, len: usize) -> Result<IndexRange, EditorError> {
+    let range = range.unwrap_or(IndexRange {
+        start: 0,
+        count: len as u32,
+    });
+    let end = u64::from(range.start) + u64::from(range.count);
+    if end > len as u64 {
+        return Err(EditorError::BadRequest(
+            "range exceeds authored array".into(),
+        ));
+    }
+    check_count("range_items", range.count as usize, MAX_QUERY_ITEMS)?;
+    Ok(range)
+}
+
+fn binding_cells(model: &Model, command: &Command) -> Result<ResponseBody, EditorError> {
+    let Command::BindingCellsGet {
+        node,
+        params,
+        target,
+        cells,
+        include_derived,
+        vertices,
+        ..
+    } = command
+    else {
+        unreachable!()
+    };
+    let key = crate::binding_key(params.clone(), node.clone(), *target)?;
+    let binding = model.binding(&key).ok_or(ModelError::UnknownBinding)?;
+    crate::edit::validate_cells(model, &key, cells.iter().copied(), cells.len())?;
+    let (width, height) = model.binding_grid(&key)?;
+    let vertex_count = if *target == BindingTarget::Deform {
+        Some(
+            model
+                .node_mesh(node)
+                .ok_or(ModelError::NotMeshed)?
+                .vertex_count() as u32,
+        )
+    } else {
+        None
+    };
+    if vertex_count.is_none() && vertices.is_some() {
+        return Err(EditorError::BadRequest(
+            "vertices only applies to deform cells".into(),
+        ));
+    }
+    let range = vertex_count
+        .map(|n| page(*vertices, n as usize))
+        .transpose()?;
+    // Bound the combined page before allocating per-cell arrays.
+    if let Some(range) = range {
+        check_count(
+            "cell_vertices",
+            cells.len().saturating_mul(range.count as usize),
+            MAX_QUERY_ITEMS,
+        )?;
+    }
+    let scalars: std::collections::HashMap<_, _> = scalar_cells(binding.values())
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| ([entry.x, entry.y], entry.value))
+        .collect();
+    let deforms: std::collections::HashMap<_, _> = deform_cells(binding.values())
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| ([entry.x, entry.y], entry.value.as_slice()))
+        .collect();
+    // A derived hole fills the grid over this vertex page. Bound cumulative
+    // fill work as well as returned vertices; otherwise one tiny read could
+    // materialize a complete mesh at every key. Authored cells and an entirely
+    // unset binding need no fill and can be sliced/answered directly.
+    if *include_derived && !deforms.is_empty() {
+        if let Some(range) = range {
+            let holes = cells
+                .iter()
+                .filter(|cell| !deforms.contains_key(*cell))
+                .count();
+            let work = (width as usize)
+                .saturating_mul(height as usize)
+                .saturating_mul(range.count as usize)
+                .saturating_mul(holes);
+            check_count("derived_cell_vertices", work, MAX_QUERY_ITEMS)?;
+        }
+    }
+    let offsets = |flat: &[f32]| -> BindingCellValue {
+        let range = range.unwrap_or(IndexRange { start: 0, count: 0 });
+        BindingCellValue::Offsets(
+            flat.as_chunks::<2>()
+                .0
+                .iter()
+                .skip(range.start as usize)
+                .take(range.count as usize)
+                .copied()
+                .collect(),
+        )
+    };
+    let mut result = Vec::with_capacity(cells.len());
+    for &cell in cells {
+        let value = scalars
+            .get(&cell)
+            .copied()
+            .map(BindingCellValue::Scalar)
+            .or_else(|| deforms.get(&cell).map(|flat| offsets(flat)));
+        let derived = if *include_derived {
+            Some(if let Some(authored) = &value {
+                authored.clone()
+            } else if let Some(range) = range {
+                let start = range.start as usize;
+                let flat =
+                    model.deform_value_at_range(&key, cell, start..start + range.count as usize)?;
+                BindingCellValue::Offsets(flat.as_chunks::<2>().0.to_vec())
+            } else {
+                BindingCellValue::Scalar(model.scalar_value_at(&key, cell)?)
+            })
+        } else {
+            None
+        };
+        if let Some(derived) = &derived {
+            let finite = match derived {
+                BindingCellValue::Scalar(value) => value.is_finite(),
+                BindingCellValue::Offsets(values) => {
+                    values.iter().flatten().all(|value| value.is_finite())
+                }
+            };
+            if !finite {
+                return Err(EditorError::BadTarget(
+                    "nonfinite derived binding value".into(),
+                ));
+            }
+        }
+        result.push(BindingCellRead {
+            cell,
+            authored: value.is_some(),
+            value,
+            derived,
+        });
+    }
+    Ok(ResponseBody::BindingCells {
+        node: node.clone(),
+        params: params.clone(),
+        target: *target,
+        width,
+        height,
+        interpolate: binding.interpolate_mode().into(),
+        vertex_count,
+        vertices: range,
+        cells: result,
+    })
 }
 
 /// The tree under `id`. A missing node reads as an empty group rather than
@@ -231,37 +468,6 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
         None => (None, None),
     };
     NodeInfo {
-        mesh: node.mesh().map(|mesh| MeshInfo {
-            verts: mesh
-                .verts
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|v| [v[0], v[1]])
-                .collect(),
-            uvs: mesh
-                .uvs
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|v| [v[0], v[1]])
-                .collect(),
-            indices: match &mesh.indices {
-                catchlight_core::formats::clm::ClmIndices::U16(v) => v
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .map(|t| [u32::from(t[0]), u32::from(t[1]), u32::from(t[2])])
-                    .collect(),
-                catchlight_core::formats::clm::ClmIndices::U32(v) => v
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .map(|t| [t[0], t[1], t[2]])
-                    .collect(),
-            },
-            origin: mesh.origin,
-        }),
         masks: match &node.kind {
             ModelNodeKind::Part(p) => p.masks(),
             ModelNodeKind::Composite(c) => c.masks(),
@@ -331,6 +537,40 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
     }
 }
 
+fn mesh_info(mesh: &catchlight_core::formats::clm::ClmMesh) -> MeshInfo {
+    MeshInfo {
+        verts: mesh
+            .verts
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|v| [v[0], v[1]])
+            .collect(),
+        uvs: mesh
+            .uvs
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|v| [v[0], v[1]])
+            .collect(),
+        indices: match &mesh.indices {
+            catchlight_core::formats::clm::ClmIndices::U16(v) => v
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| [u32::from(t[0]), u32::from(t[1]), u32::from(t[2])])
+                .collect(),
+            catchlight_core::formats::clm::ClmIndices::U32(v) => v
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| [t[0], t[1], t[2]])
+                .collect(),
+        },
+        origin: mesh.origin,
+    }
+}
+
 /// One binding as a panel reads it: the authored grid filled in `[y][x]`,
 /// with every cell nobody set left `None`.
 ///
@@ -367,6 +607,16 @@ fn binding_info(model: &Model, binding: &ModelBinding) -> Result<BindingInfo, Ed
         }
     }
     Ok(BindingInfo {
+        key_positions: binding.key_positions().to_vec(),
+        identity: match key.target {
+            catchlight_core::BindingTarget::Scalar(t) => BindingIdentity::Scalar {
+                scalar: t.identity(),
+            },
+            catchlight_core::BindingTarget::Deform => BindingIdentity::Deform {
+                offset: [0.0; 2],
+                vertex_count: model.node_mesh(&key.node).map_or(0, |m| m.vertex_count()) as u32,
+            },
+        },
         target: key.target.into(),
         param: key.params.x().clone(),
         param_y: key.params.y().cloned(),
@@ -388,7 +638,6 @@ pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {
             min: p.min,
             max: p.max,
             default: p.default,
-            key_positions: p.key_positions.clone(),
             bindings: model.bindings_of_param(pid).count() as u32,
         });
     }

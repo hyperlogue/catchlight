@@ -895,6 +895,8 @@ fn serve_websocket(
             // it still deserves an answer rather than a silent drop.
             Message::Binary(_) => {
                 let err = Reply::Err {
+                    op_index: None,
+                    limit: None,
                     id: 0,
                     code: ErrorCode::BadRequest,
                     message: "expected a text frame carrying one JSON request".into(),
@@ -946,6 +948,8 @@ fn timed_out(err: &io::Error) -> bool {
 fn answer(editor: &Editor, frame: &str) -> String {
     let reply = match serde_json::from_str::<Request>(frame) {
         Ok(request) if carries_bytes(&request.command).is_some() => Reply::Err {
+            op_index: None,
+            limit: None,
             id: request.id,
             code: ErrorCode::BulkOverHttp,
             message: format!(
@@ -955,6 +959,8 @@ fn answer(editor: &Editor, frame: &str) -> String {
         },
         Ok(request) => editor.handle(request),
         Err(e) => Reply::Err {
+            op_index: None,
+            limit: None,
             id: serde_json::from_str::<RequestId>(frame).map_or(0, |r| r.id),
             code: ErrorCode::BadRequest,
             message: format!("bad request: {e}"),
@@ -1245,7 +1251,7 @@ fn cors(response: Response, origin: Option<&str>) -> Response {
             .with("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
             .with(
                 "Access-Control-Expose-Headers",
-                "X-Catchlight-Rev, X-Catchlight-Encoding",
+                "X-Catchlight-Rev, X-Catchlight-Encoding, X-Catchlight-Reply",
             ),
         None => response,
     }

@@ -28,14 +28,12 @@
 //! because an interrupted save otherwise destroys the only copy.
 //!
 //! **The store holds the server's files, and nothing else passes through it.**
-//! Open, save, export: three commands, each naming a file that is the
+//! Open, save and manifest export name files that are the
 //! server's to read or write. Bytes a *client* holds never become a key —
 //! there is no upload, no staging map, and so no key that names something the
 //! server never wrote. A tab that wants its own bytes opened sends
 //! [`Command::SessionNew`](catchlight_editor_protocol::Command::SessionNew)
-//! and then
-//! [`Command::ImportFile`](catchlight_editor_protocol::Command::ImportFile)
-//! with the file attached, and the session it gets has no file to save back
+//! with its source and file attached, and the session it gets has no file to save back
 //! to because there is none.
 
 use std::io;
