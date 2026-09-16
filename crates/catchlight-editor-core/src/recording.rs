@@ -2,8 +2,10 @@
 //! contributions belong to the preview, never to the key being authored.
 //! Capture before scratch is applied and keep the normalized input position for
 //! the gesture. Each destination binding owns its grid, so a recording resolves
-//! or inserts keys independently. An empty binding receives an explicit identity
-//! rest cell before the changed cell; raw writes retain exact caller data.
+//! or inserts keys independently. Posed inputs reuse the nearest key within
+//! 1e-5 normalized units, with exact matches taking precedence. An empty binding
+//! receives an explicit identity rest cell before the changed cell; raw writes
+//! retain exact caller data.
 
 use catchlight_core::{
     deform_cells, scalar_cells, BindingKey, BindingParams, BindingTarget, Model, ModelNodeKind,
@@ -310,11 +312,14 @@ impl Recording {
                 vec![self.position[axis]]
             };
             for value in positions {
-                if !model
-                    .binding(&key)
-                    .ok_or("Missing recording binding.")?
-                    .key_positions()[axis]
-                    .contains(&value)
+                if recording_key_index(
+                    &model
+                        .binding(&key)
+                        .ok_or("Missing recording binding.")?
+                        .key_positions()[axis],
+                    value,
+                )
+                .is_none()
                 {
                     model
                         .key_insert(&key, param, value)
@@ -333,9 +338,7 @@ impl Recording {
                 .key_positions();
             let mut cell = [0; 2];
             for (axis, values) in axes.iter().enumerate() {
-                cell[axis] = values
-                    .iter()
-                    .position(|v| *v == position[axis])
+                cell[axis] = recording_key_index(values, position[axis])
                     .ok_or("Missing recording position.")? as u32;
             }
             Ok(cell)
@@ -380,6 +383,18 @@ impl Recording {
             .map(|(key, delta)| key + delta)
             .collect())
     }
+}
+
+// A pose is round-tripped through the param range before capture. Resolve that
+// input on each binding's axis without coalescing its explicitly authored keys.
+fn recording_key_index(positions: &[f32], at: f32) -> Option<usize> {
+    positions
+        .iter()
+        .enumerate()
+        .map(|(index, value)| (index, (value - at).abs()))
+        .filter(|(_, distance)| *distance <= 1e-5)
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(index, _)| index)
 }
 
 fn record_value(target: ScalarTarget, key: f32, before: f32, after: f32) -> Result<f32, String> {
@@ -445,6 +460,24 @@ mod tests {
             [position, 0.0],
         )
         .unwrap()
+    }
+
+    fn at_round_tripped(
+        model: &Model,
+        node: &NodeId,
+        params: BindingParams,
+        mut position: [f32; 2],
+    ) -> Recording {
+        let mut puppet = Puppet::new(model);
+        puppet.set_physics_enabled(false);
+        for (axis, id) in params.iter().enumerate() {
+            let param = model.param(id).unwrap();
+            puppet.set_param_value(id, param.min + position[axis] * (param.max - param.min));
+            position[axis] =
+                (puppet.param_value(id).unwrap() - param.min) / (param.max - param.min);
+        }
+        puppet.tick(model, 0.0);
+        Recording::capture(model, &puppet, node, params, position).unwrap()
     }
 
     fn apply(
@@ -554,6 +587,146 @@ mod tests {
             let pose = [(param.clone(), 0.5)].into_iter().collect();
             assert_eq!(model.eval_scalar(&key, &pose), Some(value));
         }
+    }
+
+    #[test]
+    fn recording_reuses_a_key_after_round_tripping_through_the_param_range() {
+        let (mut model, param, node) = fixture(0.0);
+        model.set_param_range(&param, -1.0, 1.0).unwrap();
+        let key = BindingKey::new(
+            param.clone(),
+            node.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
+        let positions = vec![vec![0.0, 0.1, 1.0]];
+        model
+            .add_binding_with_positions(&key, positions.clone())
+            .unwrap();
+        model.set_binding_key(&key, [1, 0], 4.0).unwrap();
+        let captured =
+            at_round_tripped(&model, &node, BindingParams::One(param.clone()), [0.1, 0.0]);
+        assert_ne!(captured.position[0], 0.1);
+        let before = captured.posed.translate.unwrap();
+        let writes = captured
+            .writes(
+                &RecordProperties {
+                    translate: Some([before[0] + 3.0, before[1], before[2]]),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        assert!(writes[0].inserts.is_empty());
+        assert_eq!(writes[0].cells[0].cell, [1, 0]);
+        apply(&mut model, &param, &node, &writes[0]);
+        assert_eq!(model.binding(&key).unwrap().key_positions(), positions);
+        assert_eq!(model.scalar_value_at(&key, [1, 0]).unwrap(), 7.0);
+    }
+
+    #[test]
+    fn a_round_tripped_pose_inserts_only_on_bindings_without_a_nearby_key() {
+        let (mut model, param, node) = fixture(0.0);
+        model.set_param_range(&param, -1.0, 1.0).unwrap();
+        for (target, positions) in [
+            (ScalarTarget::Tx, vec![0.0, 0.1, 1.0]),
+            (ScalarTarget::Ty, vec![0.0, 0.05, 0.075, 1.0]),
+        ] {
+            let key = BindingKey::new(param.clone(), node.clone(), BindingTarget::Scalar(target));
+            model
+                .add_binding_with_positions(&key, vec![positions])
+                .unwrap();
+            model.set_binding_key(&key, [0, 0], 0.0).unwrap();
+        }
+        let captured =
+            at_round_tripped(&model, &node, BindingParams::One(param.clone()), [0.1, 0.0]);
+        let writes = captured
+            .writes(
+                &RecordProperties {
+                    translate: Some([3.0, 7.0, 0.0]),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        assert!(writes[0].inserts.is_empty());
+        assert_eq!(writes[0].cells[0].cell, [1, 0]);
+        assert_eq!(writes[1].inserts.len(), 1);
+        assert_eq!(writes[1].inserts[0].value, captured.position[0]);
+        assert_eq!(writes[1].cells[0].cell, [3, 0]);
+        for write in &writes {
+            apply(&mut model, &param, &node, write);
+        }
+        for (target, position, value) in [(ScalarTarget::Tx, 1, 3.0), (ScalarTarget::Ty, 3, 7.0)] {
+            let key = BindingKey::new(param.clone(), node.clone(), BindingTarget::Scalar(target));
+            assert_eq!(model.scalar_value_at(&key, [position, 0]).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn recording_selects_the_nearest_key_and_preserves_close_explicit_keys() {
+        let (mut model, param, node) = fixture(0.0);
+        let key = BindingKey::new(
+            param.clone(),
+            node.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
+        let positions = vec![vec![0.0, 0.1, 0.100001, 1.0]];
+        model
+            .add_binding_with_positions(&key, positions.clone())
+            .unwrap();
+        model.set_binding_key(&key, [1, 0], 10.0).unwrap();
+        model.set_binding_key(&key, [2, 0], 20.0).unwrap();
+        for position in [0.100001, 0.1000009] {
+            let captured = at(&model, &param, &node, position);
+            let before = captured.posed.translate.unwrap();
+            let writes = captured
+                .writes(
+                    &RecordProperties {
+                        translate: Some([before[0] + 3.0, before[1], before[2]]),
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .unwrap();
+            assert!(writes[0].inserts.is_empty());
+            assert_eq!(writes[0].cells[0].cell, [2, 0]);
+            apply(&mut model, &param, &node, &writes[0]);
+            assert_eq!(model.binding(&key).unwrap().key_positions(), positions);
+            assert_eq!(model.scalar_value_at(&key, [1, 0]).unwrap(), 10.0);
+        }
+    }
+
+    #[test]
+    fn deform_recording_resolves_both_round_tripped_axes() {
+        use catchlight_core::{ModelParam, Name, ParamId};
+        let (mut model, x, node) = fixture(0.0);
+        model.set_param_range(&x, -1.0, 1.0).unwrap();
+        let y = ParamId::new("vertical").unwrap();
+        model
+            .add_param_with_id(
+                y.clone(),
+                ModelParam::new(Name::new("Vertical").unwrap(), -2.0, 2.0, 0.0),
+            )
+            .unwrap();
+        let params = BindingParams::Two(x, y);
+        let key = BindingKey {
+            params: params.clone(),
+            node: node.clone(),
+            target: BindingTarget::Deform,
+        };
+        let positions = vec![vec![0.0, 0.1, 1.0], vec![0.0, 0.2, 1.0]];
+        model
+            .add_binding_with_positions(&key, positions.clone())
+            .unwrap();
+        model.set_deform_vertices(&key, [1, 1], vec![]).unwrap();
+        let captured = at_round_tripped(&model, &node, params, [0.1, 0.2]);
+        assert_ne!(captured.position[0], 0.1);
+        assert_ne!(captured.position[1], 0.2);
+        let write = captured.deform_write(&[]).unwrap();
+        assert!(write.inserts.is_empty());
+        assert_eq!(write.cells.len(), 1);
+        assert_eq!(write.cells[0].cell, [1, 1]);
+        assert_eq!(write.key_positions, positions);
     }
 
     #[test]
