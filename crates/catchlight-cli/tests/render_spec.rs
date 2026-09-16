@@ -5,7 +5,7 @@
 mod common;
 
 use catchlight_cli::render::{args::ImageArgs, spec::*};
-use catchlight_core::formats::clm::{ClmAnimation, ClmMesh};
+use catchlight_core::formats::clm::{ClmAnimation, ClmIndices, ClmMesh};
 use catchlight_core::{
     MaskMode, Model, ModelNode, ModelNodeKind, ModelParam, ModelPart, Name, NodeId, ParamId,
 };
@@ -366,6 +366,81 @@ fn names_are_portable_and_case_insensitive_collisions_are_rejected() {
     assert_bad(json!({"schema":1,"requests":{"A":{},"a":{}}}), "collision");
     assert_bad(json!({"schema":1,"requests":{}}), "at least one");
     assert_bad(json!({"schema":2,"requests":{"a":{}}}), "unsupported");
+}
+
+#[test]
+fn windows_device_names_are_rejected_on_every_platform() {
+    let names = ["CON", "PRN", "AUX", "NUL"]
+        .map(String::from)
+        .into_iter()
+        .chain((1..=9).flat_map(|n| [format!("COM{n}"), format!("LPT{n}")]));
+    for name in names {
+        let mixed = format!("{}{}", &name[..1], name[1..].to_ascii_lowercase());
+        for variant in [&name, &name.to_ascii_lowercase(), &mixed] {
+            assert_bad(
+                json!({"schema":1,"requests":{variant:{}}}),
+                "reserved Windows device name",
+            );
+        }
+        assert_bad(
+            json!({"schema":1,"requests":{"a":{}},"animations":{name:animation()}}),
+            "reserved Windows device name",
+        );
+    }
+    for name in [
+        "con-image",
+        "auxiliary",
+        "nul_",
+        "COM0",
+        "COM10",
+        "LPT0",
+        "LPT10",
+    ] {
+        resolve(json!({"schema":1,"requests":{name:{}}}));
+    }
+}
+
+#[test]
+fn geometry_triangle_budget_counts_repeated_triangles_and_all_captures() {
+    let mut m = model();
+    m.set_node_mesh(
+        &NodeId::new("panel-a").unwrap(),
+        ClmMesh {
+            verts: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: ClmIndices::U16([0, 1, 2].repeat(1000)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut doc = animated(json!({
+        "geometry":["panel-a"], "frames":{"count":10000}
+    }));
+    let plan = parse(doc.clone()).resolve(&m).unwrap();
+    assert_eq!(plan.limits.geometry_triangles, MAX_GEOMETRY_TRIANGLES);
+    assert_eq!(
+        schema(false).unwrap()["x-catchlight-limits"]["geometry_triangles"],
+        MAX_GEOMETRY_TRIANGLES
+    );
+    doc["requests"]["pulse"]["frames"]["count"] = json!(10001);
+    let error = parse(doc.clone()).resolve(&m).unwrap_err();
+    assert!(matches!(
+        error,
+        catchlight_cli::Error::RenderLimit {
+            budget: "geometry_triangles",
+            ..
+        }
+    ));
+    doc["requests"]["pulse"]["frames"]["every"] = json!(2);
+    parse(doc.clone()).resolve(&m).unwrap();
+    doc["requests"]["second"] = json!({"extends":"pulse"});
+    let error = parse(doc).resolve(&m).unwrap_err();
+    assert!(matches!(
+        error,
+        catchlight_cli::Error::RenderLimit {
+            budget: "geometry_triangles",
+            ..
+        }
+    ));
 }
 
 #[test]

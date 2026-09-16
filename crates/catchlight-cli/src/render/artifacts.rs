@@ -4,7 +4,7 @@ use super::frame::{color_retained, FrameRuntime};
 use super::spec::{bad, Framing, Physics, ResolvedRequest, ResolvedSpec};
 use crate::Error;
 use catchlight_core::geometry::EvaluatedGeometry;
-use catchlight_core::{Model, ModelNodeKind, Puppet};
+use catchlight_core::{Model, ModelNodeKind, ParamId, Puppet};
 use image::ImageEncoder;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -250,21 +250,30 @@ pub(super) fn effective_pose(
     model: &Model,
     puppet: &Puppet,
 ) -> Result<BTreeMap<String, f32>, Error> {
-    model
-        .param_ids()
-        .iter()
-        .map(|id| {
-            let default = model
-                .param(id)
-                .ok_or_else(|| bad("parameter disappeared"))?
-                .default;
-            let value = puppet.param_value(id).unwrap_or(default);
-            if !value.is_finite() {
-                return Err(bad(format!("non-finite effective parameter {id}")));
-            }
-            Ok((id.to_string(), value))
-        })
+    effective_values(model, puppet)
+        .map(|entry| entry.map(|(id, value)| (id.to_string(), value)))
         .collect()
+}
+
+pub(super) fn validate_effective_pose(model: &Model, puppet: &Puppet) -> Result<(), Error> {
+    effective_values(model, puppet).try_for_each(|entry| entry.map(|_| ()))
+}
+
+fn effective_values<'a>(
+    model: &'a Model,
+    puppet: &'a Puppet,
+) -> impl Iterator<Item = Result<(&'a ParamId, f32), Error>> + 'a {
+    model.param_ids().iter().map(|id| {
+        let default = model
+            .param(id)
+            .ok_or_else(|| bad("parameter disappeared"))?
+            .default;
+        let value = puppet.param_value(id).unwrap_or(default);
+        if !value.is_finite() {
+            return Err(bad(format!("non-finite effective parameter {id}")));
+        }
+        Ok((id, value))
+    })
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]

@@ -44,6 +44,7 @@ pub const MAX_PIXELS: u64 = 16_777_216;
 pub const MAX_RUN_PIXELS: u64 = 2_000_000_000;
 pub const MAX_OUTPUTS: u64 = 100_000;
 pub const MAX_GEOMETRY_VERTICES: u64 = 10_000_000;
+pub const MAX_GEOMETRY_TRIANGLES: u64 = 10_000_000;
 pub const MAX_TRACE_VALUES: u64 = 10_000_000;
 pub const MAX_OVERLAY_WORK: u64 = 250_000_000;
 pub const MAX_NAME_BYTES: usize = 100;
@@ -66,7 +67,11 @@ pub struct Limits {
     pub image_pixels: u64,
     pub run_pixels: u64,
     pub output_files: u64,
+    /// Total selected vertices across all geometry sidecar captures.
     pub geometry_vertices: u64,
+    /// Total selected triangles across all geometry sidecar captures, including
+    /// repeated triangles. Each triangle emits three vertex indices.
+    pub geometry_triangles: u64,
     pub trace_values: u64,
     /// Conservative triangle-edge × image-span × line-width estimate.
     pub overlay_work: u64,
@@ -86,6 +91,7 @@ impl Default for Limits {
             run_pixels: MAX_RUN_PIXELS,
             output_files: MAX_OUTPUTS,
             geometry_vertices: MAX_GEOMETRY_VERTICES,
+            geometry_triangles: MAX_GEOMETRY_TRIANGLES,
             trace_values: MAX_TRACE_VALUES,
             overlay_work: MAX_OVERLAY_WORK,
             name_bytes: MAX_NAME_BYTES,
@@ -157,7 +163,8 @@ pub struct Document {
     #[schemars(range(min = 1, max = 1))]
     pub schema: u32,
     /// Nonempty map. Names use 1..100 ASCII letters/digits/_/-, start with
-    /// a letter/digit and exclude the reserved generated-file separator --.
+    /// a letter/digit and exclude the reserved generated-file separator -- and
+    /// Windows device names (CON, PRN, AUX, NUL, COM1..9, LPT1..9), regardless of case.
     #[schemars(transform = named_requests)]
     pub requests: BTreeMap<String, Request>,
     /// Optional spec-local native clips; no external file references.
@@ -616,6 +623,7 @@ impl Document {
         let mut filenames = BTreeSet::from(["run.json".to_string()]);
         let mut resolved_bytes = 0;
         let mut geometry_vertices = 0_u64;
+        let mut geometry_triangles = 0_u64;
         let mut trace_values = 0_u64;
         let mut overlay_work = 0_u64;
         for (name, request) in inherited {
@@ -665,17 +673,29 @@ impl Document {
                 MAX_OUTPUTS,
                 "reduce captures or split the spec",
             )?;
-            let vertices: u64 = request
+            let (vertices, triangles) = request
                 .geometry
                 .iter()
                 .filter_map(|id| model.node_mesh(id))
-                .map(|mesh| mesh.vertex_count() as u64)
-                .sum();
+                .fold((0_u64, 0_u64), |(vertices, triangles), mesh| {
+                    (
+                        vertices.saturating_add(mesh.vertex_count() as u64),
+                        triangles.saturating_add(mesh.triangle_count() as u64),
+                    )
+                });
             geometry_vertices = geometry_vertices.saturating_add(vertices.saturating_mul(captures));
             check_limit(
                 "geometry_vertices",
                 geometry_vertices,
                 MAX_GEOMETRY_VERTICES,
+                "reduce geometry selections/captures or split the spec",
+            )?;
+            geometry_triangles =
+                geometry_triangles.saturating_add(triangles.saturating_mul(captures));
+            check_limit(
+                "geometry_triangles",
+                geometry_triangles,
+                MAX_GEOMETRY_TRIANGLES,
                 "reduce geometry selections/captures or split the spec",
             )?;
             if let Some(animation) = &request.animation {
@@ -968,6 +988,17 @@ fn validate_name(name: &str) -> Result<(), Error> {
     {
         return Err(bad(format!("name {name:?} must use 1..{MAX_NAME_BYTES} ASCII letters/digits/_/-, start with a letter/digit and exclude --")));
     }
+    if ["con", "prn", "aux", "nul"]
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+        || (name.len() == 4
+            && matches!(name.as_bytes()[3], b'1'..=b'9')
+            && (name[..3].eq_ignore_ascii_case("com") || name[..3].eq_ignore_ascii_case("lpt")))
+    {
+        return Err(bad(format!(
+            "name {name:?} is a reserved Windows device name"
+        )));
+    }
     Ok(())
 }
 fn unique<T: Ord>(field: &str, ids: &[T]) -> Result<(), Error> {
@@ -1098,7 +1129,11 @@ fn named_map(schema: &mut schemars::Schema, max: usize) {
         "propertyNames".into(),
         serde_json::json!({
             "type":"string", "minLength":1, "maxLength":MAX_NAME_BYTES,
-            "pattern":"^[A-Za-z0-9][A-Za-z0-9_-]*$", "not":{"pattern":"--"}
+            "pattern":"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "not":{"anyOf":[
+                {"pattern":"--"},
+                {"pattern":"^([Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])$"}
+            ]}
         }),
     );
 }

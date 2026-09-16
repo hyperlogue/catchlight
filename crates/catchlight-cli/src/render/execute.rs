@@ -190,7 +190,7 @@ pub fn run(
                     if index > 0 {
                         runtime.advance(&model);
                     }
-                    effective_pose(&model, &runtime.puppet)?;
+                    validate_effective_pose(&model, &runtime.puppet)?;
                     if let Some(trace) = &mut trace {
                         let record = TraceFrame::observe(name, request, &model, &runtime)?;
                         serde_json::to_writer(trace.as_file_mut(), &record)
@@ -212,10 +212,12 @@ pub fn run(
                             &mut list,
                         )
                         .map_err(|e| Error::gpu("refresh", e))?;
-                    cache.retain_part_colors(&mut list, |id| frame::color_retained(request, id));
-                    let listing = super::listing::listing(&list);
+                    if request.only_parts.is_some() || !request.hide_color.is_empty() {
+                        cache
+                            .retain_part_colors(&mut list, |id| frame::color_retained(request, id));
+                    }
                     if index == 0 {
-                        listings.push(listing);
+                        listings.push(super::listing::listing(&list));
                     }
                     let mut pixels = draw(&mut ctx, &list, request)?;
                     let clean = png(&pixels, request.framing.size)?;
