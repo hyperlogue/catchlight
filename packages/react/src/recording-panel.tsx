@@ -383,7 +383,7 @@ function RecordedFields() {
             <NumberField
               key={i}
               label={`Recorded position ${i === 0 ? "X" : "Y"}`}
-              unit={i === 0 ? "X" : "Y"}
+              prefix={i === 0 ? "X" : "Y"}
               value={p.translate?.[i] ?? 0}
               onCommit={(v) => {
                 const translate: [number, number, number] = [
@@ -416,7 +416,7 @@ function RecordedFields() {
             <NumberField
               key={i}
               label={`Recorded scale ${i === 0 ? "X" : "Y"}`}
-              unit={i === 0 ? "X" : "Y"}
+              prefix={i === 0 ? "X" : "Y"}
               value={p.scale?.[i] ?? 1}
               onCommit={(v) => {
                 const scale: [number, number] = [...(p.scale ?? [1, 1])];
@@ -459,7 +459,7 @@ function RecordedFields() {
                   label={`Recorded ${label} ${["red", "green", "blue"][i]}`}
                   value={p[key]?.[i] ?? 0}
                   min={0}
-                  unit={(["R", "G", "B"] as const)[i]}
+                  prefix={(["R", "G", "B"] as const)[i]}
                   onCommit={(v) => {
                     const color: [number, number, number] = [
                       ...(p[key] ?? [0, 0, 0]),

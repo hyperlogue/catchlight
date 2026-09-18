@@ -125,13 +125,11 @@ use wasm_bindgen::prelude::*;
 use crate::replica::browser::ReplicaInner;
 use crate::{Gpu, Replica};
 
-/// The background a model is composited over. Deliberately opaque: the editor
-/// draws its own checkerboard behind the canvas when it wants one, and an
-/// alpha-blended canvas costs a composite pass the page never asked for.
+/// Opaque graphite (#171d22, linear RGB), matching the editor's `--cl-bg`.
 const CLEAR: wgpu::Color = wgpu::Color {
-    r: 0.016,
-    g: 0.019,
-    b: 0.023,
+    r: 0.008568,
+    g: 0.012286,
+    b: 0.015996,
     a: 1.0,
 };
 

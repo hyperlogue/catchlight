@@ -5,7 +5,7 @@ html,
 body {
   margin: 0;
   block-size: 100%;
-  background: #17191c;
+  background: #12171b;
 }
 
 #root {
@@ -17,7 +17,7 @@ body {
 #failure {
   margin: 0;
   padding: 8px 12px;
-  background: #202225;
+  background: #1d242b;
   color: #f5a6a6;
   font:
     12px/1.5 ui-monospace,
@@ -42,7 +42,7 @@ body {
   gap: 12px;
   align-items: center;
   justify-content: center;
-  color: #b3b8ba;
+  color: #b9c5ce;
   font:
     13px system-ui,
     sans-serif;

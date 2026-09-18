@@ -28,9 +28,7 @@ export function PropertiesPanel({ session, onError }: { session: Session; onErro
           <small>{kindLabels[info.kind]}</small>
         </div>
       </div>
-      <Disclosure title="Properties">
-        <InspectorRoot session={session} onError={onError} />
-      </Disclosure>
+      <InspectorRoot session={session} onError={onError} />
       {info.kind === "part" && <ArtworkUpload session={session} node={info.id} onError={onError} />}
       <MaskPanel session={session} info={info} onError={onError} />
       <MeshPanel session={session} info={info} onError={onError} />

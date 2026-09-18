@@ -432,24 +432,43 @@ export async function studio(
       ),
     );
     await page
-      .locator("[data-catchlight-status]")
-      .getByRole("button", { name: "Structure", exact: true })
+      .getByRole("button", { name: "Toggle structure panel", exact: true })
       .click();
     await page
       .locator('[data-catchlight-panel="left"]')
       .waitFor({ state: "visible" });
+    assert(await page.locator('[data-catchlight-panel="left"]').evaluate(
+      (panel) => panel.contains(document.activeElement),
+    ), "opening a drawer moves keyboard focus inside it");
+    await page.keyboard.press("Escape");
+    await page.locator('[data-catchlight-panel="left"]').waitFor({ state: "hidden" });
+    const structureToggle = page.getByRole("button", { name: "Toggle structure panel", exact: true });
+    assert(await structureToggle.evaluate((button) => button === document.activeElement));
+    await structureToggle.click();
     await page
       .getByRole("button", { name: "Close structure panel", exact: true })
       .click();
     await page
-      .locator("[data-catchlight-status]")
-      .getByRole("button", { name: "Properties", exact: true })
+      .getByRole("button", { name: "Toggle properties panel", exact: true })
       .click();
     await right.waitFor({ state: "visible" });
     await page.screenshot({ path: `${shots}/${tag}-studio-mobile.png` });
     await page
       .getByRole("button", { name: "Close properties panel", exact: true })
       .click();
+    const propertiesToggle = page.getByRole("button", { name: "Toggle properties panel", exact: true });
+    assert(await propertiesToggle.evaluate((button) => button === document.activeElement));
+    await propertiesToggle.click();
+    await page.getByRole("button", { name: "Dismiss side panel", exact: true })
+      .click({ position: { x: 8, y: 8 } });
+    await right.waitFor({ state: "hidden" });
+    assert(await propertiesToggle.evaluate((button) => button === document.activeElement));
+    await page.setViewportSize({ width: 320, height: 844 });
+    assert(await page.evaluate(() => {
+      const navigation = document.querySelector("[data-catchlight-canvas-tools]")!.getBoundingClientRect();
+      const zoom = document.querySelector("[data-catchlight-zoom-tools]")!.getBoundingClientRect();
+      return document.documentElement.scrollWidth <= innerWidth && navigation.right <= zoom.left;
+    }), "the narrow layout keeps canvas controls separate without page overflow");
     await page.setViewportSize({ width: 1440, height: 960 });
   });
 

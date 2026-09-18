@@ -1,43 +1,50 @@
-/* Catchlight's design system: neutral work surfaces, the logo's blue for intent, and
- * warm text that leaves artwork in charge of colour. The scale is 4/8/12/16/
- * 24/32; controls are 30px high and icons 16–18px. Everything lives in one
- * layer and under one root. Hosts theme the tokens or compose the React parts.
- * Motion communicates state only; reduced-motion keeps every operation instant. */
+/* Catchlight's default theme. Hosts override tokens or compose the unstyled
+ * React parts; every rule stays inside this layer and the .catchlight root. */
 @layer catchlight {
   .catchlight {
-    --cl-bg: #1b1d20;
-    --cl-mantle: #202225;
-    --cl-crust: #17191c;
-    --cl-surface: #292c30;
-    --cl-surface-raised: #33373c;
-    --cl-surface-active: #3c4248;
-    --cl-border: #ffffff10;
-    --cl-border-strong: #ffffff21;
-    --cl-text: #eceeea;
-    --cl-text-secondary: #b3b8ba;
-    --cl-text-dim: #81898f;
     /* The three blues are the gradient stops in assets/logo.svg. */
     --cl-accent: #72bffb;
     --cl-accent-hover: #9bd3fd;
     --cl-accent-strong: #68b7f7;
     --cl-on-accent: #102e46;
-    --cl-accent-soft: color-mix(in srgb, var(--cl-accent) 8%, transparent);
     --cl-warn: #e9bd81;
     --cl-danger: #f5a6a6;
     --cl-radius: 6px;
-    --cl-radius-large: 12px;
     --cl-gap: 8px;
     --cl-pad: 16px;
-    --cl-panel-width: 248px;
-    --cl-properties-width: 304px;
-    --cl-label-width: 88px;
-    --cl-row-height: 32px;
     --cl-font:
       "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     --cl-font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
-    --cl-font-size: 12px;
     --cl-font-size-small: 11px;
     --cl-shadow: 0 16px 64px #0006, 0 1px 4px #0005;
+    --cl-bg: #171d22;
+    --cl-mantle: #1d242b;
+    --cl-crust: #12171b;
+    --cl-surface: #29343e;
+    --cl-surface-raised: #3a4854;
+    --cl-surface-active: #455866;
+    --cl-border: #2d3943;
+    --cl-border-strong: #455664;
+    --cl-divider: #364550;
+    --cl-text: #e8eef2;
+    --cl-text-secondary: #b9c5ce;
+    --cl-text-dim: #92a3b0;
+    --cl-accent-soft: #233b4e;
+    --cl-selection-text: #e0f0fc;
+    --cl-font-size: 13px;
+    --cl-panel-width: 232px;
+    --cl-properties-width: 288px;
+    --cl-label-width: 70px;
+    --cl-row-height: 34px;
+    --cl-radius-large: 14px;
+    --cl-toolbar-height: 52px;
+    --cl-model-tabs-height: 36px;
+    --cl-status-height: 28px;
+    --cl-record: #dc3345;
+    --cl-record-hover: #c2293a;
+    --cl-record-marker: #ff6370;
+    --cl-record-text: #ffcbc7;
+    --cl-record-soft: #382b30;
     inline-size: 100%;
     block-size: 100%;
     min-block-size: 0;
@@ -74,7 +81,6 @@
     align-items: center;
     justify-content: center;
     gap: 7px;
-    min-height: 30px;
     padding: 5px 10px;
     border: 1px solid transparent;
     border-radius: var(--cl-radius);
@@ -86,6 +92,7 @@
       background 0.12s,
       border-color 0.12s,
       color 0.12s;
+    min-height: 32px;
   }
   .catchlight button:hover:not(:disabled) {
     background: var(--cl-surface-raised);
@@ -109,16 +116,16 @@
   }
   .catchlight button[data-catchlight-icon-button] {
     padding: 6px;
-    width: 30px;
-    height: 30px;
-    flex: 0 0 30px;
     background: transparent;
     color: var(--cl-text-secondary);
+    width: 32px;
+    height: 32px;
+    flex: 0 0 32px;
   }
   .catchlight button[aria-pressed="true"] {
     background: var(--cl-accent-soft);
-    color: var(--cl-accent);
-    border-color: color-mix(in srgb, var(--cl-accent) 13.3%, transparent);
+    border-color: transparent;
+    color: var(--cl-selection-text);
   }
   .catchlight button[data-catchlight-danger] {
     color: var(--cl-danger);
@@ -126,14 +133,14 @@
   }
   .catchlight
     :where(input:not([type="range"]):not([type="checkbox"]), select, textarea) {
-    border: 1px solid var(--cl-border);
     border-radius: var(--cl-radius);
     background: var(--cl-surface);
-    min-height: 30px;
     padding: 6px 8px;
     width: 100%;
     min-width: 0;
     outline-offset: 0;
+    min-height: 34px;
+    border: 1px solid transparent;
   }
   .catchlight :where(input, textarea)::placeholder {
     color: var(--cl-text-dim);
@@ -158,25 +165,25 @@
     appearance: none;
     width: 100%;
     min-width: 0;
-    height: 4px;
     border-radius: 3px;
-    background: var(--cl-surface-active);
     cursor: pointer;
+    height: 32px;
+    background: linear-gradient(var(--cl-surface-active), var(--cl-surface-active)) center / 100% 3px no-repeat;
   }
   .catchlight input[type="range"]::-webkit-slider-thumb {
     appearance: none;
-    width: 10px;
-    height: 10px;
     border-radius: 50%;
     background: var(--cl-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--cl-accent) 8.6%, transparent);
+    width: 12px;
+    height: 12px;
   }
   .catchlight input[type="range"]::-moz-range-thumb {
-    width: 10px;
-    height: 10px;
     border: 0;
     border-radius: 50%;
     background: var(--cl-accent);
+    width: 12px;
+    height: 12px;
   }
   .catchlight fieldset {
     border: 0;
@@ -199,7 +206,7 @@
     vertical-align: middle;
   }
   .catchlight kbd {
-    font: 10px/1.6 var(--cl-font);
+    font: 11px/1.6 var(--cl-font);
     color: var(--cl-text-dim);
     border: 1px solid var(--cl-border-strong);
     padding: 0 4px;
@@ -222,28 +229,28 @@
     scrollbar-width: thin;
     scrollbar-color: var(--cl-surface-active) transparent;
   }
-
   /* The workspace's fixed chrome surrounds independently scrolling tools. */
   .catchlight [data-catchlight-workspace] {
     display: grid;
     grid-template-columns: var(--cl-panel-width) minmax(0, 1fr) var(
         --cl-properties-width
       );
-    grid-template-rows: 54px 36px minmax(0, 1fr) 30px;
     grid-template-areas: "toolbar toolbar toolbar" "tabs tabs tabs" "left center right" "status status status";
     height: 100%;
     overflow: hidden;
     position: relative;
+    grid-template-rows: var(--cl-toolbar-height) var(--cl-model-tabs-height) minmax(0, 1fr) var(--cl-status-height);
   }
   .catchlight [data-catchlight-toolbar] {
     grid-area: toolbar;
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--cl-border);
-    background: var(--cl-crust);
+
     z-index: 10;
+    gap: 16px;
+    padding: 0 18px;
+    background: #1b2229;
+    border-bottom: 1px solid var(--cl-divider);
   }
   .catchlight [data-catchlight-brand] {
     display: inline-flex;
@@ -261,11 +268,11 @@
     flex-shrink: 0;
   }
   .catchlight [data-catchlight-brand] [data-catchlight-product] {
-    font-size: 8px;
     letter-spacing: 1.4px;
     color: var(--cl-text-dim);
-    margin: 3px 10px 0 1px;
     font-weight: 500;
+    font-size: 9px;
+    margin: 3px 0 0 -1px;
   }
   .catchlight [data-catchlight-main-menus],
   .catchlight [data-catchlight-history-tools] {
@@ -279,24 +286,24 @@
   }
   .catchlight [data-catchlight-command-trigger] {
     margin-inline: auto;
-    background: #ffffff05;
-    border: 1px solid var(--cl-border);
     width: min(250px, 24vw);
     justify-content: start;
     color: var(--cl-text-dim);
     min-height: 30px;
-    font-size: 11px;
+    font-size: 12px;
+    background: transparent;
+    border: 0;
   }
   .catchlight [data-catchlight-command-trigger] kbd {
     margin-left: auto;
   }
   .catchlight [data-catchlight-save-state] {
-    font-size: 10px;
     color: var(--cl-text-dim);
     display: flex;
     gap: 7px;
     align-items: center;
     white-space: nowrap;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-save-state] i,
   .catchlight [data-catchlight-environment] i {
@@ -360,12 +367,15 @@
     grid-area: tabs;
     display: flex;
     align-items: stretch;
-    background: var(--cl-crust);
-    border-bottom: 1px solid var(--cl-border);
     overflow-x: auto;
+    overflow-y: hidden;
+    background: #1b2229;
+    border-bottom: 1px solid var(--cl-divider);
   }
   .catchlight [data-catchlight-model-tabs] > button {
     margin: 3px 6px;
+    min-height: 28px;
+    height: 28px;
   }
   .catchlight [data-catchlight-session-list] {
     display: flex;
@@ -402,8 +412,8 @@
     justify-content: start;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 11px;
     color: var(--cl-text-secondary);
+    font-size: 12px;
   }
   .catchlight [data-catchlight-session][data-current] > button:first-child {
     color: var(--cl-text);
@@ -429,30 +439,31 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: var(--cl-bg);
+    background: var(--cl-mantle);
   }
   .catchlight [data-catchlight-panel="left"] {
     grid-area: left;
-    border-right: 1px solid var(--cl-border);
+    border-right: 1px solid var(--cl-divider);
   }
   .catchlight [data-catchlight-panel="right"] {
     grid-area: right;
-    border-left: 1px solid var(--cl-border);
+    border-left: 1px solid var(--cl-divider);
   }
   .catchlight [data-catchlight-panel-tabs] {
     display: flex;
     align-items: stretch;
     flex-shrink: 0;
-    height: 44px;
     gap: 18px;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--cl-border);
+
+    height: 52px;
+    border-bottom: 0;
+    padding: 0 18px;
   }
   .catchlight [data-catchlight-panel-tabs] > button {
     border-radius: 0;
     background: transparent;
     color: var(--cl-text-dim);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     border: 0;
     border-bottom: 2px solid transparent;
@@ -476,20 +487,20 @@
   .catchlight [data-catchlight-search] {
     display: flex;
     align-items: center;
-    gap: 7px;
     padding: 0 8px;
-    border: 1px solid var(--cl-border);
-    border-radius: 5px;
     color: var(--cl-text-dim);
-    background: #ffffff03;
     min-width: 0;
+    background: #151c22;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    gap: 8px;
   }
   .catchlight [data-catchlight-search] input {
     border: 0 !important;
     background: transparent !important;
     padding: 6px 0;
     box-shadow: none;
-    font-size: 11px;
+    font-size: 12px;
   }
   .catchlight [data-catchlight-search]:focus-within {
     border-color: var(--cl-accent);
@@ -497,12 +508,11 @@
   .catchlight [data-catchlight-search] input:focus-visible {
     outline: none;
   }
-
   /* Tree rows carry their own selection, depth and visibility state. */
   .catchlight [data-catchlight-tree-tools] {
     display: flex;
     gap: 5px;
-    padding: 12px 10px;
+    padding: 0 12px 16px;
   }
   .catchlight [data-catchlight-tree-tools] [data-catchlight-search] {
     flex: 1;
@@ -521,9 +531,9 @@
     padding-bottom: 20px;
   }
   .catchlight [data-catchlight-node] > ul {
+    border-left: 0;
     margin-left: 14px;
-    border-left: 1px solid var(--cl-border);
-    padding-left: 3px;
+    padding-left: 0;
   }
   .catchlight [data-catchlight-node-row] {
     display: flex;
@@ -533,6 +543,7 @@
     padding: 0 4px 0 2px;
     gap: 6px;
     border: 1px solid transparent;
+    margin-block: 2px;
   }
   .catchlight [data-catchlight-node-row]:hover {
     background: #ffffff05;
@@ -541,13 +552,14 @@
     [data-catchlight-node][data-selected]
     > [data-catchlight-node-row] {
     background: var(--cl-accent-soft);
-    border-color: color-mix(in srgb, var(--cl-accent) 12.2%, transparent);
+    border-color: transparent;
   }
   .catchlight
     [data-catchlight-node][data-selected]
     > [data-catchlight-node-row]
     [data-catchlight-node-label] {
-    color: var(--cl-accent);
+    color: var(--cl-selection-text);
+    font-weight: 600;
   }
   .catchlight
     [data-catchlight-node][data-drop="into"]
@@ -598,9 +610,10 @@
     justify-content: start;
     background: transparent;
     padding: 0;
-    font-size: 11px;
-    font-weight: 450;
     color: var(--cl-text-secondary);
+    font-size: 13px;
+    font-weight: 400;
+    border: 0;
   }
   .catchlight [data-catchlight-node-label]:hover {
     background: transparent !important;
@@ -634,15 +647,19 @@
   }
   .catchlight [data-catchlight-tree-footer] {
     display: flex;
-    gap: 2px;
-    padding: 10px 12px;
-    border-top: 1px solid var(--cl-border);
+
+    border-top: 0;
+    padding: 12px;
+    gap: 8px;
   }
   .catchlight [data-catchlight-tree-footer] > button:first-child {
     flex: 1;
-    justify-content: start;
-    background: transparent;
-    font-size: 11px;
+    justify-content: center;
+    background: #2b3945;
+    font-size: 12px;
+    color: #cce2f2;
+    min-height: 36px;
+    box-shadow: inset 0 1px #384958;
   }
   .catchlight button[data-catchlight-import-artwork] {
     padding-inline: 16px;
@@ -654,7 +671,6 @@
     margin-bottom: 12px;
     width: calc(100% - 24px);
   }
-
   /* Canvas, selection and posing shelf. */
   .catchlight [data-catchlight-center] {
     grid-area: center;
@@ -664,14 +680,17 @@
     min-width: 0;
   }
   .catchlight [data-catchlight-canvas-toolbar] {
-    height: 44px;
     flex-shrink: 0;
-    padding: 0 12px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    background: var(--cl-mantle);
-    border-bottom: 1px solid var(--cl-border);
+    height: auto;
+    min-height: 52px;
+    padding: 6px 12px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    justify-content: space-between;
+    background: var(--cl-bg);
+    border-bottom: 1px solid var(--cl-divider);
   }
   .catchlight [data-catchlight-tool-group],
   .catchlight [data-catchlight-zoom-tools] {
@@ -679,32 +698,22 @@
     align-items: center;
     gap: 2px;
   }
-  .catchlight [data-catchlight-separator] {
-    width: 1px;
-    height: 15px;
-    background: var(--cl-border-strong);
-    margin: 0 5px;
-  }
-  .catchlight [data-catchlight-canvas-label] {
-    font-size: 10px;
-    color: var(--cl-text-dim);
-    margin: 0 auto;
-    letter-spacing: 0.1px;
-  }
   .catchlight [data-catchlight-zoom] {
     background: transparent;
-    color: var(--cl-text-secondary);
-    font-size: 10px;
+
     font-variant-numeric: tabular-nums;
-    min-width: 44px;
     padding: 3px;
+    font-size: 12px;
+    min-width: 47px;
+    min-height: 30px;
+    color: var(--cl-selection-text);
   }
   .catchlight [data-catchlight-stage-wrap] {
     position: relative;
     flex: 1;
     min-height: 100px;
     overflow: hidden;
-    background: #22262a;
+    background: var(--cl-bg);
   }
   .catchlight [data-catchlight-stage] {
     position: absolute;
@@ -778,31 +787,33 @@
   }
   .catchlight [data-catchlight-canvas-hint] {
     position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    bottom: 14px;
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 9px;
-    color: #bbc3c5;
-    background: #17191cba;
-    border: 1px solid #ffffff0a;
+
     border-radius: 6px;
-    padding: 5px 9px;
     pointer-events: none;
     white-space: nowrap;
+    left: 112px;
+    transform: none;
+    bottom: 16px;
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: 11px;
+    color: var(--cl-text-dim);
   }
   .catchlight [data-catchlight-canvas-hint] kbd {
-    font-size: 9px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-dock] {
     position: relative;
     flex-shrink: 0;
     height: 42px;
-    border-top: 1px solid var(--cl-border-strong);
-    background: var(--cl-bg);
+
     overflow: visible;
+    background: var(--cl-mantle);
+    border-top: 1px solid var(--cl-divider);
   }
   .catchlight [data-catchlight-dock][data-open] {
     height: var(--cl-dock-height, 284px);
@@ -813,7 +824,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-bottom: 1px solid var(--cl-border);
+    border-bottom: 0;
   }
   .catchlight [data-catchlight-dock-header] [data-catchlight-panel-tabs] {
     height: 42px;
@@ -826,7 +837,7 @@
   }
   .catchlight [data-catchlight-dock-actions] > button:first-child {
     background: transparent;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-dock-body] {
@@ -840,27 +851,28 @@
     justify-content: space-between;
   }
   .catchlight [data-catchlight-panel-tools] > button {
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-panel-tools] [data-catchlight-search] {
     width: 190px;
   }
   .catchlight [data-catchlight-param-cards] {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
     padding: 0 16px 14px;
   }
   .catchlight [data-catchlight-param-card] {
-    padding: 7px 12px 6px;
-    background: #ffffff02;
-    border: 1px solid var(--cl-border);
+
     border-radius: 7px;
     min-width: 0;
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 8px 12px;
   }
   .catchlight [data-catchlight-param-card][data-selected] {
-    border-color: color-mix(in srgb, var(--cl-accent) 27.1%, transparent);
-    background: color-mix(in srgb, var(--cl-accent) 1.6%, transparent);
+    border-color: transparent;
+    background: var(--cl-accent-soft);
   }
   .catchlight [data-catchlight-param-card-head] {
     display: flex;
@@ -874,7 +886,8 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 11px;
+    font-size: 13px;
+    font-weight: 600;
   }
   .catchlight [data-catchlight-param-name] svg {
     color: var(--cl-accent);
@@ -901,27 +914,27 @@
     margin-top: 3px;
   }
   .catchlight [data-catchlight-param-value-row] [data-catchlight-number] {
-    flex: 0 0 48px;
+    flex: 0 0 64px;
   }
   .catchlight [data-catchlight-param-value-row] input[type="number"] {
-    padding: 3px 5px;
-    min-height: 24px;
     text-align: right;
-    font-size: 10px;
+    font-size: 13px;
+    min-height: 32px;
+    padding: 5px 8px;
   }
   .catchlight [data-catchlight-param-range] {
     display: flex;
     justify-content: space-between;
-    font-size: 9px;
+    font-size: 11px;
     color: var(--cl-text-dim);
-    padding-right: 60px;
     line-height: 22px;
+    padding-right: 76px;
   }
   .catchlight [data-catchlight-param-range] button {
     background: transparent;
     color: var(--cl-text-dim);
     min-height: 20px;
-    font-size: 9px;
+    font-size: 11px;
     padding: 0 4px;
   }
   .catchlight [data-catchlight-bindings-panel] {
@@ -968,33 +981,33 @@
     color: var(--cl-accent);
     border-color: var(--cl-accent);
   }
-
   /* The property system: shared rhythm for native and specialized controls. */
   .catchlight [data-catchlight-selection-heading] {
-    padding: 18px 16px;
     display: flex;
     gap: 12px;
     align-items: center;
+    padding: 20px 20px 28px;
   }
   .catchlight [data-catchlight-selection-heading] > svg {
-    width: 32px;
-    height: 32px;
-    padding: 7px;
-    background: var(--cl-surface);
-    border: 1px solid var(--cl-border);
     border-radius: 8px;
-    color: var(--cl-accent);
+    width: 36px;
+    height: 36px;
+    padding: 9px;
+    border: 0;
+    background: #233442;
+    color: #b8dcf7;
   }
   .catchlight [data-catchlight-selection-heading] strong {
-    font-size: 13px;
     display: block;
     font-weight: 600;
     overflow-wrap: anywhere;
+    font-size: 17px;
+    line-height: 1.3;
   }
   .catchlight [data-catchlight-selection-heading] small {
     display: block;
-    margin-top: 1px;
-    font-size: 10px;
+    font-size: 12px;
+    margin-top: 4px;
   }
   .catchlight [data-catchlight-disclosure] {
     border-top: 1px solid var(--cl-border);
@@ -1005,12 +1018,12 @@
     gap: 7px;
     list-style: none;
     cursor: pointer;
-    padding: 12px 16px;
     min-height: 40px;
-    font-size: 11px;
     font-weight: 600;
     color: var(--cl-text-secondary);
     user-select: none;
+    font-size: 12px;
+    padding: 14px 20px;
   }
   .catchlight [data-catchlight-disclosure] > summary > svg {
     width: 11px;
@@ -1022,7 +1035,7 @@
     transform: rotate(90deg);
   }
   .catchlight [data-catchlight-disclosure-body] {
-    padding: 0 16px 16px;
+    padding: 0 20px 20px;
   }
   .catchlight [data-catchlight-disclosure-body] > [data-catchlight-disclosure] {
     margin: 10px -8px 0;
@@ -1041,12 +1054,13 @@
   }
   .catchlight [data-catchlight-badge] {
     margin-left: auto;
-    border: 1px solid var(--cl-border);
     border-radius: 4px;
-    padding: 0 5px;
     color: var(--cl-text-dim);
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 400;
+    border: 0;
+    padding: 2px 7px;
+    background: var(--cl-surface);
   }
   .catchlight [data-catchlight-field=""],
   .catchlight [data-catchlight-inspector-row] {
@@ -1054,21 +1068,21 @@
     grid-template-columns: var(--cl-label-width) minmax(0, 1fr);
     align-items: center;
     min-height: 34px;
-    gap: 8px;
-    margin: 4px 0;
+    gap: 10px;
+    margin: 8px 0;
   }
   .catchlight [data-catchlight-field-label],
   .catchlight [data-catchlight-inspector-label] {
-    color: var(--cl-text-dim);
-    font-size: 10px;
     overflow-wrap: anywhere;
+    font-size: 12px;
+    color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-field-control],
   .catchlight [data-catchlight-inspector-controls] {
     display: flex;
     align-items: center;
-    gap: 4px;
     min-width: 0;
+    gap: 6px;
   }
   .catchlight [data-catchlight-inspector-row][data-field="id"],
   .catchlight [data-catchlight-inspector-row][data-field="kind"],
@@ -1081,51 +1095,66 @@
     min-width: 0;
     flex: 1;
     position: relative;
+    height: 34px;
+    border: 1px solid transparent;
+    border-radius: var(--cl-radius);
+    background: var(--cl-surface);
+    box-shadow: inset 0 1px 2px #101b2530;
   }
   .catchlight [data-catchlight-number] > span {
-    position: absolute;
-    left: 8px;
-    font-size: 9px;
     color: var(--cl-text-dim);
     pointer-events: none;
+    position: static;
+    flex: none;
+    font-size: 11px;
+    margin-inline: 8px;
   }
   .catchlight [data-catchlight-number]:has(> span) input {
-    padding-left: 28px;
+    padding-left: 8px;
   }
   .catchlight [data-catchlight-number] input {
-    font-size: 11px;
+    font-size: 13px;
+    text-align: right;
+    border: 0;
+    background: transparent;
+    flex: 1;
+    width: 0;
+    min-height: 32px;
+    min-width: 0;
   }
   .catchlight [data-catchlight-number][data-invalid] input {
-    border-color: var(--cl-warn);
+    color: var(--cl-danger);
   }
   .catchlight [data-catchlight-inspector-controls] input[type="number"] {
     width: 0;
     flex: 1;
-    font-size: 11px;
-    padding: 6px;
+    font-size: 13px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    padding: 5px 8px;
   }
   .catchlight [data-catchlight-inspector-controls] select {
-    font-size: 10px;
+    font-size: 13px;
   }
   .catchlight [data-catchlight-hint],
   .catchlight [data-catchlight-field-hint] {
-    font-size: 11px;
     color: var(--cl-text-dim);
-    line-height: 1.7;
     margin: 8px 0 12px;
+    font-size: 12px;
+    line-height: 1.65;
   }
   .catchlight [data-catchlight-toggle] {
     display: flex;
     align-items: center;
     gap: 8px;
     margin: 9px 0;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-action] {
     width: 100%;
     margin-top: 8px;
-    font-size: 11px;
+    font-size: 12px;
     border-color: var(--cl-border);
   }
   .catchlight [data-catchlight-upload-art] {
@@ -1139,7 +1168,7 @@
     border: 1px dashed var(--cl-border-strong);
     border-radius: 6px;
     color: var(--cl-text-secondary);
-    font-size: 11px;
+    font-size: 12px;
     cursor: pointer;
   }
   .catchlight [data-catchlight-upload-art] input {
@@ -1155,14 +1184,14 @@
   .catchlight [data-catchlight-id] {
     display: block;
     overflow-wrap: anywhere;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-metrics] {
     display: flex;
     gap: 12px;
     color: var(--cl-text-dim);
-    font-size: 10px;
+    font-size: 11px;
     padding: 0 0 10px;
   }
   .catchlight [data-catchlight-metrics] b {
@@ -1184,7 +1213,7 @@
   }
   .catchlight [data-catchlight-joint] select {
     margin-top: 3px;
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-index] {
     display: grid;
@@ -1194,7 +1223,7 @@
     border-radius: 50%;
     background: var(--cl-accent-soft);
     color: var(--cl-accent);
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-mask],
   .catchlight [data-catchlight-slot],
@@ -1211,19 +1240,19 @@
   }
   .catchlight [data-catchlight-mask] > span {
     flex: 1;
-    font-size: 11px;
+    font-size: 12px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .catchlight [data-catchlight-mask] select {
     width: 100px;
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-slot] > span {
     width: 74px;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-slot] [data-catchlight-number] {
     width: 42px;
@@ -1247,7 +1276,7 @@
     color: var(--cl-accent);
   }
   .catchlight [data-catchlight-model-stats] span {
-    font-size: 9px;
+    font-size: 11px;
     color: var(--cl-text-dim);
   }
   .catchlight [data-catchlight-health] {
@@ -1264,24 +1293,25 @@
     color: var(--cl-accent);
   }
   .catchlight [data-catchlight-health] strong {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 550;
   }
   .catchlight [data-catchlight-health] p {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-secondary);
     margin-top: 3px;
   }
   .catchlight [data-catchlight-warning] {
     color: var(--cl-warn);
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.7;
-    padding: 9px;
     margin: 8px 0;
-    border: 1px solid #e9bd8120;
-    background: #e9bd8108;
     border-radius: 6px;
     overflow-wrap: anywhere;
+    border: 0;
+    border-left: 3px solid var(--cl-warn);
+    background: #332e28;
+    padding: 12px;
   }
   .catchlight [data-catchlight-warning] svg {
     width: 14px;
@@ -1322,14 +1352,14 @@
   }
   .catchlight [data-catchlight-asset] strong {
     display: block;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 450;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .catchlight [data-catchlight-asset] small {
     display: block;
-    font-size: 9px;
+    font-size: 11px;
     margin-top: 3px;
   }
   .catchlight [data-catchlight-extension] {
@@ -1343,13 +1373,12 @@
     flex: 1;
     min-width: 0;
     overflow-wrap: anywhere;
-    font-size: 11px;
+    font-size: 12px;
   }
   .catchlight [data-catchlight-extension] small {
     display: block;
-    font-size: 9px;
+    font-size: 11px;
   }
-
   /* Dialogs, notifications, empty states and keyboard navigation. */
   .catchlight [data-catchlight-empty-state] {
     display: flex;
@@ -1365,11 +1394,11 @@
   }
   .catchlight [data-catchlight-empty-state] strong {
     color: var(--cl-text-secondary);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 550;
   }
   .catchlight [data-catchlight-empty-state] p {
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.8;
     max-width: 240px;
     margin-top: 7px;
@@ -1387,7 +1416,7 @@
   }
   .catchlight [data-catchlight-empty] {
     color: var(--cl-text-dim);
-    font-size: 11px;
+    font-size: 12px;
     padding: 18px;
   }
   .catchlight [data-catchlight-dialog] {
@@ -1425,7 +1454,7 @@
   }
   .catchlight [data-catchlight-dialog-body] > p {
     color: var(--cl-text-secondary);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.8;
   }
   .catchlight [data-catchlight-dialog-actions] {
@@ -1439,14 +1468,14 @@
     flex-direction: column;
     gap: 8px;
     margin: 0 0 16px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-form-label] input {
     min-height: 36px;
   }
   .catchlight [data-catchlight-form-label] textarea {
-    font: 11px/1.8 var(--cl-font-mono);
+    font: 12px/1.8 var(--cl-font-mono);
     resize: vertical;
   }
   .catchlight [data-catchlight-file-save] {
@@ -1492,12 +1521,12 @@
   }
   .catchlight [data-catchlight-palette-results] strong {
     display: block;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
   }
   .catchlight [data-catchlight-palette-results] small {
     display: block;
-    font-size: 10px;
+    font-size: 11px;
     margin-top: 2px;
   }
   .catchlight [data-catchlight-palette-hint] {
@@ -1507,7 +1536,7 @@
     padding: 12px 0 0;
     margin-top: 8px;
     border-top: 1px solid var(--cl-border);
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-shortcuts] > div {
     display: flex;
@@ -1515,7 +1544,7 @@
     gap: 12px;
     border-bottom: 1px solid var(--cl-border);
     padding: 9px 0;
-    font-size: 11px;
+    font-size: 12px;
   }
   .catchlight [data-catchlight-toast] {
     position: fixed;
@@ -1533,7 +1562,7 @@
     border-radius: 9px;
     background: var(--cl-mantle);
     box-shadow: var(--cl-shadow);
-    font-size: 12px;
+    font-size: 13px;
   }
   .catchlight [data-catchlight-toast] > svg {
     color: var(--cl-accent);
@@ -1584,7 +1613,7 @@
     padding: 0;
   }
   .catchlight [data-catchlight-binding-axis] > span {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--cl-text-dim);
   }
   .catchlight [data-catchlight-param-key][data-editable] {
@@ -1641,7 +1670,7 @@
     margin-bottom: 20px;
   }
   .catchlight [data-catchlight-eyebrow] {
-    font-size: 9px;
+    font-size: 11px;
     letter-spacing: 2px;
     color: var(--cl-text-dim);
   }
@@ -1659,7 +1688,7 @@
   }
   .catchlight [data-catchlight-welcome] > p:not([data-catchlight-eyebrow]) {
     color: var(--cl-text-dim);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.8;
   }
   .catchlight [data-catchlight-welcome] > div {
@@ -1672,12 +1701,12 @@
   }
   .catchlight [data-catchlight-welcome] > small {
     margin-top: 18px;
-    font-size: 9px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-text-button] {
     background: transparent;
     color: var(--cl-accent);
-    font-size: 11px;
+    font-size: 12px;
   }
   .catchlight [data-catchlight-drop-hint] {
     position: absolute;
@@ -1698,19 +1727,20 @@
     font-weight: 450;
   }
   .catchlight [data-catchlight-drop-hint] span {
-    font-size: 11px;
+    font-size: 12px;
   }
   .catchlight [data-catchlight-status] {
     grid-area: status;
-    background: var(--cl-crust);
-    border-top: 1px solid var(--cl-border);
     color: var(--cl-text-dim);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 0 12px;
-    font-size: 9px;
+
+    background: #151c22;
+    border-top: 1px solid var(--cl-divider);
+    font-size: 11px;
+    padding: 0 16px;
   }
   .catchlight [data-catchlight-status] > div {
     display: flex;
@@ -1725,7 +1755,7 @@
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-status-selection] {
-    opacity: 0.7;
+    opacity: 1;
   }
   .catchlight [data-catchlight-status] [data-catchlight-icon-button] {
     width: 24px;
@@ -1740,7 +1770,7 @@
     display: flex;
     align-items: center;
     gap: 7px;
-    font-size: 9px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-environment] i {
     width: 4px;
@@ -1789,26 +1819,34 @@
     position: relative;
     min-width: 0;
     flex: 1;
+    height: 34px;
+    border: 1px solid transparent;
+    border-radius: var(--cl-radius);
+    background: var(--cl-surface);
+    box-shadow: inset 0 1px 2px #101b2530;
   }
   .catchlight [data-catchlight-axis-input] > span {
-    position: absolute;
-    left: 7px;
     color: var(--cl-text-dim);
-    font-size: 9px;
     pointer-events: none;
-    text-transform: uppercase;
+    position: static;
+    flex: none;
+    font-size: 11px;
+    margin-inline: 8px;
   }
   .catchlight [data-catchlight-axis-input] > input[type="number"] {
-    padding-left: 21px;
-    padding-right: 5px;
-    width: 100%;
-    font-size: 11px;
+    padding: 5px 8px;
+    width: 0;
+    flex: 1;
+    font-size: 13px;
+    min-height: 32px;
+    border: 0;
+    background: transparent;
   }
   .catchlight [data-catchlight-binding-name] {
     min-width: 105px;
   }
   .catchlight [data-catchlight-binding-name] small {
-    font-size: 9px;
+    font-size: 11px;
     margin-left: 5px;
   }
   .catchlight [data-catchlight-bindings-panel] {
@@ -1826,156 +1864,7 @@
     > [data-catchlight-panel] {
     visibility: hidden;
   }
-  @media (min-width: 1700px) {
-    .catchlight {
-      --cl-panel-width: 272px;
-      --cl-properties-width: 320px;
-    }
-  }
-  @media (max-width: 1150px) {
-    .catchlight {
-      --cl-panel-width: 220px;
-      --cl-properties-width: 276px;
-      --cl-label-width: 78px;
-    }
-    .catchlight [data-catchlight-save-state],
-    .catchlight [data-catchlight-product] {
-      display: none !important;
-    }
-    .catchlight [data-catchlight-canvas-label] {
-      display: none;
-    }
-    .catchlight [data-catchlight-zoom-tools] {
-      margin-left: auto;
-    }
-    .catchlight [data-catchlight-history-tools] {
-      display: none;
-    }
-  }
-  @media (max-width: 900px) {
-    .catchlight
-      [data-mobile-panel="properties"]
-      [data-catchlight-panel="right"] {
-      grid-area: auto;
-    }
-    .catchlight [data-catchlight-resize="left"],
-    .catchlight [data-catchlight-resize="right"] {
-      display: none;
-    }
-    .catchlight [data-catchlight-workspace] {
-      grid-template-columns: 220px minmax(0, 1fr) 0;
-    }
-    .catchlight [data-catchlight-panel="right"] {
-      display: none;
-    }
-    .catchlight
-      [data-mobile-panel="properties"]
-      [data-catchlight-panel="right"] {
-      display: flex;
-      position: absolute;
-      right: 0;
-      top: 90px;
-      bottom: 30px;
-      width: 300px;
-      z-index: 20;
-      box-shadow: -10px 0 40px #0005;
-    }
-    .catchlight [data-catchlight-mobile-only] {
-      display: inline-flex;
-    }
-    .catchlight [data-catchlight-panel-tabs] > [data-catchlight-mobile-only] {
-      margin-left: auto;
-      align-self: center;
-    }
-    .catchlight [data-catchlight-status] button[data-catchlight-mobile-only] {
-      font-size: 9px;
-      min-height: 24px;
-      padding: 2px 5px;
-      background: transparent;
-    }
-  }
-  @media (max-width: 650px) {
-    .catchlight [data-mobile-panel="structure"] [data-catchlight-panel="left"] {
-      grid-area: auto;
-    }
-    .catchlight [data-catchlight-workspace] {
-      grid-template-columns: 0 minmax(0, 1fr) 0;
-    }
-    .catchlight [data-catchlight-panel="left"] {
-      display: none;
-    }
-    .catchlight [data-mobile-panel="structure"] [data-catchlight-panel="left"] {
-      display: flex;
-      position: absolute;
-      left: 0;
-      top: 90px;
-      bottom: 30px;
-      width: 270px;
-      z-index: 20;
-      box-shadow: 10px 0 40px #0005;
-    }
-    .catchlight [data-catchlight-toolbar] {
-      gap: 8px;
-      padding: 0 12px;
-    }
-    .catchlight [data-catchlight-brand] {
-      font-size: 15px;
-    }
-    .catchlight [data-catchlight-main-menus] > details:nth-child(2),
-    .catchlight [data-catchlight-command-trigger] span,
-    .catchlight [data-catchlight-command-trigger] kbd,
-    .catchlight [data-catchlight-save-label] {
-      display: none;
-    }
-    .catchlight [data-catchlight-command-trigger] {
-      width: 30px;
-      padding: 6px;
-      margin-right: 0;
-    }
-    .catchlight [data-catchlight-dock][data-open] {
-      height: 220px;
-    }
-    .catchlight [data-catchlight-param-cards] {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px;
-      padding: 0 10px 10px;
-    }
-    .catchlight [data-catchlight-param-card] {
-      padding: 5px 8px;
-    }
-    .catchlight [data-catchlight-param-card-head] button {
-      font-size: 10px;
-    }
-    .catchlight [data-catchlight-param-value-row] {
-      gap: 7px;
-    }
-    .catchlight [data-catchlight-param-value-row] [data-catchlight-number] {
-      flex-basis: 38px;
-    }
-    .catchlight [data-catchlight-param-range] {
-      padding-right: 45px;
-    }
-    .catchlight [data-catchlight-dock-actions] > button:first-child {
-      font-size: 0;
-      gap: 0;
-    }
-    .catchlight [data-catchlight-status-title],
-    .catchlight [data-catchlight-status-selection],
-    .catchlight [data-catchlight-environment] {
-      display: none;
-    }
-    .catchlight [data-catchlight-dock-header] [data-catchlight-panel-tabs] {
-      gap: 14px;
-      padding-left: 12px;
-    }
-    .catchlight [data-catchlight-welcome] h1 {
-      font-size: 32px;
-    }
-    .catchlight [data-catchlight-welcome-symbol],
-    .catchlight [data-catchlight-welcome] > small {
-      display: none;
-    }
-  }
+
   @media (prefers-reduced-motion: reduce) {
     .catchlight *,
     .catchlight *::before,
@@ -1985,40 +1874,35 @@
       scroll-behavior: auto !important;
     }
   }
-}
 
-@layer catchlight {
-  /* Workspace color carries intent: logo blue for topology, coral for capture. */
-  .catchlight {
-    --cl-record: #ffaca7;
-    --cl-record-soft: color-mix(in srgb, var(--cl-record) 9%, var(--cl-mantle));
-  }
   .catchlight [data-catchlight-center] {
     container-type: inline-size;
   }
   .catchlight [data-catchlight-workspace-modes] {
     display: flex;
     flex: none;
-    gap: 2px;
-    padding: 3px;
-    margin-inline: auto;
-    background: var(--cl-crust);
-    border: 1px solid var(--cl-border);
+
     border-radius: 8px;
+    gap: 4px;
+    padding: 4px;
+    margin-inline: 0;
+    border: 0;
+    background: #13191e;
   }
   .catchlight [data-catchlight-workspace-modes] button {
-    min-height: 27px;
-    padding: 4px 10px;
     background: transparent;
     border: 0;
-    font-size: 11px;
     color: var(--cl-text-dim);
     border-radius: 5px;
+    font-size: 12px;
+    min-height: 32px;
+    padding: 5px 12px;
+    gap: 8px;
   }
   .catchlight [data-catchlight-workspace-modes] button[aria-pressed="true"] {
-    background: var(--cl-surface-raised);
-    color: var(--cl-text);
-    box-shadow: 0 1px 3px #0003;
+    background: #344552;
+    color: #e1f2ff;
+    box-shadow: 0 1px 2px #0005, inset 0 1px #496072;
   }
   .catchlight
     [data-mode="mesh"]
@@ -2030,26 +1914,28 @@
     [data-mode="record"]
     [data-catchlight-workspace-modes]
     button[aria-pressed="true"] {
-    color: var(--cl-record);
+    background: #483337;
+    color: var(--cl-record-text);
+    box-shadow: 0 1px 2px #0005, inset 0 1px #63474c;
   }
   .catchlight [data-catchlight-editing-bar] {
     display: flex;
     align-items: center;
     flex: none;
     gap: 14px;
-    min-height: 65px;
     padding: 12px 16px;
-    border-block: 1px solid
-      color-mix(in srgb, var(--cl-accent) 17%, transparent);
-    background: color-mix(in srgb, var(--cl-accent) 5%, var(--cl-mantle));
+    min-height: 74px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--cl-divider);
+    background: #22323f;
   }
   .catchlight [data-catchlight-editing-bar][data-mode="record"] {
-    background: color-mix(in srgb, var(--cl-record) 3%, var(--cl-mantle));
-    border-color: color-mix(in srgb, var(--cl-record) 14%, transparent);
+    background: #22323f;
+    border-color: var(--cl-divider);
   }
   .catchlight [data-catchlight-editing-bar][data-recording] {
-    background: var(--cl-record-soft);
-    border-color: color-mix(in srgb, var(--cl-record) 38%, transparent);
+    background: #37272c;
+    border-color: var(--cl-divider);
   }
   .catchlight [data-catchlight-editing-title] {
     display: flex;
@@ -2070,8 +1956,8 @@
   }
   .catchlight [data-catchlight-editing-title] strong {
     display: block;
-    font-size: 12px;
     font-weight: 600;
+    font-size: 13px;
   }
   .catchlight [data-catchlight-editing-title] strong span {
     color: var(--cl-text-secondary);
@@ -2080,12 +1966,12 @@
   .catchlight [data-catchlight-editing-title] small {
     display: block;
     margin-top: 3px;
-    font-size: 10px;
     line-height: 1.5;
-    color: var(--cl-text-dim);
+    color: #b2cadc;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-editing-state] {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-dim);
     white-space: nowrap;
   }
@@ -2099,29 +1985,34 @@
   }
   .catchlight [data-catchlight-record-dot] {
     display: inline-block;
-    width: 7px;
-    height: 7px;
     background: currentColor;
     border-radius: 50%;
     flex: none;
+    width: 9px;
+    height: 9px;
   }
   .catchlight [data-catchlight-record-button] {
     flex: none;
-    border-color: color-mix(in srgb, var(--cl-record) 35%, transparent);
-    color: var(--cl-record);
-    background: transparent;
+
     min-width: 136px;
     min-height: 34px;
     padding-inline: 12px;
+    border-color: transparent;
+    background: var(--cl-record);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: inset 0 1px #ffffff26, 0 2px 3px #0004;
   }
   .catchlight [data-catchlight-record-button]:hover {
-    background: var(--cl-record-soft);
-    border-color: var(--cl-record);
+    background: var(--cl-record-hover);
+    color: #fff;
+    border-color: transparent;
   }
   .catchlight [data-catchlight-record-button][data-recording] {
-    color: #482623;
     background: var(--cl-record);
-    border-color: var(--cl-record);
+    color: #fff;
+    border-color: transparent;
   }
   .catchlight [data-catchlight-record-button][data-recording] i {
     border-radius: 1px;
@@ -2129,18 +2020,19 @@
   .catchlight [data-catchlight-mesh-tools] {
     display: flex;
     align-items: center;
-    gap: 5px;
-    padding: 7px 12px;
     background: var(--cl-mantle);
     flex: none;
-    border-bottom: 1px solid var(--cl-border);
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--cl-divider);
   }
   .catchlight [data-catchlight-mesh-tools] button {
     background: transparent;
     border-color: transparent;
-    font-size: 10px;
-    min-height: 28px;
     padding-inline: 8px;
+    font-size: 12px;
+    min-height: 32px;
   }
   .catchlight [data-catchlight-mesh-tools] button[aria-pressed="true"] {
     background: var(--cl-accent-soft);
@@ -2219,14 +2111,14 @@
     gap: 4px;
     pointer-events: none;
     color: var(--cl-text-dim);
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-stage-caption] span:first-child {
     display: flex;
     align-items: center;
     gap: 6px;
     color: var(--cl-text-secondary);
-    font-size: 11px;
+    font-size: 12px;
   }
   .catchlight [data-catchlight-mesh-opacity] {
     position: absolute;
@@ -2241,7 +2133,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-mesh-opacity] input {
@@ -2261,7 +2153,7 @@
     z-index: 3;
     left: 16px;
     transform: none;
-    font-size: 9px;
+    font-size: 11px;
   }
   .catchlight [data-mode="mesh"] [data-catchlight-dock] {
     height: 38px;
@@ -2281,7 +2173,7 @@
     margin: 0;
     padding: 0 16px;
     color: var(--cl-text-dim);
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight
     [data-mode="mesh"]
@@ -2293,12 +2185,12 @@
     padding: 0 16px 12px;
   }
   .catchlight [data-catchlight-edit-explainer] strong {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
   }
   .catchlight [data-catchlight-edit-explainer] p {
     color: var(--cl-text-dim);
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.7;
     margin: 5px 0 0;
   }
@@ -2315,7 +2207,7 @@
   .catchlight [data-catchlight-edit-footer] {
     border-top: 1px solid var(--cl-border);
     padding: 14px 16px;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-dim);
     line-height: 1.7;
   }
@@ -2338,12 +2230,12 @@
   .catchlight [data-catchlight-record-scope] button {
     flex: 1;
     padding: 5px 6px;
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-record-scope] button[aria-pressed="true"] {
-    color: var(--cl-record);
-    border-color: color-mix(in srgb, var(--cl-record) 28%, transparent);
     background: var(--cl-record-soft);
+    color: var(--cl-record-text);
+    border-color: transparent;
   }
   .catchlight [data-catchlight-recording-inspector] > [data-catchlight-field] {
     margin: 0 16px 12px;
@@ -2359,46 +2251,47 @@
     [data-catchlight-recording-inspector]
     [data-catchlight-selection-heading]
     > svg {
-    color: var(--cl-record);
+    color: var(--cl-record-marker);
   }
   .catchlight [data-catchlight-pair-note] {
     display: flex;
     gap: 7px;
     margin: -3px 16px 12px;
     color: var(--cl-text-dim);
-    font-size: 10px;
+    font-size: 11px;
   }
   .catchlight [data-catchlight-pair-note] b {
     color: var(--cl-text-secondary);
     font-weight: 500;
   }
   .catchlight [data-catchlight-record-target] {
-    margin: 0 16px;
-    padding: 12px;
-    border: 1px solid var(--cl-border-strong);
     border-radius: 8px;
-    background: var(--cl-crust);
+    padding: 14px;
+    border: 0;
+    background: #23323e;
+    margin: 0 20px;
   }
   .catchlight [data-recording] > [data-catchlight-record-target] {
-    border-color: color-mix(in srgb, var(--cl-record) 45%, transparent);
     background: var(--cl-record-soft);
+    box-shadow: inset 3px 0 var(--cl-record);
   }
   .catchlight [data-catchlight-record-target] > small {
     display: block;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    font-size: 9px;
-    color: var(--cl-text-dim);
+    font-size: 11px;
+    color: #b0dafa;
+    font-weight: 600;
   }
   .catchlight [data-catchlight-record-target] > strong {
     display: block;
     margin: 5px 0 8px;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
   }
   .catchlight [data-catchlight-record-target] > p {
     margin: 3px 0;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-key-state] {
@@ -2407,13 +2300,13 @@
     gap: 6px;
     padding-top: 10px;
     margin-top: 10px;
-    border-top: 1px solid var(--cl-border);
-    font-size: 9px;
-    color: var(--cl-text-dim);
+    font-size: 11px;
+    border-top: 0;
+    color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-key-state] [data-authored] {
-    fill: var(--cl-record);
-    stroke: var(--cl-record);
+    fill: var(--cl-record-marker);
+    stroke: var(--cl-record-marker);
   }
   .catchlight [data-catchlight-record-instructions] {
     display: flex;
@@ -2424,12 +2317,12 @@
   }
   .catchlight [data-catchlight-record-instructions] > svg {
     flex: none;
-    color: var(--cl-record);
     margin-top: 2px;
+    color: var(--cl-record-marker);
   }
   .catchlight [data-catchlight-record-instructions] p {
     margin: 0;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.7;
   }
   .catchlight [data-catchlight-selection-overlay][data-recording] {
@@ -2442,22 +2335,6 @@
     stroke: var(--cl-record);
     opacity: 0.65;
   }
-  .catchlight
-    [data-catchlight-selection-overlay][data-recording]
-    [data-catchlight-vertex-handle] {
-    fill: #703d40;
-    stroke: #ffccc9;
-    r: 4px;
-  }
-  .catchlight
-    [data-catchlight-selection-overlay][data-recording]
-    [data-catchlight-vertex-handle]:hover,
-  .catchlight
-    [data-catchlight-selection-overlay][data-recording]
-    [data-catchlight-vertex-handle]:focus {
-    fill: #fff1f0;
-    r: 6px;
-  }
   .catchlight [data-catchlight-recording-keys] {
     padding: 14px 20px 16px;
   }
@@ -2467,7 +2344,7 @@
     gap: 16px;
     align-items: center;
     color: var(--cl-text-dim);
-    font-size: 10px;
+    font-size: 11px;
     padding-bottom: 14px;
   }
   .catchlight [data-catchlight-key-shelf-heading] b {
@@ -2475,7 +2352,7 @@
     font-weight: 500;
   }
   .catchlight [data-catchlight-key-shelf-heading] small {
-    font-size: 9px;
+    font-size: 11px;
     white-space: nowrap;
   }
   .catchlight [data-catchlight-key-shelf-content] {
@@ -2496,7 +2373,7 @@
   .catchlight [data-catchlight-record-slider] > label {
     width: 90px;
     flex: none;
-    font-size: 11px;
+    font-size: 12px;
   }
   .catchlight [data-catchlight-record-slider] > input {
     min-width: 40px;
@@ -2515,11 +2392,12 @@
     min-width: 72px;
     flex: 1;
     justify-content: flex-start;
-    background: var(--cl-crust);
     border-color: var(--cl-border-strong);
     flex-wrap: wrap;
-    padding: 10px 12px;
     gap: 7px;
+    background: #2b3640;
+    border: 1px solid transparent;
+    padding: 8px 12px;
   }
   .catchlight [data-catchlight-record-key] > svg {
     color: var(--cl-text-dim);
@@ -2527,31 +2405,31 @@
   }
   .catchlight [data-catchlight-record-key] > span {
     font-variant-numeric: tabular-nums;
-    font-size: 12px;
+    font-size: 13px;
   }
   .catchlight [data-catchlight-record-key] > small {
     flex-basis: 100%;
-    font-size: 9px;
-    color: var(--cl-text-dim);
+    font-size: 11px;
     text-align: left;
+    color: #aac1d1;
   }
   .catchlight [data-catchlight-record-key][data-authored] > svg {
     fill: currentColor;
-    color: var(--cl-text-secondary);
+    color: var(--cl-record-marker);
   }
   .catchlight [data-catchlight-record-key][aria-pressed="true"] {
-    border-color: var(--cl-record);
-    background: var(--cl-record-soft);
-    color: var(--cl-record);
+    background: #2b465a;
+    border-color: #85c3f1;
+    color: var(--cl-text);
   }
   .catchlight [data-catchlight-record-key][aria-pressed="true"] > svg {
-    color: var(--cl-record);
+    color: var(--cl-record-marker);
   }
   .catchlight [data-catchlight-record-key][data-recording] {
-    box-shadow: inset 0 0 0 1px var(--cl-record);
+    box-shadow: none;
   }
   .catchlight [data-catchlight-record-pose-hint] {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-dim);
     margin: 10px 0 0;
     line-height: 1.6;
@@ -2570,7 +2448,7 @@
     align-items: center;
   }
   .catchlight [data-catchlight-record-matrix] span {
-    font-size: 9px;
+    font-size: 11px;
     color: var(--cl-text-dim);
     text-align: center;
     font-variant-numeric: tabular-nums;
@@ -2600,13 +2478,13 @@
     min-width: 180px;
   }
   .catchlight [data-catchlight-key-gate] strong {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--cl-warn);
   }
   .catchlight [data-catchlight-key-gate] p {
     margin: 4px 0 0;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--cl-text-secondary);
   }
   .catchlight [data-catchlight-key-gate] > div:nth-child(2) {
@@ -2615,107 +2493,15 @@
     flex-wrap: wrap;
   }
   .catchlight [data-catchlight-key-gate] button {
-    font-size: 10px;
+    font-size: 11px;
     padding-inline: 8px;
   }
   .catchlight [data-catchlight-key-gate] small {
     width: 100%;
-    font-size: 9px;
+    font-size: 11px;
     color: var(--cl-text-dim);
   }
-  @container (max-width: 730px) {
-    .catchlight [data-catchlight-editing-state] {
-      display: none;
-    }
-    .catchlight [data-catchlight-canvas-toolbar] {
-      gap: 6px;
-      padding-inline: 8px;
-    }
-    .catchlight
-      [data-catchlight-zoom-tools]
-      > button:not([data-catchlight-fit]):not([data-catchlight-zoom]) {
-      display: none;
-    }
-    .catchlight [data-catchlight-workspace-modes] button {
-      padding-inline: 8px;
-    }
-    .catchlight [data-catchlight-key-shelf-content] {
-      gap: 12px;
-    }
-    .catchlight [data-catchlight-record-slider] {
-      gap: 8px;
-    }
-    .catchlight [data-catchlight-record-slider] > label {
-      width: 65px;
-    }
-  }
-  @container (max-width: 480px) {
-    .catchlight [data-catchlight-tool-group] > button:nth-of-type(3),
-    .catchlight [data-catchlight-tool-group] > [data-catchlight-separator] {
-      display: none;
-    }
-    .catchlight [data-catchlight-zoom-tools] > [data-catchlight-zoom] {
-      display: none;
-    }
-    .catchlight [data-catchlight-editing-bar] {
-      gap: 8px;
-      padding: 10px 12px;
-      flex-wrap: wrap;
-    }
-    .catchlight [data-catchlight-editing-title] > svg {
-      display: none;
-    }
-    .catchlight [data-catchlight-editing-title] strong span {
-      display: block;
-      font-size: 10px;
-      margin-top: 2px;
-    }
-    .catchlight [data-catchlight-record-button] {
-      min-width: 123px;
-      font-size: 10px;
-      padding-inline: 8px;
-    }
-    .catchlight [data-catchlight-mesh-tools] {
-      gap: 3px;
-      padding-inline: 8px;
-    }
-    .catchlight [data-catchlight-mesh-tools] button {
-      font-size: 9px;
-      padding-inline: 6px;
-      gap: 4px;
-    }
-    .catchlight [data-catchlight-recording-keys] {
-      padding: 12px;
-    }
-    .catchlight [data-catchlight-key-shelf-heading] {
-      padding-bottom: 10px;
-    }
-    .catchlight [data-catchlight-key-shelf-heading] > small {
-      display: none;
-    }
-    .catchlight [data-catchlight-key-shelf-content] {
-      flex-wrap: wrap;
-    }
-    .catchlight [data-catchlight-record-matrix-scroll] {
-      max-width: 100%;
-      flex-basis: 100%;
-    }
-    .catchlight [data-catchlight-record-key] {
-      padding: 7px 10px;
-      min-width: 60px;
-    }
-    .catchlight [data-catchlight-mesh-opacity] {
-      right: 10px;
-      bottom: 35px;
-    }
-    .catchlight [data-catchlight-mesh-pose-held] {
-      font-size: 9px;
-      padding-inline: 12px;
-    }
-  }
-}
 
-@layer catchlight {
   .catchlight
     [data-catchlight-selection-overlay][data-recording]
     :is(
@@ -2727,25 +2513,13 @@
     stroke: var(--cl-record);
   }
   .catchlight [data-catchlight-record-button][data-recording]:hover {
-    background: #ffd0cc;
-    color: #482623;
+    background: var(--cl-record-hover);
+    color: #fff;
   }
   .catchlight [data-catchlight-toast] {
     width: max-content;
   }
-  @media (max-width: 650px) {
-    .catchlight [data-catchlight-toast] {
-      bottom: auto;
-      top: 96px;
-      width: calc(100vw - 24px);
-      min-width: 0;
-      padding: 8px 10px;
-      font-size: 11px;
-    }
-  }
-}
 
-@layer catchlight {
   .catchlight [data-catchlight-draft-constraints] {
     pointer-events: none;
     stroke: var(--cl-accent);
@@ -2757,30 +2531,16 @@
     stroke-dasharray: 3 3;
     opacity: 0.5;
   }
-}
 
-@layer catchlight {
   .catchlight [data-catchlight-record-matrix-label] {
     display: flex;
     justify-content: space-between;
     gap: 12px;
-    font-size: 9px;
+    font-size: 11px;
     color: var(--cl-text-secondary);
     padding: 0 2px 8px;
   }
-  @media (max-width: 650px) {
-    .catchlight
-      [data-mode="record"]
-      [data-catchlight-dock][data-open]:has([data-paired]),
-    .catchlight
-      [data-mode="record"]
-      [data-catchlight-dock][data-open]:has([data-catchlight-key-gate]) {
-      height: min(340px, 43dvh);
-    }
-  }
-}
 
-@layer catchlight {
   .catchlight
     [data-catchlight-selection-overlay][data-recording]
     [data-catchlight-vertex-handle],
@@ -2811,5 +2571,421 @@
     fill: #fff1f0;
     r: 5px;
     stroke-width: 2;
+  }
+  .catchlight [data-catchlight-save] {
+    color: var(--cl-text-secondary);
+    background: var(--cl-surface);
+    font-size: 12px;
+    padding-inline: 12px;
+  }
+  .catchlight [data-catchlight-canvas-tools] {
+    position: absolute;
+    z-index: 4;
+    left: 16px;
+    bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 4px;
+    background: var(--cl-surface);
+    border: 1px solid var(--cl-border-strong);
+    border-radius: 7px;
+    box-shadow: 0 4px 10px #0004, 0 1px 3px #0005;
+  }
+  .catchlight [data-catchlight-scene-label] {
+    position: absolute;
+    top: 16px;
+    left: 20px;
+    display: flex;
+    gap: 8px;
+    color: var(--cl-text-dim);
+    font-size: 11px;
+    pointer-events: none;
+  }
+  .catchlight [data-catchlight-canvas-actions] {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: auto;
+  }
+  .catchlight [data-catchlight-panel-toggle] {
+    display: none;
+    background: transparent;
+    color: var(--cl-text-secondary);
+    font-size: 12px;
+    padding-inline: 8px;
+  }
+  .catchlight [data-catchlight-panel-toggle][aria-expanded="true"] {
+    background: var(--cl-accent-soft);
+    color: var(--cl-selection-text);
+  }
+  .catchlight [data-catchlight-panel-scrim] {
+    display: none;
+    position: absolute;
+    inset: calc(var(--cl-toolbar-height) + var(--cl-model-tabs-height)) 0 var(--cl-status-height);
+    z-index: 19;
+    border: 0;
+    border-radius: 0;
+    background: #0005;
+  }
+  .catchlight [data-catchlight-zoom-tools] {
+    position: absolute;
+    z-index: 4;
+    right: 16px;
+    bottom: 12px;
+    padding: 2px 4px;
+    border: 1px solid var(--cl-border-strong);
+    border-radius: 7px;
+    background: var(--cl-surface);
+    box-shadow: 0 4px 10px #0004, 0 1px 3px #0005;
+  }
+  .catchlight [data-mode="mesh"] [data-catchlight-mesh-opacity] {
+    bottom: 60px;
+    background: var(--cl-mantle);
+  }
+  .catchlight [data-catchlight-properties] > [data-catchlight-inspector] {
+    padding: 0 20px;
+  }
+  .catchlight [data-catchlight-inspector-section] {
+    margin-block: 28px;
+  }
+  .catchlight [data-catchlight-inspector-section] > h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--cl-text);
+    margin-bottom: 12px;
+  }
+  .catchlight [data-catchlight-inspector-row]:has([data-axis="z"]),
+  .catchlight [data-catchlight-inspector-row]:has([data-axis="b"]) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    margin-block: 12px;
+  }
+  .catchlight [data-catchlight-number]:hover,
+  .catchlight [data-catchlight-axis-input]:hover {
+    background: #31414e;
+  }
+  .catchlight [data-catchlight-number]:focus-within,
+  .catchlight [data-catchlight-axis-input]:focus-within {
+    border-color: var(--cl-accent-hover);
+    outline: 2px solid #3b5e78;
+    outline-offset: 0;
+    box-shadow: none;
+  }
+  .catchlight [data-catchlight-number] input:focus-visible,
+  .catchlight [data-catchlight-axis-input] input:focus-visible {
+    outline: none;
+  }
+  .catchlight [data-catchlight-number][data-invalid] {
+    border-color: var(--cl-danger);
+    outline-color: #7e4f51;
+  }
+  .catchlight [data-catchlight-number] > [data-catchlight-number-prefix],
+  .catchlight [data-catchlight-axis-input] > [data-catchlight-number-prefix] {
+    margin-right: 0;
+    text-transform: uppercase;
+  }
+  .catchlight [data-catchlight-number] > [data-catchlight-number-unit],
+  .catchlight [data-catchlight-axis-input] > [data-catchlight-number-unit] {
+    margin-left: 4px;
+    white-space: nowrap;
+  }
+  .catchlight [data-catchlight-field-hint] {
+    grid-column: 2;
+    margin: 0;
+    font-size: 11px;
+  }
+  .catchlight [data-catchlight-node-row]:focus-within [data-catchlight-visibility],
+  .catchlight [data-catchlight-node-row]:has(input:not(:checked)) [data-catchlight-visibility] {
+    opacity: 1;
+  }
+  .catchlight [data-catchlight-node-row] button:focus-visible {
+    outline-offset: -2px;
+  }
+  .catchlight [data-catchlight-record-button]:active:not(:disabled) {
+    background: var(--cl-record-hover);
+    box-shadow: inset 0 1px 2px #0003;
+  }
+  .catchlight [data-recording] > [data-catchlight-record-target] > small,
+  .catchlight [data-catchlight-editing-bar][data-recording] [data-catchlight-editing-title] > svg {
+    color: var(--cl-record-text);
+  }
+  .catchlight [data-catchlight-editing-bar][data-recording] small {
+    color: #d2b1b6;
+  }
+  .catchlight [data-catchlight-editing-bar][data-recording] strong {
+    color: var(--cl-record-text);
+  }
+  .catchlight [data-catchlight-toolbar] svg,
+  .catchlight [data-catchlight-canvas-toolbar] svg,
+  .catchlight [data-catchlight-zoom-tools] svg {
+    width: 16px;
+    height: 16px;
+  }
+  @container (max-width: 800px) {
+    .catchlight [data-catchlight-param-cards] {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @container (max-width: 730px) {
+    .catchlight [data-catchlight-canvas-hint] {
+      display: none;
+    }
+    .catchlight [data-catchlight-editing-state] {
+      display: none;
+    }
+    .catchlight [data-catchlight-key-shelf-content] {
+      gap: 12px;
+    }
+    .catchlight [data-catchlight-record-slider] {
+      gap: 8px;
+    }
+    .catchlight [data-catchlight-record-slider] > label {
+      width: 65px;
+    }
+  }
+  @container (max-width: 500px) {
+    .catchlight [data-catchlight-canvas-toolbar] {
+      gap: 4px;
+      padding-block: 8px;
+    }
+    .catchlight [data-catchlight-workspace-modes] {
+      width: 100%;
+    }
+    .catchlight [data-catchlight-workspace-modes] button {
+      flex: 1;
+      padding-inline: 8px;
+    }
+    .catchlight [data-catchlight-canvas-actions] {
+      width: 100%;
+      margin-left: 0;
+      justify-content: space-between;
+    }
+    .catchlight [data-catchlight-tool-group] {
+      margin-left: auto;
+    }
+    .catchlight [data-catchlight-editing-title] {
+      flex-basis: 100%;
+    }
+    .catchlight [data-catchlight-editing-actions],
+    .catchlight [data-catchlight-record-button] {
+      margin-left: auto;
+    }
+    .catchlight [data-catchlight-editing-bar] {
+      gap: 8px;
+    }
+    .catchlight [data-catchlight-key-shelf-content] {
+      flex-wrap: wrap;
+    }
+    .catchlight [data-catchlight-record-matrix-scroll] {
+      max-width: 100%;
+      flex-basis: 100%;
+    }
+    .catchlight [data-catchlight-param-cards] {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .catchlight [data-catchlight-panel-tools] {
+      gap: 8px;
+    }
+    .catchlight [data-catchlight-panel-tools] [data-catchlight-search] {
+      width: auto;
+      min-width: 0;
+      flex: 1;
+    }
+    .catchlight [data-catchlight-dock-actions] > button:first-child {
+      font-size: 0;
+      gap: 0;
+    }
+    .catchlight [data-catchlight-dock-header] [data-catchlight-panel-tabs] {
+      gap: 12px;
+      padding-inline: 12px;
+    }
+    .catchlight [data-catchlight-bindings-panel] {
+      padding-inline: 12px;
+    }
+  }
+  @media (max-width: 1150px) {
+    .catchlight [data-catchlight-save-state],
+    .catchlight [data-catchlight-command-trigger] span,
+    .catchlight [data-catchlight-command-trigger] kbd,
+    .catchlight [data-catchlight-save-label] {
+      display: none;
+    }
+    .catchlight [data-catchlight-command-trigger] {
+      width: 32px;
+      padding: 6px;
+      margin-left: auto;
+      margin-right: 0;
+    }
+    .catchlight [data-catchlight-toolbar] {
+      gap: 10px;
+      padding-inline: 12px;
+    }
+  }
+  @media (max-width: 1000px) {
+    .catchlight [data-catchlight-workspace] {
+      grid-template-columns: 0 minmax(0, 1fr) var(--cl-properties-width);
+    }
+    .catchlight [data-catchlight-panel="left"] {
+      display: none;
+    }
+    .catchlight [data-catchlight-panel-toggle="structure"],
+    .catchlight [data-catchlight-panel="left"] [data-catchlight-mobile-only] {
+      display: inline-flex;
+    }
+    .catchlight [data-mobile-panel="structure"] [data-catchlight-panel="left"] {
+      grid-area: auto;
+      display: flex;
+      visibility: visible;
+      position: absolute;
+      left: 0;
+      top: calc(var(--cl-toolbar-height) + var(--cl-model-tabs-height));
+      bottom: var(--cl-status-height);
+      width: min(280px, calc(100% - 32px));
+      z-index: 20;
+      box-shadow: 12px 0 40px #0007;
+    }
+    .catchlight [data-catchlight-panel-scrim] {
+      display: block;
+    }
+    .catchlight [data-catchlight-panel-scrim]:hover {
+      background: #0005;
+    }
+    .catchlight [data-catchlight-panel-tabs] > [data-catchlight-mobile-only] {
+      margin-left: auto;
+      align-self: center;
+    }
+    .catchlight [data-catchlight-resize="left"],
+    .catchlight [data-catchlight-resize="right"] {
+      display: none;
+    }
+  }
+  @media (max-width: 600px) {
+    .catchlight {
+      --cl-toolbar-height: 104px;
+      --cl-status-height: 32px;
+      --cl-row-height: 40px;
+    }
+    .catchlight [data-catchlight-workspace] {
+      grid-template-columns: 0 minmax(0, 1fr) 0;
+    }
+    .catchlight [data-catchlight-toolbar] {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-rows: 40px 40px;
+      gap: 8px;
+      padding: 8px 12px;
+    }
+    .catchlight [data-catchlight-brand] {
+      grid-column: 1 / 3;
+      grid-row: 1;
+    }
+    .catchlight [data-catchlight-save] {
+      grid-column: 3;
+      grid-row: 1;
+    }
+    .catchlight [data-catchlight-main-menus] {
+      grid-column: 1;
+      grid-row: 2;
+    }
+    .catchlight [data-catchlight-history-tools] {
+      grid-column: 2;
+      grid-row: 2;
+      border-left: 0;
+      padding-left: 0;
+    }
+    .catchlight [data-catchlight-command-trigger] {
+      grid-column: 3;
+      grid-row: 2;
+      width: 40px;
+      margin: 0;
+      justify-self: end;
+    }
+    .catchlight [data-catchlight-panel="right"] {
+      display: none;
+    }
+    .catchlight [data-catchlight-panel-toggle="properties"],
+    .catchlight [data-catchlight-panel="right"] [data-catchlight-mobile-only] {
+      display: inline-flex;
+    }
+    .catchlight [data-mobile-panel="properties"] [data-catchlight-panel="right"] {
+      grid-area: auto;
+      display: flex;
+      visibility: visible;
+      position: absolute;
+      right: 0;
+      top: calc(var(--cl-toolbar-height) + var(--cl-model-tabs-height));
+      bottom: var(--cl-status-height);
+      width: min(300px, calc(100% - 32px));
+      z-index: 20;
+      box-shadow: -12px 0 40px #0007;
+    }
+    .catchlight button,
+    .catchlight [data-catchlight-menu] > summary {
+      min-height: 40px;
+    }
+    .catchlight button[data-catchlight-icon-button] {
+      width: 40px;
+      height: 40px;
+      flex-basis: 40px;
+    }
+    .catchlight [data-catchlight-canvas-actions] > [data-catchlight-panel-toggle] {
+      flex: 1;
+      justify-content: start;
+    }
+    .catchlight [data-catchlight-tool-group] {
+      justify-content: end;
+    }
+    .catchlight [data-catchlight-panel-toggle] span {
+      display: inline;
+    }
+    .catchlight [data-catchlight-number],
+    .catchlight [data-catchlight-axis-input] {
+      height: 40px;
+    }
+    .catchlight [data-catchlight-number] input,
+    .catchlight [data-catchlight-axis-input] input {
+      min-height: 38px;
+    }
+    .catchlight [data-mode]:not([data-mode="mesh"]) [data-catchlight-dock][data-open] {
+      height: min(var(--cl-dock-height, 280px), 34dvh);
+    }
+    .catchlight [data-mode="record"] [data-catchlight-dock][data-open]:has([data-paired]),
+    .catchlight [data-mode="record"] [data-catchlight-dock][data-open]:has([data-catchlight-key-gate]) {
+      height: min(340px, 43dvh);
+    }
+    .catchlight [data-catchlight-status-selection],
+    .catchlight [data-catchlight-environment] {
+      display: none;
+    }
+    .catchlight [data-catchlight-status] {
+      padding-inline: 12px;
+    }
+    .catchlight [data-catchlight-status] [data-catchlight-icon-button] {
+      min-height: 28px;
+      height: 28px;
+      width: 28px;
+    }
+    .catchlight [data-catchlight-toast] {
+      bottom: auto;
+      top: calc(var(--cl-toolbar-height) + var(--cl-model-tabs-height) + 8px);
+      width: calc(100vw - 24px);
+      min-width: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    .catchlight [data-catchlight-welcome] h1 {
+      font-size: 32px;
+    }
+    .catchlight [data-catchlight-welcome-symbol],
+    .catchlight [data-catchlight-welcome] > small {
+      display: none;
+    }
+  }
+  @media (hover: none) {
+    .catchlight [data-catchlight-visibility] {
+      opacity: 1;
+    }
   }
 }

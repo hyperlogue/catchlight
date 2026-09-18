@@ -94,7 +94,7 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                   min={2}
                   max={128}
                   step={1}
-                  unit="C"
+                  prefix="C"
                   onCommit={setCols}
                 />
                 <NumberField
@@ -103,7 +103,7 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                   min={2}
                   max={128}
                   step={1}
-                  unit="R"
+                  prefix="R"
                   onCommit={setRows}
                 />
               </Field>
@@ -265,7 +265,7 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
                   <NumberField
                     key={axis}
                     label={`Joint ${i + 1} ${axis === 0 ? "X" : "Y"}`}
-                    unit={axis === 0 ? "X" : "Y"}
+                    prefix={axis === 0 ? "X" : "Y"}
                     value={value}
                     onCommit={(v) => {
                       const joints = spine.joints.map((p, j) =>
@@ -537,7 +537,7 @@ export function PhysicsPanel({ session, info, onError }: AuthoringPanelProps) {
             <NumberField
               key={i}
               label={`Output scale ${i + 1}`}
-              unit={i === 0 ? "X" : "Y"}
+              prefix={i === 0 ? "X" : "Y"}
               value={v}
               onCommit={(n) =>
                 set({

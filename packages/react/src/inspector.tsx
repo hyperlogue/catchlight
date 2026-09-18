@@ -148,130 +148,138 @@ function Fields({
           commit={(next) => submit({ name: next })}
         />
       </Row>
-      <Row label="Position" field="translate">
-        <Axes
-          field="translate"
-          label="Translate"
-          axes={XYZ}
-          values={translate}
-          commit={(axis, next) => submit({ translate: with3(translate, axis, next) })}
-        />
-      </Row>
-      <Row label="Rotation °" field="rotate">
-        <Axes
-          field="rotate"
-          label="Rotate"
-          axes={XYZ}
-          values={rotate.map((v) => (v * 180) / Math.PI)}
-          commit={(axis, next) => submit({ rotate: with3(rotate, axis, (next * Math.PI) / 180) })}
-        />
-      </Row>
-      <Row label="Scale" field="scale">
-        <Axes
-          field="scale"
-          label="Scale"
-          axes={XY}
-          values={scale}
-          commit={(axis, next) => submit({ scale: with2(scale, axis, next) })}
-        />
-      </Row>
-      <Row label="Z order" field="z_order">
-        <NumberInput
-          field="z_order"
-          label="Z order"
-          value={info.z_order}
-          commit={(next) => submit({ z_order: next })}
-        />
-      </Row>
-      <Row label="Enabled" field="enabled">
-        <CheckInput
-          field="enabled"
-          label="Enabled"
-          value={info.enabled}
-          commit={(next) => submit({ enabled: next })}
-        />
-      </Row>
-      <Row label="Lock to root" field="lock_to_root">
-        <CheckInput
-          field="lock_to_root"
-          label="Lock to root"
-          value={info.lock_to_root}
-          commit={(next) => submit({ lock_to_root: next })}
-        />
-      </Row>
+      <section data-catchlight-inspector-section="" aria-label="Transform">
+        <h3>Transform</h3>
+        <Row label="Position" field="translate">
+          <Axes
+            field="translate"
+            label="Translate"
+            axes={XYZ}
+            values={translate}
+            commit={(axis, next) => submit({ translate: with3(translate, axis, next) })}
+          />
+        </Row>
+        <Row label="Rotation" field="rotate">
+          <Axes
+            field="rotate"
+            unit="°"
+            label="Rotate"
+            axes={XYZ}
+            values={rotate.map((v) => (v * 180) / Math.PI)}
+            commit={(axis, next) => submit({ rotate: with3(rotate, axis, (next * Math.PI) / 180) })}
+          />
+        </Row>
+        <Row label="Scale" field="scale">
+          <Axes
+            field="scale"
+            unit="×"
+            label="Scale"
+            axes={XY}
+            values={scale}
+            commit={(axis, next) => submit({ scale: with2(scale, axis, next) })}
+          />
+        </Row>
+        <Row label="Z order" field="z_order">
+          <NumberInput
+            field="z_order"
+            label="Z order"
+            value={info.z_order}
+            commit={(next) => submit({ z_order: next })}
+          />
+        </Row>
+        <Row label="Lock to root" field="lock_to_root">
+          <CheckInput
+            field="lock_to_root"
+            label="Lock to root"
+            value={info.lock_to_root}
+            commit={(next) => submit({ lock_to_root: next })}
+          />
+        </Row>
+      </section>
+      <section data-catchlight-inspector-section="" aria-label="Appearance">
+        <h3>Appearance</h3>
+        <Row label="Enabled" field="enabled">
+          <CheckInput
+            field="enabled"
+            label="Enabled"
+            value={info.enabled}
+            commit={(next) => submit({ enabled: next })}
+          />
+        </Row>
 
-      {opacity != null && (
-        <Row label="Opacity" field="opacity">
-          <NumberInput
-            field="opacity"
-            label="Opacity"
-            value={opacity}
-            min={0}
-            max={1}
-            commit={(next) => submit({ opacity: next })}
-          />
-        </Row>
-      )}
-      {mask_threshold != null && (
-        <Row label="Mask threshold" field="mask_threshold">
-          <NumberInput
-            field="mask_threshold"
-            label="Mask threshold"
-            value={mask_threshold}
-            min={0}
-            max={1}
-            commit={(next) => submit({ mask_threshold: next })}
-          />
-        </Row>
-      )}
-      {blend_mode != null && (
-        <Row label="Blend" field="blend_mode">
-          <SelectInput
-            field="blend_mode"
-            label="Blend mode"
-            value={blend_mode}
-            options={blendOptions(blend_mode)}
-            commit={(next) => submit({ blend_mode: next })}
-          />
-        </Row>
-      )}
-      {tint != null && (
-        <Row label="Tint" field="tint">
-          <Axes
-            field="tint"
-            label="Tint"
-            axes={RGB}
-            values={tint}
-            min={0}
-            max={1}
-            commit={(axis, next) => submit({ tint: with3(tint, axis, next) })}
-          />
-        </Row>
-      )}
-      {screen_tint != null && (
-        <Row label="Screen tint" field="screen_tint">
-          <Axes
-            field="screen_tint"
-            label="Screen tint"
-            axes={RGB}
-            values={screen_tint}
-            min={0}
-            max={1}
-            commit={(axis, next) => submit({ screen_tint: with3(screen_tint, axis, next) })}
-          />
-        </Row>
-      )}
-      {info.kind === "part" && (
-        <Row label="Texture" field="texture">
-          <SelectInput
-            field="texture"
-            label="Texture"
-            value={info.texture ?? NO_TEXTURE}
-            options={textureOptions(textures)}
-            commit={(next) => submit({ texture: next === NO_TEXTURE ? null : next })}
-          />
-        </Row>
-      )}
+        {opacity != null && (
+          <Row label="Opacity" field="opacity">
+            <NumberInput
+              field="opacity"
+              label="Opacity"
+              value={opacity}
+              min={0}
+              max={1}
+              commit={(next) => submit({ opacity: next })}
+            />
+          </Row>
+        )}
+        {mask_threshold != null && (
+          <Row label="Mask threshold" field="mask_threshold">
+            <NumberInput
+              field="mask_threshold"
+              label="Mask threshold"
+              value={mask_threshold}
+              min={0}
+              max={1}
+              commit={(next) => submit({ mask_threshold: next })}
+            />
+          </Row>
+        )}
+        {blend_mode != null && (
+          <Row label="Blend" field="blend_mode">
+            <SelectInput
+              field="blend_mode"
+              label="Blend mode"
+              value={blend_mode}
+              options={blendOptions(blend_mode)}
+              commit={(next) => submit({ blend_mode: next })}
+            />
+          </Row>
+        )}
+        {tint != null && (
+          <Row label="Tint" field="tint">
+            <Axes
+              field="tint"
+              label="Tint"
+              axes={RGB}
+              values={tint}
+              min={0}
+              max={1}
+              commit={(axis, next) => submit({ tint: with3(tint, axis, next) })}
+            />
+          </Row>
+        )}
+        {screen_tint != null && (
+          <Row label="Screen tint" field="screen_tint">
+            <Axes
+              field="screen_tint"
+              label="Screen tint"
+              axes={RGB}
+              values={screen_tint}
+              min={0}
+              max={1}
+              commit={(axis, next) => submit({ screen_tint: with3(screen_tint, axis, next) })}
+            />
+          </Row>
+        )}
+        {info.kind === "part" && (
+          <Row label="Texture" field="texture">
+            <SelectInput
+              field="texture"
+              label="Texture"
+              value={info.texture ?? NO_TEXTURE}
+              options={textureOptions(textures)}
+              commit={(next) => submit({ texture: next === NO_TEXTURE ? null : next })}
+            />
+          </Row>
+        )}
+      </section>
       {propagate_meshgroup != null && (
         <Row label="Propagate mesh group" field="propagate_meshgroup">
           <CheckInput
@@ -320,6 +328,7 @@ function Axes({
   label,
   axes,
   values,
+  unit,
   min,
   max,
   commit,
@@ -328,6 +337,7 @@ function Axes({
   label: string;
   axes: readonly string[];
   values: readonly number[];
+  unit?: string;
   min?: number | undefined;
   max?: number | undefined;
   commit: (axis: number, next: number) => Promise<void>;
@@ -338,7 +348,7 @@ function Axes({
         const name = axes[axis] ?? String(axis);
         return (
           <label key={name} data-catchlight-axis-input="">
-            <span aria-hidden="true">{name}</span>
+            <span data-catchlight-number-prefix="" aria-hidden="true">{name}</span>
             <NumberInput
               field={field}
               axis={name}
@@ -348,6 +358,7 @@ function Axes({
               max={max}
               commit={(next) => commit(axis, next)}
             />
+            {unit && <span data-catchlight-number-unit="" aria-hidden="true">{unit}</span>}
           </label>
         );
       })}

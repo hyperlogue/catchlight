@@ -555,7 +555,7 @@ export function MeshInspector() {
                 <NumberField
                   key={axis}
                   label={`Mesh vertex ${axis === 0 ? "X" : "Y"}`}
-                  unit={axis === 0 ? "X" : "Y"}
+                  prefix={axis === 0 ? "X" : "Y"}
                   value={vertex[axis]}
                   disabled={edit.stale || edit.busy}
                   onCommit={(value) =>
@@ -634,7 +634,7 @@ export function MeshInspector() {
                 min={2}
                 max={128}
                 step={1}
-                unit="C"
+                prefix="C"
                 onCommit={setCols}
               />
               <NumberField
@@ -643,7 +643,7 @@ export function MeshInspector() {
                 min={2}
                 max={128}
                 step={1}
-                unit="R"
+                prefix="R"
                 onCommit={setRows}
               />
             </Field>

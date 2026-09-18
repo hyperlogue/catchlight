@@ -48,7 +48,7 @@ import {
   usePreviewExport,
 } from "@catchlight/react";
 import type { IconName, SaveOutcome } from "@catchlight/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Stage, Environment } from "./stage.js";
 import { CommandPalette, Shortcuts } from "./dialogs.js";
@@ -308,11 +308,33 @@ function Workspace({
   const [dialog, setDialog] = useState<"save" | "commands" | "help">();
   const [dragOver, setDragOver] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"structure" | "properties">();
+  const structurePanelId = useId();
+  const propertiesPanelId = useId();
+  const panelTrigger = useRef<HTMLButtonElement | null>(null);
+  const togglePanel = (panel: "structure" | "properties", trigger: HTMLButtonElement) => {
+    panelTrigger.current = trigger;
+    setMobilePanel((open) => open === panel ? undefined : panel);
+  };
+  const closePanel = () => {
+    setMobilePanel(undefined);
+    panelTrigger.current?.focus();
+  };
   const file = useRef<HTMLInputElement>(null);
   const art = useRef<HTMLInputElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const workspace = useRef<HTMLDivElement>(null);
   useDismissMenus(workspace);
+  useEffect(() => {
+    const queries = [matchMedia("(max-width: 1000px)"), matchMedia("(max-width: 600px)")];
+    const close = () => setMobilePanel(undefined);
+    queries.forEach((query) => query.addEventListener("change", close));
+    return () => queries.forEach((query) => query.removeEventListener("change", close));
+  }, []);
+  useEffect(() => {
+    if (!mobilePanel) return;
+    const id = mobilePanel === "structure" ? structurePanelId : propertiesPanelId;
+    document.getElementById(id)?.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [mobilePanel, structurePanelId, propertiesPanelId]);
   useEffect(() => {
     workspace.current
       ?.querySelector(
@@ -322,7 +344,7 @@ function Workspace({
   }, [node, session, right, editing.mode]);
   const structureSize = usePanelSize("structure", 232, 180, 360, "x");
   const propertiesSize = usePanelSize("properties", 288, 248, 400, "x", -1);
-  const dockSize = usePanelSize("posing tools", 300, 140, 420, "y", -1);
+  const dockSize = usePanelSize("posing tools", 320, 140, 420, "y", -1);
   const capture = usePreviewExport(canvas);
   const sweep = usePoseSweep(session, param);
   const fit = useCallback(() => {
@@ -499,6 +521,11 @@ function Workspace({
         openModel();
         return;
       }
+      if (key === "escape" && mobilePanel && !typing) {
+        e.preventDefault();
+        closePanel();
+        return;
+      }
       if (typing) return;
       if (mod && key === "z") {
         e.preventDefault();
@@ -601,8 +628,8 @@ function Workspace({
             data-catchlight-logo=""
             src={logoUrl}
             alt=""
-            width="28"
-            height="28"
+            width="20"
+            height="20"
           />
           catchlight<span data-catchlight-product="">STUDIO</span>
         </a>
@@ -695,7 +722,6 @@ function Workspace({
         <button
           type="button"
           data-catchlight-save=""
-          data-primary=""
           disabled={!session}
           onClick={quickSave}
         >
@@ -734,7 +760,15 @@ function Workspace({
           onClick={newModel}
         />
       </nav>
-      <aside data-catchlight-panel="left" inert={mesh || editing.busy}>
+      {mobilePanel && (
+        <button
+          type="button"
+          data-catchlight-panel-scrim=""
+          aria-label="Dismiss side panel"
+          onClick={closePanel}
+        />
+      )}
+      <aside id={structurePanelId} data-catchlight-panel="left" inert={mesh || editing.busy}>
         <div data-catchlight-resize="left" {...structureSize.handle} />
         <div data-catchlight-panel-tabs="">
           <button
@@ -755,7 +789,7 @@ function Workspace({
             icon="close"
             label="Close structure panel"
             data-catchlight-mobile-only=""
-            onClick={() => setMobilePanel(undefined)}
+            onClick={closePanel}
           />
         </div>
         {left === "structure" ? (
@@ -864,59 +898,46 @@ function Workspace({
       </aside>
       <main data-catchlight-center="">
         <div data-catchlight-canvas-toolbar="">
-          <div data-catchlight-tool-group="">
-            <IconButton
-              icon="select"
-              label="Select and move (V)"
-              aria-pressed={tool === "select"}
-              onClick={() => setTool("select")}
-            />
-            <IconButton
-              icon="hand"
-              label="Pan (H)"
-              aria-pressed={tool === "hand"}
-              onClick={() => setTool("hand")}
-            />
-            <span data-catchlight-separator="" />
-            <IconButton
-              icon="grid"
-              label="Show grid (G)"
-              aria-pressed={grid}
-              disabled={mesh}
-              onClick={() => setGrid(!grid)}
-            />
-          </div>
           <WorkspaceModes />
-          <div data-catchlight-zoom-tools="">
-            <IconButton
-              icon="minus"
-              label="Zoom out"
-              onClick={() => zoom(1 / 1.2)}
-            />
+          <div data-catchlight-canvas-actions="">
             <button
               type="button"
-              data-catchlight-zoom=""
-              onClick={fit}
-              title="Fit model in view"
+              data-catchlight-panel-toggle="structure"
+              aria-label="Toggle structure panel"
+              aria-expanded={mobilePanel === "structure"}
+              aria-controls={structurePanelId}
+              disabled={mesh || editing.busy}
+              onClick={(event) => togglePanel("structure", event.currentTarget)}
             >
-              {view.zoom === undefined
-                ? "100%"
-                : `${Math.round(view.zoom * 100)}%`}
+              <Icon name="group" />
+              <span>Parts</span>
             </button>
-            <IconButton icon="plus" label="Zoom in" onClick={() => zoom(1.2)} />
-            <IconButton
-              data-catchlight-fit=""
-              icon="fit"
-              label="Fit model (F)"
-              onClick={fit}
-              disabled={!session}
-            />
-            <IconButton
-              icon="panel"
-              label="Focus mode (Shift F)"
-              aria-pressed={focus}
-              onClick={() => setFocus(!focus)}
-            />
+            <button
+              type="button"
+              data-catchlight-panel-toggle="properties"
+              aria-label="Toggle properties panel"
+              aria-expanded={mobilePanel === "properties"}
+              aria-controls={propertiesPanelId}
+              onClick={(event) => togglePanel("properties", event.currentTarget)}
+            >
+              <Icon name="settings" />
+              <span>Properties</span>
+            </button>
+            <div data-catchlight-tool-group="">
+              <IconButton
+                icon="grid"
+                label="Show grid (G)"
+                aria-pressed={grid}
+                disabled={mesh}
+                onClick={() => setGrid(!grid)}
+              />
+              <IconButton
+                icon="panel"
+                label="Focus mode (Shift F)"
+                aria-pressed={focus}
+                onClick={() => setFocus(!focus)}
+              />
+            </div>
           </div>
         </div>
         <EditingBar />
@@ -966,6 +987,54 @@ function Workspace({
             canvas={canvas}
             onError={onError}
           />
+          {session && !mesh && (
+            <>
+              <div data-catchlight-scene-label="">
+                <span>SCENE</span>
+                <span>/</span>
+                {editing.info?.name ?? info?.title}
+              </div>
+              <div data-catchlight-canvas-tools="">
+                <IconButton
+                  icon="select"
+                  label="Select and move (V)"
+                  aria-pressed={tool === "select"}
+                  onClick={() => setTool("select")}
+                />
+                <IconButton
+                  icon="hand"
+                  label="Pan (H)"
+                  aria-pressed={tool === "hand"}
+                  onClick={() => setTool("hand")}
+                />
+              </div>
+            </>
+          )}
+          <div data-catchlight-zoom-tools="">
+            <IconButton
+              icon="minus"
+              label="Zoom out"
+              onClick={() => zoom(1 / 1.2)}
+            />
+            <button
+              type="button"
+              data-catchlight-zoom=""
+              onClick={fit}
+              title="Fit model in view"
+            >
+              {view.zoom === undefined
+                ? "100%"
+                : `${Math.round(view.zoom * 100)}%`}
+            </button>
+            <IconButton icon="plus" label="Zoom in" onClick={() => zoom(1.2)} />
+            <IconButton
+              data-catchlight-fit=""
+              icon="fit"
+              label="Fit model (F)"
+              onClick={fit}
+              disabled={!session}
+            />
+          </div>
           {!session && (
             <div data-catchlight-welcome="">
               <span data-catchlight-welcome-symbol="">
@@ -1122,7 +1191,7 @@ function Workspace({
           )}
         </section>
       </main>
-      <aside data-catchlight-panel="right">
+      <aside id={propertiesPanelId} data-catchlight-panel="right">
         <div data-catchlight-resize="right" {...propertiesSize.handle} />
         <div data-catchlight-panel-tabs="">
           <button
@@ -1148,7 +1217,7 @@ function Workspace({
             icon="close"
             label="Close properties panel"
             data-catchlight-mobile-only=""
-            onClick={() => setMobilePanel(undefined)}
+            onClick={closePanel}
           />
         </div>
         <div data-catchlight-panel-scroll="">
@@ -1190,18 +1259,6 @@ function Workspace({
       </aside>
       <footer data-catchlight-status="">
         <div>
-          <button
-            type="button"
-            data-catchlight-mobile-only=""
-            onClick={() =>
-              setMobilePanel(
-                mobilePanel === "structure" ? undefined : "structure",
-              )
-            }
-          >
-            <Icon name="group" />
-            Structure
-          </button>
           <span data-catchlight-status-title="">
             {info?.title ?? "No model open"}
           </span>
@@ -1211,18 +1268,6 @@ function Workspace({
         </div>
         <div>
           <Environment />
-          <button
-            type="button"
-            data-catchlight-mobile-only=""
-            onClick={() =>
-              setMobilePanel(
-                mobilePanel === "properties" ? undefined : "properties",
-              )
-            }
-          >
-            <Icon name="settings" />
-            Properties
-          </button>
           <IconButton
             icon="help"
             label="Keyboard shortcuts (?)"

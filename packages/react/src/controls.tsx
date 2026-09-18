@@ -106,6 +106,7 @@ export function NumberField({
   label,
   value,
   onCommit,
+  prefix,
   unit,
   min,
   max,
@@ -115,6 +116,8 @@ export function NumberField({
   label: string;
   value: number;
   onCommit: (value: number) => void;
+  /** Axis or channel label before the value; physical units follow it. */
+  prefix?: string;
   unit?: string;
   min?: number;
   max?: number;
@@ -138,7 +141,7 @@ export function NumberField({
   };
   return (
     <span data-catchlight-number="" data-invalid={editing && invalid ? "" : undefined}>
-      {unit && <span aria-hidden="true">{unit}</span>}
+      {prefix && <span data-catchlight-number-prefix="" aria-hidden="true">{prefix}</span>}
       <input
         type="number"
         inputMode="decimal"
@@ -165,6 +168,7 @@ export function NumberField({
         }}
         {...props}
       />
+      {unit && <span data-catchlight-number-unit="" aria-hidden="true">{unit}</span>}
     </span>
   );
 }
