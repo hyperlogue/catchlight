@@ -65,6 +65,8 @@
 //! spine turns with the inner bends alone and the outer spine's rotations
 //! never reach it. Rig one spine per strand until that changes.
 
+#![doc = include_str!("spine_width.md")]
+
 use std::collections::HashMap;
 
 use glam::{Affine2, Mat2, Vec2};
