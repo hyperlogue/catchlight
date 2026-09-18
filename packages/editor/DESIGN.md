@@ -1,58 +1,114 @@
 # Catchlight studio
 
-The editor should make a character the centre of the workspace. Structure,
-properties, and posing stay close to the canvas, while less frequent rigging
-operations live in contextual disclosures. The design follows the familiar
-canvas-and-panels organisation of [Photopea](https://www.photopea.com/learn/workspace)
-and [Penpot](https://help.penpot.app/user-guide/first-steps/the-interface/),
-using catchlight's own model vocabulary throughout.
+The approved editor design atlas, version 5
+(`artifact_61435508aba949769aa9e2b1a8e5f5bb`), establishes the visual direction.
+This document carries its decisions into the production editor and future UI
+work. The character occupies the center; structure, properties and posing tools
+stay close to it. The production editor also exposes model tabs, rigging and
+file operations using the same visual system.
+
+## Design principles
+
+- **Hierarchy:** the selected object, editable values and next action lead.
+  Use size, weight, contrast and spacing together. Working text stays readable;
+  secondary information earns less emphasis through color, not tiny type.
+- **Grouping:** put controls beside the content they affect. Modes belong at
+  the top of the center pane; navigation and zoom tools sit on the canvas.
+  Separate work areas with 1px dividers. Group related fields with space, then
+  use a larger gap before the next property section.
+- **Restraint:** artwork supplies the strongest color. Selection is a single
+  continuous row fill with a brighter label. Keyboard focus has a separate
+  ring. Give a task one visually dominant action, such as Apply mesh or Start
+  recording; everyday file actions stay quiet.
+- **Explicit ownership:** show whether an edit changes the base model, a mesh
+  draft or a parameter keypoint. Recording names the node, parameter, pose and
+  property group. Scrubbing previews a pose; it does not author a key.
+- **Recovery:** keep drafts until an explicit commit or cancel. Leaving a mesh
+  draft offers Apply, Discard or Keep editing. Stop recording keeps completed
+  keys. Validation and errors say what the person can do next.
+- **Adaptation:** respond to the space a pane has, including after resizing.
+  Wrap controls before they collide. Narrow layouts use dismissible side
+  panels, preserve the studio identity and keep the canvas usable.
 
 ## Visual system
 
-`src/theme.css` contains the default theme under `@layer catchlight`, scoped
-to `.catchlight`. Hosts can override its custom properties without changing
-components or fighting selector specificity.
+`src/theme.css` is the token and component-style source of truth. Its rules live
+under `@layer catchlight`, scoped to `.catchlight`; hosts can override tokens
+or compose the unstyled React parts. Apply changes to existing rules so each
+state has one definition.
 
-The brand mark comes from `assets/logo.svg`. The editor and site use
-`assets/logo-transparent.svg`: the same circle, highlight and gradient with
-the outer white rectangle removed and the viewBox tightened to the circle.
-The original white-backed asset remains available for standalone artwork.
-Its gradient provides the accent palette: `#72bffb` for
-primary actions and selection, `#9bd3fd` for hover, and `#68b7f7` for stronger
-emphasis. Transparent accent treatments derive from those tokens.
+### Identity and color
 
-| Role       | Tokens and treatment                                                                        |
-| ---------- | ------------------------------------------------------------------------------------------- |
-| Workspace  | `--cl-bg`, `--cl-mantle`, `--cl-crust`: neutral graphite surfaces                           |
-| Controls   | `--cl-surface`, `--cl-surface-raised`, `--cl-surface-active`                                |
-| Text       | `--cl-text`, `--cl-text-secondary`, `--cl-text-dim`                                         |
-| Intent     | `--cl-accent`, `--cl-accent-soft`: the logo's blue for selection, focus and primary actions |
-| Feedback   | `--cl-warn`, `--cl-danger`; readable messages alongside colour                              |
-| Density    | 4/8/12/16/24/32 spacing, 30px controls, 32px tree rows                                      |
-| Typography | System sans, 12px controls, tabular numeric values; mono for IDs                            |
-| Shape      | 6px controls, 12px dialogs, fine borders and restrained shadows                             |
+Use the existing `assets/logo-transparent.svg`: the original circle, highlight
+and gradient on a transparent background. The header displays it at **20px**
+next to the lowercase **catchlight** wordmark and small, spaced **STUDIO** suffix.
+Keep the full title on mobile by arranging the header into two rows. The
+original white-backed `assets/logo.svg` remains available for standalone use.
+Graphite is the application surface; the identity study's pale neutral surface
+is suitable for presentations outside the editor.
 
-Artwork provides the strongest colour. Accent marks selection and actions,
-not every panel. Hover and focus are distinct; selected tools also expose
-`aria-pressed`. Motion only communicates state and respects reduced motion.
+| Role | Default | Token / treatment |
+| --- | --- | --- |
+| Canvas | `#171d22` | `--cl-bg`; the wasm viewport clear color uses its linear RGB equivalent |
+| Panels | `#1d242b` | `--cl-mantle` |
+| Recessed surfaces | `#12171b` | `--cl-crust` |
+| Editable controls | `#29343e` | `--cl-surface`; a small lift above the panel |
+| Main text | `#e8eef2` | `--cl-text` |
+| Supporting text | `#b9c5ce` / `#92a3b0` | `--cl-text-secondary` / `--cl-text-dim` |
+| Intent | `#72bffb` | `--cl-accent`; original logo blue, with `#9bd3fd` hover/focus and `#68b7f7` stronger emphasis |
+| Selected row | `#233b4e` | `--cl-accent-soft`, brighter label, no extra edge bar or inner outline |
+| Work-area boundaries | `#364550` | `--cl-divider`, 1px |
+| Record action | `#dc3345` | `--cl-record`, white text, circle to start and square to stop |
+| Recording markers | `#ff6370` | `--cl-record-marker`, readable on selected key backgrounds |
+| Recording surfaces | `#382b30` | `--cl-record-soft`, with pale `--cl-record-text` |
+
+Use saturated red for the recording action and small indicators. Larger
+recording areas use subdued tints. Keep labels and shapes meaningful without
+color: authored keys are filled diamonds; derived keys are hollow. Selection,
+hover, keyboard focus, recording and errors are separate states.
+
+### Type, controls and spacing
+
+- System sans, regular and semibold; 13px working text and values, 12px labels,
+  11px metadata. Selected object titles are 17px. Use tabular numerals for
+  editable values; reserve monospace for identifiers and code.
+- Use the 4/8/12/16/24/32 spacing scale. Place coordinates close together and
+  allow roughly 28px between property groups. Typical side panels start at
+  232px and 288px and remain resizable.
+- Desktop buttons are at least 32px high; numeric fields are 34px. Main touch
+  controls grow to 40px. Controls have 6px corners, groups 8–10px, dialogs 14px.
+- Icons are normally 16px and support labels. Import artwork has 16px horizontal
+  padding. Fields keep useful widths; three-component vectors may use a row
+  below their label instead of squeezing digits into narrow columns.
+- Axis/channel names precede a number; units follow it. `NumberField` uses
+  `prefix` for X/Y/Z, RGB and grid row/column labels, and `unit` for °, ×, px,
+  Hz or %. Keep unit text outside the editable value.
+- Keyboard focus uses a 2px ring. A focused field has one shared outline around
+  the value and its prefix/unit. Motion only communicates state and respects
+  reduced-motion preferences.
 
 ## Workspace and interactions
 
 - The top bar holds file actions, undo/redo, command search and save state.
-  Model tabs sit underneath it, above the panels they control.
+  Model tabs sit underneath it, above the panels they control. Arrange, Mesh
+  and Record stay in the center-pane toolbar. Selection and pan sit at the
+  lower left of the canvas; zoom and fit sit at the lower right.
 - Structure and Artwork share the left panel. Search retains ancestors so
   a result still has a place in the model. The gallery uses actual decoded
   artwork, including TGA, with transparency preserved.
 - Arrange owns selection, pan, zoom and base transform handles. Mesh opens an
-  isolated artwork view; Record captures gestures into a selected binding cell. One canvas survives model switches and empty states. A fitted
-  view follows resizing until the user pans or zooms.
+  isolated artwork view; Record captures gestures into a selected binding cell.
+  One canvas survives model switches and empty states. A fitted view leaves
+  breathing room around the artwork and follows resizing until the user pans
+  or zooms.
 - Properties follow the selected node's capabilities. Model-wide checks,
   welds, physics constants and metadata live in the Model tab.
 - The bottom shelf holds params and bindings. Pose previews never author
   model data. A sweep previews the selected param and restores its old value.
 - Panels resize by pointer or keyboard and remember their dimensions.
-  Narrow screens use dismissible side panels; focus mode makes more room
-  for artwork.
+  Below 1000px the structure panel becomes a drawer; below 600px both side
+  panels do. The toolbar toggles, close buttons, scrim and Escape dismiss them;
+  closing returns focus to the toggle. Focus mode makes more room for artwork.
 
 A numeric field has a draft, validates finite values and bounds, and commits
 on Enter or blur. Escape restores its previous value. Rotations in Properties
@@ -115,7 +171,7 @@ rather than an inert timeline. Selection is one node or subtree at a time.
 ## Arrange, Mesh and Record
 
 The three workspaces separate changes with different consequences. The logo's
-blue marks topology; `--cl-record` adds a coral cue for keypoint capture. Labels,
+blue marks topology; `--cl-record` adds a red cue for keypoint capture. Labels,
 selected controls and a persistent destination bar carry the same meaning
 without relying on colour.
 
@@ -179,3 +235,18 @@ bun run --filter catchlight-site sample http://localhost:5173/
 The script rasterises its own SVG artwork in Chromium and authors the model
 through the editor protocol. It writes `apps/site/public/sample.clm`, which
 is a Git LFS object. No private reference model is required.
+
+## Reviewing UI changes
+
+Review the built editor with its real wasm replica and renderer. Compare a
+selected part in Arrange, a mesh draft, and armed recording with the approved
+hierarchy and palette. Also inspect the affected specialized panels, empty
+states and dialogs; prototype-only controls are not substitutes for these.
+
+Check desktop, tablet, phone and intermediate widths, including narrow resized
+panes. Look for clipped values, overlapping controls, inaccessible panel
+contents and competing selection/focus treatments. Exercise numeric commit
+and Escape, undo, mesh Apply/Discard, recording destination changes, drawer
+focus and dialog recovery as relevant. Use renderer readback when a headless
+GPU canvas does not appear in screenshots. The browser harness and its runtime
+requirements are documented beside `apps/site/e2e/run.ts` and `drive.ts`.
