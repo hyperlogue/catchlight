@@ -69,6 +69,7 @@ export function Stage({
           camera={meshView.camera}
           onCameraChange={meshView.onCameraChange}
           onFit={meshView.onFit}
+          onResize={meshView.onResize}
           panMode={tool === "hand"}
         />
       )}

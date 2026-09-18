@@ -402,7 +402,7 @@ describe("framing the model", () => {
 
     expect(cameras).toHaveLength(1);
     expect(cameras[0]?.center).toEqual([0, 0]);
-    expect(cameras[0]?.height).toBeCloseTo(13.2, 9);
+    expect(cameras[0]?.height).toBeCloseTo(16.2, 9);
 
     // Once, and not again: an edit that moves the revision must not undo the
     // zoom the user chose after the model came up.
@@ -478,16 +478,16 @@ describe("framing the model", () => {
     // 800x600, so the height that covers 16 world units across is 12, plus the
     // margin.
     expect(api?.camera.center).toEqual([0, 0]);
-    expect(api?.camera.height).toBeCloseTo(13.2, 9);
+    expect(api?.camera.height).toBeCloseTo(16.2, 9);
     // A fitted model remains fully framed as a sidebar or window narrows.
     await run(() => api?.onResize({ width: 300, height: 600 }));
-    expect(api?.camera.height).toBeCloseTo(35.2, 9);
+    expect(api?.camera.height).toBeCloseTo(43.2, 9);
     expect(api?.zoom).toBeCloseTo(1, 9);
     // A deliberate pan belongs to the user, even at the fitted zoom level.
-    await run(() => api?.setCamera({ center: [3, 4], height: 35.2 }));
+    await run(() => api?.setCamera({ center: [3, 4], height: 43.2 }));
     await run(() => api?.onResize({ width: 800, height: 600 }));
     expect(api?.camera.center).toEqual([3, 4]);
-    expect(api?.camera.height).toBeCloseTo(35.2, 9);
+    expect(api?.camera.height).toBeCloseTo(43.2, 9);
     await view.unmount();
   });
 
@@ -523,7 +523,7 @@ describe("framing the model", () => {
     // The component's own fit, reported through `onFit`, is the reference.
     fakeReplica(session).box = [-8, -1, 8, 1];
     await run(() => frames.flush());
-    expect(api?.camera.height).toBeCloseTo(13.2, 9);
+    expect(api?.camera.height).toBeCloseTo(16.2, 9);
     expect(api?.zoom).toBeCloseTo(1, 9);
 
     // A wheel notch in: the height shrinks and the zoom grows by the same factor.

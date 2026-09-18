@@ -331,14 +331,14 @@ function Workspace({
         "[data-catchlight-mesh-canvas]",
       );
       if (element) {
+        const bounds = meshBounds(editing.mesh);
         const next = fitCamera(
-          meshBounds(editing.mesh),
+          bounds,
           { width: element.clientWidth, height: element.clientHeight },
-          0.35,
         );
         if (next) {
           view.setCamera(next);
-          view.onFit(next);
+          view.onFit(next, bounds);
         }
       }
     } else if (session) view.fit(session);

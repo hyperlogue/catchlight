@@ -13,7 +13,7 @@ import {
   wheelNotches,
   ZOOM_PER_NOTCH,
 } from "./camera.js";
-import type { Point, Size } from "./camera.js";
+import type { Bounds, Point, Size } from "./camera.js";
 import {
   Disclosure,
   EmptyState,
@@ -52,11 +52,13 @@ export function MeshCanvas({
   camera,
   onCameraChange,
   onFit,
+  onResize,
   panMode,
 }: {
   camera: Camera;
   onCameraChange: (c: Camera) => void;
-  onFit: (c: Camera) => void;
+  onFit: (c: Camera, bounds?: Bounds) => void;
+  onResize?: (size: Size) => void;
   panMode: boolean;
 }) {
   const edit = useEditing()!;
@@ -77,8 +79,8 @@ export function MeshCanvas({
       }
     | undefined
   >(undefined);
-  const last = useRef({ edit, camera, size, onCameraChange, onFit });
-  last.current = { edit, camera, size, onCameraChange, onFit };
+  const last = useRef({ edit, camera, size, onCameraChange, onFit, onResize });
+  last.current = { edit, camera, size, onCameraChange, onFit, onResize };
   const framed = useRef(false);
   useEffect(() => {
     const element = box.current;
@@ -86,6 +88,7 @@ export function MeshCanvas({
     const resize = () => {
       const next = { width: element.clientWidth, height: element.clientHeight };
       setSize(next);
+      last.current.onResize?.(next);
       if (
         !framed.current &&
         next.width > 0 &&
@@ -93,14 +96,11 @@ export function MeshCanvas({
         last.current.edit.mesh
       ) {
         framed.current = true;
-        const fitted = fitCamera(
-          meshBounds(last.current.edit.mesh),
-          next,
-          0.35,
-        );
+        const bounds = meshBounds(last.current.edit.mesh);
+        const fitted = fitCamera(bounds, next);
         if (fitted) {
           last.current.onCameraChange(fitted);
-          last.current.onFit(fitted);
+          last.current.onFit(fitted, bounds);
         }
       }
     };

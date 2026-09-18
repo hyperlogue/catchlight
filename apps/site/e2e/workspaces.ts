@@ -1,4 +1,4 @@
-/** Proposal A against the real editor. Visible controls author every user edit;
+/** Mesh and recording workflows against the real editor. Controls author every user edit;
  * the probe reads assertions and separately simulates a concurrent editor. */
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -93,6 +93,21 @@ export async function workspaces(
     const before = await read();
     await button("Mesh").click();
     await page.locator("[data-catchlight-mesh-artwork]").waitFor();
+    await pause();
+    await page.setViewportSize({ width: 320, height: 844 });
+    await pause();
+    assert(await page.evaluate(() => {
+      const canvas = document.querySelector("[data-catchlight-mesh-canvas]")!.getBoundingClientRect();
+      const vertices = document.querySelectorAll("[data-catchlight-mesh-hit]");
+      return canvas.height > 280 && [...vertices].every((vertex) => {
+        const point = vertex.getBoundingClientRect();
+        return point.left >= canvas.left && point.right <= canvas.right &&
+          point.top >= canvas.top && point.bottom <= canvas.bottom;
+      });
+    }), "a fitted mesh stays framed after resizing, with space reclaimed from the pose shelf");
+    assert.equal((await read()).revision, before.revision);
+    await page.screenshot({ path: `${shots}/${tag}-mesh-mobile.png` });
+    await page.setViewportSize({ width: 1440, height: 960 });
     await pause();
     const image = page.locator("[data-catchlight-mesh-artwork]");
     const mapping = await image.getAttribute("transform");

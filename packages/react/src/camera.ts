@@ -93,9 +93,8 @@ export function panTo(start: Camera, from: Point, size: Size, to: Point): Camera
  * portrait model on a wide canvas should do.
  *
  * `padding` is the fraction of extra world to leave around it, so the default
- * 0.1 is a 5% margin on each of the two tight sides. A box with no extent at
- * all is a model that is one point: it is centred at the default height, not
- * zoomed into infinity.
+ * 0.35 leaves room for canvas controls around the fitted model. A box with no
+ * extent is centred at the default height rather than zoomed into infinity.
  */
 export function fitCamera(
   bounds: Bounds | undefined,
@@ -143,7 +142,7 @@ function clampHeight(height: number): number {
 }
 
 /** How much world a fit leaves around the box, as a fraction of it. */
-const FIT_PADDING = 0.1;
+const FIT_PADDING = 0.35;
 const LINES_PER_NOTCH = 3;
 const PIXELS_PER_NOTCH = 100;
 const MIN_HEIGHT = 1e-6;

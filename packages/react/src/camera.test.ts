@@ -103,14 +103,14 @@ describe("framing a model", () => {
     // 12, and that is what has to cover the box, not the box's own 2.
     const framed = fitCamera([-8, -1, 8, 1], size);
     expect(framed?.center).toEqual([0, 0]);
-    expect(framed?.height).toBeCloseTo(13.2, 9);
+    expect(framed?.height).toBeCloseTo(16.2, 9);
     expect(framed && contains(framed, size, [-8, -1, 8, 1])).toBe(true);
   });
 
   test("a tall box is framed by its height", () => {
     const framed = fitCamera([-1, -8, 1, 8], size);
     expect(framed?.center).toEqual([0, 0]);
-    expect(framed?.height).toBeCloseTo(17.6, 9);
+    expect(framed?.height).toBeCloseTo(21.6, 9);
     expect(framed && contains(framed, size, [-1, -8, 1, 8])).toBe(true);
   });
 
@@ -118,7 +118,7 @@ describe("framing a model", () => {
     const box: Bounds = [10, 20, 12, 24];
     const framed = fitCamera(box, size);
     expect(framed?.center).toEqual([11, 22]);
-    expect(framed?.height).toBeCloseTo(4.4, 9);
+    expect(framed?.height).toBeCloseTo(5.4, 9);
     expect(framed && contains(framed, size, box)).toBe(true);
   });
 
@@ -139,7 +139,7 @@ describe("framing a model", () => {
   test("a canvas with no size yet frames as if it were square", () => {
     const framed = fitCamera([-8, -1, 8, 1], { width: 0, height: 0 });
     // Aspect 1, so the box's 16 across needs 16 of height.
-    expect(framed?.height).toBeCloseTo(17.6, 9);
+    expect(framed?.height).toBeCloseTo(21.6, 9);
   });
 
   test("padding is the margin, and none of it is still a fit", () => {
