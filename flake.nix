@@ -58,15 +58,15 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Crane's Cargo filter omits non-Rust assets. Keep the shaders and the
-        # JSON example embedded by `catchlight-cli render --schema`, even
-        # though that example lives under `tests/`. The Git LFS model fixtures
-        # stay out, so a plain clone is enough to `nix build`.
+        # Keep shaders, crate Markdown embedded by rustdoc, and the render
+        # schema's JSON example. Git LFS model fixtures stay out, so a plain
+        # clone is enough to build the binaries.
         src = lib.cleanSourceWith {
           src = ./.;
           name = "catchlight-source";
           filter = path: type:
             lib.hasSuffix ".wgsl" path
+            || (lib.hasSuffix ".md" path && lib.hasPrefix "${toString ./crates}/" path)
             || path == toString ./crates/catchlight-cli/tests/fixtures/render-spec.json
             || craneLib.filterCargoSources path type;
         };
