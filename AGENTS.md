@@ -67,6 +67,10 @@ tests with the affected crate or test; broaden when the change crosses shared
 boundaries or a failure warrants it. Documentation-only edits need reference
 and diff checks.
 
+- When adding or moving compile-time assets (`include_str!`, `include_bytes!`,
+  shaders), check the source filter in [flake.nix](flake.nix) and build the
+  affected Nix package. Cargo builds from the checkout can pass with assets
+  that Nix excludes.
 - Render fixtures and baselines use Git LFS; fetch the objects before render
   suites. The dev shell supplies lavapipe for machines without a hardware GPU.
 - For visual comparisons or intentional baseline updates, use the harness
