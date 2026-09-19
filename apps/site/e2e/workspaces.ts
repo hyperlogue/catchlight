@@ -73,6 +73,22 @@ export async function workspaces(
   };
   const draftVertex = '[data-mesh-vertex="30"]';
   const shapeVertex = '[data-catchlight-vertex-handle][data-vertex="30"]';
+  const meshFits = () => page.waitForFunction(() => {
+    const canvas = document.querySelector("[data-catchlight-mesh-canvas]");
+    const svg = canvas?.querySelector("svg");
+    if (!canvas || !svg) return false;
+    const bounds = canvas.getBoundingClientRect();
+    const vertices = canvas.querySelectorAll("[data-catchlight-mesh-hit]");
+    // ResizeObserver and React must publish the new size before checking the fit.
+    return bounds.height > 280 && vertices.length > 0 &&
+      svg.width.baseVal.value === canvas.clientWidth &&
+      svg.height.baseVal.value === canvas.clientHeight &&
+      [...vertices].every((vertex) => {
+        const point = vertex.getBoundingClientRect();
+        return point.left >= bounds.left && point.right <= bounds.right &&
+          point.top >= bounds.top && point.bottom <= bounds.bottom;
+      });
+  });
   const armed = () =>
     page.locator("[data-catchlight-workspace][data-recording]").count();
   const canvas = page.locator("canvas[data-catchlight-viewport]");
@@ -93,22 +109,13 @@ export async function workspaces(
     const before = await read();
     await button("Mesh").click();
     await page.locator("[data-catchlight-mesh-artwork]").waitFor();
-    await pause();
+    await meshFits();
     await page.setViewportSize({ width: 320, height: 844 });
-    await pause();
-    assert(await page.evaluate(() => {
-      const canvas = document.querySelector("[data-catchlight-mesh-canvas]")!.getBoundingClientRect();
-      const vertices = document.querySelectorAll("[data-catchlight-mesh-hit]");
-      return canvas.height > 280 && [...vertices].every((vertex) => {
-        const point = vertex.getBoundingClientRect();
-        return point.left >= canvas.left && point.right <= canvas.right &&
-          point.top >= canvas.top && point.bottom <= canvas.bottom;
-      });
-    }), "a fitted mesh stays framed after resizing, with space reclaimed from the pose shelf");
+    await meshFits();
     assert.equal((await read()).revision, before.revision);
     await page.screenshot({ path: `${shots}/${tag}-mesh-mobile.png` });
     await page.setViewportSize({ width: 1440, height: 960 });
-    await pause();
+    await meshFits();
     const image = page.locator("[data-catchlight-mesh-artwork]");
     const mapping = await image.getAttribute("transform");
     await drag(draftVertex, 7, 5);
