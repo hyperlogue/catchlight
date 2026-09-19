@@ -73,7 +73,7 @@ fn gen_fixture(args: &[String]) -> Result<()> {
 }
 
 fn import(args: &[String]) -> Result<()> {
-    use catchlight_import_inx::import_inx_bytes;
+    use catchlight_inx_importer::import_inx_bytes;
 
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;

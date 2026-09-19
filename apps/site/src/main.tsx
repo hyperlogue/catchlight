@@ -2,7 +2,7 @@
  * The host: choose a backend, build one editor, mount it.
  *
  * This is the whole of the site. Everything a person sees is
- * `@catchlight/editor`; what is left here is the two decisions only a host can
+ * `@catchlight/studio`; what is left here is the two decisions only a host can
  * make — where the model is served from, and what to do when the page
  * cannot start at all.
  *
@@ -31,10 +31,10 @@ import {
   OpfsStorage,
 } from "@catchlight/core";
 import type { Backend, Session, Storage } from "@catchlight/core";
-import { CatchlightEditor } from "@catchlight/editor";
+import { CatchlightEditor } from "@catchlight/studio";
 // Only the probe door below uses this, and only when the URL asks for it.
 import { fitCamera } from "@catchlight/react";
-import "@catchlight/editor/theme.css";
+import "@catchlight/studio/theme.css";
 // The generated module initializes itself on import: `cargo xtask build-wasm` emits
 // wasm-bindgen's bundler target, whose `.wasm` is an ESM import rather than a
 // fetch this page would have to sequence.

@@ -15,7 +15,7 @@ catchlight-core = { path = "../catchlight-core" }
 # the editor calls, so the fixture is authored the way a person would author
 # one rather than by transcribing numbers.
 catchlight-editor-core = { workspace = true }
-catchlight-import-inx = { path = "../catchlight-import-inx" }
+catchlight-inx-importer = { path = "../catchlight-import-inx" }
 # `xtask generate typescript` reads the wire types through `ts-rs`, so it is the
 # one place in the workspace that turns the `ts` feature on. Cargo unifies
 # features across a build, so `cargo test --workspace` compiles the protocol

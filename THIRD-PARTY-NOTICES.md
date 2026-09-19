@@ -19,7 +19,7 @@ credit everywhere else.
   `axisPoint()`.
 - `catchlight-core`'s `puppet/mod.rs`, `physics.rs` and `animation.rs` —
   tick order, the pendulum's frame and keyframe timing match the reference's.
-- `catchlight-import-inx`'s `to_clm.rs` — the reader is pinned to
+- `catchlight-inx-importer`'s `to_clm.rs` — the reader is pinned to
   inochi2d v0.8.6 and v0.8.7 behaviour and cites its source files.
 
 Catchlight itself is licensed `MIT OR Apache-2.0`; see [LICENSE-APACHE] and

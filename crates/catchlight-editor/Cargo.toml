@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The desktop editor GUI (egui): embeds the server and its socket"
+# No active development: the desktop editor is frozen; bug fixes only.
+publish = false
 
 [dependencies]
 catchlight-editor-server = { workspace = true }

@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@catchlight/core": "workspace:*",
-    "@catchlight/editor": "workspace:*",
+    "@catchlight/studio": "workspace:*",
     "@catchlight/react": "workspace:*",
     "@catchlight/wasm": "workspace:*",
     "react": "^19.2.0",

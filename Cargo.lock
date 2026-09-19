@@ -1679,7 +1679,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "catchlight-import-inx"
+name = "catchlight-inx-importer"
 version = "0.1.0"
 dependencies = [
  "catchlight-core",
@@ -6393,7 +6393,7 @@ dependencies = [
  "catchlight-core",
  "catchlight-editor-core",
  "catchlight-editor-protocol",
- "catchlight-import-inx",
+ "catchlight-inx-importer",
  "image",
  "serde_json",
  "syn 2.0.118",
