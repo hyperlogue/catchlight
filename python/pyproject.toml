@@ -11,14 +11,20 @@ license = "MIT OR Apache-2.0"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "hatchling>=1.27"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["catchlight"]
+
+[tool.hatch.build.targets.sdist]
+include = ["catchlight", "hatch_build.py", "README.md", "pyproject.toml", "licenses"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

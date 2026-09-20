@@ -1,0 +1,51 @@
+name: Python wheels
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - python/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/python-wheels.yml
+
+permissions:
+  contents: read
+
+# Build artifacts only. Registry publication is a separate release decision.
+jobs:
+  wheel:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container: quay.io/pypa/manylinux_2_28_${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build tools
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable
+          /opt/python/cp311-cp311/bin/python -m pip install 'hatchling>=1.27' 'auditwheel>=6.7' pytest
+          /opt/python/cp311-cp311/bin/python -m pip install --no-deps -e python
+      - name: Check packaging and build matching server wheel
+        run: |
+          export PATH="$HOME/.cargo/bin:/opt/python/cp311-cp311/bin:$PATH"
+          python -m pytest python/tests/test_packaging.py -q
+          python python/build_wheel.py --out dist/linux
+          auditwheel repair --plat manylinux_2_28_${{ matrix.arch }} --wheel-dir dist/repaired dist/linux/*.whl
+      - name: Verify installed wheel without a development environment
+        # The isolated install cannot import the checkout or find a server
+        # on PATH. The launch check needs no GPU; rendering needs host drivers.
+        run: |
+          /opt/python/cp311-cp311/bin/python python/smoke_wheel.py dist/repaired/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-manylinux_2_28-${{ matrix.arch }}
+          path: dist/repaired/*.whl

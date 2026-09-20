@@ -4,6 +4,45 @@ A blocking, dependency-free Python client for `catchlight-editor-server`.
 Generated dataclasses expose every typed command; the server validates model
 invariants and owns revisions, atomic edits, and branching history.
 
+## Installation
+
+Once a release has been published:
+
+```sh
+python -m pip install catchlight
+```
+
+The release build targets Linux x86-64 and AArch64 wheels bundling the matching
+`catchlight-editor-server`. Both architecture builds must pass before release;
+this configuration does not mean those wheels have already been published.
+The target baseline is Python 3.11 or later and glibc 2.28 or later
+(`manylinux_2_28`); musl/Alpine, macOS, and Windows are not bundled-server wheel
+targets. The package does not include `catchlight-cli`,
+`catchlight-editor-cli`, or the web editor UI. It never downloads a server
+at runtime.
+
+`launch()` selects a server in this order: an explicit `binary=` argument,
+`CATCHLIGHT_EDITOR_SERVER`, the bundled server, `PATH`, then the source
+checkout's `target/debug` build. An explicit override is your responsibility
+to keep compatible with the client. The bundled executable is internal to
+the package and does not add a command to `PATH`.
+
+Source distributions and editable installs contain the Python client only;
+they do not build Rust automatically. To launch locally from a checkout, run
+`cargo build --locked -p catchlight-editor-server`. For a source installation
+elsewhere, install the matching server separately and use `binary=` or
+`CATCHLIGHT_EDITOR_SERVER`. `catchlight.connect(url, token)` attaches to an
+existing HTTP server and needs no local executable, including on platforms
+without bundled wheels.
+
+Basic model editing and saving require no GPU. Preview rendering requires a
+working system graphics stack: a Vulkan loader and driver (a hardware driver
+or Mesa's lavapipe CPU driver), or a supported EGL/OpenGL backend. Wheels do
+not ship graphics drivers. NixOS requires an appropriate runtime environment
+for ordinary manylinux executables; a wheel does not replace that setup.
+
+## Example
+
 ```python
 import catchlight
 
@@ -165,7 +204,37 @@ uv run pytest -q
 ```
 
 Tests launch isolated backends and cover both socket and HTTP transports.
-`launch()` locates its binary from an explicit `binary` argument, then
-`$CATCHLIGHT_EDITOR_SERVER`, `PATH`, or the workspace's `target/debug` build.
 Use `-m 'not slow'` to skip the real 30-second idle timeout test. Unix-only
 because the launcher's local transport is a Unix socket.
+
+## Building distributions
+
+From the repository root, with Cargo and the Python development dependencies
+available:
+
+```sh
+uv run --project python python python/build_wheel.py --out dist/python
+uv run --project python python python/smoke_wheel.py dist/python/*.whl
+```
+
+The builder checks that the Python and Rust workspace versions match, compiles
+only `catchlight-editor-server` in release mode with the checked-in Cargo lock,
+and bundles it with the Python sources and license/third-party documents.
+The ELF header determines the wheel architecture. The executable remains
+executable after installation. A local `py3-none-linux_*` wheel depends on the
+build environment's runtime libraries; it is not a portable release artifact,
+especially when built inside Nix.
+
+The **Python wheels** GitHub Actions workflow builds natively on both supported
+architectures inside the official `manylinux_2_28` images. It runs `auditwheel
+repair`, which checks the glibc baseline and bundles required non-system linked
+libraries, then installs each repaired wheel in an isolated environment and
+launches its bundled server to create and save a model. The workflow uploads
+artifacts for review and does not publish to PyPI. Rendering drivers loaded
+dynamically remain a system dependency. Both architecture jobs must pass
+before those platform wheels are released.
+
+For a client-only source distribution, run `uv build --sdist python`. Do not
+publish a client-only `py3-none-any` wheel as the bundled-server release.
+`CATCHLIGHT_BUNDLE_SERVER` is the build hook's internal input for a prebuilt
+server; use the builder above to guarantee it comes from the same checkout.

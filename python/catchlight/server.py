@@ -23,6 +23,10 @@ Invariants this module enforces:
   socket comes back, not until the file appears and not for a line on stderr.
   A server that exits first fails the launch immediately, with what it printed.
 
+- **The installed client prefers its matching server.** Explicit arguments
+  and the environment may override it; an unrelated executable on `PATH`
+  cannot shadow the server bundled in a platform wheel.
+
 - **Sessions live in the process, not the connection.** So [`restart`] loses
   every open session, and a client held across one is talking to a new editor
   with an empty session list.
@@ -80,7 +84,8 @@ def launch(
     """Start an editor on a private socket and wait until it answers.
 
     `binary` is the server to run; absent, it is `$CATCHLIGHT_EDITOR_SERVER`,
-    then `catchlight-editor-server` on `PATH`, then this workspace's own
+    then the server bundled with this package, then `catchlight-editor-server`
+    on `PATH`, then this workspace's own
     `target/debug` build — the last of those so the tests in this repository
     need no setup beyond `cargo build`.
 
@@ -320,6 +325,9 @@ def _find_binary(explicit: str | os.PathLike[str] | None) -> str:
     from_env = os.environ.get(BINARY_ENV)
     if from_env:
         return _runnable(from_env, f"the binary ${BINARY_ENV} names")
+    bundled = Path(__file__).resolve().parent / "bin" / BINARY_NAME
+    if bundled.exists():
+        return _runnable(bundled, "the bundled server")
     on_path = shutil.which(BINARY_NAME)
     if on_path:
         return on_path
@@ -329,8 +337,9 @@ def _find_binary(explicit: str | os.PathLike[str] | None) -> str:
     if local.is_file():
         return str(local)
     raise ServerError(
-        f"no {BINARY_NAME}: pass binary=, set ${BINARY_ENV}, put it on PATH, "
-        f"or build it into {local}"
+        f"no {BINARY_NAME}: install a supported Linux platform wheel, pass "
+        f"binary=, set ${BINARY_ENV}, put it on PATH, or run "
+        "cargo build -p catchlight-editor-server in the source checkout"
     )
 
 
@@ -338,6 +347,8 @@ def _runnable(path: str | os.PathLike[str], what: str) -> str:
     resolved = Path(path)
     if not resolved.is_file():
         raise ServerError(f"{what} is not there: {resolved}")
+    if not os.access(resolved, os.X_OK):
+        raise ServerError(f"{what} is not executable: {resolved}")
     return str(resolved)
 
 
