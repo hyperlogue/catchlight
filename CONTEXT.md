@@ -334,9 +334,9 @@ _Avoid_: metadata, custom data, plugin
 ### Editing
 
 **Studio**:
-The visual authoring workspace: its viewport, panels and controls let a person
-work on a model through an editor.
-_Avoid_: editor (when naming the visual workspace)
+The local authoring application where a person and an agent work on the same
+model through shared editor sessions.
+_Avoid_: editor (the session owner), browser demo (the browser-only experience)
 
 **Editor**:
 The one thing that edits: it holds sessions, takes commands and keeps each

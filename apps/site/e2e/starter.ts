@@ -1,5 +1,5 @@
 /** Regenerate the site's original, layered starter through the editor itself.
- * Run the dev host, then `bun run --filter catchlight-site sample [url]`.
+ * Run the dev host, then `bun run --filter catchlight-demo sample [url]`.
  * SVG is the source art; Chromium rasterizes it, and the ordinary authoring
  * protocol creates the meshes, controls and .clm. No private model is used. */
 import { chromium } from "playwright-core";

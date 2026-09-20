@@ -1,5 +1,5 @@
 {
-  "name": "catchlight-site",
+  "name": "catchlight-demo",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@catchlight/core": "workspace:*",
-    "@catchlight/studio": "workspace:*",
+    "@catchlight/editor": "workspace:*",
     "@catchlight/react": "workspace:*",
     "@catchlight/wasm": "workspace:*",
     "react": "^19.2.0",

@@ -7,6 +7,20 @@
 Catchlight is a software stack for 2.5D character animation. It simulates
 3D movement through deforming 2D parts.
 
+## Applications and libraries
+
+| Offering | Audience and purpose | Distribution |
+| --- | --- | --- |
+| **Catchlight Demo** | Try authoring in a browser, with the editor running in the tab. | The hosted app in `apps/site/`, named `catchlight-demo` in the web workspace. |
+| **Catchlight Studio** | Author locally with a person and an agent sharing editor sessions. | Planned local application: the editor server together with a web UI served on the local machine. The server and connected frontend exist; the bundled application and its launcher are not implemented yet. |
+| **Catchlight libraries** | Embed animation or authoring in another application, or automate an editor. | Rust libraries, the `@catchlight/*` browser packages, and the [Python client](python/README.md). |
+
+`@catchlight/editor` is the embeddable React frontend with the default theme.
+The host chooses its backend and supplies the WASM module. It does not include
+the native editor-server executable or a local application launcher.
+`@catchlight/react` exposes the unstyled parts, and `@catchlight/core` supplies
+the web-platform glue.
+
 ## Acknowledgement
 
 Catchlight is heavily inspired by

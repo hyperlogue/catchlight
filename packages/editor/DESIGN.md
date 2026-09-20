@@ -137,7 +137,7 @@ boundaries keep future tools consistent:
 | `catchlight-editor-wasm` | Evaluated geometry, coordinate conversion, decoded artwork, owned draft/gesture handles           |
 | `@catchlight/core`       | Session lifecycle, replica reads, typed protocol routing, scratch and storage                     |
 | `@catchlight/react`      | Unstyled controls, authoring panels, gestures and workspace hooks                                 |
-| `@catchlight/studio`     | Layout, theme, command palette and notifications                                                  |
+| `@catchlight/editor`     | Layout, theme, command palette and notifications                                                  |
 | `apps/site`              | Backend choice and the original Mica starter model                                                |
 
 No component maintains a second authored model. Queries read the replica;
@@ -218,7 +218,7 @@ modal errors, artwork import, mesh generation, preview export, resizing,
 mobile panels, dirty-close protection and saved-file reopening. Its probe
 reads state for assertions; it does not author the edits being tested.
 
-`bun run --filter catchlight-site e2e` adds both backends, WebGPU, WebGL2,
+`bun run --filter catchlight-demo e2e` adds both backends, WebGPU, WebGL2,
 the browser offering neither, agent edits over a private socket and multiple
 GL canvases. It serves the production bundle. Renderer readback validates
 pixels because headless WebGPU can render without compositing its canvas into
@@ -229,7 +229,7 @@ look, blink, wave, tail sway and breathing. To regenerate it, build wasm and
 start the site with the probe available, then run:
 
 ```sh
-bun run --filter catchlight-site sample http://localhost:5173/
+bun run --filter catchlight-demo sample http://localhost:5173/
 ```
 
 The script rasterises its own SVG artwork in Chromium and authors the model

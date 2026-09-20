@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "One-time import of inochi2d .inx/.inp puppets into catchlight's .clm"
+# Internal legacy-conversion aid; no public API commitment and may be removed.
+publish = false
 
 [dependencies]
 catchlight-core = { workspace = true }

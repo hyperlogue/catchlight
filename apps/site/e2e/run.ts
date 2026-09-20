@@ -1,11 +1,11 @@
 /**
  * The web editor's smoke test: serve what Pages would ship, and drive it.
  *
- * Run it from the dev shell: `bun run --filter catchlight-site e2e`. The
+ * Run it from the dev shell: `bun run --filter catchlight-demo e2e`. The
  * Chromium it drives is in that shell.
  *
  * ```text
- * bun run --filter catchlight-site e2e
+ * bun run --filter catchlight-demo e2e
  *   CHROMIUM=<exe>        overrides the `chromium` on PATH
  *   E2E_BUILD=1           rebuild the site even when `dist/` is already there
  *   E2E_SITE_PORT=4173    where `vite preview` listens; a free port if taken
@@ -102,7 +102,7 @@ if (
   process.env.E2E_BUILD === "1" ||
   !(await Bun.file(at("apps", "site", "dist", "index.html")).exists())
 ) {
-  await must("bun", ["run", "--filter", "catchlight-site", "build"]);
+  await must("bun", ["run", "--filter", "catchlight-demo", "build"]);
 }
 
 const preview = serve(

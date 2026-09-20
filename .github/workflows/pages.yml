@@ -34,7 +34,7 @@ jobs:
       - run: nix develop -c cargo xtask build-wasm
       - run: nix develop -c bun install --frozen-lockfile
       # Pages serves under /<repo>/, which every asset URL has to carry.
-      - run: nix develop -c bun run --filter catchlight-site build
+      - run: nix develop -c bun run --filter catchlight-demo build
         env:
           VITE_BASE: /${{ github.event.repository.name }}/
       - uses: actions/upload-pages-artifact@v5

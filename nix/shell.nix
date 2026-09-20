@@ -52,7 +52,7 @@ in
         # Chromium reaches a WebGPU device through this same ICD.
         pkgs.mesa
 
-        # The browser `bun run --filter catchlight-site e2e` drives. Playwright's
+        # The browser `bun run --filter catchlight-demo e2e` drives. Playwright's
         # own download is a prebuilt binary that does not run here, so the test
         # takes the executable as an argument and this is what it finds on PATH.
         # The largest closure in the shell, and in the one shell on purpose: a

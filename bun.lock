@@ -10,12 +10,12 @@
       },
     },
     "apps/site": {
-      "name": "catchlight-site",
+      "name": "catchlight-demo",
       "version": "0.1.0",
       "dependencies": {
         "@catchlight/core": "workspace:*",
+        "@catchlight/editor": "workspace:*",
         "@catchlight/react": "workspace:*",
-        "@catchlight/studio": "workspace:*",
         "@catchlight/wasm": "workspace:*",
         "react": "^19.2.0",
         "react-dom": "^19.2.0",
@@ -34,7 +34,7 @@
       "version": "0.1.0",
     },
     "packages/editor": {
-      "name": "@catchlight/studio",
+      "name": "@catchlight/editor",
       "version": "0.1.0",
       "devDependencies": {
         "@catchlight/core": "workspace:*",
@@ -78,9 +78,9 @@
   "packages": {
     "@catchlight/core": ["@catchlight/core@workspace:packages/core"],
 
-    "@catchlight/react": ["@catchlight/react@workspace:packages/react"],
+    "@catchlight/editor": ["@catchlight/editor@workspace:packages/editor"],
 
-    "@catchlight/studio": ["@catchlight/studio@workspace:packages/editor"],
+    "@catchlight/react": ["@catchlight/react@workspace:packages/react"],
 
     "@catchlight/wasm": ["@catchlight/wasm@workspace:packages/wasm"],
 
@@ -138,7 +138,7 @@
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 
-    "catchlight-site": ["catchlight-site@workspace:apps/site"],
+    "catchlight-demo": ["catchlight-demo@workspace:apps/site"],
 
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
 

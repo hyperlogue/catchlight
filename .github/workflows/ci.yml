@@ -87,7 +87,7 @@ jobs:
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test
-      - run: nix develop -c bun run --filter catchlight-site build
+      - run: nix develop -c bun run --filter catchlight-demo build
       # The smoke test drives the built site in a real browser, against both
       # backends; the connected one is a server process with an agent editing
       # its document over the Unix socket, so those two binaries have to exist
@@ -100,7 +100,7 @@ jobs:
       # of its own.
       - run: nix develop -c bash -c 'cd python && uv run pytest -q'
       # The one step that wants the browser, and the only one that pays for it.
-      - run: nix develop -c bun run --filter catchlight-site e2e
+      - run: nix develop -c bun run --filter catchlight-demo e2e
 
   packages:
     name: nix packages
