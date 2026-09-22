@@ -61,11 +61,12 @@ pub(crate) struct MeshGroupPins {
     pub(crate) per_child: HashMap<NodeIdx, ChildPins>,
 }
 
-/// O(1) point-in-triangle lookup baked at load time. Each cell stores
-/// `triangle_index + 1` (0 means "no triangle covers this cell"). A
-/// `lookup(p)` floors `p - bounds_min` to find the cell. Each triangle is
-/// rasterized into the integer-cell grid spanning the MG mesh's bounding box
-/// by testing the cell's lower-left corner.
+/// Triangle hints baked at load time. Each cell stores `triangle_index + 1`
+/// (0 means no triangle covers its lower-left corner). `lookup(p)` floors
+/// `p - bounds_min` to find that corner's hint, not necessarily the triangle
+/// containing `p`. Propagation must validate the actual point and fall back
+/// to a scan, including when the cell has no hint. Otherwise fractional
+/// vertices jump at cell boundaries or lose deformation near mesh edges.
 ///
 /// Overlapping triangles use last-write-wins. A 2D MG with overlapping
 /// triangles is malformed input.
@@ -707,10 +708,12 @@ fn translate_children_delta(
     let mg_indices = &mg.mesh.indices;
     let mg_local = local_positions(&mg.mesh);
     let combined = mg.deform_stack.combined();
-    let tri_idx = match mg.bitmap.as_ref() {
-        Some(bm) => bm.lookup(cvertex_proj),
-        None => find_triangle_strict_hint(&mg_local, mg_indices, cvertex_proj, 0),
-    };
+    let hint = mg
+        .bitmap
+        .as_ref()
+        .and_then(|bm| bm.lookup(cvertex_proj))
+        .unwrap_or(0);
+    let tri_idx = find_triangle_strict_hint(&mg_local, mg_indices, cvertex_proj, hint);
     let Some(tri_idx) = tri_idx else {
         return Vec2::ZERO;
     };
@@ -833,16 +836,13 @@ fn propagate_to_child(
             let cv_child_local = base_v - child_origin + cur_deform_scratch[i];
             let cv_mg_local = child_to_mg_2d.transform_point2(cv_child_local);
 
-            // Strict inside-only lookup leaves vertices outside the MG mesh
-            // unchanged. With the bitmap we get O(1) lookup; the
-            // hinted scan is the fallback for empty / oversized MGs.
-            let tri_idx = match bitmap {
-                Some(bm) => bm.lookup(cv_mg_local),
-                None => {
-                    let hint = pins.vertices.get(i).copied().unwrap_or(0);
-                    find_triangle_strict_hint(&mg_local, mg_indices, cv_mg_local, hint)
-                }
-            };
+            // A cell's corner can lie in a different triangle from this
+            // vertex. Validate its hint at the exact point; only a strict
+            // containment test may decide to leave an outside vertex alone.
+            let hint = bitmap
+                .and_then(|bm| bm.lookup(cv_mg_local))
+                .unwrap_or_else(|| pins.vertices.get(i).copied().unwrap_or(0));
+            let tri_idx = find_triangle_strict_hint(&mg_local, mg_indices, cv_mg_local, hint);
             let Some(tri_idx) = tri_idx else {
                 scratch.push(Vec2::ZERO);
                 continue;
@@ -1012,6 +1012,169 @@ mod tests {
         // strict scan's identity-passthrough convention.
         assert_eq!(bm.lookup(Vec2::new(-5.0, -5.0)), None);
         assert_eq!(bm.lookup(Vec2::new(100.0, 100.0)), None);
+    }
+
+    fn fractional_bitmap_fixture(
+        vertices: Vec<Vec2>,
+        indices: Vec<u16>,
+        offsets: Vec<Vec2>,
+        points: &[Vec2],
+        use_bitmap: bool,
+    ) -> (Vec<Vec2>, Vec<Vec2>) {
+        use crate::components::{MeshGroupData, Node, PartData};
+        let mut arena = Arena::new();
+        let count = vertices.len();
+        let mg_id = arena.insert_child(
+            arena.root(),
+            Node {
+                kind: NodeKind::MeshGroup(Box::new(MeshGroupData {
+                    mesh: Mesh::new(
+                        vertices,
+                        vec![Vec2::ZERO; count],
+                        MeshIndices::U16(indices),
+                        Vec2::ZERO,
+                    ),
+                    deform_stack: crate::deform::DeformStack::new(count),
+                    translate_children: true,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        );
+        let part_id = arena.insert_child(
+            mg_id,
+            Node {
+                kind: NodeKind::Part(Box::new(PartData {
+                    mesh: Mesh::new(
+                        points.to_vec(),
+                        vec![Vec2::ZERO; points.len()],
+                        MeshIndices::U16(vec![]),
+                        Vec2::ZERO,
+                    ),
+                    deform_stack: crate::deform::DeformStack::new(points.len()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        );
+        let anchors: Vec<_> = points
+            .iter()
+            .map(|p| {
+                let mut node = Node::default();
+                node.transform.translation.x = p.x;
+                node.transform.translation.y = p.y;
+                arena.insert_child(mg_id, node)
+            })
+            .collect();
+        let mut transforms = GlobalTransforms::new();
+        arena.compute_transforms(&mut transforms);
+        let pins = bake_mesh_group_pins(&arena, &transforms, mg_id);
+        let NodeKind::MeshGroup(mg) = &mut arena.get_mut(mg_id).unwrap().kind else {
+            panic!()
+        };
+        mg.pins = pins;
+        if use_bitmap {
+            mg.bitmap = MgTriangleBitmap::build(&mg.mesh);
+        }
+        mg.deform_stack
+            .set(DeformSource::Param(0), offsets)
+            .unwrap();
+        propagate_mesh_group_deforms(&mut arena, &mut transforms, Mat4::IDENTITY);
+        arena.combine_deforms();
+        let NodeKind::Part(part) = &arena.get(part_id).unwrap().kind else {
+            panic!()
+        };
+        let warped = points
+            .iter()
+            .zip(part.deform_stack.combined())
+            .map(|(p, d)| *p + *d)
+            .collect();
+        let shifted = anchors
+            .iter()
+            .map(|id| {
+                let t = arena.get(*id).unwrap().transform.translation;
+                Vec2::new(t.x, t.y)
+            })
+            .collect();
+        (warped, shifted)
+    }
+
+    #[test]
+    fn fractional_bitmap_warp_matches_exact_piecewise_affine_surface() {
+        let points = [
+            Vec2::new(0.99, 0.97),
+            Vec2::new(1.01, 0.97),
+            Vec2::new(0.99, 0.971),
+            Vec2::new(0.25, 0.75),
+            Vec2::new(0.75, 0.25),
+        ];
+        for bitmap in [false, true] {
+            let (warped, shifted) = fractional_bitmap_fixture(
+                vec![
+                    Vec2::ZERO,
+                    Vec2::new(2., 0.),
+                    Vec2::splat(2.),
+                    Vec2::new(0., 2.),
+                ],
+                vec![0, 1, 2, 0, 2, 3],
+                vec![
+                    Vec2::ZERO,
+                    Vec2::new(0.7, 0.),
+                    Vec2::ZERO,
+                    Vec2::new(0., 0.5),
+                ],
+                &points,
+                bitmap,
+            );
+            for (i, p) in points.iter().enumerate() {
+                let delta = if p.x >= p.y {
+                    Vec2::new(0.35 * (p.x - p.y), 0.)
+                } else {
+                    Vec2::new(0., 0.25 * (p.y - p.x))
+                };
+                assert!(
+                    (warped[i] - (*p + delta)).length() < 1e-5,
+                    "part at {p:?}, bitmap={bitmap}: {:?}",
+                    warped[i]
+                );
+                assert!(
+                    (shifted[i] - (*p + delta)).length() < 1e-5,
+                    "anchor at {p:?}, bitmap={bitmap}: {:?}",
+                    shifted[i]
+                );
+            }
+            let a = warped[1] - warped[0];
+            let b = warped[2] - warped[0];
+            assert!(a.perp_dot(b) > 0., "a thin child triangle must not flip");
+        }
+    }
+
+    #[test]
+    fn fractional_bitmap_cell_does_not_decide_surface_membership() {
+        for bitmap in [false, true] {
+            let p = Vec2::splat(0.3);
+            // No integer cell corner lies inside this small triangle.
+            let (warped, shifted) = fractional_bitmap_fixture(
+                vec![Vec2::splat(0.2), Vec2::new(0.8, 0.2), Vec2::new(0.2, 0.8)],
+                vec![0, 1, 2],
+                vec![Vec2::X; 3],
+                &[p],
+                bitmap,
+            );
+            assert!((warped[0] - p - Vec2::X).length() < 1e-5);
+            assert!((shifted[0] - p - Vec2::X).length() < 1e-5);
+            // The cell corner is on the triangle, but the actual point is outside.
+            let p = Vec2::splat(1.9);
+            let (warped, shifted) = fractional_bitmap_fixture(
+                vec![Vec2::ZERO, Vec2::new(2., 0.), Vec2::new(0., 2.)],
+                vec![0, 1, 2],
+                vec![Vec2::X; 3],
+                &[p],
+                bitmap,
+            );
+            assert!((warped[0] - p).length() < 1e-5);
+            assert!((shifted[0] - p).length() < 1e-5);
+        }
     }
 
     #[test]
