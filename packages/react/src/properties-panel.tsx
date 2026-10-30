@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSelection } from "./selection.js";
 import { useNodeInfo, useReplica } from "./replica.js";
 import { InspectorRoot } from "./inspector.js";
-import { Disclosure, EmptyState, Icon, IconButton } from "./controls.js";
+import { Disclosure, EmptyState, Icon, IconButton, SearchField } from "./controls.js";
 import { flattenTree, kindLabels, kindIcons, useCommand, type ErrorHandler } from "./authoring.js";
 import { MaskPanel, SlotsPanel } from "./model-panels.js";
 import { MeshPanel, PhysicsPanel, SpinePanel } from "./rigging.js";
@@ -97,41 +97,36 @@ export function AssetsPanel({ session }: { session: Session }) {
       .filter((n) => n.kind === "part")
       .map((n) => s.nodeInfo(n.id)!),
   );
-  const { select } = useSelection();
+  const { node, select } = useSelection();
   const [search, setSearch] = useState("");
+  const needle = search.trim().toLocaleLowerCase();
+  const showing = textures
+    .map((texture) => ({ texture, owners: parts.filter((part) => part.texture === texture.id) }))
+    .filter(({ texture, owners }) =>
+      `${texture.id} ${owners.map((part) => part.name).join(" ")}`
+        .toLocaleLowerCase()
+        .includes(needle),
+    );
   return (
     <>
-      <label data-catchlight-search="">
-        <Icon name="search" width="14" height="14" />
-        <input
-          aria-label="Search textures"
-          placeholder="Find artwork…"
-          value={search}
-          onChange={(e) => setSearch(e.currentTarget.value)}
-        />
-      </label>
+      <SearchField label="Search textures" placeholder="Find artwork…" value={search} onValueChange={setSearch} />
       {!textures.length ? (
         <EmptyState icon="part" title="Your artwork lives here">
           Import PNG or TGA images to start building your character.
         </EmptyState>
+      ) : !showing.length ? (
+        <EmptyState icon="search" title="No matching artwork">
+          Try a part name or clear the search to see all artwork.
+        </EmptyState>
       ) : (
         <div data-catchlight-asset-list="">
-          {textures
-            .map((t) => ({
-              texture: t,
-              owners: parts.filter((p) => p.texture === t.id),
-            }))
-            .filter(({ texture, owners }) =>
-              `${texture.id} ${owners.map((p) => p.name).join(" ")}`
-                .toLowerCase()
-                .includes(search.toLowerCase()),
-            )
-            .map(({ texture: t, owners }) => (
+          {showing.map(({ texture: t, owners }) => (
               <button
                 type="button"
                 key={t.id}
                 data-catchlight-asset=""
-                onClick={() => select(owners[0]?.id)}
+                aria-pressed={owners.some((owner) => owner.id === node)}
+                onClick={() => select(owners.find((owner) => owner.id === node)?.id ?? owners[0]?.id)}
                 title={owners.map((p) => p.name).join(", ") || t.id}
               >
                 <span data-catchlight-asset-thumb="">

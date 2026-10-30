@@ -157,6 +157,7 @@ export {
   Icon,
   IconButton,
   Field,
+  SearchField,
   NumberField,
   TextField,
   Disclosure,

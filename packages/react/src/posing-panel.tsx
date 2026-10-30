@@ -16,6 +16,7 @@ import {
   IconButton,
   Modal,
   NumberField,
+  SearchField,
   round,
 } from "./controls.js";
 import { useCommand, type ErrorHandler } from "./authoring.js";
@@ -36,21 +37,13 @@ export function ParamsPanel({
   const [adding, setAdding] = useState(false);
   const [settings, setSettings] = useState<ParamId | undefined>();
   const showing = params.filter((p) =>
-    p.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+    p.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
   );
   const edit = params.find((p) => p.id === settings);
   return (
     <div data-catchlight-params-panel="">
       <div data-catchlight-panel-tools="">
-        <label data-catchlight-search="">
-          <Icon name="search" width="14" height="14" />
-          <input
-            aria-label="Search params"
-            placeholder="Find a param…"
-            value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
-          />
-        </label>
+        <SearchField label="Search params" placeholder="Find a param…" value={search} onValueChange={setSearch} />
         <button type="button" onClick={() => setAdding(true)}>
           <Icon name="plus" />
           New param
@@ -74,7 +67,9 @@ export function ParamsPanel({
         </EmptyState>
       )}
       {!!params.length && !showing.length && (
-        <p data-catchlight-empty="">No params match “{search}”.</p>
+        <EmptyState icon="search" title="No matching params">
+          Try a different name or clear the search to see all params.
+        </EmptyState>
       )}
       {adding && (
         <NewParamDialog
@@ -373,8 +368,8 @@ export function DeformPanel({
         </select>
       </Field>
       <Field label="Move">
-        <NumberField label="Deform X" value={x} unit="X" onCommit={setX} />
-        <NumberField label="Deform Y" value={y} unit="Y" onCommit={setY} />
+        <NumberField label="Deform X" value={x} prefix="X" onCommit={setX} />
+        <NumberField label="Deform Y" value={y} prefix="Y" onCommit={setY} />
       </Field>
       <Field label="Rotate">
         <NumberField label="Deform rotation" value={rotate} unit="°" onCommit={setRotate} />

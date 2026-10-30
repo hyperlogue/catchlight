@@ -105,12 +105,43 @@ export async function studio(
     await page.locator('[data-catchlight-node][data-node="face"]').waitFor();
     await page.waitForTimeout(700);
     const search = page.getByRole("textbox", { name: "Search nodes" });
+    const revision = (await read()).revision;
     await search.fill("waving");
     assert.equal(await page.locator("[data-catchlight-node]").count(), 3);
-    await search.fill("");
+    await search.fill("no such node");
+    await page.getByText("No matching nodes.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Clear search nodes", exact: true }).click();
+    assert(await search.evaluate((input) => input === document.activeElement));
     await selected("Face");
     await page.getByRole("button", { name: "Artwork", exact: true }).click();
     assert.equal(await page.locator("[data-catchlight-asset]").count(), 13);
+    assert.equal(await page.locator('[data-catchlight-asset][aria-pressed="true"]').count(), 1);
+    assert(await page.locator('[data-catchlight-asset][aria-pressed="true"]').evaluate((asset) => {
+      const swatch = document.createElement("span");
+      swatch.style.backgroundColor = "var(--cl-accent-soft)";
+      asset.append(swatch);
+      const selected = getComputedStyle(asset).backgroundColor === getComputedStyle(swatch).backgroundColor;
+      swatch.remove();
+      return selected;
+    }), "the selected artwork has the shared selection fill");
+    const artworkSearch = page.getByRole("textbox", { name: "Search textures" });
+    await artworkSearch.fill("no such artwork");
+    await page.getByText("No matching artwork", { exact: true }).waitFor();
+    await artworkSearch.press("Escape");
+    assert.equal(await artworkSearch.inputValue(), "");
+    assert.equal(await page.locator("[data-catchlight-asset]").count(), 13);
+    const paramSearch = page.getByRole("textbox", { name: "Search params" });
+    const paramCount = await page.locator("[data-catchlight-param-card]").count();
+    await paramSearch.fill("no such param");
+    await page.getByText("No matching params", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Clear search params", exact: true }).click();
+    assert(await paramSearch.evaluate((input) => input === document.activeElement));
+    assert.equal(await page.locator("[data-catchlight-param-card]").count(), paramCount);
+    assert.equal((await read()).revision, revision, "search and selection never author the model");
+    await page.getByLabel("Replace artwork", { exact: true }).focus();
+    assert(await page.locator("[data-catchlight-upload-art]").evaluate((label) =>
+      getComputedStyle(label).outlineStyle !== "none",
+    ), "the transparent file input exposes focus on its visible label");
     assert(
       await page
         .locator("[data-catchlight-asset-thumb] canvas")
@@ -426,6 +457,13 @@ export async function studio(
     );
     await page.screenshot({ path: `${shots}/${tag}-studio-desktop.png` });
     await page.setViewportSize({ width: 390, height: 844 });
+    for (const target of [
+      page.locator("[data-catchlight-workspace-modes] button").first(),
+      page.locator("[data-catchlight-param-card-head] > [data-catchlight-icon-button]").first(),
+    ]) {
+      const bounds = await target.boundingBox();
+      assert(bounds && bounds.width >= 40 && bounds.height >= 40, "touch targets remain usable on narrow screens");
+    }
     assert(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,

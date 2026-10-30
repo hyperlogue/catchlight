@@ -94,8 +94,12 @@ hover, keyboard focus, recording and errors are separate states.
   and Record stay in the center-pane toolbar. Selection and pan sit at the
   lower left of the canvas; zoom and fit sit at the lower right.
 - Structure and Artwork share the left panel. Search retains ancestors so
-  a result still has a place in the model. The gallery uses actual decoded
-  artwork, including TGA, with transparency preserved.
+  a result still has a place in the model. New queries reveal matching paths;
+  clearing restores the tree's ordinary expansion. Node, artwork and parameter
+  searches offer a clear action and Escape-to-clear, retaining input focus.
+  Empty results explain how to recover. The gallery uses actual decoded
+  artwork, including TGA, with transparency preserved, and marks the selected
+  part's texture.
 - Arrange owns selection, pan, zoom and base transform handles. Mesh opens an
   isolated artwork view; Record captures gestures into a selected binding cell.
   One canvas survives model switches and empty states. A fitted view leaves

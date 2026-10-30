@@ -102,6 +102,49 @@ export function Field({
     </div>
   );
 }
+/** Clearing keeps focus in the search; an empty Escape belongs to its parent. */
+export function SearchField({
+  label,
+  placeholder,
+  value,
+  onValueChange,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <div data-catchlight-search="">
+      <Icon name="search" width="14" height="14" />
+      <input
+        ref={input}
+        aria-label={label}
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onValueChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && value) {
+            event.preventDefault();
+            event.stopPropagation();
+            onValueChange("");
+          }
+        }}
+      />
+      {value && (
+        <IconButton
+          icon="close"
+          label={`Clear ${label.toLocaleLowerCase()}`}
+          onClick={() => {
+            onValueChange("");
+            input.current?.focus();
+          }}
+        />
+      )}
+    </div>
+  );
+}
 export function NumberField({
   label,
   value,

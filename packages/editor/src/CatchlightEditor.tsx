@@ -30,6 +30,7 @@ import {
   PresenceProvider,
   PropertiesPanel,
   PhysicsSettings,
+  SearchField,
   SessionList,
   WeldsPanel,
   downloadName,
@@ -795,15 +796,12 @@ function Workspace({
         {left === "structure" ? (
           <>
             <div data-catchlight-tree-tools="">
-              <label data-catchlight-search="">
-                <Icon name="search" width="14" height="14" />
-                <input
-                  aria-label="Search nodes"
-                  placeholder="Find a node…"
-                  value={search}
-                  onChange={(e) => setSearch(e.currentTarget.value)}
-                />
-              </label>
+              <SearchField
+                label="Search nodes"
+                placeholder="Find a node…"
+                value={search}
+                onValueChange={setSearch}
+              />
               <details data-catchlight-menu="">
                 <summary aria-label="Add node">
                   <Icon name="plus" />
