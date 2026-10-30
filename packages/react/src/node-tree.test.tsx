@@ -6,9 +6,14 @@ import "./test/setup.js";
 
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
+import type { TreeNode } from "@catchlight/core";
 
 import { EditorProvider, NodeTree, SelectionProvider, useSelection } from "./index.js";
-import { fire, harness, mount, run, settle, stubLayout } from "./test/harness.js";
+import { fakeReplica, fire, harness, mount, run, settle, stubLayout } from "./test/harness.js";
+
+function treeNode(id: string, name: string, children: TreeNode[] = []): TreeNode {
+  return { id, name, kind: "group", z_order: 0, enabled: true, children };
+}
 
 describe("the node tree", () => {
   test("renders the model's tree, nested", async () => {
@@ -97,6 +102,84 @@ describe("the node tree", () => {
     await run(() => session.send({ cmd: "node_add", parent: "root", kind: "part", name: "hair" }));
 
     expect(view.container.querySelectorAll("[data-catchlight-node]").length).toBe(2);
+    await view.unmount();
+  });
+
+  test("each search reveals matches and clearing restores ordinary disclosures", async () => {
+    const { editor } = await harness();
+    const session = await editor.newSession();
+    fakeReplica(session).doc!.root = treeNode("root", "Model", [
+      treeNode("head", "Head", [
+        treeNode("eyes", "Eyes", [treeNode("iris", "Iris")]),
+        treeNode("hair", "Hair"),
+      ]),
+      treeNode("body", "Body", [treeNode("finger", "Finger")]),
+    ]);
+    const ui = (filter = "") => (
+      <EditorProvider editor={editor}>
+        <SelectionProvider session={session}>
+          <NodeTree.Root session={session} filter={filter} />
+        </SelectionProvider>
+      </EditorProvider>
+    );
+    const view = await mount(ui());
+    const item = (id: string) => view.container.querySelector(`[data-node='${id}']`);
+    const collapse = async (id: string) => {
+      const toggle = item(id)?.querySelector<HTMLButtonElement>("[data-catchlight-disclosure-toggle]");
+      expect(toggle).not.toBeNull();
+      await act(async () => toggle?.click());
+    };
+
+    await collapse("eyes");
+    await collapse("body");
+    expect(item("iris")).toBeNull();
+    expect(item("finger")).toBeNull();
+
+    await view.render(ui("  IRIS  "));
+    expect(item("head")?.getAttribute("aria-expanded")).toBe("true");
+    expect(item("eyes")?.getAttribute("aria-expanded")).toBe("true");
+    expect(item("iris")).not.toBeNull();
+    expect(item("body")).toBeNull();
+    await collapse("head");
+    expect(item("iris")).toBeNull();
+
+    await view.render(ui("finger"));
+    expect(item("finger")).not.toBeNull();
+    await view.render(ui("iris"));
+    expect(item("iris")).not.toBeNull();
+    await view.render(ui("no match"));
+    expect(view.container.querySelector("[data-catchlight-empty]")?.textContent).toBe("No matching nodes.");
+    await view.render(ui("head"));
+    expect(item("iris")).not.toBeNull();
+    expect(item("hair")).not.toBeNull();
+
+    await view.render(ui());
+    expect(item("head")?.getAttribute("aria-expanded")).toBe("true");
+    expect(item("eyes")?.getAttribute("aria-expanded")).toBe("false");
+    expect(item("body")?.getAttribute("aria-expanded")).toBe("false");
+    expect(item("hair")).not.toBeNull();
+    expect(item("iris")).toBeNull();
+    expect(item("finger")).toBeNull();
+    await view.unmount();
+  });
+
+  test("a standalone item keeps its own keyboard disclosure", async () => {
+    const { editor } = await harness();
+    const session = await editor.newSession();
+    const node = treeNode("root", "Model", [treeNode("hair", "Hair")]);
+    const view = await mount(
+      <EditorProvider editor={editor}>
+        <SelectionProvider session={session}>
+          <ul role="tree"><NodeTree.Item session={session} node={node} isRoot /></ul>
+        </SelectionProvider>
+      </EditorProvider>,
+    );
+    const label = view.container.querySelector("[data-catchlight-node-label]") as HTMLElement;
+    await fire(label, new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    expect(view.container.querySelector("[data-node='hair']")).toBeNull();
+    expect(view.container.querySelector("[data-node='root']")?.getAttribute("aria-expanded")).toBe("false");
+    await fire(label, new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(view.container.querySelector("[data-node='hair']")).not.toBeNull();
     await view.unmount();
   });
 });

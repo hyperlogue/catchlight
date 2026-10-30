@@ -25,7 +25,7 @@
  */
 
 import type { NodeId, NodeKindArg, Session, TreeNode } from "@catchlight/core";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import type { ComponentProps, DragEvent, KeyboardEvent } from "react";
 
 import type { DropAt } from "./node-actions.js";
@@ -41,6 +41,21 @@ export const NODE_KINDS: readonly NodeKindArg[] = ["group", "part", "composite",
 /** What a failed edit is told to, when a host passed nothing. */
 type ErrorSink = ((cause: unknown) => void) | undefined;
 
+interface TreeDisclosure {
+  visible: ReadonlySet<NodeId> | undefined;
+  collapsed: ReadonlySet<NodeId>;
+  setExpanded(node: NodeId, expanded: boolean): void;
+}
+
+const TreeDisclosureContext = createContext<TreeDisclosure | undefined>(undefined);
+
+function setCollapsed(current: ReadonlySet<NodeId>, node: NodeId, expanded: boolean): Set<NodeId> {
+  const next = new Set(current);
+  if (expanded) next.delete(node);
+  else next.add(node);
+  return next;
+}
+
 // `onError` is also a DOM event on every element; these ones win.
 export interface NodeTreeRootProps extends Omit<ComponentProps<"ul">, "children" | "onError"> {
   session: Session;
@@ -51,26 +66,48 @@ export interface NodeTreeRootProps extends Omit<ComponentProps<"ul">, "children"
 export function NodeTreeRoot({ session, onError, filter = "", ...rest }: NodeTreeRootProps) {
   const root = useTree(session);
   const needle = filter.trim().toLocaleLowerCase();
-  const matching = (node: TreeNode): TreeNode | undefined => {
-    if (!needle || node.name.toLocaleLowerCase().includes(needle)) return node;
-    const children = node.children.map(matching).filter((child): child is TreeNode => !!child);
-    return children.length ? { ...node, children } : undefined;
+  const [collapsed, updateCollapsed] = useState<Set<NodeId>>(() => new Set());
+  const [search, setSearch] = useState({ needle: "", collapsed: new Set<NodeId>() });
+  if (search.needle !== needle) setSearch({ needle, collapsed: new Set() });
+  const visible = needle ? new Set<NodeId>() : undefined;
+  const matching = (node: TreeNode, parentMatches = false): boolean => {
+    const matches = parentMatches || node.name.toLocaleLowerCase().includes(needle);
+    let found = matches;
+    for (const child of node.children) {
+      if (matching(child, matches)) found = true;
+    }
+    if (found) visible?.add(node.id);
+    return found;
   };
-  const shown = matching(root);
+  if (visible) matching(root);
+  // Search disclosures belong to one query; ordinary expansion survives hidden rows.
+  const currentCollapsed = needle
+    ? search.needle === needle
+      ? search.collapsed
+      : new Set<NodeId>()
+    : collapsed;
+  const setExpanded = (node: NodeId, expanded: boolean): void => {
+    if (needle) {
+      setSearch((current) => ({
+        needle,
+        collapsed: setCollapsed(
+          current.needle === needle ? current.collapsed : new Set(), node, expanded,
+        ),
+      }));
+    } else {
+      updateCollapsed((current) => setCollapsed(current, node, expanded));
+    }
+  };
   return (
-    <ul role="tree" aria-label="Model structure" data-catchlight-node-tree="" {...rest}>
-      {shown ? (
-        <NodeTreeItem
-          key={needle ? "filtered" : "all"}
-          session={session}
-          node={shown}
-          isRoot
-          onError={onError}
-        />
-      ) : (
-        <li data-catchlight-empty="">No matching nodes.</li>
-      )}
-    </ul>
+    <TreeDisclosureContext value={{ visible, collapsed: currentCollapsed, setExpanded }}>
+      <ul role="tree" aria-label="Model structure" data-catchlight-node-tree="" {...rest}>
+        {!visible || visible.has(root.id) ? (
+          <NodeTreeItem session={session} node={root} isRoot onError={onError} />
+        ) : (
+          <li data-catchlight-empty="">No matching nodes.</li>
+        )}
+      </ul>
+    </TreeDisclosureContext>
   );
 }
 
@@ -87,7 +124,16 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
   const actions = useNodeActions(session);
   const [drop, setDrop] = useState<DropAt | undefined>(undefined);
   const [renaming, setRenaming] = useState(false);
-  const [expanded, setExpanded] = useState(true);
+  const disclosure = useContext(TreeDisclosureContext);
+  const [localExpanded, setLocalExpanded] = useState(true);
+  const expanded = disclosure ? !disclosure.collapsed.has(node.id) : localExpanded;
+  const setExpanded = (next: boolean): void => {
+    if (disclosure) disclosure.setExpanded(node.id, next);
+    else setLocalExpanded(next);
+  };
+  const children = disclosure?.visible
+    ? node.children.filter((child) => disclosure.visible?.has(child.id))
+    : node.children;
   const isSelected = selected === node.id;
 
   const onDragStart = (event: DragEvent<HTMLElement>): void => {
@@ -143,7 +189,7 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
     <li
       role="treeitem"
       aria-selected={isSelected}
-      aria-expanded={node.children.length ? expanded : undefined}
+      aria-expanded={children.length ? expanded : undefined}
       data-catchlight-node=""
       data-node={node.id}
       data-kind={node.kind}
@@ -160,7 +206,7 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {node.children.length ? (
+        {children.length ? (
           <button
             type="button"
             data-catchlight-disclosure-toggle=""
@@ -228,9 +274,9 @@ export function NodeTreeItem({ session, node, isRoot, onError, ...rest }: NodeTr
           </button>
         )}
       </div>
-      {node.children.length > 0 && expanded && (
+      {children.length > 0 && expanded && (
         <ul role="group">
-          {node.children.map((child) => (
+          {children.map((child) => (
             <NodeTreeItem session={session} node={child} key={child.id} onError={onError} />
           ))}
         </ul>
