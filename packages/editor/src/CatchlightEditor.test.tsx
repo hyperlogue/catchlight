@@ -223,6 +223,43 @@ describe("the assembled editor", () => {
     stop();
   });
 
+  test("a deferred close uses the current model when its metadata arrives", async () => {
+    const stop = stubObservers();
+    const { editor } = await fakeStack();
+    const first = await editor.newSession("akari");
+    const second = await editor.newSession("beni");
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    await settle();
+    const listSessions = editor.listSessions.bind(editor);
+    const listed = await listSessions();
+    let release!: (sessions: typeof listed) => void;
+    const pending = new Promise<typeof listed>((resolve) => { release = resolve; });
+    editor.listSessions = () => {
+      editor.listSessions = listSessions;
+      return pending;
+    };
+    const secondRow = `[data-catchlight-session][data-session="${second.id}"]`;
+    const current = "[data-catchlight-session][data-current]";
+
+    await run(() => button(view, `${secondRow} [data-catchlight-session-close]`).click());
+    await run(() => button(view, `${secondRow} > button`).click());
+    await settle();
+    expect(view.querySelector(current)?.getAttribute("data-session")).toBe(String(second.id));
+
+    await run(() => release(listed));
+    await settle();
+    await settle();
+    expect(view.querySelector(current)?.getAttribute("data-session")).toBe(String(first.id));
+    expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(1);
+    expect(view.querySelector("[data-catchlight-problem]")).toBeNull();
+    expect((second.replica as FakeReplica).freed).toBe(true);
+    expect((first.replica as FakeReplica).freed).toBe(false);
+
+    await unmount();
+    editor.close();
+    stop();
+  });
+
   test("one canvas element outlives every model: empty, open, close all, open again", async () => {
     const stop = stubObservers();
     const { editor, gpu, viewports } = await fakeStack();

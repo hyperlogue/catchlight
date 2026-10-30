@@ -112,7 +112,10 @@ hover, keyboard focus, recording and errors are separate states.
 - Panels resize by pointer or keyboard and remember their dimensions.
   Below 1000px the structure panel becomes a drawer; below 600px both side
   panels do. The toolbar toggles, close buttons, scrim and Escape dismiss them;
-  closing returns focus to the toggle. Focus mode makes more room for artwork.
+  Tab stays within the open drawer. A field's Escape-to-cancel or clear takes
+  precedence over dismissal. Closing returns focus to the toggle, or to the
+  canvas when a layout or mode change makes it unavailable. Focus mode makes
+  more room for artwork.
 
 A numeric field has a draft, validates finite values and bounds, and commits
 on Enter or blur. Escape restores its previous value. Rotations in Properties
@@ -123,7 +126,8 @@ of focus, and a model switch cancel the preview.
 
 Unavailable actions are disabled. Errors remain visible until dismissed,
 including when a native modal is open. Dirty model closure offers save,
-discard, or keep editing; page unload also protects unsaved work. In-tab save
+discard, or keep editing; this check reads current server state after any mesh
+draft has been applied. Page unload also protects unsaved work. In-tab save
 downloads a `.clm`; connected save reports the server's saved file.
 
 `?` opens the shortcut guide. Ctrl/Command-K searches both actions and model

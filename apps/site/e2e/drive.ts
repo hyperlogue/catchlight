@@ -54,6 +54,7 @@ import { READBACK } from "@catchlight/core";
 import { studio } from "./studio.ts";
 import { snapshots } from "./snapshots.ts";
 import { workspaces } from "./workspaces.ts";
+import { draftClose, drawerKeyboard } from "./draft-close.ts";
 import { chromium } from "playwright-core";
 
 import { fingerprint, hex, uniformity } from "./frame.ts";
@@ -732,6 +733,8 @@ async function draws(): Promise<void> {
   });
   await workspaces(page, step, shots, tag);
   await studio(page, step, shots, tag);
+  await draftClose(page, step, shots, tag);
+  await drawerKeyboard(page, step, shots, tag);
   // The page, for a human reading the run afterwards. On the WebGPU tier the
   // canvas in it is blank, because that browser never composites one.
   await page.screenshot({ path: `${shots}/${tag}-final.png` });

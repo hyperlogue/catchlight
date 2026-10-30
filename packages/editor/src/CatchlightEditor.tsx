@@ -132,6 +132,20 @@ function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
     },
     [session, sessions, editor, failed],
   );
+  const latestClose = useRef(close);
+  latestClose.current = close;
+  const requestClose = useCallback(
+    (info: SessionInfo) => {
+      // Applying a guarded mesh draft can dirty the model before this runs.
+      void editor.listSessions().then((listed) => {
+        const current = listed.find((s) => s.session === info.session);
+        if (!current) return;
+        if (current.dirty) setConfirmClose(current);
+        else latestClose.current(current);
+      }, failed);
+    },
+    [editor, failed],
+  );
   useEffect(() => {
     if (closing === undefined) return;
     setClosing(undefined);
@@ -175,7 +189,7 @@ function Shell({ onOpenStarter }: { onOpenStarter?: () => Promise<Session> }) {
           onOpened={opened}
           onNew={create}
           onChoose={choose}
-          onClose={(s) => (s.dirty ? setConfirmClose(s) : close(s))}
+          onClose={requestClose}
           onError={failed}
           onNotice={setNotice}
           {...(onOpenStarter ? { onOpenStarter } : {})}
@@ -316,26 +330,65 @@ function Workspace({
     panelTrigger.current = trigger;
     setMobilePanel((open) => open === panel ? undefined : panel);
   };
-  const closePanel = () => {
-    setMobilePanel(undefined);
-    panelTrigger.current?.focus();
-  };
   const file = useRef<HTMLInputElement>(null);
   const art = useRef<HTMLInputElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const workspace = useRef<HTMLDivElement>(null);
+  const focusCanvas = useCallback(() => {
+    const meshCanvas = workspace.current?.querySelector<SVGSVGElement>("[data-catchlight-mesh-canvas] > svg");
+    (meshCanvas ?? canvas.current)?.focus();
+  }, []);
+  const closePanel = useCallback(() => {
+    setMobilePanel(undefined);
+    if (document.querySelector("dialog[open]")) return;
+    const trigger = panelTrigger.current;
+    if (trigger?.getClientRects().length && !trigger.matches(":disabled") &&
+      !trigger.closest("[inert]") && getComputedStyle(trigger).visibility !== "hidden")
+      trigger.focus();
+    else focusCanvas();
+  }, [focusCanvas]);
   useDismissMenus(workspace);
   useEffect(() => {
+    if (mesh && document.activeElement === canvas.current) focusCanvas();
+  }, [mesh, focusCanvas]);
+  useEffect(() => {
+    if (mobilePanel === "structure" && (mesh || editing.busy)) closePanel();
+  }, [mobilePanel, mesh, editing.busy, closePanel]);
+  useEffect(() => {
     const queries = [matchMedia("(max-width: 1000px)"), matchMedia("(max-width: 600px)")];
-    const close = () => setMobilePanel(undefined);
+    const close = () => { if (mobilePanel) closePanel(); };
     queries.forEach((query) => query.addEventListener("change", close));
     return () => queries.forEach((query) => query.removeEventListener("change", close));
-  }, []);
+  }, [mobilePanel, closePanel]);
   useEffect(() => {
     if (!mobilePanel) return;
     const id = mobilePanel === "structure" ? structurePanelId : propertiesPanelId;
-    document.getElementById(id)?.querySelector<HTMLButtonElement>("button")?.focus();
-  }, [mobilePanel, structurePanelId, propertiesPanelId]);
+    const panel = document.getElementById(id);
+    if (!panel) return;
+    const controls = () => [...panel.querySelectorAll<HTMLElement>(
+      'button, input, select, textarea, summary, a[href], [tabindex]',
+    )].filter((element) => element.tabIndex >= 0 && !element.matches(":disabled") &&
+      !element.closest("[inert]") && element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== "hidden");
+    controls()[0]?.focus();
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closePanel();
+      } else if (event.key === "Tab") {
+        const items = controls();
+        const first = items[0], last = items[items.length - 1];
+        if (!panel.contains(document.activeElement) ||
+          document.activeElement === (event.shiftKey ? first : last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first)?.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => document.removeEventListener("keydown", keydown);
+  }, [mobilePanel, structurePanelId, propertiesPanelId, closePanel]);
   useEffect(() => {
     workspace.current
       ?.querySelector(
@@ -520,11 +573,6 @@ function Workspace({
       if (mod && key === "o") {
         e.preventDefault();
         openModel();
-        return;
-      }
-      if (key === "escape" && mobilePanel && !typing) {
-        e.preventDefault();
-        closePanel();
         return;
       }
       if (typing) return;
@@ -769,7 +817,14 @@ function Workspace({
           onClick={closePanel}
         />
       )}
-      <aside id={structurePanelId} data-catchlight-panel="left" inert={mesh || editing.busy}>
+      <aside
+        id={structurePanelId}
+        data-catchlight-panel="left"
+        inert={mesh || editing.busy}
+        role={mobilePanel === "structure" ? "dialog" : undefined}
+        aria-modal={mobilePanel === "structure" ? true : undefined}
+        aria-label="Structure"
+      >
         <div data-catchlight-resize="left" {...structureSize.handle} />
         <div data-catchlight-panel-tabs="">
           <button
@@ -1189,7 +1244,13 @@ function Workspace({
           )}
         </section>
       </main>
-      <aside id={propertiesPanelId} data-catchlight-panel="right">
+      <aside
+        id={propertiesPanelId}
+        data-catchlight-panel="right"
+        role={mobilePanel === "properties" ? "dialog" : undefined}
+        aria-modal={mobilePanel === "properties" ? true : undefined}
+        aria-label="Properties"
+      >
         <div data-catchlight-resize="right" {...propertiesSize.handle} />
         <div data-catchlight-panel-tabs="">
           <button
