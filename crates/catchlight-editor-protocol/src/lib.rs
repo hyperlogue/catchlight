@@ -1691,6 +1691,9 @@ pub struct ChainArg {
     /// How much of the params the solve decides, against what was posed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f32>,
+    /// Per-second drag on the strand's world velocity through still air.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub air_drag: Option<f32>,
     /// One per joint, root to tip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<Vec<LinkFeelArg>>,
@@ -1710,6 +1713,9 @@ impl ChainArg {
         if let Some(v) = self.weight {
             chain.weight = v;
         }
+        if let Some(v) = self.air_drag {
+            chain.air_drag = v;
+        }
         if let Some(links) = &self.links {
             chain.set_links(links.iter().map(LinkFeelArg::to_feel).collect());
         }
@@ -1722,6 +1728,7 @@ impl ChainArg {
             local_only: Some(chain.local_only),
             gravity: Some(chain.gravity),
             weight: Some(chain.weight),
+            air_drag: Some(chain.air_drag),
             links: Some(chain.links().iter().map(LinkFeelArg::of).collect()),
         }
     }

@@ -776,6 +776,11 @@ pub struct ModelChain {
     /// and intermediate values blend with the pose. Authored limits still
     /// constrain the result at every weight.
     pub weight: f32,
+    /// Per-second drag on each particle's velocity through still air, in
+    /// world space, at or above zero. Unlike a link's damping, which only
+    /// resists the joints turning, it resists the strand moving at all: the
+    /// strand trails a moving anchor and every swing dies at the same rate.
+    pub air_drag: f32,
     links: Vec<LinkFeel>,
 }
 
@@ -786,6 +791,7 @@ impl ModelChain {
             local_only: false,
             gravity: 1.0,
             weight: 1.0,
+            air_drag: 0.0,
             links: vec![LinkFeel::default(); links],
         }
     }

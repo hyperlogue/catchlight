@@ -181,6 +181,8 @@ pub enum ClmLoadError {
     ChainGravity { node: String },
     #[error("spine {node:?} carries a chain whose weight is not finite and at or above zero")]
     ChainWeight { node: String },
+    #[error("spine {node:?} carries a chain whose air drag is not finite and at or above zero")]
+    ChainAirDrag { node: String },
     #[error("spine {node:?} chain link {link}: {field} {reason}")]
     ChainLinkField {
         node: String,
@@ -1131,6 +1133,7 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
                 local_only: c.local_only,
                 gravity: c.gravity,
                 weight: c.weight,
+                air_drag: c.air_drag,
                 links: c
                     .links()
                     .iter()
@@ -1330,6 +1333,12 @@ fn model_spine(
             }
             .into());
         }
+        if !c.air_drag.is_finite() || c.air_drag < 0.0 {
+            return Err(ClmLoadError::ChainAirDrag {
+                node: id.to_string(),
+            }
+            .into());
+        }
         let bad = |link: usize, field: &'static str, reason: &'static str| -> ModelError {
             ClmLoadError::ChainLinkField {
                 node: id.to_string(),
@@ -1363,6 +1372,7 @@ fn model_spine(
         chain.local_only = c.local_only;
         chain.gravity = c.gravity;
         chain.weight = c.weight;
+        chain.air_drag = c.air_drag;
         chain.set_links(
             c.links
                 .iter()
@@ -2301,6 +2311,7 @@ mod tests {
             local_only: false,
             gravity: 1.0,
             weight: 1.0,
+            air_drag: 0.0,
             links: vec![
                 ClmLinkFeel {
                     gravity_scale: 1.0,
@@ -2350,6 +2361,13 @@ mod tests {
             sp.chain = Some(c);
         });
         assert_eq!(load_err(&file), ClmLoadError::ChainWeight { node });
+
+        let (file, node) = spine_file(|sp| {
+            let mut c = chain(2);
+            c.air_drag = -1.0;
+            sp.chain = Some(c);
+        });
+        assert_eq!(load_err(&file), ClmLoadError::ChainAirDrag { node });
 
         /// One way to break a link's feel, and the refusal it has to produce.
         type BreakFeel = (fn(&mut ClmChain), &'static str, &'static str);
@@ -2524,6 +2542,7 @@ mod tests {
                 local_only: false,
                 gravity: 9.8,
                 weight: 1.0,
+                air_drag: 0.0,
                 links,
             },
         );

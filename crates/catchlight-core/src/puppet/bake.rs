@@ -459,6 +459,7 @@ fn build_chain(
     // pre-folded with the model-level pixelsPerMeter x gravity.
     data.gravity = chain.gravity * g_scale;
     data.weight = chain.weight;
+    data.air_drag = chain.air_drag;
     data
 }
 

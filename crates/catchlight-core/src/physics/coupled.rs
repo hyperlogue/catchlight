@@ -12,14 +12,20 @@
 //! Bend response scales rest subtree inertia, not individual modal
 //! frequencies. Authored damping d contributes drag -ln(1-d) against relative
 //! joint motion, plus a spring damping ratio of 0.1; d = 1 uses finite heavy
-//! drag. Rest support projects each sprung rod's resultant gravity
+//! drag. Joint drag is diagonal, so the coupled modes that bend several
+//! joints together keep much less of it than one joint alone would. Air drag
+//! c is the force -c m v on each particle's world velocity: implicitly it
+//! adds h c M to the matrix, which damps every mode at ratio c / 2w, and the
+//! carried velocity's share stays on the right-hand side, so a moving anchor
+//! drags the strand behind it. Rest support projects each sprung rod's resultant gravity
 //! off its drawn tangent; differences give fixed endpoint fields. Pose
 //! targets move springs, not those fields. Limp rods retain gravity;
 //! static settling seeds limp rods toward gravity and nudges upward sprung
 //! rods off unstable equilibria, then uses relaxation within their bounds.
 //!
 //! The cubic soft stop starts at 75% of max bend with zero torque and slope,
-//! an 8 Hz response, and outward damping of 2 sqrt(k I). Hard bounds remain:
+//! an 8 Hz response, and damping of 2 sqrt(k I) both ways: a strand that
+//! reaches its limit stays there rather than rebounding off a spring. Hard bounds remain:
 //! (-limit - q)/h <= v_next <= (limit - q)/h. Active bounds require additional
 //! direct solves. Failure or budget exhaustion retains the last valid
 //! particles and frame and keeps the chain awake, including during settling.
@@ -67,8 +73,10 @@ fn cap(limit: Option<f32>) -> f64 {
         .map_or(f64::INFINITY, |x| f64::from(x.min(1.0)) * PI)
 }
 
-/// Unit-inertia torque, positive stiffness, and outward damping coefficient.
-fn stop(angle: f64, velocity: f64, limit: f64) -> (f64, f64, f64) {
+/// Unit-inertia torque, positive stiffness, and damping coefficient. The stop
+/// is critically damped in both directions, so it absorbs a strand's swing
+/// instead of handing it back.
+fn stop(angle: f64, limit: f64) -> (f64, f64, f64) {
     if !limit.is_finite() || limit <= 0.0 {
         return (0.0, 0.0, 0.0);
     }
@@ -78,11 +86,7 @@ fn stop(angle: f64, velocity: f64, limit: f64) -> (f64, f64, f64) {
     let r = ((angle.abs() - STOP_ONSET * limit) / width).clamp(0.0, 1.0);
     let omega = TAU * STOP_HZ;
     let stiffness = 3.0 * omega * omega * r * r;
-    let damping = if angle * velocity > 0.0 {
-        2.0 * stiffness.sqrt()
-    } else {
-        0.0
-    };
+    let damping = 2.0 * stiffness.sqrt();
     (
         -angle.signum() * omega * omega * width * r.powi(3),
         stiffness,
@@ -152,6 +156,7 @@ pub(super) struct State {
     omega2: Vector,
     damping: Vector,
     limits: Vector,
+    air_drag: f64,
     field: Points,
     inertia: Vector,
     field_carry: Option<DMat2>,
@@ -197,6 +202,7 @@ impl State {
                 })
                 .collect(),
             limits: chain.links.iter().map(|l| cap(l.limit)).collect(),
+            air_drag: f64::from(chain.air_drag.max(0.0)),
             rest,
             q,
             rods,
@@ -218,6 +224,7 @@ impl State {
             Some(state)
                 if state.links.as_slice() == chain.links
                     && state.gravity == chain.gravity
+                    && state.air_drag == f64::from(chain.air_drag.max(0.0))
                     && state.exported.as_slice() == chain.particles
                     && state.exported_carry == carry =>
             {
@@ -320,7 +327,8 @@ impl State {
             let mass = self.masses[k];
             let momentum =
                 mass * (self.velocities[k + 1] - anchor_velocity - carry_rate * position);
-            let force = self.field[k] - mass * bias;
+            let carried = anchor_velocity + carry_rate * position;
+            let force = self.field[k] - mass * (bias + self.air_drag * carried);
             for i in 0..=k {
                 jacobian[i] += tangent;
                 rhs[i] += jacobian[i].dot(momentum + h * force);
@@ -348,6 +356,13 @@ impl State {
                 a[i * n + j] += a[i * n + j + 1];
             }
         }
+        // Air drag on the next world velocity: h c J^T m J is h c M.
+        let air = 1.0 + h * self.air_drag;
+        if air != 1.0 {
+            for value in a.iter_mut() {
+                *value *= air;
+            }
+        }
         let mut lower: Vector = smallvec![0.0; n];
         let mut upper: Vector = smallvec![0.0; n];
         for i in 0..n {
@@ -356,7 +371,7 @@ impl State {
                 a[j * n + i] = a[i * n + j];
             }
             let limit = self.limits[i];
-            let (force, k, d) = stop(self.q[i], velocity[i], limit);
+            let (force, k, d) = stop(self.q[i], limit);
             let inertia = self.inertia[i];
             rhs[i] += h * inertia * (-self.omega2[i] * wrap(self.q[i] - targets[i]) + force);
             a[i * n + i] += inertia * (h * (self.damping[i] + d) + h * h * (self.omega2[i] + k));
@@ -1228,18 +1243,20 @@ mod tests {
     }
 
     #[test]
-    fn progressive_stop_is_continuous_and_opposes_outward_motion() {
+    fn progressive_stop_is_continuous_and_critically_damped() {
         let limit = 14.0_f64.to_radians();
-        assert_eq!(stop(limit * 0.75, 1.0, limit), (0.0, 0.0, 0.0));
-        let near = stop(limit * 0.750001, 1.0, limit);
+        assert_eq!(stop(limit * 0.75, limit), (0.0, 0.0, 0.0));
+        let near = stop(limit * 0.750001, limit);
         assert!(near.0.abs() < 1e-12 && near.1 < 1e-6);
-        let middle = stop(limit * 0.9, 1.0, limit);
-        let wall = stop(limit, 1.0, limit);
+        let middle = stop(limit * 0.9, limit);
+        let wall = stop(limit, limit);
         assert!(wall.0 < middle.0 && middle.0 < 0.0);
         assert!(wall.1 > middle.1 && wall.2 > middle.2);
-        assert_eq!(stop(limit, -1.0, limit).2, 0.0);
-        assert_eq!(stop(-limit, 1.0, limit).0, -wall.0);
-        assert_eq!(stop(1.0, 1.0, f64::INFINITY), (0.0, 0.0, 0.0));
+        // The same damping on the way back: the stop absorbs the swing.
+        assert_eq!(wall.2, 2.0 * wall.1.sqrt());
+        assert_eq!(stop(-limit, limit).0, -wall.0);
+        assert_eq!(stop(-limit, limit).2, wall.2);
+        assert_eq!(stop(1.0, f64::INFINITY), (0.0, 0.0, 0.0));
     }
 
     #[test]
@@ -1800,5 +1817,70 @@ mod tests {
             "{:?}",
             c.particles[8]
         );
+    }
+
+    /// The tip's distance from where it hangs, each frame after a kick at
+    /// the root.
+    fn ring(air_drag: f32, n: usize, frames: usize) -> Vec<f32> {
+        let mut c = chain(n);
+        c.air_drag = air_drag;
+        let rest = c.particles[n].pos;
+        let mut v = vec![0.0; n];
+        v[0] = 2.0;
+        set_state(&mut c, &vec![0.0; n], &v);
+        (0..frames)
+            .map(|_| {
+                c.tick(
+                    Vec2::ZERO,
+                    Mat2::IDENTITY,
+                    &[],
+                    1.0 / 60.0,
+                    DEFAULT_CHAIN_SUBSTEPS,
+                );
+                c.particles[n].pos.distance(rest)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn air_drag_settles_the_coupled_swing() {
+        let late = |r: &[f32]| r[60..].iter().copied().fold(0.0, f32::max);
+        for n in [2, 8] {
+            let still = ring(0.0, n, 180);
+            let dragged = ring(6.0, n, 180);
+            assert!(
+                late(&dragged) < 0.25 * late(&still),
+                "{n}: {} against {} a second after the kick",
+                late(&dragged),
+                late(&still)
+            );
+        }
+    }
+
+    #[test]
+    fn air_drag_trails_a_moving_anchor() {
+        for (drag, n) in [(0.0, 2), (8.0, 2), (0.0, 8), (8.0, 8)] {
+            let mut c = chain(n);
+            c.air_drag = drag;
+            let mut x = 0.0;
+            for _ in 0..900 {
+                x += 200.0 / 60.0;
+                c.tick(
+                    Vec2::new(x, 0.0),
+                    Mat2::IDENTITY,
+                    &[],
+                    1.0 / 60.0,
+                    DEFAULT_CHAIN_SUBSTEPS,
+                );
+            }
+            // Gliding through still air the strand leans back against the
+            // motion; without air a steady glide is no force at all.
+            let lean = c.particles[n].pos.x - c.particles[0].pos.x;
+            if drag == 0.0 {
+                assert!(lean.abs() < 0.5, "{n}: leans {lean} with no air");
+            } else {
+                assert!(lean < -2.0, "{n}: leans {lean} into the air");
+            }
+        }
     }
 }

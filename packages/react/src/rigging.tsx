@@ -358,6 +358,16 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
                 onCommit={(gravity) => setChain({ ...chain, gravity })}
               />
             </Field>
+            <Field label="Air drag">
+              <NumberField
+                label="Chain air drag"
+                value={chain.air_drag ?? 0}
+                min={0}
+                step={0.5}
+                unit="/s"
+                onCommit={(air_drag) => setChain({ ...chain, air_drag })}
+              />
+            </Field>
             <label data-catchlight-toggle="">
               <input
                 type="checkbox"

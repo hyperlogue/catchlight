@@ -665,8 +665,22 @@ pub struct ClmChain {
     /// what the caller posed. Finite and at or above zero.
     #[serde(default = "full_weight", skip_serializing_if = "is_full_weight")]
     pub weight: f32,
+    /// Per-second drag on each particle's velocity through still air, in
+    /// world space. Finite and at or above zero.
+    ///
+    /// Added after the format shipped, so it defaults: a chain without the
+    /// key feels no air, which is what every earlier file describes, and a
+    /// chain at zero writes no key.
+    #[serde(default, skip_serializing_if = "is_still")]
+    pub air_drag: f32,
     /// Material settings for each joint of the spine, in link order.
     pub links: Vec<ClmLinkFeel>,
+}
+
+/// Whether a chain feels no air, and so needs no `air_drag` key.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_still(air_drag: &f32) -> bool {
+    *air_drag == 0.0
 }
 
 /// A chain of joints drawn on the art, turning the geometry beneath the node.

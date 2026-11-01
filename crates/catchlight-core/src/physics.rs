@@ -584,6 +584,10 @@ pub struct ParticleChainData {
     /// authority, and intermediate values blend. Authored limits still
     /// constrain the result at every weight.
     pub weight: f32,
+    /// Per-second drag on each particle's world velocity, through still air.
+    /// It damps every mode of the chain at the same rate, and a moving anchor
+    /// leaves the strand trailing.
+    pub air_drag: f32,
     pub links: Vec<ChainLink>,
     /// `links.len() + 1` particles; `particles[0]` is the anchor. Any tick
     /// that finds the two out of step re-hangs the chain if the geometry is
@@ -610,6 +614,7 @@ impl ParticleChainData {
             local_only: false,
             gravity: 9.8 * 100.0,
             weight: 1.0,
+            air_drag: 0.0,
             particles: Vec::with_capacity(links.len() + 1),
             links,
             anchor: Vec2::ZERO,

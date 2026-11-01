@@ -2076,6 +2076,13 @@ fn chain_weight(weight: Option<f32>) -> Result<Option<f32>, EditorError> {
 /// the link named the way `ClmLoadError::ChainLinkField` names them.
 fn chain_of(arg: &ChainArg, joints: usize) -> Result<ModelChain, EditorError> {
     chain_weight(arg.weight)?;
+    if let Some(c) = arg.air_drag {
+        if !c.is_finite() || c < 0.0 {
+            return Err(EditorError::BadTarget(
+                "chain air drag is not finite and at or above zero".into(),
+            ));
+        }
+    }
     if let Some(g) = arg.gravity {
         if !g.is_finite() || g <= 0.0 {
             return Err(EditorError::BadTarget(

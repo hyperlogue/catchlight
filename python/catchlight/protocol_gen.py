@@ -2345,6 +2345,8 @@ class ChainArg:
     gravity: float | None = None
     # How much of the params the solve decides, against what was posed.
     weight: float | None = None
+    # Per-second drag on the strand's world velocity through still air.
+    air_drag: float | None = None
     # One per joint, root to tip.
     links: list[LinkFeelArg] | None = None
 

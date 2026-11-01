@@ -261,6 +261,7 @@ fn a_spine_round_trips_byte_for_byte() {
     chain.local_only = true;
     chain.gravity = 12.5;
     chain.weight = 0.25;
+    chain.air_drag = 6.5;
     chain.set_links(vec![
         catchlight_core::LinkFeel {
             gravity_scale: 1.0,
@@ -300,6 +301,7 @@ fn a_spine_round_trips_byte_for_byte() {
     assert!(chain.local_only);
     assert_eq!(chain.gravity, 12.5);
     assert_eq!(chain.weight, 0.25);
+    assert_eq!(chain.air_drag, 6.5);
     assert_eq!(chain.links().len(), 3);
     assert_eq!(chain.links()[1].stiffness, 2.5);
     assert_eq!(

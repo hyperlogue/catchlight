@@ -904,6 +904,10 @@ export type ChainArg = {
    */
   weight?: number | null,
   /**
+   * Per-second drag on the strand's world velocity through still air.
+   */
+  air_drag?: number | null,
+  /**
    * One per joint, root to tip.
    */
   links?: Array<LinkFeelArg> | null,

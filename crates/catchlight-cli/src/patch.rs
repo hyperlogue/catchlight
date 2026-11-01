@@ -320,7 +320,12 @@ const PHYSICS_FIELDS: &[&str] = &[
 /// list of structs, and none of those fits this command's `field=value`
 /// shape. A spine
 /// carrying no chain accepts none of them.
-const SPINE_FIELDS: &[&str] = &["chain.gravity", "chain.local_only", "chain.weight"];
+const SPINE_FIELDS: &[&str] = &[
+    "chain.air_drag",
+    "chain.gravity",
+    "chain.local_only",
+    "chain.weight",
+];
 /// Scalar param fields. Key positions belong to bindings.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
 
@@ -432,6 +437,7 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             (Some(c), "chain.local_only") => Slot::Bool(&mut c.local_only),
             (Some(c), "chain.gravity") => Slot::F32(&mut c.gravity),
             (Some(c), "chain.weight") => Slot::F32(&mut c.weight),
+            (Some(c), "chain.air_drag") => Slot::F32(&mut c.air_drag),
             _ => return None,
         },
     })
