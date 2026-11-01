@@ -23,6 +23,16 @@ ignore = [
     # sctk-adwaita -> ab_glyph -> owned_ttf_parser, for Wayland window
     # decoration titles only.
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, no fix released; via sctk-adwaita -> ab_glyph -> owned_ttf_parser" },
+    # zbus 6 folded these into zbus itself and published no patched
+    # standalone release. They are only reachable through accesskit's AT-SPI
+    # adapter (accesskit_unix -> atspi -> zbus 5), which bevy_winit and
+    # egui-winit both pull in. accesskit_unix 0.24.1, the newest release,
+    # still depends on zbus ^5.19, and Bevy 0.20 has not moved off that
+    # either. Informational unmaintained notices, not vulnerabilities.
+    # Drop these once accesskit publishes a zbus 6 release.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant merged into zbus 6; only via accesskit_unix/atspi on zbus 5, no migrated release" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names merged into zbus 6; only via accesskit_unix/atspi on zbus 5, no migrated release" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive merged into zbus 6; only via accesskit_unix/atspi on zbus 5, no migrated release" },
 ]
 
 [licenses]
