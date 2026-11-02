@@ -55,7 +55,7 @@ use catchlight_core::formats::clm::{
     ClmStructure, ClmTexture, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
+use catchlight_core::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 use catchlight_core::texture::TextureFormat;
 use catchlight_core::{Model, NodeId, ParamId, TexId};
 
@@ -577,6 +577,8 @@ fn convert_mesh_group(s: &SchemaNode, node: NodeRef<'_>) -> Result<ClmMeshGroup,
 
 fn convert_simple_physics(s: &SchemaNode, refs: &Refs<'_>) -> ClmSimplePhysics {
     ClmSimplePhysics {
+        // Inochi2D pendulums only ever swing on the screen.
+        plane: PendulumPlane::Screen,
         kind: s
             .model_type
             .as_deref()

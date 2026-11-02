@@ -155,7 +155,7 @@ use crate::id::{
     ExtensionKey, HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId,
 };
 use crate::interpolate::InterpolateMode;
-use crate::physics::{PendulumKind, PhysicsParamMapMode};
+use crate::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 
 /// How many times a generated Id is re-drawn before the model gives up. The
 /// 32 bits collide by birthday around 2^16 siblings, so a handful of retries
@@ -671,6 +671,7 @@ impl ModelMask {
 pub struct ModelPhysics {
     pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
+    pub plane: PendulumPlane,
     pub local_only: bool,
     pub gravity: f32,
     pub length: f32,
@@ -687,6 +688,7 @@ impl ModelPhysics {
         Self {
             kind,
             map_mode: PhysicsParamMapMode::default(),
+            plane: PendulumPlane::default(),
             local_only: false,
             gravity: 9.8,
             length: 100.0,
@@ -2748,6 +2750,7 @@ fn binding_values_size(values: &ClmBindingValues) -> usize {
         V::ZOrder(cells)
         | V::TransformTX(cells)
         | V::TransformTY(cells)
+        | V::TransformTZ(cells)
         | V::TransformSX(cells)
         | V::TransformSY(cells)
         | V::TransformRX(cells)

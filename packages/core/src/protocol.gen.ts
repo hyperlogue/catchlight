@@ -188,6 +188,7 @@ export type Command =
     node: NodeId,
     kind: PhysicsKind | null,
     map_mode: PhysicsMapMode | null,
+    plane: PhysicsPlane | null,
     local_only: boolean | null,
     /**
      * The params the driver writes ([`PhysicsTargets`]). Absent leaves
@@ -682,6 +683,14 @@ export type PhysicsMapMode =
   | "length_angle";
 
 /**
+ * The plane a physics driver swings in: across the screen, or toward and
+ * away from the viewer along the anchor's world z.
+ */
+export type PhysicsPlane =
+  | "screen"
+  | "depth";
+
+/**
  * How a binding reads between the cells its author keyed.
  */
 export type Interpolate =
@@ -739,6 +748,7 @@ export type TextureAlpha =
 export type ScalarTarget =
   | "tx"
   | "ty"
+  | "tz"
   | "sx"
   | "sy"
   | "rx"
@@ -762,6 +772,7 @@ export type ScalarTarget =
 export type BindingTarget =
   | "tx"
   | "ty"
+  | "tz"
   | "sx"
   | "sy"
   | "rx"
@@ -1872,6 +1883,7 @@ export type MaskInfo = {
 export type PhysicsInfo = {
   kind: PhysicsKind,
   map_mode: PhysicsMapMode,
+  plane: PhysicsPlane,
   local_only: boolean,
   gravity: number,
   length: number,

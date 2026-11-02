@@ -913,6 +913,7 @@ fn physics(targets: Vec<ParamId>, local_only: bool) -> ClmSimplePhysics {
     ClmSimplePhysics {
         kind: PendulumKind::RigidPendulum,
         map_mode: PhysicsParamMapMode::AngleLength,
+        plane: catchlight_core::physics::PendulumPlane::Screen,
         local_only,
         target_params,
         gravity: 1.0,

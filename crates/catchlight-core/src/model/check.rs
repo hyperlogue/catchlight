@@ -207,10 +207,12 @@ fn cells_outside(values: &ClmBindingValues, w: u32, h: u32) -> usize {
     use ClmBindingValues::*;
     match values {
         Deform(c) => c.cells.iter().filter(|c| c.x >= w || c.y >= h).count(),
-        ZOrder(c) | TransformTX(c) | TransformTY(c) | TransformSX(c) | TransformSY(c)
-        | TransformRX(c) | TransformRY(c) | TransformRZ(c) | Opacity(c) | TintR(c) | TintG(c)
-        | TintB(c) | ScreenTintR(c) | ScreenTintG(c) | ScreenTintB(c) | OutputScaleX(c)
-        | OutputScaleY(c) => c.cells.iter().filter(|c| c.x >= w || c.y >= h).count(),
+        ZOrder(c) | TransformTX(c) | TransformTY(c) | TransformTZ(c) | TransformSX(c)
+        | TransformSY(c) | TransformRX(c) | TransformRY(c) | TransformRZ(c) | Opacity(c)
+        | TintR(c) | TintG(c) | TintB(c) | ScreenTintR(c) | ScreenTintG(c) | ScreenTintB(c)
+        | OutputScaleX(c) | OutputScaleY(c) => {
+            c.cells.iter().filter(|c| c.x >= w || c.y >= h).count()
+        }
     }
 }
 

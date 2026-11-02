@@ -1118,6 +1118,7 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
         ModelNodeKind::SimplePhysics(ph) => ClmNodeKind::SimplePhysics(ClmSimplePhysics {
             kind: ph.kind,
             map_mode: ph.map_mode,
+            plane: ph.plane,
             local_only: ph.local_only,
             target_params: ph.target_params().clone(),
             gravity: ph.gravity,
@@ -1220,6 +1221,7 @@ fn model_kind(
         ClmNodeKind::SimplePhysics(ph) => {
             let mut physics = ModelPhysics::new(ph.kind);
             physics.map_mode = ph.map_mode;
+            physics.plane = ph.plane;
             physics.local_only = ph.local_only;
             for target in ph.target_params.iter().flatten() {
                 if !params.contains_key(target) && !shape.allows_dangling() {

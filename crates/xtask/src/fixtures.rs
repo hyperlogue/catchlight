@@ -32,7 +32,7 @@ use catchlight_core::formats::clm::{
     TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
+use catchlight_core::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 use catchlight_core::{Model, NodeId, ParamId, SlotId, TexId};
 use catchlight_editor_core::fit_strand;
 
@@ -322,6 +322,8 @@ fn pendulum() -> ClmSimplePhysics {
     ClmSimplePhysics {
         kind: PendulumKind::RigidPendulum,
         map_mode: PhysicsParamMapMode::AngleLength,
+        // On the screen writes no `plane` key either.
+        plane: PendulumPlane::Screen,
         local_only: false,
         target_params: [None, None],
         gravity: 9.8,

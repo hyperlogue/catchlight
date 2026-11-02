@@ -402,6 +402,7 @@ fn build_physics(ph: &ModelPhysics, transform: &Transform, g_scale: f32) -> Simp
     SimplePhysicsData {
         kind: ph.kind,
         map_mode: ph.map_mode,
+        plane: ph.plane,
         local_only: ph.local_only,
         // The model stores authored, unscaled gravity; the integrator wants it
         // pre-folded with the model-level pixelsPerMeter x gravity.

@@ -668,6 +668,7 @@ class PhysicsSet:
     node: NodeId
     kind: PhysicsKind | None = None
     map_mode: PhysicsMapMode | None = None
+    plane: PhysicsPlane | None = None
     local_only: bool | None = None
     # The params the driver writes ([`PhysicsTargets`]). Absent leaves
     # both outputs as they are; present, both become exactly what it
@@ -2139,6 +2140,15 @@ class PhysicsMapMode(StrEnum):
     LENGTH_ANGLE = "length_angle"
 
 
+class PhysicsPlane(StrEnum):
+    """The plane a physics driver swings in: across the screen, or toward and
+    away from the viewer along the anchor's world z.
+    """
+
+    SCREEN = "screen"
+    DEPTH = "depth"
+
+
 class Interpolate(StrEnum):
     """How a binding reads between the cells its author keyed."""
 
@@ -2199,6 +2209,7 @@ class ScalarTarget(StrEnum):
 
     TX = "tx"
     TY = "ty"
+    TZ = "tz"
     SX = "sx"
     SY = "sy"
     RX = "rx"
@@ -2223,6 +2234,7 @@ class BindingTarget(StrEnum):
 
     TX = "tx"
     TY = "ty"
+    TZ = "tz"
     SX = "sx"
     SY = "sy"
     RX = "rx"
@@ -4162,6 +4174,7 @@ class PhysicsInfo:
 
     kind: PhysicsKind
     map_mode: PhysicsMapMode
+    plane: PhysicsPlane
     local_only: bool
     gravity: float
     length: float
@@ -4383,6 +4396,7 @@ __all__ = [
     "MaskMode",
     "PhysicsKind",
     "PhysicsMapMode",
+    "PhysicsPlane",
     "Interpolate",
     "BlendMode",
     "TextureEncoding",

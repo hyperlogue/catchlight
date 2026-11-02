@@ -124,6 +124,7 @@ pub fn declarations(cfg: &Config) -> Vec<Decl> {
         proto::MaskMode,
         proto::PhysicsKind,
         proto::PhysicsMapMode,
+        proto::PhysicsPlane,
         proto::Interpolate,
         proto::BlendMode,
         proto::TextureEncoding,

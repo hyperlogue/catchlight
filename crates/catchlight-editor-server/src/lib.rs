@@ -1373,6 +1373,7 @@ impl Editor {
                 node,
                 kind,
                 map_mode,
+                plane,
                 local_only,
                 target_params,
                 gravity,
@@ -1395,6 +1396,9 @@ impl Editor {
                     }
                     if let Some(m) = map_mode {
                         ph.map_mode = m.into();
+                    }
+                    if let Some(p) = plane {
+                        ph.plane = p.into();
                     }
                     if let Some(v) = local_only {
                         ph.local_only = v;

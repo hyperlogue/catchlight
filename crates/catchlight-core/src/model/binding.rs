@@ -49,6 +49,11 @@ const SINGLE_POSITION: [f32; 1] = [0.0];
 pub enum ScalarTarget {
     Tx,
     Ty,
+    /// Depth, toward the viewer. Under a parent no `Rx` or `Ry` turns, a drawing
+    /// does not move on screen for it (the camera is orthographic, and clips
+    /// only past 1000 either way); a depth pendulum
+    /// ([`crate::physics::PendulumPlane::Depth`]) is what feels it.
+    Tz,
     Sx,
     Sy,
     Rx,
@@ -179,6 +184,7 @@ impl ScalarTarget {
         Some(match s.to_ascii_lowercase().as_str() {
             "tx" | "translatex" => Self::Tx,
             "ty" | "translatey" => Self::Ty,
+            "tz" | "translatez" => Self::Tz,
             "sx" | "scalex" => Self::Sx,
             "sy" | "scaley" => Self::Sy,
             "rx" | "rotatex" => Self::Rx,
@@ -204,6 +210,7 @@ impl ScalarTarget {
         match self {
             Self::Tx => "tx",
             Self::Ty => "ty",
+            Self::Tz => "tz",
             Self::Sx => "sx",
             Self::Sy => "sy",
             Self::Rx => "rx",
@@ -260,6 +267,7 @@ impl ScalarTarget {
         match self {
             Self::Tx => V::TransformTX(c),
             Self::Ty => V::TransformTY(c),
+            Self::Tz => V::TransformTZ(c),
             Self::Sx => V::TransformSX(c),
             Self::Sy => V::TransformSY(c),
             Self::Rx => V::TransformRX(c),
@@ -285,6 +293,7 @@ pub fn target_of(v: &ClmBindingValues) -> BindingTarget {
         V::Deform(_) => return BindingTarget::Deform,
         V::TransformTX(_) => ScalarTarget::Tx,
         V::TransformTY(_) => ScalarTarget::Ty,
+        V::TransformTZ(_) => ScalarTarget::Tz,
         V::TransformSX(_) => ScalarTarget::Sx,
         V::TransformSY(_) => ScalarTarget::Sy,
         V::TransformRX(_) => ScalarTarget::Rx,
@@ -310,6 +319,7 @@ fn scalar_cells_mut(v: &mut ClmBindingValues) -> Option<&mut Vec<ClmCell<f32>>> 
         V::ZOrder(c)
         | V::TransformTX(c)
         | V::TransformTY(c)
+        | V::TransformTZ(c)
         | V::TransformSX(c)
         | V::TransformSY(c)
         | V::TransformRX(c)
@@ -334,6 +344,7 @@ pub fn scalar_cells(v: &ClmBindingValues) -> Option<&[ClmCell<f32>]> {
         V::ZOrder(c)
         | V::TransformTX(c)
         | V::TransformTY(c)
+        | V::TransformTZ(c)
         | V::TransformSX(c)
         | V::TransformSY(c)
         | V::TransformRX(c)
@@ -1065,6 +1076,7 @@ impl ModelBinding {
             ClmBindingValues::ZOrder(c)
             | ClmBindingValues::TransformTX(c)
             | ClmBindingValues::TransformTY(c)
+            | ClmBindingValues::TransformTZ(c)
             | ClmBindingValues::TransformSX(c)
             | ClmBindingValues::TransformSY(c)
             | ClmBindingValues::TransformRX(c)

@@ -3174,6 +3174,7 @@ impl App {
                     node: primary,
                     kind: p.kind,
                     map_mode: p.map_mode,
+                    plane: None,
                     local_only: p.local_only,
                     target_params: p.target_params,
                     gravity: p.gravity,

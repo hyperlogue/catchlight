@@ -501,6 +501,7 @@ fn value_for(field: &str) -> &'static str {
         "blend_mode" => "Multiply",
         "pendulum" => "SpringPendulum",
         "map_mode" => "XY",
+        "plane" => "Depth",
         "albedo" => "none",
         "lock_to_root" | "local_only" | "propagate_meshgroup" | "translate_children" => "true",
         _ => "0.25",
@@ -564,6 +565,7 @@ fn kitchen_sink() -> ClmFile {
         kind: ClmNodeKind::SimplePhysics(ClmSimplePhysics {
             kind: PendulumKind::RigidPendulum,
             map_mode: PhysicsParamMapMode::AngleLength,
+            plane: catchlight_core::physics::PendulumPlane::Screen,
             local_only: false,
             target_params: [None, None],
             gravity: 9.8,

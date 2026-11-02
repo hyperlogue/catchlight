@@ -324,6 +324,8 @@ pub enum Command {
         #[serde(default)]
         map_mode: Option<PhysicsMapMode>,
         #[serde(default)]
+        plane: Option<PhysicsPlane>,
+        #[serde(default)]
         local_only: Option<bool>,
         /// The params the driver writes ([`PhysicsTargets`]). Absent leaves
         /// both outputs as they are; present, both become exactly what it
@@ -1987,6 +1989,46 @@ impl From<catchlight_core::physics::PendulumKind> for PhysicsKind {
     }
 }
 
+/// The plane a physics driver swings in: across the screen, or toward and
+/// away from the viewer along the anchor's world z.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum PhysicsPlane {
+    #[default]
+    Screen,
+    Depth,
+}
+
+impl PhysicsPlane {
+    /// The word this travels under.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Depth => "depth",
+        }
+    }
+}
+
+impl From<PhysicsPlane> for catchlight_core::physics::PendulumPlane {
+    fn from(plane: PhysicsPlane) -> Self {
+        match plane {
+            PhysicsPlane::Screen => Self::Screen,
+            PhysicsPlane::Depth => Self::Depth,
+        }
+    }
+}
+
+impl From<catchlight_core::physics::PendulumPlane> for PhysicsPlane {
+    fn from(plane: catchlight_core::physics::PendulumPlane) -> Self {
+        use catchlight_core::physics::PendulumPlane as P;
+        match plane {
+            P::Screen => Self::Screen,
+            P::Depth => Self::Depth,
+        }
+    }
+}
+
 /// What a physics driver's two outputs mean; see [`PhysicsTargets`].
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -2266,6 +2308,7 @@ impl From<catchlight_core::components::BlendMode> for BlendMode {
 pub enum ScalarTarget {
     Tx,
     Ty,
+    Tz,
     Sx,
     Sy,
     Rx,
@@ -2299,6 +2342,7 @@ pub enum ScalarTarget {
 pub enum BindingTarget {
     Tx,
     Ty,
+    Tz,
     Sx,
     Sy,
     Rx,
@@ -2400,6 +2444,7 @@ macro_rules! scalar_targets {
 scalar_targets!(
     Tx,
     Ty,
+    Tz,
     Sx,
     Sy,
     Rx,
@@ -2434,6 +2479,7 @@ display_as_wire!(
     MaskMode,
     PhysicsKind,
     PhysicsMapMode,
+    PhysicsPlane,
     Interpolate,
     BlendMode,
     ScalarTarget,
@@ -3160,6 +3206,7 @@ pub struct MaskInfo {
 pub struct PhysicsInfo {
     pub kind: PhysicsKind,
     pub map_mode: PhysicsMapMode,
+    pub plane: PhysicsPlane,
     pub local_only: bool,
     pub gravity: f32,
     pub length: f32,
@@ -3676,6 +3723,7 @@ mod tests {
             [
                 "tx",
                 "ty",
+                "tz",
                 "sx",
                 "sy",
                 "rx",
@@ -3698,9 +3746,10 @@ mod tests {
         assert_eq!(BindingTarget::from(ScalarTarget::Rz), BindingTarget::Rz);
     }
 
-    const SCALAR_TARGETS: [ScalarTarget; 17] = [
+    const SCALAR_TARGETS: [ScalarTarget; 18] = [
         ScalarTarget::Tx,
         ScalarTarget::Ty,
+        ScalarTarget::Tz,
         ScalarTarget::Sx,
         ScalarTarget::Sy,
         ScalarTarget::Rx,
@@ -3718,9 +3767,10 @@ mod tests {
         ScalarTarget::OutputScaleY,
     ];
 
-    const BINDING_TARGETS: [BindingTarget; 18] = [
+    const BINDING_TARGETS: [BindingTarget; 19] = [
         BindingTarget::Tx,
         BindingTarget::Ty,
+        BindingTarget::Tz,
         BindingTarget::Sx,
         BindingTarget::Sy,
         BindingTarget::Rx,

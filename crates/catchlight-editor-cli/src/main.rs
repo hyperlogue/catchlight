@@ -697,6 +697,8 @@ enum PhysicsCmd {
         kind: Option<PhysicsKind>,
         #[arg(long = "map-mode", value_parser = wire_enum::<PhysicsMapMode>)]
         map_mode: Option<PhysicsMapMode>,
+        #[arg(long, value_parser = wire_enum::<PhysicsPlane>)]
+        plane: Option<PhysicsPlane>,
         #[arg(long = "local-only")]
         local_only: Option<bool>,
         /// Rebind both of the driver's outputs, to whatever the two flags
@@ -1062,6 +1064,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     node,
                     kind,
                     map_mode,
+                    plane,
                     local_only,
                     targets,
                     target_angle,
@@ -1077,6 +1080,7 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     node: node.clone(),
                     kind: *kind,
                     map_mode: *map_mode,
+                    plane: *plane,
                     local_only: *local_only,
                     // Naming an output is itself a request to rebind, so the
                     // bare flag is only needed to detach both.

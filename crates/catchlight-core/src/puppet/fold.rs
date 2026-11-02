@@ -162,6 +162,7 @@ impl Puppet {
         match target {
             ScalarTarget::Tx => node.transform.translation.x += value,
             ScalarTarget::Ty => node.transform.translation.y += value,
+            ScalarTarget::Tz => node.transform.translation.z += value,
             ScalarTarget::Sx => node.transform.scale.x *= value,
             ScalarTarget::Sy => node.transform.scale.y *= value,
             ScalarTarget::Rx => node.transform.rotation.x += value,

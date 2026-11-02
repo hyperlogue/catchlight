@@ -664,6 +664,7 @@ impl Puppet {
                     | BindingTarget::Scalar(
                         ScalarTarget::Tx
                             | ScalarTarget::Ty
+                            | ScalarTarget::Tz
                             | ScalarTarget::Sx
                             | ScalarTarget::Sy
                             | ScalarTarget::Rx
@@ -1573,7 +1574,9 @@ impl Puppet {
             // (the anchor is local), so no inverse is needed. Otherwise invert
             // the node's model-local world matrix to rotate the displacement
             // back into the node's own frame.
-            let world_inverse = if p.local_only {
+            // A depth pendulum swings in a world plane the node's own
+            // transform does not turn, so its swing is read as it lies.
+            let world_inverse = if p.local_only || p.plane == crate::physics::PendulumPlane::Depth {
                 Some(Mat4::IDENTITY)
             } else {
                 checked_affine_inverse(transforms.get(id))
@@ -2034,6 +2037,7 @@ impl Puppet {
                 BindingTarget::Scalar(
                     ScalarTarget::Tx
                         | ScalarTarget::Ty
+                        | ScalarTarget::Tz
                         | ScalarTarget::Sx
                         | ScalarTarget::Sy
                         | ScalarTarget::Rx

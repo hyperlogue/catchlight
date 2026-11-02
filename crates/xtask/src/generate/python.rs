@@ -1641,6 +1641,7 @@ mod wire_shapes {
             node: id("hair"),
             kind: None,
             map_mode: None,
+            plane: None,
             local_only: None,
             target_params,
             gravity: None,

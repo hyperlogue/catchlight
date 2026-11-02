@@ -504,6 +504,17 @@ export function PhysicsPanel({ session, info, onError }: AuthoringPanelProps) {
           />
           Use local motion only
         </label>
+        <Field label="Swing plane">
+          <select
+            aria-label="Physics swing plane"
+            value={p.plane}
+            onChange={(e) => set({ plane: e.currentTarget.value as typeof p.plane })}
+          >
+            {["screen", "depth"].map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </Field>
       </Disclosure>
       <Disclosure title="Param outputs">
         <Field label="Mapping">

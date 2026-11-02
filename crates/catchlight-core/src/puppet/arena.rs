@@ -596,18 +596,25 @@ impl Arena {
         id: NodeIdx,
     ) -> Option<crate::Vec2> {
         let node = self.nodes.get(id.0 as usize)?;
-        let local_only = match &node.kind {
-            crate::NodeKind::SimplePhysics(p) => p.local_only,
-            crate::NodeKind::Spine(sp) => sp.chain.as_ref()?.local_only,
+        let (local_only, plane) = match &node.kind {
+            crate::NodeKind::SimplePhysics(p) => (p.local_only, p.plane),
+            crate::NodeKind::Spine(sp) => (
+                sp.chain.as_ref()?.local_only,
+                crate::physics::PendulumPlane::Screen,
+            ),
             _ => return None,
         };
-        let anchor = if local_only {
-            crate::Vec2::new(node.transform.translation.x, node.transform.translation.y)
+        let at = if local_only {
+            node.transform.translation
         } else {
-            let world = transforms.get(id);
-            crate::Vec2::new(world.w_axis.x, world.w_axis.y)
+            transforms.get(id).w_axis.truncate()
         };
-        Some(crate::Vec2::new(anchor.x, -anchor.y))
+        // A depth pendulum's horizontal is the world's z (see `PendulumPlane`).
+        let across = match plane {
+            crate::physics::PendulumPlane::Screen => at.x,
+            crate::physics::PendulumPlane::Depth => at.z,
+        };
+        Some(crate::Vec2::new(across, -at.y))
     }
 
     /// The node's full linear map, including scale and mirrors, conjugated

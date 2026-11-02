@@ -312,6 +312,7 @@ fn node_fields(n: &ClmNode) -> Fields {
             f.insert("kind".into(), "SimplePhysics".into());
             f.insert("pendulum".into(), enum_name(&p.kind));
             f.insert("map_mode".into(), enum_name(&p.map_mode));
+            f.insert("plane".into(), enum_name(&p.plane));
             f.insert("local_only".into(), p.local_only.to_string());
             for (i, slot) in p.target_params.iter().enumerate() {
                 f.insert(

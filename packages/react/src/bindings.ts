@@ -33,6 +33,7 @@ import { useRevision } from "./replica.js";
 export const BINDING_TARGETS: readonly ScalarTarget[] = [
   "tx",
   "ty",
+  "tz",
   "sx",
   "sy",
   "rx",
@@ -53,6 +54,7 @@ export const BINDING_TARGETS: readonly ScalarTarget[] = [
 export const BINDING_LABELS: Record<ScalarTarget | "deform", string> = {
   tx: "Position X",
   ty: "Position Y",
+  tz: "Depth",
   sx: "Scale X",
   sy: "Scale Y",
   rx: "Rotation X",

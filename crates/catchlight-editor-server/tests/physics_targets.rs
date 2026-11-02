@@ -108,6 +108,7 @@ fn set(session: SessionId, node: &NodeId, target_params: Option<PhysicsTargets>)
         node: node.clone(),
         kind: None,
         map_mode: None,
+        plane: None,
         local_only: None,
         target_params,
         gravity: None,

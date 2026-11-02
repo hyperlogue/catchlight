@@ -511,6 +511,7 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
                 Some(PhysicsInfo {
                     kind: ph.kind.into(),
                     map_mode: ph.map_mode.into(),
+                    plane: ph.plane.into(),
                     local_only: ph.local_only,
                     gravity: ph.gravity,
                     length: ph.length,

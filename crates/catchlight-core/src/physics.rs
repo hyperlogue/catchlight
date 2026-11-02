@@ -50,6 +50,21 @@ impl PendulumKind {
     }
 }
 
+/// The plane a pendulum swings in, read off its anchor's world position.
+///
+/// `Depth` swings toward and away from the viewer: the anchor's world `z`
+/// takes the place of `x`, so the pendulum feels only what moves the node in
+/// depth (a `Tz` binding, or an `Rx`/`Ry` above it) and nothing that moves it
+/// across the screen. Its swing is read in that world plane as it is, not
+/// turned back through the node's own transform, whose rotation lives in the
+/// screen plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum PendulumPlane {
+    #[default]
+    Screen,
+    Depth,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PhysicsParamMapMode {
     XY,
@@ -76,6 +91,7 @@ impl PhysicsParamMapMode {
 pub struct SimplePhysicsData {
     pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
+    pub plane: PendulumPlane,
     pub local_only: bool,
     pub gravity: f32,
     pub length: f32,
@@ -112,6 +128,7 @@ impl Default for SimplePhysicsData {
         Self {
             kind: PendulumKind::RigidPendulum,
             map_mode: PhysicsParamMapMode::AngleLength,
+            plane: PendulumPlane::Screen,
             local_only: false,
             gravity: 9.8 * 100.0,
             length: 100.0,

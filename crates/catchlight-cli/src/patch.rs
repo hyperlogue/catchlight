@@ -34,7 +34,7 @@ use std::path::Path;
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmTexture};
 use catchlight_core::id::{TexId, MAX_NAME_BYTES};
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
+use catchlight_core::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 
 use crate::diff::enum_name;
 use crate::{file, Error};
@@ -240,6 +240,7 @@ enum Slot<'a> {
     Blend(&'a mut BlendMode),
     Pendulum(&'a mut PendulumKind),
     MapMode(&'a mut PhysicsParamMapMode),
+    Plane(&'a mut PendulumPlane),
     Albedo(&'a mut Option<TexId>),
 }
 
@@ -262,6 +263,7 @@ const BLEND_MODES: &[&str] = &[
 ];
 const PENDULUM_KINDS: &[&str] = &["RigidPendulum", "SpringPendulum"];
 const MAP_MODES: &[&str] = &["XY", "YX", "AngleLength", "LengthAngle"];
+const PLANES: &[&str] = &["Screen", "Depth"];
 
 /// Fields every node has, whatever its kind.
 const COMMON_FIELDS: &[&str] = &[
@@ -314,6 +316,7 @@ const PHYSICS_FIELDS: &[&str] = &[
     "output_scale.x",
     "output_scale.y",
     "pendulum",
+    "plane",
 ];
 /// A spine's own scalars — the three the chain it may carry holds. Its
 /// `joints` are a list of points, its `targets` a list of Ids and its links a
@@ -421,6 +424,7 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
         ClmNodeKind::SimplePhysics(s) => match field {
             "pendulum" => Slot::Pendulum(&mut s.kind),
             "map_mode" => Slot::MapMode(&mut s.map_mode),
+            "plane" => Slot::Plane(&mut s.plane),
             "local_only" => Slot::Bool(&mut s.local_only),
             "gravity" => Slot::F32(&mut s.gravity),
             "length" => Slot::F32(&mut s.length),
@@ -509,6 +513,12 @@ fn apply(
             *slot = parsed;
             (before, enum_name(slot))
         }
+        Slot::Plane(slot) => {
+            let parsed = parse_enum(value).ok_or_else(|| bad(&one_of(PLANES)))?;
+            let before = enum_name(slot);
+            *slot = parsed;
+            (before, enum_name(slot))
+        }
         Slot::Albedo(slot) => {
             let parsed = match value {
                 "none" | "null" => None,
@@ -586,6 +596,7 @@ mod tests {
             ClmNodeKind::SimplePhysics(ClmSimplePhysics {
                 kind: PendulumKind::RigidPendulum,
                 map_mode: PhysicsParamMapMode::AngleLength,
+                plane: PendulumPlane::Screen,
                 local_only: false,
                 target_params: [None, None],
                 gravity: 1.0,

@@ -107,7 +107,7 @@ use super::container::{self, ContainerError, Section};
 use crate::components::{BlendMode, MaskMode};
 use crate::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
-use crate::physics::{PendulumKind, PhysicsParamMapMode};
+use crate::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 
 /// Alpha convention of a texture's stored bytes. The compile/preview step
 /// normalizes either representation to premultiplied linear color.
@@ -230,6 +230,7 @@ pub enum ClmBindingValues {
     ZOrder(ClmCells<f32>),
     TransformTX(ClmCells<f32>),
     TransformTY(ClmCells<f32>),
+    TransformTZ(ClmCells<f32>),
     TransformSX(ClmCells<f32>),
     TransformSY(ClmCells<f32>),
     TransformRX(ClmCells<f32>),
@@ -597,6 +598,11 @@ pub struct ClmMeshGroup {
 pub struct ClmSimplePhysics {
     pub kind: PendulumKind,
     pub map_mode: PhysicsParamMapMode,
+    /// Added after the format shipped, so it defaults: a pendulum without the
+    /// key swings on the screen, as every earlier file's does, and one on the
+    /// screen writes no key.
+    #[serde(default, skip_serializing_if = "is_screen")]
+    pub plane: PendulumPlane,
     pub local_only: bool,
     /// The two params the pendulum's swing is written into, in the order the
     /// map mode produces them. Either may be unset.
@@ -609,6 +615,12 @@ pub struct ClmSimplePhysics {
     pub angle_damping: f32,
     pub length_damping: f32,
     pub output_scale: [f32; 2],
+}
+
+/// Whether a pendulum swings on the screen, and so needs no `plane` key.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_screen(plane: &PendulumPlane) -> bool {
+    *plane == PendulumPlane::Screen
 }
 
 /// One link's feel in a [`ClmChain`], mirroring [`crate::model::LinkFeel`]
