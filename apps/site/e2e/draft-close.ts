@@ -6,12 +6,24 @@ import type { Page } from "playwright-core";
 
 type Step = (name: string, work: () => Promise<void>) => Promise<void>;
 
+async function openSample(page: Page): Promise<void> {
+  const previous = await page.locator("[data-catchlight-session][data-current]")
+    .getAttribute("data-session");
+  await page.locator("input[data-catchlight-file-open]").setInputFiles(
+    fileURLToPath(new URL("../public/sample.clm", import.meta.url)),
+  );
+  // The previous model can already contain every node in the new sample.
+  await page.waitForFunction((before) => {
+    const current = document.querySelector("[data-catchlight-session][data-current]")
+      ?.getAttribute("data-session");
+    return current !== null && current !== undefined && current !== before;
+  }, previous);
+}
+
 export async function draftClose(page: Page, step: Step, shots: string, tag: string) {
   await step("closing an applied mesh draft still protects unsaved model changes", async () => {
     await page.setViewportSize({ width: 1440, height: 960 });
-    await page.locator("input[data-catchlight-file-open]").setInputFiles(
-      fileURLToPath(new URL("../public/sample.clm", import.meta.url)),
-    );
+    await openSample(page);
     const face = page.locator('[data-catchlight-node][data-node="face"] [data-catchlight-node-label]');
     await face.waitFor();
     await face.click();
@@ -80,27 +92,7 @@ export async function draftClose(page: Page, step: Step, shots: string, tag: str
 export async function drawerKeyboard(page: Page, step: Step, shots: string, tag: string) {
   await step("drawers retain keyboard focus and let search recover before dismissal", async () => {
     await page.setViewportSize({ width: 1440, height: 960 });
-    // The step before this one leaves sample.clm open, so a face row is
-    // already in the tree. Opening another copy is asynchronous — a wasm
-    // session in this tab, a POST on the connected backend — and
-    // `openFile` only adopts the copy once its structure has loaded.
-    // Clicking the face that is already on screen selects the model about
-    // to be replaced. When the new session arrives, that selection is
-    // dropped, Delete disables, and the drawer's focus trap no longer ends
-    // on it. Wait until the opened copy is the one on screen.
-    const previous = await page
-      .locator("[data-catchlight-session][data-current]")
-      .getAttribute("data-session");
-    await page.locator("input[data-catchlight-file-open]").setInputFiles(
-      fileURLToPath(new URL("../public/sample.clm", import.meta.url)),
-    );
-    await page.waitForFunction((id) => {
-      const current = document
-        .querySelector("[data-catchlight-session][data-current]")
-        ?.getAttribute("data-session");
-      return current !== id && current !== null
-        && document.querySelector('[data-node="face"] [data-catchlight-node-label]') !== null;
-    }, previous);
+    await openSample(page);
     await page.locator('[data-node="face"] [data-catchlight-node-label]').click();
     await page.setViewportSize({ width: 390, height: 844 });
     const toggle = page.getByRole("button", { name: "Toggle structure panel", exact: true });
