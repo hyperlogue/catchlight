@@ -1,17 +1,4 @@
-/**
- * Just enough pixel arithmetic to tell a drawn frame from a blank one.
- *
- * The drive's one question about a canvas is "did anything reach it?", and in
- * this browser only the renderer can answer it. A headless Chromium holding a
- * WebGPU device never composites the canvas: `toDataURL`, a `drawImage` into a
- * 2D canvas and the compositor's own screenshot all come back blank while the
- * picture is perfectly correct. So the pixels come from `Viewport.readback`,
- * which copies the surface texture in the frame it drew — already RGBA, already
- * unpadded, already the canvas's backing-store size.
- *
- * What is left here is the two judgements made over them, and nothing that
- * knows where they came from.
- */
+/** Pixel statistics shared by renderer readbacks and decoded screenshots. */
 
 export interface Image {
   width: number;

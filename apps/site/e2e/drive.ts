@@ -1,5 +1,5 @@
 /**
- * One headless-browser pass over the web editor, against one backend.
+ * One automated browser pass over the web editor, against one backend.
  *
  * ```text
  * bun run apps/site/e2e/drive.ts <chromium-exe> <site-url> [server-base]
@@ -25,12 +25,10 @@
  * one failure this file exists to catch. `TIER=none` is the negative case —
  * both tiers switched off — and it passes when the tab says what it needs.
  *
- * **The picture comes from the renderer, not from a screenshot.** A headless
- * Chromium holding a WebGPU device never composites the canvas — a screenshot
- * of it is blank however good the frame is — so [`canvasFrame`] asks the
- * viewport for its own copy through `Viewport.readback`, which answers the
- * same shape on either tier. The screenshots this still writes are of the
- * *page*, kept because a human reading a failure wants to see the DOM.
+ * **Rendering and presentation are checked separately.** Compositor
+ * screenshots verify that the model is visible. [`canvasFrame`] redraws and
+ * reads the renderer's surface for pose and multi-canvas pixel comparisons.
+ * A healthy readback alone cannot prove that the browser displays the frame.
  *
  * **A step that cannot see the picture is not a passing step.** For every pose
  * but the deliberate extreme, a frame that is one flat colour is a failure: a
@@ -53,6 +51,7 @@
 import { READBACK } from "@catchlight/core";
 import { studio } from "./studio.ts";
 import { snapshots } from "./snapshots.ts";
+import { assertPresentedCanvas } from "./presentation.ts";
 import { workspaces } from "./workspaces.ts";
 import { draftClose, drawerKeyboard } from "./draft-close.ts";
 import { chromium } from "playwright-core";
@@ -98,16 +97,15 @@ const CONSOLE_FATAL = [
 /** A wasm trap reaches the page as an error and nothing else; hence the extra pattern. */
 const PAGE_FATAL = [...CONSOLE_FATAL, /unreachable/i];
 
-/** Headless, and none of it about graphics. */
+/** Shared browser process options. */
 const BASE_ARGS = [
-  "--headless=new",
   "--no-sandbox",
   "--no-first-run",
   "--disable-dev-shm-usage",
 ];
 
-/** What puts both tiers on Mesa's llvmpipe rather than on SwiftShader. */
-const REAL_GPU = [
+/** WebGL2 on Mesa through ANGLE Vulkan. */
+const WEBGL_GPU = [
   "--enable-features=Vulkan",
   "--use-vulkan=native",
   "--use-angle=vulkan",
@@ -115,26 +113,23 @@ const REAL_GPU = [
 ];
 
 /**
- * What a headless Chromium needs to reach a real GPU of either kind, and what
- * it takes to withhold one.
- *
- * `--use-angle=vulkan` beside `--use-vulkan=native` is what lands both tiers on
- * Mesa's llvmpipe rather than on SwiftShader, whose WebGPU device dies at the
- * first canvas configure; the ICD comes from the shell's `XDG_DATA_DIRS`, the
- * same one the Rust GPU tests find lavapipe through. On top of that the tiers
- * differ in one switch each: `--enable-unsafe-webgpu` is what gives the tab a
- * `navigator.gpu` at all, and `--disable-features=WebGPU` is what takes it
- * away, which is how the fallback is reached in a browser that would otherwise
- * have preferred WebGPU. `none` takes WebGL away as well, and is the only
- * configuration in which the editor is supposed to refuse to draw.
- *
- * `CHROMIUM_ARGS` replaces whichever set `TIER` chose, for driving a browser
- * these do not describe.
+ * These defaults target Linux/Mesa. WebGPU uses Graphite on X11 so frames
+ * reach the compositor; `run.ts` supplies Xvfb when no display exists.
+ * WebGL2 also supports headless capture.
+ * `CHROMIUM_ARGS` replaces the defaults for other browser environments.
  */
 const ARGS: Record<string, string[]> = {
-  webgpu: [...BASE_ARGS, ...REAL_GPU, "--enable-unsafe-webgpu"],
-  webgl2: [...BASE_ARGS, ...REAL_GPU, "--disable-features=WebGPU"],
-  none: [...BASE_ARGS, "--disable-features=WebGPU", "--disable-webgl"],
+  webgpu: [
+    ...BASE_ARGS,
+    "--ozone-platform=x11",
+    "--enable-skia-graphite",
+    "--skia-graphite-dawn-backend=vulkan",
+    "--use-angle=vulkan",
+    "--ignore-gpu-blocklist",
+    "--enable-unsafe-webgpu",
+  ],
+  webgl2: [...BASE_ARGS, "--headless=new", ...WEBGL_GPU, "--disable-features=WebGPU"],
+  none: [...BASE_ARGS, "--headless=new", "--disable-features=WebGPU", "--disable-webgl"],
 };
 
 const [exe, site, server] = process.argv.slice(2);
@@ -155,8 +150,10 @@ if (!chosen)
 const args = process.env.CHROMIUM_ARGS?.split(/\s+/).filter(Boolean) ?? chosen;
 const tag = `${server ? "connected" : "intab"}-${tier}`;
 
-// `headless: false` with `--headless=new` in the arguments: Playwright's own
-// headless switch is not the mode a WebGPU device comes up in.
+if (tier === "webgpu" && !process.env.CHROMIUM_ARGS && !process.env.DISPLAY) {
+  throw new Error("WebGPU presentation needs X11; use e2e/run.ts or xvfb-run -a");
+}
+// The selected flag set controls whether this pass needs a display.
 const browser = await chromium.launch({
   executablePath: exe,
   headless: false,
@@ -282,12 +279,8 @@ const maxChannelDifference = (a: Image, b: Image): number => {
 };
 
 /**
- * The frame the viewport is showing, asserted to be a picture.
- *
- * The pixels are the renderer's own copy of its surface, reached through the
- * property a live viewport hangs off its canvas — the element is all a driver
- * in the page has a handle to. Nothing here goes near the compositor, which in
- * this browser has never seen the canvas.
+ * Redraw and read the renderer's surface for pixel assertions.
+ * Browser screenshots separately check that the frame is presented.
  *
  * `flat` is for the one shot where a single colour is the right answer: a
  * param at the end of its range can pose a fixture so a flat-coloured part
@@ -454,6 +447,8 @@ async function draws(): Promise<void> {
     // a browser with no tier at all can be told apart from a slow one.
     await checkProblem();
   });
+  await step("startup canvas is visible", () =>
+    assertPresentedCanvas(page, "startup", `${shots}/${tag}-startup-canvas.png`));
   if (server && process.env.AGENT_CMD) {
     await step("an agent's edit over the socket reaches the tab", async () => {
       const nodesBefore = await page.locator("[data-catchlight-node]").count();
@@ -518,6 +513,8 @@ async function draws(): Promise<void> {
           .slice(0, 80),
       );
     });
+    await step("opened model is visible", () =>
+      assertPresentedCanvas(page, "opened model", `${shots}/${tag}-opened-canvas.png`));
   }
   await step("snapshot bytes match their receipt and forks edit independently", () => snapshots(page));
   let before: Shot = {
@@ -735,7 +732,6 @@ async function draws(): Promise<void> {
   await studio(page, step, shots, tag);
   await draftClose(page, step, shots, tag);
   await drawerKeyboard(page, step, shots, tag);
-  // The page, for a human reading the run afterwards. On the WebGPU tier the
-  // canvas in it is blank, because that browser never composites one.
+  // Save the complete editor for visual review.
   await page.screenshot({ path: `${shots}/${tag}-final.png` });
 }

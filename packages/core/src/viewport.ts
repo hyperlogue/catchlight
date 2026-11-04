@@ -22,10 +22,9 @@
  * draws once no matter how many times it was told.
  *
  * **The canvas carries a way to read its own frame, and only tests use it.**
- * A headless Chromium holding a WebGPU device never composites the canvas, so
- * a screenshot of one is blank while the picture is correct — the browser
- * smoke test has to ask the renderer instead. The element is what a driver
- * already has a handle to, so a live viewport hangs [`READBACK`] off it and
+ * Renderer readback redraws the frame and returns RGBA pixels. Browser
+ * screenshots separately verify presentation. A live viewport hangs
+ * [`READBACK`] off the element a driver already has a handle to and
  * takes it back on dispose. What answers is the tier's business and reads the
  * same either way: device pixels, RGBA, row-major. Nothing in the editor reads
  * that property, and nothing about the drawing depends on it.

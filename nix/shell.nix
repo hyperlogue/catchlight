@@ -58,6 +58,8 @@ in
         # The largest closure in the shell, and in the one shell on purpose: a
         # second shell only the smoke test entered was one more thing to know.
         pkgs.chromium
+        # WebGPU presentation tests need an X11 compositor surface.
+        pkgs.xvfb-run
       ];
 
     env = lib.optionalAttrs stdenv.hostPlatform.isLinux {

@@ -67,10 +67,8 @@
 //!
 //! - **[`readback`] is the one asynchronous entry, and the loop cannot tell
 //!   it happened.** It draws the current frame again, at the timestamp the
-//!   loop last used so nothing is advanced. It exists because a headless
-//!   Chromium holding a WebGPU device never composites the canvas — a
-//!   screenshot of one is blank while the picture is correct — so the smoke
-//!   test has no other way to see what was drawn. Where the pixels come from
+//!   loop last used so nothing is advanced. It verifies rendering; browser
+//!   screenshots separately verify presentation. Where the pixels come from
 //!   differs by tier and is invisible to whoever asked. A WebGPU surface is
 //!   copied into a buffer in the frame's own submission and the promise is
 //!   that mapping. A GL surface takes no copy usage at all, so the main
@@ -1265,9 +1263,8 @@ impl Viewport {
     /// prefers and whichever tier drew, because the test asking has no way to
     /// find out and no business caring.
     ///
-    /// It is what a headless Chromium has instead of a screenshot: that
-    /// configuration never composites the canvas, so the compositor's copy is
-    /// blank while the picture is fine.
+    /// These pixels verify rendering, not browser compositing or whether the
+    /// normal frame loop is running. Use a screenshot to verify presentation.
     ///
     /// [`Gpu::acquire`]: crate::Gpu::acquire
     pub fn readback(&self) -> Result<js_sys::Promise, JsValue> {

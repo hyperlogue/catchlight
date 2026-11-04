@@ -2,7 +2,8 @@
  * The web editor's smoke test: serve what Pages would ship, and drive it.
  *
  * Run it from the dev shell: `bun run --filter catchlight-demo e2e`. The
- * Chromium it drives is in that shell.
+ * Chromium and Xvfb are in that shell. On Linux without DISPLAY, this
+ * re-launches under Xvfb so the WebGPU pass can verify actual presentation.
  *
  * ```text
  * bun run --filter catchlight-demo e2e
@@ -45,6 +46,19 @@ import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+if (process.platform === "linux" && !process.env.DISPLAY && !process.env.CHROMIUM_ARGS) {
+  const xvfb = Bun.which("xvfb-run");
+  if (!xvfb) fail("no xvfb-run: run this inside `nix develop` for WebGPU presentation");
+  const child = Bun.spawn([
+    xvfb,
+    "-a",
+    "-s", "-screen 0 1920x1080x24 -nolisten tcp",
+    process.execPath,
+    ...process.argv.slice(1),
+  ], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+  process.exit(await child.exited);
+}
 
 /** Opened by the server, edited by the agent, and what the tab shows first. */
 const SERVER_MODEL = "tests/models/quad_over_bg.clm";
