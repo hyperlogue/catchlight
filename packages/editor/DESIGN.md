@@ -244,6 +244,19 @@ The script rasterises its own SVG artwork in Chromium and authors the model
 through the editor protocol. It writes `apps/site/public/sample.clm`, which
 is a Git LFS object. No private reference model is required.
 
+For a private local starter, pass its path directly to the development server:
+
+```sh
+CATCHLIGHT_LOCAL_MODEL=/path/to/model.clm bun run --filter catchlight-demo dev
+```
+
+The override supplies both the in-tab startup model and **Explore the starter
+character**. The server streams that one file from its original location, with
+no caching, and requires a loopback listener. Keep private models outside the
+site's `public/` directory and import graph. Neither a production build nor
+`vite preview` uses the override; they retain the shipped Mica sample. A
+connected backend still owns its initially open sessions.
+
 ## Reviewing UI changes
 
 Review the built editor with its real wasm replica and renderer. Compare a
