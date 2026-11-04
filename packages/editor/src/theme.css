@@ -2381,6 +2381,8 @@
     width: 90px;
     flex: none;
     font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
   }
   .catchlight [data-catchlight-record-slider] > input {
     min-width: 40px;
