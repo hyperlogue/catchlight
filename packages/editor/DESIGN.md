@@ -244,10 +244,14 @@ The script rasterises its own SVG artwork in Chromium and authors the model
 through the editor protocol. It writes `apps/site/public/sample.clm`, which
 is a Git LFS object. No private reference model is required.
 
+From the repository root, `bun run dev` starts the editor with the tracked
+Mica sample. On a fresh checkout, run `bun install`, `git lfs pull`, and
+`cargo xtask build-wasm` in the development shell first.
+
 For a private local starter, pass its path directly to the development server:
 
 ```sh
-CATCHLIGHT_LOCAL_MODEL=/path/to/model.clm bun run --filter catchlight-demo dev
+CATCHLIGHT_LOCAL_MODEL=/path/to/model.clm bun run dev
 ```
 
 The override supplies both the in-tab startup model and **Explore the starter
