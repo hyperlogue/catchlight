@@ -9,8 +9,6 @@ use std::path::Path;
 
 pub use catchlight_wgpu::RenderContext;
 
-const SUBSTEP_SECONDS: f32 = 0.01;
-const SETTLE_STEPS: u32 = 500;
 /// One frame of the transient a config with `ticks_after_pose` captures.
 /// Fixed at 60 Hz and never read from a clock, so a tick count in a config
 /// reads as a time and the same count always renders the same instant.
@@ -138,13 +136,13 @@ pub fn prepare_puppet(
     // frames after it are the motion that pose change starts.
     if ticks_after_pose == 0 {
         cached.puppet.apply_pose(&pose);
-    }
-    for _ in 0..SETTLE_STEPS {
-        cached
-            .puppet
-            .tick_with_root(&cached.model, world, SUBSTEP_SECONDS);
-    }
-    if ticks_after_pose > 0 {
+        cached.puppet.settle_physics(&cached.model);
+        cached.puppet.tick_with_root(&cached.model, world, 0.0);
+    } else {
+        // Transient baselines start after five seconds of fixed-step warm-up.
+        for _ in 0..500 {
+            cached.puppet.tick_with_root(&cached.model, world, 0.01);
+        }
         cached.puppet.apply_pose(&pose);
         for _ in 0..ticks_after_pose {
             cached

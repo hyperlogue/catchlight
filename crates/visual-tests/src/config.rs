@@ -96,6 +96,14 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
     let repro = repo_root.join("tests").join("models");
     vec![
         ModelSpec {
+            stem: "lan".into(),
+            path: repro.join("lan.clm"),
+            width: 512,
+            height: 512,
+            default_zoom: 512.0 / 2253.0,
+            texture_halvings: 0,
+        },
+        ModelSpec {
             stem: "disk_masked_by_disk".into(),
             path: repro.join("disk_masked_by_disk.clm"),
             width: 512,
@@ -225,6 +233,14 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
 fn camera_presets(default_zoom: f32) -> Vec<(&'static str, Camera)> {
     vec![
         (
+            "lan_face",
+            Camera {
+                x: -3.0,
+                y: 812.0,
+                zoom: 512.0 / 696.0,
+            },
+        ),
+        (
             "default",
             Camera {
                 x: 0.0,
@@ -277,6 +293,78 @@ struct Curated {
 
 fn curated_configs(stem: &str) -> Vec<Curated> {
     match stem {
+        "lan" => vec![
+            Curated {
+                label: "rest",
+                params: &[],
+                camera_preset: "default",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "face",
+                params: &[],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "turn_left",
+                params: &[("ParamAngleX", -30.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "turn_right",
+                params: &[("ParamAngleX", 30.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "pitch_down",
+                params: &[("ParamAngleY", -30.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "pitch_up",
+                params: &[("ParamAngleY", 30.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "blink",
+                params: &[("ParamEyeLOpen", 0.1, 0.0), ("ParamEyeROpen", 0.1, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "half_happy",
+                params: &[("ParamMouthOpenY", 0.5, 0.0), ("ParamMouthForm", 1.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "half_sad",
+                params: &[("ParamMouthOpenY", 0.5, 0.0), ("ParamMouthForm", -1.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "full_open",
+                params: &[("ParamMouthOpenY", 1.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+        ],
         "welded_seam" => vec![
             // Rest: the seam is coincident, so welding must be a no-op.
             Curated {

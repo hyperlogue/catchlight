@@ -1,6 +1,9 @@
 //! Visual regression harness: render a curated matrix of param/camera configs
 //! and diff each render against a committed baseline PNG.
 //!
+//! Lan pose and image comparisons run here without a browser. Browser E2E
+//! covers UI interaction, backend synchronization and canvas presentation.
+//!
 //! Cases are hand-authored in [`config`] (`default_models` × `curated_configs`
 //! × `camera_presets`, named `<model>__<label>__cam_<preset>`; a test asserts
 //! the names are unique, because two configs sharing a name would silently
