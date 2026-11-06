@@ -35,6 +35,29 @@ describe("the open models", () => {
     await view.unmount();
   });
 
+  test("a delayed list cannot restore a model after a newer list removed it", async () => {
+    const { editor } = await harness();
+    const session = await editor.newSession("akari");
+    const listSessions = editor.listSessions.bind(editor);
+    const stale = await listSessions();
+    let release!: (sessions: typeof stale) => void;
+    const pending = new Promise<typeof stale>((resolve) => { release = resolve; });
+    editor.listSessions = () => {
+      editor.listSessions = listSessions;
+      return pending;
+    };
+    const view = await mount(
+      <EditorProvider editor={editor}><SessionList.Root /></EditorProvider>,
+    );
+    await run(() => editor.closeSession(session.id));
+    await settle();
+    await run(() => release(stale));
+    await settle();
+    expect(view.container.querySelectorAll("[data-catchlight-session]")).toHaveLength(0);
+    await view.unmount();
+    editor.close();
+  });
+
   test("picking one hands the host the whole record", async () => {
     const { editor } = await harness();
     await editor.newSession("akari");

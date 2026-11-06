@@ -260,6 +260,34 @@ describe("the assembled editor", () => {
     stop();
   });
 
+  test("closing a model never switches to a closed entry from a delayed list", async () => {
+    const stop = stubObservers();
+    const { editor } = await fakeStack();
+    await editor.newSession("akari");
+    const second = await editor.newSession("beni");
+    const listSessions = editor.listSessions.bind(editor);
+    const stale = await listSessions();
+    let release!: (sessions: typeof stale) => void;
+    const pending = new Promise<typeof stale>((resolve) => { release = resolve; });
+    let hold = true;
+    editor.listSessions = () => hold ? pending : listSessions();
+    const { container: view, unmount } = await mount(<CatchlightEditor editor={editor} />);
+    hold = false;
+    await run(() => editor.closeSession(second.id));
+    await settle();
+    await run(() => release(stale));
+    await settle();
+    await run(() => button(view, "[data-catchlight-session][data-current] [data-catchlight-session-close]").click());
+    await settle();
+    await settle();
+
+    expect(view.querySelector("[data-catchlight-problem]")?.textContent ?? null).toBeNull();
+    expect(view.querySelectorAll("[data-catchlight-session]")).toHaveLength(0);
+    await unmount();
+    editor.close();
+    stop();
+  });
+
   test("one canvas element outlives every model: empty, open, close all, open again", async () => {
     const stop = stubObservers();
     const { editor, gpu, viewports } = await fakeStack();

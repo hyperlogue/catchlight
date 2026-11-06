@@ -7,7 +7,7 @@
  */
 
 import type { SessionInfo } from "@catchlight/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useEditor } from "./editor-context.js";
 
@@ -21,30 +21,27 @@ export function useSessions(): Sessions {
   const editor = useEditor();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
 
+  const request = useRef(0);
   const refresh = useCallback(async (): Promise<void> => {
-    setSessions(await editor.listSessions());
+    const generation = ++request.current;
+    const listed = await editor.listSessions();
+    // An older response must not restore a model that a newer list removed.
+    if (generation === request.current) setSessions(listed);
   }, [editor]);
 
   useEffect(() => {
-    let live = true;
     const reload = (): void => {
-      void editor
-        .listSessions()
-        .then((listed) => {
-          if (live) setSessions(listed);
-        })
-        .catch((cause: unknown) => {
-          // Nobody asked for this one, so there is nowhere to reject to.
-          console.warn("catchlight: listing sessions failed", cause);
-        });
+      void refresh().catch((cause: unknown) => {
+        console.warn("catchlight: listing sessions failed", cause);
+      });
     };
     reload();
     const off = editor.onSessionsChanged(reload);
     return () => {
-      live = false;
+      ++request.current;
       off();
     };
-  }, [editor]);
+  }, [editor, refresh]);
 
   return { sessions, refresh };
 }
