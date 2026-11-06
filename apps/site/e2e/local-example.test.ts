@@ -150,13 +150,19 @@ describe("private local example", () => {
     });
   }, 30_000);
 
+  test("unconfigured development has no starter", async () => {
+    const { root } = await fixture();
+    await withModel("", async () => {
+      expect((await config(root, "serve")).define?.__CATCHLIGHT_EXAMPLE__).toBe("null");
+    });
+  });
+
   test("production output and preview ignore the private override", async () => {
     const { root, model } = await fixture();
     await withModel(model, async () => {
       await build(await config(root, "build"));
       const output = await emittedText(join(root, "dist"));
-      expect(output).toContain("Mica.clm");
-      expect(output).toContain("sample.clm");
+      expect(output).toContain("null");
       expect(output).not.toContain("Local.clm");
       expect(output).not.toContain("__catchlight_local_example.clm");
       expect(output).not.toContain(model);

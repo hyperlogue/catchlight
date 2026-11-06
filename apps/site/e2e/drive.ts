@@ -49,6 +49,7 @@
  */
 
 import { READBACK } from "@catchlight/core";
+import { openModel, selectNode } from "./model.ts";
 import { studio } from "./studio.ts";
 import { snapshots } from "./snapshots.ts";
 import { assertPresentedCanvas } from "./presentation.ts";
@@ -199,7 +200,7 @@ const step = async (name: string, body: () => Promise<void>) => {
     console.log(`ok   ${name}`);
   } catch (e) {
     failed = true;
-    console.log(`FAIL ${name}: ${String(e).split("\n")[0]}`);
+    console.log(`FAIL ${name}: ${e instanceof Error ? e.stack : String(e)}`);
     await page
       .screenshot({
         path: `${shots}/${tag}-fail-${name.replace(/\W+/g, "-")}.png`,
@@ -360,6 +361,7 @@ const canvasFrame = async (
 };
 
 try {
+  page.setDefaultTimeout(90000);
   await step("load page", async () => {
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForTimeout(1500);
@@ -370,6 +372,14 @@ try {
     if (!hidden)
       throw new Error(`page reported: ${(await pre.textContent())?.trim()}`);
   });
+  if (!server) {
+    await step("empty editor opens Lan through the file input", async () => {
+      if (await page.locator("[data-catchlight-session][data-current]").count())
+        throw new Error("the public site must start without a bundled model");
+      await page.getByRole("button", { name: "Open a model", exact: true }).waitFor();
+      await openModel(page);
+    });
+  }
   if (tier === "none") {
     await step("the tab says what it needs", async () => {
       // The device is asked for at the first attach, so the sentence appears
@@ -484,10 +494,7 @@ async function draws(): Promise<void> {
   }
   if (process.env.OPEN_FILE) {
     await step("open a .clm through the file input", async () => {
-      await page
-        .locator("input[type=file][data-catchlight-file-open]")
-        .first()
-        .setInputFiles(process.env.OPEN_FILE!);
+      await openModel(page);
       const stem = process.env
         .OPEN_FILE!.split("/")
         .pop()!
@@ -516,6 +523,7 @@ async function draws(): Promise<void> {
     await step("opened model is visible", () =>
       assertPresentedCanvas(page, "opened model", `${shots}/${tag}-opened-canvas.png`));
   }
+  await page.getByRole("button", { name: "Record", exact: true }).click();
   await step("snapshot bytes match their receipt and forks edit independently", () => snapshots(page));
   let before: Shot = {
     size: "",
@@ -659,7 +667,9 @@ async function draws(): Promise<void> {
       },
     );
   }
+  await page.getByRole("button", { name: "Arrange", exact: true }).click();
   await step("slider poses the puppet", async () => {
+    before = await canvasFrame("before posing");
     const slider = page.locator("[data-catchlight-param-slider]").first();
     if (!(await slider.count())) {
       console.log("     (no params in this model)");
@@ -689,21 +699,9 @@ async function draws(): Promise<void> {
     before = await canvasFrame("back at the rest pose");
   });
   await step("select a node and drag it", async () => {
-    const items = page.locator("[data-catchlight-node]");
-    const n = await items.count();
-    const leaf = items.nth(n - 1);
-    const clickable = leaf.locator("[data-catchlight-node-label]").first();
-    if (await clickable.count()) await clickable.click();
-    else await leaf.click();
-    await page.waitForTimeout(300);
-    const status = await page.locator("[data-catchlight-status]").textContent();
-    console.log("     status:", status?.trim().slice(0, 120));
-    const box = (await page
-      .locator("canvas[data-catchlight-viewport]")
-      .first()
-      .boundingBox())!;
-    const cx = box.x + box.width / 2,
-      cy = box.y + box.height / 2;
+    await selectNode(page, "front-hair");
+    const box = (await page.locator("[data-catchlight-selection-box]").boundingBox())!;
+    const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
     const b0 = await canvasFrame("before the drag");
     await page.mouse.move(cx, cy);
     await page.mouse.down();

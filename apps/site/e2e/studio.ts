@@ -1,7 +1,7 @@
-/** Editor workflows against real wasm, GPU and protocol. The probe only
- * reads state for assertions; every edit is made through the visible UI. */
+/** Editor workflows against real wasm, GPU and protocol. Fixture setup adds
+ * isolated controls; the interactions under test use the visible UI. */
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
+import { openModel, selectNode, prepareAuthoring } from "./model.ts";
 import type { Editor } from "@catchlight/core";
 import type { Page } from "playwright-core";
 
@@ -14,7 +14,7 @@ export async function studio(
 ) {
   const canvas = page.locator("canvas[data-catchlight-viewport]");
   const right = page.locator('[data-catchlight-panel="right"]');
-  const read = (node = "root") =>
+  const read = (node = "Puppet") =>
     page.evaluate(async (node) => {
       const { editor } = (
         globalThis as unknown as { __catchlightProbe: { editor: Editor } }
@@ -39,8 +39,7 @@ export async function studio(
             : undefined,
       };
     }, node);
-  const selected = (name: string) =>
-    page.getByRole("button", { name, exact: true }).first().click();
+  const selected = (id: string) => selectNode(page, id);
   const change = async (before: number) => {
     await page.waitForFunction((before) => {
       const { editor } = (
@@ -61,10 +60,12 @@ export async function studio(
     await page.keyboard.press("Control+z");
     await change(rev);
   };
-  const field = async (label: string, value: string) => {
+  const field = async (label: string, value: string, expectEdit = true) => {
+    const revision = expectEdit ? (await read()).revision : undefined;
     const input = page.getByRole("spinbutton", { name: label, exact: true });
     await input.fill(value);
     await input.press("Enter");
+    if (revision !== undefined) await change(revision);
   };
   const disclosure = async (label: string) => {
     const summary = right
@@ -95,26 +96,21 @@ export async function studio(
     await page.mouse.up();
   };
 
-  await step("starter, searchable tree, and artwork gallery", async () => {
+  await step("Lan, searchable tree, and artwork gallery", async () => {
     await page.setViewportSize({ width: 1440, height: 960 });
-    await page
-      .locator("input[data-catchlight-file-open]")
-      .setInputFiles(
-        fileURLToPath(new URL("../public/sample.clm", import.meta.url)),
-      );
-    await page.locator('[data-catchlight-node][data-node="face"]').waitFor();
-    await page.waitForTimeout(700);
+    await openModel(page);
+    await prepareAuthoring(page);
     const search = page.getByRole("textbox", { name: "Search nodes" });
     const revision = (await read()).revision;
-    await search.fill("waving");
-    assert.equal(await page.locator("[data-catchlight-node]").count(), 3);
+    await search.fill("front hair");
+    assert(await page.locator('[data-catchlight-node][data-node="front-hair"]').count());
     await search.fill("no such node");
     await page.getByText("No matching nodes.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Clear search nodes", exact: true }).click();
     assert(await search.evaluate((input) => input === document.activeElement));
-    await selected("Face");
+    await selected("face");
     await page.getByRole("button", { name: "Artwork", exact: true }).click();
-    assert.equal(await page.locator("[data-catchlight-asset]").count(), 13);
+    assert.equal(await page.locator("[data-catchlight-asset]").count(), 53);
     assert.equal(await page.locator('[data-catchlight-asset][aria-pressed="true"]').count(), 1);
     assert(await page.locator('[data-catchlight-asset][aria-pressed="true"]').evaluate((asset) => {
       const swatch = document.createElement("span");
@@ -129,7 +125,7 @@ export async function studio(
     await page.getByText("No matching artwork", { exact: true }).waitFor();
     await artworkSearch.press("Escape");
     assert.equal(await artworkSearch.inputValue(), "");
-    assert.equal(await page.locator("[data-catchlight-asset]").count(), 13);
+    assert.equal(await page.locator("[data-catchlight-asset]").count(), 53);
     const paramSearch = page.getByRole("textbox", { name: "Search params" });
     const paramCount = await page.locator("[data-catchlight-param-card]").count();
     await paramSearch.fill("no such param");
@@ -187,7 +183,7 @@ export async function studio(
       Math.abs((await read("face")).info!.rotate[2] - Math.PI / 6) < 0.0001,
     );
     const valid = (await read()).revision;
-    await field("Opacity", "4");
+    await field("Opacity", "4", false);
     await page.waitForTimeout(120);
     assert.equal((await read()).revision, valid);
     assert.equal((await read("face")).info?.opacity, 1);
@@ -196,13 +192,13 @@ export async function studio(
   });
 
   await step("pose controls and two-param binding authoring", async () => {
-    await selected("Head");
+    await selected("mg-head");
     const before = (await read()).revision;
     await page
-      .getByRole("spinbutton", { name: "Head tilt value", exact: true })
+      .getByRole("spinbutton", { name: "Test drive value", exact: true })
       .fill(".5");
     await page
-      .getByRole("spinbutton", { name: "Head tilt value", exact: true })
+      .getByRole("spinbutton", { name: "Test drive value", exact: true })
       .press("Enter");
     assert.equal((await read()).revision, before);
     await page
@@ -215,7 +211,7 @@ export async function studio(
     await page.getByRole("button", { name: "Bindings", exact: true }).click();
     await page
       .getByRole("combobox", { name: "Param", exact: true })
-      .selectOption("head-tilt");
+      .selectOption("test-drive");
     await page
       .getByRole("spinbutton", { name: "rz cell 0,0", exact: true })
       .fill("-.25");
@@ -224,7 +220,7 @@ export async function studio(
       .press("Enter");
     await change(before);
     assert.equal(
-      (await read("head")).bindings.find((b) => b.target === "rz")
+      (await read("mg-head")).bindings.find((b) => b.target === "rz" && b.param === "test-drive")
         ?.keys[0]?.[0],
       -0.25,
     );
@@ -233,21 +229,21 @@ export async function studio(
       .selectOption("tx");
     await page
       .getByRole("combobox", { name: "Second driving param", exact: true })
-      .selectOption("look");
+      .selectOption("test-pair");
     const rev = (await read()).revision;
     await page.getByRole("button", { name: "Bind", exact: true }).click();
     await change(rev);
-    const two = (await read("head")).bindings.find(
-      (b) => b.target === "tx" && b.param_y === "look",
+    const two = (await read("mg-head")).bindings.find(
+      (b) => b.target === "tx" && b.param === "test-drive" && b.param_y === "test-pair",
     );
     assert.equal(two?.height, 2, "a new binding owns its two endpoint positions");
-    const axesBefore = (await read("head")).bindings.find((b) => b.target === "rz")!.key_positions;
+    const axesBefore = (await read("mg-head")).bindings.find((b) => b.target === "rz" && b.param === "test-drive")!.key_positions;
     const tx = page.locator('[data-catchlight-binding][data-target="tx"]');
-    const firstAxis = tx.locator('[data-catchlight-param-keys][data-param="head-tilt"]');
+    const firstAxis = tx.locator('[data-catchlight-param-keys][data-param="test-drive"]');
     const insertRevision = (await read()).revision;
     await firstAxis.locator('[data-catchlight-param-key-insert]').click();
     await change(insertRevision);
-    let edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    let edited = (await read("mg-head")).bindings.find((b) => b.target === "tx" && b.param === "test-drive" && b.param_y === "test-pair")!;
     assert.deepEqual(edited.key_positions, [[0, 0.5, 1], [0, 1]]);
     const marker = firstAxis.locator('[data-catchlight-param-key][data-index="1"]');
     const markerBox = await marker.boundingBox(), trackBox = await firstAxis.locator('[data-catchlight-param-key-track]').boundingBox();
@@ -259,21 +255,21 @@ export async function studio(
     assert.equal((await read()).revision, moveRevision, "key position drag remains local until release");
     await page.mouse.up();
     await change(moveRevision);
-    edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    edited = (await read("mg-head")).bindings.find((b) => b.target === "tx" && b.param === "test-drive" && b.param_y === "test-pair")!;
     assert(Math.abs(edited.key_positions[0]![1]! - 0.65) < 0.02);
     await page.screenshot({ path: `${shots}/${tag}-binding-axes.png` });
     const deleteRevision = (await read()).revision;
     await firstAxis.locator('[data-catchlight-param-key-delete]').click();
     await change(deleteRevision);
-    edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    edited = (await read("mg-head")).bindings.find((b) => b.target === "tx" && b.param === "test-drive" && b.param_y === "test-pair")!;
     assert.deepEqual(edited.key_positions, [[0, 1], [0, 1]]);
-    const secondAxis = tx.locator('[data-catchlight-param-keys][data-param="look"]');
+    const secondAxis = tx.locator('[data-catchlight-param-keys][data-param="test-pair"]');
     const secondRevision = (await read()).revision;
     await secondAxis.locator('[data-catchlight-param-key-insert]').click();
     await change(secondRevision);
-    edited = (await read("head")).bindings.find((b) => b.target === "tx" && b.param_y === "look")!;
+    edited = (await read("mg-head")).bindings.find((b) => b.target === "tx" && b.param === "test-drive" && b.param_y === "test-pair")!;
     assert.deepEqual(edited.key_positions, [[0, 1], [0, 0.5, 1]]);
-    assert.deepEqual((await read("head")).bindings.find((b) => b.target === "rz")!.key_positions, axesBefore);
+    assert.deepEqual((await read("mg-head")).bindings.find((b) => b.target === "rz" && b.param === "test-drive")!.key_positions, axesBefore);
     await page.getByRole("button", { name: "Params", exact: true }).click();
     await page.getByRole("button", { name: "New param", exact: true }).click();
     await page
@@ -289,11 +285,11 @@ export async function studio(
   });
 
   await step("masks, slots, spine fitting, and model settings", async () => {
-    await selected("Face");
+    await selected("face");
     await disclosure("Masks");
     await page
       .getByRole("combobox", { name: "Mask source", exact: true })
-      .selectOption("ear-left");
+      .selectOption("ears-l");
     let rev = (await read()).revision;
     await page.getByRole("button", { name: "Add mask", exact: true }).click();
     await change(rev);
@@ -314,16 +310,16 @@ export async function studio(
     await change(rev);
     const filled = (await read("face")).slots;
     assert(filled?.result === "slots" && filled.slots[0]?.vertex === 0);
-    await selected("Scarf ribbon");
+    await selected("front-hair");
     await disclosure("Fit a spine");
     rev = (await read()).revision;
     await page
       .getByRole("button", { name: "Fit spine to artwork", exact: true })
       .click();
     await change(rev);
-    await selected("Scarf ribbon spine");
+    await selected((await read("front-hair")).info!.parent!);
     assert(
-      (await read((await read("scarf-tail")).info!.parent!)).info?.spine?.chain,
+      (await read((await read("front-hair")).info!.parent!)).info?.spine?.chain,
     );
     await right.getByRole("button", { name: "Model", exact: true }).click();
     await disclosure("Physics environment");
@@ -387,6 +383,11 @@ export async function studio(
       const id = (await page
         .locator("[data-catchlight-node][data-selected]")
         .getAttribute("data-node"))!;
+      await page.waitForFunction(node => {
+        const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: Editor } }).__catchlightProbe;
+        const session = Number(document.querySelector("[data-catchlight-session][data-current]")!.getAttribute("data-session"));
+        return editor.session(session)?.nodeInfo(node)?.vertex_count === 9;
+      }, id);
       const imported = await read(id);
       assert.equal(imported.info?.vertex_count, 9);
       await disclosure("Mesh");
@@ -410,7 +411,7 @@ export async function studio(
         .locator("[data-catchlight-node]")
         .filter({ hasText: /^Studio badge$/ })
         .waitFor({ state: "hidden" });
-      await selected("Tail");
+      await selected("back-hair");
       await page
         .getByRole("button", { name: "Fit model (F)", exact: true })
         .click();
@@ -434,7 +435,7 @@ export async function studio(
     await page.keyboard.press("Control+k");
     await page
       .getByRole("combobox", { name: "Search commands and nodes", exact: true })
-      .fill("tail");
+      .fill("footwear");
     await page
       .getByRole("combobox", { name: "Search commands and nodes", exact: true })
       .press("Enter");
@@ -442,7 +443,7 @@ export async function studio(
       await page
         .locator("[data-catchlight-node][data-selected]")
         .getAttribute("data-node"),
-      "tail",
+      "footwear",
     );
     const before = (await page
       .locator('[data-catchlight-panel="left"]')
@@ -514,6 +515,7 @@ export async function studio(
     const inTab =
       (await page.locator("[data-catchlight-backend]").textContent()) ===
       "in-tab";
+    const savedTranslation = (await read("face")).info!.translate;
     const downloaded = inTab ? page.waitForEvent("download") : undefined;
     await page.locator("[data-catchlight-save]").click();
     const savedFile = downloaded ? await (await downloaded).path() : undefined;
@@ -522,7 +524,7 @@ export async function studio(
         .querySelector("[data-catchlight-save-state]")
         ?.textContent?.includes("All changes saved"),
     );
-    await selected("Face");
+    await selected("face");
     const rev = (await read()).revision;
     await field("Translate x", "9");
     await change(rev);
@@ -560,7 +562,8 @@ export async function studio(
         buffer: Buffer.from(await Bun.file(savedFile).arrayBuffer()),
       });
       await page.locator('[data-catchlight-node][data-node="face"]').waitFor();
-      assert.equal((await read("face")).info?.translate[0], 0);
+      assert((await read("face")).info!.translate.every((value, i) => value === savedTranslation[i]),
+        "reopening restores the saved translation");
       assert((await read()).params.some((p) => p.name === "Ear twitch"));
     }
     const problem = await page.evaluate(

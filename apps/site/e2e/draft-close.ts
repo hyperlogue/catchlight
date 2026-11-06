@@ -1,32 +1,16 @@
 /** Closing after Apply must protect the newly authored mesh before releasing the session. */
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
+import { openModel, selectNode } from "./model.ts";
 import type { Editor } from "@catchlight/core";
 import type { Page } from "playwright-core";
 
 type Step = (name: string, work: () => Promise<void>) => Promise<void>;
 
-async function openSample(page: Page): Promise<void> {
-  const previous = await page.locator("[data-catchlight-session][data-current]")
-    .getAttribute("data-session");
-  await page.locator("input[data-catchlight-file-open]").setInputFiles(
-    fileURLToPath(new URL("../public/sample.clm", import.meta.url)),
-  );
-  // The previous model can already contain every node in the new sample.
-  await page.waitForFunction((before) => {
-    const current = document.querySelector("[data-catchlight-session][data-current]")
-      ?.getAttribute("data-session");
-    return current !== null && current !== undefined && current !== before;
-  }, previous);
-}
-
 export async function draftClose(page: Page, step: Step, shots: string, tag: string) {
   await step("closing an applied mesh draft still protects unsaved model changes", async () => {
     await page.setViewportSize({ width: 1440, height: 960 });
-    await openSample(page);
-    const face = page.locator('[data-catchlight-node][data-node="face"] [data-catchlight-node-label]');
-    await face.waitFor();
-    await face.click();
+    await openModel(page);
+    await selectNode(page, "face");
     await page.locator("[data-catchlight-save]").click();
     await page.waitForFunction(() =>
       /^(Downloaded|Saved) /.test(
@@ -54,9 +38,9 @@ export async function draftClose(page: Page, step: Step, shots: string, tag: str
     await page.getByRole("button", { name: "Mesh", exact: true }).click();
     const vertex = page.locator('[data-mesh-vertex="30"]');
     await vertex.waitFor();
-    await vertex.click();
+    await vertex.focus();
     const x = page.getByRole("spinbutton", { name: "Mesh vertex X", exact: true });
-    await x.fill(String(Number(await x.inputValue()) + 8));
+    await x.fill(String(Number(await x.inputValue()) + 0.1));
     await x.press("Enter");
     await page.getByRole("button", { name: "Apply mesh", exact: true }).waitFor();
     const drafted = await read();
@@ -92,8 +76,8 @@ export async function draftClose(page: Page, step: Step, shots: string, tag: str
 export async function drawerKeyboard(page: Page, step: Step, shots: string, tag: string) {
   await step("drawers retain keyboard focus and let search recover before dismissal", async () => {
     await page.setViewportSize({ width: 1440, height: 960 });
-    await openSample(page);
-    await page.locator('[data-node="face"] [data-catchlight-node-label]').click();
+    await openModel(page);
+    await selectNode(page, "face");
     await page.setViewportSize({ width: 390, height: 844 });
     const toggle = page.getByRole("button", { name: "Toggle structure panel", exact: true });
     const panel = page.getByRole("dialog", { name: "Structure", exact: true });

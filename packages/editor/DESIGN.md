@@ -146,7 +146,7 @@ boundaries keep future tools consistent:
 | `@catchlight/core`       | Session lifecycle, replica reads, typed protocol routing, scratch and storage                     |
 | `@catchlight/react`      | Unstyled controls, authoring panels, gestures and workspace hooks                                 |
 | `@catchlight/editor`     | Layout, theme, command palette and notifications                                                  |
-| `apps/site`              | Backend choice and the original Mica starter model                                                |
+| `apps/site`              | Backend choice, empty startup and an optional private starter                                                |
 
 No component maintains a second authored model. Queries read the replica;
 edits go to the editor. Status reads provide actual undo/redo availability
@@ -214,7 +214,7 @@ destination. Escape or focus loss cancels a drag; changing the selection,
 recording property group, parameter pose or undo state stops capture. Stop
 keeps completed edits. Physics pauses in Mesh and Record and resumes in Arrange.
 
-## Verification and the starter
+## Verification and local models
 
 `apps/site/e2e/workspaces.ts` verifies fixed-texture drafts, local history,
 Apply/Cancel, multi-vertex movement, recording between keys, independent binding positions, paired axes,
@@ -226,39 +226,30 @@ modal errors, artwork import, mesh generation, preview export, resizing,
 mobile panels, dirty-close protection and saved-file reopening. Its probe
 reads state for assertions; it does not author the edits being tested.
 
-`bun run --filter catchlight-demo e2e` adds both backends, WebGPU, WebGL2,
+`E2E_MODEL=/path/to/Lan.clm bun run --filter catchlight-demo e2e` tests both backends, WebGPU, WebGL2,
 the browser offering neither, agent edits over a private socket and multiple
-GL canvases. It serves the production bundle. Renderer readback validates
+GL canvases. It serves the production bundle and imports only the supplied Lan model.
+The model is required; there is no bundled substitute. The server edits a
+temporary copy, and the input checksum is checked after the run. Screenshots
+contain private artwork and must not be published. The private visual suite
+is run locally; public CI retains unit, serving/security, type and build checks.
+Renderer readback validates
 pixels because headless WebGPU can render without compositing its canvas into
 a page screenshot. Screenshots are written under `target/e2e/` for inspection.
 
-Mica is original layered artwork with 13 parts and six controls: head tilt,
-look, blink, wave, tail sway and breathing. To regenerate it, build wasm and
-start the site with the probe available, then run:
+From the repository root, `bun run dev` starts an empty editor. On a fresh
+checkout, run `bun install` and `cargo xtask build-wasm` in the development
+shell first. Open your own `.clm`, or configure a private development starter:
 
 ```sh
-bun run --filter catchlight-demo sample http://localhost:5173/
-```
-
-The script rasterises its own SVG artwork in Chromium and authors the model
-through the editor protocol. It writes `apps/site/public/sample.clm`, which
-is a Git LFS object. No private reference model is required.
-
-From the repository root, `bun run dev` starts the editor with the tracked
-Mica sample. On a fresh checkout, run `bun install`, `git lfs pull`, and
-`cargo xtask build-wasm` in the development shell first.
-
-For a private local starter, pass its path directly to the development server:
-
-```sh
-CATCHLIGHT_LOCAL_MODEL=/path/to/model.clm bun run dev
+CATCHLIGHT_LOCAL_MODEL=/path/to/Lan.clm bun run dev
 ```
 
 The override supplies both the in-tab startup model and **Explore the starter
 character**. The server streams that one file from its original location, with
 no caching, and requires a loopback listener. Keep private models outside the
 site's `public/` directory and import graph. Neither a production build nor
-`vite preview` uses the override; they retain the shipped Mica sample. A
+`vite preview` uses the override; they start with an empty editor. A
 connected backend still owns its initially open sessions.
 
 ## Reviewing UI changes

@@ -8,7 +8,6 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --project tsconfig.json && tsc --project e2e/tsconfig.json",
-    "sample": "bun run e2e/starter.ts",
     "e2e": "bun run e2e/run.ts"
   },
   "dependencies": {

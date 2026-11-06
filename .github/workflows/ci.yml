@@ -64,9 +64,6 @@ jobs:
     name: web workspace
     runs-on: ubuntu-latest
     steps:
-      # The site ships `public/sample.clm`, and the browser smoke test opens a
-      # second fixture; both are Git LFS objects, so without this the build
-      # bundles a pointer file and the tab comes up on nothing.
       - uses: actions/checkout@v7
         with:
           lfs: true
@@ -88,19 +85,14 @@ jobs:
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test
       - run: nix develop -c bun run --filter catchlight-demo build
-      # The smoke test drives the built site in a real browser, against both
-      # backends; the connected one is a server process with an agent editing
-      # its document over the Unix socket, so those two binaries have to exist
-      # first. It runs once per GPU tier the browser can be forced into, and
-      # the browser reaches a device through the same Mesa ICD the Rust GPU
-      # tests use; the flags that get it there are in `apps/site/e2e/drive.ts`.
+      # Python integration tests launch the native editor server and CLI.
       - run: nix develop -c cargo build -p catchlight-editor-server -p catchlight-editor-cli
       # The Python client launches that server binary once per test and saves a
       # model the editor's own reader opens back, so it runs here, not in a job
       # of its own.
       - run: nix develop -c bash -c 'cd python && uv run pytest -q'
-      # The one step that wants the browser, and the only one that pays for it.
-      - run: nix develop -c bun run --filter catchlight-demo e2e
+      # Visual E2E requires the private Lan model and runs locally with E2E_MODEL.
+      # It is never fetched or published by this public workflow.
 
   packages:
     name: nix packages

@@ -1,7 +1,7 @@
-/** Mesh and recording workflows against the real editor. Controls author every user edit;
- * the probe reads assertions and separately simulates a concurrent editor. */
+/** Mesh and recording workflows on Lan with isolated authoring controls.
+ * The probe reads assertions and separately simulates a concurrent editor. */
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
+import { openModel, selectNode, prepareAuthoring } from "./model.ts";
 import type { Editor } from "@catchlight/core";
 import type { Page } from "playwright-core";
 
@@ -49,10 +49,12 @@ export async function workspaces(
     await pause();
   };
   const field = async (name: string, value: number) => {
+    const revision = name.startsWith("Recorded ") ? (await read()).revision : undefined;
     const input = page.getByRole("spinbutton", { name, exact: true });
     await input.fill(String(value));
     await input.press("Enter");
-    await pause();
+    if (revision !== undefined) await changed(revision);
+    else await pause();
   };
   const drag = async (
     selector: string,
@@ -60,7 +62,13 @@ export async function workspaces(
     dy: number,
     cancel = false,
   ) => {
-    const bounds = await page.locator(selector).first().boundingBox();
+    const index = await page.locator(selector).evaluateAll(elements => elements.findIndex(element => {
+      const r = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return hit !== null && element.contains(hit);
+    }));
+    assert(index >= 0, `no accessible handle for ${selector}`);
+    const bounds = await page.locator(selector).nth(index).boundingBox();
     assert(bounds);
     const x = bounds.x + bounds.width / 2,
       y = bounds.y + bounds.height / 2;
@@ -71,8 +79,17 @@ export async function workspaces(
     await page.mouse.up();
     await pause();
   };
-  const draftVertex = '[data-mesh-vertex="30"]';
-  const shapeVertex = '[data-catchlight-vertex-handle][data-vertex="30"]';
+  let draftVertex = '[data-mesh-vertex="30"]';
+  let shapeVertex = '[data-catchlight-vertex-handle][data-vertex="30"]';
+  const pickHandles = async (selector: string) => page.locator(selector).evaluateAll(elements =>
+    elements.filter(element => {
+      const r = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return hit === element;
+    }).map(element => ({
+      index: element.getAttribute("data-mesh-vertex") ?? element.getAttribute("data-vertex"),
+      x: element.getBoundingClientRect().x, y: element.getBoundingClientRect().y,
+    })));
   const meshFits = () => page.waitForFunction(() => {
     const canvas = document.querySelector("[data-catchlight-mesh-canvas]");
     const svg = canvas?.querySelector("svg");
@@ -93,13 +110,12 @@ export async function workspaces(
     page.locator("[data-catchlight-workspace][data-recording]").count();
   const canvas = page.locator("canvas[data-catchlight-viewport]");
   const open = async () => {
-    await page
-      .locator("input[data-catchlight-file-open]")
-      .setInputFiles(
-        fileURLToPath(new URL("../public/sample.clm", import.meta.url)),
-      );
-    await page.locator('[data-catchlight-node][data-node="face"]').waitFor();
-    await button("Face").click();
+    await openModel(page);
+    await prepareAuthoring(page);
+    await selectNode(page, "face");
+    const box = (await page.locator("[data-catchlight-selection-box]").boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -1600);
     await pause();
   };
 
@@ -107,6 +123,7 @@ export async function workspaces(
     await page.setViewportSize({ width: 1440, height: 960 });
     await open();
     const before = await read();
+    assert(before.params.some(p => p.id === "test-drive"), "authoring controls are present before mesh editing");
     await button("Mesh").click();
     await page.locator("[data-catchlight-mesh-artwork]").waitFor();
     await meshFits();
@@ -116,6 +133,9 @@ export async function workspaces(
     await page.screenshot({ path: `${shots}/${tag}-mesh-mobile.png` });
     await page.setViewportSize({ width: 1440, height: 960 });
     await meshFits();
+    const handles = await pickHandles("[data-mesh-vertex]");
+    assert(handles.length > 1, "Lan mesh exposes draggable vertex handles");
+    draftVertex = `[data-mesh-vertex="${handles[0]!.index}"]`;
     const image = page.locator("[data-catchlight-mesh-artwork]");
     const mapping = await image.getAttribute("transform");
     await drag(draftVertex, 7, 5);
@@ -150,9 +170,9 @@ export async function workspaces(
     const original = before.mesh!,
       next = applied.mesh!;
     for (const axis of [0, 1] as const) {
-      const distinct = original.verts.findIndex(
-        (p) => Math.abs(p[axis] - original.verts[0]![axis]) > 1,
-      );
+      const distinct = original.verts.reduce((best, p, i) =>
+        Math.abs(p[axis] - original.verts[0]![axis]) >
+        Math.abs(original.verts[best]![axis] - original.verts[0]![axis]) ? i : best, 0);
       const scale =
         (original.uvs[distinct]![axis] - original.uvs[0]![axis]) /
         (original.verts[distinct]![axis] - original.verts[0]![axis]);
@@ -163,13 +183,16 @@ export async function workspaces(
               (original.uvs[0]![axis] +
                 (p[axis] - original.verts[0]![axis]) * scale),
           ) < 1e-5,
+          `UV mapping changed at vertex ${i}, axis ${axis}`,
         ),
       );
     }
     await canvas.focus();
     await page.keyboard.press("Control+z");
     await changed(applied.revision);
-    assert.deepEqual((await read()).mesh, before.mesh);
+    const undone = await read();
+    assert.deepEqual(undone.mesh, before.mesh);
+    assert.deepEqual(undone.params, before.params, "mesh undo preserves unrelated parameters");
   });
 
   await step(
@@ -195,9 +218,14 @@ export async function workspaces(
         await button("Done").isVisible(),
         "returning a drag to its start is a no-op",
       );
+      const handles = await pickHandles("[data-mesh-vertex]");
+      const first = handles[0]!;
+      const second = handles.find(p => Math.hypot(p.x - first.x, p.y - first.y) > 40)!;
+      assert(second, "two distinct mesh handles are accessible");
+      draftVertex = `[data-mesh-vertex="${first.index}"]`;
       await page.locator(draftVertex).click();
       await page.keyboard.down("Shift");
-      await page.locator('[data-mesh-vertex="31"]').click();
+      await page.locator(`[data-mesh-vertex="${second.index}"]`).click();
       await page.keyboard.up("Shift");
       assert.equal(
         await page
@@ -216,9 +244,8 @@ export async function workspaces(
       await pause();
       assert(await button("Done").isVisible());
       await button("Add vertex").click();
-      const b = await page.locator(draftVertex).boundingBox();
-      assert(b);
-      await page.mouse.click(b.x + b.width / 2 + 18, b.y + b.height / 2 + 16);
+      const b = (await page.getByRole("application", { name: "Mesh on original artwork", exact: true }).boundingBox())!;
+      await page.mouse.click(b.x + 50, b.y + b.height / 2);
       await pause();
       assert.equal(
         await page.locator("[data-mesh-vertex]").count(),
@@ -240,9 +267,13 @@ export async function workspaces(
     async () => {
       const before = await read();
       await button("Record").click();
+      await page.getByRole("combobox", { name: "Recording param", exact: true }).selectOption("test-drive");
       await button("Start recording").click();
       await pause();
       assert.equal((await read()).revision, before.revision);
+      const handles = await pickHandles("[data-catchlight-vertex-handle]");
+      assert(handles.length, "Lan shape exposes draggable vertex handles");
+      shapeVertex = `[data-catchlight-vertex-handle][data-vertex="${handles[0]!.index}"]`;
       await drag(shapeVertex, 8, 5);
       await changed(before.revision);
       const keyed = await read();
@@ -259,7 +290,7 @@ export async function workspaces(
       assert.equal((await read()).revision, keyed.revision);
       assert.equal(await armed(), 1);
       await page.screenshot({ path: `${shots}/${tag}-record-shape.png` });
-      await field("Head tilt recording value", 0.25);
+      await field("Test drive recording value", 0.25);
       assert.equal(await armed(), 0);
       assert.equal((await read()).revision, keyed.revision);
       // Arming between existing positions authors nothing. The first gesture
@@ -272,13 +303,13 @@ export async function workspaces(
       await drag(shapeVertex, 3, 2);
       await changed(keyed.revision);
       const inserted = await read();
-      const deform = inserted.bindings.find((b) => b.target === "deform")!;
+      const deform = inserted.bindings.find((b) => b.target === "deform" && b.param === "test-drive")!;
       const position = deform.key_positions[0]!.indexOf(0.625);
       assert(position >= 0);
       assert.equal(deform.authored[0]![position], true);
       assert.deepEqual(inserted.bindings.filter((b) => b.target !== "deform"), beforeInsert.bindings.filter((b) => b.target !== "deform"));
       await button("Stop recording").click();
-      await field("Head tilt recording value", 0.1);
+      await field("Test drive recording value", 0.1);
       const rev = (await read()).revision;
       await button("Start recording").click();
       await pause();
@@ -286,7 +317,7 @@ export async function workspaces(
       assert.equal((await read()).revision, rev);
       await canvas.focus();
       await page.keyboard.press("Control+z");
-      await pause();
+      await changed(rev);
       assert.equal(await armed(), 0);
     },
   );
@@ -311,10 +342,11 @@ export async function workspaces(
       await page.keyboard.press("ArrowRight");
       await changed(after.revision);
       assert.deepEqual((await read()).info!.rotate, before.info!.rotate);
+      const scaleRevision = (await read()).revision;
       await drag("[data-catchlight-selection-corner]", -12, -8);
-      await pause();
+      await changed(scaleRevision);
       assert.deepEqual((await read()).info!.scale, before.info!.scale);
-      await button("Head").click();
+      await selectNode(page, "mg-head");
       await pause();
       assert.equal(await armed(), 0);
       await button("Arrange").click();
@@ -327,38 +359,40 @@ export async function workspaces(
       await button("Bindings").click();
       await page
         .getByRole("combobox", { name: "Param", exact: true })
-        .selectOption("head-tilt");
+        .selectOption("test-drive");
       await page
         .getByRole("combobox", { name: "Binding target", exact: true })
         .selectOption("tx");
       await page
         .getByRole("combobox", { name: "Second driving param", exact: true })
-        .selectOption("look");
-      const before = await read("head");
+        .selectOption("test-pair");
+      const before = await read("mg-head");
       await button("Bind").click();
       await changed(before.revision);
       await button("Record").click();
       await pause();
       await page
         .getByRole("combobox", { name: "Recording param", exact: true })
-        .selectOption("look");
+        .selectOption("test-pair");
       await pause();
       assert(await page.locator("[data-catchlight-record-matrix]").isVisible());
       await page
         .locator('[data-catchlight-record-key][data-key-x="2"][data-key-y="2"]')
         .click();
       await button("Start recording").click();
+      const originalX = Number(await page.getByRole("spinbutton", { name: "Recorded position X", exact: true }).inputValue());
       await field("Recorded position X", 20);
-      const result = await read("head");
+      const result = await read("mg-head");
       const paired = result.bindings.find(
         (b) =>
-          b.target === "tx" && b.param === "head-tilt" && b.param_y === "look",
+          b.target === "tx" && b.param === "test-drive" && b.param_y === "test-pair",
       );
       assert(paired?.authored[2]?.[2]);
-      assert.equal(paired.keys[2]![2], 20);
+      assert(Math.abs(Number(paired.keys[2]![2]) - (20 - originalX)) < 1e-4);
+      assert.equal(Number(await page.getByRole("spinbutton", { name: "Recorded position X", exact: true }).inputValue()), 20);
       assert(
         !result.bindings.some(
-          (b) => b.target === "tx" && b.param === "look" && !b.param_y,
+          (b) => b.target === "tx" && b.param === "test-pair" && !b.param_y,
         ),
       );
       assert.deepEqual(result.info!.translate, before.info!.translate);
@@ -384,11 +418,12 @@ export async function workspaces(
   await step(
     "a concurrent edit preserves the draft and refuses stale Apply",
     async () => {
-      await button("Face").click();
+      await selectNode(page, "face");
       await button("Mesh").click();
       await page.locator("[data-catchlight-mesh-artwork]").waitFor();
       await pause();
       await drag(draftVertex, 6, 4);
+      const revision = (await read()).revision;
       await page.evaluate(async () => {
         const editor = (
           globalThis as unknown as { __catchlightProbe: { editor: Editor } }
@@ -404,7 +439,7 @@ export async function workspaces(
           name: "Face updated elsewhere",
         });
       });
-      await pause();
+      await changed(revision);
       assert(await button("Apply mesh").isDisabled());
       assert(await button("Reload mesh").isVisible());
       assert(
@@ -427,10 +462,14 @@ export async function workspaces(
       await button("Transform").click();
       await button("Start recording").click();
       const before = await read();
-      const corner = await page
-        .locator("[data-catchlight-selection-corner]")
-        .first()
-        .boundingBox();
+      const corners = page.locator("[data-catchlight-selection-corner]");
+      const index = await corners.evaluateAll(elements => elements.findIndex(element => {
+        const r = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return hit !== null && element.contains(hit);
+      }));
+      assert(index >= 0, "a transform handle is accessible for the concurrent gesture");
+      const corner = await corners.nth(index).boundingBox();
       assert(corner);
       const x = corner.x + corner.width / 2,
         y = corner.y + corner.height / 2;
@@ -448,10 +487,11 @@ export async function workspaces(
         );
         await editor
           .session(id)!
-          .send({ cmd: "node_set", node: "root", name: "Concurrent edit" });
+          .send({ cmd: "node_set", node: "Puppet", name: "Concurrent edit" });
       });
+      await changed(before.revision);
       await page.mouse.up();
-      await pause();
+      await page.getByText("The model changed during this gesture. Start the gesture again.", { exact: true }).waitFor();
       const after = await read();
       assert.equal(after.revision, before.revision + 1);
       assert.deepEqual(after.bindings, before.bindings);

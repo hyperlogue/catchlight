@@ -17,9 +17,7 @@ export default defineConfig(async ({ command, isPreview }) => {
     // GitHub Pages serves under /<repo>/; a dev server and `preview` serve under /.
     base: process.env.VITE_BASE ?? "/",
     define: {
-      __CATCHLIGHT_EXAMPLE__: JSON.stringify(local?.example ?? {
-        file: "sample.clm", name: "Mica.clm",
-      }),
+      __CATCHLIGHT_EXAMPLE__: JSON.stringify(local?.example ?? null),
     },
     plugins: [react(), ...(local ? [local.plugin] : [])],
     server: {

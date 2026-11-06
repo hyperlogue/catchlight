@@ -13,7 +13,7 @@
  * URL is a self-contained editor with no process behind it.
  *
  * **A failure is shown in the page.** A server that refuses the token, a
- * sample that will not fetch, a wasm module that will not start: each of those
+ * configured starter that will not fetch, a wasm module that will not start: each of those
  * is a blank screen with a console message unless someone writes it down, and
  * the console is not where a person looks. A browser with neither WebGPU nor
  * WebGL2 is the same kind of failure, and it surfaces one step later — the
@@ -45,7 +45,8 @@ import { createRoot } from "react-dom/client";
 import "./site.css";
 
 /** The host supplies only a URL segment and display name, never a filesystem path. */
-declare const __CATCHLIGHT_EXAMPLE__: { file: string; name: string };
+type Example = { file: string; name: string };
+declare const __CATCHLIGHT_EXAMPLE__: Example | null;
 
 void start();
 
@@ -54,9 +55,10 @@ async function start(): Promise<void> {
     const server = new URLSearchParams(globalThis.location.search).get("server");
     const editor = await Editor.create(catchlight, await pick(server));
 
-    // Before the mount, so the editor comes up showing something: the panel
-    // takes the first model the editor lists as the current one.
-    if (server === null) await sample(editor).catch(report);
+    // A configured starter is opened before the panel chooses its current session.
+    if (server === null && __CATCHLIGHT_EXAMPLE__) {
+      await openStarter(editor, __CATCHLIGHT_EXAMPLE__).catch(report);
+    }
 
     mount(editor);
     probe(editor);
@@ -88,27 +90,28 @@ async function store(): Promise<Storage> {
 }
 
 /**
- * Opens the host's starter, including a development-only local override.
+ * Opens the configured development starter.
  *
- * Reported rather than thrown: a sample that will not load is worth saying out
+ * Reported rather than thrown: a starter that will not load is worth saying out
  * loud, and is no reason to withhold an editor that works.
  */
-async function sample(editor: Editor): Promise<Session> {
+async function openStarter(editor: Editor, example: Example): Promise<Session> {
   // `BASE_URL` ends in a slash and is `/<repo>/` on Pages.
-  const url = `${import.meta.env.BASE_URL}${__CATCHLIGHT_EXAMPLE__.file}`;
+  const url = `${import.meta.env.BASE_URL}${example.file}`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`fetching ${url} failed: ${response.status} ${response.statusText}`);
   }
-  return editor.openFile(new Uint8Array(await response.arrayBuffer()), __CATCHLIGHT_EXAMPLE__.name);
+  return editor.openFile(new Uint8Array(await response.arrayBuffer()), example.name);
 }
 
 function mount(editor: Editor): void {
   const host = document.getElementById("editor");
   if (!host) throw new Error("index.html has no #editor to mount into");
+  const example = __CATCHLIGHT_EXAMPLE__;
   createRoot(host).render(
     <StrictMode>
-      <CatchlightEditor editor={editor} onOpenStarter={() => sample(editor)} />
+      <CatchlightEditor editor={editor} {...(example ? { onOpenStarter: () => openStarter(editor, example) } : {})} />
     </StrictMode>,
   );
 }

@@ -6,8 +6,9 @@
  * re-launches under Xvfb so the WebGPU pass can verify actual presentation.
  *
  * ```text
- * bun run --filter catchlight-demo e2e
+ * E2E_MODEL=/path/to/Lan.clm bun run --filter catchlight-demo e2e
  *   CHROMIUM=<exe>        overrides the `chromium` on PATH
+ *   E2E_MODEL=<path>     private Lan.clm, required
  *   E2E_BUILD=1           rebuild the site even when `dist/` is already there
  *   E2E_SITE_PORT=4173    where `vite preview` listens; a free port if taken
  *   E2E_SERVER_PORT=9377  where `catchlight-editor-server` listens; likewise
@@ -42,10 +43,16 @@
  */
 
 import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+
+/** All visual passes use the caller's private Lan model. */
+const configuredModel = process.env.E2E_MODEL ?? process.env.CATCHLIGHT_LOCAL_MODEL;
+if (!configuredModel) fail("Set E2E_MODEL=/path/to/Lan.clm; the private model is not bundled.");
+const OPEN_MODEL = resolve(configuredModel);
 
 if (process.platform === "linux" && !process.env.DISPLAY && !process.env.CHROMIUM_ARGS) {
   const xvfb = Bun.which("xvfb-run");
@@ -60,17 +67,6 @@ if (process.platform === "linux" && !process.env.DISPLAY && !process.env.CHROMIU
   process.exit(await child.exited);
 }
 
-/** Opened by the server, edited by the agent, and what the tab shows first. */
-const SERVER_MODEL = "tests/models/quad_over_bg.clm";
-/**
- * Opened through the file input, in every pass that draws.
- *
- * Not the default sample: `quad_over_bg` is a red disk on a blue ground, and
- * the viewport's default camera frames it so the disk covers the canvas edge
- * to edge — a drag across the middle of that moves no pixel a screenshot can
- * see. Two welded quads leave a seam in frame for the drag to move.
- */
-const OPEN_MODEL = "tests/models/welded_seam.clm";
 /** What the agent calls the node it adds; the drive only needs the tree to grow. */
 const AGENT_NODE = "agent-added";
 
@@ -99,19 +95,16 @@ const env = {
   XDG_CACHE_HOME: join(runtime, "cache"),
 };
 
-for (const model of [SERVER_MODEL, OPEN_MODEL, "apps/site/public/sample.clm"]) {
-  const head = readFileSync(at(model)).subarray(0, 40).toString("latin1");
-  if (head.startsWith("version https://git-lfs")) {
-    fail(`${model} is a Git LFS pointer; fetch the objects with \`git lfs pull\``);
-  }
+const modelBytes = readFileSync(OPEN_MODEL);
+const modelHash = createHash("sha256").update(modelBytes).digest("hex");
+if (modelBytes.subarray(0, 40).toString("latin1").startsWith("version https://git-lfs")) {
+  fail("E2E_MODEL is a Git LFS pointer; fetch the model bytes first.");
 }
+const serverModel = join(runtime, "Lan.clm");
+await copyFile(OPEN_MODEL, serverModel);
 
-for (const bin of ["catchlight-editor-server", "catchlight-editor-cli"]) {
-  if (!(await Bun.file(at("target", "debug", bin)).exists())) {
-    await must("cargo", ["build", "-p", "catchlight-editor-server", "-p", "catchlight-editor-cli"]);
-    break;
-  }
-}
+await must("cargo", ["build", "-p", "catchlight-editor-server", "-p", "catchlight-editor-cli"]);
+
 if (
   process.env.E2E_BUILD === "1" ||
   !(await Bun.file(at("apps", "site", "dist", "index.html")).exists())
@@ -135,7 +128,7 @@ const server = serve(
     origin,
     "--store",
     join(runtime, "models"),
-    at(SERVER_MODEL),
+    serverModel,
   ],
   root,
 );
@@ -152,7 +145,7 @@ try {
     await drive("in-tab, WebGPU", [chromium, `${origin}/`], { TIER: "webgpu" }),
     await drive("connected, WebGPU", [chromium, `${origin}/`, serverBase], {
       TIER: "webgpu",
-      AGENT_CMD: `target/debug/catchlight-editor-cli node add --session 1 --parent root --kind group --name ${AGENT_NODE}`,
+      AGENT_CMD: `target/debug/catchlight-editor-cli node add --session 1 --parent Puppet --kind group --name ${AGENT_NODE}`,
     }),
     await drive("in-tab, WebGL2", [chromium, `${origin}/`], { TIER: "webgl2" }),
     await drive("in-tab, neither tier", [chromium, `${origin}/`], {
@@ -167,6 +160,10 @@ try {
   }
   if (code !== 0) {
     for (const name of ["site", "server"]) await tail(name);
+  }
+  if (createHash("sha256").update(readFileSync(OPEN_MODEL)).digest("hex") !== modelHash) {
+    console.error("E2E_MODEL changed during the run");
+    code = 1;
   }
   console.log(code === 0 ? "\ne2e: both backends and both tiers passed" : "\ne2e: FAILED");
   process.exit(code);
