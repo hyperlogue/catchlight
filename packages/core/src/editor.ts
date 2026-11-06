@@ -55,6 +55,7 @@ export class Editor {
   /** The one acquisition in flight, so two first attaches share a device. */
   #acquiring: Promise<WasmGpu> | undefined;
   #sessions = new Map<SessionId, Session>();
+  #adopting = new Map<SessionId, Promise<Session>>();
   #gpuListeners = new Set<() => void>();
   #closed = false;
 
@@ -369,6 +370,19 @@ export class Editor {
   }
 
   async #adoptId(id: SessionId, rev: number): Promise<Session> {
+    const pending = this.#adopting.get(id);
+    if (pending) return pending;
+    // Opening and session-list notifications can attach the same model together.
+    const adopting = this.#loadSession(id, rev);
+    this.#adopting.set(id, adopting);
+    try {
+      return await adopting;
+    } finally {
+      this.#adopting.delete(id);
+    }
+  }
+
+  async #loadSession(id: SessionId, rev: number): Promise<Session> {
     const session = new Session(this.#backend, id, new this.#wasm.Replica());
     try {
       await session.catchUp(rev);

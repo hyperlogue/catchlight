@@ -80,6 +80,34 @@ describe("opening models", () => {
     expect(editor.session(session.id)).toBe(session);
   });
 
+  test("concurrent attaches share a replica and closing stops both callers", async () => {
+    const backend = new ScriptedBackend();
+    const editor = await Editor.create(fakeWasm().module, backend);
+    let release!: () => void;
+    backend.hold = new Promise<void>((resolve) => { release = resolve; });
+    const info = { session: 1, title: "model", file: null, dirty: false, rev: 0, node_count: 1 };
+    const first = editor.attachSession(info);
+    const second = editor.attachSession(info);
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    await editor.closeSession(info.session);
+    expect(a === b).toBe(true);
+    expect(a.closed && b.closed).toBe(true);
+    editor.close();
+  });
+
+  test("a failed shared attachment can be retried", async () => {
+    const backend = new ScriptedBackend();
+    const editor = await Editor.create(fakeWasm().module, backend);
+    const info = { session: 1, title: "model", file: null, dirty: false, rev: 0, node_count: 1 };
+    backend.failFeed = "structure unavailable";
+    const results = await Promise.allSettled([editor.attachSession(info), editor.attachSession(info)]);
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    const session = await editor.attachSession(info);
+    expect(session.tree().id).toBe("root");
+    editor.close();
+  });
+
   test("an edit is readable the moment its promise settles", async () => {
     const { editor } = await inTab();
     const session = await editor.newSession();
