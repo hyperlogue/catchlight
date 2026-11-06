@@ -1,10 +1,11 @@
-/** The private Lan model is supplied by the caller and never bundled with the site. */
+/** Lan is the shared model fixture for browser rendering and authoring checks. */
+import { fileURLToPath } from "node:url";
 import type { Page } from "playwright-core";
 
+export const LAN_MODEL = fileURLToPath(new URL("../../../tests/models/lan.clm", import.meta.url));
+
 export function modelPath(): string {
-  const path = process.env.OPEN_FILE ?? process.env.E2E_MODEL ?? process.env.CATCHLIGHT_LOCAL_MODEL;
-  if (!path) throw new Error("Set E2E_MODEL to your private Lan.clm to run the browser suite.");
-  return path;
+  return process.env.OPEN_FILE ?? LAN_MODEL;
 }
 
 export async function openModel(page: Page): Promise<void> {

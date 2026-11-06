@@ -21,6 +21,31 @@ the native editor-server executable or a local application launcher.
 `@catchlight/react` exposes the unstyled parts, and `@catchlight/core` supplies
 the web-platform glue.
 
+## Testing
+
+Lan (`tests/models/lan.clm`) and image baselines are stored in Git LFS. Fetch
+these once with `git lfs pull`. Both suites use the checked-in fixture.
+
+Run visual comparisons through the native headless renderer:
+
+```sh
+nix develop -c cargo test -p visual-tests --test regression lan_visual_regressions
+```
+
+Chromium E2E covers editor interactions, backend synchronization, graphics
+fallback and canvas presentation. On a fresh checkout:
+
+```sh
+nix develop -c bun install --frozen-lockfile
+nix develop -c cargo xtask build-wasm --debug
+nix develop -c env E2E_BUILD=1 bun run --filter catchlight-demo e2e
+```
+
+The browser runner starts its own services and copies Lan before editing it.
+Run `cargo test -p visual-tests` for the full native suite, including synthetic
+renderer cases. See `crates/visual-tests/src/lib.rs` for baseline review and
+update commands.
+
 ## Acknowledgement
 
 Catchlight is heavily inspired by

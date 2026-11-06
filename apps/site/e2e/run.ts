@@ -6,9 +6,8 @@
  * re-launches under Xvfb so the WebGPU pass can verify actual presentation.
  *
  * ```text
- * E2E_MODEL=/path/to/Lan.clm bun run --filter catchlight-demo e2e
+ * bun run --filter catchlight-demo e2e
  *   CHROMIUM=<exe>        overrides the `chromium` on PATH
- *   E2E_MODEL=<path>     private Lan.clm, required
  *   E2E_BUILD=1           rebuild the site even when `dist/` is already there
  *   E2E_SITE_PORT=4173    where `vite preview` listens; a free port if taken
  *   E2E_SERVER_PORT=9377  where `catchlight-editor-server` listens; likewise
@@ -45,14 +44,13 @@
 import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-/** All visual passes use the caller's private Lan model. */
-const configuredModel = process.env.E2E_MODEL ?? process.env.CATCHLIGHT_LOCAL_MODEL;
-if (!configuredModel) fail("Set E2E_MODEL=/path/to/Lan.clm; the private model is not bundled.");
-const OPEN_MODEL = resolve(configuredModel);
+import { LAN_MODEL } from "./model.ts";
+
+const OPEN_MODEL = LAN_MODEL;
 
 if (process.platform === "linux" && !process.env.DISPLAY && !process.env.CHROMIUM_ARGS) {
   const xvfb = Bun.which("xvfb-run");
@@ -98,7 +96,7 @@ const env = {
 const modelBytes = readFileSync(OPEN_MODEL);
 const modelHash = createHash("sha256").update(modelBytes).digest("hex");
 if (modelBytes.subarray(0, 40).toString("latin1").startsWith("version https://git-lfs")) {
-  fail("E2E_MODEL is a Git LFS pointer; fetch the model bytes first.");
+  fail("Lan is a Git LFS pointer; run `git lfs pull --include=tests/models/lan.clm`.");
 }
 const serverModel = join(runtime, "Lan.clm");
 await copyFile(OPEN_MODEL, serverModel);
@@ -162,7 +160,7 @@ try {
     for (const name of ["site", "server"]) await tail(name);
   }
   if (createHash("sha256").update(readFileSync(OPEN_MODEL)).digest("hex") !== modelHash) {
-    console.error("E2E_MODEL changed during the run");
+    console.error("Lan fixture changed during the run");
     code = 1;
   }
   console.log(code === 0 ? "\ne2e: both backends and both tiers passed" : "\ne2e: FAILED");

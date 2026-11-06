@@ -91,8 +91,11 @@ jobs:
       # model the editor's own reader opens back, so it runs here, not in a job
       # of its own.
       - run: nix develop -c bash -c 'cd python && uv run pytest -q'
-      # Visual E2E requires the private Lan model and runs locally with E2E_MODEL.
-      # It is never fetched or published by this public workflow.
+      - run: nix develop -c cargo test -p visual-tests --lib
+      - name: headless Lan visual regressions
+        run: nix develop -c cargo test -p visual-tests --test regression lan_visual_regressions -- --nocapture
+      - name: browser E2E (Lan, both backends and graphics tiers)
+        run: nix develop -c bun run --filter catchlight-demo e2e
 
   packages:
     name: nix packages
