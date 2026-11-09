@@ -14,12 +14,11 @@ use std::process::Command;
 const CLI: &str = "catchlight-cli";
 
 /// What must never reach it. The editor protocol, the editor server, and the
-/// three clients of that server. See `crates/catchlight-cli/src/lib.rs` for
+/// two clients of that server. See `crates/catchlight-cli/src/lib.rs` for
 /// why the line sits exactly here.
-const ABOVE_THE_LINE: [&str; 5] = [
+const ABOVE_THE_LINE: [&str; 4] = [
     "catchlight-editor-protocol",
     "catchlight-editor-server",
-    "catchlight-editor",
     "catchlight-editor-cli",
     "catchlight-editor-wasm",
 ];

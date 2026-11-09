@@ -645,18 +645,16 @@ pub(crate) fn param_infos(model: &Model) -> Vec<ParamInfo> {
     out
 }
 
-/// The wire spelling of one slot. Public because the egui editor's slot panel
-/// reads a part's slots straight off the model rather than over the protocol,
-/// and there is one spelling of a slot or there are two.
-pub fn slot_info(slot: &catchlight_core::Slot) -> SlotInfo {
+/// The wire spelling of one slot.
+fn slot_info(slot: &catchlight_core::Slot) -> SlotInfo {
     SlotInfo {
         id: slot.id().clone(),
         vertex: slot.vertex(),
     }
 }
 
-/// The wire spelling of one weld, public for the same reason.
-pub fn weld_info(weld: &ModelWeld) -> WeldInfo {
+/// The wire spelling of one weld.
+fn weld_info(weld: &ModelWeld) -> WeldInfo {
     WeldInfo {
         a: weld.a().clone(),
         b: weld.b().clone(),

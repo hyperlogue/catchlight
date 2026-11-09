@@ -6,8 +6,7 @@ a tier-1 runtime target; browser rendering supports WebGPU and WebGL2.
 
 ## Project boundaries
 
-- The editor is web-first: React over a wasm replica. The desktop egui editor
-  (`crates/catchlight-editor/`) is frozen; bug fixes only.
+- The editor is web-first: React over a wasm replica.
 - The editor owns the model; the browser holds a replica updated by the
   backend. Reads are synchronous against that replica. A drag commits once,
   holding its scratch until the committed revision arrives.

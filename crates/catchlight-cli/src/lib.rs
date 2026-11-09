@@ -25,7 +25,7 @@
 //!
 //! **This crate never depends on `catchlight-editor-protocol`,
 //! `catchlight-editor-server`, or any client of that server —
-//! `catchlight-editor`, `catchlight-editor-cli`, `catchlight-editor-wasm`.**
+//! `catchlight-editor-cli`, `catchlight-editor-wasm`.**
 //! Below that line sit the structure, the reader that trusts nothing, `check`,
 //! the puppet and the renderer: tier-1 on Windows and wasm-safe. Above it is
 //! session machinery — revisions, undo, observers, per-session Id minting,
@@ -35,7 +35,7 @@
 //! `catchlight-wgpu` rather than being shared sideways, and keeps the tool
 //! answering about the file rather than about a session's copy of it. A test
 //! in `xtask` walks `cargo metadata`'s resolve graph and fails if any of the
-//! five ever appears in this crate's closure.
+//! four ever appears in this crate's closure.
 //!
 //! # Invariants
 //!

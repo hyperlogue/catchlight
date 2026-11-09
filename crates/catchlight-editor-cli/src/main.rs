@@ -1534,7 +1534,7 @@ fn connect() -> Result<UnixStream> {
     let path = socket_path();
     UnixStream::connect(&path).map_err(|e| {
         anyhow!(
-            "cannot connect to the editor server at {}; start catchlight-editor or catchlight-editor-server first: {e}",
+            "cannot connect to the editor server at {}; start catchlight-editor-server first: {e}",
             path.display()
         )
     })

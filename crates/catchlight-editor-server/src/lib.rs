@@ -2,7 +2,7 @@
 //!
 //! [`Editor`] holds many [`Session`]s (one puppet each), sharing one warm
 //! headless renderer. [`Editor::handle`] is the synchronous dispatch every
-//! frontend funnels into: the future GUI calls it in-process, [`serve_unix`]
+//! frontend funnels into: Wasm calls it in-process, [`serve_unix`]
 //! exposes it to the CLI / an agent over a Unix socket. Both speak the same
 //! [`catchlight_editor_protocol`] messages.
 //!
@@ -117,7 +117,7 @@ mod transport;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::{bind_http, serve_http, HttpOptions, HttpServer};
-pub use query::{extension_value_info, replica_query, replica_reply, slot_info, weld_info};
+pub use query::{extension_value_info, replica_query, replica_reply};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::FileStorage;
 pub use storage::{join_key, key_stem, parent_key, NoStorage, Storage};

@@ -8,7 +8,6 @@ members = [
     "crates/catchlight-editor-protocol",
     "crates/catchlight-editor-server",
     "crates/catchlight-editor-cli",
-    "crates/catchlight-editor",
     "crates/catchlight-editor-wasm",
     "crates/catchlight-wgpu",
     "crates/visual-tests",
