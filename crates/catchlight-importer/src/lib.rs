@@ -1,9 +1,13 @@
-//! One-time import of inochi2d `.inx` / `.inp` puppets into a catchlight
-//! [`Model`](catchlight_core::Model).
+//! External format adapters that import into a catchlight [`Model`](catchlight_core::Model).
+//!
+//! Inochi2D `.inx` / `.inp` is the currently supported format. Additional
+//! formats belong in this crate as separate adapters.
 //!
 //! This crate depends on `catchlight-core`; nothing in core depends on it.
-//! `catchlight_core::load_model` reads `.clm` and nothing else — an `.inx` is
-//! converted once, with `cargo xtask import`, and the `.clm` is what ships.
+//! `catchlight_core::load_model` reads `.clm` only. Importers convert their
+//! source format once, and `.clm` is what ships.
+//!
+//! # Inochi2D
 //!
 //! Three parts. [`inx`] is the container reader: `TRNSRTS\0` framing, the JSON
 //! payload, the texture table (PNG, TGA, or BC7 DDS decoded to PNG) and the

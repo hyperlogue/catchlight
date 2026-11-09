@@ -14,8 +14,8 @@ a tier-1 runtime target; browser rendering supports WebGPU and WebGL2.
   holds web-platform glue; `packages/react/` exposes hooks and unstyled parts;
   `packages/editor/` assembles them with the default theme under
   `@layer catchlight`.
-- `.clm` is the only model load format. Inochi2d import is a one-time conversion
-  in `catchlight-inx-importer`, which depends on core, never the reverse.
+- `.clm` is the only model load format. External-format import adapters belong
+  in `catchlight-importer`, which depends on core, never the reverse.
 - `catchlight-cli` operates on model files and never depends on the editor
   server, protocol, or their clients. Its file operations preserve encoded
   texture bytes without decoding images. New inspection tools belong in CLI
