@@ -22,7 +22,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # The sample model is a Git LFS object; without it the site ships a pointer.
+      # The bundled Lan model is a Git LFS object; fetch its actual bytes.
       - uses: actions/checkout@v7
         with:
           lfs: true

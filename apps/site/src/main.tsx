@@ -43,10 +43,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./site.css";
+import lanUrl from "../../../tests/models/lan.clm?url";
 
-/** The host supplies only a URL segment and display name, never a filesystem path. */
+/** A bundled asset URL or development route, never a filesystem path. */
 type Example = { file: string; name: string };
 declare const __CATCHLIGHT_EXAMPLE__: Example | null;
+const example: Example = __CATCHLIGHT_EXAMPLE__ ?? { file: lanUrl, name: "Lan.clm" };
 
 void start();
 
@@ -56,8 +58,8 @@ async function start(): Promise<void> {
     const editor = await Editor.create(catchlight, await pick(server));
 
     // A configured starter is opened before the panel chooses its current session.
-    if (server === null && __CATCHLIGHT_EXAMPLE__) {
-      await openStarter(editor, __CATCHLIGHT_EXAMPLE__).catch(report);
+    if (server === null) {
+      await openStarter(editor, example).catch(report);
     }
 
     mount(editor);
@@ -90,14 +92,14 @@ async function store(): Promise<Storage> {
 }
 
 /**
- * Opens the configured development starter.
+ * Opens Lan, or the configured development override.
  *
  * Reported rather than thrown: a starter that will not load is worth saying out
  * loud, and is no reason to withhold an editor that works.
  */
 async function openStarter(editor: Editor, example: Example): Promise<Session> {
   // `BASE_URL` ends in a slash and is `/<repo>/` on Pages.
-  const url = `${import.meta.env.BASE_URL}${example.file}`;
+  const url = new URL(example.file, new URL(import.meta.env.BASE_URL, location.href)).href;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`fetching ${url} failed: ${response.status} ${response.statusText}`);
@@ -108,10 +110,9 @@ async function openStarter(editor: Editor, example: Example): Promise<Session> {
 function mount(editor: Editor): void {
   const host = document.getElementById("editor");
   if (!host) throw new Error("index.html has no #editor to mount into");
-  const example = __CATCHLIGHT_EXAMPLE__;
   createRoot(host).render(
     <StrictMode>
-      <CatchlightEditor editor={editor} {...(example ? { onOpenStarter: () => openStarter(editor, example) } : {})} />
+      <CatchlightEditor editor={editor} onOpenStarter={() => openStarter(editor, example)} />
     </StrictMode>,
   );
 }

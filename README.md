@@ -21,6 +21,11 @@ the native editor-server executable or a local application launcher.
 `@catchlight/react` exposes the unstyled parts, and `@catchlight/core` supplies
 the web-platform glue.
 
+The demo preloads Lan from `tests/models/lan.clm` in development and production.
+Fetch Git LFS objects before building. The empty-state starter action reopens
+the same model. `CATCHLIGHT_LOCAL_MODEL` can override it for loopback development
+only; production always bundles the repository model.
+
 ## Testing
 
 Lan (`tests/models/lan.clm`) and image baselines are stored in Git LFS. Fetch

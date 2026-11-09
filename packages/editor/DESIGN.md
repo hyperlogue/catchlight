@@ -146,7 +146,7 @@ boundaries keep future tools consistent:
 | `@catchlight/core`       | Session lifecycle, replica reads, typed protocol routing, scratch and storage                     |
 | `@catchlight/react`      | Unstyled controls, authoring panels, gestures and workspace hooks                                 |
 | `@catchlight/editor`     | Layout, theme, command palette and notifications                                                  |
-| `apps/site`              | Backend choice, empty startup and an optional private starter                                                |
+| `apps/site`              | Backend choice, bundled Lan demo and an optional development starter override                                                |
 
 No component maintains a second authored model. Queries read the replica;
 edits go to the editor. Status reads provide actual undo/redo availability

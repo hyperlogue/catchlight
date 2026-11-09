@@ -373,13 +373,17 @@ try {
       throw new Error(`page reported: ${(await pre.textContent())?.trim()}`);
   });
   if (!server) {
-    await step("empty editor opens Lan through the file input", async () => {
-      if (await page.locator("[data-catchlight-session][data-current]").count())
-        throw new Error("the public site must start without a bundled model");
-      await page.getByRole("button", { name: "Open a model", exact: true }).waitFor();
-      await openModel(page);
+    await step("the demo preloads Lan", async () => {
+      await page.locator("[data-catchlight-session][data-current]").waitFor();
+      const name = await page.evaluate(() => {
+        const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
+        const id = Number(document.querySelector("[data-catchlight-session][data-current]")!.getAttribute("data-session"));
+        return editor.session(id)?.tree().name;
+      });
+      if (name !== "Lan") throw new Error(`expected Lan at startup, got ${name}`);
     });
   }
+
   if (tier === "none") {
     await step("the tab says what it needs", async () => {
       // The device is asked for at the first attach, so the sentence appears

@@ -150,7 +150,7 @@ describe("private local example", () => {
     });
   }, 30_000);
 
-  test("unconfigured development has no starter", async () => {
+  test("unconfigured development has no private override", async () => {
     const { root } = await fixture();
     await withModel("", async () => {
       expect((await config(root, "serve")).define?.__CATCHLIGHT_EXAMPLE__).toBe("null");

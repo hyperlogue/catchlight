@@ -1,3 +1,4 @@
+/** Startup and file routing; the E2E driver checks rendered presentation. */
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
@@ -6,7 +7,7 @@ import siteConfig from "../vite.config.js";
 
 const executablePath = process.env.CHROMIUM ?? Bun.which("chromium");
 
-test.skipIf(!executablePath)("the unconfigured site opens an empty editor without fetching a model", async () => {
+test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empty state", async () => {
   const previous = process.env.CATCHLIGHT_LOCAL_MODEL;
   let config;
   try {
@@ -30,15 +31,23 @@ test.skipIf(!executablePath)("the unconfigured site opens an empty editor withou
   });
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(60000);
     const models: string[] = [], errors: string[] = [];
-    page.on("request", request => { if (new URL(request.url()).pathname.endsWith(".clm")) models.push(request.url()); });
+    page.on("request", request => { if (request.resourceType() === "fetch" && new URL(request.url()).pathname.endsWith(".clm")) models.push(request.url()); });
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(server.resolvedUrls!.local[0]!, { waitUntil: "networkidle" });
+    const current = page.locator("[data-catchlight-session][data-current]");
+    await current.waitFor();
+    expect(await current.textContent()).toContain("Lan");
+    expect(models).toHaveLength(1);
+    await current.locator("[data-catchlight-session-close]").click();
     await page.getByRole("button", { name: "Create a model", exact: true }).waitFor();
     expect(await page.getByRole("button", { name: "Open a model", exact: true }).isVisible()).toBe(true);
-    expect(await page.getByRole("button", { name: "Explore the starter character" }).count()).toBe(0);
-    expect(await page.locator("[data-catchlight-session][data-current]").count()).toBe(0);
-    expect(models).toEqual([]);
+    await page.getByRole("button", { name: "Explore the starter character" }).click();
+    await current.waitFor();
+    expect(await current.textContent()).toContain("Lan");
+    expect(models).toHaveLength(2);
+    expect(models[1]).toBe(models[0]);
     expect(errors).toEqual([]);
   } finally {
     await browser.close();
