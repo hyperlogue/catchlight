@@ -56,12 +56,23 @@ export async function workspaces(
     if (revision !== undefined) await changed(revision);
     else await pause();
   };
+  // Workspace state and viewport overlays publish on separate frames. Wait
+  // for hit testing, rather than assuming a fixed pause exposes the handles.
+  const handlesReady = (selector: string, minimum = 1) => page.waitForFunction(
+    ({ selector, minimum }) => [...document.querySelectorAll(selector)].filter(element => {
+      const r = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return hit !== null && element.contains(hit);
+    }).length >= minimum,
+    { selector, minimum },
+  );
   const drag = async (
     selector: string,
     dx: number,
     dy: number,
     cancel = false,
   ) => {
+    await handlesReady(selector);
     const index = await page.locator(selector).evaluateAll(elements => elements.findIndex(element => {
       const r = element.getBoundingClientRect();
       const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
@@ -81,15 +92,18 @@ export async function workspaces(
   };
   let draftVertex = '[data-mesh-vertex="30"]';
   let shapeVertex = '[data-catchlight-vertex-handle][data-vertex="30"]';
-  const pickHandles = async (selector: string) => page.locator(selector).evaluateAll(elements =>
-    elements.filter(element => {
-      const r = element.getBoundingClientRect();
-      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-      return hit === element;
-    }).map(element => ({
-      index: element.getAttribute("data-mesh-vertex") ?? element.getAttribute("data-vertex"),
-      x: element.getBoundingClientRect().x, y: element.getBoundingClientRect().y,
-    })));
+  const pickHandles = async (selector: string, minimum = 1) => {
+    await handlesReady(selector, minimum);
+    return page.locator(selector).evaluateAll(elements =>
+      elements.filter(element => {
+        const r = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return hit !== null && element.contains(hit);
+      }).map(element => ({
+        index: element.getAttribute("data-mesh-vertex") ?? element.getAttribute("data-vertex"),
+        x: element.getBoundingClientRect().x, y: element.getBoundingClientRect().y,
+      })));
+  };
   const meshFits = () => page.waitForFunction(() => {
     const canvas = document.querySelector("[data-catchlight-mesh-canvas]");
     const svg = canvas?.querySelector("svg");
@@ -133,7 +147,7 @@ export async function workspaces(
     await page.screenshot({ path: `${shots}/${tag}-mesh-mobile.png` });
     await page.setViewportSize({ width: 1440, height: 960 });
     await meshFits();
-    const handles = await pickHandles("[data-mesh-vertex]");
+    const handles = await pickHandles("[data-mesh-vertex]", 2);
     assert(handles.length > 1, "Lan mesh exposes draggable vertex handles");
     draftVertex = `[data-mesh-vertex="${handles[0]!.index}"]`;
     const image = page.locator("[data-catchlight-mesh-artwork]");
@@ -218,7 +232,7 @@ export async function workspaces(
         await button("Done").isVisible(),
         "returning a drag to its start is a no-op",
       );
-      const handles = await pickHandles("[data-mesh-vertex]");
+      const handles = await pickHandles("[data-mesh-vertex]", 2);
       const first = handles[0]!;
       const second = handles.find(p => Math.hypot(p.x - first.x, p.y - first.y) > 40)!;
       assert(second, "two distinct mesh handles are accessible");
@@ -463,6 +477,7 @@ export async function workspaces(
       await button("Start recording").click();
       const before = await read();
       const corners = page.locator("[data-catchlight-selection-corner]");
+      await handlesReady("[data-catchlight-selection-corner]");
       const index = await corners.evaluateAll(elements => elements.findIndex(element => {
         const r = element.getBoundingClientRect();
         const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
