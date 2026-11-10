@@ -8,7 +8,8 @@
 use std::path::PathBuf;
 
 use catchlight_cli::{
-    diff, extension, fragment, patch, poses, render, texture, Error, EXIT_DIFFERS, EXIT_ERROR,
+    diff, extension, fragment, patch, poses, render, storage, texture, Error, EXIT_DIFFERS,
+    EXIT_ERROR,
 };
 use catchlight_core::formats::clm::TextureAlpha;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -131,6 +132,10 @@ enum Cmd {
     },
     /// Compare two model files by id.
     Diff { a: PathBuf, b: PathBuf },
+    /// Report encoded storage by section, texture, node and binding as JSON.
+    /// No images are decoded. Element sizes use current-format serialization;
+    /// canonical_matches_input says whether those bytes match the input exactly.
+    Storage { file: PathBuf },
     /// Read or write the vendor annotations a file carries.
     #[command(subcommand)]
     Extension(ExtensionCmd),
@@ -316,6 +321,13 @@ fn run() -> Result<i32, Error> {
             if !lines.is_empty() {
                 return Ok(EXIT_DIFFERS);
             }
+        }
+        Cmd::Storage { file } => {
+            let report = storage::run(&file)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(|e| Error::Storage(e.to_string()))?
+            );
         }
     }
     Ok(0)

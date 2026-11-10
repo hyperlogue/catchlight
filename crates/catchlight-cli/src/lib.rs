@@ -11,8 +11,9 @@
 //! subtree can be cut out, a property set, or two files compared without a
 //! renderer, a puppet, or an image decoder anywhere in the process.
 //!
-//! The inspection subcommands are the other half, and they evaluate the model
-//! rather than editing the file. [`render`] builds the puppet, draws it on a
+//! The inspection subcommands are the other half. [`storage`] accounts for
+//! encoded bytes without decoding images or evaluating the model.
+//! [`render`] builds the puppet, draws it on a
 //! headless device through [`catchlight_wgpu::RenderContext`] and prints the
 //! render list it drew. The same command renders selected Parts, pose batches
 //! and continuous physics sequences. [`poses`]
@@ -81,6 +82,7 @@ pub mod fragment;
 pub mod patch;
 pub mod poses;
 pub mod render;
+pub mod storage;
 pub mod texture;
 
 use std::path::PathBuf;
@@ -99,6 +101,8 @@ pub const EXIT_DIFFERS: i32 = 1;
 /// the file, the Id or the field that stopped it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("storage: {0}")]
+    Storage(String),
     #[error("poses budget {budget}: requested {requested}, maximum {limit}; reduce key positions or model complexity")]
     PosesLimit {
         budget: &'static str,
