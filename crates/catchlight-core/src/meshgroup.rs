@@ -79,9 +79,13 @@ pub(crate) struct MgTriangleBitmap {
     height: u32,
     bounds_min: Vec2,
     /// Coarse spatial bins bound the fallback work when a pixel hint misses.
-    /// Each triangle appears in every bin its padded bounds touch, in index
-    /// order. Bins are only candidates: exact containment remains authoritative.
+    /// Well-conditioned triangles appear in every bin their padded bounds
+    /// touch, in index order. Exact containment remains authoritative.
     candidates: Vec<Vec<u32>>,
+    /// Nearly collinear triangles cannot be culled by geometric bounds: the
+    /// existing f32 containment calculation can accept points beyond them.
+    /// Keep these in triangle order and test them regardless of the query bin.
+    unculled: Vec<u32>,
 }
 
 const TRIANGLE_BIN_SIDE: usize = 32;
@@ -129,6 +133,7 @@ impl MgTriangleBitmap {
 
         let mut cells = vec![0u16; (width * height) as usize];
         let mut candidates = vec![Vec::new(); TRIANGLE_BIN_SIDE * TRIANGLE_BIN_SIDE];
+        let mut unculled = Vec::new();
         let mut candidate_count = 0usize;
         for tri in 0..tri_count {
             let Some((a, b, c)) = triangle_vertices_raw(&mesh.vertices, &mesh.indices, tri) else {
@@ -139,34 +144,32 @@ impl MgTriangleBitmap {
             let tmin_y = a.y.min(b.y).min(c.y);
             let tmax_x = a.x.max(b.x).max(c.x);
             let tmax_y = a.y.max(b.y).max(c.y);
-            // Include the containment epsilon and floating-point rounding at
-            // edges. Clamping query bins also preserves points just beyond the
-            // bitmap rectangle; the exact test decides whether they belong.
-            let extent = Vec2::new(tmax_x - tmin_x, tmax_y - tmin_y);
-            let magnitude = a.abs().max(b.abs()).max(c.abs());
-            let padding = extent * 1e-4 + magnitude * (16.0 * f32::EPSILON) + Vec2::splat(1e-4);
-            let lo = Self::bin(
-                Vec2::new(tmin_x, tmin_y) - padding,
-                bounds_min,
-                width,
-                height,
-            );
-            let hi = Self::bin(
-                Vec2::new(tmax_x, tmax_y) + padding,
-                bounds_min,
-                width,
-                height,
-            );
-            candidate_count += (hi.0 - lo.0 + 1) * (hi.1 - lo.1 + 1);
-            // Highly overlapping input must not turn the acceleration cache
-            // into an unbounded allocation. The caller retains the exact scan.
-            if candidate_count > 1_048_576 {
-                return None;
-            }
-            for y in lo.1..=hi.1 {
-                for x in lo.0..=hi.0 {
-                    candidates[y * TRIANGLE_BIN_SIDE + x].push(tri);
+            if let Some(padding) = triangle_padding(a, b, c) {
+                let lo = Self::bin(
+                    Vec2::new(tmin_x, tmin_y) - padding,
+                    bounds_min,
+                    width,
+                    height,
+                );
+                let hi = Self::bin(
+                    Vec2::new(tmax_x, tmax_y) + padding,
+                    bounds_min,
+                    width,
+                    height,
+                );
+                candidate_count += (hi.0 - lo.0 + 1) * (hi.1 - lo.1 + 1);
+                // Highly overlapping input must not turn the acceleration cache
+                // into an unbounded allocation. The caller retains the exact scan.
+                if candidate_count > 1_048_576 {
+                    return None;
                 }
+                for y in lo.1..=hi.1 {
+                    for x in lo.0..=hi.0 {
+                        candidates[y * TRIANGLE_BIN_SIDE + x].push(tri);
+                    }
+                }
+            } else {
+                unculled.push(tri);
             }
             let left = tmin_x.floor() as i32;
             let top = tmin_y.floor() as i32;
@@ -199,6 +202,7 @@ impl MgTriangleBitmap {
             height,
             bounds_min,
             candidates,
+            unculled,
         })
     }
 
@@ -220,10 +224,18 @@ impl MgTriangleBitmap {
             return Some(hint);
         }
         let (x, y) = Self::bin(p, self.bounds_min, self.width, self.height);
-        self.candidates[y * TRIANGLE_BIN_SIDE + x]
+        let nearby = self.candidates[y * TRIANGLE_BIN_SIDE + x]
             .iter()
             .copied()
+            .find(|&tri| tri != hint && contains(tri));
+        // Preserve the full scan's first-match order when both paths contain
+        // the point. The hint still wins, exactly as before the acceleration.
+        self.unculled
+            .iter()
+            .copied()
+            .take_while(|&tri| nearby.is_none_or(|found| tri < found))
             .find(|&tri| tri != hint && contains(tri))
+            .or(nearby)
     }
 
     fn lookup(&self, p: Vec2) -> Option<u32> {
@@ -244,6 +256,35 @@ impl MgTriangleBitmap {
             Some((cell - 1) as u32)
         }
     }
+}
+
+/// Bound edge rounding only where the dot-product containment solve is well
+/// conditioned. Its determinant subtracts two nearly equal products on thin
+/// triangles; a fixed geometric epsilon does not cover that cancellation.
+/// Such triangles retain the original predicate without any spatial culling.
+fn triangle_padding(a: Vec2, b: Vec2, c: Vec2) -> Option<Vec2> {
+    let v0 = b - a;
+    let v1 = c - a;
+    let d00 = v0.dot(v0);
+    let d01 = v0.dot(v1);
+    let d11 = v1.dot(v1);
+    let product = d00 * d11;
+    let cross = d01 * d01;
+    let determinant = product - cross;
+    let scale = product + cross;
+    if !scale.is_finite() || determinant <= scale * 1e-3 || determinant < 1e-20 {
+        return None;
+    }
+    let extent = a.max(b).max(c) - a.min(b).min(c);
+    let magnitude = a.abs().max(b.abs()).max(c.abs());
+    // Widen with the cancellation factor, in addition to the predicate's
+    // edge tolerance and coordinate rounding. Clamped edge bins also retain
+    // points just outside the bitmap's rectangle.
+    Some(
+        extent * (1e-4 + 128.0 * f32::EPSILON * scale / determinant)
+            + magnitude * (16.0 * f32::EPSILON)
+            + Vec2::splat(1e-4),
+    )
 }
 
 fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> [f32; 3] {
@@ -1112,6 +1153,79 @@ mod tests {
         }
         // A failed hint must examine nearby triangles, not all 256 triangles.
         assert!(bitmap.candidates.iter().all(|bin| bin.len() <= 4));
+    }
+
+    #[test]
+    fn spatial_candidates_preserve_ill_conditioned_containment() {
+        let mesh = Mesh::new(
+            vec![
+                Vec2::ZERO,
+                Vec2::X,
+                Vec2::Y,
+                Vec2::new(6.1465526, 3.4940288),
+                Vec2::new(25.191957, 15.446337),
+                Vec2::new(21.09729, 12.879735),
+                // This ordinary triangle also contains the query, but not its
+                // integer pixel corner. Triangle 1 must still win a full scan.
+                Vec2::new(37.3, 23.04),
+                Vec2::new(37.4, 23.04),
+                Vec2::new(37.3, 23.14),
+                Vec2::splat(50.0),
+            ],
+            vec![],
+            MeshIndices::U16(vec![0, 1, 2, 3, 4, 5, 6, 7, 8]),
+            Vec2::ZERO,
+        );
+        let bitmap = MgTriangleBitmap::build(&mesh).unwrap();
+        let p = Vec2::new(37.332767, 23.065533);
+        let hint = bitmap.lookup(p).unwrap_or(0);
+        let scan = find_triangle_strict_hint(&mesh.vertices, &mesh.indices, p, hint);
+        assert_eq!(scan, Some(1));
+        assert_eq!(bitmap.find(&mesh.vertices, &mesh.indices, p, 0), scan);
+        assert_eq!(bitmap.find(&mesh.vertices, &mesh.indices, p, 2), Some(2));
+    }
+
+    #[test]
+    fn spatial_candidates_match_scan_across_scales_and_shapes() {
+        let mut seed = 0x31579u32;
+        let mut random = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        for scale in [0.001, 1.0, 64.0] {
+            let mut vertices = Vec::new();
+            let mut indices = Vec::new();
+            for i in 0..128 {
+                let a = Vec2::new(random() - 0.5, random() - 0.5) * 16.0 * scale;
+                let edge = Vec2::new(random() - 0.5, random() - 0.5) * 8.0 * scale;
+                let c = if i % 2 == 0 {
+                    a + edge * random() + edge.perp() * 10f32.powf(-6.0 * random())
+                } else {
+                    a + Vec2::new(random() - 0.5, random() - 0.5) * 8.0 * scale
+                };
+                let base = vertices.len() as u16;
+                vertices.extend([a, a + edge, c]);
+                indices.extend([base, base + 1, base + 2]);
+            }
+            let origin = Vec2::new(3.25, -7.5) * scale;
+            let mesh = Mesh::new(vertices, vec![], MeshIndices::U16(indices), origin);
+            let bitmap = MgTriangleBitmap::build(&mesh).unwrap();
+            let local = local_positions(&mesh);
+            for triangle in local.as_chunks::<3>().0 {
+                let [a, b, c] = *triangle;
+                for _ in 0..24 {
+                    let p = a + (b - a) * (random() * 3.0 - 1.0) + (c - a) * (random() * 3.0 - 1.0);
+                    let hint = bitmap.lookup(p).unwrap_or(0);
+                    assert_eq!(
+                        bitmap.find(&local, &mesh.indices, p, 0),
+                        find_triangle_strict_hint(&local, &mesh.indices, p, hint),
+                        "scale={scale}, point={p:?}, triangle={triangle:?}",
+                    );
+                }
+            }
+        }
     }
 
     fn fractional_bitmap_fixture(
