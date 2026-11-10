@@ -4,12 +4,14 @@
 //!
 //! Commands:
 //!   cargo xtask import <model.inx|.inp> [-o <model.clm>]
+//!   cargo xtask import-livliv <directory|package.livliv> [--inspect] [--allow-lossy] [-o out.clm] [--report report.json]
 //!   cargo xtask gen-fixture <name>
 //!   cargo xtask build-wasm [--debug]
 //!   cargo xtask generate [typescript|python]
 
 mod fixtures;
 mod generate;
+mod livliv;
 mod wasm;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -19,6 +21,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("import") => import(&args[1..]),
+        Some("import-livliv") => livliv::run(&args[1..]),
         Some("gen-fixture") => gen_fixture(&args[1..]),
         Some("build-wasm") => wasm::run(&args[1..]),
         Some("generate") => generate::run(&args[1..]),
@@ -36,6 +39,9 @@ fn print_usage() {
     eprintln!("  import <model.inx|.inp> [-o <model.clm>]");
     eprintln!("      One-time convert an INX/INP model to catchlight's editable .clm");
     eprintln!("      (default output: input path with a .clm extension).");
+    eprintln!("  import-livliv <directory|package.livliv> [--inspect] [--allow-lossy]");
+    eprintln!("      [-o out.clm] [--report report.json]");
+    eprintln!("      Validate or convert a LivLiv v4 package with a compatibility report.");
     eprintln!("  gen-fixture <name>");
     eprintln!("      Rebuild a hand-authored test model into tests/models/<name>.clm.");
     eprintln!(

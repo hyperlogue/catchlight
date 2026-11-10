@@ -29,9 +29,6 @@ image = { workspace = true }
 # Build-time only, and nothing but xtask depends on it.
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 
-[dev-dependencies]
-# For the one test that holds a generated Python shape against what `serde`
-# actually writes. Only the tests need it.
 serde_json = { workspace = true }
 
 [lints]

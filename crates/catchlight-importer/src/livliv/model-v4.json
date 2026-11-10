@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livliv.ai/schema/livliv-model-v4.json",
+  "$comment": "Format 4.0 (FORMAT.md). The $id is where it will be published. This schema covers model.json; the rules it cannot express (unique ids, references that resolve, files present, image sizes) are FORMAT.md §8.",
+  "title": "LivLiv model package, format 4: model.json",
+  "type": "object",
+  "required": ["format", "version", "name", "meta", "canvas", "anchors", "layers"],
+  "properties": {
+    "format": { "const": "livliv-model", "description": "The format. Packages before format 4 say livemaker-puppet (FORMAT-v3.md)." },
+    "version": { "const": 4, "description": "The major version. It changes only when a field changes meaning, is removed, or the structure changes (FORMAT.md §9)." },
+    "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "The character's name." },
+    "meta": { "$ref": "#/$defs/meta" },
+    "requires": {
+      "type": "array", "uniqueItems": true, "default": [],
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,47}$" },
+      "description": "Features a reader must have to draw this model right. A reader lacking one refuses the model and names it, rather than drawing it wrong. None are defined in 4.0."
+    },
+    "files": { "$ref": "#/$defs/files" },
+    "canvas": {
+      "type": "array", "prefixItems": [{ "type": "integer", "minimum": 16, "maximum": 8192 }, { "type": "integer", "minimum": 16, "maximum": 8192 }],
+      "items": false, "minItems": 2, "description": "[width, height] of the drawing in pixels. All coordinates are in this space: origin top left, y down."
+    },
+    "profile": { "$ref": "#/$defs/profile" },
+    "rig": { "$ref": "#/$defs/rig" },
+    "tuning": { "$ref": "#/$defs/tuning" },
+    "anchors": { "$ref": "#/$defs/anchors" },
+    "expressions": {
+      "type": "array", "maxItems": 64, "default": [],
+      "items": { "$ref": "#/$defs/expression" },
+      "description": "The expressions, in the order a UI lists them."
+    },
+    "layers": {
+      "type": "array", "minItems": 1, "maxItems": 512,
+      "items": { "$ref": "#/$defs/layer" },
+      "description": "The layers, in drawing order (bottom first)."
+    }
+  },
+  "patternProperties": { "^x-": { "description": "Extensions. Readers ignore x- fields they do not know." } },
+  "additionalProperties": false,
+
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+    "expressionId": {
+      "type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "description": "An expression id. Standard ids (smile, shy, angry, sad ... FORMAT.md Appendix A) mean the same on every model; writers start any other id with x_ (the model's own)."
+    },
+    "path": {
+      "type": "string", "maxLength": 128,
+      "pattern": "^(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$",
+      "description": "A path in the package, relative to model.json: /, no leading /, no .. segment, no scheme or drive letter."
+    },
+    "image": {
+      "type": "string", "maxLength": 128,
+      "pattern": "^textures/[A-Za-z0-9_][A-Za-z0-9_.-]*\\.(?:webp|png)$",
+      "description": "A layer image under textures/. The extension is the file's real type."
+    },
+    "box": {
+      "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }],
+      "items": false, "minItems": 4, "description": "[x0, y0, x1, y1] in canvas pixels."
+    },
+    "point": {
+      "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": false, "minItems": 2,
+      "description": "[x, y] in canvas pixels."
+    },
+    "springs": {
+      "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }],
+      "items": false, "minItems": 5, "description": "A spring chain: [k1, c1, gain, k2, c2]."
+    },
+    "label": {
+      "type": "object", "minProperties": 1, "maxProperties": 12,
+      "propertyNames": { "pattern": "^(?:und|[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)$" },
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 48 },
+      "description": "Names by language: BCP 47 tags (zh, zh-Hant, en, ja ...), und for unknown. Readers pick the UI language's tag, its script, its language, then en, zh, any, and finally the id."
+    },
+
+    "meta": {
+      "type": "object", "required": ["generator"],
+      "properties": {
+        "generator": {
+          "type": "object", "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 48, "description": "The tool that wrote the package, e.g. livliv.ai." },
+            "build": { "type": "string", "maxLength": 40, "description": "The tool's build, for troubleshooting. Readers must not change behaviour on it." }
+          },
+          "additionalProperties": false
+        },
+        "created": { "type": "string", "format": "date-time", "description": "When the package was written (UTC)." },
+        "author": {
+          "type": "object", "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 48, "description": "The credit the character's owner chose to show. Never an account id or an email address." },
+            "url": { "type": "string", "format": "uri", "maxLength": 200 }
+          },
+          "additionalProperties": false
+        },
+        "license": {
+          "type": "object", "required": ["id"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1, "maxLength": 80, "description": "An SPDX licence identifier or expression, or LicenseRef-... for other terms." },
+            "url": { "type": "string", "format": "uri", "maxLength": 200, "description": "Where the full terms are." },
+            "text": { "type": "string", "maxLength": 4000, "description": "The terms, or a summary, for offline readers." }
+          },
+          "additionalProperties": false,
+          "description": "The terms the package comes under. Without it nothing is granted."
+        },
+        "watermark": {
+          "type": "object", "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": ["livliv", "text", "none"],
+              "description": "livliv: the player draws the LivLiv logo over its output; text: it draws `text` in the corner (the owner's own mark); none: nothing."
+            },
+            "text": { "type": "string", "minLength": 1, "maxLength": 24 },
+            "center": {
+              "type": "boolean", "default": true,
+              "description": "livliv only: false draws the logo in the corner alone, without the light one over the character (FORMAT.md §3). A player that does not know it draws both."
+            }
+          },
+          "allOf": [
+            { "if": { "properties": { "kind": { "const": "text" } } }, "then": { "required": ["text"] } },
+            { "if": { "properties": { "kind": { "enum": ["livliv", "none"] } } }, "then": { "not": { "required": ["text"] } } },
+            { "if": { "properties": { "kind": { "enum": ["text", "none"] } } }, "then": { "not": { "required": ["center"] } } }
+          ],
+          "additionalProperties": false,
+          "description": "The mark the package asks the player to draw: a condition of the licence, not copy protection (FORMAT.md §3). Missing: none."
+        }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+
+    "files": {
+      "type": "object",
+      "description": "The optional files, by what they are for. A listed file must be in the package; readers do not look for files that are not listed. Layer images are named by the layers, not here.",
+      "properties": {
+        "keyforms": { "$ref": "#/$defs/path", "description": "Head-turn key poses (livliv-keyforms-v1.json). Without them the character plays on the rig alone." },
+        "avatar": { "$ref": "#/$defs/path", "description": "A small square picture (about 96 px) for round buttons." },
+        "cover": { "$ref": "#/$defs/path", "description": "The character at rest on a transparent background, for lists and previews." },
+        "preview": { "$ref": "#/$defs/path", "description": "A few seconds of animation (animated WebP)." }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+
+    "profile": {
+      "type": "object", "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "description": "The drawing's kind: anime_half, chibi, mascot, painterly. An unknown kind is treated as a generic character."
+        },
+        "facing": { "enum": ["front", "three_quarter", "side", "back"], "description": "How the face is turned. Missing: unknown." },
+        "glasses": { "type": "boolean", "description": "The character wears glasses." }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+
+    "tuning": {
+      "type": "object",
+      "description": "The owner's feel settings, each a factor (1 = default).",
+      "properties": {
+        "turn": { "type": "number", "minimum": 0, "maximum": 10 },
+        "nod": { "type": "number", "minimum": 0, "maximum": 10 },
+        "hair": { "type": "number", "minimum": 0, "maximum": 10 },
+        "hair_front": { "type": "number", "minimum": 0, "maximum": 10 },
+        "hair_back": { "type": "number", "minimum": 0, "maximum": 10 },
+        "blink": { "type": "number", "minimum": 0, "maximum": 10 },
+        "expr": { "type": "number", "minimum": 0, "maximum": 10 },
+        "mouth": { "type": "number", "minimum": 0, "maximum": 10 },
+        "breath": { "type": "number", "minimum": 0, "maximum": 10 }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+
+    "anchors": {
+      "type": "object", "required": ["head", "face", "neck_y", "top_y", "bottom_y", "hair_root_y"],
+      "properties": {
+        "head": {
+          "type": "object", "required": ["cx", "cy", "rx", "ry"],
+          "properties": { "cx": { "type": "number" }, "cy": { "type": "number" }, "rx": { "type": "number", "exclusiveMinimum": 0 }, "ry": { "type": "number", "exclusiveMinimum": 0 } },
+          "additionalProperties": false, "description": "The head ellipse: centre and radii."
+        },
+        "face": { "$ref": "#/$defs/box", "description": "The face." },
+        "neck_y": { "type": "number", "description": "Where the head meets the neck." },
+        "top_y": { "type": "number", "description": "The drawing's first row." },
+        "bottom_y": { "type": "number", "description": "The drawing's last row; at the canvas's bottom edge the picture is cut there." },
+        "collar_y": { "type": "number", "description": "The top of a collar or choker." },
+        "hair_root_y": { "type": "number", "description": "The hairline." },
+        "eyes": { "type": "array", "maxItems": 2, "items": { "$ref": "#/$defs/box" }, "description": "The eyes' boxes, image-left first." },
+        "brows": { "type": "array", "maxItems": 2, "items": { "oneOf": [{ "$ref": "#/$defs/box" }, { "type": "null" }] }, "description": "The brows' boxes; null: not found." },
+        "brow_lines": {
+          "type": "array", "maxItems": 2,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object", "required": ["x", "bottom", "lid"],
+                "properties": {
+                  "x": { "type": "array", "items": { "type": "number" }, "minItems": 2 },
+                  "bottom": { "type": "array", "items": { "type": "number" }, "minItems": 2 },
+                  "lid": { "type": "array", "items": { "type": "number" }, "minItems": 2 },
+                  "cap": { "type": "array", "items": { "type": "number" }, "minItems": 2 }
+                },
+                "additionalProperties": false
+              },
+              { "type": "null" }
+            ]
+          },
+          "description": "Per brow, sampled at x: its lower edge, the lid line and (optional) how far it may move under opaque bangs. Equal lengths."
+        },
+        "jaw": {
+          "type": "object", "required": ["top", "chin"],
+          "properties": {
+            "top": { "type": "number" }, "chin": { "type": "number" },
+            "half": { "type": "number" }, "open": { "type": "number" }, "round": { "type": "number" }, "wide": { "type": "number" }
+          },
+          "additionalProperties": false, "description": "The jaw: where it starts moving, the chin, and how far it drops at each mouth frame (px)."
+        },
+        "chest": {
+          "type": "object", "required": ["cx", "cy", "rx", "ry"],
+          "properties": { "cx": { "type": "number" }, "cy": { "type": "number" }, "rx": { "type": "number" }, "ry": { "type": "number" } },
+          "additionalProperties": false, "description": "The chest ellipse, where breathing and the chest spring act."
+        }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+
+    "chain": {
+      "type": "object", "required": ["id", "points", "k", "damp", "drive", "hang", "wind"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "attach": { "enum": ["head", "body"], "description": "What the root moves with (default head)." },
+        "depth": { "type": "number" },
+        "points": { "type": "array", "minItems": 2, "maxItems": 32, "items": { "$ref": "#/$defs/point" }, "description": "The rope's points, root first." },
+        "k": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": false, "minItems": 2 },
+        "damp": { "type": "number" }, "drive": { "type": "number" }, "hang": { "type": "number" },
+        "wind": { "type": "number" }, "freq": { "type": "number" }, "limit": { "type": "number" },
+        "sigma": { "type": "number" }, "reach": { "type": "number" },
+        "bias": { "type": "object", "propertyNames": { "$ref": "#/$defs/expressionId" }, "additionalProperties": { "type": "number" }, "description": "Degrees the chain bends at a full expression, by expression id." }
+      },
+      "additionalProperties": false
+    },
+
+    "rig": {
+      "type": "object",
+      "description": "Rig settings (FORMAT.md Appendix C). A missing one takes the reference player's default, given here.",
+      "properties": {
+        "yaw": { "type": "number", "default": 0.27 },
+        "pitch": { "type": "number", "default": 0.22 },
+        "roll": { "type": "number", "default": 0.5 },
+        "bulge": { "type": "number", "default": 0.6 },
+        "bulge_shape": { "type": "number" },
+        "bulge_extent": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 5 },
+        "drift": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": false, "minItems": 2 },
+        "hair": {
+          "type": "object",
+          "properties": { "front": { "$ref": "#/$defs/springs" }, "back": { "$ref": "#/$defs/springs" }, "side": { "$ref": "#/$defs/springs" } },
+          "additionalProperties": false
+        },
+        "hair_limit": { "type": "number", "default": 0.25 },
+        "hair_drive": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+        "wind": { "type": "number", "default": 1 },
+        "breath": { "type": "number", "default": 1 },
+        "sway": { "type": "number", "default": 1 },
+        "brow": { "type": "number", "default": 0.06 },
+        "pitch_ease": { "type": "number" },
+        "body": {
+          "type": "object",
+          "properties": {
+            "yaw": { "type": "number", "default": 0.35 }, "roll": { "type": "number", "default": 0.3 },
+            "breath": { "type": "number", "default": 1 }, "bust": { "type": "number", "default": 0 }
+          },
+          "additionalProperties": false
+        },
+        "neck": {
+          "type": "object", "required": ["twist"],
+          "properties": { "twist": { "type": "number" }, "reach": { "type": "number" } },
+          "additionalProperties": false
+        },
+        "jaw": { "type": "number" },
+        "chains": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/chain" } }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+
+    "expression": {
+      "type": "object", "required": ["id", "label"],
+      "properties": {
+        "id": { "$ref": "#/$defs/expressionId" },
+        "label": { "$ref": "#/$defs/label" },
+        "hotkey": { "type": "string", "pattern": "^[1-9]$", "description": "The owner's suggested hotkey; apps may assign their own." }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+
+    "layer": {
+      "type": "object", "required": ["id", "texture", "x", "y", "w", "h", "group"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "$ref": "#/$defs/label" },
+        "texture": { "$ref": "#/$defs/image" },
+        "frames": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/image" }, "description": "The mouth's frames, one per entry of visemes." },
+        "visemes": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "enum": ["closed", "half", "open", "round", "wide", "shut"] }, "description": "Which mouth shape each frame is. Required with frames." },
+        "mask": { "$ref": "#/$defs/image", "description": "A mask (the eye whites). Must be lossless." },
+        "talk": { "$ref": "#/$defs/image", "description": "The expression as drawn while talking (without its own mouth)." },
+        "brow_tex": { "$ref": "#/$defs/image", "description": "The brows this expression drew, drawn over the bangs." },
+        "x": { "type": "integer" }, "y": { "type": "integer" },
+        "w": { "type": "integer", "minimum": 1, "maximum": 8192 }, "h": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "group": { "enum": ["head", "body", "hair_back", "hair_side", "hair_front", "hair_inner"], "description": "What the layer moves with. Readers refuse a group they do not know." },
+        "depth": { "type": "number", "default": 0, "description": "Parallax on a head turn: front hair positive, back hair negative." },
+        "role": {
+          "type": "string", "pattern": "^[a-z][A-Za-z0-9_]{0,31}$",
+          "description": "What the player does with the layer (FORMAT.md Appendix B): expr expr_brows lid_L lid_R eye_L eye_R iris_L iris_R shine_L shine_R mouth neck_shadow blush hole edge edge_wide; L and R are the image's left and right. An unknown role is drawn as a plain layer."
+        },
+        "expression": { "$ref": "#/$defs/expressionId", "description": "For roles expr and expr_brows: the expression the layer belongs to." },
+        "pivot": { "$ref": "#/$defs/point" },
+        "clip": { "$ref": "#/$defs/id", "description": "The layer that clips this one (an iris by its eye)." },
+        "range": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": false, "minItems": 2, "description": "How far an iris moves, horizontally and vertically (px)." },
+        "brows": { "const": "redrawn", "description": "This expression drew its own brows: the neutral brows layer fades out with it." },
+        "bones": { "type": "array", "items": { "$ref": "#/$defs/id" }, "description": "The rig.chains that bend this layer." },
+        "rigid": { "$ref": "#/$defs/point", "description": "The point the whole layer hangs from, moving as the head does there." },
+        "blush": { "type": "object", "propertyNames": { "$ref": "#/$defs/expressionId" }, "additionalProperties": { "type": "number" }, "description": "A blush layer's opacity, weighted by expressions." },
+        "show": { "type": "object", "propertyNames": { "$ref": "#/$defs/expressionId" }, "additionalProperties": { "type": "number" }, "description": "Shown only with these expressions (weights)." },
+        "hide": { "type": "object", "propertyNames": { "$ref": "#/$defs/expressionId" }, "additionalProperties": { "type": "number" }, "description": "Faded out by these expressions (weights)." },
+        "fall": { "type": "number" },
+        "fall_end": { "type": "number" }
+      },
+      "dependentRequired": { "frames": ["visemes"] },
+      "allOf": [
+        { "if": { "required": ["role"], "properties": { "role": { "enum": ["expr", "expr_brows"] } } }, "then": { "required": ["expression"] } }
+      ],
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    }
+  }
+}

@@ -9,10 +9,16 @@ publish = false
 
 [dependencies]
 catchlight-core = { workspace = true }
-image.workspace = true
+image = { workspace = true, features = ["webp"] }
+# LivLiv packages use stored ZIP entries or DEFLATE; no other codecs or crypto.
+zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Validate the pinned, local LivLiv schemas; never resolve URLs or files.
+jsonschema = { version = "0.60.2", default-features = false }
 # The only BC7 DDS decode in the workspace: an .inx may store a texture as
 # DDS, and catchlight's own format never does.
 image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
+base64 = "0.22"
 serde.workspace = true
 serde_json.workspace = true
 thiserror = { workspace = true }

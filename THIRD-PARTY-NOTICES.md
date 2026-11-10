@@ -1,8 +1,8 @@
 # Third-party notices
 
 Catchlight's model semantics and rendering behaviour are derived from the
-projects listed here. Catchlight is not a port and carries no source
-copied from them: it is written against their observable behaviour, informed
+projects listed here. Except for the explicitly listed vendored schemas, Catchlight is not a
+port: it is written against their observable behaviour, informed
 by reading these permissively licensed implementations and by matching what
 they do, frame for frame, so that models authored for them look right. This
 file retains their notices — as their licences ask where they reach, and as
@@ -158,3 +158,30 @@ License: MIT
  THE SOFTWARE.
 ```
 
+
+
+## LivLiv Player — Apache License 2.0
+
+`crates/catchlight-importer/src/livliv/model-v4.json` and
+`keyforms-v1.json` are unmodified schemas from
+[LivLiv Player](https://github.com/livliv-dev/player), revision
+`d999dea88981124168f9e9ab948eda8d2f23c453`. These files remain licensed under
+Apache-2.0; see [LICENSE-APACHE]. The importer is informed by that revision's
+`FORMAT.md` and `src/runtime/puppet.ts`.
+
+Upstream NOTICE:
+
+> LivLiv Player
+> Copyright 2026 LivLiv
+>
+> This product includes software developed by LivLiv (https://livliv.ai).
+>
+> The featured characters in characters/ are not licensed under the Apache
+> License 2.0. Their own terms are in characters/LICENSE.md and
+> characters/CREDITS.md. Three of them (Kujira, Kujira Q, Pen) come from
+> other people's work.
+
+No LivLiv character assets are distributed with Catchlight. Official samples
+used locally for testing retain their own attribution, non-commercial-use,
+watermark and redistribution conditions. Conversion does not grant additional
+rights to a model or its textures.

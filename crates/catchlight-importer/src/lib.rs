@@ -1,7 +1,9 @@
 //! External format adapters that import into a catchlight [`Model`](catchlight_core::Model).
 //!
-//! Inochi2D `.inx` / `.inp` is the currently supported format. Additional
-//! formats belong in this crate as separate adapters.
+//! Inochi2D `.inx` / `.inp` and a limited LivLiv v4 adapter are available.
+//! [`livliv`] validates packages and explicitly reports conversion losses;
+//! it is not yet a reproduction of LivLiv's procedural animation runtime.
+//! Additional formats belong in this crate as separate adapters.
 //!
 //! This crate depends on `catchlight-core`; nothing in core depends on it.
 //! `catchlight_core::load_model` reads `.clm` only. Importers convert their
@@ -110,6 +112,7 @@
 
 pub(crate) mod error;
 pub mod inx;
+pub mod livliv;
 pub(crate) mod read;
 pub(crate) mod reflect;
 pub(crate) mod schema;

@@ -68,6 +68,8 @@
             lib.hasSuffix ".wgsl" path
             || (lib.hasSuffix ".md" path && lib.hasPrefix "${toString ./crates}/" path)
             || path == toString ./crates/catchlight-cli/tests/fixtures/render-spec.json
+            || path == toString ./crates/catchlight-importer/src/livliv/model-v4.json
+            || path == toString ./crates/catchlight-importer/src/livliv/keyforms-v1.json
             || craneLib.filterCargoSources path type;
         };
 
