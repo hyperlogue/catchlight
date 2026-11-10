@@ -2,7 +2,9 @@ use visual_tests::{generate_configs, run_one, Config, RunOutcome, SharedHarness}
 
 #[test]
 fn lan_visual_regressions() {
+    let harness = SharedHarness::new().expect("failed to create visual-test harness");
     check(
+        &harness,
         generate_configs()
             .into_iter()
             .filter(|c| c.model_stem == "lan"),
@@ -11,19 +13,20 @@ fn lan_visual_regressions() {
 
 #[test]
 fn synthetic_visual_regressions() {
+    let harness = SharedHarness::new().expect("failed to create visual-test harness");
     check(
+        &harness,
         generate_configs()
             .into_iter()
             .filter(|c| c.model_stem != "lan"),
     );
 }
 
-fn check(configs: impl Iterator<Item = Config>) {
-    let harness = SharedHarness::new().expect("failed to create visual-test harness");
+fn check(harness: &SharedHarness, configs: impl Iterator<Item = Config>) {
     let mut failures = Vec::new();
     for config in configs {
         println!("rendering {}", config.name);
-        match run_one(&harness, &config) {
+        match run_one(harness, &config) {
             Ok(RunOutcome::Pass(_)) => {}
             Ok(RunOutcome::Fail {
                 metrics,
