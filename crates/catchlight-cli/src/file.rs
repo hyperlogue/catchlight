@@ -26,7 +26,7 @@ use crate::Error;
 /// which the core deliberately does not have. `.clm` is the only model file
 /// catchlight loads, so anything else is refused by its extension before a
 /// byte is parsed — convert an inochi2d model once with
-/// `cargo xtask import <model.inx>` and open the `.clm` it writes.
+/// `catchlight-importer inx <model.inx>` and open the `.clm` it writes.
 ///
 /// This is the load path for the commands that evaluate a model (`render`,
 /// `poses`). The file operations go through [`read`] instead, which never

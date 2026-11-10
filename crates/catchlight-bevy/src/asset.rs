@@ -85,7 +85,7 @@ impl fmt::Debug for CatchlightModel {
 /// Loads a `.clm` into a [`CatchlightModel`].
 ///
 /// `.clm` is the only model format catchlight reads. An inochi2d `.inx` /
-/// `.inp` is converted once, with `cargo xtask import`, and the `.clm` it
+/// `.inp` is converted once, with `catchlight-importer inx`, and the `.clm` it
 /// writes is what an app ships.
 #[derive(Default, TypePath)]
 pub struct CatchlightModelLoader;

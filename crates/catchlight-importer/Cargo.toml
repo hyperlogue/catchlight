@@ -7,7 +7,18 @@ repository.workspace = true
 description = "External model format import adapters for catchlight"
 publish = false
 
+# Library consumers do not build the executable or its command-line dependency.
+[features]
+default = []
+cli = ["dep:anyhow"]
+
+[[bin]]
+name = "catchlight-importer"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
+anyhow = { workspace = true, optional = true }
 catchlight-core = { workspace = true }
 image = { workspace = true, features = ["webp"] }
 # LivLiv packages use stored ZIP entries or DEFLATE; no other codecs or crypto.

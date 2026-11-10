@@ -215,7 +215,7 @@ pub enum Error {
     Install(#[from] InstallError),
     /// The path does not end in `.clm`, so there is no format to read it as.
     #[error(
-        "{} is not a .clm; convert it first with `cargo xtask import`",
+        "{} is not a .clm; convert it first with `catchlight-importer --help`",
         .path.display()
     )]
     NotAClm { path: PathBuf },

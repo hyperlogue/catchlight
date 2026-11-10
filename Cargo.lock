@@ -1554,6 +1554,7 @@ dependencies = [
 name = "catchlight-importer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64",
  "catchlight-core",
  "flate2",
@@ -6239,7 +6240,6 @@ dependencies = [
  "catchlight-core",
  "catchlight-editor-core",
  "catchlight-editor-protocol",
- "catchlight-importer",
  "image",
  "serde_json",
  "syn 2.0.118",

@@ -61,5 +61,5 @@ fn a_file_that_is_not_a_clm_is_refused_before_any_gpu_work() {
     ]);
     assert_eq!(code, 2, "an error exits 2");
     assert!(stderr.contains("is not a .clm"), "{stderr}");
-    assert!(stderr.contains("cargo xtask import"), "{stderr}");
+    assert!(stderr.contains("catchlight-importer --help"), "{stderr}");
 }

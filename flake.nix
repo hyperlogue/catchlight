@@ -84,8 +84,8 @@
 
         binaries = ["catchlight-editor-server" "catchlight-cli" "catchlight-editor-cli"];
 
-        # One dependency build behind all three binaries, so nothing compiles
-        # the graph three times.
+        # One dependency build behind the shipped binaries, so nothing compiles
+        # the dependency graph repeatedly.
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs
           // {
             pname = "catchlight-binaries";
@@ -101,8 +101,25 @@
               version = "0.1.0";
               cargoExtraArgs = "-p ${name}";
             });
+        # The importer needs neither the editor's dependency build nor GPU
+        # system libraries. Keep its optional CLI feature local to this package.
+        importerArgs = {
+          inherit src;
+          pname = "catchlight-importer";
+          version = "0.1.0";
+          cargoExtraArgs = "-p catchlight-importer --features cli";
+          strictDeps = true;
+          doCheck = false;
+        };
       in {
-        packages = lib.genAttrs binaries binary;
+        packages =
+          lib.genAttrs binaries binary
+          // {
+            catchlight-importer = craneLib.buildPackage (importerArgs
+              // {
+                cargoArtifacts = craneLib.buildDepsOnly importerArgs;
+              });
+          };
 
         devShells.default = import ./nix/shell.nix {
           inherit pkgs rustToolchain nativeBuildInputs runtimeLibs;
