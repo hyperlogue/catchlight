@@ -11,7 +11,8 @@ use catchlight_core::{Model, NodeId, ParamId, TexId};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{decode_image, Error, Layer, Result, ValidatedPackage, UPSTREAM_REVISION};
+use super::{bake, runtime::Runtime};
+use super::{decode_image, Error, Result, ValidatedPackage, UPSTREAM_REVISION};
 
 /// Machine-readable findings, also stored in the resulting model extension.
 #[derive(Debug, Clone, Serialize)]
@@ -21,6 +22,8 @@ pub struct Report {
     pub mappings: Vec<String>,
     pub losses: Vec<String>,
     pub blockers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baking: Option<bake::BakeSummary>,
 }
 
 /// Explicit acknowledgement is required for an approximate conversion.
@@ -44,33 +47,35 @@ impl ValidatedPackage {
             upstream_revision: UPSTREAM_REVISION,
             source_version: 4,
             mappings: vec![
-                "Canvas-centred Y-up layer geometry, authored drawing order and straight-alpha textures".into(),
+                "Subdivided canvas-centred Y-up meshes, authored drawing order and straight-alpha textures".into(),
                 "Mouth frames exposed by a discrete mouthFrame param; expressions by expression/<id> params".into(),
                 "Original manifest, author, license and compatibility report retained in livliv.import".into(),
                 "Iris clipping uses the parent eye mask at alpha threshold 0.5".into(),
+                "Importer evaluates head/body turns, nod, roll, parallax, hair-follow, neck-follow/twist, breathing, blink, gaze, brows and jaw; results are native deform keypoints, with no custom runtime".into(),
             ],
             losses: vec![
-                "Procedural head turns, nod, roll, parallax, body movement, breathing, brow movement and automatic idle actions are not converted; geometry is the authored flat pose".into(),
-                "Head/hair/independent-chain springs are not converted; no trajectory equivalence is claimed".into(),
-                "Mouth loudness/vowel hysteresis, jaw deformation, talk latch and expression talk texture switching are not converted; use mouthFrame to select a drawing".into(),
+                "Motion is sampled at nine positions per axis; yaw/pitch share a two-param grid. Other controls add neutral-relative offsets and five-position pairwise residual grids. Three-way and higher coupling is approximated; baking reports measured mixed-pose error".into(),
+                "Samples use settled torso follow with zero spring displacement. Temporal smoothing, wind, hair/independent-chain dynamics and automatic idle actions are not reproduced by pose tables".into(),
+                "Mouth loudness/vowel hysteresis, talk latch and expression talk texture switching are not converted; mouthFrame selects the drawing and mouthOpen drives within-frame jaw/stretch samples".into(),
                 "Expression opacity easing is sampled at 17 positions; multi-expression show/hide/blush and redrawn-brow suppression are not converted".into(),
-                "Iris soft clipping is approximated with a binary mask. Blink/lid deformation and gaze are not converted; eye patches remain in their authored open pose".into(),
+                "Iris soft clipping uses a binary mask; blink/gaze samples use authored pivots. Image-derived curved lash lines, nasal iris narrowing, highlights sparkle and brow-follow over bangs are not reproduced".into(),
             ],
             blockers: Vec::new(),
+            baking: None,
         };
         let mark = &self.manifest["meta"]["watermark"];
         if !mark.is_null() && mark["kind"] != "none" {
             report.blockers.push(format!("watermark {} requires screen-space output rendering, which Catchlight does not implement", mark["kind"]));
         }
         if self.model.files.contains_key("keyforms") {
-            report.losses.push("keyforms are validated but not baked; group displacement fields, masks and Hermite interpolation are not applied".into());
+            report.mappings.push("Head/hair/torso/per-layer keyform fields and masks are resampled; source Hermite corrections are evaluated before baking".into());
+            report.losses.push("Diagonal keyforms require caller-supplied weights and are not activated by angle params".into());
         }
         for (i, layer) in self.model.layers.iter().enumerate() {
             let raw = &self.manifest["layers"][i];
             let mut omitted = Vec::new();
             for key in [
-                "talk", "brow_tex", "brows", "bones", "rigid", "blush", "show", "hide", "depth",
-                "pivot", "range", "fall", "fall_end",
+                "talk", "brow_tex", "brows", "bones", "blush", "show", "hide",
             ] {
                 if raw.get(key).is_some() {
                     omitted.push(key);
@@ -95,6 +100,13 @@ impl ValidatedPackage {
                         | "hole"
                         | "edge"
                         | "edge_wide"
+                        | "eye_L"
+                        | "eye_R"
+                        | "iris_L"
+                        | "iris_R"
+                        | "shine_L"
+                        | "shine_R"
+                        | "neck_shadow"
                 ) {
                     report.losses.push(format!(
                         "layer {}: role {role} is drawn as a plain layer",
@@ -109,7 +121,7 @@ impl ValidatedPackage {
     /// Convert the supported subset. Refuse required rendering behavior rather
     /// than issue a file that loses it. Other approximations require opt-in.
     pub fn convert(&self, options: Options) -> Result<Conversion> {
-        let report = self.report();
+        let mut report = self.report();
         if !report.blockers.is_empty() {
             return Err(Error::Invalid(report.blockers.join("; ")));
         }
@@ -141,7 +153,12 @@ impl ValidatedPackage {
                 default: 0.0,
             });
         }
+        let runtime = Runtime::new(self)?;
+        bake::add_params(&mut file.doc)?;
+        let mut summary = bake::BakeSummary::default();
         for (i, layer) in self.model.layers.iter().enumerate() {
+            let (mesh, points) = bake::mesh(layer, self.model.canvas);
+            let mut layer_nodes = Vec::new();
             let is_mouth = layer.role.as_deref() == Some("mouth");
             let paths: Vec<&str> = if is_mouth {
                 layer.frames.iter().map(String::as_str).collect()
@@ -194,13 +211,19 @@ impl ValidatedPackage {
                 })?;
                 let opacity = if is_mask {
                     0.0
-                } else if is_mouth || matches!(layer.role.as_deref(), Some("expr" | "expr_brows")) {
+                } else if is_mouth
+                    || matches!(
+                        layer.role.as_deref(),
+                        Some("expr" | "expr_brows" | "lid_L" | "lid_R")
+                    )
+                {
                     1.0
                 } else {
                     match layer.role.as_deref() {
                         Some(
                             "expr" | "expr_brows" | "lid_L" | "lid_R" | "blush" | "hole" | "edge"
-                            | "edge_wide",
+                            | "edge_wide" | "eye_L" | "eye_R" | "iris_L" | "iris_R" | "shine_L"
+                            | "shine_R" | "neck_shadow",
                         ) => 0.0,
                         _ if layer.show.is_empty() && frame == 0 => 1.0,
                         _ => 0.0,
@@ -230,7 +253,7 @@ impl ValidatedPackage {
                     Vec::new()
                 };
                 let part = ClmPart {
-                    mesh: mesh(layer, self.model.canvas),
+                    mesh: mesh.clone(),
                     albedo: Some(tex_id),
                     opacity,
                     blend_mode: BlendMode::Normal,
@@ -247,8 +270,39 @@ impl ValidatedPackage {
                     i as f32,
                     ClmNodeKind::Part(part),
                 ));
+                layer_nodes.push(id.clone());
                 if is_mask {
                     continue;
+                }
+                let role = layer.role.as_deref().unwrap_or_default();
+                if role.starts_with("eye_")
+                    || role.starts_with("iris_")
+                    || role.starts_with("shine_")
+                    || role.starts_with("lid_")
+                {
+                    let axis: Vec<f32> = (0..=32).map(|n| n as f32 / 32.).collect();
+                    let values = axis
+                        .iter()
+                        .map(|&x| {
+                            if role.starts_with("lid_") {
+                                (1. - super::runtime::smooth(0.05, 0.35, x as f64)) as f32
+                            } else {
+                                super::runtime::smooth(0.02, 0.2, x as f64) as f32
+                            }
+                        })
+                        .collect();
+                    opacity_binding(
+                        &mut file.doc,
+                        id.clone(),
+                        ParamId::new(if role.ends_with("_L") {
+                            "eyeLOpen"
+                        } else {
+                            "eyeROpen"
+                        })?,
+                        axis,
+                        values,
+                        InterpolateMode::Linear,
+                    );
                 }
                 if is_mouth {
                     let last = layer.frames.len() - 1;
@@ -283,7 +337,16 @@ impl ValidatedPackage {
                     }
                 }
             }
+            bake::layer(
+                &runtime,
+                i,
+                &points,
+                &layer_nodes,
+                &mut file.doc,
+                &mut summary,
+            )?;
         }
+        report.baking = Some(summary);
         file.doc.extensions.insert(
             catchlight_core::id::ExtensionKey::new("livliv.import")?,
             ClmExtension::Json(json!({"manifest": self.manifest, "report": report})),
@@ -309,19 +372,6 @@ fn node(
         transform: ClmTransform::default(),
         lock_to_root: false,
         kind,
-    }
-}
-
-fn mesh(l: &Layer, canvas: [u32; 2]) -> ClmMesh {
-    let x = l.x as f32 - canvas[0] as f32 / 2.0;
-    let y = canvas[1] as f32 / 2.0 - l.y as f32;
-    let w = l.w as f32;
-    let h = l.h as f32;
-    ClmMesh {
-        verts: vec![x, y, x + w, y, x, y - h, x + w, y - h],
-        uvs: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        indices: ClmIndices::U16(vec![0, 2, 1, 1, 2, 3]),
-        origin: [0.0, 0.0],
     }
 }
 

@@ -4,9 +4,19 @@
 //! refused explicitly: its omitted rights information cannot be inferred.
 //! Package data is never executable and resource paths never resolve URLs.
 //! Source metadata and compatibility findings must travel with a conversion.
+//!
+//! Motion is evaluated here at import time, then sampled into ordinary .clm
+//! deform bindings. Joint yaw/pitch and pairwise correction grids preserve
+//! two-control interactions; measured mixed-pose error is retained in the
+//! report. No LivLiv code or new runtime node kind is required to play it.
+//! Springs, automatic actions and other history-dependent behavior are not
+//! encoded by these settled-pose tables and remain explicit conversion losses.
 
+mod bake;
+pub use bake::BakeSummary;
 mod convert;
 mod package;
+mod runtime;
 pub use convert::{Conversion, Options, Report};
 
 pub use package::Package;
@@ -167,7 +177,10 @@ impl Package {
                 reference(&chain_ids, id, "bone")?;
             }
             if layer.frames.len() != layer.visemes.len()
-                || (layer.role.as_deref() == Some("mouth") && layer.frames.len() < 3)
+                || (layer.role.as_deref() == Some("mouth")
+                    && (layer.frames.len() < 3
+                        || layer.visemes.get(..3)
+                            != Some(&["closed".to_owned(), "half".to_owned(), "open".to_owned()])))
             {
                 return Err(Error::Invalid(format!(
                     "layer {} has inconsistent mouth frames/visemes",

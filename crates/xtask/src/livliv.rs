@@ -40,16 +40,8 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     .validate()?;
     let report = package.report();
-    let json = serde_json::to_string_pretty(&report)?;
-    eprintln!("{json}");
-    if let Some(path) = report_path {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        std::io::Write::write_all(&mut file, format!("{json}\n").as_bytes())?;
-    }
     if inspect {
+        write_report(&report, report_path.as_deref())?;
         eprintln!(
             "validated {} ({} layers); conversion blockers: {}",
             package.name(),
@@ -58,7 +50,15 @@ pub fn run(args: &[String]) -> Result<()> {
         );
         return Ok(());
     }
-    let converted = package.convert(options)?;
+    let converted = match package.convert(options) {
+        Ok(converted) => converted,
+        Err(error) => {
+            write_report(&report, report_path.as_deref())?;
+            return Err(error.into());
+        }
+    };
+    // Successful reports include measured baking error and table counts.
+    write_report(&converted.report, report_path.as_deref())?;
     let output = output.unwrap_or_else(|| input.with_extension("clm"));
     // A failed conversion never creates an output; successful writes also
     // refuse to replace an existing file or the source package.
@@ -69,5 +69,21 @@ pub fn run(args: &[String]) -> Result<()> {
         .open(&output)?;
     std::io::Write::write_all(&mut file, &bytes)?;
     eprintln!("wrote {} ({} bytes)", output.display(), bytes.len());
+    Ok(())
+}
+
+fn write_report(
+    report: &catchlight_importer::livliv::Report,
+    path: Option<&std::path::Path>,
+) -> Result<()> {
+    let json = serde_json::to_string_pretty(report)?;
+    eprintln!("{json}");
+    if let Some(path) = path {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        std::io::Write::write_all(&mut file, format!("{json}\n").as_bytes())?;
+    }
     Ok(())
 }

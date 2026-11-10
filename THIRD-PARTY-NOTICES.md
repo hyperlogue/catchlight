@@ -1,9 +1,10 @@
 # Third-party notices
 
 Catchlight's model semantics and rendering behaviour are derived from the
-projects listed here. Except for the explicitly listed vendored schemas, Catchlight is not a
-port: it is written against their observable behaviour, informed
-by reading these permissively licensed implementations and by matching what
+projects listed here. Except for the explicitly listed LivLiv schemas and
+pose evaluator, Catchlight is not a port: it is written against their
+observable behaviour, informed by reading these permissively licensed
+implementations and by matching what
 they do, frame for frame, so that models authored for them look right. This
 file retains their notices — as their licences ask where they reach, and as
 credit everywhere else.
@@ -167,7 +168,10 @@ License: MIT
 [LivLiv Player](https://github.com/livliv-dev/player), revision
 `d999dea88981124168f9e9ab948eda8d2f23c453`. These files remain licensed under
 Apache-2.0; see [LICENSE-APACHE]. The importer is informed by that revision's
-`FORMAT.md` and `src/runtime/puppet.ts`.
+`FORMAT.md` and `src/runtime/puppet.ts`. The import-time evaluator in
+`crates/catchlight-importer/src/livliv/runtime.rs` ports that file's settled
+pose calculations and keyform interpolation; those derived portions remain
+Apache-2.0. It runs only during conversion and is not embedded in model files.
 
 Upstream NOTICE:
 
