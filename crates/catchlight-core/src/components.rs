@@ -258,10 +258,10 @@ pub struct MeshGroupData {
     pub translate_children: bool,
     pub deform_stack: crate::deform::DeformStack,
     pub(crate) pins: crate::meshgroup::MeshGroupPins,
-    /// O(1) point-in-triangle bitmap baked from `mesh` at load time
-    /// (alongside `pins`). `None` when the mesh is empty or
-    /// degenerate; the propagation path then falls back to the linear
-    /// hinted scan.
+    /// Pixel hints and spatial triangle candidates baked from `mesh` alongside
+    /// `pins`. Exact containment is checked at the current position. `None`
+    /// when the cache cannot be built within its limits; propagation then
+    /// falls back to the linear hinted scan.
     pub(crate) bitmap: Option<crate::meshgroup::MgTriangleBitmap>,
 }
 
