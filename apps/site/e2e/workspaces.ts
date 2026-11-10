@@ -110,8 +110,13 @@ export async function workspaces(
     if (!canvas || !svg) return false;
     const bounds = canvas.getBoundingClientRect();
     const vertices = canvas.querySelectorAll("[data-catchlight-mesh-hit]");
-    // ResizeObserver and React must publish the new size before checking the fit.
-    return bounds.height > 280 && vertices.length > 0 &&
+    const dockHeader = document.querySelector("[data-catchlight-dock-header]");
+    // The host may reserve space above the editor (for example, demo navigation).
+    // Check that Mesh reclaims the pose shelf directly, rather than inferring it
+    // from a fixed canvas height. ResizeObserver and React must also publish the
+    // new SVG size and fitted vertices before this can pass.
+    return bounds.width > 0 && bounds.height > 0 && vertices.length > 0 &&
+      dockHeader !== null && dockHeader.getClientRects().length === 0 &&
       svg.width.baseVal.value === canvas.clientWidth &&
       svg.height.baseVal.value === canvas.clientHeight &&
       [...vertices].every((vertex) => {
