@@ -2,7 +2,7 @@
 
 //! winit viewer for a `.clm` model — the interactive way to look at one.
 //!
-//! `.clm` only; import an `.inx` with `catchlight-importer inx` first.
+//! `.clm` only; import an `.inx` with `catchlight-importer` first.
 //!
 //! `--control` (or the `C` key) opens the egui panel of per-param sliders and
 //! stops animation playback.
@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// only the filesystem half, which the core deliberately does not have.
 ///
 /// `.clm` is the only model file catchlight loads. Convert an inochi2d model
-/// once with `catchlight-importer inx <model.inx>` and open the `.clm` it writes.
+/// once with `catchlight-importer <model.inx>` and open the `.clm` it writes.
 fn load_model_file(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
     let format = ModelFormat::from_path(path).ok_or_else(|| {
