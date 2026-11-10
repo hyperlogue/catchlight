@@ -17,6 +17,7 @@
         "@catchlight/editor": "workspace:*",
         "@catchlight/react": "workspace:*",
         "@catchlight/wasm": "workspace:*",
+        "@mediapipe/tasks-vision": "0.10.32",
         "react": "^19.2.0",
         "react-dom": "^19.2.0",
       },
@@ -85,6 +86,8 @@
     "@catchlight/wasm": ["@catchlight/wasm@workspace:packages/wasm"],
 
     "@happy-dom/global-registrator": ["@happy-dom/global-registrator@20.12.2", "", { "dependencies": { "@types/node": ">=20.0.0", "happy-dom": "^20.12.2" } }, "sha512-0aafW5l/+At7oo/lYjsokATwHKmv9F6iqOTjPDBVlmD4a6pmGINMdnt0faZuEcnvBVwBji0BoW4tdHQZ0qt9Kg=="],
+
+    "@mediapipe/tasks-vision": ["@mediapipe/tasks-vision@0.10.32", "", {}, "sha512-3tiAZnmKloYnRXYoO3dKltTUGnqeCwzC4lV03uY0vCsE+aveJTyEVQyZHOlQGQNsjK+gRHzkf9q08C99Qm2K0Q=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.147.0", "", {}, "sha512-IJ3s6ltHLp45S0bh7phkX+gJO7A1Wuz2EaqpAhb8WjqDwbzMiWKHhyyT42tskaWjEYXtHtVCPpnBJVT9+dcRLg=="],
 

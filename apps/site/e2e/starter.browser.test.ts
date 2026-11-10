@@ -36,6 +36,9 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
     page.on("request", request => { if (request.resourceType() === "fetch" && new URL(request.url()).pathname.endsWith(".clm")) models.push(request.url()); });
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(server.resolvedUrls!.local[0]!, { waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "Bring a character to life." }).waitFor();
+    expect(models).toHaveLength(0);
+    await page.getByRole("link", { name: /Open the editor/ }).click();
     const current = page.locator("[data-catchlight-session][data-current]");
     await current.waitFor();
     expect(await current.textContent()).toContain("Lan");
@@ -49,6 +52,56 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
     expect(models).toHaveLength(2);
     expect(models[1]).toBe(models[0]);
     expect(errors).toEqual([]);
+    await page.getByRole("link", { name: "← All demos" }).click();
+    await page.getByRole("link", { name: /Try face tracking/ }).click();
+    await page.getByRole("button", { name: "Start camera" }).waitFor();
+    expect(await page.locator("video").evaluate(video => (video as HTMLVideoElement).srcObject)).toBeNull();
+    await page.getByRole("button", { name: "Start camera" }).click();
+    await page.getByRole("status").filter({ hasText: "Tracking stopped" }).waitFor();
+    expect(await page.getByRole("button", { name: "Start camera" }).isVisible()).toBe(true);
+    // Supply deterministic detections while using a real browser MediaStream.
+    // This checks the Lan mapping and shutdown without a physical webcam.
+    await page.route(/@mediapipe_tasks-vision.*\.js/, route => route.fulfill({
+      contentType: "application/javascript",
+      body: `export const FilesetResolver = { forVisionTasks: async () => ({}) };
+        export const FaceLandmarker = { createFromOptions: async () => ({
+          close() { globalThis.detectorClosed = true; },
+          detectForVideo() { return { faceLandmarks: [[]], facialTransformationMatrixes: [],
+            faceBlendshapes: [{ categories: [
+              { categoryName: "eyeBlinkLeft", score: 1 },
+              { categoryName: "jawOpen", score: 0.5 }
+            ] }] }; }
+        }) };`,
+    }));
+    await page.goto(`${server.resolvedUrls!.local[0]}?demo=face&probe=1`);
+    await page.getByRole("button", { name: "Start camera" }).waitFor();
+    await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 32;
+      canvas.getContext("2d")!.fillRect(0, 0, 32, 32);
+      const stream = canvas.captureStream(30);
+      Object.defineProperty(navigator.mediaDevices, "getUserMedia", { value: async () => stream });
+      (globalThis as unknown as { testStream: MediaStream }).testStream = stream;
+    });
+    await page.getByRole("button", { name: "Start camera" }).click();
+    await page.getByRole("status").filter({ hasText: "Tracking live" }).waitFor();
+    const readPose = () => page.evaluate(async () => {
+      const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
+      const session = editor.session((await editor.listSessions())[0]!.session)!;
+      return session.params().filter(p => ["ParamEyeLOpen", "ParamMouthOpenY"].includes(p.name))
+        .map(p => ({ name: p.name, value: session.paramValue(p.id), default: p.default }));
+    });
+    const pose = await readPose();
+    expect(pose.find(p => p.name === "ParamEyeLOpen")?.value).toBe(0);
+    expect(pose.find(p => p.name === "ParamMouthOpenY")?.value).toBe(0.75);
+    await page.getByRole("button", { name: "Stop camera" }).click();
+    expect(await page.evaluate(() => {
+      const state = globalThis as unknown as { testStream: MediaStream; detectorClosed: boolean };
+      return state.detectorClosed && state.testStream.getTracks().every(t => t.readyState === "ended");
+    })).toBe(true);
+    for (const param of await readPose()) expect(param.value).toBe(param.default);
+    await page.getByRole("link", { name: "← All demos" }).click();
+    await page.getByRole("heading", { name: "Bring a character to life." }).waitFor();
   } finally {
     await browser.close();
     await server.close();

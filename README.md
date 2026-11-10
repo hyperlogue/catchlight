@@ -11,7 +11,7 @@ Catchlight is a software stack for 2.5D character animation. It simulates
 
 | Offering | Audience and purpose | Distribution |
 | --- | --- | --- |
-| **Catchlight Demo** | Try authoring in a browser, with the editor running in the tab. | The hosted app in `apps/site/`, named `catchlight-demo` in the web workspace. |
+| **Catchlight Demo** | Choose the in-browser editor or camera-driven face tracking. | The hosted app in `apps/site/`, named `catchlight-demo` in the web workspace. |
 | **Catchlight Studio** | Author locally with a person and an agent sharing editor sessions. | Planned local application: the editor server together with a web UI served on the local machine. The server and connected frontend exist; the bundled application and its launcher are not implemented yet. |
 | **Catchlight libraries** | Embed animation or authoring in another application, or automate an editor. | Rust libraries, the `@catchlight/*` browser packages, and the [Python client](python/README.md). |
 
@@ -21,7 +21,12 @@ the native editor-server executable or a local application launcher.
 `@catchlight/react` exposes the unstyled parts, and `@catchlight/core` supplies
 the web-platform glue.
 
-The demo preloads Lan from `tests/models/lan.clm` in development and production.
+The landing page offers an editor demo (`?demo=editor`) and a face-tracking
+demo (`?demo=face`). Both preload Lan from `tests/models/lan.clm`. Face tracking
+starts only after clicking **Start camera**, processes frames locally, and
+downloads MediaPipe assets from Google and jsDelivr. It requires HTTPS (or
+localhost) and camera permission; stopping or leaving the tab releases the
+camera. Tracking poses an ephemeral model without saving changes.
 Fetch Git LFS objects before building. The empty-state starter action reopens
 the same model. `CATCHLIGHT_LOCAL_MODEL` can override it for loopback development
 only; production always bundles the repository model.
