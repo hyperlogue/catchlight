@@ -233,6 +233,14 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
 fn camera_presets(default_zoom: f32) -> Vec<(&'static str, Camera)> {
     vec![
         (
+            "lan_hair",
+            Camera {
+                x: 0.0,
+                y: 600.0,
+                zoom: 512.0 / 1100.0,
+            },
+        ),
+        (
             "lan_face",
             Camera {
                 x: -3.0,
@@ -294,6 +302,20 @@ struct Curated {
 fn curated_configs(stem: &str) -> Vec<Curated> {
     match stem {
         "lan" => vec![
+            Curated {
+                label: "roll_left",
+                params: &[("head_roll", -30.0, 0.0)],
+                camera_preset: "lan_hair",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "roll_right",
+                params: &[("head_roll", 30.0, 0.0)],
+                camera_preset: "lan_hair",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
             Curated {
                 label: "rest",
                 params: &[],
