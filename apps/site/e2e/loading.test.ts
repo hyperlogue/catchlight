@@ -7,6 +7,7 @@ const originalDocument = globalThis.document;
 let label = "";
 let detail = "";
 let fraction: number | undefined;
+let fractions: number[] = [];
 beforeAll(() => { globalThis.document = {
   getElementById(id: string) {
     if (id === "loading-label") return { set textContent(value: string) { label = value; } };
@@ -14,7 +15,7 @@ beforeAll(() => { globalThis.document = {
     return {
       setAttribute() {},
       removeAttribute() { fraction = undefined; },
-      set value(value: number) { fraction = value; },
+      set value(value: number) { fraction = value; fractions.push(value); },
     };
   },
 } as unknown as Document; });
@@ -47,3 +48,25 @@ test("HTTP errors do not become model bytes", async () => {
   globalThis.fetch = (async () => new Response("missing", { status: 404 })) as unknown as typeof fetch;
   await expect(downloadModel("https://example.test/model.clm", "Model.clm")).rejects.toThrow("404");
 });
+
+for (const headers of [{}, { "content-length": "2", "content-encoding": "gzip" }]) {
+  test(`bundled size gives progress before headers and during streaming: ${JSON.stringify(headers)}`, async () => {
+    globalThis.fetch = (async () => {
+      expect(detail).toBe("Model.clm · 0.0 MB / 2.0 MB · 0%");
+      expect(fraction).toBe(0);
+      let chunk = 0;
+      return new Response(new ReadableStream({
+        pull(controller) {
+          if (chunk++ < 2) controller.enqueue(new Uint8Array(1048576));
+          else controller.close();
+        },
+      }), { headers: headers as HeadersInit });
+    }) as unknown as typeof fetch;
+    fractions = [];
+    const bytes = await downloadModel("https://example.test/model.clm", "Model.clm", 2097152);
+    expect(fractions).toContain(0.5);
+    expect(bytes.length).toBe(2097152);
+    expect(detail).toBe("Model.clm · 2.0 MB / 2.0 MB · 100%");
+    expect(fraction).toBe(1);
+  });
+}

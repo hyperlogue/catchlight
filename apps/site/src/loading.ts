@@ -12,16 +12,9 @@ export function showLoading(label: string, detail: string, fraction?: number): v
   }
 }
 
-/** Fetch counts decoded bytes, so a compressed Content-Length is not a total. */
-export async function downloadModel(url: string, name: string): Promise<Uint8Array> {
-  showLoading("Downloading model…", name);
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`fetching ${url} failed: ${response.status} ${response.statusText}`);
-  }
-  const length = Number(response.headers.get("content-length"));
-  const encoding = response.headers.get("content-encoding");
-  const total = (!encoding || encoding === "identity") && Number.isFinite(length) && length > 0 ? length : undefined;
+/** The bundled asset's decoded size stays accurate across HTTP compression. */
+export async function downloadModel(url: string, name: string, modelSize?: number): Promise<Uint8Array> {
+  let total = modelSize !== undefined && Number.isFinite(modelSize) && modelSize > 0 ? modelSize : undefined;
   const describe = (received: number) => {
     const size = `${(received / 1048576).toFixed(1)} MB`;
     showLoading("Downloading model…", total !== undefined && received <= total
@@ -29,7 +22,20 @@ export async function downloadModel(url: string, name: string): Promise<Uint8Arr
       : `${name} · ${size} received`, total !== undefined && received <= total ? received / total : undefined);
   };
   describe(0);
-  if (!response.body) return new Uint8Array(await response.arrayBuffer());
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`fetching ${url} failed: ${response.status} ${response.statusText}`);
+  }
+  // A development override may only have a size in its response headers.
+  const length = Number(response.headers.get("content-length"));
+  const encoding = response.headers.get("content-encoding");
+  if (total === undefined && (!encoding || encoding === "identity") && Number.isFinite(length) && length > 0) total = length;
+  describe(0);
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    describe(bytes.length);
+    return bytes;
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let received = 0;

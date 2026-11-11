@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
@@ -17,6 +18,8 @@ export default defineConfig(async ({ command, isPreview }) => {
     // GitHub Pages serves under /<repo>/; a dev server and `preview` serve under /.
     base: process.env.VITE_BASE ?? "/",
     define: {
+      // Fetch exposes decoded bytes; HTTP Content-Length may describe compression.
+      __CATCHLIGHT_LAN_SIZE__: (await stat(new URL("../../tests/models/lan.clm", import.meta.url))).size,
       __CATCHLIGHT_EXAMPLE__: JSON.stringify(local?.example ?? null),
     },
     plugins: [react(), ...(local ? [local.plugin] : [])],

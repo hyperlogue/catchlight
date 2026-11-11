@@ -24,9 +24,11 @@ import { FaceDemo } from "./face-demo.js";
 import lanUrl from "../../../tests/models/lan.clm?url";
 
 /** A bundled asset URL or development route, never a filesystem path. */
-type Example = { file: string; name: string };
+type Example = { file: string; name: string; size?: number };
+declare const __CATCHLIGHT_LAN_SIZE__: number;
+const lan: Example = { file: lanUrl, name: "Lan.clm", size: __CATCHLIGHT_LAN_SIZE__ };
 declare const __CATCHLIGHT_EXAMPLE__: Example | null;
-const example: Example = __CATCHLIGHT_EXAMPLE__ ?? { file: lanUrl, name: "Lan.clm" };
+const example: Example = __CATCHLIGHT_EXAMPLE__ ?? lan;
 
 export async function start(mode: "editor" | "face"): Promise<void> {
   try {
@@ -36,7 +38,7 @@ export async function start(mode: "editor" | "face"): Promise<void> {
 
     // A configured starter is opened before the panel chooses its current session.
     const session = server === null
-      ? await openStarter(editor, mode === "face" ? { file: lanUrl, name: "Lan.clm" } : example).catch(report)
+      ? await openStarter(editor, mode === "face" ? lan : example).catch(report)
       : undefined;
 
     mount(editor, mode, session);
@@ -79,7 +81,7 @@ async function store(): Promise<Storage> {
 async function openStarter(editor: Editor, example: Example): Promise<Session> {
   // `BASE_URL` ends in a slash and is `/<repo>/` on Pages.
   const url = new URL(example.file, new URL(import.meta.env.BASE_URL, location.href)).href;
-  const bytes = await downloadModel(url, example.name);
+  const bytes = await downloadModel(url, example.name, example.size);
   await showProcessing(example.name);
   return editor.openFile(bytes, example.name);
 }
