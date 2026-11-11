@@ -51,6 +51,20 @@ body {
   flex-shrink: 0;
 }
 
+.loading-content { width: min(360px, calc(100% - 48px)); display: grid; gap: 12px; }
+.loading-content img { margin-bottom: 4px; }
+#loading-label { color: #e8eef2; font-size: 17px; font-weight: 600; }
+#loading-detail { color: #92a3b0; line-height: 1.5; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+#loading-progress { appearance: none; border: 0; width: 100%; height: 6px; border-radius: 3px; overflow: hidden; background: #29343e; }
+#loading-progress::-webkit-progress-bar { background: #29343e; border-radius: 3px; }
+#loading-progress::-webkit-progress-value { background: #72bffb; border-radius: 3px; }
+#loading-progress::-moz-progress-bar { background: #72bffb; border-radius: 3px; }
+#loading-progress:indeterminate { background: linear-gradient(90deg, #29343e 0%, #72bffb 50%, #29343e 100%); background-size: 200% 100%; animation: loading-pulse 1.8s linear infinite; }
+#loading-progress:indeterminate::-webkit-progress-bar { background: transparent; }
+#loading-progress:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes loading-pulse { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { #loading-progress:indeterminate { animation: none; } }
+
 body { color: #e8eef2; font: 15px/1.6 system-ui, sans-serif; }
  .chooser, .chooser *, .face-demo, .face-demo *, .demo-nav { box-sizing: border-box; }
 .chooser a { color: inherit; }

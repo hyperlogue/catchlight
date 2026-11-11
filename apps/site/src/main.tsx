@@ -2,12 +2,15 @@
 import { createRoot } from "react-dom/client";
 import logo from "../../../assets/logo-transparent.svg";
 import "./site.css";
+import { showLoading } from "./loading.js";
 
 const query = new URLSearchParams(location.search);
 const mode = query.get("demo");
 // Existing connected and probe URLs remain direct editor entry points.
 if (mode === "face" || mode === "editor" || query.has("server") || query.has("probe")) {
   void import("./demo.js").then(({ start }) => start(mode === "face" ? "face" : "editor")).catch(cause => {
+    showLoading("Could not open Catchlight", "Reload the page to try again.");
+    document.getElementById("loading-progress")?.setAttribute("hidden", "");
     const failure = document.getElementById("failure")!;
     failure.hidden = false;
     failure.textContent = `Could not load the demo. Reload to try again. ${String(cause)}`;

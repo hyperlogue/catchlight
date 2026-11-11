@@ -16,13 +16,18 @@
       <!-- Anything that went wrong before or after the mount, in the page. -->
       <pre id="failure" hidden></pre>
       <div id="editor">
-        <div class="loading" role="status">
-          <img
-            src="../../assets/logo-transparent.svg"
-            alt=""
-            width="32"
-            height="32"
-          />Opening Catchlight…
+        <div class="loading">
+          <div class="loading-content">
+            <img
+              src="../../assets/logo-transparent.svg"
+              alt=""
+              width="32"
+              height="32"
+            />
+            <div id="loading-label" role="status">Opening Catchlight…</div>
+            <progress id="loading-progress" max="1" aria-label="Opening Catchlight"></progress>
+            <div id="loading-detail">Loading the editor runtime</div>
+          </div>
         </div>
       </div>
     </div>

@@ -19,6 +19,7 @@ import * as catchlight from "@catchlight/wasm";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
+import { downloadModel, showLoading, showProcessing } from "./loading.js";
 import { FaceDemo } from "./face-demo.js";
 import lanUrl from "../../../tests/models/lan.clm?url";
 
@@ -30,6 +31,7 @@ const example: Example = __CATCHLIGHT_EXAMPLE__ ?? { file: lanUrl, name: "Lan.cl
 export async function start(mode: "editor" | "face"): Promise<void> {
   try {
     const server = mode === "face" ? null : new URLSearchParams(globalThis.location.search).get("server");
+    showLoading("Starting editor…", "Preparing your workspace");
     const editor = await Editor.create(catchlight, mode === "face" ? new InTabBackend(new catchlight.CatchlightEditor(), new MemoryStorage()) : await pick(server));
 
     // A configured starter is opened before the panel chooses its current session.
@@ -40,6 +42,8 @@ export async function start(mode: "editor" | "face"): Promise<void> {
     mount(editor, mode, session);
     probe(editor);
   } catch (cause) {
+    showLoading("Could not open Catchlight", "Reload the page to try again.");
+    document.getElementById("loading-progress")?.setAttribute("hidden", "");
     report(cause);
   }
 }
@@ -75,11 +79,9 @@ async function store(): Promise<Storage> {
 async function openStarter(editor: Editor, example: Example): Promise<Session> {
   // `BASE_URL` ends in a slash and is `/<repo>/` on Pages.
   const url = new URL(example.file, new URL(import.meta.env.BASE_URL, location.href)).href;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`fetching ${url} failed: ${response.status} ${response.statusText}`);
-  }
-  return editor.openFile(new Uint8Array(await response.arrayBuffer()), example.name);
+  const bytes = await downloadModel(url, example.name);
+  await showProcessing(example.name);
+  return editor.openFile(bytes, example.name);
 }
 
 function mount(editor: Editor, mode: "editor" | "face", session: Session | void): void {
