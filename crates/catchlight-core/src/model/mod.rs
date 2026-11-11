@@ -722,7 +722,7 @@ pub struct LinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
     /// Damping strength in `0..=1`, mapped to per-second drag on relative
-    /// joint motion. Adds to spring damping; 1 gives heavy damping.
+    /// joint motion. Zero is undamped; 1 gives heavy damping.
     pub damping: f32,
     /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
     /// this is not each link's oscillation frequency. Zero disables the spring.
@@ -730,9 +730,8 @@ pub struct LinkFeel {
     /// The furthest this link's bend may reach either way, in half turns,
     /// within `(0, 1]`. `None` is a joint that turns as far as the forces
     /// take it, which is every link written before there was a limit.
-    /// New links default to 14 degrees in either direction from the drawn
-    /// curve. This keeps the spine ramp's average centre-line extension below
-    /// 1%; it does not bound strain across the whole mesh. Saved links keep
+    /// New links are unrestricted. Author a limit explicitly when a physical
+    /// joint stop or an artistic restriction is wanted. Saved links keep
     /// their authored limit, including no limit.
     ///
     /// A limit binds the pose as well as the physics, **at every weight**: a
@@ -750,7 +749,7 @@ impl Default for LinkFeel {
             gravity_scale: 1.0,
             damping: 0.5,
             stiffness: 0.0,
-            limit: Some(14.0 / 180.0),
+            limit: None,
         }
     }
 }

@@ -903,12 +903,22 @@ fn a_chains_weight_is_how_much_of_the_param_it_decides() {
 /// writes is the bend the solver holds, so a kick hard enough to fling a
 /// strand right over cannot push the param past the limit its link carries.
 ///
-/// The new-chain default is 14 degrees, and the kick is worth far more than
+/// The authored stop is 14 degrees, and the kick is worth far more than
 /// that on the first link alone.
 #[test]
-fn a_new_chain_never_writes_a_bend_past_the_default_limit() {
+fn a_chain_never_writes_a_bend_past_its_authored_limit() {
     const LIMIT: f32 = 14.0 / 180.0;
     let mut f = Fixture::new(3);
+    let mut data = catchlight_core::ModelChain::new(3);
+    data.gravity = 981.0;
+    data.set_links(vec![
+        catchlight_core::LinkFeel {
+            limit: Some(LIMIT),
+            ..Default::default()
+        };
+        3
+    ]);
+    f.model.set_spine_chain(&f.chain, Some(data)).unwrap();
     f.wire_outputs();
 
     let mut puppet = f.puppet();
@@ -1174,8 +1184,8 @@ fn links_in_one_chain_keep_all_limits_on_a_shared_param() {
 }
 
 /// A one-joint spine under a node the transform scales, mirrors or both.
-/// `3 Hz` and weighted, so the link is held off gravity by its gravity support and
-/// has somewhere else to fall if the carry is wrong.
+/// A weightless `3 Hz` spring isolates the mapping from local bends to art;
+/// gravity balance is tested separately by the physical-mechanics suite.
 fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
     let mut hex = SeededHex::new(9);
     let mut model = Model::new();
@@ -1206,7 +1216,7 @@ fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
 
     let mut spine = ModelSpine::new(vec![[50.0, -50.0]]);
     let mut chain = ModelChain::new(1);
-    chain.gravity = 981.0;
+    chain.gravity = 0.0;
     chain.set_links(vec![catchlight_core::LinkFeel {
         gravity_scale: 1.0,
         damping: 0.5,
@@ -1227,7 +1237,7 @@ fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
     (model, id, param)
 }
 
-/// A spring strong enough to hold this drawing must still read bend zero
+/// A weightless spring holding this drawing must still read bend zero
 /// under scale and mirrors. The solver carries rest geometry by the full
 /// linear map that `link_bends` inverts, including nonuniform scale and
 /// single-axis mirrors that a rotation-only carry cannot represent.
@@ -1380,8 +1390,9 @@ fn coupled_motion_survives_rebake_and_reaches_params() {
     let chain = spine.chain.as_ref().unwrap();
     assert_eq!(chain.particles.last().unwrap().pos, before);
     puppet.tick(&f.model, DT);
-    for bend in chain_bends(&puppet, f.idx(&puppet)) {
-        assert!(bend.abs() <= 14.0 / 180.0 + 1e-5);
+    for (param, bend) in f.params.iter().zip(chain_bends(&puppet, f.idx(&puppet))) {
+        assert!(bend.is_finite());
+        assert!((puppet.param_value(param).unwrap() - bend).abs() < 1e-6);
     }
     // A geometry edit creates a fresh coupled chain.
     f.model

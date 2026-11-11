@@ -13,20 +13,18 @@
 //! `world_inverse` by the same flip coming out. Gravity points toward +Y
 //! in that frame.
 //!
-//! Hair chains use angular two-way coupling; the solver and cache invariants
-//! live in `physics/coupled.rs`. Relative bends preserve local link lengths;
-//! the full node map carries them into world space. Rest support cancels
-//! gravity torque on drawn sprung links, but weak upward springs can still
-//! be unstable. Posed bends move the spring targets.
+//! Hair chains use physical angular two-way coupling; the equations, hard
+//! contacts and integration invariants live in `physics/coupled.rs`. Gravity
+//! acts independently of stiffness. Posed bends set torsional spring targets.
 //!
-//! A model's `chain_substeps` selects equal steps per frame, defaulting to four.
-//! The anchor and carry interpolate across those steps. Damping is per second;
-//! changing the count changes integration accuracy, not authored material.
-//! Static settling has its own fixed relaxation step and budget.
+//! A model's `chain_substeps` selects a minimum number of steps per frame.
+//! The solver bounds elapsed time per step and refines unconverged nonlinear
+//! stages. Rotation and stretch interpolate separately; damping is per second.
+//! Static settling minimizes spring and gravity potential independently of playback.
 //!
-//! Per-link bend limits combine progressive resistance with a final bound.
-//! The puppet also enforces the tightest bound after blending driver claims
-//! and animation. A sleeping chain must have stopped for the whole frame.
+//! Per-link limits are hard, inelastic angular contacts. The puppet also
+//! enforces the tightest bound after blending driver claims and animation.
+//! A sleeping chain must have stopped for the whole frame.
 
 use crate::{Mat2, Mat4, Vec2};
 
@@ -552,7 +550,7 @@ pub struct ChainLink {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
     /// Damping strength in `0..=1`, mapped to per-second drag on relative
-    /// joint motion. Adds to spring damping; 1 gives heavy damping.
+    /// joint motion. Zero is undamped; 1 gives heavy damping.
     pub damping: f32,
     /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
     /// this is not each link's oscillation frequency. Zero disables the spring.
@@ -669,7 +667,7 @@ pub(crate) fn tick_chains(jobs: &mut [ChainTick<'_>], dt: f32, substeps: std::nu
 }
 
 impl ParticleChainData {
-    /// Advance by `dt` in exactly `substeps` equal steps, interpolating the
+    /// Advance by `dt` in at least `substeps` steps, interpolating the
     /// anchor and full carry from the previous frame. `dt` is capped at
     /// `PHYSICS_MAX_DT`; nonpositive or nonfinite time only repositions the
     /// frame. `posed` contains spring targets in half turns, missing entries 0.
@@ -684,7 +682,7 @@ impl ParticleChainData {
         coupled::tick(self, anchor_world, carry_world, posed, dt, substeps);
     }
 
-    /// Find a stationary pose with bounded damped relaxation. Unsprung links
+    /// Find a stationary pose by bounded potential minimization. Unsprung links
     /// start toward gravity within their limits. Failure or budget exhaustion
     /// leaves the chain awake; settling is independent of the frame substeps.
     /// Invalid geometry or an unrepresentable initial pose preserves the
@@ -779,14 +777,6 @@ fn usable_carry(carry: Mat2) -> Mat2 {
         return Mat2::IDENTITY;
     }
     carry
-}
-
-/// Interpolate the carry's columns alongside the anchor across a frame.
-fn lerp_carry(from: Mat2, to: Mat2, t: f32) -> Mat2 {
-    Mat2::from_cols(
-        from.x_axis.lerp(to.x_axis, t),
-        from.y_axis.lerp(to.y_axis, t),
-    )
 }
 
 /// A direction as an angle from straight down, positive toward +X — the

@@ -2327,14 +2327,14 @@ class LinkFeelArg:
     # Multiplier on the chain's gravity for this link's particle.
     gravity_scale: float | None = None
     # Damping strength in `0..=1`, mapped to per-second drag on relative
-    # joint motion. Adds to spring damping; 1 gives heavy damping.
+    # joint motion. Zero is undamped; 1 gives heavy damping.
     damping: float | None = None
     # Bend response in Hz, scaled by rest subtree inertia. Coupling means
     # this is not each link's oscillation frequency. Zero disables the spring.
     stiffness: float | None = None
     # The furthest this link's bend may reach either way, in half turns,
-    # within `(0, 1]`. Absent uses the core's default (14 degrees); `null`
-    # means unlimited. The limit measures bend from the drawn curve, not
+    # within `(0, 1]`. Absent uses the core's unrestricted default; `null`
+    # explicitly means unlimited. The limit measures bend from the drawn curve, not
     # the link's world rotation. `links` replaces the whole list, so an
     # absent field does not preserve a previous limit.
     limit: float | Clear | None = None

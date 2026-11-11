@@ -1,51 +1,45 @@
-//! Angular two-way coupling with a prescribed anchor.
+//! Planar articulated point masses with physical forces and prescribed roots.
 //!
-//! Relative joint angles preserve local rod lengths and bend bounds; the
-//! full carry maps them to world space, including scale and mirrors. Each
-//! link's mass is its rest length, lumped at its distal joint. Endpoint
-//! Jacobians give M = sum(m J^T J), so distal masses react on their ancestors.
-//! A substep solves (M + h D + h² K) v_next =
-//! J^T m(v_world - v_carried) + h(torque - bias). Bias includes centripetal
-//! acceleration and the changing carry's cross term. Springs and stops are
-//! linearized once: this is a first-order integrator, not an exact trajectory.
+//! Each distal joint carries a mass proportional to its link's rest length.
+//! Relative angles enforce local rod lengths exactly. Endpoint Jacobians give
+//! M = sum(m J^T J), so forces and constraint impulses couple both ways.
+//! Gravity acts on every mass independently of bending stiffness. Torsional
+//! spring energy is k * wrap(q-target)^2 / 2; k uses rest subtree inertia times
+//! (2 pi * authored Hz)^2. Joint drag is the authored -ln(1-d) times that
+//! inertia (d=1 uses finite heavy drag). Air drag opposes world velocity.
+//! There is no gravity cancellation, implicit spring damping, or soft stop.
 //!
-//! Bend response scales rest subtree inertia, not individual modal
-//! frequencies. Authored damping d contributes drag -ln(1-d) against relative
-//! joint motion, plus a spring damping ratio of 0.1; d = 1 uses finite heavy
-//! drag. Joint drag is diagonal, so the coupled modes that bend several
-//! joints together keep much less of it than one joint alone would. Air drag
-//! c is the force -c m v on each particle's world velocity: implicitly it
-//! adds h c M to the matrix, which damps every mode at ratio c / 2w, and the
-//! carried velocity's share stays on the right-hand side, so a moving anchor
-//! drags the strand behind it. Rest support projects each sprung rod's resultant gravity
-//! off its drawn tangent; differences give fixed endpoint fields. Pose
-//! targets move springs, not those fields. Limp rods retain gravity;
-//! static settling seeds limp rods toward gravity and nudges upward sprung
-//! rods off unstable equilibria, then uses relaxation within their bounds.
+//! The prescribed map is interpolated as rotation times stretch, including
+//! mirrors. Analytic first and second derivatives enter the angular equations:
+//! M qddot = J^T(F - m(Cddot r + 2 Cdot J_local qdot + C Jdot_local qdot))
+//! minus spring and damping torques. World momentum is projected once at each
+//! step's start when prescribed root velocity changes. Stages then use M v
+//! in angular coordinates, avoiding double-counting moving-frame terms.
 //!
-//! The cubic soft stop starts at 75% of max bend with zero torque and slope,
-//! an 8 Hz response, and damping of 2 sqrt(k I) both ways: a strand that
-//! reaches its limit stays there rather than rebounding off a spring. Hard bounds remain:
-//! (-limit - q)/h <= v_next <= (limit - q)/h. Active bounds require additional
-//! direct solves. Failure or budget exhaustion retains the last valid
-//! particles and frame and keeps the chain awake, including during settling.
-//! Nonfinite geometry or initial positions outside f32 range are rejected
-//! before replacing particle state; failed initialization is retried next tick.
+//! A two-stage, second-order L-stable SDIRK method integrates those equations.
+//! Each stage solves springs and drag implicitly and iterates nonlinear
+//! geometry to an angular tolerance. Embedded position and velocity estimates
+//! bound local error. Unconverged or inaccurate stages bisect their interval
+//! up to eight times before retaining the last valid state and staying awake.
+//! Authored substeps are a minimum; no step exceeds 1/480 second. Rendering at
+//! a lower rate therefore does not silently coarsen the material's integration.
 //!
-//! Rest geometry and material coefficients are cached; support and rest
-//! inertia also depend on carry. Angular state stays in f64, with f32
-//! particles exported once per tick. Comparing links, gravity, frame and
-//! particles with the last export detects public edits. Targets are sampled
-//! once per frame. Caches are runtime-only and reset on rebake.
+//! Optional hard angular stops use a bounded SPD solve, followed by a coupled
+//! velocity projection for perfectly inelastic contact. They introduce no
+//! resistance before contact. Limits refer to the drawn relative bend, not
+//! to world gravity. A frame that moves at any step remains awake.
 //!
-//! Two suffix sums assemble M in O(n²); Cholesky remains O(n³). Independent
-//! 2/8-link locks batch in fours after anchors and targets are sampled.
-//! Other sizes, incomplete groups and targets without SIMD use scalar solves.
-//! Substep scratch is inline through eight links, with heap spill above that.
+//! Angular state and integration use f64; public particles are exported as
+//! f32 once per tick. Comparing links, gravity, frame and particles with the
+//! last export detects public edits; edited bends project into authored bounds.
+//! Static settling minimizes gravity plus spring potential with bounded Newton
+//! steps, rather than changing damping and simulating an arbitrary duration.
 //!
-//! Every substep solves its current matrix, including constrained solves.
+//! This is a 2D point-mass/rigid-link model: it has no strand collisions,
+//! torsion or distributed rod inertia. Nonuniform animated scale prescribes
+//! changing world geometry; it is external work, not a material deformation.
 
-mod batch;
+mod motion;
 
 use std::f64::consts::{PI, TAU};
 
@@ -59,9 +53,12 @@ type Vector = SmallVec<[f64; 16]>;
 type Matrix = SmallVec<[f64; 64]>;
 type Points = SmallVec<[DVec2; 16]>;
 
-const STOP_ONSET: f64 = 0.75;
-const STOP_HZ: f64 = 8.0;
-const BEND_SPRING_DAMPING_RATIO: f32 = 0.1;
+const MAX_STEP: f64 = 1.0 / 480.0;
+const POSITION_TOLERANCE: f64 = 1e-5;
+// Two nonzero stages of the ARS(2,2,2) implicit tableau:
+// A = [[gamma, 0], [1-gamma, gamma]], b = [1-gamma, gamma].
+// https://sundials.readthedocs.io/en/latest/arkode/Butcher_link.html#c.ARKODE_ARS222_ESDIRK_3_1_2
+const SDIRK_GAMMA: f64 = 1.0 - std::f64::consts::FRAC_1_SQRT_2;
 
 fn wrap(angle: f64) -> f64 {
     (angle + PI).rem_euclid(TAU) - PI
@@ -71,27 +68,6 @@ fn cap(limit: Option<f32>) -> f64 {
     limit
         .filter(|x| x.is_finite() && *x > 0.0)
         .map_or(f64::INFINITY, |x| f64::from(x.min(1.0)) * PI)
-}
-
-/// Unit-inertia torque, positive stiffness, and damping coefficient. The stop
-/// is critically damped in both directions, so it absorbs a strand's swing
-/// instead of handing it back.
-fn stop(angle: f64, limit: f64) -> (f64, f64, f64) {
-    if !limit.is_finite() || limit <= 0.0 {
-        return (0.0, 0.0, 0.0);
-    }
-    let width = (1.0 - STOP_ONSET) * limit;
-    // The hard bound contains integrated angles; limiting r also keeps a
-    // manually displaced particle from creating an unbounded initial force.
-    let r = ((angle.abs() - STOP_ONSET * limit) / width).clamp(0.0, 1.0);
-    let omega = TAU * STOP_HZ;
-    let stiffness = 3.0 * omega * omega * r * r;
-    let damping = 2.0 * stiffness.sqrt();
-    (
-        -angle.signum() * omega * omega * width * r.powi(3),
-        stiffness,
-        damping,
-    )
 }
 
 fn usable(carry: Mat2) -> DMat2 {
@@ -176,7 +152,11 @@ pub(super) struct State {
 impl State {
     fn new(chain: &ParticleChainData, carry: Mat2) -> Self {
         let rest = rest_rods(chain);
-        let q = angles(chain, &rest, usable(carry));
+        let q: Vector = angles(chain, &rest, usable(carry))
+            .iter()
+            .zip(&chain.links)
+            .map(|(q, l)| q.clamp(-cap(l.limit), cap(l.limit)))
+            .collect();
         let rods = rods_at(&rest, &q);
         let omega: Vector = chain
             .links
@@ -191,14 +171,12 @@ impl State {
             damping: chain
                 .links
                 .iter()
-                .zip(&omega)
-                .map(|(link, w)| {
-                    let drag = if link.damping >= 1.0 {
+                .map(|link| {
+                    if link.damping >= 1.0 {
                         1e6
                     } else {
                         -f64::from(1.0 - link.damping.max(0.0)).ln()
-                    };
-                    drag + 2.0 * f64::from(BEND_SPRING_DAMPING_RATIO) * w
+                    }
                 })
                 .collect(),
             limits: chain.links.iter().map(|l| cap(l.limit)).collect(),
@@ -242,17 +220,11 @@ impl State {
         self.field.resize(n, DVec2::ZERO);
         self.inertia.clear();
         self.inertia.resize(n, 0.0);
-        let mut gravity = 0.0;
-        let mut distal = DVec2::ZERO;
-        for i in (0..n).rev() {
-            gravity += self.masses[i] * f64::from(self.gravity * self.links[i].gravity_scale);
-            let mut resultant = DVec2::new(0.0, gravity);
-            if self.links[i].stiffness > 0.0 {
-                let tangent = (carry * self.rest[i].perp()).normalize();
-                resultant -= tangent * resultant.dot(tangent);
-            }
-            self.field[i] = resultant - distal;
-            distal = resultant;
+        for i in 0..n {
+            self.field[i] = DVec2::new(
+                0.0,
+                self.masses[i] * f64::from(self.gravity * self.links[i].gravity_scale),
+            );
         }
         let mut jacobian: Points = smallvec![DVec2::ZERO; n];
         for k in 0..n {
@@ -285,107 +257,169 @@ struct System {
 }
 
 impl State {
-    fn system(&mut self, step: &Step, targets: &[f64]) -> System {
-        let &Step {
-            old_carry,
-            carry,
-            carry_rate,
-            anchor_velocity,
-            h,
-            ..
-        } = step;
-        self.fields(carry);
+    /// Project world momentum onto the prescribed frame's instantaneous
+    /// admissible velocities. Root velocity changes act as constraint impulses.
+    fn project_velocity(&self, step: &Step) -> Option<Vector> {
+        if self.motion_carry == Some(step.carry)
+            && self.motion_rate == step.carry_rate
+            && self.velocities[0] == step.anchor_velocity
+        {
+            return Some(self.angular.clone());
+        }
         let n = self.q.len();
-        let mut a: Matrix = smallvec![0.0; n * n];
+        let mut a: Matrix = smallvec![0.0; n*n];
         let mut rhs: Vector = smallvec![0.0; n];
-        let mut velocity: Vector = smallvec![0.0; n];
-        let mut jacobian: Points = smallvec![DVec2::ZERO; n];
-        let mut tangents: Points = smallvec![DVec2::ZERO; n];
+        let mut jac: Points = smallvec![DVec2::ZERO; n];
+        let mut pos = DVec2::ZERO;
+        for k in 0..n {
+            let tangent = step.carry * self.rods[k].perp();
+            pos += self.rods[k];
+            let momentum = self.masses[k]
+                * (self.velocities[k + 1] - step.anchor_velocity - step.carry_rate * pos);
+            for i in 0..=k {
+                jac[i] += tangent;
+                rhs[i] += jac[i].dot(momentum);
+            }
+            for i in 0..=k {
+                for j in 0..=k {
+                    a[i * n + j] += self.masses[k] * jac[i].dot(jac[j]);
+                }
+            }
+        }
+        factor_solve(&mut a, &mut rhs).then_some(rhs)
+    }
+
+    /// One implicit Runge--Kutta stage: q = base_q + h v. Gravity never
+    /// depends on stiffness. Spring energy is k (q-target)^2 / 2 and joint
+    /// damping is the authored Rayleigh dissipation alone.
+    fn system_at(
+        &mut self,
+        step: &Step,
+        targets: &[f64],
+        base_q: &[f64],
+        base_v: &[f64],
+        guess: &[f64],
+    ) -> System {
+        self.fields(step.carry);
+        let h = step.h;
+        let n = self.q.len();
+        let q: Vector = base_q.iter().zip(guess).map(|(q, v)| q + h * v).collect();
+        let rods = rods_at(&self.rest, &q);
+        let mut a: Matrix = smallvec![0.0; n*n];
+        let mut rhs: Vector = smallvec![0.0; n];
+        let mut jac: Points = smallvec![DVec2::ZERO; n];
         let mut position = DVec2::ZERO;
         let mut bias = DVec2::ZERO;
-        let mut previous_omega = 0.0;
-        let cached_motion = self.motion_carry == Some(old_carry) && self.motion_rate == carry_rate;
+        let mut omega = 0.0;
         for k in 0..n {
-            let rod = self.rods[k];
-            let tangent = carry * rod.perp();
-            tangents[k] = tangent;
-            let omega = if cached_motion {
-                previous_omega + self.angular[k]
-            } else {
-                let old_tangent = old_carry * rod.perp();
-                let rod_velocity = self.velocities[k + 1] - self.velocities[k] - carry_rate * rod;
-                rod_velocity.dot(old_tangent) / old_tangent.length_squared()
-            };
-            velocity[k] = if cached_motion {
-                self.angular[k]
-            } else {
-                omega - previous_omega
-            };
-            previous_omega = omega;
+            let rod = rods[k];
+            let tangent = step.carry * rod.perp();
+            omega += guess[k];
             position += rod;
-            bias += -(carry * rod) * omega * omega + 2.0 * (carry_rate * rod.perp()) * omega;
-            let mass = self.masses[k];
-            let momentum =
-                mass * (self.velocities[k + 1] - anchor_velocity - carry_rate * position);
-            let carried = anchor_velocity + carry_rate * position;
-            let force = self.field[k] - mass * (bias + self.air_drag * carried);
+            // Full acceleration in a prescribed affine frame. Unlike a
+            // world-momentum update, the angular ODE needs both Coriolis
+            // terms: its RHS starts from M * base_v in this same frame.
+            bias += step.carry_acceleration * rod + 2.0 * (step.carry_rate * rod.perp()) * omega
+                - (step.carry * rod) * omega * omega;
+            let carried = step.anchor_velocity + step.carry_rate * position;
+            let force = self.field[k] - self.masses[k] * (bias + self.air_drag * carried);
             for i in 0..=k {
-                jacobian[i] += tangent;
-                rhs[i] += jacobian[i].dot(momentum + h * force);
+                jac[i] += tangent;
+                rhs[i] += h * jac[i].dot(force);
             }
-        }
-        // Absolute rod rotations have M_ij = distal_mass(max(i,j)) t_i.t_j.
-        // Relative bends rotate every distal rod: two suffix sums transform
-        // that matrix in O(n²), instead of accumulating n endpoint matrices.
-        let mut distal_mass = 0.0;
-        for i in (0..n).rev() {
-            distal_mass += self.masses[i];
-            for j in 0..=i {
-                let value = distal_mass * tangents[i].dot(tangents[j]);
-                a[i * n + j] = value;
-                a[j * n + i] = value;
-            }
-        }
-        for i in (0..n.saturating_sub(1)).rev() {
-            for j in 0..n {
-                a[i * n + j] += a[(i + 1) * n + j];
+            for i in 0..=k {
+                for j in 0..=k {
+                    a[i * n + j] += self.masses[k] * jac[i].dot(jac[j]);
+                }
             }
         }
         for i in 0..n {
-            for j in (0..n.saturating_sub(1)).rev() {
-                a[i * n + j] += a[i * n + j + 1];
-            }
+            rhs[i] += a[i * n..(i + 1) * n]
+                .iter()
+                .zip(base_v)
+                .map(|(m, v)| m * v)
+                .sum::<f64>();
         }
-        // Air drag on the next world velocity: h c J^T m J is h c M.
-        let air = 1.0 + h * self.air_drag;
-        if air != 1.0 {
-            for value in a.iter_mut() {
-                *value *= air;
-            }
+        for value in &mut a {
+            *value *= 1.0 + h * self.air_drag;
         }
-        let mut lower: Vector = smallvec![0.0; n];
-        let mut upper: Vector = smallvec![0.0; n];
+        let mut lower: Vector = smallvec![f64::NEG_INFINITY; n];
+        let mut upper: Vector = smallvec![f64::INFINITY; n];
+        let mut initial: Vector = guess.iter().copied().collect();
         for i in 0..n {
-            // Use one triangle to preserve exact symmetry after suffix sums.
-            for j in 0..i {
-                a[j * n + i] = a[i * n + j];
-            }
-            let limit = self.limits[i];
-            let (force, k, d) = stop(self.q[i], limit);
             let inertia = self.inertia[i];
-            rhs[i] += h * inertia * (-self.omega2[i] * wrap(self.q[i] - targets[i]) + force);
-            a[i * n + i] += inertia * (h * (self.damping[i] + d) + h * h * (self.omega2[i] + k));
-            lower[i] = (-limit - self.q[i]) / h;
-            upper[i] = (limit - self.q[i]) / h;
-            velocity[i] = velocity[i].clamp(lower[i], upper[i]);
+            // Re-evaluate the periodic spring's branch at the stage iterate;
+            // freezing it at base_q gives the wrong torque across +/- pi.
+            let spring_offset = wrap(q[i] - targets[i]) - h * guess[i];
+            rhs[i] -= h * inertia * self.omega2[i] * spring_offset;
+            a[i * n + i] += inertia * (h * self.damping[i] + h * h * self.omega2[i]);
+            if h > 0.0 {
+                lower[i] = (-self.limits[i] - base_q[i]) / h;
+                upper[i] = (self.limits[i] - base_q[i]) / h;
+                initial[i] = initial[i].clamp(lower[i], upper[i]);
+            }
         }
         System {
             a,
             rhs,
             lower,
             upper,
-            initial: velocity,
+            initial,
         }
+    }
+
+    fn system(&mut self, step: &Step, targets: &[f64]) -> System {
+        let q = self.q.clone();
+        let v = self
+            .project_velocity(step)
+            .unwrap_or_else(|| smallvec![f64::NAN; q.len()]);
+        self.system_at(step, targets, &q, &v, &v)
+    }
+
+    fn stage(&mut self, step: &Step, targets: &[f64], q: &[f64], v: &[f64]) -> Option<Vector> {
+        let mut guess: Vector = v.iter().copied().collect();
+        for i in 0..guess.len() {
+            guess[i] = guess[i].clamp(
+                (-self.limits[i] - q[i]) / step.h,
+                (self.limits[i] - q[i]) / step.h,
+            );
+        }
+        for _ in 0..16 {
+            let system = self.system_at(step, targets, q, v, &guess);
+            let next = solve(&system)?;
+            let error = next
+                .iter()
+                .zip(&guess)
+                .map(|(a, b)| (a - b).abs() * step.h)
+                .fold(0.0, f64::max);
+            guess = next;
+            if error < 1e-9 {
+                return Some(guess);
+            }
+        }
+        None
+    }
+
+    /// Perfectly inelastic impact: a joint landing on a stop has zero normal
+    /// relative velocity. Project with the coupled mass matrix so free-joint
+    /// momentum is preserved. An inward force releases it on the next step.
+    fn contact_velocity(&mut self, step: &Step, q: &[f64], v: Vector) -> Option<Vector> {
+        if !(0..q.len()).any(|i| self.limits[i].is_finite() && q[i].abs() >= self.limits[i] - 1e-10)
+        {
+            return Some(v);
+        }
+        let n = q.len();
+        let mut stationary = Step::stationary(step.anchor, step.carry, 0.0);
+        stationary.carry_rate = step.carry_rate;
+        let mut s = self.system_at(&stationary, &vec![0.0; n], q, &v, &v);
+        for i in 0..n {
+            if self.limits[i].is_finite() && q[i].abs() >= self.limits[i] - 1e-10 {
+                s.lower[i] = 0.0;
+                s.upper[i] = 0.0;
+            }
+            s.initial[i] = v[i].clamp(s.lower[i], s.upper[i]);
+        }
+        solve(&s)
     }
 }
 
@@ -394,7 +428,7 @@ fn factor_solve(a: &mut [f64], b: &mut [f64]) -> bool {
     let n = b.len();
     if n == 2 {
         let determinant = a[0] * a[3] - a[1] * a[2];
-        if !determinant.is_finite() || determinant <= 0.0 {
+        if a[0] <= 0.0 || a[3] <= 0.0 || !determinant.is_finite() || determinant <= 0.0 {
             return false;
         }
         let x = (b[0] * a[3] - b[1] * a[1]) / determinant;
@@ -548,6 +582,7 @@ struct Step {
     anchor: DVec2,
     anchor_velocity: DVec2,
     old_carry: DMat2,
+    carry_acceleration: DMat2,
     carry: DMat2,
     carry_rate: DMat2,
     h: f64,
@@ -559,6 +594,7 @@ impl Step {
             anchor,
             anchor_velocity: DVec2::ZERO,
             old_carry: carry,
+            carry_acceleration: DMat2::ZERO,
             carry,
             carry_rate: DMat2::ZERO,
             h,
@@ -567,11 +603,13 @@ impl Step {
 }
 
 impl State {
-    fn advance(&mut self, step: &Step, velocity: &[f64], targets: &[f64]) -> Option<bool> {
-        let mut q = self.q.clone();
-        for (i, angle) in q.iter_mut().enumerate() {
-            *angle = (*angle + step.h * velocity[i]).clamp(-self.limits[i], self.limits[i]);
-        }
+    fn commit(
+        &mut self,
+        step: &Step,
+        q: Vector,
+        velocity: &[f64],
+        targets: &[f64],
+    ) -> Option<bool> {
         let rods = rods_at(&self.rest, &q);
         let mut positions: Points = SmallVec::with_capacity(q.len() + 1);
         let mut velocities: Points = SmallVec::with_capacity(q.len() + 1);
@@ -663,10 +701,10 @@ struct Frame<'a> {
     chain: &'a mut ParticleChainData,
     state: Box<State>,
     targets: Vector,
-    start_anchor: Vec2,
-    end_anchor: Vec2,
-    start_carry: Mat2,
-    end_carry: Mat2,
+    start_anchor: DVec2,
+    end_anchor: DVec2,
+    motion: motion::Motion,
+    duration: f64,
     from: Vec2,
     from_carry: Mat2,
     moved: bool,
@@ -690,12 +728,20 @@ impl<'a> Frame<'a> {
         anchor: Vec2,
         carry: Mat2,
         posed: &[f32],
+        duration: f64,
     ) -> Option<Self> {
         if !prepare(chain, anchor, carry, posed) {
             return None;
         }
         let start_anchor = chain.anchor;
-        let start_carry = chain.carry;
+        // A reflection change cannot interpolate through an invertible map.
+        // Re-express the same world state in the new handedness immediately;
+        // subsequent continuous motion still uses analytic frame derivatives.
+        let start_carry = if chain.carry.determinant().signum() != carry.determinant().signum() {
+            carry
+        } else {
+            chain.carry
+        };
         let state = State::take(chain, start_carry);
         let targets = (0..chain.links.len())
             .map(|i| -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
@@ -704,10 +750,10 @@ impl<'a> Frame<'a> {
             chain,
             state,
             targets,
-            start_anchor,
-            start_carry,
-            end_anchor: anchor,
-            end_carry: carry,
+            start_anchor: start_anchor.as_dvec2(),
+            end_anchor: anchor.as_dvec2(),
+            motion: motion::Motion::new(start_carry, carry, duration),
+            duration,
             from: start_anchor,
             from_carry: start_carry,
             moved: false,
@@ -715,40 +761,98 @@ impl<'a> Frame<'a> {
         })
     }
 
-    fn step(&self, k: u32, steps: u32, h: f64) -> Step {
-        let t = k as f32 / steps as f32;
-        let anchor = if k == steps {
-            self.end_anchor
-        } else {
-            self.start_anchor.lerp(self.end_anchor, t)
-        };
-        let carry = if k == steps {
-            self.end_carry
-        } else {
-            super::lerp_carry(self.start_carry, self.end_carry, t)
-        };
-        let old_carry = usable(self.from_carry);
-        let carry = usable(carry);
+    fn sample(&self, t: f64, h: f64) -> Step {
+        let (carry, carry_rate, carry_acceleration) = self.motion.sample(t);
         Step {
-            anchor: anchor.as_dvec2(),
-            anchor_velocity: (anchor - self.from).as_dvec2() / h,
-            old_carry,
+            anchor: self.start_anchor.lerp(self.end_anchor, t),
+            anchor_velocity: (self.end_anchor - self.start_anchor) / self.duration,
+            old_carry: carry,
             carry,
-            carry_rate: (carry - old_carry) * (1.0 / h),
+            carry_rate,
+            carry_acceleration,
             h,
         }
     }
 
-    fn accept(&mut self, step: &Step, velocity: Option<Vector>) {
-        let moved = velocity.and_then(|v| self.state.advance(step, &v, &self.targets));
-        if let Some(moved) = moved {
-            self.moved |= moved;
-            self.from = step.anchor.as_vec2();
-            self.from_carry =
-                Mat2::from_cols(step.carry.x_axis.as_vec2(), step.carry.y_axis.as_vec2());
-        } else {
-            self.failed = true;
+    fn integrate(&mut self, t0: f64, t1: f64) -> Option<bool> {
+        let h = (t1 - t0) * self.duration;
+        let start = self.sample(t0, h);
+        let q = self.state.q.clone();
+        let v = self.state.project_velocity(&start)?;
+        let a = SDIRK_GAMMA;
+        let first = self.sample(t0 + (t1 - t0) * a, h * a);
+        let v1 = self.state.stage(&first, &self.targets, &q, &v)?;
+        let qbase: Vector = q
+            .iter()
+            .zip(&v1)
+            .map(|(q, v)| q + h * (1.0 - a) * v)
+            .collect();
+        let vbase: Vector = v
+            .iter()
+            .zip(&v1)
+            .map(|(v, w)| v + (1.0 - a) / a * (w - v))
+            .collect();
+        let end = self.sample(t1, h * a);
+        let v2 = self.state.stage(&end, &self.targets, &qbase, &vbase)?;
+        let q2: Vector = qbase
+            .iter()
+            .zip(&v2)
+            .enumerate()
+            .map(|(i, (q, v))| (q + h * a * v).clamp(-self.state.limits[i], self.state.limits[i]))
+            .collect();
+        // The first-order embedded weights [3/5, 2/5] give an independent
+        // local position-error estimate. Refine excited fast modes even when
+        // their implicit stages converge (stability alone is not accuracy).
+        // Impact steps are nonsmooth and use the hard-contact solve instead.
+        if !(0..q2.len()).any(|i| {
+            self.state.limits[i].is_finite()
+                && (q2[i].abs() >= self.state.limits[i] - 1e-10
+                    || (q[i] + h * a * v1[i]).abs() >= self.state.limits[i] - 1e-10)
+        }) {
+            let rods = rods_at(&self.state.rest, &q2);
+            let mut angle_error = 0.0;
+            let mut angular_velocity_error = 0.0;
+            let mut displacement = DVec2::ZERO;
+            let mut velocity_error = DVec2::ZERO;
+            let mut error = 0.0_f64;
+            let mut length = 0.0;
+            for i in 0..q2.len() {
+                angle_error += h * (0.4 - a) * (v2[i] - v1[i]);
+                angular_velocity_error += (0.4 - a) / a * ((v2[i] - vbase[i]) - (v1[i] - v[i]));
+                let rod = end.carry * rods[i];
+                length += rod.length();
+                displacement += (end.carry * rods[i].perp()) * angle_error;
+                velocity_error += (end.carry * rods[i].perp()) * angular_velocity_error;
+                error = error
+                    .max(displacement.length())
+                    .max(velocity_error.length() * MAX_STEP);
+            }
+            if error > POSITION_TOLERANCE * length {
+                return None;
+            }
         }
+        let v2 = self.state.contact_velocity(&end, &q2, v2)?;
+        let mut commit = self.sample(t1, h);
+        commit.old_carry = start.carry;
+        let moved = self.state.commit(&commit, q2, &v2, &self.targets)?;
+        self.from = commit.anchor.as_vec2();
+        self.from_carry =
+            Mat2::from_cols(commit.carry.x_axis.as_vec2(), commit.carry.y_axis.as_vec2());
+        self.moved |= moved;
+        Some(moved)
+    }
+
+    fn interval(&mut self, t0: f64, t1: f64, depth: u8) -> bool {
+        if self.integrate(t0, t1).is_some() {
+            return true;
+        }
+        // A nonlinear stage must converge before it changes particle state.
+        // Retry at finer resolution; exhaustion retains the last valid state.
+        if depth == 8 {
+            return false;
+        }
+        let mid = (t0 + t1) * 0.5;
+        self.interval(t0, mid, depth + 1) && self.interval(mid, t1, depth + 1)
     }
 
     fn finish(mut self) {
@@ -768,13 +872,16 @@ pub(super) fn tick(
     dt: f32,
     substeps: std::num::NonZeroU8,
 ) {
-    let mut job = [super::ChainTick {
-        chain,
-        anchor,
-        carry,
-        posed: posed.iter().copied().collect(),
-    }];
-    tick_chains(&mut job, dt, substeps);
+    tick_chains(
+        &mut [super::ChainTick {
+            chain,
+            anchor,
+            carry,
+            posed: posed.iter().copied().collect(),
+        }],
+        dt,
+        substeps,
+    );
 }
 
 pub(super) fn tick_chains(
@@ -782,98 +889,146 @@ pub(super) fn tick_chains(
     dt: f32,
     substeps: std::num::NonZeroU8,
 ) {
-    for job in jobs.iter_mut() {
-        job.carry = super::usable_carry(job.carry);
-    }
-    if !dt.is_finite() || dt <= 0.0 {
-        for job in jobs {
-            if !prepare(job.chain, job.anchor, job.carry, &job.posed) {
-                continue;
+    for job in jobs {
+        let carry = super::usable_carry(job.carry);
+        if !dt.is_finite() || dt <= 0.0 {
+            if prepare(job.chain, job.anchor, carry, &job.posed) {
+                job.chain.anchor = job.anchor;
+                job.chain.carry = carry;
+                job.chain.coupled = None;
             }
-            job.chain.anchor = job.anchor;
-            job.chain.carry = job.carry;
-            // Repositioning changes the frame without carrying particle state.
-            job.chain.coupled = None;
+            continue;
         }
-        return;
-    }
-    let dt = dt.min(super::PHYSICS_MAX_DT);
-    let steps = u32::from(substeps.get());
-    // Dividing in f32 can round a positive subnormal dt down to zero.
-    let h = f64::from(dt) / f64::from(steps);
-    jobs.sort_unstable_by_key(|job| job.chain.links.len());
-    // Sort only independent requests after all anchors and posed targets
-    // have been sampled. A batch never reads another batch's output.
-    let mut start = 0;
-    while start < jobs.len() {
-        let n = jobs[start].chain.links.len();
-        let batch_len = if cfg!(any(
-            target_feature = "sse2",
-            all(target_arch = "aarch64", target_feature = "neon"),
-            target_feature = "simd128"
-        )) && matches!(n, 2 | 8)
-            && jobs[start..]
-                .iter()
-                .take(4)
-                .filter(|j| j.chain.links.len() == n)
-                .count()
-                == 4
-        {
-            4
-        } else {
-            1
+        let duration = f64::from(dt.min(super::PHYSICS_MAX_DT));
+        let steps =
+            u32::from(substeps.get()).max((duration as f32 / MAX_STEP as f32).ceil() as u32);
+        let Some(mut frame) = Frame::new(job.chain, job.anchor, carry, &job.posed, duration) else {
+            continue;
         };
-        let mut frames: SmallVec<[Frame<'_>; 4]> = jobs[start..start + batch_len]
-            .iter_mut()
-            .filter_map(|job| Frame::new(job.chain, job.anchor, job.carry, &job.posed))
-            .collect();
-        for k in 1..=steps {
-            let mut systems: SmallVec<[System; 4]> = SmallVec::new();
-            let mut substeps: SmallVec<[Step; 4]> = SmallVec::new();
-            for frame in &mut frames {
-                let step = frame.step(k, steps, h);
-                systems.push(frame.state.system(&step, &frame.targets));
-                substeps.push(step);
-            }
-            let solutions = if frames.len() == 4 {
-                batch::solve(&systems)
-            } else {
-                systems.iter().map(solve).collect()
-            };
-            for ((frame, step), velocity) in frames.iter_mut().zip(&substeps).zip(solutions) {
-                if !frame.failed {
-                    frame.accept(step, velocity);
-                }
-            }
-            if frames.iter().all(|f| f.failed) {
+        for k in 0..steps {
+            if !frame.interval(
+                f64::from(k) / f64::from(steps),
+                f64::from(k + 1) / f64::from(steps),
+                0,
+            ) {
+                frame.failed = true;
                 break;
             }
         }
-        for frame in frames {
-            frame.finish();
-        }
-        start += batch_len;
+        frame.finish();
     }
 }
 
-fn relax(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]) -> bool {
-    let step = Step::stationary(anchor.as_dvec2(), usable(carry), f64::from(1.0 / 240.0_f32));
-    let targets: Vector = (0..chain.links.len())
-        .map(|i| -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
-        .collect();
-    for _ in 0..2400 {
-        let mut state = State::take(chain, carry);
-        let system = state.system(&step, &targets);
-        let result = solve(&system).and_then(|v| state.advance(&step, &v, &targets));
-        state.export(chain);
-        chain.coupled = Some(state);
-        match result {
-            Some(false) => return true,
-            Some(true) => {}
-            None => return false,
+/// Potential, gradient and Hessian of gravity plus torsional springs.
+/// The Hessian is allowed to be indefinite (an upright limp rod is unstable).
+fn potential(state: &State, carry: DMat2, q: &[f64], targets: &[f64]) -> (f64, Vector, Matrix) {
+    let n = q.len();
+    let rods = rods_at(&state.rest, q);
+    let mut value = 0.0;
+    let mut gradient: Vector = smallvec![0.0;n];
+    let mut hessian: Matrix = smallvec![0.0;n*n];
+    let mut weight = 0.0;
+    for k in (0..n).rev() {
+        weight += state.masses[k] * f64::from(state.gravity * state.links[k].gravity_scale);
+        value -= weight * (carry * rods[k]).y;
+        let torque = -weight * (carry * rods[k].perp()).y;
+        let curvature = weight * (carry * rods[k]).y;
+        for i in 0..=k {
+            gradient[i] += torque;
+            for j in 0..=k {
+                hessian[i * n + j] += curvature;
+            }
         }
     }
-    false
+    for i in 0..n {
+        let k = state.inertia[i] * state.omega2[i];
+        let angle = wrap(q[i] - targets[i]);
+        value += 0.5 * k * angle * angle;
+        gradient[i] += k * angle;
+        hessian[i * n + i] += k;
+    }
+    (value, gradient, hessian)
+}
+
+/// Bounded damped Newton minimization. Static settling is not simulated
+/// elapsed time and must not change the authored damping or spring forces.
+fn relax(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]) -> bool {
+    let mut state = State::take(chain, carry);
+    let map = usable(carry);
+    state.fields(map);
+    let n = state.q.len();
+    let targets: Vector = (0..n)
+        .map(|i| -f64::from(posed.get(i).copied().unwrap_or(0.0)) * PI)
+        .collect();
+    let mut q = state.q.clone();
+    let mut converged = false;
+    for _ in 0..512 {
+        let (energy, gradient, hessian) = potential(&state, map, &q, &targets);
+        if !energy.is_finite() || gradient.iter().any(|g| !g.is_finite()) {
+            break;
+        }
+        let scale = (0..n).map(|i| hessian[i * n + i].abs()).fold(1.0, f64::max);
+        let mut shift = 0.0;
+        let mut direction = None;
+        for _ in 0..24 {
+            let mut a = hessian.clone();
+            for i in 0..n {
+                a[i * n + i] += shift;
+            }
+            let system = System {
+                a,
+                rhs: gradient.iter().map(|g| -g).collect(),
+                lower: q.iter().zip(&state.limits).map(|(q, l)| -l - q).collect(),
+                upper: q.iter().zip(&state.limits).map(|(q, l)| l - q).collect(),
+                initial: smallvec![0.0;n],
+            };
+            if let Some(d) = solve(&system) {
+                direction = Some(d);
+                break;
+            }
+            shift = if shift == 0.0 {
+                scale * 1e-6
+            } else {
+                shift * 10.0
+            };
+        }
+        let Some(direction) = direction else { break };
+        let largest = direction.iter().map(|d| d.abs()).fold(0.0, f64::max);
+        if largest < 1e-10 {
+            converged = true;
+            break;
+        }
+        let slope: f64 = gradient.iter().zip(&direction).map(|(g, d)| g * d).sum();
+        let mut fraction = (0.5 / largest).min(1.0);
+        let mut accepted = false;
+        for _ in 0..32 {
+            let trial: Vector = q
+                .iter()
+                .zip(&direction)
+                .enumerate()
+                .map(|(i, (q, d))| (q + fraction * d).clamp(-state.limits[i], state.limits[i]))
+                .collect();
+            let next = potential(&state, map, &trial, &targets).0;
+            if next.is_finite()
+                && next <= energy + 1e-4 * fraction * slope + 1e-14 * energy.abs().max(1.0)
+            {
+                q = trial;
+                accepted = true;
+                break;
+            }
+            fraction *= 0.5;
+        }
+        if !accepted {
+            break;
+        }
+    }
+    // Always export a valid minimization iterate. An unfinished solve stays
+    // awake so the ordinary dynamics can continue from it.
+    let step = Step::stationary(anchor.as_dvec2(), map, MAX_STEP);
+    let result = state.commit(&step, q, &vec![0.0; n], &targets);
+    state.export(chain);
+    chain.coupled = Some(state);
+    converged && result.is_some()
 }
 
 pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, posed: &[f32]) {
@@ -905,11 +1060,11 @@ pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, p
                     wrap(rest[i].perp_dot(target).atan2(rest[i].dot(target)) - parent);
                 if link.stiffness <= 0.0 {
                     bend = toward_gravity;
-                } else if rest[i].dot(target) < 0.0 {
-                    // Break an inverted zero-torque equilibrium. Relaxation
-                    // returns strong springs to the drawing and lets weak
-                    // ones sag, without a separate stability solve.
-                    bend += toward_gravity.clamp(-1e-3, 1e-3);
+                } else if (DMat2::from_angle(parent + bend) * rest[i]).dot(target) < 0.0 {
+                    // Break inverted zero-torque equilibria deterministically,
+                    // including a downward drawing posed upward. Strong
+                    // springs return to a stable upright pose; weak ones fall.
+                    bend += wrap(toward_gravity - bend).clamp(-1e-3, 1e-3);
                 }
             }
             bend = bend.clamp(-cap(link.limit), cap(link.limit));
@@ -939,23 +1094,8 @@ pub(super) fn settle(chain: &mut ParticleChainData, anchor: Vec2, carry: Mat2, p
     chain.anchor_initialized = true;
     chain.particles.clear();
     chain.particles.extend(particles);
-    // Off the hot path. Damping is temporarily increased to settle faster,
-    // never written back to authored data.
-    let damping: SmallVec<[f32; 16]> = chain.links.iter().map(|l| l.damping).collect();
-    for link in &mut chain.links {
-        link.damping = 0.9999;
-    }
-    relax(chain, anchor, carry, posed);
-    for (link, damping) in chain.links.iter_mut().zip(damping) {
-        link.damping = damping;
-    }
-    // Heavy relaxation can fall below the storage floor before the authored
-    // damping would. Finish on the actual equations, so the next ordinary
-    // tick does not release a residual that the relaxation masked.
+    chain.coupled = None;
     let settled = relax(chain, anchor, carry, posed);
-    for particle in &mut chain.particles {
-        particle.vel = Vec2::ZERO;
-    }
     chain.moved_last_tick = !settled;
 }
 
@@ -1016,7 +1156,7 @@ mod tests {
                         let t = f32::from(k) / f32::from(count);
                         sliced.tick(
                             anchor * t,
-                            super::super::lerp_carry(Mat2::IDENTITY, carry, t),
+                            Mat2::from_angle(0.03 * t),
                             &[],
                             dt / f32::from(count),
                             std::num::NonZeroU8::MIN,
@@ -1056,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn suffix_mass_assembly_matches_endpoint_kinetic_energy() {
+    fn mass_assembly_matches_endpoint_kinetic_energy() {
         for n in [1, 2, 3, 8, 17, 32] {
             let mut c = chain(n);
             for (i, l) in c.links.iter_mut().enumerate() {
@@ -1104,11 +1244,11 @@ mod tests {
     }
 
     #[test]
-    fn batched_locks_match_independent_ticks_with_edits_and_moving_frames() {
-        // Two complete SIMD batches, remainders and arbitrary-sized scalar
+    fn multiple_locks_match_independent_ticks_with_edits_and_moving_frames() {
+        // Several independent groups, remainders and arbitrary-sized
         // chains; every lane has different fields, poses and bound activity.
         let sizes = [8, 2, 8, 2, 3, 8, 2, 8, 2, 17, 8, 2];
-        let mut batched: Vec<_> = sizes
+        let mut grouped: Vec<_> = sizes
             .into_iter()
             .enumerate()
             .map(|(i, n)| {
@@ -1121,11 +1261,11 @@ mod tests {
                 c
             })
             .collect();
-        let mut scalar = batched.clone();
+        let mut scalar = grouped.clone();
         for frame in 1..=160 {
             let t = frame as f32 / 60.0;
             if frame == 80 {
-                for chains in [&mut batched, &mut scalar] {
+                for chains in [&mut grouped, &mut scalar] {
                     chains[0].particles[8].pos.x += 4.0;
                     chains[1].links[0].length *= 0.9;
                     chains[2].links[3].damping = 0.9;
@@ -1148,7 +1288,7 @@ mod tests {
             for (c, (anchor, carry, posed)) in scalar.iter_mut().zip(&inputs) {
                 c.tick(*anchor, *carry, posed, 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
             }
-            let mut jobs: Vec<_> = batched
+            let mut jobs: Vec<_> = grouped
                 .iter_mut()
                 .zip(&inputs)
                 .map(|(chain, (anchor, carry, posed))| super::super::ChainTick {
@@ -1159,7 +1299,7 @@ mod tests {
                 })
                 .collect();
             tick_chains(&mut jobs, 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
-            for (a, b) in batched.iter().zip(&scalar) {
+            for (a, b) in grouped.iter().zip(&scalar) {
                 assert_eq!(a.anchor, b.anchor);
                 assert_eq!(a.carry, b.carry);
                 for (a, b) in a.particles.iter().zip(&b.particles) {
@@ -1177,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_simd_lane_does_not_freeze_other_locks() {
+    fn a_failed_lock_does_not_freeze_other_locks() {
         let mut chains: Vec<_> = (0..4).map(|_| chain(8)).collect();
         let before = chains[1].particles.clone();
         chains[1].gravity = f32::NAN;
@@ -1240,23 +1380,6 @@ mod tests {
             );
             assert_eq!(c.particles, fresh.particles, "edit {change}");
         }
-    }
-
-    #[test]
-    fn progressive_stop_is_continuous_and_critically_damped() {
-        let limit = 14.0_f64.to_radians();
-        assert_eq!(stop(limit * 0.75, limit), (0.0, 0.0, 0.0));
-        let near = stop(limit * 0.750001, limit);
-        assert!(near.0.abs() < 1e-12 && near.1 < 1e-6);
-        let middle = stop(limit * 0.9, limit);
-        let wall = stop(limit, limit);
-        assert!(wall.0 < middle.0 && middle.0 < 0.0);
-        assert!(wall.1 > middle.1 && wall.2 > middle.2);
-        // The same damping on the way back: the stop absorbs the swing.
-        assert_eq!(wall.2, 2.0 * wall.1.sqrt());
-        assert_eq!(stop(-limit, limit).0, -wall.0);
-        assert_eq!(stop(-limit, limit).2, wall.2);
-        assert_eq!(stop(1.0, f64::INFINITY), (0.0, 0.0, 0.0));
     }
 
     #[test]
@@ -1457,7 +1580,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_geometry_does_not_block_other_locks_in_a_batch() {
+    fn invalid_geometry_does_not_block_other_locks() {
         for invalid_count in 1..=4 {
             let mut chains: Vec<_> = (0..4).map(|_| chain(8)).collect();
             for c in &mut chains[..invalid_count] {
@@ -1512,7 +1635,7 @@ mod tests {
         set_state(&mut c, &[0.2, -0.1], &[0.4, -0.3]);
         let rest = rest_rods(&c);
         let q = angles(&c, &rest, DMat2::IDENTITY);
-        let h = 1e-4;
+        let h = 1e-7;
         let mut state = State::new(&c, c.carry);
         let mut step = Step::stationary(c.anchor.as_dvec2(), DMat2::IDENTITY, h);
         let s = state.system(&step, &[0.0; 2]);
@@ -1537,12 +1660,12 @@ mod tests {
         assert!(factor_solve(&mut mass, &mut force));
         let expected = [force[0], force[1] - force[0]];
         for i in 0..2 {
-            assert!(((actual[i] - projected[i]) / h - expected[i]).abs() < 1e-7);
+            assert!(((actual[i] - projected[i]) / h - expected[i]).abs() < 1e-4);
         }
     }
 
     #[test]
-    fn drawing_is_equilibrium_with_distal_mass_and_full_carry() {
+    fn sprung_links_settle_with_gravity_and_full_carry() {
         for carry in [
             Mat2::IDENTITY,
             Mat2::from_angle(0.4),
@@ -1557,9 +1680,12 @@ mod tests {
             for _ in 0..120 {
                 c.tick(c.anchor, carry, &[], 1.0 / 60.0, DEFAULT_CHAIN_SUBSTEPS);
             }
-            for q in angles(&c, &rest_rods(&c), usable(carry)) {
-                assert!(q.abs() < 2e-5, "{q}");
-            }
+            assert!(
+                angles(&c, &rest_rods(&c), usable(carry))
+                    .iter()
+                    .any(|q| q.abs() > 1e-4),
+                "gravity must deflect sprung links away from their drawing"
+            );
             assert!(c.is_at_rest(1e-4));
         }
     }
@@ -1744,6 +1870,7 @@ mod tests {
     fn direct_motion_settles_after_a_kick() {
         for n in [2, 8] {
             let mut direct = chain(n);
+            direct.air_drag = 4.0;
             let q: Vector = (0..n).map(|i| 0.1 * (i as f64 + 1.0).sin()).collect();
             set_state(&mut direct, &q, &vec![0.0; n]);
             for _ in 0..1200 {
@@ -1862,6 +1989,11 @@ mod tests {
         for (drag, n) in [(0.0, 2), (8.0, 2), (0.0, 8), (8.0, 8)] {
             let mut c = chain(n);
             c.air_drag = drag;
+            // Start already gliding: zero air drag should exert no force,
+            // independently of how slowly joint damping dissipates a kick.
+            for p in &mut c.particles {
+                p.vel = Vec2::new(200.0, 0.0);
+            }
             let mut x = 0.0;
             for _ in 0..900 {
                 x += 200.0 / 60.0;

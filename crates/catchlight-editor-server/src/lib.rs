@@ -2247,6 +2247,13 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
     runtime.link_bends(inverse, &mut bends);
     bends
         .iter()
+        // A root bend rotates all lower links even if their own relative
+        // hinges remain straight. Report the departure of each link's
+        // orientation from its drawing, not just its local joint angle.
+        .scan(0.0_f32, |turn, bend| {
+            *turn += bend;
+            Some(*turn)
+        })
         .enumerate()
         .filter(|(_, bend)| bend.abs() > 1e-3)
         .map(|(i, _)| {

@@ -129,7 +129,8 @@ pub enum TextureEncoding {
 pub struct ClmPhysics {
     pub pixels_per_meter: f32,
     pub gravity: f32,
-    /// Equal hair-chain steps per frame for every chain in this model (1..=255).
+    /// Minimum hair-chain steps per frame (1..=255). The solver also bounds
+    /// elapsed time per step and refines unconverged nonlinear stages.
     #[serde(
         default = "default_chain_substeps",
         skip_serializing_if = "default_substeps"
@@ -634,7 +635,7 @@ pub struct ClmLinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
     /// Damping strength in `0..=1`, mapped to per-second drag on relative
-    /// joint motion. Adds to spring damping; 1 gives heavy damping.
+    /// joint motion. Zero is undamped; 1 gives heavy damping.
     pub damping: f32,
     /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
     /// this is not each link's oscillation frequency. Zero disables the spring.

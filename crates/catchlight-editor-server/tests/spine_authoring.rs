@@ -815,8 +815,8 @@ fn new_chain_limits_default_but_explicit_choices_survive_an_edit() {
     use serde_json::json;
 
     for (wire, expected) in [
-        (json!({}), Some(14.0 / 180.0)),
-        (json!({"links": [{"stiffness": 2.0}]}), Some(14.0 / 180.0)),
+        (json!({}), None),
+        (json!({"links": [{"stiffness": 2.0}]}), None),
         (json!({"links": [{"limit": null}]}), None),
         (json!({"links": [{"limit": 0.25}]}), Some(0.25)),
     ] {

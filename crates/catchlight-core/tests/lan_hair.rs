@@ -3,11 +3,9 @@
 //! the actual model through Puppet so carry, output params and limits all
 //! participate. Requires the Lan Git LFS object, like the visual suite.
 //!
-//! Long locks keep a sprung root that follows the scalp. Their lower links
-//! are limp: a nonzero spring also enables head-relative gravity support,
-//! so merely widening the limits still makes the whole lock follow the head.
-//! The second joint needs room to counter head roll; narrow stops along the
-//! lower lengths must not prevent them from hanging under gravity.
+//! Long locks keep a sprung root that follows the scalp and limp lower
+//! links. The second joint has room to counter head roll; narrow stops along
+//! the lower lengths must not prevent them from hanging under gravity.
 
 use catchlight_core::{Model, NodeKind, ParamId, Puppet, Vec2, Vec3};
 
