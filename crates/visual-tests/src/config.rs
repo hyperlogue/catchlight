@@ -302,6 +302,22 @@ struct Curated {
 fn curated_configs(stem: &str) -> Vec<Curated> {
     match stem {
         "lan" => vec![
+            // Keep close-ups as well as the full strands: a fringe crossing
+            // the eyes must be reviewed at face scale, not just as hair motion.
+            Curated {
+                label: "roll_left",
+                params: &[("head_roll", -30.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
+            Curated {
+                label: "roll_right",
+                params: &[("head_roll", 30.0, 0.0)],
+                camera_preset: "lan_face",
+                frame_puppets: &[],
+                ticks_after_pose: 0,
+            },
             Curated {
                 label: "roll_left",
                 params: &[("head_roll", -30.0, 0.0)],
