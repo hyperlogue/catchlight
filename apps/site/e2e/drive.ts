@@ -703,7 +703,7 @@ async function draws(): Promise<void> {
     before = await canvasFrame("back at the rest pose");
   });
   await step("select a node and drag it", async () => {
-    await selectNode(page, "front-hair");
+    await selectNode(page, "front-hair-lock-2");
     const box = (await page.locator("[data-catchlight-selection-box]").boundingBox())!;
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
     const b0 = await canvasFrame("before the drag");

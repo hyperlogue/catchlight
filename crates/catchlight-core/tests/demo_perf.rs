@@ -16,7 +16,7 @@ fn lan_pose_tick() {
     let file = clm::decode(&bytes).unwrap();
     let model = Model::from_clm_file(&file).unwrap();
     let mut puppet = Puppet::new(&model);
-    let param = ParamId::new("ParamBodyAngleX").unwrap();
+    let param = ParamId::new("body_yaw").unwrap();
     assert!(
         model.param(&param).is_some(),
         "the demo slider must drive a param"

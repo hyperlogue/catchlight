@@ -103,14 +103,14 @@ export async function studio(
     const search = page.getByRole("textbox", { name: "Search nodes" });
     const revision = (await read()).revision;
     await search.fill("front hair");
-    assert(await page.locator('[data-catchlight-node][data-node="front-hair"]').count());
+    assert(await page.locator('[data-catchlight-node][data-node="front-hair-lock-2"]').count());
     await search.fill("no such node");
     await page.getByText("No matching nodes.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Clear search nodes", exact: true }).click();
     assert(await search.evaluate((input) => input === document.activeElement));
     await selected("face");
     await page.getByRole("button", { name: "Artwork", exact: true }).click();
-    assert.equal(await page.locator("[data-catchlight-asset]").count(), 53);
+    assert.equal(await page.locator("[data-catchlight-asset]").count(), 79);
     assert.equal(await page.locator('[data-catchlight-asset][aria-pressed="true"]').count(), 1);
     assert(await page.locator('[data-catchlight-asset][aria-pressed="true"]').evaluate((asset) => {
       const swatch = document.createElement("span");
@@ -125,7 +125,7 @@ export async function studio(
     await page.getByText("No matching artwork", { exact: true }).waitFor();
     await artworkSearch.press("Escape");
     assert.equal(await artworkSearch.inputValue(), "");
-    assert.equal(await page.locator("[data-catchlight-asset]").count(), 53);
+    assert.equal(await page.locator("[data-catchlight-asset]").count(), 79);
     const paramSearch = page.getByRole("textbox", { name: "Search params" });
     const paramCount = await page.locator("[data-catchlight-param-card]").count();
     await paramSearch.fill("no such param");
@@ -310,16 +310,16 @@ export async function studio(
     await change(rev);
     const filled = (await read("face")).slots;
     assert(filled?.result === "slots" && filled.slots[0]?.vertex === 0);
-    await selected("front-hair");
+    await selected("front-hair-lock-2");
     await disclosure("Fit a spine");
     rev = (await read()).revision;
     await page
       .getByRole("button", { name: "Fit spine to artwork", exact: true })
       .click();
     await change(rev);
-    await selected((await read("front-hair")).info!.parent!);
+    await selected((await read("front-hair-lock-2")).info!.parent!);
     assert(
-      (await read((await read("front-hair")).info!.parent!)).info?.spine?.chain,
+      (await read((await read("front-hair-lock-2")).info!.parent!)).info?.spine?.chain,
     );
     await right.getByRole("button", { name: "Model", exact: true }).click();
     await disclosure("Physics environment");
@@ -411,7 +411,7 @@ export async function studio(
         .locator("[data-catchlight-node]")
         .filter({ hasText: /^Studio badge$/ })
         .waitFor({ state: "hidden" });
-      await selected("back-hair");
+      await selected("back-hair-lock-12");
       await page
         .getByRole("button", { name: "Fit model (F)", exact: true })
         .click();

@@ -88,12 +88,12 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
     const readPose = () => page.evaluate(async () => {
       const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
       const session = editor.session((await editor.listSessions())[0]!.session)!;
-      return session.params().filter(p => ["ParamEyeLOpen", "ParamMouthOpenY"].includes(p.name))
+      return session.params().filter(p => ["eye_left_open", "mouth_open"].includes(p.name))
         .map(p => ({ name: p.name, value: session.paramValue(p.id), default: p.default }));
     });
     const pose = await readPose();
-    expect(pose.find(p => p.name === "ParamEyeLOpen")?.value).toBe(0);
-    expect(pose.find(p => p.name === "ParamMouthOpenY")?.value).toBe(0.75);
+    expect(pose.find(p => p.name === "eye_left_open")?.value).toBe(0);
+    expect(pose.find(p => p.name === "mouth_open")?.value).toBe(0.75);
     await page.getByRole("button", { name: "Stop camera" }).click();
     expect(await page.evaluate(() => {
       const state = globalThis as unknown as { testStream: MediaStream; detectorClosed: boolean };

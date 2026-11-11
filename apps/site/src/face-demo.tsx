@@ -80,17 +80,17 @@ export function FaceDemo({ session }: { session: Session }) {
               setStatus("Tracking live — turn your head, blink, or open your mouth.");
               const scores = new Map(result.faceBlendshapes[0]?.categories.map(c => [c.categoryName, c.score]));
               const score = (name: string) => scores.get(name) ?? 0;
-              pose("ParamEyeLOpen", 1 - score("eyeBlinkLeft"));
-              pose("ParamEyeROpen", 1 - score("eyeBlinkRight"));
-              pose("ParamMouthOpenY", score("jawOpen") * 1.5);
-              pose("ParamMouthForm", (score("mouthSmileLeft") + score("mouthSmileRight")) / 2);
+              pose("eye_left_open", 1 - score("eyeBlinkLeft"));
+              pose("eye_right_open", 1 - score("eyeBlinkRight"));
+              pose("mouth_open", score("jawOpen") * 1.5);
+              pose("mouth_expression", (score("mouthSmileLeft") + score("mouthSmileRight")) / 2);
               // MediaPipe's column-major rotation matrix, converted to degrees.
               const m = result.facialTransformationMatrixes[0]?.data;
               if (m) {
                 const degrees = 180 / Math.PI;
-                pose("ParamAngleX", Math.atan2(m[8]!, m[10]!) * degrees);
-                pose("ParamAngleY", -Math.atan2(-m[9]!, Math.hypot(m[8]!, m[10]!)) * degrees);
-                pose("ParamAngleZ", -Math.atan2(m[1]!, m[5]!) * degrees);
+                pose("head_yaw", -Math.atan2(m[8]!, m[10]!) * degrees);
+                pose("head_pitch", -Math.atan2(-m[9]!, Math.hypot(m[8]!, m[10]!)) * degrees);
+                pose("head_roll", -Math.atan2(m[1]!, m[5]!) * degrees);
               }
             }
           }
