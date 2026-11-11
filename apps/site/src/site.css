@@ -73,12 +73,42 @@ body { color: #e8eef2; font: 15px/1.6 system-ui, sans-serif; }
 .demo-nav a { color: #72bffb; text-decoration: none; padding: 4px; }
 .demo-nav span { color: #92a3b0; }
 .face-demo { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
-.face-stage { min-width: 0; min-height: 0; background: #171d22; }
+.face-stage { position: relative; min-width: 0; min-height: 0; background: #171d22; }
 .face-stage canvas { width: 100%; height: 100%; }
 .face-controls { padding: 28px; background: #1d242b; overflow: auto; border-left: 1px solid #364550; }
 .face-controls h1 { font-size: 26px; line-height: 1.2; margin: 16px 0; }
 .face-controls p { color: #b9c5ce; }
-.face-controls video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; transform: scaleX(-1); background: #12171b; border-radius: 8px; margin-top: 16px; }
+.face-controls video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #12171b; border-radius: 8px; margin-top: 16px; }
+.face-controls video.mirrored { transform: scaleX(-1); }
+.face-toggles { display: grid; gap: 10px; margin: 20px 0; }
+.face-toggles label { display: flex; align-items: center; gap: 10px; cursor: pointer; color: #e8eef2; }
+.face-toggles input { appearance: none; position: relative; flex: none; inline-size: 36px; block-size: 20px; margin: 0; border-radius: 10px; background: #364550; cursor: pointer; transition: background .15s; }
+.face-toggles input::after { content: ""; position: absolute; inset-block-start: 3px; inset-inline-start: 3px; inline-size: 14px; block-size: 14px; border-radius: 50%; background: #e8eef2; transition: transform .15s; }
+.face-toggles input:checked { background: #72bffb; }
+.face-toggles input:checked::after { transform: translateX(16px); background: #12171b; }
+.face-toggles input:focus-visible { outline: 3px solid #9bd3fd; outline-offset: 3px; }
+.tier-badge { position: absolute; inset-block-end: 12px; inset-inline-start: 12px; padding: 2px 10px; border-radius: 999px; background: #12171bcc; border: 1px solid #364550; color: #b9c5ce; font: 600 12px/1.6 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; letter-spacing: .04em; pointer-events: none; }
+.tier-badge[data-tier="webgpu"] { color: #9be3b0; border-color: #2f5b3d; }
+.tier-badge[data-tier="webgl2"] { color: #f3d08a; border-color: #5e4c26; }
+.nerd-stats { position: absolute; inset-block-start: 12px; inset-inline-start: 12px; inline-size: min(440px, calc(100% - 24px)); max-block-size: calc(100% - 60px); overflow: auto; padding: 10px 12px; background: #0b0f12d9; border: 1px solid #ffffff21; border-radius: 6px; color: #e8eef2; font: 11px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; backdrop-filter: blur(4px); }
+.nerd-stats dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 12px; margin: 0; }
+.nerd-stats dt { color: #92a3b0; text-align: end; }
+.nerd-stats dd { margin: 0; overflow-wrap: anywhere; }
+.nerd-stats .with-graph { display: flex; align-items: center; gap: 8px; }
+.nerd-stats .with-graph span { min-inline-size: 13ch; }
+.nerd-stats h2 { margin: 10px 0 4px; color: #92a3b0; font: inherit; text-transform: uppercase; letter-spacing: .08em; }
+.nerd-stats p { margin: 0; color: #92a3b0; }
+.nerd-stats table { border-collapse: collapse; inline-size: 100%; }
+.nerd-stats th { font-weight: 400; text-align: start; color: #b9c5ce; padding-inline-end: 8px; white-space: nowrap; }
+.nerd-stats td:nth-child(2) { text-align: end; padding-inline-end: 8px; font-variant-numeric: tabular-nums; }
+.nerd-stats td:last-child { inline-size: 45%; }
+.sparkline { flex: 1; min-inline-size: 60px; block-size: 16px; background: #ffffff0d; }
+.sparkline polyline { fill: none; stroke: #72bffb; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.bar { position: relative; display: block; block-size: 6px; background: #ffffff14; border-radius: 3px; overflow: hidden; }
+.bar i { position: absolute; inset-block: 0; background: #72bffb; }
+.nerd-close { position: absolute; inset-block-start: 4px; inset-inline-end: 6px; padding: 0 4px; border: 0; background: none; color: #92a3b0; font: 16px/1 system-ui; cursor: pointer; }
+.nerd-close:hover { color: #e8eef2; }
+.nerd-close:focus-visible { outline: 2px solid #9bd3fd; }
 .face-controls button { width: 100%; min-height: 44px; border: 0; border-radius: 6px; color: #12171b; background: #72bffb; font: 600 15px system-ui; cursor: pointer; }
 .face-controls button:hover { background: #9bd3fd; }
 .face-controls .camera-error { color: #f5a6a6; overflow-wrap: anywhere; }

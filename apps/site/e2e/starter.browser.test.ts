@@ -78,7 +78,10 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
     await page.evaluate(() => {
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = 32;
-      canvas.getContext("2d")!.fillRect(0, 0, 32, 32);
+      const context = canvas.getContext("2d")!;
+      // A canvas stream only emits frames when the canvas changes.
+      let shade = 0;
+      setInterval(() => { context.fillStyle = `rgb(${shade = (shade + 1) % 256}, 0, 0)`; context.fillRect(0, 0, 32, 32); }, 33);
       const stream = canvas.captureStream(30);
       Object.defineProperty(navigator.mediaDevices, "getUserMedia", { value: async () => stream });
       (globalThis as unknown as { testStream: MediaStream }).testStream = stream;
@@ -88,12 +91,23 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
     const readPose = () => page.evaluate(async () => {
       const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
       const session = editor.session((await editor.listSessions())[0]!.session)!;
-      return session.params().filter(p => ["eye_left_open", "mouth_open"].includes(p.name))
+      return session.params().filter(p => ["eye_left_open", "eye_right_open", "mouth_open"].includes(p.name))
         .map(p => ({ name: p.name, value: session.paramValue(p.id), default: p.default }));
     });
-    const pose = await readPose();
-    expect(pose.find(p => p.name === "eye_left_open")?.value).toBe(0);
+    // Mirrored by default: the tracked left eye closes the eye on that side of the screen.
+    let pose = await readPose();
+    expect(pose.find(p => p.name === "eye_right_open")?.value).toBe(0);
     expect(pose.find(p => p.name === "mouth_open")?.value).toBe(0.75);
+    await page.getByRole("switch", { name: "Mirror left and right" }).uncheck();
+    await page.waitForFunction(() => !document.querySelector("video")!.classList.contains("mirrored"));
+    for (let tries = 0; tries < 100 && (await readPose()).find(p => p.name === "eye_left_open")?.value !== 0; tries++)
+      await page.waitForTimeout(100);
+    pose = await readPose();
+    expect(pose.find(p => p.name === "eye_left_open")?.value).toBe(0);
+    await page.getByRole("switch", { name: "Stats for nerds" }).check();
+    const stats = page.getByRole("region", { name: "Stats for nerds" });
+    await stats.getByText("mouth_open").waitFor();
+    expect(await page.locator(".tier-badge").textContent()).toMatch(/^WebGPU$|^WebGL2$/);
     await page.getByRole("button", { name: "Stop camera" }).click();
     expect(await page.evaluate(() => {
       const state = globalThis as unknown as { testStream: MediaStream; detectorClosed: boolean };
