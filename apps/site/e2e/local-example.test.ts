@@ -1,17 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { build, createServer, preview } from "vite";
 import type { InlineConfig } from "vite";
 import siteConfig from "../vite.config.js";
+import { removeTemporaryDirectory } from "./temporary.ts";
 
 const temporary: string[] = [];
 const privateBytes = new TextEncoder().encode("private-model-fixture-not-for-public-builds");
 
 afterEach(async () => {
-  await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  for (const path of temporary.splice(0)) await removeTemporaryDirectory(path);
 });
 
 async function fixture() {

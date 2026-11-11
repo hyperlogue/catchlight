@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { assertPresentedCanvas } from "./presentation.ts";
+import { removeTemporaryDirectory } from "./temporary.ts";
 
 const executablePath = process.env.CHROMIUM ?? Bun.which("chromium");
 
@@ -79,6 +80,6 @@ test.skipIf(!executablePath)("presentation rejects a blank canvas despite health
       .rejects.toThrow("before grid or selection overlays");
   } finally {
     await browser.close();
-    await rm(directory, { recursive: true, force: true });
+    await removeTemporaryDirectory(directory);
   }
 }, 15000);
