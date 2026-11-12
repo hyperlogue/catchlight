@@ -60,8 +60,14 @@ fn front_locks_keep_their_length_while_the_head_rolls() {
     let roll = ParamId::new("head_roll").unwrap();
     // Cross-section centres from the scalp to the painted tip, by authored Y.
     let samples = [
-        ("front-hair-lock-2", [940.0, 820.0, 700.0, 580.0, 460.0, 423.98]),
-        ("front-hair-lock-7", [940.0, 820.0, 700.0, 570.0, 495.0, 420.93]),
+        (
+            "front-hair-lock-2",
+            [940.0, 820.0, 700.0, 580.0, 460.0, 423.98],
+        ),
+        (
+            "front-hair-lock-7",
+            [940.0, 820.0, 700.0, 570.0, 495.0, 420.93],
+        ),
     ];
     let length = |puppet: &Puppet, id: &str, ys: &[f32]| -> f32 {
         let centres: Vec<_> = ys
