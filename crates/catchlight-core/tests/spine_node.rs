@@ -22,6 +22,23 @@ const DT: f32 = 1.0 / 60.0;
 /// A sixth of a turn, in the half turns a bend is measured in.
 const THIRTY_DEGREES: f32 = 1.0 / 6.0;
 
+#[test]
+fn a_bent_strip_has_no_tangent_jump_at_a_joint() {
+    let f = Fixture::new(2, 100.0, 2001);
+    let posed = f.bend(&[0.08, -0.03]);
+    // Check the visible edges, not just the simulated centre-line joints.
+    // Their two one-sided tangents must approach the same direction.
+    for column in 0..2 {
+        let before = posed[2000 + column] - posed[1998 + column];
+        let after = posed[2002 + column] - posed[2000 + column];
+        let kink = before.angle_to(after).abs().to_degrees();
+        assert!(
+            kink < 0.5,
+            "edge {column} has a {kink} degree corner at the joint"
+        );
+    }
+}
+
 /// A strip two columns wide running down from the origin, `rows` rows deep
 /// over `length` model pixels. Row 0 sits on the spine's root.
 fn strip(rows: usize, length: f32) -> ClmMesh {

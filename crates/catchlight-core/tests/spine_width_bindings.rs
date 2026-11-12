@@ -53,9 +53,9 @@ fn check_frame(f: &Fixture, puppet: &Puppet, yaw: f32, body: f32) {
                         + smooth(t) * width_delta(yaw, b[1]));
             let angle = std::f32::consts::PI
                 * if t <= 0.5 {
-                    2.0 * t * b[0]
+                    smooth(2.0 * t) * b[0]
                 } else {
-                    b[0] + (2.0 * t - 1.0) * b[1]
+                    b[0] + smooth(2.0 * t - 1.0) * b[1]
                 };
             let expected = Mat2::from_angle(angle) * Vec2::new(10.0 * ratio, 0.0);
             let cross_section = local[2 * row + 1] - local[2 * row];

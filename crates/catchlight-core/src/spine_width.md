@@ -152,16 +152,18 @@ import/export and CLI file operations on the generated model, a second
 hairstyle, and the unsplit fallback. Pixel reconstruction and missing coverage
 remain Carver acceptance work; no width mechanism can supply missing paint.
 
-The spine ramp is position-continuous but does not guarantee tangent
-continuity at joints, nor prevent triangle inversions. Its documented interior
-stretch remains. A smooth width envelope cannot repair those properties;
-small per-link bends, supported root geometry and appropriate mesh samples
-must pass the visual checks. Do not describe the solver as rate-independent.
+The spine's eased angle ramp has zero slope at each link endpoint, avoiding
+the tangent jump that a linear ramp introduces there. It cannot smooth a
+coarse mesh or a discontinuous nearest-link assignment around a bent rest
+polyline, nor prevent triangle inversions. Its documented interior stretch
+remains. Small per-link bends, supported root geometry and appropriate mesh
+samples must still pass the visual checks. Do not describe the solver as
+rate-independent.
 
 Consider native support only if an actual trial needs a coupled orientation
 function beyond two-input fields, a shared nonlinear width budget that cannot
-be baked adequately, or guaranteed tangent continuity through joints. Those
-would be distinct missing contracts, not a missing same-frame ordering step.
+be baked adequately, or continuity across arbitrary rest-mesh assignments.
+Those would be distinct missing contracts, not a missing same-frame ordering step.
 Any future orientation/width fields should be optional, with absence giving
 exactly the existing geometry and behavior (width factor one), including old
 files and manual spines. No such fields are introduced by this recipe.

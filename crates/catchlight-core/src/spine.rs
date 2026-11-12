@@ -18,20 +18,21 @@
 //! the identity; the hinge of link `j` is carried to where the links above it
 //! have already put it, `c_j' = T_j(c_j)`, and `T_{j+1} = Rot(c_j', theta_j)
 //! . T_j`. A vertex in link `k` takes `Rot(c_k', f * theta_k) . T_k` for its
-//! own ramp `f`, so it feels every joint above it in full and its own in
-//! proportion. That is O(N) per spine and O(1) per vertex, and it is the
-//! composition itself rather than a sum of samples of it: two 50 px links bent
+//! own eased ramp `f = t²(3 - 2t)`, where `t` is its fraction along the link.
+//! The ramp's derivative is zero at both ends, so the deformation tangents
+//! agree at link endpoints. Every joint above acts in full. This is O(N) per
+//! spine and O(1) per vertex, and it is the composition itself rather than a
+//! sum of samples of it: two 50 px links bent
 //! a sixth of a turn each put the tip where the composed rigid motion puts it,
 //! and every joint stays the drawn distance from the joint above it.
 //!
 //! **The joints are exact; the art between them stretches.** A vertex `f` of
-//! the way along a link turns by `f * theta` about the hinge, so the interior
-//! of a bent link leaves the hinge along the link above and spirals out to
-//! the joint rather than running straight to it, and that spiral is longer
+//! the way along a link turns by `smoothstep(f) * theta` about the hinge, so
+//! the interior of a bent link leaves the hinge along the link above and curves
+//! out to the joint rather than running straight to it, and that curve is longer
 //! than the chord it replaces: a 100 px link bent a quarter turn measures
-//! about 124 px along a three-row centre line and about 132 px along a dense
-//! one, all of the excess in the half nearer the joint; a sixth of a turn
-//! costs about 16 %, a twelfth about 4 %. This is the ramp's trade and not a
+//! about 124 px along a three-row centre line. Denser sampling captures the
+//! additional curved length. This is the ramp's trade and not a
 //! defect to tune away. With the joint pinned by the composition, the only
 //! interior that keeps its length is the crease (`f = 1` everywhere), which
 //! is a hinge and not a bend; every smooth interior from the hinge is longer
@@ -492,7 +493,13 @@ fn turn_child(
                 scratch.push(Vec2::ZERO);
                 continue;
             };
-            let turn = rotate_about(link.hinge, bend.ramp * link.angle) * link.above;
+            // Zero slope at both ends makes the deformation tangent agree
+            // with the adjacent link (and with unbent art above the root).
+            // A linear angle ramp adds a one-sided angular-velocity term at
+            // each joint, producing a visible corner even on a smooth strip.
+            let t = bend.ramp;
+            let smooth = t * t * (3.0 - 2.0 * t);
+            let turn = rotate_about(link.hinge, smooth * link.angle) * link.above;
             let turned = spine_to_child
                 .transform_point2(turn.transform_point2(child_to_spine.transform_point2(current)));
             let offset = turned - current;
