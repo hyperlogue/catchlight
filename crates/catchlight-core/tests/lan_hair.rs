@@ -6,14 +6,15 @@
 //!
 //! Long locks keep a sprung root that follows the scalp. Back lengths are
 //! limp; the two long front locks retain a soft elastic response. Their air
-//! drag suppresses ringing after small movements without changing the settled
-//! curves. The second joint has room to counter head roll; narrow stops along
+//! drag suppresses ringing after small movements; too much leaves them
+//! creeping toward rest long after the head stops. The second joint has room to counter head roll; narrow stops along
 //! the lower lengths must not prevent them from hanging under gravity.
 //! Back locks have a short supported root and a gradual transition into their
 //! hanging length, so head roll cannot carry a long upper section sideways.
 //! Front guides follow the painted tips. Authored head-roll deforms shape the
-//! reviewed front curves and back silhouette before the live spine transports
-//! them; the mesh checks below cover those curves as well as particle motion.
+//! front curves and back silhouette before the live spine transports them.
+//! Front deforms bend each lock along its own length without stretching it;
+//! the mesh checks below cover those curves as well as particle motion.
 //! The connected right fringe shares the side lock's supported upper link
 //! and head-roll deformation field, so its painted cuts cannot pull apart.
 //! The left swept fringe uses stiff elastic links. Simulation roots and the
@@ -54,26 +55,80 @@ fn section_center(puppet: &Puppet, model: &Model, id: &str, y: f32) -> Vec2 {
 }
 
 #[test]
-fn front_lock_curves_reach_the_reviewed_positions() {
+fn front_locks_keep_their_length_while_the_head_rolls() {
+    let model = lan();
+    let roll = ParamId::new("head_roll").unwrap();
+    // Cross-section centres from the scalp to the painted tip, by authored Y.
+    let samples = [
+        ("front-hair-lock-2", [940.0, 820.0, 700.0, 580.0, 460.0, 423.98]),
+        ("front-hair-lock-7", [940.0, 820.0, 700.0, 570.0, 495.0, 420.93]),
+    ];
+    let length = |puppet: &Puppet, id: &str, ys: &[f32]| -> f32 {
+        let centres: Vec<_> = ys
+            .iter()
+            .map(|&y| section_center(puppet, &model, id, y))
+            .collect();
+        centres.windows(2).map(|w| w[0].distance(w[1])).sum()
+    };
+    let mut rest = Puppet::new(&model);
+    rest.set_physics_enabled(false);
+    rest.tick(&model, DT);
+    // Head-roll deforms may bend the locks, but hair does not stretch. A
+    // strand that grows and shrinks with the head reads as jelly.
+    for physics in [false, true] {
+        for angle in [-30.0, -15.0, 15.0, 30.0] {
+            let mut puppet = Puppet::new(&model);
+            puppet.set_physics_enabled(physics);
+            puppet.set_param_value(&roll, angle);
+            if physics {
+                puppet.settle_physics(&model);
+            }
+            puppet.tick(&model, DT);
+            for (id, ys) in &samples {
+                let drawn = length(&rest, id, ys);
+                let posed = length(&puppet, id, ys);
+                assert!(
+                    (posed / drawn - 1.0).abs() < 0.03,
+                    "{id} at roll {angle} (physics {physics}): length {posed}, drawn {drawn}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn front_locks_settle_promptly_after_a_head_roll() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
-    puppet.set_param_value(&ParamId::new("head_roll").unwrap(), -30.0);
     puppet.settle_physics(&model);
-    puppet.tick(&model, DT);
-    // Landmarks read from the approved tilted-head reference, in model
-    // coordinates. Pin the belly and tip of each curve, not only its bounds.
-    for (part, y, want) in [
-        ("front-hair-lock-2", 540.0, Vec2::new(-108.0, 500.0)),
-        ("front-hair-lock-2", 480.0, Vec2::new(-116.0, 430.0)),
-        ("front-hair-lock-2", 423.98, Vec2::new(-110.0, 372.0)),
-        ("front-hair-lock-7", 570.0, Vec2::new(147.0, 540.0)),
-        ("front-hair-lock-7", 495.0, Vec2::new(154.0, 465.0)),
-        ("front-hair-lock-7", 420.93, Vec2::new(132.0, 380.0)),
-    ] {
-        let got = section_center(&puppet, &model, part, y);
+    let roll = ParamId::new("head_roll").unwrap();
+    let samples = [
+        ("front-hair-lock-2", 540.0),
+        ("front-hair-lock-2", 423.98),
+        ("front-hair-lock-7", 570.0),
+        ("front-hair-lock-7", 420.93),
+    ];
+    // Roll 12 units over a quarter second, then hold. Heavy air drag on soft
+    // springs creeps toward rest for most of a second, which reads as goo.
+    let mut held = Vec::new();
+    for frame in 0..150 {
+        let t = (frame as f32 / 15.0).min(1.0);
+        puppet.set_param_value(&roll, 12.0 * t * t * (3.0 - 2.0 * t));
+        puppet.tick(&model, DT);
+        if frame >= 14 {
+            held.push(samples.map(|(id, y)| section_center(&puppet, &model, id, y)));
+        }
+    }
+    let last = *held.last().unwrap();
+    for (i, (id, y)) in samples.into_iter().enumerate() {
+        let settled = held
+            .iter()
+            .rposition(|h| h[i].distance(last[i]) > 0.5)
+            .map_or(0, |k| k + 1);
         assert!(
-            got.distance(want) < 1.0,
-            "{part} at rest y={y}: curve at {got:?}, reference {want:?}"
+            settled as f32 * DT < 0.5,
+            "{id} at rest y={y}: still moving {}s after the head stopped",
+            settled as f32 * DT
         );
     }
 }
