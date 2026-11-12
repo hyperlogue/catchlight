@@ -5,7 +5,9 @@
 //! Requires the Lan Git LFS object, like the visual suite.
 //!
 //! Long locks keep a sprung root that follows the scalp. Back lengths are
-//! limp; the two long front locks retain a soft elastic response. The second joint has room to counter head roll; narrow stops along
+//! limp; the two long front locks retain a soft elastic response. Their air
+//! drag suppresses ringing after small movements without changing the settled
+//! curves. The second joint has room to counter head roll; narrow stops along
 //! the lower lengths must not prevent them from hanging under gravity.
 //! Back locks have a short supported root and a gradual transition into their
 //! hanging length, so head roll cannot carry a long upper section sideways.
@@ -148,6 +150,36 @@ fn long_lock_mesh_tips_lag_a_small_head_roll() {
         assert!(
             actual < rigid * 0.95,
             "{id}: mesh tip moved {actual}px, rigid carry {rigid}px"
+        );
+    }
+}
+
+#[test]
+fn front_locks_do_not_ring_after_a_tiny_head_roll() {
+    let model = lan();
+    let mut puppet = Puppet::new(&model);
+    puppet.settle_physics(&model);
+    let roll = ParamId::new("head_roll").unwrap();
+    let samples = [("front-hair-lock-2", 423.98), ("front-hair-lock-7", 420.93)];
+    let mut held = Vec::new();
+    // A half-unit roll over a quarter second, then hold the head still. The
+    // visible tips may ease toward rest, but must not travel back and forth
+    // nearly as far as the original small movement after it has stopped.
+    for frame in 0..=75 {
+        let t = (frame as f32 / 15.0).min(1.0);
+        puppet.set_param_value(&roll, 0.5 * t * t * (3.0 - 2.0 * t));
+        puppet.tick(&model, DT);
+        if frame >= 15 {
+            held.push(samples.map(|(id, y)| section_center(&puppet, &model, id, y)));
+        }
+    }
+    for (i, (id, _)) in samples.into_iter().enumerate() {
+        let travel: f32 = held.windows(2).map(|w| w[1][i].distance(w[0][i])).sum();
+        let direct = held.first().unwrap()[i].distance(held.last().unwrap()[i]);
+        let ringing = travel - direct;
+        assert!(
+            ringing < 0.1,
+            "{id}: {ringing}px of extra back-and-forth tip travel after a tiny roll"
         );
     }
 }
