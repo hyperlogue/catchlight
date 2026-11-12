@@ -14,30 +14,31 @@
 //! which is the convention `ParticleChainData::link_bends` reports its bends
 //! in, so the chain a spine carries writes the params the spine reads.
 //!
-//! **The rotations compose, root to tip, once per spine per frame.** `T_0` is
-//! the identity; the hinge of link `j` is carried to where the links above it
-//! have already put it, `c_j' = T_j(c_j)`, and `T_{j+1} = Rot(c_j', theta_j)
-//! . T_j`. A vertex in link `k` takes `Rot(c_k', f * theta_k) . T_k` for its
-//! own eased ramp `f = t²(3 - 2t)`, where `t` is its fraction along the link.
-//! The ramp's derivative is zero at both ends, so the deformation tangents
-//! agree at link endpoints. Every joint above acts in full. This is O(N) per
-//! spine and O(1) per vertex, and it is the composition itself rather than a
-//! sum of samples of it: two 50 px links bent
-//! a sixth of a turn each put the tip where the composed rigid motion puts it,
-//! and every joint stays the drawn distance from the joint above it.
+//! **The joint path is composed; the visible strand rounds its corners.**
+//! The physical links still turn rigidly about their parent joints, root to
+//! tip. Between adjacent link midpoints, the art follows a quadratic Bezier
+//! whose middle control is their shared joint. These nonnegative weights keep
+//! the curve within the joint path's convex hull: a hanging length cannot
+//! curl outward and back merely because its upper link changed direction.
+//! The root and tip are exact; interior joints are controls, not interpolation
+//! points. Rounding slightly shortens the visible path rather than inflating
+//! it into the spiral made by a partial rotation about each hinge.
 //!
-//! **The joints are exact; the art between them stretches.** A vertex `f` of
-//! the way along a link turns by `smoothstep(f) * theta` about the hinge, so
-//! the interior of a bent link leaves the hinge along the link above and curves
-//! out to the joint rather than running straight to it, and that curve is longer
-//! than the chord it replaces: a 100 px link bent a quarter turn measures
-//! about 124 px along a three-row centre line. Denser sampling captures the
-//! additional curved length. This is the ramp's trade and not a
-//! defect to tune away. With the joint pinned by the composition, the only
-//! interior that keeps its length is the crease (`f = 1` everywhere), which
-//! is a hinge and not a bend; every smooth interior from the hinge is longer
-//! than the chord. Art that must not stretch along its strand wants more,
-//! shorter links, so that each joint's turn is small.
+//! **Transport the art from its rest curve to its posed curve.** Each baked
+//! link coordinate samples both curves. Their tangent difference rotates the
+//! vertex's offset from the rest curve, then translates it onto the posed
+//! curve. Width and pre-existing deforms therefore travel with the strand.
+//! The root cross-section remains attached, with its orientation eased into
+//! the first link over that link's first half. Art above the root stays fixed;
+//! art beyond the tip follows the last link. All-zero bends remain exactly
+//! inactive. This is O(N) per spine and O(1) per vertex.
+//!
+//! **This is surface reconstruction, not another force.** The simulated
+//! particles, their lengths, gravity and inertia are untouched. The authored
+//! guide must follow the artwork: a painted tip far from its guide will still
+//! be offset from the simulated tip. Coarse triangles and discontinuous rest
+//! assignments can still create visible corners; sufficiently sampled art and
+//! accurate guides are required.
 //!
 //! **The assignment comes from rest geometry, once per bake.** Each descendant
 //! vertex is mapped into spine space through the rest transforms and projected
@@ -159,14 +160,14 @@ fn rotate_about(pivot: Vec2, angle: f32) -> Affine2 {
     Affine2::from_mat2_translation(r, pivot - r * pivot)
 }
 
-/// One link, ready for the per-vertex loop: the composed transform of every
-/// joint above it, the hinge it turns about once those have moved it, and its
-/// own turn in radians.
+/// One physical link in its rest and composed frames. Adjacent links supply
+/// the three controls used to reconstruct the visible curve.
 #[derive(Debug, Clone, Copy)]
 struct ComposedLink {
-    above: Affine2,
-    hinge: Vec2,
-    angle: f32,
+    rest_start: Vec2,
+    rest_end: Vec2,
+    posed_start: Vec2,
+    posed_end: Vec2,
 }
 
 /// Compose the joints root to tip, once per spine per frame.
@@ -194,14 +195,79 @@ fn compose(joints: &[Vec2], bends: &[f32]) -> Option<Vec<ComposedLink>> {
         let rest_hinge = if k == 0 { Vec2::ZERO } else { joints[k - 1] };
         let hinge = above.transform_point2(rest_hinge);
         let angle = angle(k);
-        out.push(ComposedLink {
-            above,
-            hinge,
-            angle,
-        });
         above = rotate_about(hinge, angle) * above;
+        out.push(ComposedLink {
+            rest_start: rest_hinge,
+            rest_end: joints[k],
+            posed_start: hinge,
+            posed_end: above.transform_point2(joints[k]),
+        });
     }
     Some(out)
+}
+
+/// Round the joint path with quadratic Beziers between link midpoints.
+/// The curve stays inside the control polygon: a vertical hanging section
+/// cannot acquire the outward curl produced by rotating vertices about a
+/// hinge through only a fraction of its angle. Root and tip remain exact;
+/// internal joints are controls, not points the visible curve must pass through.
+fn curve_sample(links: &[ComposedLink], bend: VertexBend, posed: bool) -> (Vec2, Vec2) {
+    let endpoints = |k: usize| {
+        let l = &links[k];
+        if posed {
+            (l.posed_start, l.posed_end)
+        } else {
+            (l.rest_start, l.rest_end)
+        }
+    };
+    let k = bend.link as usize;
+    let t = bend.ramp;
+    let (start, end) = endpoints(k);
+    let corner = if t < 0.5 && k > 0 {
+        Some((endpoints(k - 1).0, start, end, t + 0.5))
+    } else if t >= 0.5 && k + 1 < links.len() {
+        Some((start, end, endpoints(k + 1).1, t - 0.5))
+    } else {
+        None
+    };
+    if let Some((before, joint, after, u)) = corner {
+        let a = (before + joint) * 0.5;
+        let c = (joint + after) * 0.5;
+        let left = a.lerp(joint, u);
+        let right = joint.lerp(c, u);
+        let tangent = right - left;
+        (
+            left.lerp(right, u),
+            if tangent.length_squared() > 1e-12 {
+                tangent
+            } else {
+                end - start
+            },
+        )
+    } else {
+        (start.lerp(end, t), end - start)
+    }
+}
+
+fn curve_transform(links: &[ComposedLink], bend: VertexBend) -> Affine2 {
+    if bend.link == 0 && bend.ramp == 0.0 {
+        return Affine2::IDENTITY;
+    }
+    let (rest, rest_tangent) = curve_sample(links, bend, false);
+    let (posed, posed_tangent) = curve_sample(links, bend, true);
+    // atan2 remains accurate for the tiny bends seen near rest; an acos of
+    // the normalized dot loses their magnitude to f32 cancellation.
+    let mut angle = rest_tangent
+        .perp_dot(posed_tangent)
+        .atan2(rest_tangent.dot(posed_tangent));
+    // Keep the attachment cross-section fixed, blending its orientation into
+    // the first link. The centre line still follows the simulated path.
+    if bend.link == 0 && bend.ramp < 0.5 {
+        let t = 2.0 * bend.ramp;
+        angle *= t * t * (3.0 - 2.0 * t);
+    }
+    let rotation = Mat2::from_angle(angle);
+    Affine2::from_mat2_translation(rotation, posed - rotation * rest)
 }
 
 /// Arc length at the head of each link, and each link's own length. `out[k]`
@@ -489,17 +555,11 @@ fn turn_child(
         for (i, &base_v) in verts.iter().enumerate() {
             let current = base_v - origin + cur_deform[i];
             let bend = pins[i];
-            let Some(link) = links.get(bend.link as usize) else {
+            if bend.link as usize >= links.len() {
                 scratch.push(Vec2::ZERO);
                 continue;
-            };
-            // Zero slope at both ends makes the deformation tangent agree
-            // with the adjacent link (and with unbent art above the root).
-            // A linear angle ramp adds a one-sided angular-velocity term at
-            // each joint, producing a visible corner even on a smooth strip.
-            let t = bend.ramp;
-            let smooth = t * t * (3.0 - 2.0 * t);
-            let turn = rotate_about(link.hinge, smooth * link.angle) * link.above;
+            }
+            let turn = curve_transform(links, bend);
             let turned = spine_to_child
                 .transform_point2(turn.transform_point2(child_to_spine.transform_point2(current)));
             let offset = turned - current;

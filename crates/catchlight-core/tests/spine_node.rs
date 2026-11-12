@@ -2,9 +2,10 @@
 //! The spine as a node the puppet ticks.
 //!
 //! The claim a spine exists to make is that its joints *compose*: a vertex
-//! under two bent links lands where the two rigid rotations put it, and no
-//! link changes length doing it. Summed per-link deform bindings do neither,
-//! which is what these tests measure against. The rest is wiring — that the
+//! at the tip lands where the rigid rotations compose. Internal joints are
+//! controls for a rounded surface, and cannot introduce an outward curl.
+//! Summed per-link deform bindings do not preserve that composed path.
+//! The rest is wiring — that the
 //! bends come off the params, that a vertex above the root stays put, that a
 //! turned part and a group above the spine both still work.
 //!
@@ -23,19 +24,44 @@ const DT: f32 = 1.0 / 60.0;
 const THIRTY_DEGREES: f32 = 1.0 / 6.0;
 
 #[test]
+fn a_strand_turning_vertical_does_not_bulge_past_its_joint_path() {
+    let f = Fixture::new(3, 100.0, 301);
+    // A supported upper link leans with the scalp; the two lower links hang
+    // vertically. The rendered centre line must not curl out and back while
+    // the simulated path has already become vertical.
+    let posed = f.bend(&[0.1, -0.1, 0.0]);
+    let hanging_x = 100.0 * (0.1 * std::f32::consts::PI).sin();
+    for row in 0..301 {
+        let center = (posed[2 * row] + posed[2 * row + 1]) * 0.5;
+        assert!(
+            center.x <= hanging_x + 0.001,
+            "row {row}: visible hair bulges to {}, beyond hanging path {hanging_x}",
+            center.x
+        );
+    }
+}
+
+#[test]
 fn a_bent_strip_has_no_tangent_jump_at_a_joint() {
     let f = Fixture::new(2, 100.0, 2001);
     let posed = f.bend(&[0.08, -0.03]);
     // Check the visible edges, not just the simulated centre-line joints.
     // Their two one-sided tangents must approach the same direction.
-    for column in 0..2 {
-        let before = posed[2000 + column] - posed[1998 + column];
-        let after = posed[2002 + column] - posed[2000 + column];
-        let kink = before.angle_to(after).abs().to_degrees();
-        assert!(
-            kink < 0.5,
-            "edge {column} has a {kink} degree corner at the joint"
-        );
+    for row in [500, 1000, 1500] {
+        for column in 0..2 {
+            let index = 2 * row + column;
+            let before = posed[index] - posed[index - 2];
+            let after = posed[index + 2] - posed[index];
+            let kink = before
+                .perp_dot(after)
+                .atan2(before.dot(after))
+                .abs()
+                .to_degrees();
+            assert!(
+                kink < 0.5,
+                "edge {column}, row {row} has a {kink} degree corner"
+            );
+        }
     }
 }
 
@@ -185,7 +211,7 @@ fn composed(joints: &[Vec2], bends: &[f32], link: usize, ramp: f32, p: Vec2) -> 
 }
 
 /// Two links bent a sixth of a turn each put the tip exactly where the two
-/// rotations compose — and leave both links the length they were drawn.
+/// rotations compose, with a rounded surface between the endpoints.
 ///
 /// This is the whole reason the kind exists. Two summed per-link deform
 /// bindings authored at the same bends miss that point by a visible margin and
@@ -206,25 +232,18 @@ fn two_bent_links_land_on_the_composed_position() {
         "tip at {tip:?}, composed rigid answer {want:?}"
     );
 
-    // Neither link changed length: the turn is rigid on the spine's own axis.
+    // The surface rounds the internal joint inside the control polygon.
     let root = 0.5 * (posed[0] + posed[1]);
     let knee = 0.5 * (posed[2] + posed[3]);
-    assert!(
-        ((knee - root).length() - 50.0).abs() < 1e-3,
-        "upper link is {} long",
-        (knee - root).length()
-    );
-    assert!(
-        ((tip - knee).length() - 50.0).abs() < 1e-3,
-        "lower link is {} long",
-        (tip - knee).length()
-    );
+    let joint = composed(&joints, &bends, 0, 1.0, joints[0]);
+    let rounded = 0.125 * root + 0.75 * joint + 0.125 * tip;
+    assert!(knee.distance(rounded) < 1e-4);
 }
 
 /// The same claim, one link deeper and at two different bends, so a test that
 /// only happened to work for equal angles would fail.
 #[test]
-fn three_unequal_bends_compose_at_every_joint() {
+fn three_unequal_bends_round_the_composed_joint_path() {
     let f = Fixture::new(3, 40.0, 4);
     let bends = [0.2, -0.1, 0.35];
     let posed = f.bend(&bends);
@@ -233,62 +252,35 @@ fn three_unequal_bends_compose_at_every_joint() {
         Vec2::new(0.0, -80.0),
         Vec2::new(0.0, -120.0),
     ];
-    for (row, (link, rest)) in [(0usize, 0.0f32), (1, -40.0), (2, -80.0), (3, -120.0)]
-        .into_iter()
-        .enumerate()
-        .map(|(r, (l, y))| (r, (l.min(2), y)))
-    {
-        let ramp = if row == 0 { 0.0 } else { 1.0 };
+    let mut controls = vec![Vec2::ZERO];
+    for (k, joint) in joints.iter().enumerate() {
+        controls.push(composed(&joints, &bends, k, 1.0, *joint));
+    }
+    for row in 0..4 {
         let got = 0.5 * (posed[row * 2] + posed[row * 2 + 1]);
-        let want = composed(&joints, &bends, link, ramp, Vec2::new(0.0, rest));
-        assert!(
-            (got - want).length() < 1e-3,
-            "row {row} at {got:?}, composed {want:?}"
-        );
+        let want = if row == 0 || row == 3 {
+            controls[row]
+        } else {
+            controls[row - 1] * 0.125 + controls[row] * 0.75 + controls[row + 1] * 0.125
+        };
+        assert!(got.distance(want) < 1e-3, "row {row}: {got:?} != {want:?}");
     }
 }
 
-/// Halfway into a link, a vertex takes half that link's turn — the ramp that
-/// makes a crease a bend rather than a hinge. This pins the mapping; what the
-/// mapping costs in length is measured by the test after it.
+/// A single link has no internal joint to round: its centre line follows
+/// the rigid link, rather than spiralling away from it.
 #[test]
-fn a_vertex_halfway_into_a_link_takes_half_its_turn() {
-    // Five rows over one 100 px link: row 2 sits at the middle.
-    let f = Fixture::new(1, 100.0, 5);
+fn a_single_link_has_no_artificial_curl_or_length_inflation() {
+    let f = Fixture::new(1, 100.0, 101);
     let posed = f.bend(&[0.5]);
-    let middle = 0.5 * (posed[4] + posed[5]);
-    // A bend of 0.5 half turns is a quarter turn; half of it is an eighth,
-    // about the root, applied to the vertex at (0, -50).
-    let (sin, cos) = std::f32::consts::FRAC_PI_4.sin_cos();
-    let want = Vec2::new(50.0 * sin, -50.0 * cos);
-    assert!(
-        (middle - want).length() < 1e-3,
-        "middle at {middle:?}, want {want:?}"
-    );
-}
-
-/// **The joints are exact and the art between them stretches**, and this
-/// pins how much: a 100 px link bent a quarter turn keeps its tip 100 px from
-/// the root, and its three-row centre line measures 123.7 px, the middle row
-/// having turned half as far about the same hinge. The number is the ramp's
-/// trade, documented in the module doc, and a change that moves it is a
-/// change to what a bend looks like.
-#[test]
-fn the_ramp_stretches_the_interior_between_exact_joints() {
-    // Three rows over one 100 px link: root, middle and tip.
-    let f = Fixture::new(1, 100.0, 3);
-    let posed = f.bend(&[0.5]);
-    let centre = |row: usize| 0.5 * (posed[2 * row] + posed[2 * row + 1]);
-    let (root, middle, tip) = (centre(0), centre(1), centre(2));
-    assert!(
-        (tip - root).length() > 100.0 - 1e-3 && (tip - root).length() < 100.0 + 1e-3,
-        "the joint kept its distance from the hinge: tip at {tip:?}",
-    );
-    let along = (middle - root).length() + (tip - middle).length();
-    assert!(
-        (along - 123.68).abs() < 0.05,
-        "the centre line of a quarter-turn link measures {along}, want 123.68",
-    );
+    for row in 0..101 {
+        let centre = (posed[2 * row] + posed[2 * row + 1]) * 0.5;
+        let want = Vec2::new(row as f32, 0.0);
+        assert!(
+            centre.distance(want) < 1e-4,
+            "row {row}: {centre:?} != {want:?}"
+        );
+    }
 }
 
 /// A vertex above the spine's root does not move, however hard the spine

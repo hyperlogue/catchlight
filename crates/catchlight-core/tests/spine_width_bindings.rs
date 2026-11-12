@@ -51,13 +51,18 @@ fn check_frame(f: &Fixture, puppet: &Puppet, yaw: f32, body: f32) {
                 + envelope(t)
                     * ((1.0 - smooth(t)) * width_delta(yaw, b[0])
                         + smooth(t) * width_delta(yaw, b[1]));
-            let angle = std::f32::consts::PI
-                * if t <= 0.5 {
-                    smooth(2.0 * t) * b[0]
-                } else {
-                    b[0] + smooth(2.0 * t - 1.0) * b[1]
-                };
-            let expected = Mat2::from_angle(angle) * Vec2::new(10.0 * ratio, 0.0);
+            // The cross-section follows the tangent of the rounded joint
+            // path, with a fixed attachment blended into the first link.
+            let first = Mat2::from_angle(std::f32::consts::PI * b[0]) * Vec2::X;
+            let last = Mat2::from_angle(std::f32::consts::PI * (b[0] + b[1])) * Vec2::X;
+            let normal = if t < 0.25 {
+                Mat2::from_angle(std::f32::consts::PI * smooth(4.0 * t) * b[0]) * Vec2::X
+            } else if t < 0.75 {
+                first.lerp(last, 2.0 * t - 0.5).normalize()
+            } else {
+                last
+            };
+            let expected = normal * (10.0 * ratio);
             let cross_section = local[2 * row + 1] - local[2 * row];
             assert!(
                 cross_section.distance(expected) < 1e-4,

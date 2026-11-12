@@ -4,11 +4,14 @@
 //! so attachments, output params, limits and visible deformation participate.
 //! Requires the Lan Git LFS object, like the visual suite.
 //!
-//! Long locks keep a sprung root that follows the scalp and limp lower
-//! links. The second joint has room to counter head roll; narrow stops along
+//! Long locks keep a sprung root that follows the scalp. Back lengths are
+//! limp; the two long front locks retain a soft elastic response. The second joint has room to counter head roll; narrow stops along
 //! the lower lengths must not prevent them from hanging under gravity.
-//! Back locks have a short supported root and a short transition into their
+//! Back locks have a short supported root and a gradual transition into their
 //! hanging length, so head roll cannot carry a long upper section sideways.
+//! Front guides follow the painted tips. Authored head-roll deforms shape the
+//! reviewed front curves and back silhouette before the live spine transports
+//! them; the mesh checks below cover those curves as well as particle motion.
 //! The fringe instead uses stiff elastic links. Its simulation roots and the
 //! artwork must share attachments; inverse translations on the parts conceal
 //! a displaced simulation pivot until the links bend.
@@ -16,6 +19,138 @@
 use catchlight_core::{Model, NodeKind, ParamId, Puppet, Vec2, Vec3};
 
 const DT: f32 = 1.0 / 60.0;
+
+/// Cross-section midpoint in the evaluated mesh, selected by authored Y.
+/// This observes the visible deformation, not the particle-chain endpoint.
+fn section_center(puppet: &Puppet, model: &Model, id: &str, y: f32) -> Vec2 {
+    let geometry = catchlight_core::geometry::EvaluatedGeometry::new(model, puppet).unwrap();
+    let mesh = geometry
+        .mesh(&catchlight_core::NodeId::new(id).unwrap())
+        .unwrap();
+    let mut crossings = Vec::new();
+    for i in 0..mesh.triangle_count() {
+        let [a, b, c] = mesh.triangle(i).unwrap();
+        for (a, b) in [(a, b), (b, c), (c, a)] {
+            let a = mesh.vertex(a as usize).unwrap();
+            let b = mesh.vertex(b as usize).unwrap();
+            if (a.rest.y - b.rest.y).abs() < 1e-6 {
+                continue;
+            }
+            let t = (y - a.rest.y) / (b.rest.y - a.rest.y);
+            if (0.0..=1.0).contains(&t) {
+                crossings.push((
+                    a.rest.x + (b.rest.x - a.rest.x) * t,
+                    a.world.lerp(b.world, t).truncate(),
+                ));
+            }
+        }
+    }
+    crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (crossings.first().unwrap().1 + crossings.last().unwrap().1) * 0.5
+}
+
+#[test]
+fn front_lock_curves_reach_the_reviewed_positions() {
+    let model = lan();
+    let mut puppet = Puppet::new(&model);
+    puppet.set_param_value(&ParamId::new("head_roll").unwrap(), -30.0);
+    puppet.settle_physics(&model);
+    puppet.tick(&model, DT);
+    // Landmarks read from the approved tilted-head reference, in model
+    // coordinates. Pin the belly and tip of each curve, not only its bounds.
+    for (part, y, want) in [
+        ("front-hair-lock-2", 540.0, Vec2::new(-108.0, 500.0)),
+        ("front-hair-lock-2", 480.0, Vec2::new(-116.0, 430.0)),
+        ("front-hair-lock-2", 423.98, Vec2::new(-110.0, 372.0)),
+        ("front-hair-lock-7", 570.0, Vec2::new(147.0, 540.0)),
+        ("front-hair-lock-7", 495.0, Vec2::new(154.0, 465.0)),
+        ("front-hair-lock-7", 420.93, Vec2::new(132.0, 380.0)),
+    ] {
+        let got = section_center(&puppet, &model, part, y);
+        assert!(
+            got.distance(want) < 1.0,
+            "{part} at rest y={y}: curve at {got:?}, reference {want:?}"
+        );
+    }
+}
+
+#[test]
+fn back_hair_outline_follows_the_reviewed_fall() {
+    let model = lan();
+    let mut puppet = Puppet::new(&model);
+    puppet.set_param_value(&ParamId::new("head_roll").unwrap(), -30.0);
+    puppet.settle_physics(&model);
+    puppet.tick(&model, DT);
+    let geometry = catchlight_core::geometry::EvaluatedGeometry::new(&model, &puppet).unwrap();
+    // The outer back-hair contour beside the cheek and neck. Mesh boundaries
+    // include a small transparent margin around the painted silhouette.
+    for (y, expected_x) in [(775.0, -107.61), (725.0, -116.16), (675.0, -126.26)] {
+        let mut left = f32::INFINITY;
+        for id in model
+            .node_ids()
+            .filter(|id| id.as_str().starts_with("back-hair-lock-"))
+        {
+            let mesh = geometry.mesh(id).unwrap();
+            for (_, [a, b, c]) in mesh.triangles() {
+                for (a, b) in [(a, b), (b, c), (c, a)] {
+                    let a = mesh.vertex(a as usize).unwrap().world;
+                    let b = mesh.vertex(b as usize).unwrap().world;
+                    if (a.y - b.y).abs() < 1e-6 {
+                        continue;
+                    }
+                    let t = (y - a.y) / (b.y - a.y);
+                    if (0.0..=1.0).contains(&t) {
+                        left = left.min(a.x + (b.x - a.x) * t);
+                    }
+                }
+            }
+        }
+        assert!(
+            (left - expected_x).abs() < 5.0,
+            "back hair at y={y}: edge {left}, reference {expected_x}"
+        );
+    }
+}
+
+#[test]
+fn long_lock_mesh_tips_lag_a_small_head_roll() {
+    let model = lan();
+    let mut live = Puppet::new(&model);
+    live.settle_physics(&model);
+    live.tick(&model, DT);
+    let samples = [("front-hair-lock-2", 423.98), ("front-hair-lock-7", 420.93)];
+    let before = samples.map(|(id, y)| section_center(&live, &model, id, y));
+    let mut carried = Puppet::new(&model);
+    carried.set_physics_enabled(false);
+    for id in model.node_ids() {
+        let NodeKind::Spine(spine) = &live.get(live.node_idx(id).unwrap()).unwrap().kind else {
+            continue;
+        };
+        if spine.chain.is_none() {
+            continue;
+        }
+        let catchlight_core::model::ModelNodeKind::Spine(authored) = &model.node(id).unwrap().kind
+        else {
+            unreachable!()
+        };
+        for param in authored.targets().iter().flatten() {
+            carried.set_param_value(param, live.param_value(param).unwrap_or(0.0));
+        }
+    }
+    let roll = ParamId::new("head_roll").unwrap();
+    live.set_param_value(&roll, 1.0);
+    carried.set_param_value(&roll, 1.0);
+    live.tick(&model, DT);
+    carried.tick(&model, DT);
+    for (i, (id, y)) in samples.into_iter().enumerate() {
+        let actual = section_center(&live, &model, id, y).distance(before[i]);
+        let rigid = section_center(&carried, &model, id, y).distance(before[i]);
+        assert!(
+            actual < rigid * 0.95,
+            "{id}: mesh tip moved {actual}px, rigid carry {rigid}px"
+        );
+    }
+}
 
 fn lan() -> Model {
     Model::from_clm_bytes(

@@ -152,13 +152,14 @@ import/export and CLI file operations on the generated model, a second
 hairstyle, and the unsplit fallback. Pixel reconstruction and missing coverage
 remain Carver acceptance work; no width mechanism can supply missing paint.
 
-The spine's eased angle ramp has zero slope at each link endpoint, avoiding
-the tangent jump that a linear ramp introduces there. It cannot smooth a
-coarse mesh or a discontinuous nearest-link assignment around a bent rest
-polyline, nor prevent triangle inversions. Its documented interior stretch
-remains. Small per-link bends, supported root geometry and appropriate mesh
-samples must still pass the visual checks. Do not describe the solver as
-rate-independent.
+The spine reconstructs a rounded curve inside its joint control polygon,
+then transports each width-adjusted cross-section with the curve's tangent.
+Internal joints are controls rather than exact surface interpolation points;
+root and tip remain exact. This avoids the artificial curls and length
+inflation of partial hinge rotations. It cannot smooth a coarse mesh or a
+discontinuous nearest-link assignment around a bent rest polyline, nor prevent
+triangle inversions. Accurate guides and appropriate mesh samples must still
+pass the visual checks. Do not describe the solver as rate-independent.
 
 Consider native support only if an actual trial needs a coupled orientation
 function beyond two-input fields, a shared nonlinear width budget that cannot
