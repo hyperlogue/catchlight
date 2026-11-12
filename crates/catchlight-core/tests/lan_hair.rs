@@ -7,6 +7,8 @@
 //! Long locks keep a sprung root that follows the scalp and limp lower
 //! links. The second joint has room to counter head roll; narrow stops along
 //! the lower lengths must not prevent them from hanging under gravity.
+//! Back locks have a short supported root and a short transition into their
+//! hanging length, so head roll cannot carry a long upper section sideways.
 //! The fringe instead uses stiff elastic links. Its simulation roots and the
 //! artwork must share attachments; inverse translations on the parts conceal
 //! a displaced simulation pivot until the links bend.
@@ -204,8 +206,23 @@ fn long_hair_hangs_down_while_its_roots_follow_head_roll() {
     }
     for angle in [-30.0, 30.0] {
         puppet.set_param_value(&roll, angle);
-        for _ in 0..300 {
+        for frame in 0..300 {
             puppet.tick(&model, DT);
+            for id in model
+                .node_ids()
+                .filter(|id| id.as_str().starts_with("Back-Hair-Lock"))
+            {
+                let idx = puppet.node_idx(id).unwrap();
+                let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
+                    continue;
+                };
+                let chain = spine.chain.as_ref().unwrap();
+                let root = puppet.transforms().get(idx).w_axis;
+                assert!(
+                    chain.anchor.distance(Vec2::new(root.x, -root.y)) < 0.01,
+                    "{id} at {angle}, frame {frame}: back-hair root lagged behind its attachment"
+                );
+            }
         }
         let mut locks = 0;
         for id in model.node_ids() {
@@ -229,7 +246,7 @@ fn long_hair_hangs_down_while_its_roots_follow_head_roll() {
                 .transform_point3(Vec3::from_array(node.transform.translation));
             assert!(
                 chain.anchor.distance(Vec2::new(expected.x, -expected.y)) < 0.01,
-                "{id} at {angle}: simulation root must remain on the scalp"
+                "{id} at {angle}: simulation root must remain on the scalp: anchor={:?}, expected={expected:?}", chain.anchor
             );
             let particles = &chain.particles;
             let root = particles[1].pos - particles[0].pos;
@@ -243,6 +260,11 @@ fn long_hair_hangs_down_while_its_roots_follow_head_roll() {
                 root_bend < 5.0,
                 "{id} at {angle}: root detached from head direction by {root_bend} degrees"
             );
+            if id.as_str().starts_with("Back-Hair-Lock") {
+                assert!(root.x.abs() < 8.0,
+                    "{id} at {angle}: supported root carries the back hair {}px sideways before it can hang down",
+                    root.x.abs());
+            }
             let n = particles.len();
             let tail = particles[n - 1].pos - particles[n - 2].pos;
             let tilt = tail.angle_to(Vec2::Y).abs().to_degrees();
