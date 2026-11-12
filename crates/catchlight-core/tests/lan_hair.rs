@@ -14,7 +14,9 @@
 //! Front guides follow the painted tips. Authored head-roll deforms shape the
 //! reviewed front curves and back silhouette before the live spine transports
 //! them; the mesh checks below cover those curves as well as particle motion.
-//! The fringe instead uses stiff elastic links. Its simulation roots and the
+//! The connected right fringe shares the side lock's supported upper link
+//! and head-roll deformation field, so its painted cuts cannot pull apart.
+//! The left swept fringe uses stiff elastic links. Simulation roots and the
 //! artwork must share attachments; inverse translations on the parts conceal
 //! a displaced simulation pivot until the links bend.
 
@@ -276,37 +278,28 @@ fn assert_fringe_shape(model: &Model, simulated: &Puppet, drawn: &Puppet, pose: 
     use catchlight_core::geometry::EvaluatedGeometry;
     let actual = EvaluatedGeometry::new(model, simulated).unwrap();
     let reference = EvaluatedGeometry::new(model, drawn).unwrap();
-    let mut meshes = 0;
-    for id in model.node_ids() {
-        let NodeKind::Spine(spine) = &simulated.get(simulated.node_idx(id).unwrap()).unwrap().kind
-        else {
-            continue;
-        };
-        if spine.chain.is_none() || spine.joints.len() >= 6 || !id.as_str().contains("Hair-Lock") {
-            continue;
-        }
-        for child in model.node(id).unwrap().children() {
-            if !matches!(
-                model.node(child).unwrap().kind,
-                catchlight_core::model::ModelNodeKind::Part(_)
-            ) {
-                continue;
-            }
-            meshes += 1;
-            let mesh = actual.mesh(child).unwrap();
-            let rest = reference.mesh(child).unwrap();
-            let worst = mesh
-                .vertices()
-                .zip(rest.vertices())
-                .map(|(a, b)| a.world.distance(b.world))
-                .fold(0.0_f32, f32::max);
-            assert!(
-                worst < limit,
-                "{child} at {pose}: fringe moved {worst}px away from its drawing"
-            );
-        }
+    // Select the visible fringe pieces rather than inferring their role
+    // from link count: the right cluster shares the side lock's upper support.
+    for id in [
+        "front-hair-lock-13",
+        "front-hair-lock-22",
+        "front-hair-lock-23",
+        "front-hair-lock-23-under",
+        "front-hair-lock-24",
+    ] {
+        let id = catchlight_core::NodeId::new(id).unwrap();
+        let mesh = actual.mesh(&id).unwrap();
+        let rest = reference.mesh(&id).unwrap();
+        let worst = mesh
+            .vertices()
+            .zip(rest.vertices())
+            .map(|(a, b)| a.world.distance(b.world))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            worst < limit,
+            "{id} at {pose}: fringe moved {worst}px away from its drawing"
+        );
     }
-    assert!(meshes >= 4, "must exercise all four short fringe locks");
 }
 
 #[test]
