@@ -18,9 +18,9 @@
 //! the mesh checks below cover those curves as well as particle motion.
 //! The connected right fringe shares the side lock's supported upper link
 //! and head-roll deformation field, so its painted cuts cannot pull apart.
-//! The left swept fringe uses stiff elastic links. Simulation roots and the
-//! artwork must share attachments; inverse translations on the parts conceal
-//! a displaced simulation pivot until the links bend.
+//! The left swept fringe uses stiff elastic links. Simulation roots follow
+//! the guide embedded in each lock's art, and no hair spine is slid against
+//! its art on head yaw or pitch: the rig keeps both on one attachment.
 
 use catchlight_core::{Model, NodeIdx, NodeKind, ParamId, Puppet, Vec2, Vec3};
 
@@ -247,6 +247,42 @@ fn front_locks_do_not_ring_after_a_tiny_head_roll() {
         assert!(
             ringing < 0.5,
             "{id}: {ringing}px of extra back-and-forth tip travel after a tiny roll"
+        );
+    }
+}
+
+/// Head yaw and pitch reach the hair through the head's warp alone: no hair
+/// spine, and no part directly under one, carries a translation key on them.
+/// A spine slid one way with its art slid back renders the same, but leaves
+/// the node somewhere the art is not.
+#[test]
+fn no_hair_spine_is_slid_against_its_art() {
+    let model = lan();
+    let head = [
+        ParamId::new("head_yaw").unwrap(),
+        ParamId::new("head_pitch").unwrap(),
+    ];
+    for binding in model.bindings() {
+        let key = binding.key();
+        let node = model.node(&key.node).unwrap();
+        let on_spine = |n: &catchlight_core::ModelNode| {
+            matches!(n.kind, catchlight_core::model::ModelNodeKind::Spine(_))
+        };
+        let under_spine = on_spine(node)
+            || node
+                .parent()
+                .and_then(|p| model.node(p))
+                .is_some_and(on_spine);
+        let slide = matches!(
+            key.target,
+            catchlight_core::BindingTarget::Scalar(
+                catchlight_core::ScalarTarget::Tx | catchlight_core::ScalarTarget::Ty
+            )
+        );
+        assert!(
+            !(under_spine && slide && head.iter().any(|p| key.params.contains(p))),
+            "{} slides on head yaw or pitch",
+            key.node
         );
     }
 }
