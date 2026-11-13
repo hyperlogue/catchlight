@@ -71,6 +71,14 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
               { categoryName: "eyeBlinkLeft", score: 1 },
               { categoryName: "jawOpen", score: 0.5 }
             ] }] }; }
+        }) };
+        const point = (x, y, z) => ({ x, y, z, visibility: 1 });
+        const shoulders = (left, right) => [...Array(11).fill(point(0, 0, 0)), left, right];
+        export const PoseLandmarker = { createFromOptions: async () => ({
+          close() { globalThis.poserClosed = true; },
+          // Level shoulders turned toward the subject's left: that shoulder is 0.1 m further away.
+          detectForVideo() { return { landmarks: [shoulders(point(0.7, 0.5, 0), point(0.5, 0.5, 0))],
+            worldLandmarks: [shoulders(point(0.1, 0, 0.1), point(-0.1, 0, 0))] }; }
         }) };`,
     }));
     await page.goto(`${server.resolvedUrls!.local[0]}?demo=face&probe=1`);
@@ -91,27 +99,33 @@ test.skipIf(!executablePath)("the demo preloads Lan and reopens it from the empt
     const readPose = () => page.evaluate(async () => {
       const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
       const session = editor.session((await editor.listSessions())[0]!.session)!;
-      return session.params().filter(p => ["eye_left_open", "eye_right_open", "mouth_open"].includes(p.name))
+      return session.params().filter(p => ["eye_left_open", "eye_right_open", "mouth_open", "body_yaw"].includes(p.name))
         .map(p => ({ name: p.name, value: session.paramValue(p.id), default: p.default }));
     });
     // Mirrored by default: the tracked left eye closes the eye on that side of the screen.
     let pose = await readPose();
     expect(pose.find(p => p.name === "eye_right_open")?.value).toBe(0);
     expect(pose.find(p => p.name === "mouth_open")?.value).toBe(0.75);
+    // The torso eases toward the tracked shoulder turn and stops at the rig's limit.
+    const bodyYaw = async () => (await readPose()).find(p => p.name === "body_yaw")?.value;
+    for (let tries = 0; tries < 100 && (await bodyYaw()) !== -7.5; tries++) await page.waitForTimeout(100);
+    expect(await bodyYaw()).toBe(-7.5);
     await page.getByRole("switch", { name: "Mirror left and right" }).uncheck();
     await page.waitForFunction(() => !document.querySelector("video")!.classList.contains("mirrored"));
     for (let tries = 0; tries < 100 && (await readPose()).find(p => p.name === "eye_left_open")?.value !== 0; tries++)
       await page.waitForTimeout(100);
     pose = await readPose();
     expect(pose.find(p => p.name === "eye_left_open")?.value).toBe(0);
+    for (let tries = 0; tries < 100 && (await bodyYaw()) !== 7.5; tries++) await page.waitForTimeout(100);
+    expect(await bodyYaw()).toBe(7.5);
     await page.getByRole("switch", { name: "Stats for nerds" }).check();
     const stats = page.getByRole("region", { name: "Stats for nerds" });
     await stats.getByText("mouth_open").waitFor();
     expect(await page.locator(".tier-badge").textContent()).toMatch(/^WebGPU$|^WebGL2$/);
     await page.getByRole("button", { name: "Stop camera" }).click();
     expect(await page.evaluate(() => {
-      const state = globalThis as unknown as { testStream: MediaStream; detectorClosed: boolean };
-      return state.detectorClosed && state.testStream.getTracks().every(t => t.readyState === "ended");
+      const state = globalThis as unknown as { testStream: MediaStream; detectorClosed: boolean; poserClosed: boolean };
+      return state.detectorClosed && state.poserClosed && state.testStream.getTracks().every(t => t.readyState === "ended");
     })).toBe(true);
     for (const param of await readPose()) expect(param.value).toBe(param.default);
     await page.getByRole("link", { name: "← All demos" }).click();

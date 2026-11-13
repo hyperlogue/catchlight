@@ -23,8 +23,9 @@ the web-platform glue.
 
 The landing page offers an editor demo (`?demo=editor`) and a face-tracking
 demo (`?demo=face`). Both preload Lan from `tests/models/lan.clm`. Face tracking
-starts only after clicking **Start camera**, processes frames locally, and
-downloads MediaPipe assets from Google and jsDelivr. It requires HTTPS (or
+also follows shoulder posture. It starts only after clicking **Start camera**,
+processes frames locally, and downloads MediaPipe assets from Google and
+jsDelivr. It requires HTTPS (or
 localhost) and camera permission; stopping or leaving the tab releases the
 camera. Tracking poses an ephemeral model without saving changes.
 Fetch Git LFS objects before building. The empty-state starter action reopens

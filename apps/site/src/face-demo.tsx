@@ -2,15 +2,50 @@
  * Tracking only poses the replica: no authored keys or saved model changes.
  * Each run owns its stream, detector and frame loop, including late async arrivals.
  * Mirroring is read per frame, so toggling it never restarts the camera.
+ * The face detector drives the head and expression; a second pose detector
+ * drives the torso from the shoulders, eased because pose depth is noisy.
+ * A torso param eases back to rest whenever its landmarks are out of view.
  */
 import type { Camera, Session } from "@catchlight/core";
 import { useEditor, Viewport } from "@catchlight/react";
-import type { FaceLandmarker } from "@mediapipe/tasks-vision";
+import type { FaceLandmarker, PoseLandmarker, PoseLandmarkerResult } from "@mediapipe/tasks-vision";
 import { useEffect, useRef, useState } from "react";
 import { StatsForNerds, TierBadge, trackingStats, useGpuTier } from "./face-stats.js";
 
 /** Lan's head with room for a turn and a tilt. */
 const FACE_CAMERA: Camera = { center: [-3, 770], height: 520 };
+
+const MODELS = "https://storage.googleapis.com/mediapipe-models";
+/** MediaPipe pose landmark indices; "left" is the subject's own left. */
+const LEFT_SHOULDER = 11, RIGHT_SHOULDER = 12, LEFT_HIP = 23, RIGHT_HIP = 24;
+/** Share of the gap to the target closed per detection. */
+const BODY_EASE = 0.35;
+
+/** Torso targets in rig units, unmirrored and before clamping. A param is
+ * absent while the landmarks it needs are out of view. */
+export function torsoTargets(result: PoseLandmarkerResult): Map<string, number> {
+  const targets = new Map<string, number>();
+  const image = result.landmarks[0], world = result.worldLandmarks[0];
+  if (!image || !world) return targets;
+  const seen = (...indices: number[]) => indices.every(i => (image[i]?.visibility ?? 0) > 0.5);
+  if (!seen(LEFT_SHOULDER, RIGHT_SHOULDER)) return targets;
+  const degrees = 180 / Math.PI;
+  // World landmarks are metric: x toward image right, y down, z away from the camera.
+  const l = world[LEFT_SHOULDER]!, r = world[RIGHT_SHOULDER]!;
+  // The rig's torso range is a few degrees, so a real turn is scaled down to fit.
+  targets.set("body_yaw", Math.atan2(r.z - l.z, l.x - r.x) * degrees * 0.5);
+  // Lan's body_roll runs opposite to head_roll.
+  targets.set("body_roll", Math.atan2(l.y - r.y, l.x - r.x) * degrees);
+  // Sway: the shoulder midpoint reaches the full range a quarter frame off centre.
+  targets.set("body_move_x", (0.5 - (image[LEFT_SHOULDER]!.x + image[RIGHT_SHOULDER]!.x) / 2) * 40);
+  if (seen(LEFT_HIP, RIGHT_HIP)) {
+    const lh = world[LEFT_HIP]!, rh = world[RIGHT_HIP]!;
+    // Lan's body_pitch is positive leaning toward the viewer.
+    const up = (lh.y + rh.y - l.y - r.y) / 2, forward = (lh.z + rh.z - l.z - r.z) / 2;
+    targets.set("body_pitch", Math.atan2(forward, up) * degrees * 0.5);
+  }
+  return targets;
+}
 
 export function FaceDemo({ session }: { session: Session }) {
   const editor = useEditor();
@@ -31,6 +66,9 @@ export function FaceDemo({ session }: { session: Session }) {
     let disposed = false;
     let stream: MediaStream | undefined;
     let detector: FaceLandmarker | undefined;
+    let poser: PoseLandmarker | undefined;
+    /** Eased torso values, by param name. */
+    const body = new Map<string, number>();
     let frame = 0;
     const params = session.params();
     const pose = (name: string, value: number) => {
@@ -43,6 +81,7 @@ export function FaceDemo({ session }: { session: Session }) {
       for (const p of params) session.setParam(p.id, p.default);
       stats.driven.clear();
       stats.shapes = [];
+      body.clear();
     };
     const cleanup = () => {
       disposed = true;
@@ -50,6 +89,8 @@ export function FaceDemo({ session }: { session: Session }) {
       stream?.getTracks().forEach(track => track.stop());
       detector?.close();
       detector = undefined;
+      poser?.close();
+      poser = undefined;
       if (video.current) video.current.srcObject = null;
       reset();
     };
@@ -72,16 +113,23 @@ export function FaceDemo({ session }: { session: Session }) {
       await element.play();
       if (disposed) return;
       setStatus("Loading face tracking…");
-      const { FaceLandmarker, FilesetResolver } = await import("@mediapipe/tasks-vision");
+      const { FaceLandmarker, FilesetResolver, PoseLandmarker } = await import("@mediapipe/tasks-vision");
       const files = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm");
       if (disposed) return;
-      const loaded = await FaceLandmarker.createFromOptions(files, {
-        baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" },
-        runningMode: "VIDEO", numFaces: 1, outputFaceBlendshapes: true,
-        outputFacialTransformationMatrixes: true,
-      });
-      if (disposed) { loaded.close(); return; }
+      const [loaded, torso] = await Promise.all([
+        FaceLandmarker.createFromOptions(files, {
+          baseOptions: { modelAssetPath: `${MODELS}/face_landmarker/face_landmarker/float16/1/face_landmarker.task` },
+          runningMode: "VIDEO", numFaces: 1, outputFaceBlendshapes: true,
+          outputFacialTransformationMatrixes: true,
+        }),
+        PoseLandmarker.createFromOptions(files, {
+          baseOptions: { modelAssetPath: `${MODELS}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task` },
+          runningMode: "VIDEO", numPoses: 1,
+        }),
+      ]);
+      if (disposed) { loaded.close(); torso.close(); return; }
       detector = loaded;
+      poser = torso;
       let lastTime = -1;
       let lastFrame = 0;
       const tick = (now: number) => {
@@ -93,13 +141,14 @@ export function FaceDemo({ session }: { session: Session }) {
             lastFrame = now;
             const started = performance.now();
             const result = loaded.detectForVideo(element, now);
+            const posture = torso.detectForVideo(element, now);
             stats.inferenceMs = performance.now() - started;
             stats.detections++;
             if (result.faceLandmarks.length === 0) {
               reset();
               setStatus("No face in view. Face the camera in good light.");
             } else {
-              setStatus("Tracking live — turn your head, blink, or open your mouth.");
+              setStatus("Tracking live — turn your head, blink, open your mouth, or lean.");
               stats.faces++;
               const categories = result.faceBlendshapes[0]?.categories ?? [];
               stats.shapes = categories.filter(c => c.categoryName !== "_neutral")
@@ -121,6 +170,14 @@ export function FaceDemo({ session }: { session: Session }) {
                 pose("head_yaw", -side * Math.atan2(m[8]!, m[10]!) * degrees);
                 pose("head_pitch", -Math.atan2(-m[9]!, Math.hypot(m[8]!, m[10]!)) * degrees);
                 pose("head_roll", -side * Math.atan2(m[1]!, m[5]!) * degrees);
+              }
+              const targets = torsoTargets(posture);
+              for (const name of ["body_yaw", "body_roll", "body_move_x", "body_pitch"]) {
+                // Like the head, turns and sway flip with the mirror; a lean does not.
+                const target = (targets.get(name) ?? 0) * (name === "body_pitch" ? 1 : -side);
+                const eased = (body.get(name) ?? 0) + (target - (body.get(name) ?? 0)) * BODY_EASE;
+                body.set(name, eased);
+                pose(name, eased);
               }
             }
           }
@@ -151,7 +208,7 @@ export function FaceDemo({ session }: { session: Session }) {
     </div>
     <aside className="face-controls">
       <p className="eyebrow">LIVE PERFORMANCE</p><h1>Your expressions.<br />Lan’s animation.</h1>
-      <p>Turn your head, blink, and open your mouth to bring Lan to life.</p>
+      <p>Turn your head, blink, open your mouth, and lean or turn your shoulders to bring Lan to life.</p>
       <video ref={video} muted playsInline className={mirrored ? "mirrored" : undefined}
         aria-label={mirrored ? "Mirrored camera preview" : "Camera preview"} />
       <p role="status">{status}</p>
