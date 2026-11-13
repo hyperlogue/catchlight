@@ -1679,3 +1679,281 @@ fn a_warp_over_the_art_moves_the_chain_root() {
         );
     }
 }
+
+/// A strip of art 20 px wide down a three-link strand's 150 px, cut every
+/// 30 px so a keyform can curve it: two columns, rows from 10 above the root
+/// to 170 below it.
+fn strip() -> ClmMesh {
+    let rows: Vec<f32> = (0..7).map(|r| 10.0 - 30.0 * r as f32).collect();
+    let mut verts = Vec::new();
+    for y in &rows {
+        verts.extend([-10.0, *y, 10.0, *y]);
+    }
+    let mut indices = Vec::new();
+    for r in 0..rows.len() as u16 - 1 {
+        let (a, b, c, d) = (2 * r, 2 * r + 1, 2 * r + 3, 2 * r + 2);
+        indices.extend([a, b, c, a, c, d]);
+    }
+    ClmMesh {
+        uvs: vec![0.0; verts.len()],
+        verts,
+        indices: ClmIndices::U16(indices),
+        origin: [0.0, 0.0],
+    }
+}
+
+/// A chain under a `head` group with its art beneath it, and four params
+/// that move things: `head` slides the group 30 px to +X, `offset` slides
+/// the spine 40 px to +X and the art back by as much, `shape` curves the
+/// art toward +X by a keyform that grows down the strand, and `shift`
+/// slides the art 30 px to +X by a keyform.
+struct Guided {
+    model: Model,
+    spine: NodeId,
+    art: NodeId,
+    bends: Vec<ParamId>,
+    head: ParamId,
+    offset: ParamId,
+    shape: ParamId,
+    shift: ParamId,
+}
+
+fn guided(gravity_scale: f32) -> Guided {
+    let mut hex = SeededHex::new(37);
+    let mut model = Model::new();
+    model.set_physics(ClmPhysics {
+        pixels_per_meter: 1.0,
+        gravity: 1.0,
+        ..ClmPhysics::default()
+    });
+    let root = model.root().expect("root").clone();
+    // Bends read their value straight off; the slides are bindings, which
+    // read the position along the range, so theirs runs from 0.
+    let mut param = |model: &mut Model, name: &str| {
+        model
+            .add_param(
+                ModelParam {
+                    name: Name::truncated(name),
+                    min: if name.starts_with("bend") { -1.0 } else { 0.0 },
+                    max: 1.0,
+                    default: 0.0,
+                },
+                &mut hex,
+            )
+            .expect("add param")
+    };
+    let bends: Vec<ParamId> = (0..3)
+        .map(|i| param(&mut model, &format!("bend{i}")))
+        .collect();
+    let [head_p, offset, shape, shift] =
+        ["head", "offset", "shape", "shift"].map(|n| param(&mut model, n));
+    let mut hex = SeededHex::new(41);
+    let head = model
+        .add_node(
+            &root,
+            ModelNode::new("head", ModelNodeKind::Group),
+            &mut hex,
+        )
+        .expect("add the head");
+    let mut spine = ModelSpine::new(joints(3));
+    let mut chain = ModelChain::new(3);
+    chain.gravity = 981.0;
+    chain.set_links(
+        (0..3)
+            .map(|_| catchlight_core::LinkFeel {
+                gravity_scale,
+                stiffness: 6.0,
+                limit: None,
+            })
+            .collect(),
+    );
+    spine.set_chain(Some(chain));
+    let spine_id = model
+        .add_node(
+            &head,
+            ModelNode::new("hair", ModelNodeKind::Spine(spine)),
+            &mut hex,
+        )
+        .expect("add the spine");
+    model
+        .set_spine_targets(&spine_id, bends.iter().cloned().map(Some).collect())
+        .expect("aim the spine");
+    let art = model
+        .add_node(
+            &spine_id,
+            ModelNode::new("art", ModelNodeKind::Part(ModelPart::new(strip()))),
+            &mut hex,
+        )
+        .expect("add the art");
+    let slide = |model: &mut Model, param: &ParamId, node: &NodeId, by: f32| {
+        let key = BindingKey::new(
+            param.clone(),
+            node.clone(),
+            BindingTarget::Scalar(ScalarTarget::Tx),
+        );
+        model
+            .add_binding_with_positions(&key, vec![vec![0.0, 1.0]])
+            .expect("add the slide");
+        model.set_binding_key(&key, [0, 0], 0.0).expect("rest");
+        model.set_binding_key(&key, [1, 0], by).expect("slide");
+    };
+    slide(&mut model, &head_p, &head, 30.0);
+    slide(&mut model, &offset, &spine_id, 40.0);
+    slide(&mut model, &offset, &art, -40.0);
+    let rest = strip();
+    for (param, offsets) in [
+        (
+            &shape,
+            rest.verts
+                .chunks(2)
+                .flat_map(|v| [0.002 * (10.0 - v[1]).powi(2), 0.0])
+                .collect::<Vec<f32>>(),
+        ),
+        (
+            &shift,
+            rest.verts.chunks(2).flat_map(|_| [30.0, 0.0]).collect(),
+        ),
+    ] {
+        let key = BindingKey::new(param.clone(), art.clone(), BindingTarget::Deform);
+        model
+            .add_binding_with_positions(&key, vec![vec![0.0, 1.0]])
+            .expect("add the keyform");
+        model.reset_binding_key(&key, [0, 0]).expect("rest key");
+        model
+            .set_deform_vertices(&key, [1, 0], offsets)
+            .expect("author the keyform");
+    }
+    Guided {
+        model,
+        spine: spine_id,
+        art,
+        bends,
+        head: head_p,
+        offset,
+        shape,
+        shift,
+    }
+}
+
+fn art_vertices(model: &Model, puppet: &Puppet, art: &NodeId) -> Vec<Vec2> {
+    let geometry = catchlight_core::geometry::EvaluatedGeometry::new(model, puppet).unwrap();
+    let mesh = geometry.mesh(art).unwrap();
+    (0..mesh.vertex_count())
+        .map(|i| mesh.vertex(i).unwrap().world.truncate())
+        .collect()
+}
+
+/// **The guide is embedded in the art.** A keyform that curves the strand's
+/// art is the shape the strand hangs in: settled, its particles lie along
+/// the curved art, and the render is the keyformed art, as with physics off.
+#[test]
+fn a_keyformed_strand_settles_on_its_keyformed_art() {
+    for gravity_scale in [0.0, 1.0] {
+        let g = guided(gravity_scale);
+        let mut live = Puppet::new(&g.model);
+        let mut still = Puppet::new(&g.model);
+        still.set_physics_enabled(false);
+        for puppet in [&mut live, &mut still] {
+            puppet.set_param_value(&g.shape, 1.0);
+        }
+        live.settle_physics(&g.model);
+        live.tick(&g.model, DT);
+        still.tick(&g.model, DT);
+        let drawn = art_vertices(&g.model, &still, &g.art);
+        let rendered = art_vertices(&g.model, &live, &g.art);
+        for (i, (a, b)) in drawn.iter().zip(&rendered).enumerate() {
+            assert!(
+                a.distance(*b) < 0.5,
+                "gravity {gravity_scale}: vertex {i} renders at {b}, keyformed at {a}"
+            );
+        }
+        if gravity_scale == 0.0 {
+            // Each link turns to the keyformed guide's direction and keeps
+            // its drawn length; the keyform moves a point at height y by
+            // 0.002 (10 - y)^2, which the 30 px rows carry piecewise
+            // linearly, so the guide is within half a pixel of it.
+            let bent = |y: f32| 0.002 * (10.0 - y).powi(2);
+            let mut want = bent(0.0);
+            let mut above = 0.0f32;
+            for y in [-60.0f32, -110.0, -150.0] {
+                let (dx, dy) = (bent(y) - bent(above), above - y);
+                want += dy * dx / dx.hypot(dy);
+                above = y;
+            }
+            let idx = live.node_idx(&g.spine).unwrap();
+            let tip = tip(&live, idx);
+            assert!(
+                (tip.x - want).abs() < 0.5,
+                "a weightless strand hangs along the curved art: tip {tip}"
+            );
+        }
+    }
+}
+
+/// Sliding the spine one way and its art back the other leaves the art
+/// where it was drawn, and the guide sits on the art, so not one frame of a
+/// swing changes: the strand roots and turns where the art is, not where
+/// the node went.
+#[test]
+fn sliding_the_spine_against_its_art_changes_no_frame() {
+    let g = guided(1.0);
+    let mut plain = Puppet::new(&g.model);
+    let mut slid = Puppet::new(&g.model);
+    slid.set_param_value(&g.offset, 1.0);
+    for puppet in [&mut plain, &mut slid] {
+        puppet.settle_physics(&g.model);
+    }
+    let mut swing = 0.0f32;
+    for frame in 0..180 {
+        let head = 0.5 - 0.5 * (frame as f32 / 4.0).cos();
+        for puppet in [&mut plain, &mut slid] {
+            puppet.set_param_value(&g.head, head);
+            puppet.tick(&g.model, DT);
+        }
+        for bend in &g.bends {
+            swing = swing.max(plain.param_value(bend).unwrap().abs());
+        }
+        let a = art_vertices(&g.model, &plain, &g.art);
+        let b = art_vertices(&g.model, &slid, &g.art);
+        for (i, (a, b)) in a.iter().zip(&b).enumerate() {
+            assert!(
+                a.distance(*b) < 1e-2,
+                "frame {frame} vertex {i}: {b} with the spine slid, {a} without"
+            );
+        }
+    }
+    assert!(swing > 0.01, "the head swings the strand: {swing}");
+}
+
+/// A keyform that moves the art's root moves the strand's root, so it swings
+/// the strand as the same move made by the head does — one frame later,
+/// since chains read the guide the previous fold posed.
+#[test]
+fn a_keyform_moving_the_root_swings_like_the_head() {
+    let g = guided(1.0);
+    let run = |param: &ParamId| {
+        let mut puppet = Puppet::new(&g.model);
+        puppet.settle_physics(&g.model);
+        let mut trace = Vec::new();
+        for frame in 1..=240 {
+            puppet.set_param_value(param, (frame as f32 / 6.0).min(1.0));
+            puppet.tick(&g.model, DT);
+            trace.push(puppet.param_value(&g.bends[0]).unwrap());
+        }
+        trace
+    };
+    let head = run(&g.head);
+    let keyed = run(&g.shift);
+    let peak = |t: &[f32]| t.iter().fold(0.0f32, |m, b| m.max(b.abs()));
+    assert!(peak(&head) > 0.01, "the head move swings the strand");
+    for (f, (h, k)) in head.iter().zip(&keyed[1..]).enumerate() {
+        assert!(
+            (h - k).abs() < 0.1 * peak(&head),
+            "frame {f}: the keyform swings {k}, the head {h}"
+        );
+    }
+    assert!(
+        keyed.last().unwrap().abs() < 1e-4,
+        "and back on the drawing once it holds"
+    );
+}

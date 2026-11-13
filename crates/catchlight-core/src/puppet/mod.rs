@@ -519,7 +519,7 @@ impl Puppet {
                 }
             })
             .collect();
-        let chains: Vec<(NodeId, ParticleChainData, Vec2)> = self
+        let chains: Vec<(NodeId, ParticleChainData, Vec2, Vec<Vec2>)> = self
             .arena
             .chain_node_ids
             .iter()
@@ -533,7 +533,10 @@ impl Puppet {
                     .copied()
                     .unwrap_or_default();
                 match &self.arena.get(idx)?.kind {
-                    NodeKind::Spine(sp) => sp.chain.as_ref().map(|ch| (id, ch.clone(), shift)),
+                    NodeKind::Spine(sp) => sp
+                        .chain
+                        .as_ref()
+                        .map(|ch| (id, ch.clone(), shift, sp.posed_guide.clone())),
                     _ => None,
                 }
             })
@@ -585,11 +588,12 @@ impl Puppet {
                 p.anchor_initialized = saved.anchor_initialized;
             }
         }
-        // The warp a chain root carried survives too, so a rebake under a
-        // turned head does not jump every root back for a frame.
+        // The warp a chain root carried survives too, and so does its posed
+        // guide, so a rebake under a turned head or a held keyform does not
+        // jump every root and target back to the drawing for a frame.
         let n = self.arena.chain_node_ids.len();
         self.arena.chain_root_shifts.resize(n, Vec2::ZERO);
-        for (id, saved, shift) in chains {
+        for (id, saved, shift, guide) in chains {
             let Some(&idx) = self.node_of_id.get(&id) else {
                 continue;
             };
@@ -599,6 +603,9 @@ impl Puppet {
             let Some(NodeKind::Spine(spine)) = self.arena.get_mut(idx).map(|n| &mut n.kind) else {
                 continue;
             };
+            if guide.len() == spine.joints.len() + 1 {
+                spine.posed_guide = guide;
+            }
             let Some(chain) = &mut spine.chain else {
                 continue;
             };
@@ -1430,16 +1437,30 @@ impl Puppet {
     /// stiff strand walk its target away one frame at a time.
     ///
     /// A link no param drives is posed at 0, which is the strand as drawn.
+    ///
+    /// **The target is the posed guide turned by the pose.** Each bend adds
+    /// the turn the last fold's posed guide makes off the drawing at that
+    /// link ([`SpineData::guide_turn`]), so the strand hangs in the shape the
+    /// artist deformed it into. The chain's claims take the same turn back
+    /// off (`write_driver_param_outputs`), so its params stay bends relative
+    /// to the guide, which is what the spine pass turns the guide by.
     fn chain_posed_bends(&self, c: usize, out: &mut Vec<f32>) {
         out.clear();
         let Some(targets) = self.chain_slot_row(c) else {
             return;
         };
-        out.extend(
-            targets
-                .iter()
-                .map(|slot| slot.and_then(|slot| self.param_base(slot)).unwrap_or(0.0)),
-        );
+        let spine =
+            self.arena
+                .chain_node_ids
+                .get(c)
+                .and_then(|&id| match &self.arena.get(id)?.kind {
+                    NodeKind::Spine(sp) => Some(sp),
+                    _ => None,
+                });
+        out.extend(targets.iter().enumerate().map(|(k, slot)| {
+            let pose = slot.and_then(|slot| self.param_base(slot)).unwrap_or(0.0);
+            pose + spine.map_or(0.0, |sp| sp.guide_turn(k))
+        }));
     }
 
     /// Displace every particle of a chain by `offset` and stop it there, so
@@ -1479,26 +1500,31 @@ impl Puppet {
     }
 
     /// Where chain `c`'s root is this frame and the frame its drawn shape
-    /// hangs in. The root is the spine origin where the art renders it:
-    /// through the node's transform, then through the warp of the mesh group
-    /// that moves its art, recorded by the previous frame's mesh-group pass.
+    /// hangs in. The root is the posed guide's root where the art renders it:
+    /// the last fold's guide root (the spine origin while the guide is the
+    /// drawing) through the node's transform, then through the warp of the
+    /// mesh group that moves its art, recorded by the previous frame's
+    /// mesh-group pass.
     /// The frame is the node's linear map alone: a warp is 2.5D projection,
     /// not a turn the drawn shape should hang from. A `local_only` chain
     /// takes no warp.
     fn chain_root(&self, transforms: &GlobalTransforms, c: usize) -> Option<(Vec2, crate::Mat2)> {
         let id = *self.arena.chain_node_ids.get(c)?;
         let mut anchor = self.arena.physics_anchor(transforms, id)?;
-        let local_only = matches!(
-            self.arena.get(id).map(|n| &n.kind),
-            Some(NodeKind::Spine(sp)) if sp.chain.as_ref().is_some_and(|ch| ch.local_only)
-        );
-        if !local_only {
+        let carry = self.arena.chain_carry(transforms, id)?;
+        let Some(NodeKind::Spine(sp)) = self.arena.get(id).map(|n| &n.kind) else {
+            return None;
+        };
+        // The posed guide's root, from the node's Y-up space into the frame.
+        let guide = sp.guide_root();
+        anchor += carry * Vec2::new(guide.x, -guide.y);
+        if !sp.chain.as_ref().is_some_and(|ch| ch.local_only) {
             if let Some(shift) = self.arena.chain_root_shifts.get(c) {
                 // Puppet-local is Y-up; the physics frame is Y-down.
                 anchor += Vec2::new(shift.x, -shift.y);
             }
         }
-        Some((anchor, self.arena.chain_carry(transforms, id)?))
+        Some((anchor, carry))
     }
 
     /// Advance every driver by `dt` seconds against `transforms`, then write
@@ -1637,6 +1663,9 @@ impl Puppet {
                 let (Some(slot), Some(&bend)) = (*slot, bends.get(i)) else {
                     continue;
                 };
+                // The strand targeted the guide's turn on top of the pose
+                // (`chain_posed_bends`); the param is the bend off the guide.
+                let bend = bend - spine.guide_turn(i);
                 let Some(at) = self.chain_claim_scratch.get_mut(slot as usize) else {
                     continue;
                 };
@@ -1782,6 +1811,15 @@ impl Puppet {
         if n == 0 || !self.physics_enabled {
             return;
         }
+        if !self.arena.chain_node_ids.is_empty() {
+            // Chains read the posed guide and root warp the last fold
+            // recorded, so fold this pose first: a settle before the first
+            // tick, or after a pose change, hangs them on what renders.
+            let mut out = std::mem::take(&mut self.transforms);
+            let mesh_groups = !self.arena.mesh_group_node_ids.is_empty();
+            self.fold_frame(&mut out, Mat4::IDENTITY, mesh_groups);
+            self.transforms = out;
+        }
         self.arena.ensure_physics_ancestor_mask();
         let mut transforms = std::mem::take(&mut self.arena.physics_transforms);
         let mut posed = std::mem::take(&mut self.chain_posed_scratch);
@@ -1923,27 +1961,7 @@ impl Puppet {
             && (!self.param_mesh_group_relevant.is_empty() || !self.scratch_transforms.is_empty())
             && (needs_final_apply || mesh_group_generation_changed);
         if needs_final_apply {
-            self.reset_frame();
-            self.apply_params();
-            self.apply_scratch_transforms();
-            // Transforms BEFORE the propagation, so a mesh group and its
-            // children sit where this frame's pose put them.
-            self.arena.compute_transforms_with_root(&mut out, root);
-            // Spines before mesh groups: a group above a spine reads its
-            // children's current deform, so it warps art the spine has bent.
-            // Unconditional on having any spine, because `reset_frame` just
-            // dropped every spine source and only this rebuilds it.
-            if !self.arena.spine_node_ids.is_empty() {
-                self.apply_spine_bends();
-                self.arena.propagate_spine_deforms(&out);
-            }
-            if has_mesh_group_work {
-                self.arena.propagate_mesh_group_deforms(&mut out, root);
-                self.last_tick_mesh_group_generation = Some(self.mesh_group_param_generation);
-            }
-            self.arena.apply_welds(&out);
-            self.arena.combine_deforms();
-            self.last_tick_folded_param_generation = Some(self.param_generation);
+            self.fold_frame(&mut out, root, has_mesh_group_work);
         } else {
             self.arena.compute_transforms_with_root(&mut out, root);
         }
@@ -1959,6 +1977,34 @@ impl Puppet {
         }
         self.transforms = out;
         motion
+    }
+
+    /// The final fold: pose every node and deform from the resolved params,
+    /// then the spine and mesh-group passes, welds and the combine. The
+    /// spine and mesh-group passes also record what the next frame's chains
+    /// read: each posed guide and each root's warp.
+    fn fold_frame(&mut self, out: &mut GlobalTransforms, root: Mat4, mesh_groups: bool) {
+        self.reset_frame();
+        self.apply_params();
+        self.apply_scratch_transforms();
+        // Transforms BEFORE the propagation, so a mesh group and its
+        // children sit where this frame's pose put them.
+        self.arena.compute_transforms_with_root(out, root);
+        // Spines before mesh groups: a group above a spine reads its
+        // children's current deform, so it warps art the spine has bent.
+        // Unconditional on having any spine, because `reset_frame` just
+        // dropped every spine source and only this rebuilds it.
+        if !self.arena.spine_node_ids.is_empty() {
+            self.apply_spine_bends();
+            self.arena.propagate_spine_deforms(out);
+        }
+        if mesh_groups {
+            self.arena.propagate_mesh_group_deforms(out, root);
+            self.last_tick_mesh_group_generation = Some(self.mesh_group_param_generation);
+        }
+        self.arena.apply_welds(out);
+        self.arena.combine_deforms();
+        self.last_tick_folded_param_generation = Some(self.param_generation);
     }
 
     /// Whether any driver is away from the rest pose `settle_physics` puts it

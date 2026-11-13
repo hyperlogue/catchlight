@@ -291,6 +291,17 @@ impl DeformStack {
         self.generation
     }
 
+    /// Vertex `index`'s offset summed over the active sources other than
+    /// `except`: one vertex of what [`Self::sum_active_into`] would give with
+    /// `except` cleared, without clearing it or reading the rest.
+    pub fn active_offset_except(&self, except: DeformSource, index: usize) -> Vec2 {
+        self.sources
+            .iter()
+            .filter(|s| s.active && s.source != except)
+            .filter_map(|s| s.offsets.get(index))
+            .fold(Vec2::ZERO, |sum, d| sum + *d)
+    }
+
     pub fn is_active(&self) -> bool {
         self.sources.iter().any(|s| s.active)
     }

@@ -25,7 +25,7 @@
 //! `propagate_mesh_group = false` halts both walks.
 //!
 //! **A chain's root is where its art is drawn.** The pass records how far the
-//! group warping a chain spine's art moves the spine origin
+//! group warping a chain spine's art moves the posed guide's root
 //! (`record_chain_root_shifts`), and the next frame's chain root adds it.
 //!
 //! **A Spine is a pass-through, on both walks.** It carries no mesh of its own
@@ -291,7 +291,7 @@ fn triangle_padding(a: Vec2, b: Vec2, c: Vec2) -> Option<Vec2> {
     )
 }
 
-fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> [f32; 3] {
+pub(crate) fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> [f32; 3] {
     let v0 = b - a;
     let v1 = c - a;
     let v2 = p - a;
@@ -882,7 +882,7 @@ fn warp_group_of(arena: &Arena, spine: NodeIdx) -> Option<NodeIdx> {
     }
 }
 
-/// Record how far this frame's groups warp each chain's spine origin, in
+/// Record how far this frame's groups warp each chain's posed guide root, in
 /// puppet-local units, for the next frame's chain roots
 /// (`Arena::chain_root_shifts`). The spine itself is not moved: its art is
 /// warped already, and moving the node would move it twice. Runs after every
@@ -906,8 +906,14 @@ fn record_chain_root_shifts(arena: &mut Arena, transforms: &GlobalTransforms, ro
             let Some(mg_global_inv) = checked_affine_inverse(mg_global) else {
                 continue;
             };
-            let origin = transforms.get(arena.chain_node_ids[c]).w_axis;
-            let at = transform_point(mg_global_inv, origin.xy());
+            // The posed guide's root, which the spine pass just recorded.
+            let spine_id = arena.chain_node_ids[c];
+            let guide = match arena.get(spine_id).map(|n| &n.kind) {
+                Some(NodeKind::Spine(sp)) => sp.guide_root(),
+                _ => Vec2::ZERO,
+            };
+            let origin = transform_point(transforms.get(spine_id), guide);
+            let at = transform_point(mg_global_inv, origin);
             if let Some(delta) = warp_at(arena, mg_id, at) {
                 let shift = root_inv * (linear_mat2(mg_global) * delta);
                 if shift.is_finite() {

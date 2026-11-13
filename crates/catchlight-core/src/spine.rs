@@ -40,6 +40,20 @@
 //! assignments can still create visible corners; sufficiently sampled art and
 //! accurate guides are required.
 //!
+//! **The guide is embedded in the art.** The bake binds the root and every
+//! joint to the rest triangle of the spine's guide part (its largest meshed
+//! part) that holds it, or the nearest one, as barycentric weights. Each fold,
+//! before the turn, the posed guide is those points read through the part's
+//! current deform (every source but this spine's own) and its current
+//! transform, in spine space. The transport runs from the posed guide, not the
+//! drawing, so a keyform that reshapes or moves the art moves the curve the
+//! bends turn it about. Where no guide point moves off the drawing by more
+//! than rounding (`GUIDE_STILL_SQ`), the posed guide is left empty and reads
+//! as the drawing exactly; with no deform and the part placed as at rest,
+//! reading it costs one transform compare. A chain reads the previous fold's posed guide
+//! as its root offset and shape target (`Puppet::chain_root`,
+//! `Puppet::chain_posed_bends`); bends stay relative to the guide.
+//!
 //! **The assignment comes from rest geometry, once per bake.** Each descendant
 //! vertex is mapped into spine space through the rest transforms and projected
 //! onto the nearest link; the arc length `s` to that projection gives the link
@@ -90,11 +104,33 @@ pub(crate) struct VertexBend {
     pub(crate) ramp: f32,
 }
 
+/// One guide point bound into the guide part's rest mesh: its part-local
+/// rest position and the triangle corners and weights it reads the part's
+/// deform through. Weights outside the triangle extrapolate, so an affine
+/// deform carries the point exactly.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GuidePoint {
+    rest: Vec2,
+    corners: [u32; 3],
+    weights: [f32; 3],
+}
+
+/// The spine's guide, bound into its guide part at bake.
+#[derive(Debug, Clone)]
+pub(crate) struct GuideBinding {
+    part: NodeIdx,
+    /// The part's local space to the spine's, at rest.
+    rest_to_spine: Affine2,
+    /// The root, then each joint.
+    points: Vec<GuidePoint>,
+}
+
 /// One spine's per-vertex assignment, keyed by the node the vertices belong
-/// to. Empty until the bake fills it.
+/// to, and its guide. Empty until the bake fills it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SpinePins {
     pub(crate) per_child: HashMap<NodeIdx, Vec<VertexBend>>,
+    pub(crate) guide: Option<GuideBinding>,
 }
 
 /// The runtime half of a spine: the polyline as drawn, this frame's bends,
@@ -115,6 +151,9 @@ pub struct SpineData {
     /// zero. Gravity, spring targets and limits determine the settled pose.
     pub chain: Option<crate::physics::ParticleChainData>,
     pub(crate) pins: SpinePins,
+    /// The last fold's posed guide in the node's own space: the root, then
+    /// each joint. Empty reads as the drawing, the root at the origin.
+    pub(crate) posed_guide: Vec<Vec2>,
 }
 
 impl SpineData {
@@ -126,6 +165,7 @@ impl SpineData {
             bends,
             chain: None,
             pins: SpinePins::default(),
+            posed_guide: Vec::new(),
         }
     }
 
@@ -151,6 +191,45 @@ impl SpineData {
             (length, drawn)
         })
     }
+
+    /// The last fold's posed guide in the node's own space, root first,
+    /// then each joint; empty while it is the drawing.
+    pub fn posed_guide(&self) -> &[Vec2] {
+        &self.posed_guide
+    }
+
+    /// The posed guide's root in the node's own space: where a chain the
+    /// spine carries hangs from on the next tick.
+    pub fn guide_root(&self) -> Vec2 {
+        self.posed_guide.first().copied().unwrap_or(Vec2::ZERO)
+    }
+
+    /// How far the posed guide turns link `k` off the drawing, in half
+    /// turns relative to the link above: the bend that would draw the guide's
+    /// shape, in the convention the params use. Zero while the guide is the
+    /// drawing.
+    pub(crate) fn guide_turn(&self, k: usize) -> f32 {
+        if self.posed_guide.len() != self.joints.len() + 1 || k >= self.joints.len() {
+            return 0.0;
+        }
+        let absolute = |k: usize| {
+            let above = if k == 0 {
+                Vec2::ZERO
+            } else {
+                self.joints[k - 1]
+            };
+            let drawn = self.joints[k] - above;
+            let posed = self.posed_guide[k + 1] - self.posed_guide[k];
+            let turn = drawn.perp_dot(posed).atan2(drawn.dot(posed));
+            if turn.is_finite() {
+                turn
+            } else {
+                0.0
+            }
+        };
+        let parent = if k == 0 { 0.0 } else { absolute(k - 1) };
+        (absolute(k) - parent) / std::f32::consts::PI
+    }
 }
 
 /// A rotation of `angle` radians about `pivot`, counterclockwise in a Y-up
@@ -172,9 +251,10 @@ struct ComposedLink {
 
 /// Compose the joints root to tip, once per spine per frame.
 ///
-/// Returns `None` when every bend is zero, which is the whole spine's
-/// identity and the caller's cue to write nothing.
-fn compose(joints: &[Vec2], bends: &[f32]) -> Option<Vec<ComposedLink>> {
+/// `root` and `joints` are the curve the art sits on: the drawing, or the
+/// posed guide. Returns `None` when every bend is zero, which is the whole
+/// spine's identity and the caller's cue to write nothing.
+fn compose(root: Vec2, joints: &[Vec2], bends: &[f32]) -> Option<Vec<ComposedLink>> {
     let n = joints.len();
     let angle = |k: usize| {
         let b = bends.get(k).copied().unwrap_or(0.0);
@@ -190,9 +270,9 @@ fn compose(joints: &[Vec2], bends: &[f32]) -> Option<Vec<ComposedLink>> {
     let mut out = Vec::with_capacity(n);
     let mut above = Affine2::IDENTITY;
     for k in 0..n {
-        // The hinge above link k, as drawn: the node's own origin for the
-        // first link, the joint that ends the link above it after that.
-        let rest_hinge = if k == 0 { Vec2::ZERO } else { joints[k - 1] };
+        // The hinge above link k, as drawn: the root for the first link, the
+        // joint that ends the link above it after that.
+        let rest_hinge = if k == 0 { root } else { joints[k - 1] };
         let hinge = above.transform_point2(rest_hinge);
         let angle = angle(k);
         above = rotate_about(hinge, angle) * above;
@@ -412,7 +492,168 @@ pub(crate) fn bake_spine_pins(
             .collect();
         pins.per_child.insert(child_id, assigned);
     }
+    pins.guide = bind_guide(arena, transforms, spine_id, &spine.joints, spine_global_inv);
     pins
+}
+
+/// Bind the root and joints into the spine's guide part: the meshed part
+/// under it with the largest rest area in spine space.
+fn bind_guide(
+    arena: &Arena,
+    transforms: &GlobalTransforms,
+    spine_id: NodeIdx,
+    joints: &[Vec2],
+    spine_global_inv: glam::Mat4,
+) -> Option<GuideBinding> {
+    let mut best: Option<(f32, NodeIdx, Affine2)> = None;
+    for child_id in descendant_turned_nodes(&arena.tree, spine_id, arena) {
+        let Some(NodeKind::Part(p)) = arena.get(child_id).map(|n| &n.kind) else {
+            continue;
+        };
+        let to_spine = affine2_from_mat4(spine_global_inv * transforms.get(child_id));
+        let v = |i: u32| {
+            p.mesh
+                .vertices
+                .get(i as usize)
+                .map(|v| to_spine.transform_point2(*v - p.mesh.origin))
+        };
+        let indices: Vec<u32> = p.mesh.indices.iter_u32().collect();
+        let area: f32 = indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter_map(|&[a, b, c]| Some((v(b)? - v(a)?).perp_dot(v(c)? - v(a)?).abs()))
+            .sum();
+        if best.is_none_or(|(a, ..)| area > a) {
+            best = Some((area, child_id, to_spine));
+        }
+    }
+    let (area, part, rest_to_spine) = best?;
+    if area.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        return None;
+    }
+    let NodeKind::Part(p) = &arena.get(part)?.kind else {
+        return None;
+    };
+    let local: Vec<Vec2> = p.mesh.vertices.iter().map(|v| *v - p.mesh.origin).collect();
+    let indices: Vec<u32> = p.mesh.indices.iter_u32().collect();
+    let to_part = rest_to_spine.inverse();
+    let points = std::iter::once(Vec2::ZERO)
+        .chain(joints.iter().copied())
+        .map(|at| {
+            let q = to_part.transform_point2(at);
+            bind_point(&local, &indices, q)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(GuideBinding {
+        part,
+        rest_to_spine,
+        points,
+    })
+}
+
+/// The triangle that holds `q`, or the nearest one, with `q`'s weights in it.
+fn bind_point(local: &[Vec2], indices: &[u32], q: Vec2) -> Option<GuidePoint> {
+    let mut best: Option<(f32, GuidePoint)> = None;
+    for &corners in indices.as_chunks::<3>().0 {
+        let [a, b, c] = corners.map(|i| local.get(i as usize).copied());
+        let (Some(a), Some(b), Some(c)) = (a, b, c) else {
+            continue;
+        };
+        let weights = crate::meshgroup::barycentric(q, a, b, c);
+        if !weights.iter().all(|w| w.is_finite()) {
+            continue;
+        }
+        let distance = if weights.iter().all(|w| *w >= 0.0) {
+            0.0
+        } else {
+            [(a, b), (b, c), (c, a)]
+                .into_iter()
+                .map(|(p0, p1)| {
+                    let d = p1 - p0;
+                    let t = ((q - p0).dot(d) / d.length_squared().max(1e-12)).clamp(0.0, 1.0);
+                    (p0 + d * t).distance_squared(q)
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        if best.is_none_or(|(d, _)| distance < d) {
+            best = Some((
+                distance,
+                GuidePoint {
+                    rest: q,
+                    corners,
+                    weights,
+                },
+            ));
+        }
+        if distance == 0.0 {
+            break;
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Squared displacement (px²) under which every guide point counts as still
+/// on the drawing: the rounding of composing a turned parent's transforms.
+const GUIDE_STILL_SQ: f32 = 1e-8;
+
+/// This fold's posed guide for `spine_id`: the bound points read through the
+/// guide part's deform (all but the spine's own source) and its current
+/// placement, in spine space. Empty when no point moves off the drawing by
+/// more than rounding, so the drawing is read exactly; otherwise the drawing
+/// plus each point's displacement.
+fn pose_guide(
+    arena: &Arena,
+    transforms: &GlobalTransforms,
+    spine_id: NodeIdx,
+    spine_global_inv: glam::Mat4,
+    out: &mut Vec<Vec2>,
+) {
+    out.clear();
+    let Some(NodeKind::Spine(spine)) = arena.get(spine_id).map(|n| &n.kind) else {
+        return;
+    };
+    let Some(guide) = &spine.pins.guide else {
+        return;
+    };
+    let Some(NodeKind::Part(part)) = arena.get(guide.part).map(|n| &n.kind) else {
+        return;
+    };
+    let now = affine2_from_mat4(spine_global_inv * transforms.get(guide.part));
+    let stack = &part.deform_stack;
+    let deformed = stack.is_active();
+    if now == guide.rest_to_spine && !deformed {
+        return;
+    }
+    let own = DeformSource::Node(spine_id);
+    let mut moved = false;
+    for (k, point) in guide.points.iter().enumerate() {
+        let mut delta =
+            now.transform_point2(point.rest) - guide.rest_to_spine.transform_point2(point.rest);
+        if deformed {
+            let offset = point
+                .corners
+                .iter()
+                .zip(point.weights)
+                .fold(Vec2::ZERO, |sum, (&i, w)| {
+                    sum + stack.active_offset_except(own, i as usize) * w
+                });
+            delta += now.matrix2 * offset;
+        }
+        if !delta.is_finite() {
+            delta = Vec2::ZERO;
+        }
+        moved |= delta.length_squared() > GUIDE_STILL_SQ;
+        let drawn = if k == 0 {
+            Vec2::ZERO
+        } else {
+            spine.joints[k - 1]
+        };
+        out.push(drawn + delta);
+    }
+    if !moved {
+        out.clear();
+    }
 }
 
 /// Turn every spine's descendants by this frame's bends.
@@ -426,6 +667,7 @@ pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTran
     let mut scratch = std::mem::take(&mut arena.spine_scratch);
     let mut cur_deform = std::mem::take(&mut arena.spine_cur_deform_scratch);
     let mut child_ids: smallvec::SmallVec<[NodeIdx; 8]> = smallvec::SmallVec::new();
+    let mut guide = Vec::new();
 
     for spine_id in order {
         child_ids.clear();
@@ -441,13 +683,21 @@ pub(crate) fn propagate_spine_deforms(arena: &mut Arena, transforms: &GlobalTran
         let Some(spine_global_inv) = checked_affine_inverse(transforms.get(spine_id)) else {
             continue;
         };
+        pose_guide(arena, transforms, spine_id, spine_global_inv, &mut guide);
+        if let Some(NodeKind::Spine(spine)) = arena.get_mut(spine_id).map(|n| &mut n.kind) {
+            std::mem::swap(&mut spine.posed_guide, &mut guide);
+        }
         // Composed once per spine, not once per child: the joints move
         // together and the per-vertex loop only samples the result.
         let links = {
             let Some(NodeKind::Spine(spine)) = arena.get(spine_id).map(|n| &n.kind) else {
                 continue;
             };
-            match compose(&spine.joints, &spine.bends) {
+            let composed = match spine.posed_guide.split_first() {
+                Some((&root, joints)) => compose(root, joints, &spine.bends),
+                None => compose(Vec2::ZERO, &spine.joints, &spine.bends),
+            };
+            match composed {
                 Some(links) => links,
                 // Every bend at zero is the art as drawn. The sources were
                 // dropped above, so leaving them inactive is exactly zero.
