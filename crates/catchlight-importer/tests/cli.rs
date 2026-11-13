@@ -139,6 +139,53 @@ fn livliv_binary_inspects_and_exports_the_final_baking_report() {
 }
 
 #[test]
+fn livliv_binary_refuses_required_watermarks_with_or_without_allow_lossy() {
+    // Same minimal v4 package as the export test, with the two watermark kinds
+    // the library already treats as blockers. `--allow-lossy` must not export.
+    for (kind, watermark) in [
+        ("livliv", json!({"kind":"livliv","center":false})),
+        ("text", json!({"kind":"text","text":"Credit"})),
+    ] {
+        for allow_lossy in [false, true] {
+            let dir = Workspace::new();
+            std::fs::create_dir_all(dir.0.join("source/textures")).unwrap();
+            image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 255, 255, 255]))
+                .save(dir.0.join("source/textures/a.png"))
+                .unwrap();
+            let manifest = json!({"format":"livliv-model","version":4,"name":"Synthetic","canvas":[32,32],"meta":{"generator":{"name":"test"},"license":{"id":"CC0-1.0"},"watermark":watermark.clone()},
+                "anchors":{"head":{"cx":16,"cy":12,"rx":8,"ry":8},"face":[8,4,24,20],"neck_y":22,"top_y":0,"bottom_y":32,"hair_root_y":4},
+                "layers":[{"id":"face","group":"head","texture":"textures/a.png","x":12,"y":8,"w":4,"h":4}]});
+            std::fs::write(
+                dir.0.join("source/model.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            let out = format!("{kind}-{allow_lossy}.clm");
+            let result = if allow_lossy {
+                dir.run(&["source", "--allow-lossy", "-o", &out])
+            } else {
+                dir.run(&["source", "-o", &out])
+            };
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                !result.status.success(),
+                "kind {kind} allow_lossy={allow_lossy} exited successfully: {stderr}"
+            );
+            assert!(
+                stderr.contains(&format!("watermark \"{kind}\""))
+                    && stderr.contains("screen-space output rendering"),
+                "kind {kind} allow_lossy={allow_lossy} did not report the watermark blocker: {stderr}"
+            );
+            assert!(
+                !dir.0.join(&out).exists(),
+                "kind {kind} allow_lossy={allow_lossy} wrote {out}"
+            );
+            assert!(!dir.0.join("source.clm").exists());
+        }
+    }
+}
+
+#[test]
 fn help_does_not_require_input_and_missing_arguments_fail() {
     let dir = Workspace::new();
     let result = dir.run(&["--help"]);
