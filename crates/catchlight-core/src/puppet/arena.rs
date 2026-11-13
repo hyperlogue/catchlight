@@ -163,6 +163,16 @@ pub(crate) struct Arena {
     /// needs to fill (see `compute_physics_ancestor_transforms`). Invalidated
     /// on `insert_child`.
     physics_ancestor_mask: Option<Vec<bool>>,
+    /// Parallel to `chain_node_ids`: the mesh group whose warp moves the
+    /// chain's art directly (the nearest one reached through parts,
+    /// propagating composites and spines only), if any. Invalidated with the
+    /// structure caches.
+    pub(crate) chain_warp_groups: Option<Vec<Option<NodeIdx>>>,
+    /// Parallel to `chain_node_ids`: how far the **previous** frame's
+    /// mesh-group pass warped each chain's spine origin, in puppet-local
+    /// (Y-up) units. The chain root adds it, one frame late, the same scheme
+    /// as `tc_shift_deltas`.
+    pub(crate) chain_root_shifts: Vec<glam::Vec2>,
 }
 
 impl Arena {
@@ -199,6 +209,8 @@ impl Arena {
             tc_shift_nonzero: 0,
             tc_shift_changed: false,
             physics_ancestor_mask: None,
+            chain_warp_groups: None,
+            chain_root_shifts: Vec::new(),
         }
     }
 
@@ -278,6 +290,8 @@ impl Arena {
     pub(crate) fn invalidate_structure_caches(&mut self) {
         self.mg_pre_order_cache = None;
         self.physics_ancestor_mask = None;
+        self.chain_warp_groups = None;
+        self.chain_root_shifts.clear();
     }
 
     pub(crate) fn rebuild_all_mesh_group_pins(&mut self) {

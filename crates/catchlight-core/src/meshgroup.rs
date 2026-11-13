@@ -24,6 +24,10 @@
 //! which shifts only descendants without a mesh. A Composite with
 //! `propagate_mesh_group = false` halts both walks.
 //!
+//! **A chain's root is where its art is drawn.** The pass records how far the
+//! group warping a chain spine's art moves the spine origin
+//! (`record_chain_root_shifts`), and the next frame's chain root adds it.
+//!
 //! **A Spine is a pass-through, on both walks.** It carries no mesh of its own
 //! and it does not hand a group's deform down — it only adds its own turn — so
 //! `descendant_meshed_nodes` walks straight past it to the meshed nodes below
@@ -695,6 +699,9 @@ pub(crate) fn propagate_mesh_group_deforms(
     arena.mg_propagate_scratch = scratch;
     arena.mg_cur_deform_scratch = cur_deform_scratch;
     arena.mg_deformed_vertices_scratch = deformed_mg_vertices;
+    if !arena.chain_node_ids.is_empty() {
+        record_chain_root_shifts(arena, transforms, root);
+    }
     // Put the cache back unless invalidated during propagate (no caller
     // in the hot path mutates the tree, but check to be safe).
     if arena.mg_pre_order_cache.is_none() {
@@ -804,21 +811,35 @@ fn translate_children_delta(
     let cvertex_full = mg_global_inv * world_cur;
     let cvertex_proj = Vec2::new(cvertex_full.x, cvertex_full.y);
 
-    // Find the MG triangle covering cvertex_proj. If outside, the warp is
-    // the identity there: newPos = cvertex_proj makes delta = 0.
-    let Some(NodeKind::MeshGroup(mg)) = arena.get(mg_id).map(|n| &n.kind) else {
+    // Outside the lattice the warp is the identity there: delta = 0.
+    let Some(delta_mg) = warp_at(arena, mg_id, cvertex_proj) else {
         return Vec2::ZERO;
+    };
+
+    // mg_to_parent linear: (parent.global.inverse * MG.global) upper-left
+    // 2x2. Translation is stripped because this maps a displacement vector
+    // rather than a point.
+    let Some(parent_global_inv) = checked_affine_inverse(parent_global) else {
+        return Vec2::ZERO;
+    };
+    let mg_to_parent = parent_global_inv * mg_global;
+    linear_mat2(mg_to_parent) * delta_mg
+}
+
+/// The group's combined deform at `p` in its own local space: the
+/// barycentric blend over the rest triangle covering `p`, or `None` outside
+/// the lattice (where the warp is the identity).
+fn warp_at(arena: &Arena, mg_id: NodeIdx, p: Vec2) -> Option<Vec2> {
+    let Some(NodeKind::MeshGroup(mg)) = arena.get(mg_id).map(|n| &n.kind) else {
+        return None;
     };
     let mg_indices = &mg.mesh.indices;
     let mg_local = local_positions(&mg.mesh);
     let combined = mg.deform_stack.combined();
     let tri_idx = match &mg.bitmap {
-        Some(bitmap) => bitmap.find(&mg_local, mg_indices, cvertex_proj, 0),
-        None => find_triangle_strict_hint(&mg_local, mg_indices, cvertex_proj, 0),
-    };
-    let Some(tri_idx) = tri_idx else {
-        return Vec2::ZERO;
-    };
+        Some(bitmap) => bitmap.find(&mg_local, mg_indices, p, 0),
+        None => find_triangle_strict_hint(&mg_local, mg_indices, p, 0),
+    }?;
     let base_idx = tri_idx as usize * 3;
     let i0 = mg_indices.get(base_idx).map(|i| i as usize);
     let i1 = mg_indices.get(base_idx + 1).map(|i| i as usize);
@@ -834,25 +855,68 @@ fn translate_children_delta(
         {
             (a, b, c)
         }
-        _ => return Vec2::ZERO,
+        _ => return None,
     };
-    let w = barycentric(cvertex_proj, mg_local[a], mg_local[b], mg_local[c]);
+    let w = barycentric(p, mg_local[a], mg_local[b], mg_local[c]);
     if w[0].is_nan() {
-        return Vec2::ZERO;
+        return None;
     }
-    // delta_mg = barycentric-weighted MG deform at cvertex_proj. Equivalent
-    // to (newPos - cvertex_proj) since newPos = cvertex_proj + delta_mg once
-    // the base barycentric weights sum to 1.
-    let delta_mg = combined[a] * w[0] + combined[b] * w[1] + combined[c] * w[2];
+    Some(combined[a] * w[0] + combined[b] * w[1] + combined[c] * w[2])
+}
 
-    // mg_to_parent linear: (parent.global.inverse * MG.global) upper-left
-    // 2x2. Translation is stripped because this maps a displacement vector
-    // rather than a point.
-    let Some(parent_global_inv) = checked_affine_inverse(parent_global) else {
-        return Vec2::ZERO;
-    };
-    let mg_to_parent = parent_global_inv * mg_global;
-    linear_mat2(mg_to_parent) * delta_mg
+/// The mesh group whose warp reaches `spine`'s art directly: the nearest
+/// ancestor reached through parts, propagating composites and spines only,
+/// the same nodes `descendant_meshed_nodes` walks through. A group above any
+/// other node moves the spine bodily through `translate_children`, which its
+/// transform already carries.
+fn warp_group_of(arena: &Arena, spine: NodeIdx) -> Option<NodeIdx> {
+    let mut at = arena.tree.get_parent(spine)?;
+    loop {
+        match arena.get(at).map(|n| &n.kind)? {
+            NodeKind::MeshGroup(_) => return Some(at),
+            NodeKind::Part(_) | NodeKind::Spine(_) => {}
+            NodeKind::Composite(c) if c.propagate_mesh_group => {}
+            _ => return None,
+        }
+        at = arena.tree.get_parent(at)?;
+    }
+}
+
+/// Record how far this frame's groups warp each chain's spine origin, in
+/// puppet-local units, for the next frame's chain roots
+/// (`Arena::chain_root_shifts`). The spine itself is not moved: its art is
+/// warped already, and moving the node would move it twice. Runs after every
+/// group has combined, so a group's stack carries the outer groups' pushes.
+fn record_chain_root_shifts(arena: &mut Arena, transforms: &GlobalTransforms, root: Mat4) {
+    let n = arena.chain_node_ids.len();
+    if arena.chain_warp_groups.is_none() {
+        let groups = (0..n)
+            .map(|c| warp_group_of(arena, arena.chain_node_ids[c]))
+            .collect();
+        arena.chain_warp_groups = Some(groups);
+    }
+    let mut shifts = std::mem::take(&mut arena.chain_root_shifts);
+    shifts.clear();
+    shifts.resize(n, Vec2::ZERO);
+    let root_inv = linear_mat2(root).inverse();
+    if let Some(groups) = &arena.chain_warp_groups {
+        for (c, group) in groups.iter().enumerate() {
+            let Some(mg_id) = *group else { continue };
+            let mg_global = transforms.get(mg_id);
+            let Some(mg_global_inv) = checked_affine_inverse(mg_global) else {
+                continue;
+            };
+            let origin = transforms.get(arena.chain_node_ids[c]).w_axis;
+            let at = transform_point(mg_global_inv, origin.xy());
+            if let Some(delta) = warp_at(arena, mg_id, at) {
+                let shift = root_inv * (linear_mat2(mg_global) * delta);
+                if shift.is_finite() {
+                    shifts[c] = shift;
+                }
+            }
+        }
+    }
+    arena.chain_root_shifts = shifts;
 }
 
 #[allow(clippy::too_many_arguments)]

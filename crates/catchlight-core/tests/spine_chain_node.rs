@@ -1436,3 +1436,128 @@ fn model_physics_rate_reaches_live_chains_after_an_edit() {
         }
     }
 }
+
+/// **A chain's root is where its art renders.** A mesh group whose warp
+/// slides the strand's art moves the chain root by the same amount, one
+/// frame after the group pass measured it, without moving the spine node:
+/// the art is warped already. The strand then swings and returns to its
+/// drawing, because the move was a translation.
+#[test]
+fn a_warp_over_the_art_moves_the_chain_root() {
+    let mut hex = SeededHex::new(31);
+    let mut model = Model::new();
+    model.set_physics(ClmPhysics {
+        pixels_per_meter: 1.0,
+        gravity: 1.0,
+        ..ClmPhysics::default()
+    });
+    let root = model.root().expect("root").clone();
+    let lattice = ClmMesh {
+        verts: vec![-200.0, 60.0, 200.0, 60.0, -200.0, -200.0, 200.0, -200.0],
+        uvs: vec![0.0; 8],
+        indices: ClmIndices::U16(vec![0, 1, 3, 0, 3, 2]),
+        origin: [0.0, 0.0],
+    };
+    let group = model
+        .add_node(
+            &root,
+            ModelNode::new(
+                "lattice",
+                ModelNodeKind::MeshGroup(catchlight_core::model::ModelMeshGroup::new(lattice)),
+            ),
+            &mut hex,
+        )
+        .expect("add the group");
+    let params: Vec<ParamId> = (0..3)
+        .map(|i| {
+            model
+                .add_param(
+                    ModelParam {
+                        name: Name::truncated(format!("bend{i}")),
+                        min: -1.0,
+                        max: 1.0,
+                        default: 0.0,
+                    },
+                    &mut hex,
+                )
+                .expect("add param")
+        })
+        .collect();
+    let warp = model
+        .add_param(
+            ModelParam {
+                name: Name::truncated("warp"),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+            },
+            &mut hex,
+        )
+        .expect("add param");
+    let mut spine = ModelSpine::new(joints(3));
+    let mut chain = ModelChain::new(3);
+    chain.gravity = 981.0;
+    spine.set_chain(Some(chain));
+    let node = model
+        .add_node(
+            &group,
+            ModelNode::new("hair", ModelNodeKind::Spine(spine)),
+            &mut hex,
+        )
+        .expect("add the spine");
+    model
+        .set_spine_targets(&node, params.iter().cloned().map(Some).collect())
+        .expect("aim the spine");
+    model
+        .add_node(
+            &node,
+            ModelNode::new("art", ModelNodeKind::Part(ModelPart::new(quad()))),
+            &mut hex,
+        )
+        .expect("add the art");
+    let key = BindingKey::new(warp.clone(), group.clone(), BindingTarget::Deform);
+    model
+        .add_binding_with_positions(&key, vec![vec![0.0, 1.0]])
+        .expect("add the warp");
+    model.reset_binding_key(&key, [0, 0]).expect("rest key");
+    model
+        .set_deform_vertices(
+            &key,
+            [1, 0],
+            vec![40.0, 0.0, 40.0, 0.0, 40.0, 0.0, 40.0, 0.0],
+        )
+        .expect("author the warp");
+
+    let mut puppet = Puppet::new(&model);
+    let idx = puppet.node_idx(&node).expect("the spine baked");
+    puppet.settle_physics(&model);
+    puppet.tick(&model, DT);
+    let rest = anchor(&puppet, idx);
+
+    puppet.set_param_value(&warp, 1.0);
+    puppet.tick(&model, DT);
+    assert!(
+        anchor(&puppet, idx).distance(rest) < 1e-3,
+        "the warp reaches the root the frame after the group measured it"
+    );
+    puppet.tick(&model, DT);
+    let moved = anchor(&puppet, idx) - rest;
+    assert!(
+        (moved - Vec2::new(40.0, 0.0)).length() < 1e-3,
+        "the root follows the warped art, got {moved}"
+    );
+    assert!(
+        puppet.param_value(&params[0]).unwrap().abs() > 1e-3,
+        "the move swings the strand"
+    );
+    for _ in 0..600 {
+        puppet.tick(&model, DT);
+    }
+    for p in &params {
+        let bend = puppet.param_value(p).unwrap();
+        assert!(
+            bend.abs() < 1e-4,
+            "a translation returns the strand to its drawing: {bend}"
+        );
+    }
+}

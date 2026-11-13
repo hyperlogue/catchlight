@@ -519,14 +519,21 @@ impl Puppet {
                 }
             })
             .collect();
-        let chains: Vec<(NodeId, ParticleChainData)> = self
+        let chains: Vec<(NodeId, ParticleChainData, Vec2)> = self
             .arena
             .chain_node_ids
             .iter()
-            .filter_map(|&idx| {
+            .enumerate()
+            .filter_map(|(c, &idx)| {
                 let id = self.id_of_node.get(idx.0 as usize)?.clone();
+                let shift = self
+                    .arena
+                    .chain_root_shifts
+                    .get(c)
+                    .copied()
+                    .unwrap_or_default();
                 match &self.arena.get(idx)?.kind {
-                    NodeKind::Spine(sp) => sp.chain.as_ref().map(|c| (id, c.clone())),
+                    NodeKind::Spine(sp) => sp.chain.as_ref().map(|ch| (id, ch.clone(), shift)),
                     _ => None,
                 }
             })
@@ -578,10 +585,17 @@ impl Puppet {
                 p.anchor_initialized = saved.anchor_initialized;
             }
         }
-        for (id, saved) in chains {
+        // The warp a chain root carried survives too, so a rebake under a
+        // turned head does not jump every root back for a frame.
+        let n = self.arena.chain_node_ids.len();
+        self.arena.chain_root_shifts.resize(n, Vec2::ZERO);
+        for (id, saved, shift) in chains {
             let Some(&idx) = self.node_of_id.get(&id) else {
                 continue;
             };
+            if let Some(c) = self.arena.chain_node_ids.iter().position(|&x| x == idx) {
+                self.arena.chain_root_shifts[c] = shift;
+            }
             let Some(NodeKind::Spine(spine)) = self.arena.get_mut(idx).map(|n| &mut n.kind) else {
                 continue;
             };
@@ -1464,18 +1478,27 @@ impl Puppet {
         true
     }
 
-    /// Where a chain's root is this frame and the frame its drawn shape hangs
-    /// in: the spine node's anchor and linear map. The one place a chain's
-    /// root input is chosen, so another source can replace it per chain.
-    fn chain_root(
-        &self,
-        transforms: &GlobalTransforms,
-        id: NodeIdx,
-    ) -> Option<(Vec2, crate::Mat2)> {
-        Some((
-            self.arena.physics_anchor(transforms, id)?,
-            self.arena.chain_carry(transforms, id)?,
-        ))
+    /// Where chain `c`'s root is this frame and the frame its drawn shape
+    /// hangs in. The root is the spine origin where the art renders it:
+    /// through the node's transform, then through the warp of the mesh group
+    /// that moves its art, recorded by the previous frame's mesh-group pass.
+    /// The frame is the node's linear map alone: a warp is 2.5D projection,
+    /// not a turn the drawn shape should hang from. A `local_only` chain
+    /// takes no warp.
+    fn chain_root(&self, transforms: &GlobalTransforms, c: usize) -> Option<(Vec2, crate::Mat2)> {
+        let id = *self.arena.chain_node_ids.get(c)?;
+        let mut anchor = self.arena.physics_anchor(transforms, id)?;
+        let local_only = matches!(
+            self.arena.get(id).map(|n| &n.kind),
+            Some(NodeKind::Spine(sp)) if sp.chain.as_ref().is_some_and(|ch| ch.local_only)
+        );
+        if !local_only {
+            if let Some(shift) = self.arena.chain_root_shifts.get(c) {
+                // Puppet-local is Y-up; the physics frame is Y-down.
+                anchor += Vec2::new(shift.x, -shift.y);
+            }
+        }
+        Some((anchor, self.arena.chain_carry(transforms, id)?))
     }
 
     /// Advance every driver by `dt` seconds against `transforms`, then write
@@ -1504,7 +1527,7 @@ impl Puppet {
         let mut inputs: smallvec::SmallVec<[ChainInput; 32]> = smallvec::SmallVec::new();
         for i in 0..self.arena.chain_node_ids.len() {
             let id = self.arena.chain_node_ids[i];
-            if let Some((anchor, carry)) = self.chain_root(transforms, id) {
+            if let Some((anchor, carry)) = self.chain_root(transforms, i) {
                 self.chain_posed_bends(i, &mut posed);
                 inputs.push((id, anchor, carry, posed.iter().copied().collect()));
             }
@@ -1784,10 +1807,7 @@ impl Puppet {
             }
             for i in 0..self.arena.chain_node_ids.len() {
                 let id = self.arena.chain_node_ids[i];
-                let Some(anchor) = self.arena.physics_anchor(&transforms, id) else {
-                    continue;
-                };
-                let Some(carry) = self.arena.chain_carry(&transforms, id) else {
+                let Some((anchor, carry)) = self.chain_root(&transforms, i) else {
                     continue;
                 };
                 self.chain_posed_bends(i, &mut posed);

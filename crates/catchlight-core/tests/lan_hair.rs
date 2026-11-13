@@ -230,9 +230,8 @@ fn front_locks_do_not_ring_after_a_tiny_head_roll() {
     let samples = [("front-hair-lock-2", 423.98), ("front-hair-lock-7", 420.93)];
     let mut held = Vec::new();
     // A half-unit roll over a quarter second, then hold the head still. The
-    // visible tips may ease toward rest and swing about it, but must not keep
-    // travelling back and forth. Damping 6/s leaves about 2.5 px of extra
-    // travel here; this bounds it from growing.
+    // visible tips may ease toward rest, but must not travel back and forth:
+    // hair that wobbles after a small movement reads as jelly.
     for frame in 0..=75 {
         let t = (frame as f32 / 15.0).min(1.0);
         puppet.set_param_value(&roll, 0.5 * t * t * (3.0 - 2.0 * t));
@@ -246,7 +245,7 @@ fn front_locks_do_not_ring_after_a_tiny_head_roll() {
         let direct = held.first().unwrap()[i].distance(held.last().unwrap()[i]);
         let ringing = travel - direct;
         assert!(
-            ringing < 3.0,
+            ringing < 0.5,
             "{id}: {ringing}px of extra back-and-forth tip travel after a tiny roll"
         );
     }
@@ -504,6 +503,51 @@ fn long_hair_hangs_down_while_its_roots_follow_head_roll() {
         assert!(
             locks >= 10,
             "must exercise the bundled long front and back locks"
+        );
+    }
+}
+
+/// Body roll is a warp in Lan's rig: it moves the art without turning the
+/// spine nodes. The chain roots follow the warped art, so the long locks
+/// swing with it, and since the move is a translation of the head they come
+/// back to their drawing once the body holds still.
+#[test]
+fn long_locks_swing_with_a_body_roll_and_return_to_the_drawing() {
+    let model = lan();
+    let mut puppet = Puppet::new(&model);
+    puppet.settle_physics(&model);
+    let roll = ParamId::new("body_roll").unwrap();
+    let locks = ["Front-Hair-Lock-2-Spine", "Back-Hair-Lock-19-Spine"];
+    let bends = |puppet: &Puppet, id: &str| -> Vec<f32> {
+        let idx = puppet
+            .node_idx(&catchlight_core::NodeId::new(id).unwrap())
+            .unwrap();
+        let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
+            unreachable!()
+        };
+        let mut out = Vec::new();
+        spine.chain.as_ref().unwrap().link_bends(&mut out);
+        out
+    };
+    let mut swing = [0.0f32; 2];
+    for frame in 1..=240 {
+        puppet.set_param_value(&roll, 10.0 * (frame as f32 / 6.0).min(1.0));
+        puppet.tick(&model, DT);
+        for (i, id) in locks.iter().enumerate() {
+            let turn: f32 = bends(&puppet, id).iter().sum();
+            swing[i] = swing[i].max(turn.abs());
+        }
+    }
+    for (i, id) in locks.iter().enumerate() {
+        assert!(
+            swing[i] > 0.02,
+            "{id}: a body roll swings the lock, peak {}",
+            swing[i]
+        );
+        let rest = bends(&puppet, id);
+        assert!(
+            rest.iter().all(|b| b.abs() < 1e-3),
+            "{id}: back on the drawing after the body holds: {rest:?}"
         );
     }
 }
