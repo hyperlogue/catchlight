@@ -715,17 +715,14 @@ impl ModelPhysics {
 
 /// One link's feel, when a spine carries a particle chain.
 ///
-/// Lengths and drawn directions come from the spine's joints. Integration
-/// accuracy is selected by the model's `chain_substeps` setting.
+/// Lengths and drawn directions come from the spine's joints.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
-    /// Damping strength in `0..=1`, mapped to per-second drag on relative
-    /// joint motion. Zero is undamped; 1 gives heavy damping.
-    pub damping: f32,
-    /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
-    /// this is not each link's oscillation frequency. Zero disables the spring.
+    /// How strongly the link holds its drawn (or posed) turn, in Hz, at or
+    /// above zero. Zero is limp; around `physics_rate / 2 pi` and above the
+    /// link follows rigidly. A whole strand swings slower than its links.
     pub stiffness: f32,
     /// The furthest this link's bend may reach either way, in half turns,
     /// within `(0, 1]`. `None` is a joint that turns as far as the forces
@@ -747,7 +744,6 @@ impl Default for LinkFeel {
     fn default() -> Self {
         Self {
             gravity_scale: 1.0,
-            damping: 0.5,
             stiffness: 0.0,
             limit: None,
         }
@@ -777,10 +773,11 @@ pub struct ModelChain {
     /// and intermediate values blend with the pose. Authored limits still
     /// constrain the result at every weight.
     pub weight: f32,
-    /// Per-second drag on each particle's velocity through still air, in
-    /// world space, at or above zero. Unlike a link's damping, which only
-    /// resists the joints turning, it resists the strand moving at all: the
-    /// strand trails a moving anchor and every swing dies at the same rate.
+    /// Per-second damping of motion relative to the root's own motion, at or
+    /// above zero: bounce and settle time, without trailing.
+    pub damping: f32,
+    /// Per-second drag on absolute motion, at or above zero: the strand
+    /// trails a moving root. Use only when that look is wanted.
     pub air_drag: f32,
     links: Vec<LinkFeel>,
 }
@@ -792,6 +789,7 @@ impl ModelChain {
             local_only: false,
             gravity: 1.0,
             weight: 1.0,
+            damping: crate::physics::DEFAULT_CHAIN_DAMPING,
             air_drag: 0.0,
             links: vec![LinkFeel::default(); links],
         }

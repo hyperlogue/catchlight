@@ -318,13 +318,14 @@ const PHYSICS_FIELDS: &[&str] = &[
     "pendulum",
     "plane",
 ];
-/// A spine's own scalars — the three the chain it may carry holds. Its
+/// A spine's own scalars — the scalars the chain it may carry holds. Its
 /// `joints` are a list of points, its `targets` a list of Ids and its links a
 /// list of structs, and none of those fits this command's `field=value`
 /// shape. A spine
 /// carrying no chain accepts none of them.
 const SPINE_FIELDS: &[&str] = &[
     "chain.air_drag",
+    "chain.damping",
     "chain.gravity",
     "chain.local_only",
     "chain.weight",
@@ -442,6 +443,10 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             (Some(c), "chain.gravity") => Slot::F32(&mut c.gravity),
             (Some(c), "chain.weight") => Slot::F32(&mut c.weight),
             (Some(c), "chain.air_drag") => Slot::F32(&mut c.air_drag),
+            (Some(c), "chain.damping") => Slot::F32(
+                c.damping
+                    .get_or_insert(catchlight_core::physics::DEFAULT_CHAIN_DAMPING),
+            ),
             _ => return None,
         },
     })

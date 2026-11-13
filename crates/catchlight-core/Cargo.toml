@@ -45,7 +45,7 @@ harness = false
 test = false
 
 [[bench]]
-name = "chain_coupling"
+name = "strand"
 harness = false
 test = false
 

@@ -699,8 +699,9 @@ class PhysicsGlobals:
     session: SessionId
     gravity: float | None = None
     pixels_per_meter: float | None = None
-    # Equal steps per frame for all hair chains in the model, 1..=255.
-    chain_substeps: int | None = None
+    # Fixed hair-strand step rate for the whole model, in Hz, within
+    # 30..=1000.
+    physics_rate: float | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -2316,8 +2317,7 @@ class LinkFeelArg:
     from what a chain actually does; absent means "what the editor would have
     used". `{}` is a link at every default.
 
-    Lengths and drawn directions come from the spine's joints. Integration
-    accuracy is selected by the model's `chain_substeps` setting.
+    Lengths and drawn directions come from the spine's joints.
 
     A reply fills every one of them in, so a client can read a chain out of
     [`SpineInfo::chain`], change one number, and send the list straight back
@@ -2326,11 +2326,8 @@ class LinkFeelArg:
 
     # Multiplier on the chain's gravity for this link's particle.
     gravity_scale: float | None = None
-    # Damping strength in `0..=1`, mapped to per-second drag on relative
-    # joint motion. Zero is undamped; 1 gives heavy damping.
-    damping: float | None = None
-    # Bend response in Hz, scaled by rest subtree inertia. Coupling means
-    # this is not each link's oscillation frequency. Zero disables the spring.
+    # How strongly the link holds its drawn turn, in Hz, at or above zero.
+    # Zero is limp; around `physics_rate / 2 pi` the link follows rigidly.
     stiffness: float | None = None
     # The furthest this link's bend may reach either way, in half turns,
     # within `(0, 1]`. Absent uses the core's unrestricted default; `null`
@@ -2357,7 +2354,10 @@ class ChainArg:
     gravity: float | None = None
     # How much of the params the solve decides, against what was posed.
     weight: float | None = None
-    # Per-second drag on the strand's world velocity through still air.
+    # Per-second damping of motion relative to the root's own motion:
+    # bounce and settle time, without trailing.
+    damping: float | None = None
+    # Per-second drag on the strand's absolute motion: it trails the root.
     air_drag: float | None = None
     # One per joint, root to tip.
     links: list[LinkFeelArg] | None = None
@@ -4064,7 +4064,7 @@ class StatusInfo:
     redo_steps: int = 0
     gravity: float | None = None
     pixels_per_meter: float | None = None
-    chain_substeps: int | None = None
+    physics_rate: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

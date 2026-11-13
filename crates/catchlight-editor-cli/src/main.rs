@@ -733,9 +733,9 @@ enum PhysicsCmd {
         gravity: Option<f32>,
         #[arg(long = "pixels-per-meter", allow_hyphen_values = true)]
         pixels_per_meter: Option<f32>,
-        /// Equal hair-physics steps per frame, 1..=255 (default 4).
+        /// Fixed hair-strand step rate in Hz, 30..=1000 (default 120).
         #[arg(long)]
-        chain_substeps: Option<u8>,
+        physics_rate: Option<f32>,
     },
 }
 
@@ -1099,12 +1099,12 @@ fn build_command(cli: &Cli) -> Result<Command> {
                 PhysicsCmd::Globals {
                     gravity,
                     pixels_per_meter,
-                    chain_substeps,
+                    physics_rate,
                 } => Command::PhysicsGlobals {
                     session,
                     gravity: *gravity,
                     pixels_per_meter: *pixels_per_meter,
-                    chain_substeps: *chain_substeps,
+                    physics_rate: *physics_rate,
                 },
             }
         }

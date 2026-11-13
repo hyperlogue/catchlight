@@ -378,7 +378,9 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
                     .map(|j| Vec2::new(j[0], j[1]))
                     .collect(),
             );
-            data.chain = spine.chain().map(|c| build_chain(c, &data, g_scale));
+            data.chain = spine
+                .chain()
+                .map(|c| build_chain(c, &data, g_scale, model.physics().physics_rate));
             NodeKind::Spine(Box::new(data))
         }
     };
@@ -435,6 +437,7 @@ fn build_chain(
     chain: &crate::model::ModelChain,
     spine: &crate::spine::SpineData,
     g_scale: f32,
+    rate: f32,
 ) -> ParticleChainData {
     let links = spine
         .link_geometry()
@@ -449,7 +452,6 @@ fn build_chain(
             length,
             drawn,
             gravity_scale: feel.gravity_scale,
-            damping: feel.damping,
             stiffness: feel.stiffness,
             limit: feel.limit,
         })
@@ -460,7 +462,9 @@ fn build_chain(
     // pre-folded with the model-level pixelsPerMeter x gravity.
     data.gravity = chain.gravity * g_scale;
     data.weight = chain.weight;
+    data.damping = chain.damping;
     data.air_drag = chain.air_drag;
+    data.rate = rate;
     data
 }
 

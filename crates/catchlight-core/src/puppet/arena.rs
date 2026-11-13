@@ -391,12 +391,17 @@ impl Arena {
             .map(|&id| (id, crate::spine::bake_spine_pins(self, &transforms, id)))
             .collect();
         for (id, pins) in baked {
+            let rest_carry = self.chain_carry(&transforms, id);
             let Some(crate::NodeKind::Spine(spine)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             else {
                 continue;
             };
             spine.pins = pins;
+            // The chain's neutral rest is measured in the authored pose.
+            if let (Some(chain), Some(rest_carry)) = (&mut spine.chain, rest_carry) {
+                chain.rest_carry = rest_carry;
+            }
         }
     }
 

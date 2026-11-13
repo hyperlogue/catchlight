@@ -198,7 +198,6 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                     ? {
                         links: Array.from({ length: links }, () => ({
                           stiffness: spring,
-                          damping: 0.5,
                         })),
                       }
                     : null,
@@ -323,7 +322,6 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
                   ? {
                       links: spine.joints.map(() => ({
                         stiffness: 2,
-                        damping: 0.5,
                       })),
                     }
                   : null,
@@ -356,6 +354,16 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
                 min={0.001}
                 unit="g"
                 onCommit={(gravity) => setChain({ ...chain, gravity })}
+              />
+            </Field>
+            <Field label="Damping">
+              <NumberField
+                label="Chain damping"
+                value={chain.damping ?? 6}
+                min={0}
+                step={0.5}
+                unit="/s"
+                onCommit={(damping) => setChain({ ...chain, damping })}
               />
             </Field>
             <Field label="Air drag">
@@ -393,16 +401,6 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
                       value={link?.stiffness ?? 0}
                       min={0}
                       onCommit={(stiffness) => feel(i, { stiffness })}
-                    />
-                  </Field>
-                  <Field label="Damping">
-                    <NumberField
-                      label={`Link ${i + 1} damping`}
-                      value={link?.damping ?? 0.5}
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      onCommit={(damping) => feel(i, { damping })}
                     />
                   </Field>
                   <Field label="Gravity">

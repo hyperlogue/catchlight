@@ -124,26 +124,35 @@ pub enum TextureEncoding {
 }
 
 /// Authored global physics; the build folds `pixels_per_meter * gravity` into
-/// each pendulum and hair chain's gravity. Hair substeps apply model-wide.
+/// each pendulum and hair chain's gravity. The hair step rate applies
+/// model-wide.
+///
+/// Files from before `physics_rate` carry `chain_substeps` instead; it is
+/// ignored, and they read at the default rate.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClmPhysics {
     pub pixels_per_meter: f32,
     pub gravity: f32,
-    /// Minimum hair-chain steps per frame (1..=255). The solver also bounds
-    /// elapsed time per step and refines unconverged nonlinear stages.
+    /// Fixed hair-strand step rate in Hz, finite and within
+    /// [`PHYSICS_RATE_RANGE`]. A link stiffer than about `rate / 2 pi` Hz
+    /// follows rigidly.
     #[serde(
-        default = "default_chain_substeps",
-        skip_serializing_if = "default_substeps"
+        default = "default_physics_rate",
+        skip_serializing_if = "is_default_rate"
     )]
-    pub chain_substeps: std::num::NonZeroU8,
+    pub physics_rate: f32,
 }
 
-fn default_chain_substeps() -> std::num::NonZeroU8 {
-    crate::physics::DEFAULT_CHAIN_SUBSTEPS
+/// The step rates a file may carry, in Hz.
+pub const PHYSICS_RATE_RANGE: std::ops::RangeInclusive<f32> = 30.0..=1000.0;
+
+fn default_physics_rate() -> f32 {
+    crate::physics::DEFAULT_PHYSICS_RATE
 }
 
-fn default_substeps(value: &std::num::NonZeroU8) -> bool {
-    *value == crate::physics::DEFAULT_CHAIN_SUBSTEPS
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_rate(value: &f32) -> bool {
+    *value == crate::physics::DEFAULT_PHYSICS_RATE
 }
 
 impl Default for ClmPhysics {
@@ -151,7 +160,7 @@ impl Default for ClmPhysics {
         Self {
             pixels_per_meter: 1000.0,
             gravity: 9.8,
-            chain_substeps: default_chain_substeps(),
+            physics_rate: default_physics_rate(),
         }
     }
 }
@@ -628,17 +637,22 @@ fn is_screen(plane: &PendulumPlane) -> bool {
 /// rather than reusing it: the file's shape is the file's to keep stable,
 /// exactly as [`ClmSimplePhysics`] mirrors the driver it describes.
 ///
-/// Lengths and drawn directions come from the spine's joints. Integration
-/// accuracy is selected by [`ClmPhysics::chain_substeps`].
+/// Lengths and drawn directions come from the spine's joints.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClmLinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
-    /// Damping strength in `0..=1`, mapped to per-second drag on relative
-    /// joint motion. Zero is undamped; 1 gives heavy damping.
-    pub damping: f32,
-    /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
-    /// this is not each link's oscillation frequency. Zero disables the spring.
+    /// Retired per-link joint damping in `0..=1`, read only to migrate a
+    /// chain written without [`ClmChain::damping`]. The model's writer never
+    /// sets it; a file-level edit carries it through untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damping: Option<f32>,
+    /// How strongly the link holds its drawn turn, in Hz, finite and at or
+    /// above zero. Zero is limp.
+    ///
+    /// Files from the coupled solver stored the link's spring frequency
+    /// against its subtree's inertia; it reads unchanged as the frequency of
+    /// the link's own pull, the closest per-link meaning.
     pub stiffness: f32,
     /// The furthest this link's bend may reach either way, in half turns,
     /// within `(0, 1]`. Absent is a joint with no limit on it.
@@ -678,8 +692,18 @@ pub struct ClmChain {
     /// what the caller posed. Finite and at or above zero.
     #[serde(default = "full_weight", skip_serializing_if = "is_full_weight")]
     pub weight: f32,
-    /// Per-second drag on each particle's velocity through still air, in
-    /// world space. Finite and at or above zero.
+    /// Per-second damping of motion relative to the root's own motion,
+    /// finite and at or above zero: it sets bounce and settle time without
+    /// making the strand trail a moving head.
+    ///
+    /// Absent in files from before chain damping; the reader then takes the
+    /// mean over links of `-ln(1 - d)` from each retired link damping `d`,
+    /// each term capped at 10 (the default when no link has one). The
+    /// model's writer always writes the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damping: Option<f32>,
+    /// Per-second drag on each particle's absolute velocity, in world space:
+    /// a moving root leaves the strand trailing. Finite and at or above zero.
     ///
     /// Added after the format shipped, so it defaults: a chain without the
     /// key feels no air, which is what every earlier file describes, and a

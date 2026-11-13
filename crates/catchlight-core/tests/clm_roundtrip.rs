@@ -261,23 +261,21 @@ fn a_spine_round_trips_byte_for_byte() {
     chain.local_only = true;
     chain.gravity = 12.5;
     chain.weight = 0.25;
+    chain.damping = 3.5;
     chain.air_drag = 6.5;
     chain.set_links(vec![
         catchlight_core::LinkFeel {
             gravity_scale: 1.0,
-            damping: 0.5,
             stiffness: 0.0,
             limit: None,
         },
         catchlight_core::LinkFeel {
             gravity_scale: 0.8,
-            damping: 0.25,
             stiffness: 2.5,
             limit: Some(0.375),
         },
         catchlight_core::LinkFeel {
             gravity_scale: 0.6,
-            damping: 0.0,
             stiffness: 0.0,
             limit: None,
         },
@@ -301,6 +299,7 @@ fn a_spine_round_trips_byte_for_byte() {
     assert!(chain.local_only);
     assert_eq!(chain.gravity, 12.5);
     assert_eq!(chain.weight, 0.25);
+    assert_eq!(chain.damping, 3.5);
     assert_eq!(chain.air_drag, 6.5);
     assert_eq!(chain.links().len(), 3);
     assert_eq!(chain.links()[1].stiffness, 2.5);
@@ -309,7 +308,7 @@ fn a_spine_round_trips_byte_for_byte() {
         0.0,
         "an unsprung link stays one"
     );
-    assert_eq!(chain.links()[2].damping, 0.0);
+    assert_eq!(chain.links()[2].gravity_scale, 0.6);
     assert_eq!(chain.links()[1].limit, Some(0.375), "the limit came back");
     assert_eq!(
         chain.links()[0].limit,
@@ -319,28 +318,71 @@ fn a_spine_round_trips_byte_for_byte() {
 }
 
 #[test]
-fn chain_substeps_default_and_round_trip_without_rewriting_old_files() {
+fn physics_rate_defaults_round_trips_and_ignores_retired_substeps() {
     use catchlight_core::formats::clm::ClmPhysics;
-    let old = serde_json::json!({"gravity": 9.8, "pixels_per_meter": 1000.0});
-    let defaults: ClmPhysics = serde_json::from_value(old.clone()).unwrap();
-    assert_eq!(defaults.chain_substeps.get(), 4);
-    assert!(serde_json::to_value(defaults)
-        .unwrap()
-        .get("chain_substeps")
-        .is_none());
-    for invalid in [0, 256, -1] {
-        let mut value = old.clone();
-        value["chain_substeps"] = invalid.into();
-        assert!(serde_json::from_value::<ClmPhysics>(value).is_err());
-    }
-    for steps in [1, 4, 8, 16, 255] {
+    let old = serde_json::json!({"gravity": 9.8, "pixels_per_meter": 1000.0, "chain_substeps": 8});
+    let defaults: ClmPhysics = serde_json::from_value(old).unwrap();
+    assert_eq!(
+        defaults.physics_rate, 120.0,
+        "substeps read as the default rate"
+    );
+    let written = serde_json::to_value(defaults).unwrap();
+    assert!(
+        written.get("physics_rate").is_none(),
+        "the default writes no key"
+    );
+    assert!(written.get("chain_substeps").is_none());
+    for rate in [30.0, 60.0, 240.0, 1000.0] {
         let mut model = Model::new();
         let mut physics = *model.physics();
-        physics.chain_substeps = std::num::NonZeroU8::new(steps).unwrap();
+        physics.physics_rate = rate;
         model.set_physics(physics);
         let bytes = model.to_clm_bytes().unwrap();
         let reopened = Model::from_clm_bytes(&bytes).unwrap();
-        assert_eq!(reopened.physics().chain_substeps.get(), steps);
+        assert_eq!(reopened.physics().physics_rate, rate);
         assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
     }
+    for rate in [0.0, 29.0, 1001.0, f32::NAN] {
+        let mut model = Model::new();
+        let mut physics = *model.physics();
+        physics.physics_rate = rate;
+        model.set_physics(physics);
+        let bytes = model.to_clm_bytes().unwrap();
+        assert!(Model::from_clm_bytes(&bytes).is_err(), "rate {rate} loads");
+    }
+}
+
+/// A chain written before chains carried damping takes the mean per-second
+/// rate `-ln(1 - d)` of its links' retired damping, each capped at 10.
+#[test]
+fn a_chain_without_damping_migrates_from_its_links() {
+    let mut hex = SeededHex::new(4);
+    let mut model = Model::new();
+    let root = model.root().unwrap().clone();
+    let mut spine =
+        catchlight_core::ModelSpine::new(vec![[0.0, -10.0], [0.0, -20.0], [0.0, -30.0]]);
+    spine.set_chain(Some(catchlight_core::ModelChain::new(3)));
+    let node = model
+        .add_node(
+            &root,
+            catchlight_core::ModelNode::new("hair", ModelNodeKind::Spine(spine)),
+            &mut hex,
+        )
+        .unwrap();
+    let mut file = model.to_clm_file().unwrap();
+    for n in &mut file.doc.nodes {
+        if let catchlight_core::formats::clm::ClmNodeKind::Spine(sp) = &mut n.kind {
+            let chain = sp.chain.as_mut().unwrap();
+            chain.damping = None;
+            for (link, d) in chain.links.iter_mut().zip([0.5, 0.1, 1.0]) {
+                link.damping = Some(d);
+            }
+        }
+    }
+    let migrated = Model::from_clm_file(&file).unwrap();
+    let ModelNodeKind::Spine(sp) = &migrated.node(&node).unwrap().kind else {
+        panic!("spine");
+    };
+    let want = ((-(0.5f32.ln())) + (-(0.9f32.ln())) + 10.0) / 3.0;
+    assert!((sp.chain().unwrap().damping - want).abs() < 1e-5);
 }

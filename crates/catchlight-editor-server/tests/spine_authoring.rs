@@ -434,18 +434,18 @@ fn every_chain_knob_the_file_refuses_is_refused_at_the_door() {
             }),
         ),
         (
-            "damping 1.5",
-            with_feel(LinkFeelArg {
-                damping: Some(1.5),
-                ..Default::default()
-            }),
+            "damping -0.1",
+            ChainArg {
+                damping: Some(-0.1),
+                ..ChainArg::default()
+            },
         ),
         (
-            "damping -0.1",
-            with_feel(LinkFeelArg {
-                damping: Some(-0.1),
-                ..Default::default()
-            }),
+            "damping NaN",
+            ChainArg {
+                damping: Some(f32::NAN),
+                ..ChainArg::default()
+            },
         ),
         (
             "stiffness -1",
@@ -850,12 +850,12 @@ fn new_chain_limits_default_but_explicit_choices_survive_an_edit() {
             "wrong limit for {wire}: {chain:?}"
         );
 
-        // Read, change damping, send back: null must stay explicit so an
+        // Read, change stiffness, send back: null must stay explicit so an
         // unlimited chain never acquires the default during an unrelated edit.
         let mut read: ChainArg =
             serde_json::from_value(serde_json::to_value(&chain).unwrap()).unwrap();
         for feel in read.links.as_mut().unwrap() {
-            feel.damping = Some(0.8);
+            feel.stiffness = Some(0.8);
         }
         body(
             &ed,
@@ -873,8 +873,8 @@ fn new_chain_limits_default_but_explicit_choices_survive_an_edit() {
             read.links
                 .unwrap()
                 .iter()
-                .all(|l| l.limit == Some(expected) && l.damping == Some(0.8)),
-            "editing damping changed the limit for {wire}"
+                .all(|l| l.limit == Some(expected) && l.stiffness == Some(0.8)),
+            "editing stiffness changed the limit for {wire}"
         );
     }
 }
@@ -1064,24 +1064,25 @@ fn a_set_can_leave_replace_or_remove_the_chain() {
 }
 
 #[test]
-fn model_chain_substeps_are_reported_validated_and_undoable() {
+fn model_physics_rate_is_reported_validated_and_undoable() {
     let ed = Editor::new();
     let session = session(&ed);
     let steps = || match body(&ed, 1, Command::Status { session }) {
-        ResponseBody::Status { status } => status.chain_substeps.unwrap(),
+        ResponseBody::Status { status } => status.physics_rate.unwrap(),
         other => panic!("{other:?}"),
     };
-    assert_eq!(steps(), 4);
-    let edit = |count| Command::PhysicsGlobals {
+    assert_eq!(steps(), 120.0);
+    let edit = |rate| Command::PhysicsGlobals {
         session,
         gravity: None,
         pixels_per_meter: None,
-        chain_substeps: Some(count),
+        physics_rate: Some(rate),
     };
-    body(&ed, 2, edit(8));
-    assert_eq!(steps(), 8);
-    assert!(matches!(reply(&ed, 3, edit(0)), Reply::Err { .. }));
-    assert_eq!(steps(), 8);
+    body(&ed, 2, edit(240.0));
+    assert_eq!(steps(), 240.0);
+    assert!(matches!(reply(&ed, 3, edit(0.0)), Reply::Err { .. }));
+    assert!(matches!(reply(&ed, 3, edit(f32::NAN)), Reply::Err { .. }));
+    assert_eq!(steps(), 240.0);
     body(
         &ed,
         4,
@@ -1090,7 +1091,7 @@ fn model_chain_substeps_are_reported_validated_and_undoable() {
             if_rev: ed.revision(session).unwrap(),
         },
     );
-    assert_eq!(steps(), 4);
+    assert_eq!(steps(), 120.0);
     body(
         &ed,
         5,
@@ -1099,5 +1100,5 @@ fn model_chain_substeps_are_reported_validated_and_undoable() {
             if_rev: ed.revision(session).unwrap(),
         },
     );
-    assert_eq!(steps(), 8);
+    assert_eq!(steps(), 240.0);
 }

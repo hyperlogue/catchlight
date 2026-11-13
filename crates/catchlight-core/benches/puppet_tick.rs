@@ -66,9 +66,9 @@ const BEND_MAX: f32 = 0.5;
 /// How far `turn` slides the strands at either end of its range, in model
 /// pixels: far enough that the step swings a chain rather than nudging it.
 const TURN_SHIFT: f32 = 120.0;
-/// Fraction of a particle's velocity shed per second. Low enough that a
-/// chain is still moving frames after the anchor steps.
-const DAMPING: f32 = 0.3;
+/// Chain damping per second. Low enough that a chain is still moving frames
+/// after the anchor steps.
+const DAMPING: f32 = 0.36;
 
 /// One measured configuration.
 struct Scenario {
@@ -409,10 +409,10 @@ impl Built {
                 );
                 if s.chains {
                     let mut chain = ModelChain::new(s.links);
+                    chain.damping = DAMPING;
                     chain.set_links(vec![
                         LinkFeel {
                             gravity_scale: 1.0,
-                            damping: DAMPING,
                             stiffness: s.stiffness,
                             limit: None,
                         };

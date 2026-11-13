@@ -808,10 +808,10 @@ const STRAND_ROWS: usize = 9;
 
 /// Links the chain hangs the strip on, and so bend params the fixture carries.
 const STRAND_LINKS: u32 = 3;
-/// Fraction of a link particle's velocity shed per second. Low enough that a
-/// swing is still moving several frames after the anchor steps, which is what
-/// a mid-swing baseline needs to be a transient rather than a rest shape.
-const STRAND_DAMPING: f32 = 0.3;
+/// The chain's damping, per second. Low enough that a swing is still moving
+/// several frames after the anchor steps, which is what a mid-swing baseline
+/// needs to be a transient rather than a rest shape.
+const STRAND_DAMPING: f32 = 0.36;
 /// The chain's authored gravity. The bake folds the model's
 /// `pixels_per_meter * gravity` into this, so 1.0 is one g at the model's own
 /// scale — 9800 px/s^2 under the default 1000 px/m — and not a pixel
@@ -882,12 +882,13 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
                     // The chain decides the bends it writes, so the file
                     // carries no `weight` key.
                     weight: 1.0,
+                    damping: Some(STRAND_DAMPING),
                     // Still air writes no `air_drag` key either.
                     air_drag: 0.0,
                     links: (0..fit.lengths.len())
                         .map(|_| ClmLinkFeel {
                             gravity_scale: 1.0,
-                            damping: STRAND_DAMPING,
+                            damping: None,
                             stiffness: 0.0,
                             // No limit, so the file carries no `limit` key
                             // and the fixture's bytes do not move.

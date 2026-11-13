@@ -210,9 +210,10 @@ export type Command =
     gravity: number | null,
     pixels_per_meter: number | null,
     /**
-     * Equal steps per frame for all hair chains in the model, 1..=255.
+     * Fixed hair-strand step rate for the whole model, in Hz, within
+     * 30..=1000.
      */
-    chain_substeps: number | null,
+    physics_rate: number | null,
   }
   | {
     "cmd": "node_delete",
@@ -860,8 +861,7 @@ export type PhysicsTargets = {
  * from what a chain actually does; absent means "what the editor would have
  * used". `{}` is a link at every default.
  *
- * Lengths and drawn directions come from the spine's joints. Integration
- * accuracy is selected by the model's `chain_substeps` setting.
+ * Lengths and drawn directions come from the spine's joints.
  *
  * A reply fills every one of them in, so a client can read a chain out of
  * [`SpineInfo::chain`], change one number, and send the list straight back
@@ -873,13 +873,8 @@ export type LinkFeelArg = {
    */
   gravity_scale?: number | null,
   /**
-   * Damping strength in `0..=1`, mapped to per-second drag on relative
-   * joint motion. Zero is undamped; 1 gives heavy damping.
-   */
-  damping?: number | null,
-  /**
-   * Bend response in Hz, scaled by rest subtree inertia. Coupling means
-   * this is not each link's oscillation frequency. Zero disables the spring.
+   * How strongly the link holds its drawn turn, in Hz, at or above zero.
+   * Zero is limp; around `physics_rate / 2 pi` the link follows rigidly.
    */
   stiffness?: number | null,
   /**
@@ -915,7 +910,12 @@ export type ChainArg = {
    */
   weight?: number | null,
   /**
-   * Per-second drag on the strand's world velocity through still air.
+   * Per-second damping of motion relative to the root's own motion:
+   * bounce and settle time, without trailing.
+   */
+  damping?: number | null,
+  /**
+   * Per-second drag on the strand's absolute motion: it trails the root.
    */
   air_drag?: number | null,
   /**
@@ -1751,7 +1751,7 @@ export type StatusInfo = {
   redo_steps: number,
   gravity?: number | null,
   pixels_per_meter?: number | null,
-  chain_substeps?: number | null,
+  physics_rate?: number | null,
 };
 
 export type TreeNode = {

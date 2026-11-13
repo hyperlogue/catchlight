@@ -411,7 +411,7 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
             onCommit={(gravity) =>
               void run({
                 cmd: "physics_globals_set",
-                chain_substeps: null,
+                physics_rate: null,
                 gravity,
                 pixels_per_meter: null,
               })
@@ -427,30 +427,31 @@ export function PhysicsSettings({ session, onError }: { session: Session; onErro
             onCommit={(pixels_per_meter) =>
               void run({
                 cmd: "physics_globals_set",
-                chain_substeps: null,
+                physics_rate: null,
                 pixels_per_meter,
                 gravity: null,
               })
             }
           />
         </Field>
-        <Field label="Hair steps per frame">
+        <Field label="Hair step rate">
           <NumberField
-            label="Hair physics steps per frame"
-            value={status.chain_substeps ?? 4}
-            min={1}
-            max={255}
-            step={1}
-            onCommit={(steps) => void run({
+            label="Hair physics step rate"
+            value={status.physics_rate ?? 120}
+            min={30}
+            max={1000}
+            step={10}
+            unit="Hz"
+            onCommit={(physics_rate) => void run({
               cmd: "physics_globals_set",
-              chain_substeps: Math.round(steps),
+              physics_rate,
               gravity: null,
               pixels_per_meter: null,
             })}
           />
         </Field>
         <p data-catchlight-hint="">
-          Gravity and world scale apply to all physics. The step count applies to every hair chain in this model.
+          Gravity and world scale apply to all physics. The step rate applies to every hair chain in this model; a link stiffer than about a sixth of it follows rigidly.
         </p>
       </fieldset>
     </Disclosure>

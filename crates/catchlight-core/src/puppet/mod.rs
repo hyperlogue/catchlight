@@ -64,11 +64,10 @@
 //!   preview has to outlive it.
 //! - **A tick reports self-driven motion only.** [`Puppet::tick`] returns
 //!   [`Motion`]: a pendulum away from the rest pose `settle_physics` places,
-//!   a chain still moving, or an animation lane that wrote a param. Both
-//!   drivers answer `is_at_rest` at `SETTLE_EPS_SQ`, the same epsilon
-//!   `settle_physics` converges on; they differ in what they measure,
-//!   because a sprung chain's arithmetic settles a hair off the pose it
-//!   settles toward and it is stillness a caller is really asking about.
+//!   a chain that is not asleep, or an animation lane that wrote a param. A
+//!   pendulum answers `is_at_rest` at `SETTLE_EPS_SQ`, the epsilon
+//!   `settle_physics` converges on; a chain answers whether its strand
+//!   sleeps, which is stillness rather than a distance from a pose.
 //!   A pose, scratch or model change is deliberately not motion — the caller
 //!   made it and already knows to redraw. `Motion` is not `#[must_use]`: most
 //!   callers tick for the frame, not for the answer.
@@ -589,20 +588,11 @@ impl Puppet {
             let Some(chain) = &mut spine.chain else {
                 continue;
             };
-            // Only a chain of the same shape can take the old particles: they
-            // are positions on rods of particular lengths, and a chain whose
-            // links the edit changed has no rod to put the old point back on.
-            // That one leaves the fresh bake alone and re-hangs on its next
-            // tick, which is a visible snap — and the honest one, since the
-            // author just changed the chain the hair was hanging from.
-            if saved.particles.len() != chain.links.len() + 1 {
-                continue;
-            }
-            chain.particles = saved.particles;
-            chain.anchor = saved.anchor;
-            chain.carry = saved.carry;
-            chain.moved_last_tick = saved.moved_last_tick;
-            chain.anchor_initialized = saved.anchor_initialized;
+            // Only a chain of the same shape can take the old strand: a chain
+            // whose link count the edit changed re-hangs on its next tick,
+            // which is a visible snap — and the honest one. A settings edit
+            // on the same shape rebakes in place and keeps the swing.
+            chain.restore_runtime(saved);
         }
     }
 
@@ -1469,20 +1459,23 @@ impl Puppet {
             self.chain_posed_scratch = posed;
             return false;
         };
-        if !chain.anchor_initialized || chain.particles.len() != chain.links.len() + 1 {
-            let (anchor, carry) = (chain.anchor, chain.carry);
-            chain.settle_to_rest(anchor, carry, &posed);
-        }
-        for particle in chain.particles.iter_mut().skip(1) {
-            particle.pos += offset;
-            particle.vel = Vec2::ZERO;
-        }
-        // The velocities are zero but the chain is off its rest pose, so it
-        // is about to move: a kick is a move, and `is_at_rest` has to say so
-        // before the next tick has run.
-        chain.moved_last_tick = offset != Vec2::ZERO;
+        chain.kick(offset, &posed);
         self.chain_posed_scratch = posed;
         true
+    }
+
+    /// Where a chain's root is this frame and the frame its drawn shape hangs
+    /// in: the spine node's anchor and linear map. The one place a chain's
+    /// root input is chosen, so another source can replace it per chain.
+    fn chain_root(
+        &self,
+        transforms: &GlobalTransforms,
+        id: NodeIdx,
+    ) -> Option<(Vec2, crate::Mat2)> {
+        Some((
+            self.arena.physics_anchor(transforms, id)?,
+            self.arena.chain_carry(transforms, id)?,
+        ))
     }
 
     /// Advance every driver by `dt` seconds against `transforms`, then write
@@ -1492,12 +1485,7 @@ impl Puppet {
     /// kinds never read each other's state — only the anchor pose, which this
     /// frame's pre-pass already built — so the split is bookkeeping, not an
     /// order that means anything.
-    fn tick_physics(
-        &mut self,
-        transforms: &GlobalTransforms,
-        dt: f32,
-        substeps: std::num::NonZeroU8,
-    ) -> bool {
+    fn tick_physics(&mut self, transforms: &GlobalTransforms, dt: f32) -> bool {
         let _span = tracing::trace_span!("tick_physics").entered();
         for i in 0..self.arena.physics_node_ids.len() {
             let id = self.arena.physics_node_ids[i];
@@ -1516,10 +1504,7 @@ impl Puppet {
         let mut inputs: smallvec::SmallVec<[ChainInput; 32]> = smallvec::SmallVec::new();
         for i in 0..self.arena.chain_node_ids.len() {
             let id = self.arena.chain_node_ids[i];
-            if let (Some(anchor), Some(carry)) = (
-                self.arena.physics_anchor(transforms, id),
-                self.arena.chain_carry(transforms, id),
-            ) {
+            if let Some((anchor, carry)) = self.chain_root(transforms, id) {
                 self.chain_posed_bends(i, &mut posed);
                 inputs.push((id, anchor, carry, posed.iter().copied().collect()));
             }
@@ -1544,7 +1529,7 @@ impl Puppet {
                 }
             }
         }
-        crate::physics::tick_chains(&mut jobs, dt, substeps);
+        crate::physics::tick_chains(&mut jobs, dt);
         drop(jobs);
         self.chain_posed_scratch = posed;
         self.write_driver_param_outputs(transforms)
@@ -1610,18 +1595,9 @@ impl Puppet {
             let Some(chain) = &spine.chain else {
                 continue;
             };
-            // Same two branches as a pendulum's, and for the same reason: a
-            // `local_only` chain already integrated in the parent's frame.
-            let world_inverse = if chain.local_only {
-                Some(Mat4::IDENTITY)
-            } else {
-                checked_affine_inverse(transforms.get(id))
-            };
-            let Some(world_inverse) = world_inverse else {
-                continue;
-            };
-            let flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
-            chain.link_bends(flip * world_inverse * flip, &mut bends);
+            // The strand reads its bends through the carry it was ticked
+            // with, which is the node's frame (identity for `local_only`).
+            chain.link_bends(&mut bends);
             let weight = chain.weight;
             // Copied out beside the bends, for the reason `targets` is: the
             // claim below needs the puppet back, and a link's limit has to
@@ -1903,7 +1879,7 @@ impl Puppet {
                 self.arena.physics_transforms = local;
             }
             let local = std::mem::take(&mut self.arena.physics_transforms);
-            self.tick_physics(&local, dt, model.physics().chain_substeps);
+            self.tick_physics(&local, dt);
             self.arena.physics_transforms = local;
             motion.physics = self.drivers_moving();
         }
@@ -1972,7 +1948,7 @@ impl Puppet {
             matches!(
                 self.arena.get(id).map(|n| &n.kind),
                 Some(NodeKind::Spine(sp))
-                    if sp.chain.as_ref().is_some_and(|c| !c.is_at_rest(SETTLE_EPS_SQ))
+                    if sp.chain.as_ref().is_some_and(|c| !c.is_at_rest())
             )
         })
     }

@@ -1,5 +1,5 @@
-//! CPU puppet timing and trajectory traces; see `chain_coupling.md` for
-//! commands, fixture settings and measured results. No GPU work is timed.
+//! CPU puppet timing and strand accuracy across step rates; see `strand.md`
+//! for commands and fixture settings. No GPU work is timed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use catchlight_core::{
@@ -9,7 +9,7 @@ use catchlight_core::{
     ModelNodeKind, ModelParam, ModelPart, ModelSpine, Name, NodeId, ParamId, ParticleChainData,
     Puppet, ScalarTarget, Vec2,
 };
-use std::{f32::consts::TAU, hint::black_box, num::NonZeroU8, time::Instant};
+use std::{f32::consts::TAU, hint::black_box, time::Instant};
 
 const DT: f32 = 1.0 / 60.0;
 const FRAMES: usize = 3000;
@@ -82,7 +82,6 @@ fn rig(locks: usize, links: usize, mesh: bool, amplitude: f32) -> Rig {
         chain.set_links(vec![
             LinkFeel {
                 stiffness: 4.0,
-                damping: 0.3,
                 gravity_scale: 1.0,
                 limit: LinkFeel::default().limit,
             };
@@ -127,8 +126,14 @@ fn rig(locks: usize, links: usize, mesh: bool, amplitude: f32) -> Rig {
 }
 
 fn timing(frequency: bool, repeat: Option<usize>) {
-    println!("timing,repeat,locks,links,vertices_per_lock,drive_px,substeps,physics_hz,min_us,median_us,p90_us");
-    let counts: &[u8] = if frequency { &[4, 8, 16] } else { &[4] };
+    println!(
+        "timing,repeat,locks,links,vertices_per_lock,drive_px,physics_hz,min_us,median_us,p90_us"
+    );
+    let rates: &[f32] = if frequency {
+        &[60.0, 120.0, 240.0]
+    } else {
+        &[120.0]
+    };
     let lock_counts: &[usize] = if frequency { &[20] } else { &[10, 20] };
     let meshes: &[bool] = if frequency { &[true] } else { &[false, true] };
     for repeat in repeat.map_or(1..=3, |r| r..=r) {
@@ -137,10 +142,10 @@ fn timing(frequency: bool, repeat: Option<usize>) {
                 for &mesh in meshes {
                     for amplitude in [10.0, 120.0] {
                         let mut rig = rig(locks, links, mesh, amplitude);
-                        for offset in 0..counts.len() {
-                            let steps = counts[(offset + repeat) % counts.len()];
+                        for offset in 0..rates.len() {
+                            let rate = rates[(offset + repeat) % rates.len()];
                             let mut physics = *rig.model.physics();
-                            physics.chain_substeps = NonZeroU8::new(steps).unwrap();
+                            physics.physics_rate = rate;
                             rig.model.set_physics(physics);
                             let mut puppet = Puppet::new(&rig.model);
                             puppet.settle_physics(&rig.model);
@@ -166,8 +171,8 @@ fn timing(frequency: bool, repeat: Option<usize>) {
                             }
                             samples.sort_unstable();
                             let us = |i: usize| samples[i] as f64 / 1000.0;
-                            println!("timing,{repeat},{locks},{links},{},{amplitude},{steps},{},{:.3},{:.3},{:.3}",
-                                if mesh { 20 } else { 0 }, u32::from(steps) * 60, us(0), us(FRAMES / 2), us(FRAMES * 9 / 10));
+                            println!("timing,{repeat},{locks},{links},{},{amplitude},{rate},{:.3},{:.3},{:.3}",
+                                if mesh { 20 } else { 0 }, us(0), us(FRAMES / 2), us(FRAMES * 9 / 10));
                         }
                     }
                 }
@@ -176,12 +181,11 @@ fn timing(frequency: bool, repeat: Option<usize>) {
     }
 }
 
-fn trajectory(links: usize, amplitude: f32, substeps: u8) -> Vec<Vec<Vec2>> {
+fn trajectory(links: usize, amplitude: f32, rate: f32) -> Vec<Vec<Vec2>> {
     let mut chain = ParticleChainData::new(vec![
         ChainLink {
             length: 160.0 / links as f32,
             stiffness: 4.0,
-            damping: 0.3,
             limit: LinkFeel::default().limit,
             ..ChainLink::default()
         };
@@ -189,17 +193,12 @@ fn trajectory(links: usize, amplitude: f32, substeps: u8) -> Vec<Vec<Vec2>> {
     ]);
     let gravity = ClmPhysics::default();
     chain.gravity = gravity.gravity * gravity.pixels_per_meter;
+    chain.rate = rate;
     chain.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
     let mut frames = Vec::new();
     for frame in 1..=600 {
         let anchor = Vec2::new(amplitude * (frame as f32 * DT * TAU).sin(), 0.0);
-        chain.tick(
-            anchor,
-            Mat2::IDENTITY,
-            &[],
-            DT,
-            NonZeroU8::new(substeps).unwrap(),
-        );
+        chain.tick(anchor, Mat2::IDENTITY, &[], DT);
         frames.push(chain.particles.iter().map(|p| p.pos).collect());
     }
     frames
@@ -219,25 +218,20 @@ fn error(a: &[Vec<Vec2>], b: &[Vec<Vec2>]) -> (f64, f32) {
 }
 
 fn quality() {
-    println!("quality,links,drive_px,substeps,physics_hz,tip_rms_vs_fine_px,tip_max_vs_fine_px");
+    println!("quality,links,drive_px,physics_hz,tip_rms_vs_fine_px,tip_max_vs_fine_px");
     for links in [2, 8] {
         for amplitude in [10.0, 120.0] {
-            let fine = trajectory(links, amplitude, 128);
-            let finer = trajectory(links, amplitude, 255);
+            let fine = trajectory(links, amplitude, 960.0);
+            let finer = trajectory(links, amplitude, 1000.0);
             let reference_error = error(&fine, &finer);
             println!(
                 "reference,{links},{amplitude},{:.6},{:.6}",
                 reference_error.0, reference_error.1
             );
-            for substeps in [4, 8, 16] {
-                let measured = trajectory(links, amplitude, substeps);
+            for rate in [60.0, 120.0, 240.0, 480.0] {
+                let measured = trajectory(links, amplitude, rate);
                 let e = error(&measured, &fine);
-                println!(
-                    "quality,{links},{amplitude},{substeps},{},{:.6},{:.6}",
-                    u32::from(substeps) * 60,
-                    e.0,
-                    e.1
-                );
+                println!("quality,{links},{amplitude},{rate},{:.6},{:.6}", e.0, e.1);
             }
         }
     }
@@ -252,7 +246,6 @@ fn trace(subdivisions: usize) {
                     .map(|i| ChainLink {
                         length: 160.0 / links as f32,
                         stiffness: 4.0,
-                        damping: 0.3,
                         limit: LinkFeel::default().limit,
                         drawn: if scenario == "scale" {
                             Mat2::from_angle(0.07 * i as f32) * Vec2::Y
@@ -284,10 +277,7 @@ fn trace(subdivisions: usize) {
                     posed[0] = 0.05 * (t * TAU * 0.5).sin();
                 }
                 if scenario == "kick" && frame == 180 {
-                    for p in chain.particles.iter_mut().skip(1) {
-                        p.pos.x += 2.0;
-                        p.vel = Vec2::ZERO;
-                    }
+                    chain.kick(Vec2::new(2.0, 0.0), &posed);
                 }
                 for k in 1..=subdivisions {
                     let f = k as f32 / subdivisions as f32;
@@ -299,7 +289,6 @@ fn trace(subdivisions: usize) {
                         ),
                         &posed,
                         DT / subdivisions as f32,
-                        NonZeroU8::MIN,
                     );
                 }
                 for (joint, p) in chain.particles.iter().enumerate().skip(1) {

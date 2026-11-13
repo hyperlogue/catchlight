@@ -183,6 +183,10 @@ pub enum ClmLoadError {
     ChainWeight { node: String },
     #[error("spine {node:?} carries a chain whose air drag is not finite and at or above zero")]
     ChainAirDrag { node: String },
+    #[error("spine {node:?} carries a chain whose damping is not finite and at or above zero")]
+    ChainDamping { node: String },
+    #[error("the physics rate {rate} Hz is outside 30..=1000")]
+    PhysicsRate { rate: String },
     #[error("spine {node:?} chain link {link}: {field} {reason}")]
     ChainLinkField {
         node: String,
@@ -848,6 +852,13 @@ impl Model {
             }
         }
 
+        if !crate::formats::clm::PHYSICS_RATE_RANGE.contains(&doc.physics.physics_rate) {
+            return Err(ClmLoadError::PhysicsRate {
+                rate: doc.physics.physics_rate.to_string(),
+            }
+            .into());
+        }
+
         Ok(Model {
             identity: super::next_identity(),
             generation: 0,
@@ -1134,13 +1145,14 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
                 local_only: c.local_only,
                 gravity: c.gravity,
                 weight: c.weight,
+                damping: Some(c.damping),
                 air_drag: c.air_drag,
                 links: c
                     .links()
                     .iter()
                     .map(|l| ClmLinkFeel {
                         gravity_scale: l.gravity_scale,
-                        damping: l.damping,
+                        damping: None,
                         stiffness: l.stiffness,
                         limit: l.limit,
                     })
@@ -1354,8 +1366,10 @@ fn model_spine(
             if !link.gravity_scale.is_finite() {
                 return Err(bad(i, "gravity_scale", "is not finite"));
             }
-            if !link.damping.is_finite() || !(0.0..=1.0).contains(&link.damping) {
-                return Err(bad(i, "damping", "is outside 0..=1"));
+            if let Some(d) = link.damping {
+                if !d.is_finite() || !(0.0..=1.0).contains(&d) {
+                    return Err(bad(i, "damping", "is outside 0..=1"));
+                }
             }
             if !link.stiffness.is_finite() || link.stiffness < 0.0 {
                 return Err(bad(i, "stiffness", "is not finite and at or above zero"));
@@ -1370,17 +1384,24 @@ fn model_spine(
                 }
             }
         }
+        let damping = c.damping.unwrap_or_else(|| legacy_chain_damping(&c.links));
+        if !damping.is_finite() || damping < 0.0 {
+            return Err(ClmLoadError::ChainDamping {
+                node: id.to_string(),
+            }
+            .into());
+        }
         let mut chain = ModelChain::new(c.links.len());
         chain.local_only = c.local_only;
         chain.gravity = c.gravity;
         chain.weight = c.weight;
+        chain.damping = damping;
         chain.air_drag = c.air_drag;
         chain.set_links(
             c.links
                 .iter()
                 .map(|l| LinkFeel {
                     gravity_scale: l.gravity_scale,
-                    damping: l.damping,
                     stiffness: l.stiffness,
                     limit: l.limit,
                 })
@@ -1389,6 +1410,21 @@ fn model_spine(
         spine.set_chain(Some(chain));
     }
     Ok(spine)
+}
+
+/// Chain damping for a file written before chains carried it: the mean over
+/// links of the per-second rate `-ln(1 - d)` each retired link damping `d`
+/// stood for, each capped at 10/s. No link damping reads as the default.
+fn legacy_chain_damping(links: &[ClmLinkFeel]) -> f32 {
+    let rates: Vec<f32> = links
+        .iter()
+        .filter_map(|l| l.damping)
+        .map(|d| (-(1.0 - d).ln()).clamp(0.0, 10.0))
+        .collect();
+    if rates.is_empty() {
+        return crate::physics::DEFAULT_CHAIN_DAMPING;
+    }
+    rates.iter().sum::<f32>() / rates.len() as f32
 }
 
 fn model_masks(
@@ -2313,11 +2349,12 @@ mod tests {
             local_only: false,
             gravity: 1.0,
             weight: 1.0,
+            damping: Some(6.0),
             air_drag: 0.0,
             links: vec![
                 ClmLinkFeel {
                     gravity_scale: 1.0,
-                    damping: 0.5,
+                    damping: None,
                     stiffness: 0.0,
                     limit: None,
                 };
@@ -2370,6 +2407,12 @@ mod tests {
             sp.chain = Some(c);
         });
         assert_eq!(load_err(&file), ClmLoadError::ChainAirDrag { node });
+        let (file, node) = spine_file(|sp| {
+            let mut c = chain(2);
+            c.damping = Some(-1.0);
+            sp.chain = Some(c);
+        });
+        assert_eq!(load_err(&file), ClmLoadError::ChainDamping { node });
 
         /// One way to break a link's feel, and the refusal it has to produce.
         type BreakFeel = (fn(&mut ClmChain), &'static str, &'static str);
@@ -2379,8 +2422,16 @@ mod tests {
                 "gravity_scale",
                 "is not finite",
             ),
-            (|c| c.links[1].damping = 1.5, "damping", "is outside 0..=1"),
-            (|c| c.links[1].damping = -0.1, "damping", "is outside 0..=1"),
+            (
+                |c| c.links[1].damping = Some(1.5),
+                "damping",
+                "is outside 0..=1",
+            ),
+            (
+                |c| c.links[1].damping = Some(-0.1),
+                "damping",
+                "is outside 0..=1",
+            ),
             (
                 |c| c.links[1].stiffness = -1.0,
                 "stiffness",
@@ -2474,7 +2525,7 @@ mod tests {
     fn a_limitless_link_writes_no_limit_key() {
         let feel = ClmLinkFeel {
             gravity_scale: 1.0,
-            damping: 0.5,
+            damping: None,
             stiffness: 0.0,
             limit: None,
         };
@@ -2489,8 +2540,8 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["gravity_scale", "damping", "stiffness"],
-            "a link with no limit carries no key for one",
+            ["gravity_scale", "stiffness"],
+            "a link with no limit (or retired damping) carries no key for one",
         );
         assert_eq!(
             ciborium::from_reader::<ClmLinkFeel, _>(bytes.as_slice()).unwrap(),
@@ -2523,7 +2574,7 @@ mod tests {
 
         let links = vec![ClmLinkFeel {
             gravity_scale: 1.0,
-            damping: 0.5,
+            damping: Some(0.5),
             stiffness: 0.0,
             limit: None,
         }];
@@ -2544,6 +2595,7 @@ mod tests {
                 local_only: false,
                 gravity: 9.8,
                 weight: 1.0,
+                damping: None,
                 air_drag: 0.0,
                 links,
             },

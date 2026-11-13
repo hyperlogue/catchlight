@@ -1181,7 +1181,7 @@ impl Editor {
                         redo_steps: s.history.depths().1 as u32,
                         gravity: Some(s.model.physics().gravity),
                         pixels_per_meter: Some(s.model.physics().pixels_per_meter),
-                        chain_substeps: Some(s.model.physics().chain_substeps.get()),
+                        physics_rate: Some(s.model.physics().physics_rate),
                         node_count: s.model.node_count() as u32,
                         param_count: s.model.param_ids().len() as u32,
                         texture_count: s.model.texture_ids().len() as u32,
@@ -1429,7 +1429,7 @@ impl Editor {
                 session,
                 gravity,
                 pixels_per_meter,
-                chain_substeps,
+                physics_rate,
             } => self.edit_session_captured(session, |s| {
                 let mut physics = *s.model.physics();
                 if let Some(g) = gravity {
@@ -1438,10 +1438,13 @@ impl Editor {
                 if let Some(ppm) = pixels_per_meter {
                     physics.pixels_per_meter = ppm;
                 }
-                if let Some(steps) = chain_substeps {
-                    physics.chain_substeps = std::num::NonZeroU8::new(steps).ok_or_else(|| {
-                        EditorError::BadTarget("chain_substeps must be in 1..=255".into())
-                    })?;
+                if let Some(rate) = physics_rate {
+                    if !catchlight_core::formats::clm::PHYSICS_RATE_RANGE.contains(&rate) {
+                        return Err(EditorError::BadTarget(
+                            "physics_rate must be in 30..=1000 Hz".into(),
+                        ));
+                    }
+                    physics.physics_rate = rate;
                 }
                 s.model.set_physics(physics);
                 Ok(ResponseBody::Empty)
@@ -2087,6 +2090,13 @@ fn chain_of(arg: &ChainArg, joints: usize) -> Result<ModelChain, EditorError> {
             ));
         }
     }
+    if let Some(c) = arg.damping {
+        if !c.is_finite() || c < 0.0 {
+            return Err(EditorError::BadTarget(
+                "chain damping is not finite and at or above zero".into(),
+            ));
+        }
+    }
     if let Some(g) = arg.gravity {
         if !g.is_finite() || g <= 0.0 {
             return Err(EditorError::BadTarget(
@@ -2101,11 +2111,6 @@ fn chain_of(arg: &ChainArg, joints: usize) -> Result<ModelChain, EditorError> {
         if let Some(v) = feel.gravity_scale {
             if !v.is_finite() {
                 return Err(bad("gravity_scale", "is not finite"));
-            }
-        }
-        if let Some(v) = feel.damping {
-            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
-                return Err(bad("damping", "is outside 0..=1"));
             }
         }
         if let Some(v) = feel.stiffness {
@@ -2200,8 +2205,10 @@ fn rest_carry(model: &Model, id: &NodeId) -> catchlight_core::Mat2 {
     flip * m * flip
 }
 
-/// Ask the runtime where the chain settles, so authoring feedback uses the
-/// same coupled forces and limits as playback.
+/// Ask the runtime how far the chain sags off its drawing at rest, so
+/// authoring feedback uses the same forces and limits as playback. Playback
+/// subtracts that sag, so a large one is a strand that swings about a shape
+/// it cannot hold.
 fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
     let Some(ModelNodeKind::Spine(spine)) = model.node(node).map(|n| &n.kind) else {
         return Vec::new();
@@ -2227,7 +2234,6 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
                 length,
                 drawn,
                 gravity_scale: feel.gravity_scale,
-                damping: feel.damping,
                 stiffness: feel.stiffness,
                 limit: feel.limit,
             },
@@ -2235,17 +2241,13 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
         .collect();
     let mut runtime = catchlight_core::physics::ParticleChainData::new(links);
     runtime.gravity = gravity;
+    runtime.damping = chain.damping;
+    runtime.air_drag = chain.air_drag;
+    runtime.rate = model.physics().physics_rate;
+    runtime.rest_carry = carry;
     runtime.settle_to_rest(Vec2::ZERO, carry, &[]);
-    let local = carry.inverse();
-    let inverse = Mat4::from_cols(
-        local.x_axis.extend(0.0).extend(0.0),
-        local.y_axis.extend(0.0).extend(0.0),
-        Mat4::IDENTITY.z_axis,
-        Mat4::IDENTITY.w_axis,
-    );
-    let mut bends = Vec::new();
-    runtime.link_bends(inverse, &mut bends);
-    bends
+    runtime
+        .rest_sag()
         .iter()
         // A root bend rotates all lower links even if their own relative
         // hinges remain straight. Report the departure of each link's

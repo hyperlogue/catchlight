@@ -100,7 +100,6 @@ impl Fixture {
             chain.set_links(vec![
                 LinkFeel {
                     stiffness: response,
-                    damping: 0.8,
                     limit: Some(LIMIT),
                     ..LinkFeel::default()
                 };

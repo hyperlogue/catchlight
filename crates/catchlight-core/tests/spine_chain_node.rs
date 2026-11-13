@@ -16,7 +16,7 @@ use catchlight_core::model::{
     ModelSpine, ScalarTarget,
 };
 use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
-use catchlight_core::{Mat4, Model, Name, NodeId, NodeIdx, ParamId, Puppet, Vec2};
+use catchlight_core::{Model, Name, NodeId, NodeIdx, ParamId, Puppet, Vec2};
 
 const DT: f32 = 1.0 / 60.0;
 
@@ -200,8 +200,10 @@ fn a_chain_follows_a_posed_group_the_same_frame() {
         .add_binding_with_positions(&key, vec![vec![0.0, 0.5, 1.0]])
         .unwrap();
     model.reset_binding_key(&key, [1, 0]).unwrap();
+    // Shorter than the 90 px strand: a longer jump is a teleport, which
+    // carries the strand rigidly instead of swinging it.
     model
-        .set_binding_key(&key, [2, 0], 200.0)
+        .set_binding_key(&key, [2, 0], 60.0)
         .expect("the param's top key slides the group");
 
     let mut puppet = Puppet::new(&model);
@@ -218,7 +220,7 @@ fn a_chain_follows_a_posed_group_the_same_frame() {
     puppet.tick(&model, DT);
     let moved = anchor(&puppet, idx);
     assert!(
-        (moved.x - 200.0).abs() < 1e-3,
+        (moved.x - 60.0).abs() < 1e-3,
         "the pre-pass folds the pose the caller just set, got {moved}"
     );
     // The anchor teleported; the tip did not, because the rods have to drag it
@@ -502,19 +504,18 @@ fn a_chain_beside_a_part_leaves_the_part_alone() {
     );
 }
 
-/// **The first link's bend zero is the node's own down, not gravity's.** Two
-/// chains under one node turned 30 degrees about Z: the sprung one has no
-/// weight at all, so its spring holds it along the node and its bend reads
-/// zero; the limp one hangs along gravity, which from inside the turned node
-/// is 30 degrees away. This is what makes a stiff strand follow a tilted head
-/// and a limp one hang off it, and it is also where the spring and
-/// `link_bends` are checked against each other: they disagree the moment
-/// either one measures from the wrong direction.
+/// **The first link's bend zero is the node's own down, not gravity's, and
+/// a settled strand renders its drawing.** Two chains under one node turned
+/// 30 degrees about Z, settled there: the sprung one has no weight at all, so
+/// its pull holds it along the node; the limp one hangs along gravity, which
+/// from inside the turned node is 30 degrees away. Both read zero, because
+/// output is measured from the neutral rest, and the limp one's rest sag says
+/// where gravity put it.
 ///
 /// The sign is `link_bends`': a tip displaced toward the node's +X reads
 /// positive (`a_kicked_chain_writes_its_bends_and_only_where_it_is_aimed`).
 /// Turning the node *toward* +X leaves gravity on the node's -X side, so the
-/// limp chain's first bend is **negative** — 30 degrees is a sixth of a half
+/// limp chain's first sag is **negative** — 30 degrees is a sixth of a half
 /// turn, so -1/6.
 #[test]
 fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
@@ -561,7 +562,6 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
             (0..links)
                 .map(|_| catchlight_core::LinkFeel {
                     gravity_scale,
-                    damping: 0.5,
                     stiffness,
                     limit: None,
                 })
@@ -596,9 +596,18 @@ fn a_sprung_chain_follows_a_turned_node_and_a_limp_one_hangs() {
         .param_value(&chains[1].1[0])
         .expect("the limp chain's first bend");
     assert!(
-        (limp + 1.0 / 6.0).abs() < 1e-3,
+        limp.abs() < 1e-6,
+        "a settled strand renders as drawn, got {limp}"
+    );
+    let limp_idx = puppet.node_idx(&chains[1].0).expect("the limp chain baked");
+    let catchlight_core::NodeKind::Spine(sp) = &puppet.get(limp_idx).unwrap().kind else {
+        panic!("spine");
+    };
+    let sag = sp.chain.as_ref().unwrap().rest_sag()[0];
+    assert!(
+        (sag + 1.0 / 6.0).abs() < 1e-3,
         "a limp chain hangs along gravity, a sixth of a half turn off a node \
-         turned 30 degrees toward +X, got {limp}",
+         turned 30 degrees toward +X, got {sag}",
     );
 
     // None of the three is still moving, so a viewport over a tilted rig is
@@ -655,7 +664,7 @@ fn chain_bends(puppet: &Puppet, idx: NodeIdx) -> Vec<f32> {
             sp.chain
                 .as_ref()
                 .expect("the spine carries a chain")
-                .link_bends(Mat4::IDENTITY, &mut out);
+                .link_bends(&mut out);
             out
         }
         other => panic!("not a spine: {other:?}"),
@@ -700,7 +709,6 @@ fn posed_chain(rotation: f32, links: usize) -> (Model, NodeId, Vec<ParamId>) {
         (0..links)
             .map(|_| catchlight_core::LinkFeel {
                 gravity_scale: 0.0,
-                damping: 0.5,
                 stiffness: 10.0,
                 limit: None,
             })
@@ -777,7 +785,6 @@ fn a_chain_settled_under_a_posed_bend_stays_put() {
         (0..2)
             .map(|_| catchlight_core::LinkFeel {
                 gravity_scale: 1.0,
-                damping: 0.5,
                 stiffness: 4.0,
                 limit: None,
             })
@@ -955,7 +962,6 @@ fn limited_chain(limit: f32, weight: f32) -> (Model, NodeId, ParamId) {
     data.weight = weight;
     data.set_links(vec![catchlight_core::LinkFeel {
         gravity_scale: 0.0,
-        damping: 0.5,
         stiffness: 10.0,
         limit: Some(limit),
     }]);
@@ -1219,7 +1225,6 @@ fn scaled_spine(scale: [f32; 2], on_parent: bool) -> (Model, NodeId, ParamId) {
     chain.gravity = 0.0;
     chain.set_links(vec![catchlight_core::LinkFeel {
         gravity_scale: 1.0,
-        damping: 0.5,
         stiffness: 3.0,
         limit: None,
     }]);
@@ -1314,7 +1319,6 @@ fn a_mirrored_spine_bends_the_other_way() {
         chain.set_links(vec![
             catchlight_core::LinkFeel {
                 gravity_scale: 1.0,
-                damping: 0.5,
                 stiffness: 2.0,
                 limit: None,
             };
@@ -1369,7 +1373,7 @@ fn a_mirrored_spine_bends_the_other_way() {
 }
 
 #[test]
-fn coupled_motion_survives_rebake_and_reaches_params() {
+fn strand_motion_survives_rebake_and_reaches_params() {
     let mut f = Fixture::new(2);
     f.wire_outputs();
     let mut puppet = f.puppet();
@@ -1394,7 +1398,7 @@ fn coupled_motion_survives_rebake_and_reaches_params() {
         assert!(bend.is_finite());
         assert!((puppet.param_value(param).unwrap() - bend).abs() < 1e-6);
     }
-    // A geometry edit creates a fresh coupled chain.
+    // A geometry edit rebakes the strand.
     f.model
         .set_spine_joints(&f.chain, straight(3, 30.0))
         .unwrap();
@@ -1407,15 +1411,15 @@ fn coupled_motion_survives_rebake_and_reaches_params() {
 }
 
 #[test]
-fn model_substeps_reach_live_chains_after_an_edit() {
+fn model_physics_rate_reaches_live_chains_after_an_edit() {
     for links in [2, 8] {
         let mut f = Fixture::new(links);
         f.wire_outputs();
         let mut puppet = f.puppet();
         puppet.settle_physics(&f.model);
-        for count in [1, 4, 8, 16] {
+        for rate in [30.0, 120.0, 240.0, 1000.0] {
             let mut physics = *f.model.physics();
-            physics.chain_substeps = std::num::NonZeroU8::new(count).unwrap();
+            physics.physics_rate = rate;
             f.model.set_physics(physics);
             puppet.sync(&f.model);
             let idx = f.idx(&puppet);
@@ -1423,14 +1427,10 @@ fn model_substeps_reach_live_chains_after_an_edit() {
             let catchlight_core::NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
                 panic!("spine");
             };
-            let mut expected = spine.chain.as_ref().unwrap().clone();
-            expected.tick(
-                expected.anchor,
-                expected.carry,
-                &[],
-                DT,
-                physics.chain_substeps,
-            );
+            let chain = spine.chain.as_ref().unwrap();
+            assert_eq!(chain.rate, rate);
+            let mut expected = chain.clone();
+            expected.tick(expected.anchor, expected.carry, &[], DT);
             puppet.tick(&f.model, DT);
             assert!(tip(&puppet, idx).distance(expected.particles[links].pos) < 1e-3);
         }

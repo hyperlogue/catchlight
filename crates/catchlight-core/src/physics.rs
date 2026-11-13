@@ -1,34 +1,27 @@
 //! Physics drivers: pendulums and hair chains that write motion into params.
 //!
-//! **SimplePhysics integrates in substeps sized by the driver, and damping is
-//! per-second.** `SimplePhysicsData::tick` clamps `dt` to `PHYSICS_MAX_DT` and
-//! splits it by `max_substep()`, derived from `RK4_STABILITY_LIMIT *
-//! RK4_STEP_SAFETY` and capped at `PHYSICS_MAX_SUBSTEPS`. `angle_damping` is a
-//! fraction shed per **second** (`(1 - d).powf(dt)`), so the material a model
-//! describes does not change with frame rate or substep count. Applying
-//! damping per step would make 60 Hz and 144 Hz render different hair.
+//! **SimplePhysics integrates in substeps sized by the driver.**
+//! `SimplePhysicsData::tick` clamps `dt` to `PHYSICS_MAX_DT` and splits it by
+//! `max_substep()`, derived from `RK4_STABILITY_LIMIT * RK4_STEP_SAFETY` and
+//! capped at `PHYSICS_MAX_SUBSTEPS`. `angle_damping` and `length_damping` are
+//! ratios of critical damping for their mode (`2 * sqrt(g / length)` and
+//! `2 * 2 pi frequency`), applied as a continuous force, so the material does
+//! not change with frame rate or substep count.
 //!
 //! **Physics drivers work in a Y-down frame.** `Arena::physics_anchor` flips Y
 //! going in and `Puppet::write_physics_param_outputs` conjugates
 //! `world_inverse` by the same flip coming out. Gravity points toward +Y
 //! in that frame.
 //!
-//! Hair chains use physical angular two-way coupling; the equations, hard
-//! contacts and integration invariants live in `physics/coupled.rs`. Gravity
-//! acts independently of stiffness. Posed bends set torsional spring targets.
-//!
-//! A model's `chain_substeps` selects a minimum number of steps per frame.
-//! The solver bounds elapsed time per step and refines unconverged nonlinear
-//! stages. Rotation and stretch interpolate separately; damping is per second.
-//! Static settling minimizes spring and gravity potential independently of playback.
-//!
-//! Per-link limits are hard, inelastic angular contacts. The puppet also
-//! enforces the tightest bound after blending driver claims and animation.
-//! A sleeping chain must have stopped for the whole frame.
+//! Hair chains are root-driven strands stepped at the model's fixed
+//! `physics_rate`; the step, time and rest invariants live in
+//! `physics/strand.rs`. Posed bends are shape targets. Per-link limits clamp
+//! each step; the puppet also enforces the tightest bound after blending
+//! driver claims and animation.
 
 use crate::{Mat2, Mat4, Vec2};
 
-mod coupled;
+mod strand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PendulumKind {
@@ -549,11 +542,9 @@ pub struct ChainLink {
     pub drawn: Vec2,
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
-    /// Damping strength in `0..=1`, mapped to per-second drag on relative
-    /// joint motion. Zero is undamped; 1 gives heavy damping.
-    pub damping: f32,
-    /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
-    /// this is not each link's oscillation frequency. Zero disables the spring.
+    /// How strongly the link holds its drawn (or posed) turn, in Hz: each
+    /// step pulls the link's end `(2 pi stiffness / rate)^2` of the way to its
+    /// target. Near `rate / 2 pi` the link follows rigidly; zero is limp.
     pub stiffness: f32,
     /// The furthest this link's bend may reach either way, in half turns, or
     /// `None` for a joint that turns as far as the forces take it. Within
@@ -568,28 +559,27 @@ impl Default for ChainLink {
             length: 100.0,
             drawn: Vec2::new(0.0, 1.0),
             gravity_scale: 1.0,
-            damping: 0.5,
             stiffness: 0.0,
             limit: None,
         }
     }
 }
 
-/// An editable world-space point mass with explicit velocity.
+/// A point of the simulated strand, with its velocity over the last step.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ChainParticle {
     pub pos: Vec2,
     pub vel: Vec2,
 }
 
-/// Rigid local links with angular two-way coupling and a prescribed anchor.
+/// A root-driven strand hung from a prescribed root; see `physics/strand.rs`.
 ///
-/// [`Self::link_bends`] reports relative bends from the drawing in half turns.
-/// Positive bend rotates counterclockwise in the model's Y-up frame, moving
-/// a downward link toward +X. Every link on its drawn curve reads zero.
+/// [`Self::link_bends`] reports bends in half turns from the neutral rest.
+/// Positive bend rotates counterclockwise in the model's Y-up frame, moving a
+/// downward link toward +X. A strand settled in its rest frame reads zero.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParticleChainData {
-    coupled: Option<Box<coupled::State>>,
+    strand: Option<Box<strand::Strand>>,
     pub local_only: bool,
     /// Pre-folded like `SimplePhysicsData::gravity` (pixels/s², toward +Y in
     /// the physics frame).
@@ -599,43 +589,47 @@ pub struct ParticleChainData {
     /// authority, and intermediate values blend. Authored limits still
     /// constrain the result at every weight.
     pub weight: f32,
-    /// Per-second drag on each particle's world velocity, through still air.
-    /// It damps every mode of the chain at the same rate, and a moving anchor
-    /// leaves the strand trailing.
+    /// Per-second damping of motion relative to the root's own motion: it
+    /// sets bounce and settle time without making the strand trail.
+    pub damping: f32,
+    /// Per-second drag on absolute motion: a moving root leaves the strand
+    /// trailing.
     pub air_drag: f32,
+    /// Fixed step rate in Hz.
+    pub rate: f32,
     pub links: Vec<ChainLink>,
-    /// `links.len() + 1` particles; `particles[0]` is the anchor. Any tick
-    /// that finds the two out of step re-hangs the chain if the geometry is
-    /// representable, so editing `links` is enough to reshape it.
+    /// `links.len() + 1` points exported after each tick; `particles[0]` is
+    /// the root. Read-only: [`Self::kick`] displaces the strand.
     pub particles: Vec<ChainParticle>,
     pub anchor: Vec2,
     /// The full local-to-world linear map in the physics (Y-down) frame,
-    /// including scale and mirrors. The solver preserves lengths before this
-    /// map; `link_bends` reads the rods through its inverse.
+    /// including scale and mirrors. Rest rods map through it; bends read
+    /// through its inverse.
     pub carry: Mat2,
-    /// `false` until the chain is settled at its first sampled anchor and carry.
+    /// `false` until the chain is hung at its first sampled anchor and carry.
     pub anchor_initialized: bool,
-    /// Whether any substep moved a particle, or a kick displaced the chain.
-    /// Failed solves and exhausted settling also set this to keep it awake.
-    /// Successful settling clears it. Tracking the whole tick prevents a
-    /// zero-velocity turning point from being mistaken for rest.
-    pub moved_last_tick: bool,
+    /// The node's linear map (physics frame) at its authored rest pose. The
+    /// neutral bends are measured with the root pointing as it does there,
+    /// so the strand renders its drawing at that pose.
+    pub rest_carry: Mat2,
 }
 
 impl ParticleChainData {
     pub fn new(links: Vec<ChainLink>) -> Self {
         let mut chain = Self {
-            coupled: None,
+            strand: None,
             local_only: false,
             gravity: 9.8 * 100.0,
             weight: 1.0,
+            damping: DEFAULT_CHAIN_DAMPING,
             air_drag: 0.0,
+            rate: DEFAULT_PHYSICS_RATE,
             particles: Vec::with_capacity(links.len() + 1),
             links,
             anchor: Vec2::ZERO,
             carry: Mat2::IDENTITY,
             anchor_initialized: false,
-            moved_last_tick: true,
+            rest_carry: Mat2::IDENTITY,
         };
         chain
             .particles
@@ -650,11 +644,14 @@ impl Default for ParticleChainData {
     }
 }
 
-/// Default number of equal hair-physics steps per frame.
-pub const DEFAULT_CHAIN_SUBSTEPS: std::num::NonZeroU8 = std::num::NonZeroU8::MIN.saturating_add(3);
+/// Default fixed step rate for hair strands, in Hz.
+pub const DEFAULT_PHYSICS_RATE: f32 = 120.0;
 
-/// One independently sampled chain. Batching may reorder solves after all
-/// inputs have been sampled; `Puppet` writes their results in driver order.
+/// Default chain damping, per second.
+pub const DEFAULT_CHAIN_DAMPING: f32 = 6.0;
+
+/// One independently sampled chain. `Puppet` gathers every root first, so a
+/// root source can be swapped per chain without touching the solver.
 pub(crate) struct ChainTick<'a> {
     pub chain: &'a mut ParticleChainData,
     pub anchor: Vec2,
@@ -662,110 +659,196 @@ pub(crate) struct ChainTick<'a> {
     pub posed: smallvec::SmallVec<[f32; 8]>,
 }
 
-pub(crate) fn tick_chains(jobs: &mut [ChainTick<'_>], dt: f32, substeps: std::num::NonZeroU8) {
-    coupled::tick_chains(jobs, dt, substeps);
+pub(crate) fn tick_chains(jobs: &mut [ChainTick<'_>], dt: f32) {
+    for job in jobs {
+        job.chain.tick(job.anchor, job.carry, &job.posed, dt);
+    }
 }
 
 impl ParticleChainData {
-    /// Advance by `dt` in at least `substeps` steps, interpolating the
-    /// anchor and full carry from the previous frame. `dt` is capped at
-    /// `PHYSICS_MAX_DT`; nonpositive or nonfinite time only repositions the
-    /// frame. `posed` contains spring targets in half turns, missing entries 0.
-    pub fn tick(
-        &mut self,
-        anchor_world: Vec2,
-        carry_world: Mat2,
-        posed: &[f32],
-        dt: f32,
-        substeps: std::num::NonZeroU8,
-    ) {
-        coupled::tick(self, anchor_world, carry_world, posed, dt, substeps);
-    }
-
-    /// Find a stationary pose by bounded potential minimization. Unsprung links
-    /// start toward gravity within their limits. Failure or budget exhaustion
-    /// leaves the chain awake; settling is independent of the frame substeps.
-    /// Invalid geometry or an unrepresentable initial pose preserves the
-    /// previous particles and frame.
-    pub fn settle_to_rest(&mut self, anchor_world: Vec2, carry_world: Mat2, posed: &[f32]) {
-        self.coupled = None;
-        coupled::settle(self, anchor_world, usable_carry(carry_world), posed);
-    }
-
-    /// Whether no particle moved during the last tick and all velocities
-    /// fit `eps_sq`. This measures motion, not distance from the drawing.
-    pub fn is_at_rest(&self, eps_sq: f32) -> bool {
-        if !self.anchor_initialized || self.particles.len() != self.links.len() + 1 {
-            return false;
+    fn settings(&self) -> strand::Settings {
+        strand::Settings {
+            links: self.links.iter().copied().collect(),
+            gravity: self.gravity,
+            damping: self.damping,
+            air_drag: self.air_drag,
+            rate: self.rate,
         }
-        !self.moved_last_tick
+    }
+
+    fn settings_match(&self, s: &strand::Settings) -> bool {
+        s.links[..] == self.links[..]
+            && s.gravity == self.gravity
+            && s.damping == self.damping
+            && s.air_drag == self.air_drag
+            && s.rate == self.rate
+    }
+
+    /// Where the root points in the rest frame.
+    fn rest_dir(&self) -> Vec2 {
+        let drawn0 = self
+            .links
+            .first()
+            .map_or(Vec2::Y, |l| l.drawn.try_normalize().unwrap_or(Vec2::Y));
+        (usable_carry(self.rest_carry) * drawn0)
+            .try_normalize()
+            .unwrap_or(Vec2::Y)
+    }
+
+    /// Whether `strand` was baked from these settings and rest frame and can
+    /// take `carry` without rebuilding its geometry.
+    fn current(&self, strand: &strand::Strand, carry: Mat2) -> bool {
+        self.settings_match(strand.settings())
+            && strand.rest_dir() == self.rest_dir()
+            && strand.fits(carry)
+    }
+
+    fn usable_geometry(&self, anchor: Vec2) -> bool {
+        anchor.is_finite()
+            && self.gravity.is_finite()
             && self
-                .particles
+                .links
                 .iter()
-                .all(|p| p.vel.length_squared() <= eps_sq)
+                .all(|l| l.length.is_finite() && l.drawn.is_finite() && l.stiffness.is_finite())
+    }
+
+    /// Rebake after a settings edit or a carry whose metric changed, keeping
+    /// the motion and the rest frame.
+    fn refresh(&mut self, carry: Mat2, posed: &[f32]) {
+        let Some(old) = self.strand.as_deref() else {
+            return;
+        };
+        if self.current(old, carry) {
+            return;
+        }
+        let mut fresh =
+            strand::Strand::new(self.settings(), self.anchor, carry, posed, self.rest_dir());
+        fresh.adopt(old);
+        self.strand = Some(Box::new(fresh));
+    }
+
+    /// Advance by `dt` seconds toward `anchor_world` and `carry_world` at the
+    /// frame's end, in fixed steps. `posed` holds the bend targets in half
+    /// turns, missing entries 0. Nonpositive or nonfinite `dt` carries the
+    /// strand rigidly to the new anchor.
+    pub fn tick(&mut self, anchor_world: Vec2, carry_world: Mat2, posed: &[f32], dt: f32) {
+        let carry = usable_carry(carry_world);
+        if !self.usable_geometry(anchor_world) {
+            return;
+        }
+        if !self.anchor_initialized || self.strand.is_none() {
+            self.settle_to_rest(anchor_world, carry, posed);
+        }
+        self.refresh(carry, posed);
+        let Some(strand) = self.strand.as_deref_mut() else {
+            return;
+        };
+        strand.tick(anchor_world, carry, posed, dt);
+        if strand.steps() > 0 {
+            strand.export(&mut self.particles);
+        }
+        self.anchor = anchor_world;
+        self.carry = carry;
+    }
+
+    /// Hang the strand at rest for `anchor_world`, `carry_world` and `posed`
+    /// by simulating in place until it stops.
+    pub fn settle_to_rest(&mut self, anchor_world: Vec2, carry_world: Mat2, posed: &[f32]) {
+        let carry = usable_carry(carry_world);
+        if !self.usable_geometry(anchor_world) {
+            return;
+        }
+        let reusable = self
+            .strand
+            .as_deref()
+            .is_some_and(|s| self.current(s, carry));
+        if reusable {
+            if let Some(strand) = self.strand.as_deref_mut() {
+                strand.rest(anchor_world, carry, posed);
+            }
+        } else {
+            let fresh =
+                strand::Strand::new(self.settings(), anchor_world, carry, posed, self.rest_dir());
+            self.strand = Some(Box::new(fresh));
+        }
+        if let Some(strand) = self.strand.as_deref() {
+            strand.export(&mut self.particles);
+        }
+        self.anchor = anchor_world;
+        self.carry = carry;
+        self.anchor_initialized = true;
+    }
+
+    /// Displace every point below the root by `offset` (physics frame) and
+    /// stop it there, hanging the strand first if it never was.
+    pub fn kick(&mut self, offset: Vec2, posed: &[f32]) {
+        if !self.anchor_initialized || self.strand.is_none() {
+            let (anchor, carry) = (self.anchor, self.carry);
+            self.settle_to_rest(anchor, carry, posed);
+        }
+        if let Some(strand) = self.strand.as_deref_mut() {
+            strand.kick(offset);
+            strand.export(&mut self.particles);
+        }
+    }
+
+    /// Whether the strand sleeps: it ran out of motion with unchanged input,
+    /// so the next tick with the same input runs no step.
+    pub fn is_at_rest(&self) -> bool {
+        self.anchor_initialized && self.strand.as_deref().is_some_and(strand::Strand::asleep)
+    }
+
+    /// Fixed steps the last tick ran: at most [`MAX_STEPS_PER_TICK`], none
+    /// while asleep.
+    pub fn steps_last_tick(&self) -> u32 {
+        self.strand.as_deref().map_or(0, strand::Strand::steps)
+    }
+
+    /// The bends, in half turns, the strand settles to in its rest frame
+    /// before the neutral offset removes them: how far gravity and the
+    /// settings sag it off the drawing. Empty before the first hang.
+    pub fn rest_sag(&self) -> &[f32] {
+        self.strand.as_deref().map_or(&[], strand::Strand::neutral)
     }
 
     /// The bend at the joint above each link, in half turns, written into
-    /// `out` (cleared first). One value per link, so a chain reads out as a
-    /// vector the same shape as the thing that authored it.
+    /// `out` (cleared first): the deviation from the neutral rest, read in
+    /// the node's own frame and interpolated between the last two steps.
     ///
-    /// `world_inverse` maps each rod out of world space and into the
-    /// node's frame exactly as [`SimplePhysicsData::param_value`] does: the
-    /// translation column is ignored, and the caller hands over a matrix
-    /// already conjugated by the Y flip.
-    ///
-    /// **A chain lying on its drawing reads zero on every link, whatever the
-    /// drawing.** The first link's bend is measured from its own drawn
-    /// direction; every later one from the link above it turned by the angle
-    /// the drawing has at that joint, wrapped into a half turn either way.
-    /// Positive bend rotates counterclockwise in the model's Y-up frame.
-    pub fn link_bends(&self, world_inverse: Mat4, out: &mut Vec<f32>) {
-        out.clear();
-        let rods = self.links.len().min(self.particles.len().saturating_sub(1));
-        let mut previous = 0.0f32;
-        for i in 0..rods {
-            let d_world = self.particles[i + 1].pos - self.particles[i].pos;
-            let d_local = world_inverse
-                .transform_vector3(d_world.extend(0.0))
-                .truncate();
-            let dir = if d_local.length_squared() > 1e-12 {
-                d_local.normalize()
-            } else {
-                Vec2::new(0.0, 1.0)
-            };
-            // Y-down: (0, 1) is straight down and reads 0, (1, 0) points at
-            // +X and reads +pi/2. Note the sign is the opposite of
-            // `param_value`'s angle, which reports a pendulum's swing in a
-            // Y-up parameter frame; this one stays in the node's own frame.
-            let theta = f32::atan2(dir.x, dir.y);
-            // The bearing bend zero sits at: the link's own drawn direction
-            // for the first link, and for the rest the solved link above it
-            // carried by the turn the drawing makes here.
-            let reference = if i == 0 {
-                bearing(self.links[0].drawn)
-            } else {
-                previous + (bearing(self.links[i].drawn) - bearing(self.links[i - 1].drawn))
-            };
-            let bend = if i == 0 {
-                fold_half_turn(theta - reference)
-            } else {
-                wrap_to_half_turn(theta - reference)
-            };
-            previous = theta;
-            out.push(bend / std::f32::consts::PI);
+    /// The first link's bend is measured from its drawn direction under the
+    /// root's frame, every later one from the link above it turned by the
+    /// drawing's turn at that joint. Positive bend rotates counterclockwise
+    /// in the model's Y-up frame. Zero on every link before the first hang.
+    pub fn link_bends(&self, out: &mut Vec<f32>) {
+        match self.strand.as_deref() {
+            Some(strand) => strand.link_bends(out),
+            None => {
+                out.clear();
+                out.resize(self.links.len(), 0.0);
+            }
         }
+    }
+
+    /// Take the runtime state of `saved` when it hangs the same number of
+    /// links, so a rebake keeps the swing; settings changes rebake on the
+    /// next tick. `false` when the shapes differ.
+    pub fn restore_runtime(&mut self, saved: Self) -> bool {
+        if saved.particles.len() != self.links.len() + 1 || saved.links.len() != self.links.len() {
+            return false;
+        }
+        self.strand = saved.strand;
+        self.particles = saved.particles;
+        self.anchor = saved.anchor;
+        self.carry = saved.carry;
+        self.anchor_initialized = saved.anchor_initialized;
+        true
     }
 }
 
-/// Storage-scale motion floor, so subpixel roundoff does not keep a viewport
-/// awake indefinitely. Settling can stop a few hundredths of a pixel early.
-fn is_projection_noise(moved: Vec2, old: Vec2, length: f32) -> bool {
-    let floor = 4.0 * f32::EPSILON * old.length().max(length);
-    moved.length_squared() <= floor * floor
-}
+/// Most fixed steps one tick runs; the rest of a longer frame is dropped.
+pub const MAX_STEPS_PER_TICK: u32 = strand::MAX_STEPS;
 
-/// Use identity for a nonfinite or nearly singular carry. All chain paths
-/// share this policy, including validation during frame interpolation.
+/// Use identity for a nonfinite or nearly singular carry.
 fn usable_carry(carry: Mat2) -> Mat2 {
     if !carry.to_cols_array().iter().all(|v| v.is_finite()) {
         return Mat2::IDENTITY;
@@ -777,38 +860,6 @@ fn usable_carry(carry: Mat2) -> Mat2 {
         return Mat2::IDENTITY;
     }
     carry
-}
-
-/// A direction as an angle from straight down, positive toward +X — the
-/// convention [`ParticleChainData::link_bends`] reports its bends in.
-fn bearing(v: Vec2) -> f32 {
-    f32::atan2(v.x, v.y)
-}
-
-/// Fold an angle into `(-pi, pi]`, exactly: a value already inside comes back
-/// bit for bit, which [`wrap_to_half_turn`] does not promise and which the
-/// committed trajectory baseline depends on for the first link's bend.
-fn fold_half_turn(angle: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-    if angle > PI {
-        angle - TAU
-    } else if angle <= -PI {
-        angle + TAU
-    } else {
-        angle
-    }
-}
-
-/// Fold an angle into `(-pi, pi]` so a joint that crosses the back of the
-/// chain reports the short way round rather than a full turn.
-fn wrap_to_half_turn(angle: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-    let folded = angle.rem_euclid(TAU);
-    if folded > PI {
-        folded - TAU
-    } else {
-        folded
-    }
 }
 
 #[cfg(test)]

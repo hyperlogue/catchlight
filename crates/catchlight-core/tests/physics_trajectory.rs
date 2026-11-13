@@ -27,7 +27,7 @@ use catchlight_core::formats::clm::ClmPhysics;
 use catchlight_core::id::SeededHex;
 use catchlight_core::model::{ModelNode, ModelNodeKind, ModelParam, ModelPhysics};
 use catchlight_core::physics::{ChainLink, ParticleChainData, PendulumKind, PhysicsParamMapMode};
-use catchlight_core::{Mat2, Mat4, Model, Name, ParamId, Puppet, Vec2};
+use catchlight_core::{Mat2, Model, Name, ParamId, Puppet, Vec2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -161,7 +161,8 @@ fn spring_stiff() -> Scenario {
     }
 }
 
-/// Three unequal links yanked 40 px sideways, pinning the coupled transient.
+/// Three unequal limp links whose root steps 40 px sideways, pinning the
+/// strand's transient.
 fn chain_perturbed() -> Vec<Vec<f32>> {
     let mut chain = ParticleChainData::new(
         [60.0f32, 50.0, 40.0]
@@ -177,19 +178,20 @@ fn chain_perturbed() -> Vec<Vec<f32>> {
     yank(chain)
 }
 
-/// The same displacement with bend springs, damping and two-way coupling.
+/// The same displacement with shape pull, damping and air drag.
 fn chain_stiff() -> Vec<Vec<f32>> {
     let mut chain = ParticleChainData::new(
         [60.0f32, 50.0]
             .map(|length| ChainLink {
                 length,
-                damping: 0.3,
                 stiffness: 3.0,
                 ..Default::default()
             })
             .to_vec(),
     );
     chain.gravity = 980.0;
+    chain.damping = 0.4;
+    chain.air_drag = 0.5;
     chain.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
     yank(chain)
 }
@@ -201,15 +203,9 @@ fn yank(mut chain: ParticleChainData) -> Vec<Vec<f32>> {
     let mut samples = Vec::with_capacity(FRAMES / SAMPLE_EVERY + 1);
     let mut bends = Vec::new();
     for f in 0..FRAMES {
-        chain.tick(
-            anchor,
-            Mat2::IDENTITY,
-            &[],
-            DT,
-            catchlight_core::DEFAULT_CHAIN_SUBSTEPS,
-        );
+        chain.tick(anchor, Mat2::IDENTITY, &[], DT);
         if f % SAMPLE_EVERY == 0 {
-            chain.link_bends(Mat4::IDENTITY, &mut bends);
+            chain.link_bends(&mut bends);
             samples.push(bends.clone());
         }
     }

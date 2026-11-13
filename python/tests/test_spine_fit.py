@@ -133,7 +133,8 @@ def test_a_spine_added_by_hand_reads_the_params_it_names(
         chain=ChainArg(
             gravity=4.5,
             weight=0.5,
-            links=[LinkFeelArg(stiffness=2.0), LinkFeelArg(damping=0.25)],
+            damping=4.0,
+            links=[LinkFeelArg(stiffness=2.0), LinkFeelArg(gravity_scale=0.25)],
         ),
     )
 
@@ -143,9 +144,10 @@ def test_a_spine_added_by_hand_reads_the_params_it_names(
     assert held.chain is not None
     assert held.chain.gravity == pytest.approx(4.5)
     assert held.chain.weight == pytest.approx(0.5)
+    assert held.chain.damping == pytest.approx(4.0)
     assert held.chain.links is not None
     assert held.chain.links[0].stiffness == pytest.approx(2.0)
-    assert held.chain.links[1].damping == pytest.approx(0.25)
+    assert held.chain.links[1].gravity_scale == pytest.approx(0.25)
 
     # An add may name the Id it makes, as every other add here may.
     plain = built.spine("root", [(0.0, -20.0)], node="root/tail")

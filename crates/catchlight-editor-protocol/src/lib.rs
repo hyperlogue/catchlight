@@ -354,9 +354,10 @@ pub enum Command {
         gravity: Option<f32>,
         #[serde(default)]
         pixels_per_meter: Option<f32>,
-        /// Equal steps per frame for all hair chains in the model, 1..=255.
+        /// Fixed hair-strand step rate for the whole model, in Hz, within
+        /// 30..=1000.
         #[serde(default)]
-        chain_substeps: Option<u8>,
+        physics_rate: Option<f32>,
     },
     NodeDelete {
         session: SessionId,
@@ -1615,8 +1616,7 @@ pub struct PhysicsTargets {
 /// from what a chain actually does; absent means "what the editor would have
 /// used". `{}` is a link at every default.
 ///
-/// Lengths and drawn directions come from the spine's joints. Integration
-/// accuracy is selected by the model's `chain_substeps` setting.
+/// Lengths and drawn directions come from the spine's joints.
 ///
 /// A reply fills every one of them in, so a client can read a chain out of
 /// [`SpineInfo::chain`], change one number, and send the list straight back
@@ -1627,12 +1627,8 @@ pub struct LinkFeelArg {
     /// Multiplier on the chain's gravity for this link's particle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity_scale: Option<f32>,
-    /// Damping strength in `0..=1`, mapped to per-second drag on relative
-    /// joint motion. Zero is undamped; 1 gives heavy damping.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub damping: Option<f32>,
-    /// Bend response in Hz, scaled by rest subtree inertia. Coupling means
-    /// this is not each link's oscillation frequency. Zero disables the spring.
+    /// How strongly the link holds its drawn turn, in Hz, at or above zero.
+    /// Zero is limp; around `physics_rate / 2 pi` the link follows rigidly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stiffness: Option<f32>,
     /// The furthest this link's bend may reach either way, in half turns,
@@ -1656,7 +1652,6 @@ impl LinkFeelArg {
         let d = catchlight_core::LinkFeel::default();
         catchlight_core::LinkFeel {
             gravity_scale: self.gravity_scale.unwrap_or(d.gravity_scale),
-            damping: self.damping.unwrap_or(d.damping),
             stiffness: self.stiffness.unwrap_or(d.stiffness),
             limit: self.limit.unwrap_or(d.limit),
         }
@@ -1667,7 +1662,6 @@ impl LinkFeelArg {
     pub fn of(feel: &catchlight_core::LinkFeel) -> Self {
         Self {
             gravity_scale: Some(feel.gravity_scale),
-            damping: Some(feel.damping),
             stiffness: Some(feel.stiffness),
             limit: Some(feel.limit),
         }
@@ -1693,7 +1687,11 @@ pub struct ChainArg {
     /// How much of the params the solve decides, against what was posed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f32>,
-    /// Per-second drag on the strand's world velocity through still air.
+    /// Per-second damping of motion relative to the root's own motion:
+    /// bounce and settle time, without trailing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damping: Option<f32>,
+    /// Per-second drag on the strand's absolute motion: it trails the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub air_drag: Option<f32>,
     /// One per joint, root to tip.
@@ -1715,6 +1713,9 @@ impl ChainArg {
         if let Some(v) = self.weight {
             chain.weight = v;
         }
+        if let Some(v) = self.damping {
+            chain.damping = v;
+        }
         if let Some(v) = self.air_drag {
             chain.air_drag = v;
         }
@@ -1730,6 +1731,7 @@ impl ChainArg {
             local_only: Some(chain.local_only),
             gravity: Some(chain.gravity),
             weight: Some(chain.weight),
+            damping: Some(chain.damping),
             air_drag: Some(chain.air_drag),
             links: Some(chain.links().iter().map(LinkFeelArg::of).collect()),
         }
@@ -2976,7 +2978,7 @@ pub struct StatusInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixels_per_meter: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chain_substeps: Option<u8>,
+    pub physics_rate: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
