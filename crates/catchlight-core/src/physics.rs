@@ -15,7 +15,8 @@
 //!
 //! Hair chains are root-driven strands stepped at the model's fixed
 //! `physics_rate`; the step, time and rest invariants live in
-//! `physics/strand.rs`. Posed bends are shape targets. Per-link limits clamp
+//! `physics/strand.rs`. Posed bends are shape targets, and a settled strand
+//! reads its pose. Per-link limits clamp
 //! each step; the puppet also enforces the tightest bound after blending
 //! driver claims and animation.
 
@@ -804,9 +805,10 @@ impl ParticleChainData {
         self.strand.as_deref().map_or(0, strand::Strand::steps)
     }
 
-    /// The bends, in half turns, the strand settles to in its rest frame
-    /// before the neutral offset removes them: how far gravity and the
-    /// settings sag it off the drawing. Empty before the first hang.
+    /// How far, in half turns per link, the strand rests off its posed bends
+    /// in its rest frame: the sag gravity and the settings give it, which the
+    /// output removes. With no pose it is the sag off the drawing. Empty
+    /// before the first hang.
     pub fn rest_sag(&self) -> &[f32] {
         self.strand.as_deref().map_or(&[], strand::Strand::neutral)
     }

@@ -22,14 +22,21 @@
 //! moved more than `QUIET_SQ.sqrt()` pixels, the strand sleeps: a tick with
 //! the same root, frame and pose runs no step.
 //!
-//! **Neutral rest.** Output is `bend - b0`, where `b0` is the bend the strand
-//! settles to in its rest frame with the runtime constants (the rest shape
-//! depends on damping too). A settled strand in its rest frame therefore
-//! reads zero and renders the drawing. The rest frame is the live carry
-//! turned so the root points along `rest_dir`, the node's direction at its
-//! authored rest pose; a live root within 1e-6 of it uses the live carry
-//! as is, so the default pose reads exactly zero. Settling starts each link
-//! `SETTLE_NUDGE` off its target, so a drawing on an unstable balance falls.
+//! **Neutral rest.** Output is `bend - b0`, where `b0` is how far the strand
+//! rests off its pose in its rest frame with the runtime constants (the rest
+//! shape depends on damping too). A settled strand in its rest frame therefore
+//! reads its pose: zero renders the drawing, and a keyed bend renders the key
+//! however far gravity sags the strand off it. `b0` comes from the closed-form
+//! balance (each link along the sum of its spring's pull, gravity and the
+//! length correction its child hands up), so it is remeasured cheaply whenever
+//! the posed bends change. The rest frame is the live carry turned so the root
+//! points along `rest_dir`, the node's direction at its authored rest pose; a
+//! live root within 1e-6 of it uses the live carry as is, and a strand hung in
+//! that frame reads its pose exactly.
+//!
+//! **Hanging.** A hang starts from the balance turned `SETTLE_NUDGE` off it,
+//! so a drawing on an unstable balance falls, then steps in place until
+//! nothing moves.
 //!
 //! Geometry is world space (physics Y-down): link lengths and drawn turns are
 //! the node's rest rods mapped through the carry. A carry whose metric
@@ -57,6 +64,10 @@ const SETTLE_STEPS: u32 = 4000;
 const SETTLED_SQ: f32 = 1e-10;
 /// Turn (radians) each link starts settling from off its target.
 const SETTLE_NUDGE: f32 = 1e-3;
+/// Sweeps the closed-form balance takes at most; it stops once no link turns.
+const BALANCE_SWEEPS: u32 = 64;
+/// Squared change of a link's direction at which the balance has converged.
+const BALANCED_SQ: f32 = 1e-12;
 /// Relative change in the carry's metric that rebuilds the geometry.
 const METRIC_EPS: f32 = 1e-4;
 
@@ -119,6 +130,12 @@ pub(super) struct Strand {
     h: f32,
     mirror: f32,
     rest_dir: Vec2,
+    /// The live carry turned so the root points along `rest_dir`; turning the
+    /// carry does not change it, so it is baked with the geometry.
+    rest_carry: Mat2,
+    /// The last rest-frame balance, each link's direction and the push its
+    /// child hands up, which the next measure of `b0` starts from.
+    rest_balance: (Links<Vec2>, Links<Vec2>),
     b0: Links<f32>,
     // Pose targets.
     posed: Links<f32>,
@@ -207,6 +224,8 @@ impl Strand {
             h,
             mirror: if carry.determinant() < 0.0 { -1.0 } else { 1.0 },
             rest_dir,
+            rest_carry: carry,
+            rest_balance: (Links::new(), Links::new()),
             b0: smallvec::smallvec![0.0; n],
             posed: smallvec::smallvec![0.0; n],
             pose_turn: smallvec::smallvec![Vec2::X; n],
@@ -225,27 +244,20 @@ impl Strand {
             moved: 0.0,
             settings,
         };
-        // Measure the neutral rest in the rest frame: the live carry turned so
-        // its root points along `rest_dir`. When they already agree the live
-        // carry is used as is, so settling there reads exactly zero.
-        let rest_carry =
+        // The rest frame: the live carry turned so its root points along
+        // `rest_dir`. When they already agree the live carry is used as is,
+        // so hanging there reads the pose exactly.
+        strand.rest_carry =
             if strand.rest_dir.dot(dir) > 0.0 && strand.rest_dir.perp_dot(dir).abs() < 1e-6 {
                 carry
             } else {
                 let turn = cmul(strand.rest_dir, cconj(dir));
                 Mat2::from_cols(turn, turn.perp()) * carry
             };
-        strand.settle(root, rest_carry, &[]);
-        let mut b0 = Links::new();
-        strand.bends(strand.rest_dir, rest_carry, &mut b0);
-        strand.b0 = b0;
-        if rest_carry == carry && posed.iter().all(|b| *b == 0.0 || !b.is_finite()) {
-            // Already hanging at rest here: the output is exactly zero.
-            strand.out.iter_mut().for_each(|o| *o = 0.0);
-            strand.out_prev.clone_from(&strand.out);
-        } else {
-            strand.settle(root, carry, posed);
+        if !strand.set_posed(posed) {
+            strand.measure_neutral();
         }
+        strand.settle(root, carry, posed);
         strand
     }
 
@@ -295,7 +307,8 @@ impl Strand {
             .unwrap_or(self.step_dir)
     }
 
-    /// Update the pose targets; `true` when they changed.
+    /// Update the pose targets, remeasuring the neutral offset for them;
+    /// `true` when they changed.
     fn set_posed(&mut self, posed: &[f32]) -> bool {
         let mut changed = false;
         for i in 0..self.posed.len() {
@@ -310,22 +323,102 @@ impl Strand {
                 changed = true;
             }
         }
+        if changed {
+            self.measure_neutral();
+        }
         changed
     }
 
-    /// Hang the strand on its targets and simulate in place until it stops.
-    fn settle(&mut self, root: Vec2, carry: Mat2, posed: &[f32]) {
-        self.set_posed(posed);
-        let dir = self.dir(carry);
+    /// Measure `b0` for the current pose: balance the strand in the rest
+    /// frame and keep how far it lies off the pose.
+    fn measure_neutral(&mut self) {
+        let dir = self.dir(self.rest_carry);
+        let (mut u, mut push) = std::mem::take(&mut self.rest_balance);
+        self.balance(dir, &mut u, &mut push);
+        let mut p: SmallVec<[Vec2; 16]> = SmallVec::with_capacity(u.len() + 1);
+        p.push(Vec2::ZERO);
+        for (u, l) in u.iter().zip(&self.len) {
+            p.push(p[p.len() - 1] + *u * *l);
+        }
+        let mut b0 = std::mem::take(&mut self.b0);
+        self.bends_of(&p, dir, self.rest_carry, &mut b0);
+        for (b, pose) in b0.iter_mut().zip(&self.posed) {
+            *b -= pose;
+        }
+        self.b0 = b0;
+        self.rest_balance = (u, push);
+    }
+
+    /// Each link's direction at rest under root direction `dir`, written into
+    /// `u`: the fixed point of [`Self::step`] with a still root, solved
+    /// directly. A link at rest lies along `w = (1 - alpha) f + alpha l want`,
+    /// where `f` is gravity plus the share of its child's length correction
+    /// the step hands up as velocity; the other root of that balance is
+    /// unstable. A limit clamps the direction as the step does.
+    ///
+    /// `u` and `push` (what each link's child hands up) start from a previous
+    /// balance when they hold one, so a pose that moves a little per frame
+    /// rebalances in a few sweeps; empty, they start from the pose.
+    fn balance(&self, dir: Vec2, u: &mut Links<Vec2>, push: &mut Links<Vec2>) {
+        let n = self.len.len();
+        if u.len() != n || push.len() != n {
+            u.clear();
+            let mut parent = dir;
+            for i in 0..n {
+                parent = cmul(cmul(parent, self.rel[i]), self.pose_turn[i]);
+                u.push(parent);
+            }
+            push.clear();
+            push.resize(n, Vec2::ZERO);
+        }
+        let mut want: SmallVec<[Vec2; 16]> = smallvec::smallvec![Vec2::ZERO; n];
+        let hand_up = DFTL * self.kd * self.ka;
+        for _ in 0..BALANCE_SWEEPS {
+            let mut parent = dir;
+            let mut change = 0.0f32;
+            for i in 0..n {
+                let (a, l) = (self.alpha[i], self.len[i]);
+                let drawn = cmul(parent, self.rel[i]);
+                want[i] = cmul(drawn, self.pose_turn[i]);
+                let w = (self.g[i] + push[i]) * (1.0 - a) + want[i] * (a * l);
+                let mut v = w.try_normalize().unwrap_or(u[i]);
+                if let Some((cos, turn)) = self.limit[i] {
+                    if drawn.dot(v) < cos {
+                        v = if drawn.perp_dot(v) >= 0.0 {
+                            cmul(drawn, turn)
+                        } else {
+                            cmul(drawn, cconj(turn))
+                        };
+                    }
+                }
+                change = change.max(v.distance_squared(u[i]));
+                u[i] = v;
+                parent = v;
+            }
+            // The step moves each joint's previous position by `DFTL` of the
+            // correction placing the link below it, which reads as velocity.
+            for i in (1..n).rev() {
+                let (a, l) = (self.alpha[i], self.len[i]);
+                let x = (u[i] * l + self.g[i] + push[i]) * (1.0 - a) + want[i] * (a * l);
+                push[i - 1] = (x - u[i] * l) * hand_up;
+            }
+            if change <= BALANCED_SQ {
+                break;
+            }
+        }
+    }
+
+    /// Place the strand at its balance under root direction `dir`, a nudge
+    /// off it, and step in place until it stops.
+    fn hang(&mut self, root: Vec2, dir: Vec2) {
+        let (mut u, mut push) = (Links::new(), Links::new());
+        self.balance(dir, &mut u, &mut push);
         self.p[0] = root;
-        // Start a hair off the targets, so a strand drawn on an unstable
-        // balance (upright, say) falls off it instead of resting there.
+        // Start a hair off the balance, so a strand drawn on an unstable one
+        // (upright, say) falls off it instead of resting there.
         let nudge = unit(SETTLE_NUDGE);
-        let mut parent = dir;
-        for i in 0..self.len.len() {
-            let u = cmul(cmul(cmul(parent, self.rel[i]), self.pose_turn[i]), nudge);
-            self.p[i + 1] = self.p[i] + u * self.len[i];
-            parent = u;
+        for (i, u) in u.iter().enumerate() {
+            self.p[i + 1] = self.p[i] + cmul(*u, nudge) * self.len[i];
         }
         self.q.clone_from(&self.p);
         for _ in 0..SETTLE_STEPS {
@@ -334,17 +427,30 @@ impl Strand {
                 break;
             }
         }
+    }
+
+    /// Hang the strand on its targets and simulate in place until it stops.
+    fn settle(&mut self, root: Vec2, carry: Mat2, posed: &[f32]) {
+        self.set_posed(posed);
+        let dir = self.dir(carry);
+        self.hang(root, dir);
         self.q.clone_from(&self.p);
         self.root = root;
         self.carry = carry;
         self.step_dir = dir;
         self.acc = 0.0;
-        let mut out = std::mem::take(&mut self.out);
-        self.bends(dir, carry, &mut out);
-        for (o, b) in out.iter_mut().zip(&self.b0) {
-            *o -= b;
+        if carry == self.rest_carry {
+            // Hung in the frame `b0` was measured in: it reads its pose, which
+            // the hang reaches only to its stopping tolerance.
+            self.out.clone_from(&self.posed);
+        } else {
+            let mut out = std::mem::take(&mut self.out);
+            self.bends(dir, carry, &mut out);
+            for (o, b) in out.iter_mut().zip(&self.b0) {
+                *o -= b;
+            }
+            self.out = out;
         }
-        self.out = out;
         self.out_prev.clone_from(&self.out);
         self.asleep = true;
         self.quiet = 0;
@@ -397,11 +503,16 @@ impl Strand {
     /// Raw node-frame bends in half turns for root direction `dir` under
     /// `carry`, without the neutral offset.
     fn bends(&self, dir: Vec2, carry: Mat2, out: &mut Links<f32>) {
+        self.bends_of(&self.p, dir, carry, out);
+    }
+
+    /// [`Self::bends`] of the points `p`.
+    fn bends_of(&self, p: &[Vec2], dir: Vec2, carry: Mat2, out: &mut Links<f32>) {
         out.clear();
         let inverse = carry.inverse();
         let mut parent = dir;
         for i in 0..self.len.len() {
-            let u = (self.p[i + 1] - self.p[i]) / self.len[i];
+            let u = (p[i + 1] - p[i]) / self.len[i];
             let a = inverse * cmul(parent, self.rel[i]);
             let b = inverse * u;
             parent = u;
@@ -511,7 +622,8 @@ impl Strand {
         self.steps
     }
 
-    /// The neutral rest bends subtracted from the output.
+    /// How far the strand settles off its pose in its rest frame: the offset
+    /// subtracted from the output.
     pub(super) fn neutral(&self) -> &[f32] {
         &self.b0
     }

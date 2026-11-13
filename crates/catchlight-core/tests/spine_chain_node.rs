@@ -843,6 +843,124 @@ fn every_link_holds_its_own_posed_bend() {
     }
 }
 
+/// [`posed_chain`] with three soft, weighted links at `weight`: gravity
+/// sags them well off any pose they are given, so only the neutral offset
+/// can make them render one.
+fn sagging_chain(rotation: f32, weight: f32) -> (Model, NodeId, Vec<ParamId>) {
+    let (mut model, chain, params) = posed_chain(rotation, 3);
+    let mut soft = ModelChain::new(3);
+    soft.gravity = 981.0;
+    soft.weight = weight;
+    soft.set_links(
+        [4.0, 1.5, 1.0]
+            .into_iter()
+            .map(|stiffness| catchlight_core::LinkFeel {
+                gravity_scale: 1.0,
+                stiffness,
+                limit: None,
+            })
+            .collect(),
+    );
+    model
+        .set_spine_chain(&chain, Some(soft))
+        .expect("retune the links");
+    (model, chain, params)
+}
+
+/// **A keyed bend is the pose, and a settled strand renders it.** Gravity
+/// sags these soft links far off any shape their springs ask for, so the
+/// strand alone would droop off the key; the output measures from where the
+/// strand rests under that key, so the param reads the key once it settles.
+///
+/// Both ways in: hung at once by `settle_physics`, and swung there by ticks
+/// after the key changes on a strand that was resting on the drawing. Under
+/// a turned node too, since the rest frame is the node's authored one.
+#[test]
+fn a_keyed_bend_settles_to_render_the_key() {
+    let key = [0.2f32, -0.1, 0.15];
+    for rotation in [0.0, std::f32::consts::FRAC_PI_6] {
+        let (model, chain, params) = sagging_chain(rotation, 1.0);
+        let mut settled = Puppet::new(&model);
+        let mut swung = Puppet::new(&model);
+        swung.settle_physics(&model);
+        for (param, key) in params.iter().zip(key) {
+            settled.set_param_value(param, key);
+            swung.set_param_value(param, key);
+        }
+        settled.settle_physics(&model);
+        settled.tick(&model, DT);
+        let mut frames = 0;
+        while swung.tick(&model, DT).physics {
+            frames += 1;
+            assert!(frames < 1200, "the strand comes to rest on its key");
+        }
+
+        let idx = settled.node_idx(&chain).expect("the chain baked");
+        let catchlight_core::NodeKind::Spine(sp) = &settled.get(idx).unwrap().kind else {
+            panic!("spine");
+        };
+        let sag = sp.chain.as_ref().unwrap().rest_sag().to_vec();
+        assert!(
+            sag.iter().any(|s| s.abs() > 0.05),
+            "gravity really does pull the strand off its key: {sag:?}",
+        );
+        for (how, puppet) in [("settled", &settled), ("swung", &swung)] {
+            for (i, (param, key)) in params.iter().zip(key).enumerate() {
+                let got = puppet.param_value(param).expect("the bend");
+                assert!(
+                    (got - key).abs() < 1e-4,
+                    "{how} under a node turned {rotation} rad: link {i} keyed \
+                     at {key} renders {got}",
+                );
+            }
+        }
+    }
+}
+
+/// **Weight scales the swing about the key, never the key.** The strand
+/// simulates the same at any weight, so at 0.5 every frame of a swing lands
+/// half as far from the key as at 1, and both come to rest on it.
+#[test]
+fn half_weight_halves_the_swing_but_keeps_the_pose() {
+    let key = [0.2f32, -0.1, 0.15];
+    let mut puppets = [1.0f32, 0.5].map(|weight| {
+        let (model, chain, params) = sagging_chain(0.0, weight);
+        let mut puppet = Puppet::new(&model);
+        for (param, key) in params.iter().zip(key) {
+            puppet.set_param_value(param, key);
+        }
+        puppet.settle_physics(&model);
+        let idx = puppet.node_idx(&chain).expect("the chain baked");
+        assert!(puppet.kick_chain(idx, Vec2::new(40.0, 0.0)), "kicked");
+        (model, puppet, params)
+    });
+    let mut swing = 0.0f32;
+    for frame in 0..600 {
+        for (model, puppet, _) in &mut puppets {
+            puppet.tick(model, DT);
+        }
+        let [(_, full, params), (_, half, _)] = &puppets;
+        for (i, (param, key)) in params.iter().zip(key).enumerate() {
+            let full = full.param_value(param).expect("the bend") - key;
+            let half = half.param_value(param).expect("the bend") - key;
+            swing = swing.max(full.abs());
+            assert!(
+                (half - 0.5 * full).abs() < 1e-5,
+                "frame {frame} link {i}: half weight swings {half} off the \
+                 key, half of full weight's {full}",
+            );
+        }
+    }
+    assert!(swing > 0.05, "the kick swung the strand: {swing}");
+    let [(_, full, params), (_, half, _)] = &puppets;
+    for puppet in [full, half] {
+        for (param, key) in params.iter().zip(key) {
+            let got = puppet.param_value(param).expect("the bend");
+            assert!((got - key).abs() < 1e-4, "back on the key {key}: {got}");
+        }
+    }
+}
+
 /// **`weight` is how much of its param a chain decides.** At 1 the solve is
 /// the value; at 0.5 the param lands half way between the pose and the
 /// solve; at 0 the chain asserts nothing at all and the param keeps the pose

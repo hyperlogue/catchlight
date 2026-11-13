@@ -1567,6 +1567,11 @@ impl Puppet {
     /// `resolve_contributions` can clamp after every driver and the pose have
     /// been blended. Pre-blending each chain and claiming at full authority
     /// would let a zero-weight chain dilute another driver's output.
+    ///
+    /// **The keyed bend is the pose.** The strand targets the posed bends and
+    /// reads them back once settled, so a chain alone on its params resolves
+    /// to `pose + weight * (strand - pose)`: a key renders as keyed at any
+    /// weight, and the weight scales only the swing about it.
     fn write_driver_param_outputs(&mut self, transforms: &GlobalTransforms) -> bool {
         self.physics_update_scratch.clear();
         for i in 0..self.arena.physics_node_ids.len() {
