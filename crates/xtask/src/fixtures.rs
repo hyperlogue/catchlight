@@ -882,13 +882,12 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
                     // The chain decides the bends it writes, so the file
                     // carries no `weight` key.
                     weight: 1.0,
-                    damping: Some(STRAND_DAMPING),
+                    damping: STRAND_DAMPING,
                     // Still air writes no `air_drag` key either.
                     air_drag: 0.0,
                     links: (0..fit.lengths.len())
                         .map(|_| ClmLinkFeel {
                             gravity_scale: 1.0,
-                            damping: None,
                             stiffness: 0.0,
                             // No limit, so the file carries no `limit` key
                             // and the fixture's bytes do not move.

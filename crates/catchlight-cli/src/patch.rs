@@ -443,10 +443,7 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             (Some(c), "chain.gravity") => Slot::F32(&mut c.gravity),
             (Some(c), "chain.weight") => Slot::F32(&mut c.weight),
             (Some(c), "chain.air_drag") => Slot::F32(&mut c.air_drag),
-            (Some(c), "chain.damping") => Slot::F32(
-                c.damping
-                    .get_or_insert(catchlight_core::physics::DEFAULT_CHAIN_DAMPING),
-            ),
+            (Some(c), "chain.damping") => Slot::F32(&mut c.damping),
             _ => return None,
         },
     })

@@ -1145,14 +1145,13 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
                 local_only: c.local_only,
                 gravity: c.gravity,
                 weight: c.weight,
-                damping: Some(c.damping),
+                damping: c.damping,
                 air_drag: c.air_drag,
                 links: c
                     .links()
                     .iter()
                     .map(|l| ClmLinkFeel {
                         gravity_scale: l.gravity_scale,
-                        damping: None,
                         stiffness: l.stiffness,
                         limit: l.limit,
                     })
@@ -1366,11 +1365,6 @@ fn model_spine(
             if !link.gravity_scale.is_finite() {
                 return Err(bad(i, "gravity_scale", "is not finite"));
             }
-            if let Some(d) = link.damping {
-                if !d.is_finite() || !(0.0..=1.0).contains(&d) {
-                    return Err(bad(i, "damping", "is outside 0..=1"));
-                }
-            }
             if !link.stiffness.is_finite() || link.stiffness < 0.0 {
                 return Err(bad(i, "stiffness", "is not finite and at or above zero"));
             }
@@ -1384,7 +1378,7 @@ fn model_spine(
                 }
             }
         }
-        let damping = c.damping.unwrap_or_else(|| legacy_chain_damping(&c.links));
+        let damping = c.damping;
         if !damping.is_finite() || damping < 0.0 {
             return Err(ClmLoadError::ChainDamping {
                 node: id.to_string(),
@@ -1410,21 +1404,6 @@ fn model_spine(
         spine.set_chain(Some(chain));
     }
     Ok(spine)
-}
-
-/// Chain damping for a file written before chains carried it: the mean over
-/// links of the per-second rate `-ln(1 - d)` each retired link damping `d`
-/// stood for, each capped at 10/s. No link damping reads as the default.
-fn legacy_chain_damping(links: &[ClmLinkFeel]) -> f32 {
-    let rates: Vec<f32> = links
-        .iter()
-        .filter_map(|l| l.damping)
-        .map(|d| (-(1.0 - d).ln()).clamp(0.0, 10.0))
-        .collect();
-    if rates.is_empty() {
-        return crate::physics::DEFAULT_CHAIN_DAMPING;
-    }
-    rates.iter().sum::<f32>() / rates.len() as f32
 }
 
 fn model_masks(
@@ -2349,12 +2328,11 @@ mod tests {
             local_only: false,
             gravity: 1.0,
             weight: 1.0,
-            damping: Some(6.0),
+            damping: 6.0,
             air_drag: 0.0,
             links: vec![
                 ClmLinkFeel {
                     gravity_scale: 1.0,
-                    damping: None,
                     stiffness: 0.0,
                     limit: None,
                 };
@@ -2409,28 +2387,18 @@ mod tests {
         assert_eq!(load_err(&file), ClmLoadError::ChainAirDrag { node });
         let (file, node) = spine_file(|sp| {
             let mut c = chain(2);
-            c.damping = Some(-1.0);
+            c.damping = -1.0;
             sp.chain = Some(c);
         });
         assert_eq!(load_err(&file), ClmLoadError::ChainDamping { node });
 
         /// One way to break a link's feel, and the refusal it has to produce.
         type BreakFeel = (fn(&mut ClmChain), &'static str, &'static str);
-        let cases: [BreakFeel; 7] = [
+        let cases: [BreakFeel; 5] = [
             (
                 |c| c.links[1].gravity_scale = f32::NAN,
                 "gravity_scale",
                 "is not finite",
-            ),
-            (
-                |c| c.links[1].damping = Some(1.5),
-                "damping",
-                "is outside 0..=1",
-            ),
-            (
-                |c| c.links[1].damping = Some(-0.1),
-                "damping",
-                "is outside 0..=1",
             ),
             (
                 |c| c.links[1].stiffness = -1.0,
@@ -2525,7 +2493,6 @@ mod tests {
     fn a_limitless_link_writes_no_limit_key() {
         let feel = ClmLinkFeel {
             gravity_scale: 1.0,
-            damping: None,
             stiffness: 0.0,
             limit: None,
         };
@@ -2541,7 +2508,7 @@ mod tests {
         assert_eq!(
             keys,
             ["gravity_scale", "stiffness"],
-            "a link with no limit (or retired damping) carries no key for one",
+            "a link with no limit carries no key for one",
         );
         assert_eq!(
             ciborium::from_reader::<ClmLinkFeel, _>(bytes.as_slice()).unwrap(),
@@ -2564,26 +2531,31 @@ mod tests {
 
     #[test]
     fn a_chain_map_without_weight_reads_as_full_authority() {
-        /// A chain map without the key: the same fields, in the same order.
+        /// A chain map from before the weight and chain damping, its link
+        /// still carrying the retired damping key.
         #[derive(serde::Serialize)]
         struct ChainBeforeTheWeight {
             local_only: bool,
             gravity: f32,
-            links: Vec<ClmLinkFeel>,
+            links: Vec<LinkBeforeChainDamping>,
+        }
+        #[derive(serde::Serialize)]
+        struct LinkBeforeChainDamping {
+            gravity_scale: f32,
+            damping: f32,
+            stiffness: f32,
         }
 
-        let links = vec![ClmLinkFeel {
-            gravity_scale: 1.0,
-            damping: Some(0.5),
-            stiffness: 0.0,
-            limit: None,
-        }];
         let mut bytes = Vec::new();
         ciborium::into_writer(
             &ChainBeforeTheWeight {
                 local_only: false,
                 gravity: 9.8,
-                links: links.clone(),
+                links: vec![LinkBeforeChainDamping {
+                    gravity_scale: 1.0,
+                    damping: 0.5,
+                    stiffness: 0.0,
+                }],
             },
             &mut bytes,
         )
@@ -2595,9 +2567,13 @@ mod tests {
                 local_only: false,
                 gravity: 9.8,
                 weight: 1.0,
-                damping: None,
+                damping: -(0.5f32.ln()),
                 air_drag: 0.0,
-                links,
+                links: vec![ClmLinkFeel {
+                    gravity_scale: 1.0,
+                    stiffness: 0.0,
+                    limit: None,
+                }],
             },
         );
     }

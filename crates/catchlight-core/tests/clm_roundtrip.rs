@@ -353,9 +353,11 @@ fn physics_rate_defaults_round_trips_and_ignores_retired_substeps() {
 }
 
 /// A chain written before chains carried damping takes the mean per-second
-/// rate `-ln(1 - d)` of its links' retired damping, each capped at 10.
+/// rate `-ln(1 - d)` of its links' retired damping, each capped at 10, and
+/// the next write carries only the chain key.
 #[test]
 fn a_chain_without_damping_migrates_from_its_links() {
+    use catchlight_core::formats::clm::{ClmNodeKind, ClmStructure};
     let mut hex = SeededHex::new(4);
     let mut model = Model::new();
     let root = model.root().unwrap().clone();
@@ -369,20 +371,60 @@ fn a_chain_without_damping_migrates_from_its_links() {
             &mut hex,
         )
         .unwrap();
-    let mut file = model.to_clm_file().unwrap();
-    for n in &mut file.doc.nodes {
-        if let catchlight_core::formats::clm::ClmNodeKind::Spine(sp) = &mut n.kind {
-            let chain = sp.chain.as_mut().unwrap();
-            chain.damping = None;
-            for (link, d) in chain.links.iter_mut().zip([0.5, 0.1, 1.0]) {
-                link.damping = Some(d);
+    let file = model.to_clm_file().unwrap();
+    // Spell the chain as an old file did: no chain key, one per link.
+    let old_chain = |d: Option<f32>| {
+        let mut chain = serde_json::to_value(&file.doc).unwrap();
+        for n in chain["nodes"].as_array_mut().unwrap() {
+            let Some(c) = n["kind"].get_mut("Spine").map(|sp| &mut sp["chain"]) else {
+                continue;
+            };
+            let c = c.as_object_mut().unwrap();
+            match d {
+                Some(d) => c.insert("damping".into(), d.into()),
+                None => c.remove("damping"),
+            };
+            for (link, d) in c["links"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .zip([0.5, 0.1, 1.0])
+            {
+                link["damping"] = d.into();
             }
         }
-    }
-    let migrated = Model::from_clm_file(&file).unwrap();
+        chain
+    };
+    let doc: ClmStructure = serde_json::from_value(old_chain(None)).unwrap();
+    let mut migrated_file = file.clone();
+    migrated_file.doc = doc;
+    let migrated = Model::from_clm_file(&migrated_file).unwrap();
     let ModelNodeKind::Spine(sp) = &migrated.node(&node).unwrap().kind else {
         panic!("spine");
     };
     let want = ((-(0.5f32.ln())) + (-(0.9f32.ln())) + 10.0) / 3.0;
     assert!((sp.chain().unwrap().damping - want).abs() < 1e-5);
+
+    let rewritten = serde_json::to_string(&migrated_file.doc).unwrap();
+    assert_eq!(
+        rewritten.matches("\"damping\"").count(),
+        1,
+        "only the chain key is written back: {rewritten}"
+    );
+
+    // A chain key beside leftover link keys wins, and the link keys go.
+    let doc: ClmStructure = serde_json::from_value(old_chain(Some(2.0))).unwrap();
+    let ClmNodeKind::Spine(sp) = &doc.nodes.iter().find(|n| n.id == node).unwrap().kind else {
+        panic!("spine");
+    };
+    assert_eq!(sp.chain.as_ref().map(|c| c.damping), Some(2.0));
+
+    // A retired damping outside its range is refused, not read as NaN.
+    let mut bad = old_chain(None);
+    for n in bad["nodes"].as_array_mut().unwrap() {
+        if let Some(sp) = n["kind"].get_mut("Spine") {
+            sp["chain"]["links"][1]["damping"] = 1.5.into();
+        }
+    }
+    assert!(serde_json::from_value::<ClmStructure>(bad).is_err());
 }

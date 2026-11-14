@@ -356,20 +356,13 @@ fn node_fields(n: &ClmNode) -> Fields {
                 f.insert("chain.local_only".into(), c.local_only.to_string());
                 f.insert("chain.gravity".into(), c.gravity.to_string());
                 f.insert("chain.weight".into(), c.weight.to_string());
-                f.insert(
-                    "chain.damping".into(),
-                    c.damping
-                        .map_or_else(|| "(from links)".to_string(), |d| d.to_string()),
-                );
+                f.insert("chain.damping".into(), c.damping.to_string());
                 f.insert("chain.air_drag".into(), c.air_drag.to_string());
                 for (i, link) in c.links.iter().enumerate() {
                     f.insert(
                         format!("chain.links.{i}.gravity_scale"),
                         link.gravity_scale.to_string(),
                     );
-                    if let Some(d) = link.damping {
-                        f.insert(format!("chain.links.{i}.damping"), d.to_string());
-                    }
                     f.insert(
                         format!("chain.links.{i}.stiffness"),
                         link.stiffness.to_string(),

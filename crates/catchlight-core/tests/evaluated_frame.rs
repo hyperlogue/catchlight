@@ -1010,12 +1010,11 @@ fn particle_chain_fixture() -> FixtureFile {
                     local_only: false,
                     gravity: 1.0,
                     weight: 1.0,
-                    damping: Some(0.36),
+                    damping: 0.36,
                     air_drag: 0.0,
                     links: (0..3)
                         .map(|_| ClmLinkFeel {
                             gravity_scale: 1.0,
-                            damping: None,
                             stiffness: 0.0,
                             limit: None,
                         })

@@ -642,11 +642,6 @@ fn is_screen(plane: &PendulumPlane) -> bool {
 pub struct ClmLinkFeel {
     /// Multiplier on the chain's gravity for this link's particle.
     pub gravity_scale: f32,
-    /// Retired per-link joint damping in `0..=1`, read only to migrate a
-    /// chain written without [`ClmChain::damping`]. The model's writer never
-    /// sets it; a file-level edit carries it through untouched.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub damping: Option<f32>,
     /// How strongly the link holds its drawn turn, in Hz, finite and at or
     /// above zero. Zero is limp.
     ///
@@ -683,6 +678,7 @@ fn is_full_weight(weight: &f32) -> bool {
 /// and limits determine the settled pose. Particle positions are runtime
 /// state owned by a puppet and are not stored in the file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ChainOnDisk")]
 pub struct ClmChain {
     pub local_only: bool,
     /// Authored, unscaled — the global g-scale fold is a build step, as it is
@@ -696,12 +692,10 @@ pub struct ClmChain {
     /// finite and at or above zero: it sets bounce and settle time without
     /// making the strand trail a moving head.
     ///
-    /// Absent in files from before chain damping; the reader then takes the
-    /// mean over links of `-ln(1 - d)` from each retired link damping `d`,
-    /// each term capped at 10 (the default when no link has one). The
-    /// model's writer always writes the key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub damping: Option<f32>,
+    /// Absent in files from before chain damping, which damped each link
+    /// instead with a retired `damping` in `0..=1`; the reader migrates those
+    /// into this key on read and never keeps the link keys.
+    pub damping: f32,
     /// Per-second drag on each particle's absolute velocity, in world space:
     /// a moving root leaves the strand trailing. Finite and at or above zero.
     ///
@@ -712,6 +706,79 @@ pub struct ClmChain {
     pub air_drag: f32,
     /// Material settings for each joint of the spine, in link order.
     pub links: Vec<ClmLinkFeel>,
+}
+
+/// A [`ClmChain`] as any file may spell it, including one written before
+/// chains carried damping.
+///
+/// Such a chain damped each link with a `damping` in `0..=1`; it reads as the
+/// mean over links of the per-second rate `-ln(1 - d)` each stood for, every
+/// term capped at 10/s, and a chain with no damping anywhere reads as
+/// [`crate::physics::DEFAULT_CHAIN_DAMPING`]. A chain key, once present,
+/// wins over any link keys left beside it. Either way the link keys are
+/// dropped, so the next write carries only the chain key.
+#[derive(Deserialize)]
+struct ChainOnDisk {
+    local_only: bool,
+    gravity: f32,
+    #[serde(default = "full_weight")]
+    weight: f32,
+    #[serde(default)]
+    damping: Option<f32>,
+    #[serde(default)]
+    air_drag: f32,
+    links: Vec<LinkOnDisk>,
+}
+
+#[derive(Deserialize)]
+struct LinkOnDisk {
+    gravity_scale: f32,
+    #[serde(default)]
+    damping: Option<f32>,
+    stiffness: f32,
+    #[serde(default)]
+    limit: Option<f32>,
+}
+
+impl TryFrom<ChainOnDisk> for ClmChain {
+    type Error = String;
+
+    fn try_from(c: ChainOnDisk) -> Result<Self, String> {
+        let mut rates = Vec::new();
+        for (i, link) in c.links.iter().enumerate() {
+            if let Some(d) = link.damping {
+                if !(0.0..=1.0).contains(&d) {
+                    return Err(format!(
+                        "chain link {i} carries a retired damping {d} outside 0..=1"
+                    ));
+                }
+                rates.push((-(1.0 - d).ln()).min(10.0));
+            }
+        }
+        let damping = c.damping.unwrap_or_else(|| {
+            if rates.is_empty() {
+                crate::physics::DEFAULT_CHAIN_DAMPING
+            } else {
+                rates.iter().sum::<f32>() / rates.len() as f32
+            }
+        });
+        Ok(Self {
+            local_only: c.local_only,
+            gravity: c.gravity,
+            weight: c.weight,
+            damping,
+            air_drag: c.air_drag,
+            links: c
+                .links
+                .into_iter()
+                .map(|l| ClmLinkFeel {
+                    gravity_scale: l.gravity_scale,
+                    stiffness: l.stiffness,
+                    limit: l.limit,
+                })
+                .collect(),
+        })
+    }
 }
 
 /// Whether a chain feels no air, and so needs no `air_drag` key.
