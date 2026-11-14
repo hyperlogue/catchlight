@@ -411,7 +411,7 @@ export async function studio(
         .locator("[data-catchlight-node]")
         .filter({ hasText: /^Studio badge$/ })
         .waitFor({ state: "hidden" });
-      await selected("back-hair-lock-12");
+      await selected("back-hair-lock-19");
       await page
         .getByRole("button", { name: "Fit model (F)", exact: true })
         .click();

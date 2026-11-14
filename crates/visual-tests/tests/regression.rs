@@ -22,7 +22,7 @@ fn lan_visual_regressions_fringe_coverage() {
             }],
             camera: Camera {
                 x: 74.375,
-                y: 833.125,
+                y: 853.125,
                 zoom: 4.0,
             },
             frame_puppets: vec![],
