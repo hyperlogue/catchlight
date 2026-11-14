@@ -24,9 +24,12 @@
 //! which shifts only descendants without a mesh. A Composite with
 //! `propagate_mesh_group = false` halts both walks.
 //!
-//! **A chain's root is where its art is drawn.** The pass records how far the
-//! group warping a chain spine's art moves the posed guide's root
-//! (`record_chain_root_shifts`), and the next frame's chain root adds it.
+//! **A chain's root is where its art is drawn.** How far the group warping a
+//! chain spine's art moves the posed guide's root (`record_chain_root_shifts`)
+//! is added to the chain root. The physics pre-pass records it for the frame
+//! it steps: it folds only the groups between a chain and the puppet root and
+//! pushes each into the next (`propagate_chain_root_groups`), never into a
+//! part. A group never depends on a spine below it, so this is exact.
 //!
 //! **A Spine is a pass-through, on both walks.** It carries no mesh of its own
 //! and it does not hand a group's deform down — it only adds its own turn — so
@@ -883,11 +886,14 @@ fn warp_group_of(arena: &Arena, spine: NodeIdx) -> Option<NodeIdx> {
 }
 
 /// Record how far this frame's groups warp each chain's posed guide root, in
-/// puppet-local units, for the next frame's chain roots
-/// (`Arena::chain_root_shifts`). The spine itself is not moved: its art is
+/// puppet-local units, for the chain roots (`Arena::chain_root_shifts`). The spine itself is not moved: its art is
 /// warped already, and moving the node would move it twice. Runs after every
 /// group has combined, so a group's stack carries the outer groups' pushes.
-fn record_chain_root_shifts(arena: &mut Arena, transforms: &GlobalTransforms, root: Mat4) {
+pub(crate) fn record_chain_root_shifts(
+    arena: &mut Arena,
+    transforms: &GlobalTransforms,
+    root: Mat4,
+) {
     let n = arena.chain_node_ids.len();
     if arena.chain_warp_groups.is_none() {
         let groups = (0..n)
@@ -923,6 +929,128 @@ fn record_chain_root_shifts(arena: &mut Arena, transforms: &GlobalTransforms, ro
         }
     }
     arena.chain_root_shifts = shifts;
+}
+
+/// The mesh groups whose warp reaches a chain root, outermost first, the
+/// group-to-group pushes between them, and every node whose deform bindings
+/// the physics pre-pass folds to pose roots and guides: those groups and the
+/// chains' guide parts.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ChainRootGroups {
+    order: Vec<NodeIdx>,
+    /// `(outer, inner)`: `outer` pushes its warp into `inner`'s lattice.
+    edges: Vec<(NodeIdx, NodeIdx)>,
+    /// By node slot.
+    pub(crate) deformed: Vec<bool>,
+}
+
+/// Build [`ChainRootGroups`]: each chain's warp group, then the group that
+/// warps that one, out to the last.
+pub(crate) fn chain_root_groups(arena: &mut Arena) -> ChainRootGroups {
+    let mut deformed = vec![false; arena.nodes.len()];
+    let mut edges = Vec::new();
+    for c in 0..arena.chain_node_ids.len() {
+        let spine = arena.chain_node_ids[c];
+        if let Some(NodeKind::Spine(sp)) = arena.get(spine).map(|n| &n.kind) {
+            if let Some(slot) = sp.guide_part().and_then(|p| deformed.get_mut(p.0 as usize)) {
+                *slot = true;
+            }
+        }
+        let mut inner = warp_group_of(arena, spine);
+        while let Some(mg) = inner {
+            match deformed.get_mut(mg.0 as usize) {
+                Some(slot) if !*slot => *slot = true,
+                // Reached from another chain already, with everything above.
+                _ => break,
+            }
+            let outer = warp_group_of(arena, mg);
+            if let Some(outer) = outer {
+                edges.push((outer, mg));
+            }
+            inner = outer;
+        }
+    }
+    let pre_order = take_mg_pre_order(arena);
+    let order = pre_order
+        .iter()
+        .copied()
+        .filter(|id| {
+            deformed.get(id.0 as usize).copied().unwrap_or(false)
+                && matches!(
+                    arena.get(*id).map(|n| &n.kind),
+                    Some(NodeKind::MeshGroup(_))
+                )
+        })
+        .collect();
+    if arena.mg_pre_order_cache.is_none() {
+        arena.mg_pre_order_cache = Some(pre_order);
+    }
+    ChainRootGroups {
+        order,
+        edges,
+        deformed,
+    }
+}
+
+/// The physics pre-pass's slice of [`propagate_mesh_group_deforms`]: combine
+/// each group in [`ChainRootGroups`], outermost first, and push it into the
+/// next group in only, so each chain's warp group holds this frame's warp
+/// without touching any part. `transforms` must hold those groups.
+pub(crate) fn propagate_chain_root_groups(arena: &mut Arena, transforms: &GlobalTransforms) {
+    let Some(groups) = arena.chain_root_groups.take() else {
+        return;
+    };
+    let mut scratch = std::mem::take(&mut arena.mg_propagate_scratch);
+    let mut cur_deform_scratch = std::mem::take(&mut arena.mg_cur_deform_scratch);
+    let mut deformed_mg_vertices = std::mem::take(&mut arena.mg_deformed_vertices_scratch);
+    for &mg_id in &groups.order {
+        {
+            let Some(NodeKind::MeshGroup(mg)) = arena.get_mut(mg_id).map(|n| &mut n.kind) else {
+                continue;
+            };
+            mg.deform_stack.combine();
+            let mg_combined = mg.deform_stack.combined();
+            deformed_mg_vertices.clear();
+            if mg_combined.len() == mg.mesh.vertices.len() {
+                deformed_mg_vertices.extend(
+                    mg.mesh
+                        .vertices
+                        .iter()
+                        .zip(mg_combined)
+                        .map(|(v, d)| *v - mg.mesh.origin + *d),
+                );
+            } else {
+                deformed_mg_vertices.extend(mg.mesh.vertices.iter().map(|v| *v - mg.mesh.origin));
+            }
+        }
+        let mg_global = transforms.get(mg_id);
+        let Some(mg_global_inv) = checked_affine_inverse(mg_global) else {
+            continue;
+        };
+        for &(outer, child_id) in &groups.edges {
+            if outer != mg_id {
+                continue;
+            }
+            let child_global = transforms.get(child_id);
+            let Some(child_global_inv) = checked_affine_inverse(child_global) else {
+                continue;
+            };
+            propagate_to_child(
+                arena,
+                mg_id,
+                child_id,
+                &mut scratch,
+                &mut cur_deform_scratch,
+                &deformed_mg_vertices,
+                affine2_from_mat4(mg_global_inv * child_global),
+                affine2_from_mat4(child_global_inv * mg_global),
+            );
+        }
+    }
+    arena.mg_propagate_scratch = scratch;
+    arena.mg_cur_deform_scratch = cur_deform_scratch;
+    arena.mg_deformed_vertices_scratch = deformed_mg_vertices;
+    arena.chain_root_groups = Some(groups);
 }
 
 #[allow(clippy::too_many_arguments)]

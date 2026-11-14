@@ -158,8 +158,9 @@ pub(crate) struct Arena {
     /// pre-pass, so a shift that has just appeared reaches the anchors even if
     /// the pose then stands still.
     tc_shift_changed: bool,
-    /// Slots that are a driver node — SimplePhysics or particle chain — or
-    /// an ancestor of one: the only slots the physics pre-pass transform walk
+    /// Slots that are a driver node — SimplePhysics or particle chain — a
+    /// chain's guide part, or an ancestor of one: the only slots the physics
+    /// pre-pass transform walk
     /// needs to fill (see `compute_physics_ancestor_transforms`). Invalidated
     /// on `insert_child`.
     physics_ancestor_mask: Option<Vec<bool>>,
@@ -168,11 +169,15 @@ pub(crate) struct Arena {
     /// propagating composites and spines only), if any. Invalidated with the
     /// structure caches.
     pub(crate) chain_warp_groups: Option<Vec<Option<NodeIdx>>>,
-    /// Parallel to `chain_node_ids`: how far the **previous** frame's
-    /// mesh-group pass warped each chain's spine origin, in puppet-local
-    /// (Y-up) units. The chain root adds it, one frame late, the same scheme
-    /// as `tc_shift_deltas`.
+    /// Parallel to `chain_node_ids`: how far the mesh groups warp each
+    /// chain's posed guide root, in puppet-local (Y-up) units. The physics
+    /// pre-pass records it for the pose it is about to step
+    /// (`Puppet::pose_chain_roots`), and the final fold records it again.
     pub(crate) chain_root_shifts: Vec<glam::Vec2>,
+    /// What the physics pre-pass poses so chain roots and guides are this
+    /// frame's (`meshgroup::chain_root_groups`). Invalidated with the
+    /// structure caches.
+    pub(crate) chain_root_groups: Option<crate::meshgroup::ChainRootGroups>,
 }
 
 impl Arena {
@@ -211,6 +216,7 @@ impl Arena {
             physics_ancestor_mask: None,
             chain_warp_groups: None,
             chain_root_shifts: Vec::new(),
+            chain_root_groups: None,
         }
     }
 
@@ -292,6 +298,7 @@ impl Arena {
         self.physics_ancestor_mask = None;
         self.chain_warp_groups = None;
         self.chain_root_shifts.clear();
+        self.chain_root_groups = None;
     }
 
     pub(crate) fn rebuild_all_mesh_group_pins(&mut self) {
@@ -743,7 +750,21 @@ impl Arena {
             return;
         }
         let mut mask = vec![false; self.nodes.len()];
-        for &pid in self.physics_node_ids.iter().chain(&self.chain_node_ids) {
+        // A chain's guide part too, so the pre-pass can pose its guide.
+        let guides: Vec<NodeIdx> = self
+            .chain_node_ids
+            .iter()
+            .filter_map(|&id| match &self.nodes.get(id.0 as usize)?.kind {
+                crate::NodeKind::Spine(sp) => sp.guide_part(),
+                _ => None,
+            })
+            .collect();
+        for &pid in self
+            .physics_node_ids
+            .iter()
+            .chain(&self.chain_node_ids)
+            .chain(&guides)
+        {
             let mut cur = Some(pid);
             while let Some(id) = cur {
                 match mask.get_mut(id.0 as usize) {

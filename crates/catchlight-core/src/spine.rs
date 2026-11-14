@@ -50,9 +50,11 @@
 //! bends turn it about. Where no guide point moves off the drawing by more
 //! than rounding (`GUIDE_STILL_SQ`), the posed guide is left empty and reads
 //! as the drawing exactly; with no deform and the part placed as at rest,
-//! reading it costs one transform compare. A chain reads the previous fold's posed guide
-//! as its root offset and shape target (`Puppet::chain_root`,
-//! `Puppet::chain_posed_bends`); bends stay relative to the guide.
+//! reading it costs one transform compare. A chain reads the posed guide as
+//! its root offset and shape target (`Puppet::chain_root`,
+//! `Puppet::chain_posed_bends`); bends stay relative to the guide. The physics
+//! pre-pass poses it for the frame it steps (`pose_chain_guides`), so the
+//! strand and the transport agree on the same frame's guide.
 //!
 //! **The assignment comes from rest geometry, once per bake.** Each descendant
 //! vertex is mapped into spine space through the rest transforms and projected
@@ -198,8 +200,13 @@ impl SpineData {
         &self.posed_guide
     }
 
+    /// The part the guide is embedded in, if the spine has one.
+    pub(crate) fn guide_part(&self) -> Option<NodeIdx> {
+        self.pins.guide.as_ref().map(|g| g.part)
+    }
+
     /// The posed guide's root in the node's own space: where a chain the
-    /// spine carries hangs from on the next tick.
+    /// spine carries hangs from.
     pub fn guide_root(&self) -> Vec2 {
         self.posed_guide.first().copied().unwrap_or(Vec2::ZERO)
     }
@@ -653,6 +660,23 @@ fn pose_guide(
     }
     if !moved {
         out.clear();
+    }
+}
+
+/// Pose every chain spine's guide against `transforms` (which must hold the
+/// spine and its guide part) and the guide parts' current deforms: the
+/// physics pre-pass's half of what `propagate_spine_deforms` records.
+pub(crate) fn pose_chain_guides(arena: &mut Arena, transforms: &GlobalTransforms) {
+    let mut guide = Vec::new();
+    for c in 0..arena.chain_node_ids.len() {
+        let spine_id = arena.chain_node_ids[c];
+        let Some(spine_global_inv) = checked_affine_inverse(transforms.get(spine_id)) else {
+            continue;
+        };
+        pose_guide(arena, transforms, spine_id, spine_global_inv, &mut guide);
+        if let Some(NodeKind::Spine(spine)) = arena.get_mut(spine_id).map(|n| &mut n.kind) {
+            std::mem::swap(&mut spine.posed_guide, &mut guide);
+        }
     }
 }
 

@@ -22,7 +22,7 @@
 //! the guide embedded in each lock's art, and no hair spine is slid against
 //! its art on head yaw or pitch: the rig keeps both on one attachment.
 
-use catchlight_core::{Model, NodeIdx, NodeKind, ParamId, Puppet, Vec2, Vec3};
+use catchlight_core::{Model, NodeKind, ParamId, Puppet, Vec2, Vec3};
 
 const DT: f32 = 1.0 / 60.0;
 
@@ -465,27 +465,17 @@ fn long_hair_hangs_down_while_its_roots_follow_head_roll() {
             carried_tip.distance(old_tip)
         );
     }
-    // The root is the guide's root where the art renders it: the posed guide
-    // the last fold recorded, carried by this frame's node transform.
-    let guide_roots = |puppet: &Puppet| -> Vec<(NodeIdx, Vec2)> {
-        model
-            .node_ids()
-            .filter(|id| id.as_str().starts_with("Back-Hair-Lock"))
-            .filter_map(|id| {
-                let idx = puppet.node_idx(id)?;
-                let NodeKind::Spine(spine) = &puppet.get(idx)?.kind else {
-                    return None;
-                };
-                Some((idx, spine.guide_root()))
-            })
-            .collect()
-    };
+    // The root is the guide's root where the art renders it, on the same
+    // frame: this frame's posed guide, carried by this frame's transform.
     for angle in [-30.0, 30.0] {
         puppet.set_param_value(&roll, angle);
         for frame in 0..300 {
-            let guides = guide_roots(&puppet);
             puppet.tick(&model, DT);
-            for (idx, guide) in guides {
+            for id in model
+                .node_ids()
+                .filter(|id| id.as_str().starts_with("Back-Hair-Lock"))
+            {
+                let idx = puppet.node_idx(id).unwrap();
                 let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
                     continue;
                 };
@@ -493,10 +483,10 @@ fn long_hair_hangs_down_while_its_roots_follow_head_roll() {
                 let root = puppet
                     .transforms()
                     .get(idx)
-                    .transform_point3(guide.extend(0.0));
+                    .transform_point3(spine.guide_root().extend(0.0));
                 assert!(
                     chain.anchor.distance(Vec2::new(root.x, -root.y)) < 0.01,
-                    "{idx:?} at {angle}, frame {frame}: back-hair root lagged behind its art"
+                    "{id} at {angle}, frame {frame}: back-hair root lagged behind its art"
                 );
             }
         }
@@ -597,5 +587,69 @@ fn long_locks_swing_with_a_body_roll_and_return_to_the_drawing() {
             rest.iter().all(|b| b.abs() < 1e-3),
             "{id}: back on the drawing after the body holds: {rest:?}"
         );
+    }
+}
+
+/// Where a lock's simulated tip renders in its node frame, from the bends the
+/// chain writes: the drawn links turned by each bend.
+fn simulated_tip(puppet: &Puppet, spine: &str) -> Vec2 {
+    let cmul = |a: Vec2, b: Vec2| Vec2::new(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+    let idx = puppet
+        .node_idx(&catchlight_core::NodeId::new(spine).unwrap())
+        .unwrap();
+    let NodeKind::Spine(s) = &puppet.get(idx).unwrap().kind else {
+        panic!("{spine} is not a spine")
+    };
+    let chain = s.chain.as_ref().unwrap();
+    let mut bends = Vec::new();
+    chain.link_bends(&mut bends);
+    let (mut at, mut prev_drawn, mut prev_u) =
+        (Vec2::ZERO, chain.links[0].drawn, chain.links[0].drawn);
+    for (link, bend) in chain.links.iter().zip(bends) {
+        let rel = cmul(link.drawn, Vec2::new(prev_drawn.x, -prev_drawn.y));
+        let turn = Vec2::from_angle(-bend * std::f32::consts::PI);
+        let u = cmul(cmul(prev_u, rel), turn);
+        at += u * link.length;
+        prev_drawn = link.drawn;
+        prev_u = u;
+    }
+    at
+}
+
+/// **The frame rate does not change the swing.** A head roll ramp under a yaw
+/// sine reaches the hair through the warped root, the keyformed guide and
+/// the node transform, all evaluated on the frame they render; 30 and 60 fps
+/// land on the 240 fps trajectory at the same instants.
+#[test]
+fn hair_swings_alike_at_any_frame_rate() {
+    let model = lan();
+    let locks = ["Front-Hair-Lock-2-Spine", "Back-Hair-Lock-19-Spine"];
+    let run = |fps: f32| -> Vec<Vec<(f32, Vec2)>> {
+        let mut puppet = Puppet::new(&model);
+        puppet.settle_physics(&model);
+        let mut out = vec![Vec::new(); locks.len()];
+        for f in 1..=(2.0 * fps) as usize {
+            let t = f as f32 / fps;
+            puppet.set_param_value(&ParamId::new("head_roll").unwrap(), 40.0 * t.min(0.5));
+            puppet.set_param_value(&ParamId::new("head_yaw").unwrap(), 15.0 * (3.0 * t).sin());
+            puppet.tick(&model, 1.0 / fps);
+            for (i, lock) in locks.iter().enumerate() {
+                out[i].push((t, simulated_tip(&puppet, lock)));
+            }
+        }
+        out
+    };
+    let reference = run(240.0);
+    for fps in [30.0, 60.0] {
+        for (lock, (trace, truth)) in locks.iter().zip(run(fps).iter().zip(&reference)) {
+            for (t, tip) in trace {
+                let k = (t * 240.0).round() as usize - 1;
+                let off = tip.distance(truth[k].1);
+                assert!(
+                    off < 0.1,
+                    "{lock} at {fps} fps, t={t:.3}: {off:.3} px off 240 fps"
+                );
+            }
+        }
     }
 }

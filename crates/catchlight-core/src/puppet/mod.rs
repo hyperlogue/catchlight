@@ -1811,15 +1811,6 @@ impl Puppet {
         if n == 0 || !self.physics_enabled {
             return;
         }
-        if !self.arena.chain_node_ids.is_empty() {
-            // Chains read the posed guide and root warp the last fold
-            // recorded, so fold this pose first: a settle before the first
-            // tick, or after a pose change, hangs them on what renders.
-            let mut out = std::mem::take(&mut self.transforms);
-            let mesh_groups = !self.arena.mesh_group_node_ids.is_empty();
-            self.fold_frame(&mut out, Mat4::IDENTITY, mesh_groups);
-            self.transforms = out;
-        }
         self.arena.ensure_physics_ancestor_mask();
         let mut transforms = std::mem::take(&mut self.arena.physics_transforms);
         let mut posed = std::mem::take(&mut self.chain_posed_scratch);
@@ -1831,6 +1822,7 @@ impl Puppet {
             self.arena.apply_previous_tc_shifts();
             self.arena
                 .compute_physics_ancestor_transforms(&mut transforms);
+            self.pose_chain_roots(&transforms);
 
             let mut moved = false;
             for i in 0..self.arena.physics_node_ids.len() {
@@ -1939,6 +1931,7 @@ impl Puppet {
                 self.arena.ensure_physics_ancestor_mask();
                 let mut local = std::mem::take(&mut self.arena.physics_transforms);
                 self.arena.compute_physics_ancestor_transforms(&mut local);
+                self.pose_chain_roots(&local);
                 self.arena.physics_transforms = local;
             }
             let local = std::mem::take(&mut self.arena.physics_transforms);
@@ -2066,6 +2059,37 @@ impl Puppet {
         self.apply_params_where(|_| true);
     }
 
+    /// Physics pre-pass, chain half: pose what chain roots and guides read
+    /// for the frame about to be stepped. Fold the deform bindings of the
+    /// mesh groups that warp chain roots and of the guide parts, push each
+    /// group into the next one in, pose every guide, then record each root's
+    /// warp. `transforms` is the pre-pass's, which holds every node read here.
+    fn pose_chain_roots(&mut self, transforms: &GlobalTransforms) {
+        if self.arena.chain_node_ids.is_empty() {
+            return;
+        }
+        if self.arena.chain_root_groups.is_none() {
+            let groups = crate::meshgroup::chain_root_groups(&mut self.arena);
+            self.arena.chain_root_groups = Some(groups);
+        }
+        let deformed = self
+            .arena
+            .chain_root_groups
+            .as_mut()
+            .map(|g| std::mem::take(&mut g.deformed))
+            .unwrap_or_default();
+        self.apply_bindings_where(|b| {
+            b.target == BindingTarget::Deform
+                && deformed.get(b.node.0 as usize).copied().unwrap_or(false)
+        });
+        if let Some(groups) = self.arena.chain_root_groups.as_mut() {
+            groups.deformed = deformed;
+        }
+        crate::meshgroup::propagate_chain_root_groups(&mut self.arena, transforms);
+        crate::spine::pose_chain_guides(&mut self.arena, transforms);
+        crate::meshgroup::record_chain_root_shifts(&mut self.arena, transforms, Mat4::IDENTITY);
+    }
+
     /// Physics pre-pass: build the anchor pose. Stepping a driver reads only
     /// node transforms (the anchors) and each driver's output scale, so
     /// restrict the fold to the targets feeding those. Deform and colour
@@ -2098,6 +2122,10 @@ impl Puppet {
     }
 
     fn apply_params_where(&mut self, include: impl Fn(BindingTarget) -> bool) {
+        self.apply_bindings_where(|b| include(b.target));
+    }
+
+    fn apply_bindings_where(&mut self, include: impl Fn(&BakedBinding) -> bool) {
         // Normalize each input once; each binding locates it on its own axes.
         for slot in 0..self.params.len() {
             self.located[slot] = self.locate(slot as u32);
@@ -2106,7 +2134,7 @@ impl Puppet {
         // put back before returning, and nothing here can early-return.
         let bindings = std::mem::take(&mut self.bindings);
         for b in &bindings {
-            if !include(b.target) {
+            if !include(b) {
                 continue;
             }
             self.fold_binding(b);

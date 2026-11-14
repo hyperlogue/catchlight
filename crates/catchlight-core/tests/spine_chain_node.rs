@@ -1556,9 +1556,8 @@ fn model_physics_rate_reaches_live_chains_after_an_edit() {
 }
 
 /// **A chain's root is where its art renders.** A mesh group whose warp
-/// slides the strand's art moves the chain root by the same amount, one
-/// frame after the group pass measured it, without moving the spine node:
-/// the art is warped already. The strand then swings and returns to its
+/// slides the strand's art moves the chain root by the same amount, on the
+/// frame it warps, without moving the spine node: the art is warped already. The strand then swings and returns to its
 /// drawing, because the move was a translation.
 #[test]
 fn a_warp_over_the_art_moves_the_chain_root() {
@@ -1653,11 +1652,6 @@ fn a_warp_over_the_art_moves_the_chain_root() {
     let rest = anchor(&puppet, idx);
 
     puppet.set_param_value(&warp, 1.0);
-    puppet.tick(&model, DT);
-    assert!(
-        anchor(&puppet, idx).distance(rest) < 1e-3,
-        "the warp reaches the root the frame after the group measured it"
-    );
     puppet.tick(&model, DT);
     let moved = anchor(&puppet, idx) - rest;
     assert!(
@@ -1926,8 +1920,7 @@ fn sliding_the_spine_against_its_art_changes_no_frame() {
 }
 
 /// A keyform that moves the art's root moves the strand's root, so it swings
-/// the strand as the same move made by the head does — one frame later,
-/// since chains read the guide the previous fold posed.
+/// the strand as the same move made by the head does, on the same frame.
 #[test]
 fn a_keyform_moving_the_root_swings_like_the_head() {
     let g = guided(1.0);
@@ -1946,7 +1939,7 @@ fn a_keyform_moving_the_root_swings_like_the_head() {
     let keyed = run(&g.shift);
     let peak = |t: &[f32]| t.iter().fold(0.0f32, |m, b| m.max(b.abs()));
     assert!(peak(&head) > 0.01, "the head move swings the strand");
-    for (f, (h, k)) in head.iter().zip(&keyed[1..]).enumerate() {
+    for (f, (h, k)) in head.iter().zip(&keyed).enumerate() {
         assert!(
             (h - k).abs() < 0.1 * peak(&head),
             "frame {f}: the keyform swings {k}, the head {h}"

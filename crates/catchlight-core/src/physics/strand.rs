@@ -140,6 +140,8 @@ pub(super) struct Strand {
     // Pose targets.
     posed: Links<f32>,
     pose_turn: Links<Vec2>,
+    /// The previous frame's posed bends, kept for blending across a tick.
+    pose_scratch: Links<f32>,
     // State.
     p: Links<Vec2>,
     q: Links<Vec2>,
@@ -229,6 +231,7 @@ impl Strand {
             b0: smallvec::smallvec![0.0; n],
             posed: smallvec::smallvec![0.0; n],
             pose_turn: smallvec::smallvec![Vec2::X; n],
+            pose_scratch: Links::new(),
             p: smallvec::smallvec![root; n + 1],
             q: smallvec::smallvec![root; n + 1],
             corr: smallvec::smallvec![Vec2::ZERO; n + 1],
@@ -442,13 +445,12 @@ impl Strand {
         if carry == self.rest_carry {
             // Hung in the frame `b0` was measured in: it reads its pose, which
             // the hang reaches only to its stopping tolerance.
-            self.out.clone_from(&self.posed);
+            self.out.clear();
+            self.out
+                .extend(self.posed.iter().zip(&self.b0).map(|(p, b)| p + b));
         } else {
             let mut out = std::mem::take(&mut self.out);
             self.bends(dir, carry, &mut out);
-            for (o, b) in out.iter_mut().zip(&self.b0) {
-                *o -= b;
-            }
             self.out = out;
         }
         self.out_prev.clone_from(&self.out);
@@ -524,9 +526,6 @@ impl Strand {
         std::mem::swap(&mut self.out_prev, &mut self.out);
         let mut out = std::mem::take(&mut self.out);
         self.bends(dir, carry, &mut out);
-        for (o, b) in out.iter_mut().zip(&self.b0) {
-            *o -= b;
-        }
         self.out = out;
     }
 
@@ -534,7 +533,16 @@ impl Strand {
     /// its end.
     pub(super) fn tick(&mut self, root: Vec2, carry: Mat2, posed: &[f32], dt: f32) {
         self.steps = 0;
+        let mut pose0 = std::mem::take(&mut self.pose_scratch);
+        pose0.clone_from(&self.posed);
         let posed_changed = self.set_posed(posed);
+        self.advance(root, carry, &pose0, posed_changed, dt);
+        self.pose_scratch = pose0;
+    }
+
+    /// [`Self::tick`] after the pose targets are updated; `pose0` holds the
+    /// previous frame's posed bends, which the steps blend from.
+    fn advance(&mut self, root: Vec2, carry: Mat2, pose0: &[f32], posed_changed: bool, dt: f32) {
         if self.asleep && root == self.root && carry == self.carry && !posed_changed {
             return;
         }
@@ -564,6 +572,15 @@ impl Strand {
             let f = ((k as f32 * self.h - acc0) / dt).clamp(0.0, 1.0);
             let r = r0.lerp(root, f);
             let d = d0.lerp(d1, f).try_normalize().unwrap_or(d1);
+            if posed_changed {
+                // The pose is input like the root: blend it across the frame
+                // so a key moving under a long frame does not jump.
+                let f = if k == steps { 1.0 } else { f };
+                for (i, turn) in self.pose_turn.iter_mut().enumerate() {
+                    let b = pose0[i] + (self.posed[i] - pose0[i]) * f;
+                    *turn = unit(-b * std::f32::consts::PI * self.mirror);
+                }
+            }
             self.step(r, d, r - prev_root, prev_dir.perp_dot(d));
             prev_root = r;
             prev_dir = d;
@@ -629,6 +646,9 @@ impl Strand {
     }
 
     /// Rendered bends: one step of latency, interpolated by the accumulator.
+    /// The steps store raw bends and the neutral offset comes off here, so a
+    /// pose that moves `b0` during a frame shifts both stored steps alike and
+    /// the result does not depend on how the frame was cut.
     pub(super) fn link_bends(&self, out: &mut Vec<f32>) {
         let f = (self.acc / self.h).clamp(0.0, 1.0);
         out.clear();
@@ -636,7 +656,8 @@ impl Strand {
             self.out_prev
                 .iter()
                 .zip(&self.out)
-                .map(|(a, b)| a + (b - a) * f),
+                .zip(&self.b0)
+                .map(|((a, b), b0)| a + (b - a) * f - b0),
         );
     }
 
