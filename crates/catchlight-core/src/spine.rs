@@ -108,8 +108,9 @@ pub(crate) struct VertexBend {
 
 /// One guide point bound into the guide part's rest mesh: its part-local
 /// rest position and the triangle corners and weights it reads the part's
-/// deform through. Weights outside the triangle extrapolate, so an affine
-/// deform carries the point exactly.
+/// deform through. A point outside the mesh reads the deform at its nearest
+/// point on the nearest triangle, with weights in [0, 1], so a sliver
+/// triangle cannot amplify a small keyform into a large move.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GuidePoint {
     rest: Vec2,
@@ -154,8 +155,14 @@ pub struct SpineData {
     pub chain: Option<crate::physics::ParticleChainData>,
     pub(crate) pins: SpinePins,
     /// The last fold's posed guide in the node's own space: the root, then
-    /// each joint. Empty reads as the drawing, the root at the origin.
+    /// each joint. Empty reads as the drawing, the root at the origin. What
+    /// the transport turns the art about.
     pub(crate) posed_guide: Vec<Vec2>,
+    /// The guide as the physics pre-pass posed it, in the same layout: what
+    /// a chain hangs from and targets. Kept apart from `posed_guide` so the
+    /// final fold, which runs under the caller's root, never feeds rounding
+    /// noise back into the strand's input and keeps it awake.
+    pub(crate) chain_guide: Vec<Vec2>,
 }
 
 impl SpineData {
@@ -168,6 +175,7 @@ impl SpineData {
             chain: None,
             pins: SpinePins::default(),
             posed_guide: Vec::new(),
+            chain_guide: Vec::new(),
         }
     }
 
@@ -194,8 +202,9 @@ impl SpineData {
         })
     }
 
-    /// The last fold's posed guide in the node's own space, root first,
-    /// then each joint; empty while it is the drawing.
+    /// The last render fold's posed guide in the node's own space, root
+    /// first, then each joint; empty while it is the drawing. The transport
+    /// turns the art about it; chains read the pre-pass's copy instead.
     pub fn posed_guide(&self) -> &[Vec2] {
         &self.posed_guide
     }
@@ -205,18 +214,18 @@ impl SpineData {
         self.pins.guide.as_ref().map(|g| g.part)
     }
 
-    /// The posed guide's root in the node's own space: where a chain the
-    /// spine carries hangs from.
+    /// The guide's root in the node's own space as the physics pre-pass
+    /// posed it: where a chain the spine carries hangs from.
     pub fn guide_root(&self) -> Vec2 {
-        self.posed_guide.first().copied().unwrap_or(Vec2::ZERO)
+        self.chain_guide.first().copied().unwrap_or(Vec2::ZERO)
     }
 
-    /// How far the posed guide turns link `k` off the drawing, in half
+    /// How far the pre-pass's guide turns link `k` off the drawing, in half
     /// turns relative to the link above: the bend that would draw the guide's
     /// shape, in the convention the params use. Zero while the guide is the
     /// drawing.
     pub(crate) fn guide_turn(&self, k: usize) -> f32 {
-        if self.posed_guide.len() != self.joints.len() + 1 || k >= self.joints.len() {
+        if self.chain_guide.len() != self.joints.len() + 1 || k >= self.joints.len() {
             return 0.0;
         }
         let absolute = |k: usize| {
@@ -226,7 +235,7 @@ impl SpineData {
                 self.joints[k - 1]
             };
             let drawn = self.joints[k] - above;
-            let posed = self.posed_guide[k + 1] - self.posed_guide[k];
+            let posed = self.chain_guide[k + 1] - self.chain_guide[k];
             let turn = drawn.perp_dot(posed).atan2(drawn.dot(posed));
             if turn.is_finite() {
                 turn
@@ -235,7 +244,12 @@ impl SpineData {
             }
         };
         let parent = if k == 0 { 0.0 } else { absolute(k - 1) };
-        (absolute(k) - parent) / std::f32::consts::PI
+        // Each absolute turn is in (-pi, pi]; their difference is wrapped back
+        // into that range, so links either side of a half turn read a small
+        // relative turn rather than nearly a full one.
+        let turn = absolute(k) - parent;
+        let turn = turn - std::f32::consts::TAU * (turn / std::f32::consts::TAU).round();
+        turn / std::f32::consts::PI
     }
 }
 
@@ -531,6 +545,10 @@ fn bind_guide(
             .iter()
             .filter_map(|&[a, b, c]| Some((v(b)? - v(a)?).perp_dot(v(c)? - v(a)?).abs()))
             .sum();
+        // A broken mesh counts as no area rather than poisoning the choice.
+        // Equal areas keep the first part in walk order, which is the tree's
+        // child order, so the choice is stable until the art itself changes.
+        let area = if area.is_finite() { area } else { 0.0 };
         if best.is_none_or(|(a, ..)| area > a) {
             best = Some((area, child_id, to_spine));
         }
@@ -567,21 +585,30 @@ fn bind_point(local: &[Vec2], indices: &[u32], q: Vec2) -> Option<GuidePoint> {
         let (Some(a), Some(b), Some(c)) = (a, b, c) else {
             continue;
         };
-        let weights = crate::meshgroup::barycentric(q, a, b, c);
-        if !weights.iter().all(|w| w.is_finite()) {
+        let inside = crate::meshgroup::barycentric(q, a, b, c);
+        if !inside.iter().all(|w| w.is_finite()) {
             continue;
         }
-        let distance = if weights.iter().all(|w| *w >= 0.0) {
-            0.0
+        // Outside every triangle, read the deform at the nearest point on
+        // this one: extrapolated weights would scale a sliver triangle's
+        // deform by many times its size.
+        let (distance, weights) = if inside.iter().all(|w| *w >= 0.0) {
+            (0.0, inside)
         } else {
-            [(a, b), (b, c), (c, a)]
+            let (distance, nearest) = [(a, b), (b, c), (c, a)]
                 .into_iter()
                 .map(|(p0, p1)| {
                     let d = p1 - p0;
                     let t = ((q - p0).dot(d) / d.length_squared().max(1e-12)).clamp(0.0, 1.0);
-                    (p0 + d * t).distance_squared(q)
+                    let at = p0 + d * t;
+                    (at.distance_squared(q), at)
                 })
-                .fold(f32::INFINITY, f32::min)
+                .fold((f32::INFINITY, q), |m, e| if e.0 < m.0 { e } else { m });
+            let weights = crate::meshgroup::barycentric(nearest, a, b, c);
+            if !weights.iter().all(|w| w.is_finite()) {
+                continue;
+            }
+            (distance, weights.map(|w| w.clamp(0.0, 1.0)))
         };
         if best.is_none_or(|(d, _)| distance < d) {
             best = Some((
@@ -675,7 +702,7 @@ pub(crate) fn pose_chain_guides(arena: &mut Arena, transforms: &GlobalTransforms
         };
         pose_guide(arena, transforms, spine_id, spine_global_inv, &mut guide);
         if let Some(NodeKind::Spine(spine)) = arena.get_mut(spine_id).map(|n| &mut n.kind) {
-            std::mem::swap(&mut spine.posed_guide, &mut guide);
+            std::mem::swap(&mut spine.chain_guide, &mut guide);
         }
     }
 }

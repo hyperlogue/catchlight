@@ -704,13 +704,21 @@ impl ParticleChainData {
             && strand.fits(carry)
     }
 
+    /// Every input the strand bakes from is finite. A non-finite setting
+    /// would compare unequal to itself and rebake the strand every tick.
     fn usable_geometry(&self, anchor: Vec2) -> bool {
         anchor.is_finite()
             && self.gravity.is_finite()
-            && self
-                .links
-                .iter()
-                .all(|l| l.length.is_finite() && l.drawn.is_finite() && l.stiffness.is_finite())
+            && self.damping.is_finite()
+            && self.air_drag.is_finite()
+            && self.rate.is_finite()
+            && self.links.iter().all(|l| {
+                l.length.is_finite()
+                    && l.drawn.is_finite()
+                    && l.stiffness.is_finite()
+                    && l.gravity_scale.is_finite()
+                    && l.limit.is_none_or(|x| !x.is_nan())
+            })
     }
 
     /// Rebake after a settings edit or a carry whose metric changed, keeping
@@ -722,9 +730,14 @@ impl ParticleChainData {
         if self.current(old, carry) {
             return;
         }
+        // Bake only: the old strand's points carry over, so hanging the fresh
+        // one first would be thrown away. A strand that cannot adopt them
+        // (another link count, or a broken state) is hung instead.
         let mut fresh =
-            strand::Strand::new(self.settings(), self.anchor, carry, posed, self.rest_dir());
-        fresh.adopt(old);
+            strand::Strand::bake(self.settings(), self.anchor, carry, posed, self.rest_dir());
+        if !fresh.adopt(old) {
+            fresh.hang_at(self.anchor, carry, posed);
+        }
         self.strand = Some(Box::new(fresh));
     }
 
@@ -799,7 +812,7 @@ impl ParticleChainData {
         self.anchor_initialized && self.strand.as_deref().is_some_and(strand::Strand::asleep)
     }
 
-    /// Fixed steps the last tick ran: at most [`MAX_STEPS_PER_TICK`], none
+    /// Fixed steps the last tick ran: at most [`MAX_TICK_SECONDS`] of them, none
     /// while asleep.
     pub fn steps_last_tick(&self) -> u32 {
         self.strand.as_deref().map_or(0, strand::Strand::steps)
@@ -847,8 +860,9 @@ impl ParticleChainData {
     }
 }
 
-/// Most fixed steps one tick runs; the rest of a longer frame is dropped.
-pub const MAX_STEPS_PER_TICK: u32 = strand::MAX_STEPS;
+/// Most simulated time one tick advances, in seconds; the rest of a longer
+/// frame is dropped. At the default 120 Hz that is 8 steps.
+pub const MAX_TICK_SECONDS: f32 = strand::MAX_TICK_SECONDS;
 
 /// Use identity for a nonfinite or nearly singular carry.
 fn usable_carry(carry: Mat2) -> Mat2 {

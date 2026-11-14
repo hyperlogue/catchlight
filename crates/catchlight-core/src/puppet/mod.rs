@@ -26,6 +26,10 @@
 //!   the last one recorded (`Arena::apply_previous_tc_shifts`), so an anchor
 //!   follows one frame late. It is also
 //!   what makes the pre-pass skippable: see that method for the argument.
+//!   Chain roots and guides are the exception: the pre-pass folds the few
+//!   deforms they read (`pose_chain_roots`), so they are this frame's, and
+//!   it is their only source, so the render fold under the caller's root
+//!   never disagrees with what the strands stepped against.
 //! - **The generation gate is the only staleness check.** A puppet records
 //!   `model.generation()` when it bakes; every method that takes a `&Model`
 //!   compares it first and rebakes when it moved. Nothing else may assume the
@@ -536,7 +540,7 @@ impl Puppet {
                     NodeKind::Spine(sp) => sp
                         .chain
                         .as_ref()
-                        .map(|ch| (id, ch.clone(), shift, sp.posed_guide.clone())),
+                        .map(|ch| (id, ch.clone(), shift, sp.chain_guide.clone())),
                     _ => None,
                 }
             })
@@ -604,7 +608,7 @@ impl Puppet {
                 continue;
             };
             if guide.len() == spine.joints.len() + 1 {
-                spine.posed_guide = guide;
+                spine.chain_guide = guide;
             }
             let Some(chain) = &mut spine.chain else {
                 continue;
@@ -824,6 +828,8 @@ impl Puppet {
         for v in buf[n..].iter_mut() {
             *v = Vec2::ZERO;
         }
+        // It may reshape a chain's guide, which only the pre-pass poses.
+        self.last_anchor_pose_generation = None;
         true
     }
 
@@ -836,6 +842,7 @@ impl Puppet {
             NodeKind::MeshGroup(mg) => mg.deform_stack.clear_source(DeformSource::Scratch),
             _ => return false,
         }
+        self.last_anchor_pose_generation = None;
         true
     }
 
@@ -902,6 +909,9 @@ impl Puppet {
     fn invalidate_fold(&mut self) {
         self.last_tick_folded_param_generation = None;
         self.last_tick_mesh_group_generation = None;
+        // A scratch edit can move a chain's guide or root warp, which only
+        // the physics pre-pass poses.
+        self.last_anchor_pose_generation = None;
     }
 
     /// Write every scratch transform over what the fold produced. Runs after
@@ -1439,7 +1449,7 @@ impl Puppet {
     /// A link no param drives is posed at 0, which is the strand as drawn.
     ///
     /// **The target is the posed guide turned by the pose.** Each bend adds
-    /// the turn the last fold's posed guide makes off the drawing at that
+    /// the turn the physics pre-pass's guide makes off the drawing at that
     /// link ([`SpineData::guide_turn`]), so the strand hangs in the shape the
     /// artist deformed it into. The chain's claims take the same turn back
     /// off (`write_driver_param_outputs`), so its params stay bends relative
@@ -1500,11 +1510,11 @@ impl Puppet {
     }
 
     /// Where chain `c`'s root is this frame and the frame its drawn shape
-    /// hangs in. The root is the posed guide's root where the art renders it:
-    /// the last fold's guide root (the spine origin while the guide is the
-    /// drawing) through the node's transform, then through the warp of the
-    /// mesh group that moves its art, recorded by the previous frame's
-    /// mesh-group pass.
+    /// hangs in. The root is the guide's root where the art renders it: the
+    /// guide root the physics pre-pass posed for this frame (the spine origin
+    /// while the guide is the drawing) through the node's transform, then
+    /// through the warp of the mesh group that moves its art, which the same
+    /// pre-pass recorded (`pose_chain_roots`).
     /// The frame is the node's linear map alone: a warp is 2.5D projection,
     /// not a turn the drawn shape should hang from. A `local_only` chain
     /// takes no warp.
@@ -1784,9 +1794,10 @@ impl Puppet {
         true
     }
 
-    /// Bring every driver to its analytic rest pose without simulating, so a
-    /// freshly loaded or re-posed model renders settled on its first frame
-    /// instead of visibly swinging into place.
+    /// Bring every driver to rest, so a freshly loaded or re-posed model
+    /// renders settled on its first frame instead of visibly swinging into
+    /// place. A pendulum takes its analytic rest; a chain starts from its
+    /// closed-form balance and simulates in place until it stops.
     ///
     /// One driver's output can position another's anchor, so a single pass is
     /// not enough: each pass settles every driver against the current anchor
@@ -1795,9 +1806,10 @@ impl Puppet {
     /// transforms → anchor", so an acyclic driver graph converges in at most
     /// one pass per driver; the extra pass is what observes the fixed point.
     ///
-    /// Leaves the puppet in the anchor pose, with deform stacks cleared and
-    /// colour at base — `tick` is what folds a renderable frame, and the
-    /// resets here force it to. Render only after ticking.
+    /// Leaves the puppet in the anchor pose, colour at base and with only the
+    /// deforms the chain pre-pass folds (guide parts and the groups warping
+    /// chain roots) — `tick` is what folds a renderable frame, and the resets
+    /// here force it to. Render only after ticking.
     pub fn settle_physics(&mut self, model: &Model) {
         let _span = tracing::trace_span!("settle_physics").entered();
         self.sync(model);
@@ -1819,6 +1831,7 @@ impl Puppet {
         for _ in 0..=n {
             self.reset_frame();
             self.apply_anchor_transform_bindings();
+            self.apply_scratch_transforms();
             self.arena.apply_previous_tc_shifts();
             self.arena
                 .compute_physics_ancestor_transforms(&mut transforms);
@@ -1927,6 +1940,9 @@ impl Puppet {
                 pre_pass_ran = true;
                 self.reset_frame();
                 self.apply_anchor_transform_bindings();
+                // A drag in progress moves what the final fold renders, so the
+                // drivers must hang from it too.
+                self.apply_scratch_transforms();
                 self.arena.apply_previous_tc_shifts();
                 self.arena.ensure_physics_ancestor_mask();
                 let mut local = std::mem::take(&mut self.arena.physics_transforms);
@@ -1973,9 +1989,9 @@ impl Puppet {
     }
 
     /// The final fold: pose every node and deform from the resolved params,
-    /// then the spine and mesh-group passes, welds and the combine. The
-    /// spine and mesh-group passes also record what the next frame's chains
-    /// read: each posed guide and each root's warp.
+    /// then the spine and mesh-group passes, welds and the combine. Chains
+    /// read nothing from it: their guides and root warps come from the
+    /// physics pre-pass (`pose_chain_roots`).
     fn fold_frame(&mut self, out: &mut GlobalTransforms, root: Mat4, mesh_groups: bool) {
         self.reset_frame();
         self.apply_params();
@@ -2072,18 +2088,43 @@ impl Puppet {
             let groups = crate::meshgroup::chain_root_groups(&mut self.arena);
             self.arena.chain_root_groups = Some(groups);
         }
-        let deformed = self
+        // The Deform bindings on those nodes, found once per bake. Folded
+        // straight from the list: the anchor fold this pre-pass just ran
+        // located every param for this pose.
+        let bindings = match self
             .arena
             .chain_root_groups
             .as_mut()
-            .map(|g| std::mem::take(&mut g.deformed))
-            .unwrap_or_default();
-        self.apply_bindings_where(|b| {
-            b.target == BindingTarget::Deform
-                && deformed.get(b.node.0 as usize).copied().unwrap_or(false)
-        });
+            .and_then(|g| g.bindings.take())
+        {
+            Some(list) => list,
+            None => {
+                let deformed = self
+                    .arena
+                    .chain_root_groups
+                    .as_ref()
+                    .map(|g| g.deformed.as_slice())
+                    .unwrap_or_default();
+                self.bindings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| {
+                        b.target == BindingTarget::Deform
+                            && deformed.get(b.node.0 as usize).copied().unwrap_or(false)
+                    })
+                    .map(|(i, _)| i as u32)
+                    .collect()
+            }
+        };
+        let baked = std::mem::take(&mut self.bindings);
+        for &i in &bindings {
+            if let Some(b) = baked.get(i as usize) {
+                self.fold_binding(b);
+            }
+        }
+        self.bindings = baked;
         if let Some(groups) = self.arena.chain_root_groups.as_mut() {
-            groups.deformed = deformed;
+            groups.bindings = Some(bindings);
         }
         crate::meshgroup::propagate_chain_root_groups(&mut self.arena, transforms);
         crate::spine::pose_chain_guides(&mut self.arena, transforms);
@@ -2122,10 +2163,6 @@ impl Puppet {
     }
 
     fn apply_params_where(&mut self, include: impl Fn(BindingTarget) -> bool) {
-        self.apply_bindings_where(|b| include(b.target));
-    }
-
-    fn apply_bindings_where(&mut self, include: impl Fn(&BakedBinding) -> bool) {
         // Normalize each input once; each binding locates it on its own axes.
         for slot in 0..self.params.len() {
             self.located[slot] = self.locate(slot as u32);
@@ -2134,7 +2171,7 @@ impl Puppet {
         // put back before returning, and nothing here can early-return.
         let bindings = std::mem::take(&mut self.bindings);
         for b in &bindings {
-            if !include(b) {
+            if !include(b.target) {
                 continue;
             }
             self.fold_binding(b);

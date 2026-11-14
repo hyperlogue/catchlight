@@ -702,9 +702,6 @@ pub(crate) fn propagate_mesh_group_deforms(
     arena.mg_propagate_scratch = scratch;
     arena.mg_cur_deform_scratch = cur_deform_scratch;
     arena.mg_deformed_vertices_scratch = deformed_mg_vertices;
-    if !arena.chain_node_ids.is_empty() {
-        record_chain_root_shifts(arena, transforms, root);
-    }
     // Put the cache back unless invalidated during propagate (no caller
     // in the hot path mutates the tree, but check to be safe).
     if arena.mg_pre_order_cache.is_none() {
@@ -815,7 +812,7 @@ fn translate_children_delta(
     let cvertex_proj = Vec2::new(cvertex_full.x, cvertex_full.y);
 
     // Outside the lattice the warp is the identity there: delta = 0.
-    let Some(delta_mg) = warp_at(arena, mg_id, cvertex_proj) else {
+    let Some(delta_mg) = warp_at(arena, mg_id, cvertex_proj, &mut Vec::new()) else {
         return Vec2::ZERO;
     };
 
@@ -831,17 +828,20 @@ fn translate_children_delta(
 
 /// The group's combined deform at `p` in its own local space: the
 /// barycentric blend over the rest triangle covering `p`, or `None` outside
-/// the lattice (where the warp is the identity).
-fn warp_at(arena: &Arena, mg_id: NodeIdx, p: Vec2) -> Option<Vec2> {
+/// the lattice (where the warp is the identity). `mg_local` is scratch for
+/// the lattice's local positions, so a caller warping many points reuses it.
+fn warp_at(arena: &Arena, mg_id: NodeIdx, p: Vec2, mg_local: &mut Vec<Vec2>) -> Option<Vec2> {
     let Some(NodeKind::MeshGroup(mg)) = arena.get(mg_id).map(|n| &n.kind) else {
         return None;
     };
     let mg_indices = &mg.mesh.indices;
-    let mg_local = local_positions(&mg.mesh);
+    mg_local.clear();
+    mg_local.extend(mg.mesh.vertices.iter().map(|v| *v - mg.mesh.origin));
+    let mg_local = &*mg_local;
     let combined = mg.deform_stack.combined();
     let tri_idx = match &mg.bitmap {
-        Some(bitmap) => bitmap.find(&mg_local, mg_indices, p, 0),
-        None => find_triangle_strict_hint(&mg_local, mg_indices, p, 0),
+        Some(bitmap) => bitmap.find(mg_local, mg_indices, p, 0),
+        None => find_triangle_strict_hint(mg_local, mg_indices, p, 0),
     }?;
     let base_idx = tri_idx as usize * 3;
     let i0 = mg_indices.get(base_idx).map(|i| i as usize);
@@ -886,9 +886,11 @@ fn warp_group_of(arena: &Arena, spine: NodeIdx) -> Option<NodeIdx> {
 }
 
 /// Record how far this frame's groups warp each chain's posed guide root, in
-/// puppet-local units, for the chain roots (`Arena::chain_root_shifts`). The spine itself is not moved: its art is
-/// warped already, and moving the node would move it twice. Runs after every
-/// group has combined, so a group's stack carries the outer groups' pushes.
+/// puppet-local units, for the chain roots (`Arena::chain_root_shifts`).
+/// The spine itself is not moved: its art is warped already, and moving the
+/// node would move it twice. The physics pre-pass runs it after
+/// `propagate_chain_root_groups`, so each group's stack carries the outer
+/// groups' pushes.
 pub(crate) fn record_chain_root_shifts(
     arena: &mut Arena,
     transforms: &GlobalTransforms,
@@ -905,6 +907,7 @@ pub(crate) fn record_chain_root_shifts(
     shifts.clear();
     shifts.resize(n, Vec2::ZERO);
     let root_inv = linear_mat2(root).inverse();
+    let mut local = std::mem::take(&mut arena.mg_deformed_vertices_scratch);
     if let Some(groups) = &arena.chain_warp_groups {
         for (c, group) in groups.iter().enumerate() {
             let Some(mg_id) = *group else { continue };
@@ -920,7 +923,7 @@ pub(crate) fn record_chain_root_shifts(
             };
             let origin = transform_point(transforms.get(spine_id), guide);
             let at = transform_point(mg_global_inv, origin);
-            if let Some(delta) = warp_at(arena, mg_id, at) {
+            if let Some(delta) = warp_at(arena, mg_id, at, &mut local) {
                 let shift = root_inv * (linear_mat2(mg_global) * delta);
                 if shift.is_finite() {
                     shifts[c] = shift;
@@ -928,6 +931,7 @@ pub(crate) fn record_chain_root_shifts(
             }
         }
     }
+    arena.mg_deformed_vertices_scratch = local;
     arena.chain_root_shifts = shifts;
 }
 
@@ -942,6 +946,10 @@ pub(crate) struct ChainRootGroups {
     edges: Vec<(NodeIdx, NodeIdx)>,
     /// By node slot.
     pub(crate) deformed: Vec<bool>,
+    /// Indices into the puppet's baked bindings of the Deform bindings on
+    /// `deformed` nodes, filled by the puppet on first use. Both are rebuilt
+    /// with the arena, so the indices cannot go stale.
+    pub(crate) bindings: Option<Vec<u32>>,
 }
 
 /// Build [`ChainRootGroups`]: each chain's warp group, then the group that
@@ -989,6 +997,7 @@ pub(crate) fn chain_root_groups(arena: &mut Arena) -> ChainRootGroups {
         order,
         edges,
         deformed,
+        bindings: None,
     }
 }
 

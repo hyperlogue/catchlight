@@ -653,3 +653,58 @@ fn hair_swings_alike_at_any_frame_rate() {
         }
     }
 }
+
+/// **Hair sleeps wherever the caller places the puppet.** A viewport passes a
+/// root transform; the strands' inputs come from the physics pre-pass alone,
+/// so the render fold under that root cannot feed rounding back in and keep
+/// them awake.
+#[test]
+fn hair_sleeps_under_a_placed_root() {
+    let model = lan();
+    let root = catchlight_core::Mat4::from_translation(Vec3::new(120.0, -40.0, 0.0))
+        * catchlight_core::Mat4::from_rotation_z(0.37)
+        * catchlight_core::Mat4::from_scale(Vec3::new(0.73, 0.73, 1.0));
+    for yaw in [0.0, 20.0] {
+        let mut puppet = Puppet::new(&model);
+        puppet.set_param_value(&ParamId::new("head_yaw").unwrap(), yaw);
+        puppet.settle_physics(&model);
+        let mut awake = 0;
+        for frame in 0..600 {
+            let motion = puppet.tick_with_root(&model, root, DT);
+            if frame >= 500 && motion.physics {
+                awake += 1;
+            }
+        }
+        assert_eq!(awake, 0, "yaw {yaw}: hair still awake under a placed root");
+    }
+}
+
+/// **A held drag on a lock lets the hair settle.** The physics pre-pass sees
+/// the same scratch transform the render does, so the strand hangs from the
+/// dragged art instead of alternating between it and the undragged one.
+#[test]
+fn a_held_drag_on_a_lock_lets_the_hair_settle() {
+    let model = lan();
+    let mut puppet = Puppet::new(&model);
+    puppet.settle_physics(&model);
+    let lock = puppet
+        .node_idx(&catchlight_core::NodeId::new("front-hair-lock-2").unwrap())
+        .unwrap();
+    let at = puppet.get(lock).unwrap().transform;
+    assert!(puppet.set_scratch_transform(
+        lock,
+        catchlight_core::ScratchTransform {
+            translation: Some(at.translation + Vec3::new(25.0, 0.0, 0.0)),
+            rotation: Some(at.rotation + Vec3::new(0.0, 0.0, 0.2)),
+            ..Default::default()
+        },
+    ));
+    let mut awake = 0;
+    for frame in 0..900 {
+        let motion = puppet.tick(&model, DT);
+        if frame >= 800 && motion.physics {
+            awake += 1;
+        }
+    }
+    assert_eq!(awake, 0, "the hair never settled under a held drag");
+}

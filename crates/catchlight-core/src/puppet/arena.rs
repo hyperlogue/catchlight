@@ -172,7 +172,7 @@ pub(crate) struct Arena {
     /// Parallel to `chain_node_ids`: how far the mesh groups warp each
     /// chain's posed guide root, in puppet-local (Y-up) units. The physics
     /// pre-pass records it for the pose it is about to step
-    /// (`Puppet::pose_chain_roots`), and the final fold records it again.
+    /// (`Puppet::pose_chain_roots`); nothing else writes it.
     pub(crate) chain_root_shifts: Vec<glam::Vec2>,
     /// What the physics pre-pass poses so chain roots and guides are this
     /// frame's (`meshgroup::chain_root_groups`). Invalidated with the

@@ -214,6 +214,12 @@ fn physics(a: &ClmStructure, b: &ClmStructure, out: &mut Vec<String>) {
             a.physics.gravity, b.physics.gravity
         ));
     }
+    if a.physics.physics_rate != b.physics.physics_rate {
+        out.push(format!(
+            "~ physics physics_rate: {} -> {}",
+            a.physics.physics_rate, b.physics.physics_rate
+        ));
+    }
 }
 
 /// One line per extension key, not one per field: a value is a single thing

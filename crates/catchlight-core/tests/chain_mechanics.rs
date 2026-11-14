@@ -2,7 +2,7 @@
 //! Strand invariants independent of trajectory baselines: exact lengths, a
 //! neutral rest that reads zero, return to rest after a translation, frame-rate
 //! agreement, bounded catch-up and sleep. Lengths are pixels, time seconds.
-use catchlight_core::physics::{ChainLink, ParticleChainData, MAX_STEPS_PER_TICK};
+use catchlight_core::physics::{ChainLink, ParticleChainData, MAX_TICK_SECONDS};
 use catchlight_core::{Mat2, Vec2};
 
 /// A six-link strand drawn with a gentle curve, stiffer at the root, hung
@@ -173,7 +173,8 @@ fn a_tick_runs_at_most_the_step_cap() {
             &[],
             dt,
         );
-        assert_eq!(c.steps_last_tick(), MAX_STEPS_PER_TICK, "dt {dt}");
+        assert_eq!(c.steps_last_tick(), 8, "dt {dt}: 8 steps at 120 Hz");
+        assert_eq!(MAX_TICK_SECONDS * 120.0, 8.0);
     }
     c.tick(Vec2::new(5.0, 0.0), Mat2::IDENTITY, &[], 1.0 / 60.0);
     assert_eq!(c.steps_last_tick(), 2, "a 60 fps frame is two 120 Hz steps");
@@ -237,4 +238,45 @@ fn a_kick_swings_and_settles() {
     }
     assert!(c.is_at_rest());
     assert!(tip(&c).length() < 0.05);
+}
+
+/// The step cap is simulated time, not a step count, so a fast physics rate
+/// still runs in real time at an ordinary frame rate.
+#[test]
+fn a_fast_rate_keeps_real_time() {
+    for rate in [480.0f32, 1000.0] {
+        let mut c = strand();
+        c.rate = rate;
+        c.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
+        let mut steps = 0;
+        for f in 1..=30 {
+            c.tick(Vec2::new(f as f32, 0.0), Mat2::IDENTITY, &[], 1.0 / 30.0);
+            steps += c.steps_last_tick();
+        }
+        assert!(
+            (steps as f32 - rate).abs() <= 1.0,
+            "{rate} Hz ran {steps} steps in a second of 30 fps frames"
+        );
+    }
+}
+
+/// A tick with no time that turns the frame or changes the pose leaves the
+/// strand awake, so the next real ticks hang it where a fresh settle would.
+#[test]
+fn a_zero_time_tick_does_not_freeze_a_new_input() {
+    let turned = Mat2::from_angle(0.5);
+    let pose = [0.0, 0.1, 0.0, 0.0, 0.0, 0.0];
+    let mut fresh = strand();
+    fresh.settle_to_rest(Vec2::ZERO, turned, &pose);
+    let mut c = strand();
+    c.settle_to_rest(Vec2::ZERO, Mat2::IDENTITY, &[]);
+    assert!(c.is_at_rest());
+    c.tick(Vec2::ZERO, turned, &pose, 0.0);
+    assert!(!c.is_at_rest(), "a zero-time input change wakes the strand");
+    for _ in 0..600 {
+        c.tick(Vec2::ZERO, turned, &pose, 1.0 / 60.0);
+    }
+    for (a, b) in bends(&c).iter().zip(bends(&fresh)) {
+        assert!((a - b).abs() < 1e-3, "settled {a} vs fresh {b}");
+    }
 }

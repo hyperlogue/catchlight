@@ -2209,6 +2209,10 @@ fn rest_carry(model: &Model, id: &NodeId) -> catchlight_core::Mat2 {
 /// authoring feedback uses the same forces and limits as playback. Playback
 /// subtracts that sag, so a large one is a strand that swings about a shape
 /// it cannot hold.
+/// Sag, in half turns (9°), past which a fit warns that a link cannot hold
+/// its drawing.
+const SAG_WARNING: f32 = 0.05;
+
 fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
     let Some(ModelNodeKind::Spine(spine)) = model.node(node).map(|n| &n.kind) else {
         return Vec::new();
@@ -2257,11 +2261,16 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
             Some(*turn)
         })
         .enumerate()
-        .filter(|(_, bend)| bend.abs() > 1e-3)
-        .map(|(i, _)| {
+        // Playback offsets the sag, so a soft strand that droops a few
+        // degrees still renders its drawing; warn only where the shape it
+        // swings about is far from the one drawn.
+        .filter(|(_, bend)| bend.abs() > SAG_WARNING)
+        .map(|(i, bend)| {
             format!(
-                "link {} cannot rest as drawn under its gravity and bend response",
-                i + 1
+                "link {} cannot rest as drawn: it sags {:.0}° under gravity, so it swings \
+                 about a shape it cannot hold; raise its stiffness",
+                i + 1,
+                bend.abs() * 180.0
             )
         })
         .collect()

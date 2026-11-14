@@ -15,12 +15,17 @@
 //! are interpolated across the frame, root velocity is measured from the last
 //! *step's* root (so zero-step frames lose no motion), and output bends are
 //! interpolated between the last two steps: a fixed one-step latency. A tick
-//! runs at most `MAX_STEPS`; the rest of a long frame is dropped. A root jump
-//! longer than the strand moves it rigidly with zero velocity.
+//! simulates at most `MAX_TICK_SECONDS` (8 steps at 120 Hz); the rest of a
+//! long frame is dropped, at any rate. A root jump longer than the strand
+//! moves it rigidly with zero velocity. A tick with no time (`dt <= 0`)
+//! carries the strand rigidly to its root and wakes it if the frame or pose
+//! changed, so the next real tick swings toward them.
 //!
-//! **Sleep.** After `SLEEP_STEPS` steps with unchanged input in which no point
-//! moved more than `QUIET_SQ.sqrt()` pixels, the strand sleeps: a tick with
-//! the same root, frame and pose runs no step.
+//! **Sleep.** After `SLEEP_SECONDS` with unchanged input in which no point
+//! moved faster than `QUIET_SPEED`, the strand sleeps: a tick with the same
+//! root, frame and pose runs no step. A strand still creeping toward rest
+//! slower than that stops short of it by about `QUIET_SPEED` times its
+//! slowest time constant: hundredths of a pixel on a tuned strand.
 //!
 //! **Neutral rest.** Output is `bend - b0`, where `b0` is how far the strand
 //! rests off its pose in its rest frame with the runtime constants (the rest
@@ -52,12 +57,13 @@ type Links<T> = SmallVec<[T; 8]>;
 
 /// Share of a child's length correction passed to its parent's velocity.
 const DFTL: f32 = 0.9;
-/// Most steps a single tick runs; a longer frame plays in slow motion.
-pub(super) const MAX_STEPS: u32 = 8;
-/// Quiet steps before a strand sleeps.
-const SLEEP_STEPS: u32 = 24;
-/// Squared per-step point motion (px²) that counts as quiet.
-const QUIET_SQ: f32 = 1e-6;
+/// Most simulated time a single tick advances; a longer frame drops the
+/// rest. As steps, `rate / 15`: 8 at the default 120 Hz.
+pub(super) const MAX_TICK_SECONDS: f32 = 1.0 / 15.0;
+/// Quiet time before a strand sleeps.
+const SLEEP_SECONDS: f32 = 0.2;
+/// Point speed (px/s) below which a step counts as quiet.
+const QUIET_SPEED: f32 = 0.12;
 /// Step budget for settling; it stops early once nothing moves.
 const SETTLE_STEPS: u32 = 4000;
 /// Squared per-step motion (px²) at which settling has converged.
@@ -170,6 +176,22 @@ impl Strand {
         posed: &[f32],
         rest_dir: Vec2,
     ) -> Self {
+        let mut strand = Self::bake(settings, root, carry, posed, rest_dir);
+        strand.settle(root, carry, posed);
+        strand
+    }
+
+    /// Bake `settings` for `carry` and measure the neutral rest, without
+    /// hanging: the points sit at `root` until a hang or [`Self::adopt`]
+    /// places them. The neutral rest is the closed-form balance, so this is
+    /// cheap enough to run on every carry rescale.
+    pub(super) fn bake(
+        settings: Settings,
+        root: Vec2,
+        carry: Mat2,
+        posed: &[f32],
+        rest_dir: Vec2,
+    ) -> Self {
         let n = settings.links.len();
         let h = 1.0 / usable_rate(settings.rate);
         let drawn0 = settings
@@ -260,7 +282,6 @@ impl Strand {
         if !strand.set_posed(posed) {
             strand.measure_neutral();
         }
-        strand.settle(root, carry, posed);
         strand
     }
 
@@ -288,9 +309,12 @@ impl Strand {
 
     /// Carry another strand's motion over to this freshly baked one, so an
     /// edit or a rescale continues the swing instead of re-hanging it.
-    pub(super) fn adopt(&mut self, old: &Strand) {
-        if old.p.len() != self.p.len() {
-            return;
+    /// `false`, leaving this strand as baked, when the old one has a
+    /// different link count or a non-finite point: then it must be hung.
+    pub(super) fn adopt(&mut self, old: &Strand) -> bool {
+        let finite = old.p.iter().chain(&old.q).all(|v| v.is_finite());
+        if old.p.len() != self.p.len() || !finite {
+            return false;
         }
         self.p.clone_from(&old.p);
         self.q.clone_from(&old.q);
@@ -302,6 +326,12 @@ impl Strand {
         self.out.clone_from(&old.out);
         self.asleep = false;
         self.quiet = 0;
+        true
+    }
+
+    /// Hang this strand at rest for `root`, `carry` and `posed`.
+    pub(super) fn hang_at(&mut self, root: Vec2, carry: Mat2, posed: &[f32]) {
+        self.settle(root, carry, posed);
     }
 
     fn dir(&self, carry: Mat2) -> Vec2 {
@@ -547,7 +577,13 @@ impl Strand {
             return;
         }
         if !(dt.is_finite() && dt > 0.0) {
-            // No time passes: carry the strand along rigidly.
+            // No time passes: carry the strand along rigidly. A turned frame
+            // or a new pose is off this rest, so stay awake for the next real
+            // tick to swing toward it.
+            if carry != self.carry || posed_changed {
+                self.asleep = false;
+                self.quiet = 0;
+            }
             self.translate(root - self.root);
             self.root = root;
             self.carry = carry;
@@ -559,11 +595,12 @@ impl Strand {
             self.translate(root - self.root);
             self.root = root;
         }
-        let dt = dt.min(MAX_STEPS as f32 * self.h);
+        let max_steps = self.max_steps();
+        let dt = dt.min(max_steps as f32 * self.h);
         let (r0, c0) = (self.root, self.carry);
         let (d0, d1) = (self.dir(c0), self.dir(carry));
         let acc0 = self.acc;
-        let steps = (((acc0 + dt) / self.h).floor() as u32).min(MAX_STEPS);
+        let steps = (((acc0 + dt) / self.h).floor() as u32).min(max_steps);
         self.acc = (acc0 + dt - steps as f32 * self.h).clamp(0.0, self.h);
         let mut prev_root = self.p[0];
         let mut prev_dir = self.step_dir;
@@ -598,18 +635,24 @@ impl Strand {
         self.step_dir = prev_dir;
         self.steps = steps;
         let still = root == r0 && carry == c0 && !posed_changed;
-        if still && moved < QUIET_SQ {
+        let quiet_step = QUIET_SPEED * self.h;
+        if still && moved < quiet_step * quiet_step {
             self.quiet += steps;
         } else {
             self.quiet = 0;
         }
         self.root = root;
         self.carry = carry;
-        if self.quiet >= SLEEP_STEPS {
+        if self.quiet as f32 * self.h >= SLEEP_SECONDS - 0.5 * self.h {
             self.asleep = true;
             self.q.clone_from(&self.p);
             self.out_prev.clone_from(&self.out);
         }
+    }
+
+    /// Most steps one tick runs at this strand's rate.
+    pub(super) fn max_steps(&self) -> u32 {
+        ((MAX_TICK_SECONDS / self.h).round() as u32).max(1)
     }
 
     fn translate(&mut self, by: Vec2) {

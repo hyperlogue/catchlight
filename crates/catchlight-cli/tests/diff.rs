@@ -62,11 +62,12 @@ type Mutation = (&'static str, fn(&mut ClmFile));
 fn the_result_is_empty_exactly_when_the_files_are_equal() {
     let base = decode(&common::fixture("composite_masks"));
 
-    let mutations: [Mutation; 6] = [
+    let mutations: [Mutation; 7] = [
         ("nothing", |_| {}),
         ("a z order", |f| f.doc.nodes[1].z_order += 1.0),
         ("a texture byte", |f| f.textures[0].data[10] ^= 0xff),
         ("the world's gravity", |f| f.doc.physics.gravity = 1.0),
+        ("the physics rate", |f| f.doc.physics.physics_rate = 60.0),
         ("the texture order", |f| f.textures.swap(0, 1)),
         ("a dropped node", |f| {
             f.doc.nodes.pop();
