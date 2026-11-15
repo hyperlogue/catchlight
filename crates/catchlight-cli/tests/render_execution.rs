@@ -440,3 +440,122 @@ fn interrupt_after_a_frame_preserves_valid_artifacts_and_marks_manifest_incomple
     }
     assert!(!destination.join("a--trace.jsonl").exists());
 }
+
+fn probe(path: &Path) -> String {
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-count_frames", "-select_streams", "v:0"])
+        .args([
+            "-show_entries",
+            "stream=codec_name,width,height,r_frame_rate,nb_read_frames",
+        ])
+        .args(["-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .expect("ffprobe from the dev shell");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn clip_shortcuts_encode_a_time_span_to_one_video_file() {
+    let dir = common::tmp("render-execution-video-cli");
+    let mut m = model();
+    let clip: catchlight_core::formats::clm::ClmAnimation = serde_json::from_value(json!({
+        "name":"Slide","timestep":0.125,"length":8,"lead_in":-1,"lead_out":-1,
+        "lanes":[{"param":"drive","interpolation":"Linear",
+            "keyframes":[{"frame":0,"value":0},{"frame":7,"value":1}]}]}))
+    .unwrap();
+    m.set_animations(vec![clip]).unwrap();
+    let path = dir.join("model.clm");
+    std::fs::write(&path, m.to_clm_bytes().unwrap()).unwrap();
+    let out = dir.join("slide.mp4");
+    let args = |out: &Path, extra: &[&str]| {
+        let mut args = vec![
+            "render",
+            path.to_str().unwrap(),
+            "--animation",
+            "Slide",
+            "--rect=-16,-16,64,32",
+            "--scale",
+            "1",
+            "--physics",
+            "off",
+        ];
+        args.extend_from_slice(extra);
+        args.extend(["--out", out.to_str().unwrap()]);
+        common::run(&args)
+    };
+    // [0.25, 0.75) at 0.125 s/frame is frames 2..6, played at 8 fps.
+    let (code, stdout, stderr) = args(&out, &["--from", "0.25", "--to", "0.75"]);
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    assert_eq!(probe(&out), "h264,64,32,8/1,4");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+    let (code, _, stderr) = args(&dir.join("slide.png"), &[]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("--out-dir"), "{stderr}");
+    let (code, _, stderr) = args(&dir.join("never.gif"), &["--from", "0.5", "--to", "0.5"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("at least one frame"), "{stderr}");
+    assert!(!dir.join("never.gif").exists());
+}
+
+#[test]
+fn camera_moves_the_view_and_video_sits_beside_kept_frames() {
+    let dir = common::tmp("render-execution-camera");
+    let mut s = spec();
+    s["animations"] = json!({"hold":{"name":"Hold","timestep":0.05,"length":4,
+        "lead_in":-1,"lead_out":-1,"lanes":[]}});
+    s["requests"]["a"]["animation"] = json!({"source":"spec","name":"hold"});
+    s["requests"]["a"]["video"] = json!({"format":"webm","keep_frames":true});
+    s["requests"]["a"]["frames"] = json!({"start":1,"count":4,"every":2});
+    s["requests"]["a"]["camera"] = json!([{"frame":1,"center":[20,0],"zoom":2}]);
+    s["requests"]["still"] = json!({"extends":"a","camera":null,"video":null});
+    let run = invoke(&dir, &s, "out");
+    assert_eq!(probe(&dir.join("out/a.webm")), "vp9,64,32,10/1,2");
+    let outputs = &run["requests"]["a"]["outputs"];
+    assert_eq!(
+        outputs[2],
+        json!({"file":"a.webm","frame":null,"kind":"video"})
+    );
+    // Zoomed onto the child at x=20, pixel 20 sees world x≈14: the child.
+    let moved = rgba(&dir.join("out/a--000001.png"));
+    let still = rgba(&dir.join("out/still--000001.png"));
+    assert_eq!(moved.get_pixel(20, 16).0, [0, 255, 0, 255]);
+    assert_eq!(still.get_pixel(20, 16).0, [0, 0, 0, 0]);
+    assert!(!dir.join("out/a--000000.png").exists());
+}
+
+#[test]
+fn missing_ffmpeg_fails_before_rendering_with_an_honest_manifest() {
+    let dir = common::tmp("render-execution-no-ffmpeg");
+    write_model(&dir.join("model.clm"));
+    let mut s = spec();
+    s["animations"] = json!({"hold":{"name":"Hold","timestep":0.05,"length":2,
+        "lead_in":-1,"lead_out":-1,"lanes":[]}});
+    s["requests"]["a"]["animation"] = json!({"source":"spec","name":"hold"});
+    s["requests"]["a"]["video"] = json!({"format":"gif"});
+    std::fs::write(dir.join("spec.json"), serde_json::to_vec(&s).unwrap()).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_catchlight-cli"))
+        .env("CATCHLIGHT_FFMPEG", dir.join("no-such-ffmpeg"))
+        .args([
+            "render",
+            "model.clm",
+            "--spec",
+            "spec.json",
+            "--out-dir",
+            "out",
+        ])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("needs ffmpeg"));
+    let run: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("out/run.json")).unwrap()).unwrap();
+    assert_eq!(run["complete"], false);
+    assert_eq!(std::fs::read_dir(dir.join("out")).unwrap().count(), 1);
+}

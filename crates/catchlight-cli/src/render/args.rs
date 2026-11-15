@@ -1,7 +1,10 @@
 //! CLI shortcuts lower to the same authoring request as JSON. Model-dependent
 //! mask-source shortcuts become explicit edges before ordinary validation.
 
-use super::spec::{self, Background, Document, MaskEdge, Physics, Request, Setting};
+use super::spec::{
+    self, AnimationRef, AnimationSource, Background, Document, Frames, Initial, MaskEdge, Physics,
+    Request, Setting, Video, VideoFormat,
+};
 use crate::Error;
 use catchlight_core::{Model, ModelNodeKind, NodeId};
 use clap::{Args, ValueEnum};
@@ -50,7 +53,8 @@ pub struct ImageArgs {
     /// Opaque white (default) or transparent black.
     #[arg(long, value_enum)]
     pub background: Option<BackgroundArg>,
-    /// Static physics policy, default settled.
+    /// Physics policy, default settled. With --animation, settled starts the
+    /// simulation settled and off disables it.
     #[arg(long, value_enum)]
     pub physics: Option<PhysicsArg>,
 }
@@ -149,6 +153,83 @@ impl ImageArgs {
     }
 }
 
+/// Playback shortcuts for one model clip. Seconds select the export frames
+/// whose start time lies in [from, to), on the clip's own timestep.
+#[derive(Debug, Clone, Default, Args)]
+#[group(id = "clip_settings", multiple = true)]
+pub struct ClipArgs {
+    /// Play this model clip, by display name. Physics simulates by default.
+    #[arg(long)]
+    pub animation: Option<String>,
+    /// First captured playback time, in seconds. Earlier frames still simulate.
+    #[arg(long, requires = "animation")]
+    pub from: Option<f64>,
+    /// End of capture, exclusive, in seconds. Default the clip length.
+    #[arg(long, requires = "animation")]
+    pub to: Option<f64>,
+    /// Capture every Nth frame; a video plays at 1 / (timestep × N) fps.
+    #[arg(long, requires = "animation")]
+    pub every: Option<u32>,
+}
+impl ClipArgs {
+    fn apply(&self, model: &Model, request: &mut Request) -> Result<(), Error> {
+        let Some(name) = &self.animation else {
+            return Ok(());
+        };
+        let clip = model
+            .animations()
+            .iter()
+            .find(|a| &a.name == name)
+            .ok_or_else(|| spec::bad(format!("unknown model animation {name}")))?;
+        let step = f64::from(clip.timestep);
+        if !step.is_finite() || step <= 0.0 {
+            return Err(spec::bad(format!(
+                "animation {name} has no positive timestep"
+            )));
+        }
+        // Tolerate decimal seconds that land a hair past a frame boundary.
+        let frame = |seconds: f64, flag: &str| {
+            if !seconds.is_finite() || seconds < 0.0 {
+                return Err(spec::bad(format!(
+                    "--{flag} takes finite nonnegative seconds"
+                )));
+            }
+            let f = (seconds / step - 1e-6).ceil().max(0.0);
+            if f > f64::from(u32::MAX) {
+                return Err(spec::bad(format!("--{flag} is too far into the clip")));
+            }
+            Ok(f as u32)
+        };
+        let start = self
+            .from
+            .map(|s| frame(s, "from"))
+            .transpose()?
+            .unwrap_or(0);
+        let count = self.to.map(|s| frame(s, "to")).transpose()?;
+        if count.is_some_and(|c| c <= start) {
+            return Err(spec::bad("--to must leave at least one frame after --from"));
+        }
+        request.animation = Setting::Value(AnimationRef {
+            source: AnimationSource::Model,
+            name: name.clone(),
+        });
+        request.frames = Setting::Value(Frames {
+            start,
+            count,
+            every: self.every.unwrap_or(1),
+        });
+        request.physics = match request.physics {
+            Setting::Value(Physics::Off {}) => Setting::Value(Physics::Off {}),
+            Setting::Value(_) => Setting::Value(Physics::Simulate {
+                initial: Initial::Settled,
+                warmup_frames: 0,
+            }),
+            _ => Setting::Inherit,
+        };
+        Ok(())
+    }
+}
+
 /// Unified render entry points: every image flag lowers to the spec normalizer.
 #[derive(Debug, Args)]
 pub struct RenderArgs {
@@ -156,7 +237,7 @@ pub struct RenderArgs {
     #[arg(required_unless_present = "schema")]
     pub file: Option<PathBuf>,
     /// Compatibility output: model.clm out.png [width height camera_height].
-    #[arg(conflicts_with_all = ["schema", "validate", "spec", "image_settings", "out", "out_dir"])]
+    #[arg(conflicts_with_all = ["schema", "validate", "spec", "image_settings", "clip_settings", "out", "out_dir"])]
     pub legacy_out: Option<PathBuf>,
     #[arg(requires = "legacy_out")]
     pub width: Option<u32>,
@@ -165,12 +246,13 @@ pub struct RenderArgs {
     #[arg(requires = "height")]
     pub camera_height: Option<f32>,
     /// Named render requests JSON; rendering requires --out-dir.
-    #[arg(long, conflicts_with_all = ["image_settings", "out"])]
+    #[arg(long, conflicts_with_all = ["image_settings", "clip_settings", "out"])]
     pub spec: Option<PathBuf>,
     /// Expand settings and validate model references/work without GPU or writes.
     #[arg(long, conflicts_with_all = ["out", "out_dir"])]
     pub validate: bool,
-    /// Write one PNG atomically.
+    /// Write one PNG atomically, or with --animation one .mp4/.webm/.gif
+    /// encoded by ffmpeg.
     #[arg(short, long, conflicts_with = "out_dir")]
     pub out: Option<PathBuf>,
     /// Write flat named artifacts and a run manifest.
@@ -178,10 +260,12 @@ pub struct RenderArgs {
     pub out_dir: Option<PathBuf>,
     /// Discover authoring or resolved planning schema, without a model or GPU.
     #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "spec",
-        conflicts_with_all = ["file", "legacy_out", "spec", "validate", "image_settings", "out", "out_dir"])]
+        conflicts_with_all = ["file", "legacy_out", "spec", "validate", "image_settings", "clip_settings", "out", "out_dir"])]
     pub schema: Option<SchemaKind>,
     #[command(flatten)]
     pub image: ImageArgs,
+    #[command(flatten)]
+    pub clip: ClipArgs,
 }
 impl RenderArgs {
     pub fn run(self) -> Result<(), Error> {
@@ -228,7 +312,27 @@ impl RenderArgs {
                 None,
             )
         } else {
-            (Document::single(self.image.request(&loaded.model)?), None)
+            let mut request = self.image.request(&loaded.model)?;
+            self.clip.apply(&loaded.model, &mut request)?;
+            let format = self.out.as_deref().and_then(VideoFormat::from_extension);
+            match (format, self.clip.animation.is_some()) {
+                (Some(format), true) => {
+                    request.video = Setting::Value(Video {
+                        format,
+                        keep_frames: false,
+                    });
+                }
+                (Some(_), false) => {
+                    return Err(spec::bad("video output requires --animation"));
+                }
+                (None, true) if self.out.is_some() => {
+                    return Err(spec::bad(
+                        "--animation writes .mp4, .webm or .gif with --out, or frames with --out-dir",
+                    ));
+                }
+                _ => {}
+            }
+            (Document::single(request), None)
         };
         let plan = document.resolve(&loaded.model)?;
         if self.validate {
@@ -239,6 +343,9 @@ impl RenderArgs {
             super::execute::check_output_path(file, output)?;
         }
         let destination = match (&output, &self.out_dir) {
+            (Some(path), _) if VideoFormat::from_extension(path).is_some() => {
+                super::execute::Destination::Video(path.clone())
+            }
             (Some(path), _) => super::execute::Destination::Png(path.clone()),
             (_, Some(path)) => super::execute::Destination::Directory(path.clone()),
             _ => super::execute::Destination::Terminal,

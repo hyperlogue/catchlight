@@ -205,6 +205,16 @@ pub struct Request {
     pub animation: Setting<AnimationRef>,
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub frames: Setting<Frames>,
+    /// Animated requests only. Keys move the view over the fixed image size
+    /// that rect and scale set; before the first and after the last key the
+    /// nearest key holds.
+    #[serde(default, skip_serializing_if = "Setting::is_inherit")]
+    #[schemars(length(min = 1))]
+    pub camera: Setting<Vec<CameraKey>>,
+    /// Animated requests only. Encode the captured frames as `{name}.{format}`
+    /// through an external ffmpeg.
+    #[serde(default, skip_serializing_if = "Setting::is_inherit")]
+    pub video: Setting<Video>,
     /// Animated requests only. Trace records every update, including frame 0.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     #[schemars(with = "Setting<Vec<ModelIdSchema>>")]
@@ -239,6 +249,8 @@ impl Request {
             pose,
             animation,
             frames,
+            camera,
+            video,
             trace_params,
             only_parts,
             hide_color,
@@ -309,11 +321,15 @@ pub enum AnimationSource {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Frames {
+    /// First captured export frame. Earlier frames still simulate and trace.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub start: u32,
     /// Number of export frame indices including frame 0. Default clip length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 100001))]
     pub count: Option<u32>,
-    /// Capture indices divisible by every. Simulation still updates all frames.
+    /// Capture start, start + every, ... below count. Simulation still updates
+    /// all frames.
     #[serde(default = "one")]
     #[schemars(range(min = 1))]
     pub every: u32,
@@ -321,6 +337,7 @@ pub struct Frames {
 impl Default for Frames {
     fn default() -> Self {
         Self {
+            start: 0,
             count: None,
             every: 1,
         }
@@ -328,6 +345,72 @@ impl Default for Frames {
 }
 fn one() -> u32 {
     1
+}
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CameraKey {
+    /// Export frame index; keys strictly increase and may lie past count.
+    pub frame: u32,
+    /// World-space view center; world Y is up.
+    pub center: [f32; 2],
+    /// Magnification over the request scale, positive. Default 1. Zoom
+    /// interpolates geometrically, so equal times give equal zoom ratios.
+    #[serde(default = "unit_zoom")]
+    #[schemars(transform = positive_number)]
+    pub zoom: f32,
+    /// Timing of the move from this key to the next.
+    #[serde(default)]
+    pub ease: Ease,
+}
+fn unit_zoom() -> f32 {
+    1.0
+}
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Ease {
+    #[default]
+    Linear,
+    /// Smoothstep: starts and stops at rest.
+    Smooth,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Video {
+    pub format: VideoFormat,
+    /// Also write the clean PNG frames. Overlays and geometry are unaffected.
+    #[serde(default)]
+    pub keep_frames: bool,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoFormat {
+    /// H.264 yuv420p; needs an opaque background. Odd sizes pad by one pixel
+    /// of background on the right/bottom.
+    Mp4,
+    /// VP9 yuva420p, keeping transparency.
+    Webm,
+    /// Palette GIF with 1-bit transparency; frame delays round to 10 ms.
+    Gif,
+}
+impl VideoFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Webm => "webm",
+            Self::Gif => "gif",
+        }
+    }
+    pub fn from_extension(path: &Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        [Self::Mp4, Self::Webm, Self::Gif]
+            .into_iter()
+            .find(|f| f.extension() == ext)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
@@ -398,9 +481,20 @@ impl Framing {
         let size = dimensions.map(|v| v as u32);
         let pixels = u64::from(size[0]) * u64::from(size[1]);
         check_limit("image_pixels", pixels, MAX_PIXELS, "reduce rect or scale")?;
+        let mut framing = Self::view(size, [x + w * 0.5, y + h * 0.5], s)?;
+        framing.rect = rect;
+        Ok(framing)
+    }
+
+    /// One image size viewed at any center and scale: a camera key's frame.
+    /// `rect` reports the effective rect, since no request rect produced it.
+    pub fn view(size: [u32; 2], center: [f64; 2], s: f64) -> Result<Self, Error> {
+        if !center.iter().all(|v| v.is_finite()) || !s.is_finite() || s <= 0.0 {
+            return Err(bad("camera center must be finite and scale positive"));
+        }
         // The camera consumes f32 coordinates. Record the same representable
         // center in the mapping rather than a different f64-only midpoint.
-        let center = [x + w * 0.5, y + h * 0.5].map(|v| f64::from(v as f32));
+        let center = center.map(|v| f64::from(v as f32));
         let span = [f64::from(size[0]) / s, f64::from(size[1]) / s];
         let effective_rect = [
             center[0] - span[0] * 0.5,
@@ -420,9 +514,9 @@ impl Framing {
             ));
         }
         Ok(Self {
-            rect,
+            rect: effective_rect.map(|v| v as f32),
             effective_rect,
-            scale,
+            scale: s as f32,
             size,
             center: center.map(|v| v as f32),
             height: span[1] as f32,
@@ -471,6 +565,9 @@ pub struct ResolvedRequest {
     #[schemars(with = "BTreeMap<ModelIdSchema, f32>")]
     pub pose: BTreeMap<ParamId, f32>,
     pub animation: Option<ResolvedAnimation>,
+    /// Strictly increasing keys; empty keeps the static framing.
+    pub camera: Vec<CameraKey>,
+    pub video: Option<Video>,
     #[schemars(with = "Vec<ModelIdSchema>")]
     pub trace_params: Vec<ParamId>,
     #[schemars(with = "Option<Vec<ModelIdSchema>>")]
@@ -495,15 +592,59 @@ pub struct ResolvedAnimation {
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedFrames {
+    pub start: u32,
     pub count: u32,
     pub every: u32,
 }
 impl ResolvedFrames {
     pub fn captured_indices(&self) -> impl Iterator<Item = u32> {
-        (0..self.count).step_by(self.every as usize)
+        (self.start..self.count).step_by(self.every as usize)
     }
     pub fn captures(&self) -> u64 {
-        u64::from((self.count - 1) / self.every + 1)
+        u64::from((self.count - 1 - self.start) / self.every + 1)
+    }
+    pub fn is_captured(&self, index: u32) -> bool {
+        index >= self.start && (index - self.start).is_multiple_of(self.every)
+    }
+}
+impl ResolvedRequest {
+    /// The view of one export frame: the static framing, or the camera keys
+    /// interpolated at that frame over the same image size.
+    pub fn framing_at(&self, frame: u32) -> Result<Framing, Error> {
+        let (Some(first), Some(last)) = (self.camera.first(), self.camera.last()) else {
+            return Ok(self.framing.clone());
+        };
+        let (center, zoom) = if frame <= first.frame {
+            (first.center.map(f64::from), f64::from(first.zoom))
+        } else if frame >= last.frame {
+            (last.center.map(f64::from), f64::from(last.zoom))
+        } else {
+            let i = self.camera.partition_point(|k| k.frame <= frame);
+            let (a, b) = (&self.camera[i - 1], &self.camera[i]);
+            let mut u = f64::from(frame - a.frame) / f64::from(b.frame - a.frame);
+            if a.ease == Ease::Smooth {
+                u = u * u * (3.0 - 2.0 * u);
+            }
+            let lerp = |x: f32, y: f32| f64::from(x) + (f64::from(y) - f64::from(x)) * u;
+            (
+                [
+                    lerp(a.center[0], b.center[0]),
+                    lerp(a.center[1], b.center[1]),
+                ],
+                f64::from(a.zoom) * (f64::from(b.zoom) / f64::from(a.zoom)).powf(u),
+            )
+        };
+        Framing::view(
+            self.framing.size,
+            center,
+            f64::from(self.framing.scale) * zoom,
+        )
+    }
+    /// Seconds per captured frame of an animated request.
+    pub fn frame_interval(&self) -> Option<f64> {
+        self.animation
+            .as_ref()
+            .map(|a| f64::from(a.clip.0.timestep) * f64::from(a.frames.every))
     }
 }
 
@@ -663,9 +804,11 @@ impl Document {
                 "reduce scale/captures or split the spec",
             )?;
             let output_count = captures
-                * (1 + u64::from(request.overlay.is_some())
+                * (u64::from(request.video.as_ref().is_none_or(|v| v.keep_frames))
+                    + u64::from(request.overlay.is_some())
                     + u64::from(!request.geometry.is_empty()))
-                + u64::from(request.animation.is_some());
+                + u64::from(request.animation.is_some())
+                + u64::from(request.video.is_some());
             out.output_files += output_count;
             check_limit(
                 "output_files",
@@ -848,6 +991,9 @@ impl Document {
                 if count == 0 || frames.every == 0 {
                     return Err(bad("frame count and every must be positive"));
                 }
+                if frames.start >= count {
+                    return Err(bad("frames.start must be below the frame count"));
+                }
                 check_limit(
                     "simulation_updates",
                     u64::from(count - 1),
@@ -858,6 +1004,7 @@ impl Document {
                     selection,
                     clip,
                     frames: ResolvedFrames {
+                        start: frames.start,
                         count,
                         every: frames.every,
                     },
@@ -865,9 +1012,36 @@ impl Document {
             })
             .transpose()?;
         if animation.is_none()
-            && (request.frames.value().is_some() || request.trace_params.clone().value().is_some())
+            && (request.frames.value().is_some()
+                || request.trace_params.clone().value().is_some()
+                || request.camera.clone().value().is_some()
+                || request.video.clone().value().is_some())
         {
-            return Err(bad("frames and trace_params require an animation"));
+            return Err(bad(
+                "frames, camera, video and trace_params require an animation",
+            ));
+        }
+        let camera = request.camera.value().unwrap_or_default();
+        for pair in camera.windows(2) {
+            if pair[0].frame >= pair[1].frame {
+                return Err(bad("camera key frames must strictly increase"));
+            }
+        }
+        for key in &camera {
+            if !key.zoom.is_finite() || key.zoom <= 0.0 {
+                return Err(bad("camera zoom must be finite and positive"));
+            }
+            Framing::view(
+                framing.size,
+                key.center.map(f64::from),
+                f64::from(framing.scale) * f64::from(key.zoom),
+            )?;
+        }
+        let video = request.video.value();
+        if video.as_ref().is_some_and(|v| v.format == VideoFormat::Mp4) && background.alpha != 1.0 {
+            return Err(bad(
+                "mp4 cannot carry transparency; use an opaque background or webm",
+            ));
         }
         let physics = request.physics.value().unwrap_or_else(|| {
             if animation.is_some() {
@@ -944,6 +1118,8 @@ impl Document {
             physics,
             pose,
             animation,
+            camera,
+            video,
             trace_params,
             only_parts,
             hide_color,
@@ -957,8 +1133,11 @@ impl Document {
 
 fn plan_outputs(name: &str, request: &ResolvedRequest) -> Vec<String> {
     let mut out = Vec::new();
+    let clean = request.video.as_ref().is_none_or(|v| v.keep_frames);
     let mut image = |stem: String| {
-        out.push(format!("{stem}.png"));
+        if clean {
+            out.push(format!("{stem}.png"));
+        }
         if request.overlay.is_some() {
             out.push(format!("{stem}--mesh.png"));
         }
@@ -971,6 +1150,9 @@ fn plan_outputs(name: &str, request: &ResolvedRequest) -> Vec<String> {
             image(format!("{name}--{n:06}"));
         }
         out.push(format!("{name}--trace.jsonl"));
+        if let Some(video) = &request.video {
+            out.push(format!("{name}.{}", video.format.extension()));
+        }
     } else {
         image(name.to_string());
     }

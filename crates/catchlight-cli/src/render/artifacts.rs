@@ -83,7 +83,7 @@ impl GeometryOutput {
             request: name.into(),
             frame: request.animation.as_ref().map(|_| runtime.index),
             pose: effective_pose(model, &runtime.puppet)?,
-            framing: request.framing.clone(),
+            framing: request.framing_at(runtime.index)?,
             nodes,
         })
     }
@@ -335,6 +335,7 @@ pub enum OutputKind {
     Mesh,
     Geometry,
     Trace,
+    Video,
 }
 impl RunManifest {
     pub fn new(plan: ResolvedSpec, input: InputIdentity) -> Self {

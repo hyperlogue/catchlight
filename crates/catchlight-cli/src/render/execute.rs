@@ -6,8 +6,9 @@ use super::{
     artifacts::*,
     frame::{self, FrameRuntime},
     overlay,
-    spec::{bad, ResolvedRequest, ResolvedSpec},
+    spec::{bad, Framing, ResolvedRequest, ResolvedSpec},
     terminal,
+    video::{self, VideoSink},
 };
 use crate::Error;
 use catchlight_core::{Model, ModelFormat};
@@ -24,6 +25,8 @@ use std::sync::{
 pub enum Destination {
     Terminal,
     Png(PathBuf),
+    /// One animated request with `video`, written to this path alone.
+    Video(PathBuf),
     Directory(PathBuf),
 }
 #[derive(Debug, Clone, Default)]
@@ -116,7 +119,18 @@ pub fn run(
         Destination::Directory(path) => Some(path.clone()),
         _ => None,
     };
-    if directory.is_none()
+    if let Destination::Video(_) = &destination {
+        if plan.requests.len() != 1
+            || plan
+                .requests
+                .values()
+                .any(|r| r.video.is_none() || r.overlay.is_some() || !r.geometry.is_empty())
+        {
+            return Err(bad(
+                "video output takes one animated request without overlays or geometry",
+            ));
+        }
+    } else if directory.is_none()
         && (plan.requests.len() != 1
             || plan
                 .requests
@@ -148,6 +162,18 @@ pub fn run(
     };
     persist_manifest(&directory, &manifest)?;
     let mut active_request = None;
+    if plan.requests.values().any(|r| r.video.is_some()) {
+        if let Err(error) = video::preflight() {
+            if let Some(run) = &mut manifest {
+                run.failure = Some(RunFailure {
+                    kind: "render_failed".into(),
+                    request: None,
+                });
+            }
+            persist_manifest(&directory, &manifest)?;
+            return Err(error);
+        }
+    }
     let result = (|| {
         cancel.check()?;
         let first = plan
@@ -181,10 +207,28 @@ pub fn run(
                 .filter(|_| request.animation.is_some())
                 .map(|dir| tempfile::NamedTempFile::new_in(dir).map_err(|e| Error::io(dir, e)))
                 .transpose()?;
+            let video_path = request.video.as_ref().and_then(|spec| match &destination {
+                Destination::Directory(dir) => {
+                    Some(dir.join(format!("{name}.{}", spec.format.extension())))
+                }
+                Destination::Video(path) => Some(path.clone()),
+                _ => None,
+            });
+            let mut sink = match (&request.video, request.frame_interval(), video_path) {
+                (Some(spec), Some(interval), Some(path)) => Some(VideoSink::start(
+                    &path,
+                    spec.format,
+                    request.framing.size,
+                    interval,
+                    &request.background,
+                )?),
+                _ => None,
+            };
+            let clean_frames = request.video.as_ref().is_none_or(|v| v.keep_frames);
             let deform_set = ctx.renderer.acquire_deform_set();
             let request_result = (|| {
                 let count = request.animation.as_ref().map_or(1, |a| a.frames.count);
-                let every = request.animation.as_ref().map_or(1, |a| a.frames.every);
+                let mut listed = false;
                 for index in 0..count {
                     cancel.check()?;
                     if index > 0 {
@@ -199,9 +243,14 @@ pub fn run(
                             .write_all(b"\n")
                             .map_err(|e| bad(format!("trace write: {e}")))?;
                     }
-                    if index % every != 0 {
+                    if request
+                        .animation
+                        .as_ref()
+                        .is_some_and(|a| !a.frames.is_captured(index))
+                    {
                         continue;
                     }
+                    let framing = request.framing_at(index)?;
                     let mut list = RenderList::default();
                     cache
                         .refresh_puppet(
@@ -216,40 +265,43 @@ pub fn run(
                         cache
                             .retain_part_colors(&mut list, |id| frame::color_retained(request, id));
                     }
-                    if index == 0 {
+                    if !listed {
                         listings.push(super::listing::listing(&list));
+                        listed = true;
                     }
-                    let mut pixels = draw(&mut ctx, &list, request)?;
-                    let clean = png(&pixels, request.framing.size)?;
+                    let mut pixels = draw(&mut ctx, &list, request, &framing)?;
+                    if let Some(sink) = &mut sink {
+                        sink.push(&pixels)?;
+                    }
                     let frame = request.animation.as_ref().map(|_| index);
                     let stem = frame.map_or_else(|| name.clone(), |n| format!("{name}--{n:06}"));
                     match &destination {
-                        Destination::Png(path) => atomic_write(path, &clean)?,
+                        Destination::Png(path) => atomic_write(path, &png(&pixels, framing.size)?)?,
+                        Destination::Video(_) => {}
                         Destination::Terminal => {
                             if terminal::supported() {
-                                terminal::present(&clean, std::io::stdout())
+                                terminal::present(&png(&pixels, framing.size)?, std::io::stdout())
                                     .map_err(|e| bad(format!("terminal image: {e}")))?;
                             } else {
                                 println!("Use --out image.png or --out-dir directory to save this render.");
                             }
                         }
                         Destination::Directory(dir) => {
-                            let filename = format!("{stem}.png");
-                            atomic_write(&dir.join(&filename), &clean)?;
-                            record(&mut manifest, name, filename, frame, OutputKind::Image);
+                            if clean_frames {
+                                let filename = format!("{stem}.png");
+                                atomic_write(&dir.join(&filename), &png(&pixels, framing.size)?)?;
+                                record(&mut manifest, name, filename, frame, OutputKind::Image);
+                            }
                             if let Some(overlay) = &request.overlay {
                                 overlay::draw(
                                     &mut pixels,
                                     &model,
                                     &runtime.puppet,
-                                    &request.framing,
+                                    &framing,
                                     &overlay.mesh,
                                 )?;
                                 let filename = format!("{stem}--mesh.png");
-                                atomic_write(
-                                    &dir.join(&filename),
-                                    &png(&pixels, request.framing.size)?,
-                                )?;
+                                atomic_write(&dir.join(&filename), &png(&pixels, framing.size)?)?;
                                 record(&mut manifest, name, filename, frame, OutputKind::Mesh);
                             }
                             if !request.geometry.is_empty() {
@@ -266,6 +318,14 @@ pub fn run(
             })();
             ctx.renderer.release_deform_set(deform_set);
             request_result?;
+            if let Some(sink) = sink {
+                cancel.check()?;
+                sink.finish()?;
+                if let (Some(spec), Destination::Directory(_)) = (&request.video, &destination) {
+                    let filename = format!("{name}.{}", spec.format.extension());
+                    record(&mut manifest, name, filename, None, OutputKind::Video);
+                }
+            }
             if let (Some(trace), Some(dir)) = (trace, directory.as_ref()) {
                 trace.as_file().sync_all().map_err(|e| Error::io(dir, e))?;
                 let filename = format!("{name}--trace.jsonl");
@@ -337,6 +397,7 @@ fn draw(
     ctx: &mut RenderContext,
     list: &RenderList,
     request: &ResolvedRequest,
+    framing: &Framing,
 ) -> Result<Vec<u8>, Error> {
     let bg = &request.background;
     let alpha = f64::from(bg.alpha);
@@ -350,11 +411,11 @@ fn draw(
         .render_rgba(
             list,
             catchlight_wgpu::Framing {
-                center: glam::Vec2::from_array(request.framing.center),
-                height: request.framing.height,
+                center: glam::Vec2::from_array(framing.center),
+                height: framing.height,
             },
-            request.framing.size[0],
-            request.framing.size[1],
+            framing.size[0],
+            framing.size[1],
             Some(clear),
         )
         .map_err(|e| Error::gpu("render", e))?;

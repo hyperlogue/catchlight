@@ -40,6 +40,9 @@ in
 
         uv
         python3
+
+        # `catchlight-cli render` pipes frames to ffmpeg for video output.
+        ffmpeg-headless
       ])
       ++ lib.optionals stdenv.hostPlatform.isLinux [
         # `vulkaninfo --summary` is how you check which ICD the loader actually

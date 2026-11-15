@@ -185,7 +185,11 @@ fn filenames_and_animation_decimation_include_zero_without_changing_updates() {
     let req = &r.requests["pulse"];
     assert_eq!(
         req.animation.as_ref().unwrap().frames,
-        ResolvedFrames { count: 6, every: 2 }
+        ResolvedFrames {
+            start: 0,
+            count: 6,
+            every: 2
+        }
     );
     assert_eq!(
         req.physics,
@@ -651,4 +655,111 @@ fn output_schema_examples_are_complete_and_share_evaluated_model_facts() {
             .collect();
         assert_eq!(json!(recorded), request["outputs"]);
     }
+}
+
+#[test]
+fn frame_start_captures_from_start_while_simulating_from_zero() {
+    let r = resolve(animated(json!({"frames":{"start":3,"every":2}})));
+    let frames = &r.requests["pulse"].animation.as_ref().unwrap().frames;
+    assert_eq!(frames.captured_indices().collect::<Vec<_>>(), [3, 5]);
+    assert_eq!(frames.captures(), 2);
+    assert!(!frames.is_captured(1) && frames.is_captured(5));
+    assert_eq!(r.simulation_updates, 5);
+    assert_eq!(
+        r.requests["pulse"].outputs,
+        [
+            "pulse--000003.png",
+            "pulse--000005.png",
+            "pulse--trace.jsonl"
+        ]
+    );
+    assert_bad(
+        animated(json!({"frames":{"start":6}})),
+        "frames.start must be below",
+    );
+}
+
+#[test]
+fn camera_holds_outside_keys_and_interpolates_center_and_zoom_between() {
+    let r = request(json!({}));
+    assert_eq!(r.framing_at(3).unwrap(), r.framing);
+    let doc = animated(json!({"rect":[0,0,100,50],"scale":1,"camera":[
+        {"frame":2,"center":[0,0]},
+        {"frame":4,"center":[20,-10],"zoom":4,"ease":"smooth"},
+        {"frame":8,"center":[40,10],"zoom":1}]}));
+    let r = &resolve(doc).requests["pulse"];
+    let first = r.framing_at(0).unwrap();
+    assert_eq!(first, r.framing_at(2).unwrap());
+    assert_eq!(first.center, [0.0, 0.0]);
+    assert_eq!(first.size, [100, 50]);
+    let mid = r.framing_at(3).unwrap();
+    assert_eq!(mid.center, [10.0, -5.0]);
+    assert_eq!(mid.scale, 2.0);
+    assert_eq!(mid.size, [100, 50]);
+    assert_eq!(mid.height, 25.0);
+    // Smoothstep at a quarter: 0.15625 of the way, geometric zoom 4 -> 1.
+    let eased = r.framing_at(5).unwrap();
+    assert_eq!(eased.center, [23.125, -6.875]);
+    assert!((f64::from(eased.scale) - 4.0 * 0.25_f64.powf(0.15625)).abs() < 1e-5);
+    assert_eq!(r.framing_at(9).unwrap().center, [40.0, 10.0]);
+    assert_eq!(r.framing_at(9).unwrap().size, [100, 50]);
+}
+
+#[test]
+fn camera_and_video_validate_before_rendering() {
+    assert_bad(
+        json!({"schema":1,"requests":{"a":{"camera":[{"frame":0,"center":[0,0]}]}}}),
+        "require an animation",
+    );
+    assert_bad(
+        json!({"schema":1,"requests":{"a":{"video":{"format":"mp4"}}}}),
+        "require an animation",
+    );
+    assert_bad(
+        animated(json!({"camera":[{"frame":2,"center":[0,0]},{"frame":2,"center":[1,0]}]})),
+        "strictly increase",
+    );
+    assert_bad(
+        animated(json!({"camera":[{"frame":0,"center":[0,0],"zoom":0}]})),
+        "zoom must be finite and positive",
+    );
+    assert_bad(
+        animated(json!({"video":{"format":"mp4"},"background":{"srgb":[0,0,0],"alpha":0}})),
+        "mp4 cannot carry transparency",
+    );
+    assert_bad(
+        animated(json!({"video":{"format":"avi"}})),
+        "invalid render spec",
+    );
+}
+
+#[test]
+fn video_replaces_clean_frames_unless_kept() {
+    let r = resolve(animated(
+        json!({"frames":{"count":2},"video":{"format":"webm"},"geometry":["panel-a"]}),
+    ));
+    assert_eq!(
+        r.requests["pulse"].outputs,
+        [
+            "pulse--000000--geometry.json",
+            "pulse--000001--geometry.json",
+            "pulse--trace.jsonl",
+            "pulse.webm"
+        ]
+    );
+    assert_eq!(r.output_files, 5);
+    let r = resolve(animated(
+        json!({"frames":{"count":2},"video":{"format":"gif","keep_frames":true}}),
+    ));
+    assert_eq!(
+        r.requests["pulse"].outputs,
+        [
+            "pulse--000000.png",
+            "pulse--000001.png",
+            "pulse--trace.jsonl",
+            "pulse.gif"
+        ]
+    );
+    assert_eq!(r.output_files, 5);
+    assert!((r.requests["pulse"].frame_interval().unwrap() - 0.016666667).abs() < 1e-7);
 }
