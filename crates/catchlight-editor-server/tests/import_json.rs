@@ -320,7 +320,7 @@ fn a_byte_extension_marker_is_refused_by_key() {
     // A marker for bytes nothing carries: legal in a structure, unreadable
     // without the section a JSON import has no room for.
     file.doc.extensions.insert(
-        catchlight_core::id::ExtensionKey::new("molan.thumb").unwrap(),
+        catchlight_core::id::ExtensionKey::new("acme.thumb").unwrap(),
         clm::ClmExtension::Bytes(clm::ClmExtensionMarker {
             size: 3,
             hash: clm::extension_hash(b"abc"),
@@ -329,7 +329,7 @@ fn a_byte_extension_marker_is_refused_by_key() {
 
     let ed = editor();
     let (_, message) = err(create_json(&ed, &as_json(&file)));
-    assert!(message.contains("molan.thumb"), "{message}");
+    assert!(message.contains("acme.thumb"), "{message}");
 }
 
 /// The same structure with every node and texture Id prefixed, so it can be

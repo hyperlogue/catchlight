@@ -1350,8 +1350,8 @@ mod tests {
     fn extensions_needed_follows_the_hash_and_not_the_key() {
         let editor = CatchlightEditor::new();
         let session = new_session(&editor);
-        set_extension(&editor, session, "molan.thumb", b"first");
-        set_json_extension(&editor, session, "molan.meta");
+        set_extension(&editor, session, "acme.thumb", b"first");
+        set_json_extension(&editor, session, "acme.meta");
         let structure = structure_of(&editor, session);
 
         // Nothing held: the one byte extension is needed, and the JSON one is
@@ -1359,18 +1359,18 @@ mod tests {
         let mut replica = ReplicaState::new();
         let needed = replica.extensions_needed(&structure).unwrap();
         assert_eq!(needed.len(), 1, "needed {needed:?}");
-        assert_eq!(needed[0].key.as_str(), "molan.thumb");
+        assert_eq!(needed[0].key.as_str(), "acme.thumb");
         assert_eq!(needed[0].hash, extension_hash(b"first"));
 
         // Held, so nothing is needed — and applying keeps it held.
-        replica.put_extension("molan.thumb", b"first".to_vec());
+        replica.put_extension("acme.thumb", b"first".to_vec());
         assert!(replica.extensions_needed(&structure).unwrap().is_empty());
         assert!(replica.apply_structure(&structure, 1).unwrap());
         assert!(replica.extensions_needed(&structure).unwrap().is_empty());
         assert_eq!(
             replica
                 .model()
-                .extension(&"molan.thumb".parse().unwrap())
+                .extension(&"acme.thumb".parse().unwrap())
                 .and_then(|v| v.bytes().cloned())
                 .as_deref(),
             Some(&b"first"[..]),
@@ -1378,7 +1378,7 @@ mod tests {
 
         // The same key with different bytes is a different hash, and exactly
         // that one key is needed again.
-        set_extension(&editor, session, "molan.thumb", b"second");
+        set_extension(&editor, session, "acme.thumb", b"second");
         let moved = structure_of(&editor, session);
         let needed = replica.extensions_needed(&moved).unwrap();
         assert_eq!(needed.len(), 1, "needed {needed:?}");
@@ -1387,7 +1387,7 @@ mod tests {
         // And a structure whose marker the replica cannot satisfy is refused
         // whole rather than applied with the value dropped.
         assert!(replica.apply_structure(&moved, 2).is_err());
-        replica.put_extension("molan.thumb", b"second".to_vec());
+        replica.put_extension("acme.thumb", b"second".to_vec());
         assert!(replica.apply_structure(&moved, 2).unwrap());
     }
 
@@ -1397,10 +1397,10 @@ mod tests {
     fn an_unrelated_edit_needs_no_extension_fetch() {
         let editor = CatchlightEditor::new();
         let session = new_session(&editor);
-        set_extension(&editor, session, "molan.thumb", b"held");
+        set_extension(&editor, session, "acme.thumb", b"held");
 
         let mut replica = ReplicaState::new();
-        replica.put_extension("molan.thumb", b"held".to_vec());
+        replica.put_extension("acme.thumb", b"held".to_vec());
         assert!(replica
             .apply_structure(&structure_of(&editor, session), 1)
             .unwrap());

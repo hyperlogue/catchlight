@@ -1558,7 +1558,7 @@ fn a_byte_extension_has_a_route_of_its_own() {
             id: 2,
             command: Command::ExtensionSet {
                 session,
-                key: "molan.thumb".parse().unwrap(),
+                key: "acme.thumb".parse().unwrap(),
                 value: ExtensionSet::Bytes,
             },
         },
@@ -1569,7 +1569,7 @@ fn a_byte_extension_has_a_route_of_its_own() {
     let fetched = http(
         server.addr,
         "GET",
-        &format!("/sessions/{}/extensions/molan.thumb", session.0),
+        &format!("/sessions/{}/extensions/acme.thumb", session.0),
         &[("Authorization", &bearer())],
         b"",
     );
@@ -1617,7 +1617,7 @@ fn only_a_byte_extension_answers_on_that_route() {
             id: 2,
             command: Command::ExtensionSet {
                 session,
-                key: "molan.caster".parse().unwrap(),
+                key: "acme.camera".parse().unwrap(),
                 value: ExtensionSet::Json {
                     value: serde_json::json!({ "v": 1 }),
                 },
@@ -1630,8 +1630,8 @@ fn only_a_byte_extension_answers_on_that_route() {
     ));
 
     for (key, why) in [
-        ("molan.caster", "a json extension is inline, not a payload"),
-        ("molan.nothing", "a key the model does not carry"),
+        ("acme.camera", "a json extension is inline, not a payload"),
+        ("acme.nothing", "a key the model does not carry"),
     ] {
         let response = http(
             server.addr,

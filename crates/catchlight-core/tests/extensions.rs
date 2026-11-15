@@ -66,8 +66,8 @@ fn every_fixture_carries_both_kinds_through_a_save() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let mut model = Model::from_clm_bytes(&std::fs::read(&path).unwrap())
             .unwrap_or_else(|e| panic!("{name}: {e}"));
-        model.set_extension(key("molan.caster"), json()).unwrap();
-        model.set_extension(key("molan.thumb"), bytes()).unwrap();
+        model.set_extension(key("acme.camera"), json()).unwrap();
+        model.set_extension(key("acme.thumb"), bytes()).unwrap();
 
         let first = model
             .to_clm_bytes()
@@ -108,10 +108,10 @@ fn a_model_without_extensions_keeps_its_bytes_after_version_migration() {
 fn setting_and_deleting_moves_the_generation() {
     let mut model = Model::new();
     let before = model.generation();
-    model.set_extension(key("molan.caster"), json()).unwrap();
+    model.set_extension(key("acme.camera"), json()).unwrap();
     let after_set = model.generation();
     assert!(after_set > before, "a set is a model edit");
-    model.delete_extension(&key("molan.caster")).unwrap();
+    model.delete_extension(&key("acme.camera")).unwrap();
     assert!(model.generation() > after_set, "so is a delete");
     assert!(model.extensions().is_empty());
 }
@@ -119,9 +119,9 @@ fn setting_and_deleting_moves_the_generation() {
 #[test]
 fn deleting_a_key_the_model_does_not_carry_is_an_error() {
     let mut model = Model::new();
-    let err = model.delete_extension(&key("molan.absent")).unwrap_err();
+    let err = model.delete_extension(&key("acme.absent")).unwrap_err();
     assert!(
-        matches!(&err, ModelError::UnknownExtension(k) if k == "molan.absent"),
+        matches!(&err, ModelError::UnknownExtension(k) if k == "acme.absent"),
         "{err}"
     );
 }
@@ -161,10 +161,10 @@ fn a_byte_value_over_the_cap_is_refused() {
     let mut model = Model::new();
     let too_big = vec![0u8; MAX_EXTENSION_BYTES + 1];
     let err = model
-        .set_extension(key("molan.huge"), ExtensionValue::Bytes(Arc::from(too_big)))
+        .set_extension(key("acme.huge"), ExtensionValue::Bytes(Arc::from(too_big)))
         .unwrap_err();
     assert!(
-        matches!(&err, ModelError::ExtensionTooLarge { key, .. } if key == "molan.huge"),
+        matches!(&err, ModelError::ExtensionTooLarge { key, .. } if key == "acme.huge"),
         "{err}"
     );
 }
@@ -222,9 +222,9 @@ fn refusal(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> clm::ClmError {
 
 #[test]
 fn a_marker_without_its_bytes_is_refused_by_key() {
-    let doc = with_extensions(vec![(key("molan.thumb"), marker(b"abc"))]);
+    let doc = with_extensions(vec![(key("acme.thumb"), marker(b"abc"))]);
     assert!(
-        matches!(refusal(&doc, &[]), clm::ClmError::ExtensionBytesMissing { key } if key == "molan.thumb")
+        matches!(refusal(&doc, &[]), clm::ClmError::ExtensionBytesMissing { key } if key == "acme.thumb")
     );
 }
 
@@ -233,49 +233,49 @@ fn bytes_nothing_names_are_refused_by_key() {
     // No entry at all, and an entry of the wrong kind, are both orphans.
     let empty = root_structure();
     assert!(
-        matches!(refusal(&empty, &[blob("molan.thumb", b"abc")]), clm::ClmError::ExtensionBytesOrphan { key } if key == "molan.thumb")
+        matches!(refusal(&empty, &[blob("acme.thumb", b"abc")]), clm::ClmError::ExtensionBytesOrphan { key } if key == "acme.thumb")
     );
     let as_json = with_extensions(vec![(
-        key("molan.thumb"),
+        key("acme.thumb"),
         ClmExtension::Json(serde_json::json!(1)),
     )]);
     assert!(matches!(
-        refusal(&as_json, &[blob("molan.thumb", b"abc")]),
+        refusal(&as_json, &[blob("acme.thumb", b"abc")]),
         clm::ClmError::ExtensionBytesOrphan { .. }
     ));
 }
 
 #[test]
 fn a_size_or_a_hash_that_disagrees_with_the_marker_is_refused() {
-    let doc = with_extensions(vec![(key("molan.thumb"), marker(b"abc"))]);
+    let doc = with_extensions(vec![(key("acme.thumb"), marker(b"abc"))]);
     assert!(matches!(
-        refusal(&doc, &[blob("molan.thumb", b"abcd")]),
+        refusal(&doc, &[blob("acme.thumb", b"abcd")]),
         clm::ClmError::ExtensionSizeMismatch { .. }
     ));
     // Same length, different bytes: only the hash catches it.
     assert!(matches!(
-        refusal(&doc, &[blob("molan.thumb", b"abd")]),
-        clm::ClmError::ExtensionHashMismatch { key } if key == "molan.thumb"
+        refusal(&doc, &[blob("acme.thumb", b"abd")]),
+        clm::ClmError::ExtensionHashMismatch { key } if key == "acme.thumb"
     ));
 }
 
 #[test]
 fn a_byte_value_over_the_cap_is_refused_on_the_way_in() {
     let big = vec![7u8; MAX_EXTENSION_BYTES + 1];
-    let doc = with_extensions(vec![(key("molan.huge"), marker(&big))]);
+    let doc = with_extensions(vec![(key("acme.huge"), marker(&big))]);
     assert!(matches!(
-        refusal(&doc, &[blob("molan.huge", &big)]),
-        clm::ClmError::ExtensionTooLarge { key, .. } if key == "molan.huge"
+        refusal(&doc, &[blob("acme.huge", &big)]),
+        clm::ClmError::ExtensionTooLarge { key, .. } if key == "acme.huge"
     ));
 }
 
 #[test]
 fn the_same_key_carried_twice_is_refused() {
-    let doc = with_extensions(vec![(key("molan.thumb"), marker(b"abc"))]);
+    let doc = with_extensions(vec![(key("acme.thumb"), marker(b"abc"))]);
     assert!(matches!(
         refusal(
             &doc,
-            &[blob("molan.thumb", b"abc"), blob("molan.thumb", b"abc")]
+            &[blob("acme.thumb", b"abc"), blob("acme.thumb", b"abc")]
         ),
         clm::ClmError::ExtensionBytesDuplicate { .. }
     ));
@@ -285,7 +285,7 @@ fn the_same_key_carried_twice_is_refused() {
 /// are not in the file.
 #[test]
 fn writing_a_marker_without_its_bytes_is_refused_too() {
-    let doc = with_extensions(vec![(key("molan.thumb"), marker(b"abc"))]);
+    let doc = with_extensions(vec![(key("acme.thumb"), marker(b"abc"))]);
     assert!(matches!(
         clm::encode(&doc, &[], &[]).unwrap_err(),
         clm::ClmError::ExtensionBytesMissing { .. }
@@ -322,7 +322,7 @@ fn a_value_that_is_not_json_or_a_marker_is_refused() {
 
 #[test]
 fn a_key_off_the_charset_or_without_a_dot_is_refused_and_named() {
-    for bad in ["caster", "molan.", "molan caster", ".molan"] {
+    for bad in ["camera", "acme.", "acme camera", ".acme"] {
         assert!(
             ExtensionKey::new(bad).is_err(),
             "{bad:?} should not be a key"
@@ -332,7 +332,7 @@ fn a_key_off_the_charset_or_without_a_dot_is_refused_and_named() {
     let mut buf = Vec::new();
     ciborium::into_writer(
         &ciborium::value::Value::Map(vec![(
-            ciborium::value::Value::Text("caster".into()),
+            ciborium::value::Value::Text("camera".into()),
             ciborium::value::Value::Map(vec![(
                 ciborium::value::Value::Text("json".into()),
                 ciborium::value::Value::Integer(1.into()),
@@ -343,7 +343,7 @@ fn a_key_off_the_charset_or_without_a_dot_is_refused_and_named() {
     .unwrap();
     let decoded: Result<BTreeMap<ExtensionKey, ClmExtension>, _> = ciborium::from_reader(&buf[..]);
     let message = decoded.expect_err("a bad key is refused").to_string();
-    assert!(message.contains("caster"), "{message}");
+    assert!(message.contains("camera"), "{message}");
 }
 
 // ---- addons --------------------------------------------------------------
@@ -363,7 +363,7 @@ fn extract_leaves_extensions_behind_and_install_refuses_one() {
             &mut hex,
         )
         .unwrap();
-    base.set_extension(key("molan.caster"), json()).unwrap();
+    base.set_extension(key("acme.camera"), json()).unwrap();
 
     let addon = base.extract(&[child]);
     assert!(
@@ -373,11 +373,11 @@ fn extract_leaves_extensions_behind_and_install_refuses_one() {
 
     // One that does is refused, by key.
     let mut carrier = addon.clone();
-    carrier.set_extension(key("molan.caster"), json()).unwrap();
+    carrier.set_extension(key("acme.camera"), json()).unwrap();
     let mut target = Model::new();
     let err = target.install(&carrier).unwrap_err();
     assert!(
-        matches!(&err, InstallError::CarriesExtension { key } if key == "molan.caster"),
+        matches!(&err, InstallError::CarriesExtension { key } if key == "acme.camera"),
         "{err}"
     );
 }

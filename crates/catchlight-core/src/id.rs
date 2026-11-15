@@ -84,9 +84,9 @@ pub enum IdError {
     },
     /// Only an [`ExtensionKey`] produces this: it is the one Id-shaped string
     /// that must carry a dot.
-    #[error("an extension key needs a dot: the vendor comes first, as in `molan.caster`")]
+    #[error("an extension key needs a dot: the vendor comes first, as in `acme.camera`")]
     MissingDot,
-    /// Only an [`ExtensionKey`] produces this: `molan.` names a vendor and
+    /// Only an [`ExtensionKey`] produces this: `acme.` names a vendor and
     /// nothing after it.
     #[error("an extension key must not end with '.'")]
     TrailingDot,
@@ -128,8 +128,8 @@ pub fn validate_id(s: &str) -> Result<(), IdError> {
 /// `vendor.name`, vendor first.
 ///
 /// The dot is what keeps two vendors apart in one flat namespace. Without it
-/// a key is a land grab on a plain word, so `caster` is refused and
-/// `molan.caster` is not. A leading dot is already out by the charset, so the
+/// a key is a land grab on a plain word, so `camera` is refused and
+/// `acme.camera` is not. A leading dot is already out by the charset, so the
 /// whole of the extra rule is "a dot, and not the last byte".
 ///
 /// [`EXTENSION_RESERVED_PREFIX`] is *not* checked here. A file may carry a
@@ -384,7 +384,7 @@ impl SlotId {
 }
 
 /// The key an extension is filed under: the Id charset plus a required
-/// interior dot, vendor first (`molan.caster`).
+/// interior dot, vendor first (`acme.camera`).
 ///
 /// Hand-written rather than one of the `string_id!` types because it is the
 /// one Id-shaped string with a rule of its own ([`validate_extension_key`]),

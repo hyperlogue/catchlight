@@ -2,7 +2,7 @@
 //!
 //! An extension is a key a vendor owns and a value catchlight never reads.
 //! The key is the Id charset with a required dot, vendor first
-//! (`molan.caster`), and `catchlight.` is the format's own: a file may carry
+//! (`acme.camera`), and `catchlight.` is the format's own: a file may carry
 //! one, because the format may write one some day, but nothing here will
 //! author one.
 //!

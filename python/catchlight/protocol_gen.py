@@ -3205,7 +3205,7 @@ class Camera:
     height: float
 
 # The key an extension is filed under: the Id charset plus a required
-# interior dot, vendor first (`molan.caster`).
+# interior dot, vendor first (`acme.camera`).
 #
 # Hand-written rather than one of the `string_id!` types because it is the
 # one Id-shaped string with a rule of its own ([`validate_extension_key`]),

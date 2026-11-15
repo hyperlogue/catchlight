@@ -267,39 +267,39 @@ describe("connected", () => {
   test("a feed fetches a byte extension only when its hash moved", async () => {
     const doc = emptyDoc("akari");
     doc.extensions = [
-      { key: "molan.thumb", kind: "bytes", hash: "first" },
-      { key: "molan.other", kind: "bytes", hash: "held" },
-      { key: "molan.caster", kind: "json", value: { v: 1 } },
+      { key: "acme.thumb", kind: "bytes", hash: "first" },
+      { key: "acme.other", kind: "bytes", hash: "held" },
+      { key: "acme.camera", kind: "json", value: { v: 1 } },
     ];
     const { backend, http } = await connect({
       "/sessions/1/structure": () =>
         httpResponse(structureBytes(doc), { headers: { "X-Catchlight-Rev": "3" } }),
-      "/sessions/1/extensions/molan.thumb": () =>
+      "/sessions/1/extensions/acme.thumb": () =>
         httpResponse(new TextEncoder().encode("first")),
     });
     const replica = new FakeReplica();
     // One held at the hash the structure names, one held at an older hash.
-    replica.heldExtensions.set("molan.other", "held");
-    replica.heldExtensions.set("molan.thumb", "stale");
+    replica.heldExtensions.set("acme.other", "held");
+    replica.heldExtensions.set("acme.thumb", "stale");
 
     expect(await backend.feed(replica, 1, 3)).toBe(3);
 
     const fetched = http.calls.map((call) => call.url).filter((url) => url.includes("/extensions/"));
     // Only the one whose hash moved: an unchanged marker costs nothing, and a
     // json extension is already in the structure.
-    expect(fetched).toEqual(["http://editor.local/sessions/1/extensions/molan.thumb"]);
-    expect(replica.heldExtensions.get("molan.thumb")).toBe("first");
+    expect(fetched).toEqual(["http://editor.local/sessions/1/extensions/acme.thumb"]);
+    expect(replica.heldExtensions.get("acme.thumb")).toBe("first");
   });
 
   test("an unrelated edit fetches no extension at all", async () => {
     const doc = emptyDoc("akari");
-    doc.extensions = [{ key: "molan.thumb", kind: "bytes", hash: "held" }];
+    doc.extensions = [{ key: "acme.thumb", kind: "bytes", hash: "held" }];
     const { backend, http } = await connect({
       "/sessions/1/structure": () =>
         httpResponse(structureBytes(doc), { headers: { "X-Catchlight-Rev": "9" } }),
     });
     const replica = new FakeReplica();
-    replica.heldExtensions.set("molan.thumb", "held");
+    replica.heldExtensions.set("acme.thumb", "held");
 
     expect(await backend.feed(replica, 1, 9)).toBe(9);
     expect(http.calls.filter((call) => call.url.includes("/extensions/"))).toHaveLength(0);

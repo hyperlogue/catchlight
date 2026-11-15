@@ -24,27 +24,27 @@ def either(request: pytest.FixtureRequest, served: LaunchedServer) -> Client:
 def test_a_json_value_comes_back_as_what_went_in(either: Client) -> None:
     session = either.new()
     value = {"palette": ["#fff", "#000"], "version": 2, "nested": [1, 2, {"a": None}]}
-    either.extension_set(session, "molan.caster", value)
+    either.extension_set(session, "acme.camera", value)
 
-    assert either.extension_get(session, "molan.caster") == value
+    assert either.extension_get(session, "acme.camera") == value
 
 
 def test_bytes_travel_attached_and_come_back_as_the_payload(either: Client) -> None:
     session = either.new()
     blob = bytes(range(256)) * 4
 
-    either.extension_set(session, "molan.thumb", blob)
+    either.extension_set(session, "acme.thumb", blob)
 
-    assert either.extension_get(session, "molan.thumb") == blob
+    assert either.extension_get(session, "acme.thumb") == blob
 
 
 def test_the_listing_reports_a_marker_rather_than_the_bytes(either: Client) -> None:
     session = either.new()
-    either.extension_set(session, "molan.thumb", b"a thumbnail")
-    either.extension_set(session, "molan.caster", {"v": 1})
+    either.extension_set(session, "acme.thumb", b"a thumbnail")
+    either.extension_set(session, "acme.camera", {"v": 1})
 
     listed = either.extensions(session)
-    assert [e.key for e in listed] == ["molan.caster", "molan.thumb"]
+    assert [e.key for e in listed] == ["acme.camera", "acme.thumb"]
 
     json_value = listed[0].value
     assert isinstance(json_value, ExtensionValueInfoJson)
@@ -59,12 +59,12 @@ def test_the_listing_reports_a_marker_rather_than_the_bytes(either: Client) -> N
 
 def test_a_delete_takes_the_key_with_it(either: Client) -> None:
     session = either.new()
-    either.extension_set(session, "molan.caster", {"v": 1})
-    either.extension_delete(session, "molan.caster")
+    either.extension_set(session, "acme.camera", {"v": 1})
+    either.extension_delete(session, "acme.camera")
 
     assert either.extensions(session) == []
     with pytest.raises(ProtocolError) as raised:
-        either.extension_get(session, "molan.caster")
+        either.extension_get(session, "acme.camera")
     assert raised.value.code is ErrorCode.NO_EXTENSION
 
 
@@ -81,11 +81,11 @@ def test_an_extension_survives_a_save_and_an_open(
     """The whole point: a vendor's value is carried across a round trip through
     the format, byte for byte."""
     session = either.new()
-    either.extension_set(session, "molan.caster", {"rig": "v2"})
-    either.extension_set(session, "molan.thumb", b"a thumbnail")
+    either.extension_set(session, "acme.camera", {"rig": "v2"})
+    either.extension_set(session, "acme.thumb", b"a thumbnail")
     saved = either.save_to(session, tmp_path / "rig.clm")
 
     reopened = served.client().open(saved)
     reader = served.client()
-    assert reader.extension_get(reopened, "molan.caster") == {"rig": "v2"}
-    assert reader.extension_get(reopened, "molan.thumb") == b"a thumbnail"
+    assert reader.extension_get(reopened, "acme.camera") == {"rig": "v2"}
+    assert reader.extension_get(reopened, "acme.thumb") == b"a thumbnail"

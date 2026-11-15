@@ -327,7 +327,7 @@ to order.
 **Extension**:
 A vendor's annotation on a whole model, filed under a key the vendor owns
 and carried without ever being read: its value is JSON or opaque bytes. The
-key is vendor first, then a dot — `molan.caster` — and `catchlight.` is the
+key is vendor first, then a dot — `acme.camera` — and `catchlight.` is the
 format's own. An addon carries none.
 _Avoid_: metadata, custom data, plugin
 

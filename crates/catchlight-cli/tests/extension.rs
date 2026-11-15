@@ -25,7 +25,7 @@ fn both_kinds_round_trip_through_the_binary() {
         "extension",
         "set",
         model.to_str().unwrap(),
-        "molan.caster",
+        "acme.camera",
         "--json",
         r#"{"rig":"v2","count":3}"#,
     ]);
@@ -36,7 +36,7 @@ fn both_kinds_round_trip_through_the_binary() {
         "extension",
         "set",
         model.to_str().unwrap(),
-        "molan.thumb",
+        "acme.thumb",
         "--bytes",
         source.to_str().unwrap(),
     ]);
@@ -47,12 +47,12 @@ fn both_kinds_round_trip_through_the_binary() {
     assert_eq!(code, 0);
     assert_eq!(
         stdout.lines().collect::<Vec<_>>(),
-        vec!["molan.caster\tjson", "molan.thumb\tbytes\t3000"]
+        vec!["acme.camera\tjson", "acme.thumb\tbytes\t3000"]
     );
 
     // get: JSON to stdout, bytes to a file, byte-for-byte.
     let (code, stdout, _) =
-        common::run(&["extension", "get", model.to_str().unwrap(), "molan.caster"]);
+        common::run(&["extension", "get", model.to_str().unwrap(), "acme.camera"]);
     assert_eq!(code, 0);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json on stdout");
     assert_eq!(json, serde_json::json!({"rig": "v2", "count": 3}));
@@ -62,7 +62,7 @@ fn both_kinds_round_trip_through_the_binary() {
         "extension",
         "get",
         model.to_str().unwrap(),
-        "molan.thumb",
+        "acme.thumb",
         "--out",
         out.to_str().unwrap(),
     ]);
@@ -74,24 +74,15 @@ fn both_kinds_round_trip_through_the_binary() {
     assert_eq!(loaded.extensions().len(), 2);
 
     // delete takes one away and errors on a key that is not there.
-    let (code, _, _) = common::run(&[
-        "extension",
-        "delete",
-        model.to_str().unwrap(),
-        "molan.thumb",
-    ]);
+    let (code, _, _) = common::run(&["extension", "delete", model.to_str().unwrap(), "acme.thumb"]);
     assert_eq!(code, 0);
     let (code, stdout, _) = common::run(&["extension", "list", model.to_str().unwrap()]);
     assert_eq!(code, 0);
     assert_eq!(stdout.lines().count(), 1);
-    let (code, _, stderr) = common::run(&[
-        "extension",
-        "delete",
-        model.to_str().unwrap(),
-        "molan.thumb",
-    ]);
+    let (code, _, stderr) =
+        common::run(&["extension", "delete", model.to_str().unwrap(), "acme.thumb"]);
     assert_eq!(code, 2, "deleting twice is an error");
-    assert!(stderr.contains("molan.thumb"), "{stderr}");
+    assert!(stderr.contains("acme.thumb"), "{stderr}");
 }
 
 #[test]
@@ -104,13 +95,13 @@ fn a_byte_value_will_not_be_printed() {
         "extension",
         "set",
         model.to_str().unwrap(),
-        "molan.thumb",
+        "acme.thumb",
         "--bytes",
         source.to_str().unwrap(),
     ]);
 
     let (code, stdout, stderr) =
-        common::run(&["extension", "get", model.to_str().unwrap(), "molan.thumb"]);
+        common::run(&["extension", "get", model.to_str().unwrap(), "acme.thumb"]);
     assert_eq!(code, 2, "an error exits 2");
     assert!(stdout.is_empty(), "nothing was printed: {stdout:?}");
     assert!(stderr.contains("--out"), "{stderr}");
@@ -121,9 +112,9 @@ fn a_key_that_is_not_a_vendors_is_refused() {
     let dir = common::tmp("extension-bad-keys");
     let model = common::copy_fixture("welded_seam", &dir);
     for (key, expected) in [
-        ("caster", "dot"),
+        ("camera", "dot"),
         ("catchlight.thing", "catchlight."),
-        ("molan caster", "caster"),
+        ("acme camera", "camera"),
     ] {
         let (code, _, stderr) = common::run(&[
             "extension",
@@ -150,7 +141,7 @@ fn a_patch_leaves_extensions_byte_identical() {
         "extension",
         "set",
         model.to_str().unwrap(),
-        "molan.thumb",
+        "acme.thumb",
         "--bytes",
         source.to_str().unwrap(),
     ]);
@@ -158,7 +149,7 @@ fn a_patch_leaves_extensions_byte_identical() {
         "extension",
         "set",
         model.to_str().unwrap(),
-        "molan.caster",
+        "acme.camera",
         "--json",
         r#"{"rig":"v2"}"#,
     ]);
@@ -185,7 +176,7 @@ fn diff_renders_a_changed_key_as_one_line() {
         "extension",
         "set",
         changed.to_str().unwrap(),
-        "molan.caster",
+        "acme.camera",
         "--json",
         r#"{"rig":"v2"}"#,
     ]);
@@ -194,14 +185,14 @@ fn diff_renders_a_changed_key_as_one_line() {
         common::run(&["diff", base.to_str().unwrap(), changed.to_str().unwrap()]);
     assert_eq!(code, 1, "the files differ");
     let lines: Vec<&str> = stdout.lines().filter(|l| l.contains("extension")).collect();
-    assert_eq!(lines, vec![r#"+ extension molan.caster: {"rig":"v2"}"#]);
+    assert_eq!(lines, vec![r#"+ extension acme.camera: {"rig":"v2"}"#]);
 
     // Change it, and the one line names both sides.
     common::run(&[
         "extension",
         "set",
         base.to_str().unwrap(),
-        "molan.caster",
+        "acme.camera",
         "--json",
         r#"{"rig":"v1"}"#,
     ]);
@@ -211,7 +202,7 @@ fn diff_renders_a_changed_key_as_one_line() {
             .lines()
             .filter(|l| l.contains("extension"))
             .collect::<Vec<_>>(),
-        vec![r#"~ extension molan.caster: {"rig":"v1"} -> {"rig":"v2"}"#]
+        vec![r#"~ extension acme.camera: {"rig":"v1"} -> {"rig":"v2"}"#]
     );
 
     // A byte value shows its size and its hash, never its bytes.
@@ -221,14 +212,14 @@ fn diff_renders_a_changed_key_as_one_line() {
         "extension",
         "set",
         changed.to_str().unwrap(),
-        "molan.thumb",
+        "acme.thumb",
         "--bytes",
         source.to_str().unwrap(),
     ]);
     let (_, stdout, _) = common::run(&["diff", base.to_str().unwrap(), changed.to_str().unwrap()]);
     let line = stdout
         .lines()
-        .find(|l| l.contains("molan.thumb"))
+        .find(|l| l.contains("acme.thumb"))
         .expect("a line for the byte value");
     assert!(line.contains("3000 bytes"), "{line}");
     assert!(line.contains("blake3"), "{line}");
@@ -244,7 +235,7 @@ fn an_addon_carries_no_extensions() {
         "extension",
         "set",
         base.to_str().unwrap(),
-        "molan.caster",
+        "acme.camera",
         "--json",
         r#"{"rig":"v2"}"#,
     ]);
@@ -263,13 +254,13 @@ fn an_addon_carries_no_extensions() {
     // Give the fragment one by hand, and merging it is refused by key.
     let mut carrier = cut;
     carrier.doc.extensions.insert(
-        catchlight_core::id::ExtensionKey::new("molan.caster").unwrap(),
+        catchlight_core::id::ExtensionKey::new("acme.camera").unwrap(),
         ClmExtension::Json(serde_json::json!(1)),
     );
     let carrier_path = common::write_clm(&dir, "carrier", &carrier);
     let err = fragment::merge(&base, &carrier_path, &dir.join("merged.clm")).unwrap_err();
     let message = err.to_string();
-    assert!(message.contains("molan.caster"), "{message}");
+    assert!(message.contains("acme.camera"), "{message}");
     assert!(message.contains("extension"), "{message}");
 }
 

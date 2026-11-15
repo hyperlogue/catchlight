@@ -163,9 +163,9 @@ fn key(s: &str) -> ExtensionKey {
 fn a_json_extension_goes_in_whole_and_comes_back_whole() {
     let mut f = Fixture::new();
     let value = json!({"palette": ["#fff", "#000"], "version": 2});
-    f.set_json("molan.caster", value.clone());
+    f.set_json("acme.camera", value.clone());
 
-    match f.get("molan.caster") {
+    match f.get("acme.camera") {
         (
             ResponseBody::Extension {
                 key,
@@ -173,7 +173,7 @@ fn a_json_extension_goes_in_whole_and_comes_back_whole() {
             },
             payload,
         ) => {
-            assert_eq!(key, key_of("molan.caster"));
+            assert_eq!(key, key_of("acme.camera"));
             assert_eq!(got, value, "the value is carried, not interpreted");
             assert!(payload.is_none(), "a json value is inline, not a payload");
         }
@@ -185,9 +185,9 @@ fn a_json_extension_goes_in_whole_and_comes_back_whole() {
 fn a_byte_extension_arrives_attached_and_leaves_as_the_payload() {
     let mut f = Fixture::new();
     let bytes = b"a thumbnail, more or less".to_vec();
-    f.set_bytes("molan.thumb", &bytes);
+    f.set_bytes("acme.thumb", &bytes);
 
-    match f.get("molan.thumb") {
+    match f.get("acme.thumb") {
         (
             ResponseBody::Extension {
                 value: ExtensionValueInfo::Bytes { size, hash },
@@ -220,7 +220,7 @@ fn the_kind_and_the_attachment_have_to_agree() {
     let code = f.code(
         Command::ExtensionSet {
             session: f.session,
-            key: key("molan.thumb"),
+            key: key("acme.thumb"),
             value: ExtensionSet::Bytes,
         },
         Attachments::none(),
@@ -233,7 +233,7 @@ fn the_kind_and_the_attachment_have_to_agree() {
     let code = f.code(
         Command::ExtensionSet {
             session: f.session,
-            key: key("molan.caster"),
+            key: key("acme.camera"),
             value: ExtensionSet::Json { value: json!(1) },
         },
         attachments,
@@ -252,7 +252,7 @@ fn an_attachment_under_another_name_never_reaches_the_command() {
     let code = f.code(
         Command::ExtensionSet {
             session: f.session,
-            key: key("molan.thumb"),
+            key: key("acme.thumb"),
             value: ExtensionSet::Bytes,
         },
         attachments,
@@ -277,11 +277,11 @@ fn the_formats_own_prefix_is_not_a_vendors_to_author() {
 #[test]
 fn a_key_the_model_does_not_carry_says_so() {
     let mut f = Fixture::new();
-    f.set_json("molan.caster", json!(1));
+    f.set_json("acme.camera", json!(1));
     f.ok(
         Command::ExtensionDelete {
             session: f.session,
-            key: key("molan.caster"),
+            key: key("acme.camera"),
         },
         Attachments::none(),
     );
@@ -290,7 +290,7 @@ fn a_key_the_model_does_not_carry_says_so() {
         f.code(
             Command::ExtensionDelete {
                 session: f.session,
-                key: key("molan.caster"),
+                key: key("acme.camera"),
             },
             Attachments::none(),
         ),
@@ -301,7 +301,7 @@ fn a_key_the_model_does_not_carry_says_so() {
         f.code(
             Command::ExtensionGet {
                 session: f.session,
-                key: key("molan.caster"),
+                key: key("acme.camera"),
             },
             Attachments::none(),
         ),
@@ -312,8 +312,8 @@ fn a_key_the_model_does_not_carry_says_so() {
 #[test]
 fn a_set_is_an_edit_and_undo_covers_it() {
     let mut f = Fixture::new();
-    f.set_json("molan.caster", json!("first"));
-    f.set_json("molan.caster", json!("second"));
+    f.set_json("acme.camera", json!("first"));
+    f.set_json("acme.camera", json!("second"));
 
     f.ok(
         Command::Undo {
@@ -322,7 +322,7 @@ fn a_set_is_an_edit_and_undo_covers_it() {
         },
         Attachments::none(),
     );
-    match f.get("molan.caster") {
+    match f.get("acme.camera") {
         (
             ResponseBody::Extension {
                 value: ExtensionValueInfo::Json { value },
@@ -347,11 +347,11 @@ fn a_set_is_an_edit_and_undo_covers_it() {
 #[test]
 fn a_delete_is_undoable_too() {
     let mut f = Fixture::new();
-    f.set_bytes("molan.thumb", b"held");
+    f.set_bytes("acme.thumb", b"held");
     f.ok(
         Command::ExtensionDelete {
             session: f.session,
-            key: key("molan.thumb"),
+            key: key("acme.thumb"),
         },
         Attachments::none(),
     );
@@ -364,18 +364,18 @@ fn a_delete_is_undoable_too() {
         },
         Attachments::none(),
     );
-    assert_eq!(f.get("molan.thumb").1.expect("bytes").bytes, b"held");
+    assert_eq!(f.get("acme.thumb").1.expect("bytes").bytes, b"held");
 }
 
 #[test]
 fn the_listing_reports_both_kinds_in_key_order() {
     let mut f = Fixture::new();
-    f.set_bytes("molan.thumb", b"bytes here");
-    f.set_json("molan.caster", json!({"v": 1}));
+    f.set_bytes("acme.thumb", b"bytes here");
+    f.set_json("acme.camera", json!({"v": 1}));
 
     let listed = f.list();
     let keys: Vec<&str> = listed.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(keys, vec!["molan.caster", "molan.thumb"], "key order");
+    assert_eq!(keys, vec!["acme.camera", "acme.thumb"], "key order");
     assert!(matches!(listed[0].1, ExtensionValueInfo::Json { .. }));
     match &listed[1].1 {
         ExtensionValueInfo::Bytes { size, hash } => {
@@ -394,8 +394,8 @@ fn the_listing_reports_both_kinds_in_key_order() {
 #[test]
 fn a_replica_lists_the_extensions_the_editor_lists() {
     let mut f = Fixture::new();
-    f.set_bytes("molan.thumb", b"bytes here");
-    f.set_json("molan.caster", json!({"v": 1}));
+    f.set_bytes("acme.thumb", b"bytes here");
+    f.set_json("acme.camera", json!({"v": 1}));
 
     let from_editor = f.list();
     let command = Command::Extensions { session: f.session };
