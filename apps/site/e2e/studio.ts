@@ -314,15 +314,23 @@ export async function studio(
     assert(filled?.result === "slots" && filled.slots[0]?.vertex === 0);
     await selected("front-hair-lock-2");
     await disclosure("Fit a spine");
+    const lockSpine = (await read("front-hair-lock-2")).info!.parent!;
+    const lockTargets = (await read(lockSpine)).info!.spine!.targets;
+    assert.equal(Number(await page.getByRole("spinbutton", { name: "Spine links" }).inputValue()), lockTargets.length);
+    assert.equal(await page.getByRole("checkbox", { name: "Simulate movement" }).isChecked(), false);
     rev = (await read()).revision;
-    await page
-      .getByRole("button", { name: "Fit spine to artwork", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Fit spine to artwork", exact: true }).click();
     await change(rev);
-    await selected((await read("front-hair-lock-2")).info!.parent!);
-    assert(
-      (await read((await read("front-hair-lock-2")).info!.parent!)).info?.spine?.chain,
-    );
+    const refitted = (await read(lockSpine)).info!.spine!;
+    assert.deepEqual(refitted.targets, lockTargets);
+    assert(!refitted.chain, "the refit keeps the response-driven bends");
+    await selected("neck");
+    await disclosure("Fit a spine");
+    assert(await page.getByRole("checkbox", { name: "Simulate movement" }).isChecked());
+    rev = (await read()).revision;
+    await page.getByRole("button", { name: "Fit spine to artwork", exact: true }).click();
+    await change(rev);
+    assert((await read((await read("neck")).info!.parent!)).info!.spine?.chain);
     await right.getByRole("button", { name: "Model", exact: true }).click();
     await disclosure("Physics environment");
     rev = (await read()).revision;

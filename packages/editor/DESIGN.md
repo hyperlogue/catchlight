@@ -105,6 +105,8 @@ hover, keyboard focus, recording and errors are separate states.
   One canvas survives model switches and empty states. A fitted view leaves
   breathing room around the artwork and follows resizing until the user pans
   or zooms.
+- Fitting artwork already under a spine starts with its current link count and
+  preserves its driver settings. A new fit offers a particle chain by default.
 - Properties follow the selected node's capabilities. Model-wide checks,
   welds, physics constants and metadata live in the Model tab.
 - The bottom shelf holds params and bindings. Pose previews never author

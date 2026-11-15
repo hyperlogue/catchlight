@@ -32,9 +32,14 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
   const [margin, setMargin] = useState(4);
   const [cols, setCols] = useState(6);
   const [rows, setRows] = useState(8);
-  const [links, setLinks] = useState(3);
+  const fittedSpine = info.parent ? session.nodeInfo(info.parent)?.spine : undefined;
+  const [linkOverride, setLinks] = useState<number>();
+  const links = linkOverride ?? fittedSpine?.joints.length ?? 3;
   const [spring, setSpring] = useState(2);
-  const [simulate, setSimulate] = useState(true);
+  // An omitted chain on a refit preserves the spine's existing driver and
+  // bend params. A new fit offers a particle chain by default.
+  const [chainOverride, setSimulate] = useState<boolean>();
+  const simulate = chainOverride ?? !fittedSpine;
   const [warnings, setWarnings] = useState<string[]>([]);
   if (info.vertex_count == null) return null;
   return (
@@ -170,7 +175,7 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                   checked={simulate}
                   onChange={(e) => setSimulate(e.currentTarget.checked)}
                 />
-                Simulate movement
+                {fittedSpine?.chain ? "Replace chain settings" : "Simulate movement"}
               </label>
             </Field>
             {simulate && (
