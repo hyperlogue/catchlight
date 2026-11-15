@@ -316,6 +316,7 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
         scale: Vec2::from_array(node.transform.scale),
     };
     let kind = match &node.kind {
+        ModelNodeKind::MotionResponse(_) => NodeKind::MotionResponse,
         ModelNodeKind::Group => NodeKind::Group,
         ModelNodeKind::Part(p) => {
             let mesh = build_mesh(p.mesh());

@@ -130,6 +130,7 @@ mod correspondence;
 mod equality;
 mod eval;
 mod file;
+mod response;
 
 pub use addon::{InstallError, Installed, Required, Requirement, Requirements};
 pub use binding::{
@@ -167,6 +168,8 @@ const ID_MINT_ATTEMPTS: usize = 64;
 /// it returns one of these.
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
+    #[error("invalid motion response {node}: {reason}")]
+    InvalidResponse { node: NodeId, reason: String },
     #[error("unknown node id")]
     UnknownNode,
     #[error("unknown param id")]
@@ -334,6 +337,8 @@ pub struct Model {
     physics: ClmPhysics,
     welds: Vec<ModelWeld>,
     nodes: HashMap<NodeId, ModelNode>,
+    /// Avoid scanning a legacy model for response ownership on every edit.
+    response_count: usize,
     /// The nodes whose parent this model does not carry, in tree order.
     /// A complete model has exactly one and its `parent` is `None`; a
     /// fragment has one or more, each naming a base node that is absent.
@@ -482,6 +487,7 @@ pub enum ModelNodeKind {
     Part(ModelPart),
     Composite(ModelComposite),
     MeshGroup(ModelMeshGroup),
+    MotionResponse(crate::MotionResponse),
     SimplePhysics(ModelPhysics),
     Spine(ModelSpine),
 }
@@ -494,6 +500,7 @@ impl ModelNodeKind {
             Self::Part(_) => "part",
             Self::Composite(_) => "composite",
             Self::MeshGroup(_) => "mesh_group",
+            Self::MotionResponse(_) => "motion_response",
             Self::SimplePhysics(_) => "physics",
             Self::Spine(_) => "spine",
         }
@@ -506,6 +513,7 @@ impl ModelNodeKind {
             Self::Part(_) => NodeIdKind::Part,
             Self::Composite(_) => NodeIdKind::Composite,
             Self::MeshGroup(_) => NodeIdKind::MeshGroup,
+            Self::MotionResponse(_) => NodeIdKind::MotionResponse,
             Self::SimplePhysics(_) => NodeIdKind::SimplePhysics,
             Self::Spine(_) => NodeIdKind::Spine,
         }
@@ -1097,6 +1105,7 @@ impl Model {
             physics: ClmPhysics::default(),
             welds: Vec::new(),
             nodes,
+            response_count: 0,
             roots: vec![root],
             params: HashMap::new(),
             param_order: Vec::new(),
@@ -1224,7 +1233,17 @@ impl Model {
         f: impl FnOnce(&mut ModelNode) -> R,
     ) -> Result<R, ModelError> {
         let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
+        let previous = node.clone();
         let out = f(node);
+        let previous_count = self.response_count;
+        self.response_count = self.response_count
+            - usize::from(matches!(previous.kind, ModelNodeKind::MotionResponse(_)))
+            + usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
+        if let Err(error) = self.validate_responses() {
+            self.response_count = previous_count;
+            self.nodes.insert(id.clone(), previous);
+            return Err(error);
+        }
         self.bump();
         Ok(out)
     }
@@ -1287,7 +1306,14 @@ impl Model {
         self.check_node_refs(&node)?;
         node.parent = Some(parent.clone());
         node.children.clear();
+        let added = usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
+        self.response_count += added;
         self.nodes.insert(id.clone(), node);
+        if let Err(error) = self.validate_responses() {
+            self.response_count -= added;
+            self.nodes.remove(&id);
+            return Err(error);
+        }
         self.attach_child(parent, id);
         self.bump();
         Ok(())
@@ -1315,11 +1341,14 @@ impl Model {
         }
         self.roots.retain(|r| !removed.contains(r));
         for r in &removed {
-            self.nodes.remove(r);
+            self.remove_counted_node(r);
         }
         for node in self.nodes.values_mut() {
             if let Some(masks) = node.masks_mut() {
                 masks.retain(|m| !removed.contains(&m.source));
+            }
+            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
+                r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,..} if removed.contains(part)));
             }
         }
         self.bindings.retain(|b| !removed.contains(&b.key.node));
@@ -1342,6 +1371,17 @@ impl Model {
         }
         if self.is_self_or_descendant(new_parent, id) {
             return Err(ModelError::Cycle);
+        }
+        if matches!(&self.nodes[id].kind, ModelNodeKind::MotionResponse(r) if r.inputs.iter().any(|t| matches!(t.source,crate::ResponseSource::Parent)))
+            && !matches!(
+                self.nodes[new_parent].kind,
+                ModelNodeKind::MotionResponse(_)
+            )
+        {
+            return Err(ModelError::InvalidResponse {
+                node: id.clone(),
+                reason: "Parent needs a motion response parent".into(),
+            });
         }
         let old_parent = self.nodes.get(id).and_then(|n| n.parent.clone());
         match old_parent.and_then(|op| self.nodes.get_mut(&op)) {
@@ -1425,12 +1465,26 @@ impl Model {
                 |m, id| m.nodes.contains_key(id),
                 hex,
             )?;
+            self.response_count +=
+                usize::from(matches!(copy.kind, ModelNodeKind::MotionResponse(_)));
             self.nodes.insert(new_id.clone(), copy);
             self.attach_child(&new_parent, new_id.clone());
             map.insert(old.clone(), new_id);
         }
 
         for new_id in map.values() {
+            if let Some(ModelNodeKind::MotionResponse(r)) =
+                self.nodes.get_mut(new_id).map(|n| &mut n.kind)
+            {
+                r.output_param = None;
+                for t in &mut r.inputs {
+                    if let crate::ResponseSource::PartSlot { part, .. } = &mut t.source {
+                        if let Some(mapped) = map.get(part) {
+                            *part = mapped.clone();
+                        }
+                    }
+                }
+            }
             if let Some(masks) = self.nodes.get_mut(new_id).and_then(ModelNode::masks_mut) {
                 for m in masks.iter_mut() {
                     if let Some(mapped) = map.get(&m.source) {
@@ -1529,6 +1583,17 @@ impl Model {
                 *r = new.clone();
             }
         }
+        for node in self.nodes.values_mut() {
+            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
+                for t in &mut r.inputs {
+                    if let crate::ResponseSource::PartSlot { part, .. } = &mut t.source {
+                        if part == old {
+                            *part = new.clone();
+                        }
+                    }
+                }
+            }
+        }
         self.bump();
         Ok(())
     }
@@ -1591,6 +1656,20 @@ impl Model {
         for lane in self.animations.iter_mut().flat_map(|a| &mut a.lanes) {
             if &lane.param == old {
                 lane.param = new.clone();
+            }
+        }
+        for node in self.nodes.values_mut() {
+            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
+                if r.output_param.as_ref() == Some(old) {
+                    r.output_param = Some(new.clone());
+                }
+                for t in &mut r.inputs {
+                    if let crate::ResponseSource::PoseParam(p) = &mut t.source {
+                        if p == old {
+                            *p = new.clone();
+                        }
+                    }
+                }
             }
         }
         self.bump();
@@ -1674,6 +1753,9 @@ impl Model {
         {
             return Err(ModelError::UnknownParam);
         }
+        for p in targets.iter().flatten() {
+            self.check_response_writer(p)?;
+        }
         match self.nodes.get_mut(id).map(|n| &mut n.kind) {
             Some(ModelNodeKind::SimplePhysics(ph)) => ph.target_params = targets,
             Some(_) => return Err(ModelError::NotPhysics),
@@ -1700,6 +1782,12 @@ impl Model {
             .any(|p| !self.params.contains_key(p))
         {
             return Err(ModelError::UnknownParam);
+        }
+        if matches!(self.node(node).map(|n| &n.kind),Some(ModelNodeKind::Spine(s)) if s.chain().is_some())
+        {
+            for p in targets.iter().flatten() {
+                self.check_response_writer(p)?;
+            }
         }
         match self.nodes.get_mut(node).map(|n| &mut n.kind) {
             Some(ModelNodeKind::Spine(spine)) => {
@@ -1741,6 +1829,13 @@ impl Model {
         node: &NodeId,
         chain: Option<ModelChain>,
     ) -> Result<(), ModelError> {
+        if chain.is_some() {
+            if let Some(ModelNodeKind::Spine(s)) = self.node(node).map(|n| &n.kind) {
+                for p in s.targets().iter().flatten() {
+                    self.check_response_writer(p)?;
+                }
+            }
+        }
         match self.nodes.get_mut(node).map(|n| &mut n.kind) {
             Some(ModelNodeKind::Spine(spine)) => spine.set_chain(chain),
             Some(_) => return Err(ModelError::NotSpine),
@@ -1986,6 +2081,17 @@ impl Model {
                 }
             }
         }
+        for node in self.nodes.values_mut() {
+            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
+                for t in &mut r.inputs {
+                    if let crate::ResponseSource::PartSlot { part, slot, .. } = &mut t.source {
+                        if part == id && slot == from {
+                            *slot = to.clone();
+                        }
+                    }
+                }
+            }
+        }
         self.bump();
         Ok(())
     }
@@ -2029,6 +2135,11 @@ impl Model {
             }
             Arc::make_mut(&mut w.pairs)
                 .retain(|p| !(drops_a && &p.a == slot) && !(drops_b && &p.b == slot));
+        }
+        for node in self.nodes.values_mut() {
+            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
+                r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,slot:s,..} if part==id && s==slot));
+            }
         }
         self.bump();
         Ok(())
@@ -2103,6 +2214,14 @@ impl Model {
         }
         for node in self.nodes.values_mut() {
             match &mut node.kind {
+                ModelNodeKind::MotionResponse(r) => {
+                    r.inputs.retain(
+                        |t| !matches!(&t.source,crate::ResponseSource::PoseParam(p) if p==id),
+                    );
+                    if r.output_param.as_ref() == Some(id) {
+                        r.output_param = None;
+                    }
+                }
                 ModelNodeKind::SimplePhysics(ph) => {
                     for t in &mut ph.target_params {
                         if t.as_ref() == Some(id) {
@@ -2354,6 +2473,9 @@ impl Model {
             .any(|lane| lane.keyframes.windows(2).any(|w| w[0].frame > w[1].frame))
         {
             return Err(ModelError::UnsortedLane);
+        }
+        for lane in animations.iter().flat_map(|a| &a.lanes) {
+            self.check_response_writer(&lane.param)?;
         }
         self.animations = animations;
         self.bump();

@@ -194,6 +194,7 @@ fn filenames_and_animation_decimation_include_zero_without_changing_updates() {
     assert_eq!(
         req.physics,
         Physics::Simulate {
+            response_clock: Default::default(),
             initial: Initial::Fresh,
             warmup_frames: 0
         }

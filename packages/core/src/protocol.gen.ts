@@ -183,6 +183,12 @@ export type Command =
     index: number,
   }
   | {
+    "cmd": "motion_response_set",
+    session: SessionId,
+    node: NodeId,
+    response: MotionResponseInfo,
+  }
+  | {
     "cmd": "physics_set",
     session: SessionId,
     node: NodeId,
@@ -643,6 +649,7 @@ export type Command =
   };
 
 export type NodeKindArg =
+  | "motion_response"
   | "group"
   | "part"
   | "composite"
@@ -657,6 +664,7 @@ export type NodeKind =
   | "part"
   | "composite"
   | "mesh_group"
+  | "motion_response"
   | "physics"
   | "spine";
 
@@ -1843,6 +1851,7 @@ export type NodeInfo = {
    */
   propagate_meshgroup?: boolean | null,
   mg_translate_children?: boolean | null,
+  motion_response?: MotionResponseInfo | null,
   /**
    * A SimplePhysics driver's settings, absent on every other kind.
    */
@@ -1874,6 +1883,37 @@ export type MeshInfo = {
 export type MaskInfo = {
   source: NodeId,
   mode: MaskMode,
+};
+
+export type MotionSource =
+  | {
+    "kind": "pose_param",
+    param: ParamId,
+  }
+  | {
+    "kind": "part_slot",
+    part: NodeId,
+    slot: SlotId,
+    angle_deg: number,
+    reference_length: number,
+  }
+  | {
+    "kind": "parent"
+  };
+
+export type MotionInput = {
+  source: MotionSource,
+  gain: number,
+};
+
+/**
+ * The complete authoring payload for a scalar response.
+ */
+export type MotionResponseInfo = {
+  inputs: Array<MotionInput>,
+  period_s: number,
+  damping_ratio: number,
+  output_param: ParamId | null,
 };
 
 /**
@@ -2052,6 +2092,7 @@ export type EditCommandTag =
   | "id_rename"
   | "mask_add"
   | "mask_delete"
+  | "motion_response_set"
   | "physics_set"
   | "physics_globals_set"
   | "node_delete"

@@ -196,6 +196,8 @@ fn sorted<T: Ord>(it: impl Iterator<Item = T>) -> impl Iterator<Item = T> {
 /// stopped it; the base model is untouched.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InstallError {
+    #[error("{0}")]
+    InvalidResponse(String),
     #[error(
         "the addon's root {node:?} names no parent, so it is a complete model and there is \
          nowhere in the base to attach it"
@@ -305,6 +307,31 @@ impl Model {
                     }
                 }
             }
+            if let ModelNodeKind::MotionResponse(r) = &node.kind {
+                for p in
+                    r.output_param
+                        .iter()
+                        .chain(r.inputs.iter().filter_map(|t| match &t.source {
+                            crate::ResponseSource::PoseParam(p) => Some(p),
+                            _ => None,
+                        }))
+                {
+                    if !self.params.contains_key(p) {
+                        need(Required::Param(p.clone()), "motion response param", &id);
+                    }
+                }
+                for t in &r.inputs {
+                    if let crate::ResponseSource::PartSlot { part, slot, .. } = &t.source {
+                        if !self.nodes.contains_key(part) {
+                            need(
+                                Required::Slot(part.clone(), slot.clone()),
+                                "motion response slot",
+                                &id,
+                            );
+                        }
+                    }
+                }
+            }
             if let ModelNodeKind::Spine(spine) = &node.kind {
                 for t in spine.targets().iter().flatten() {
                     if !self.params.contains_key(t) {
@@ -388,6 +415,16 @@ impl Model {
     /// textures and its animations, and the generation is bumped once.
     pub fn install(&mut self, addon: &Model) -> Result<Installed, InstallError> {
         self.check_install(addon)?;
+        if self.response_count > 0 || addon.response_count > 0 {
+            let mut combined = self.clone();
+            combined.response_count += addon.response_count;
+            combined.nodes.extend(addon.nodes.clone());
+            combined.bindings.extend(addon.bindings.iter().cloned());
+            combined.animations.extend(addon.animations.iter().cloned());
+            combined
+                .validate_responses()
+                .map_err(|e| InstallError::InvalidResponse(e.to_string()))?;
+        }
 
         let order = addon.nodes_in_order();
         let mut installed = Installed {
@@ -399,6 +436,7 @@ impl Model {
             animations: addon.animations.clone(),
         };
 
+        self.response_count += addon.response_count;
         for id in order {
             let Some(node) = addon.nodes.get(&id) else {
                 continue;
@@ -600,6 +638,10 @@ impl Model {
                 .filter(|w| inside(&w.a) || inside(&w.b))
                 .cloned()
                 .collect(),
+            response_count: nodes
+                .values()
+                .filter(|n| matches!(n.kind, ModelNodeKind::MotionResponse(_)))
+                .count(),
             nodes,
             roots: picked,
             params: HashMap::new(),
@@ -640,11 +682,14 @@ impl Model {
             }
         }
         for id in &installed.nodes {
-            self.nodes.remove(id);
+            self.remove_counted_node(id);
         }
         self.roots.retain(|r| !removed.contains(r));
         for node in self.nodes.values_mut() {
             node.children.retain(|c| !removed.contains(c));
+            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
+                r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,..} if removed.contains(part)));
+            }
             if let Some(masks) = node.masks_mut() {
                 masks.retain(|m| !removed.contains(&m.source));
             }

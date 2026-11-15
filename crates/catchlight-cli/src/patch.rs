@@ -344,6 +344,7 @@ pub fn node_fields(kind: &ClmNodeKind) -> Vec<&'static str> {
 
 fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
     match kind {
+        ClmNodeKind::MotionResponse(_) => &["period_s", "damping_ratio"],
         ClmNodeKind::Group => &[],
         ClmNodeKind::Part(_) => PART_FIELDS,
         ClmNodeKind::Composite(_) => COMPOSITE_FIELDS,
@@ -355,6 +356,7 @@ fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
 
 fn kind_name(kind: &ClmNodeKind) -> &'static str {
     match kind {
+        ClmNodeKind::MotionResponse(_) => "motion response",
         ClmNodeKind::Group => "group",
         ClmNodeKind::Part(_) => "part",
         ClmNodeKind::Composite(_) => "composite",
@@ -391,6 +393,11 @@ fn common_slot<'a>(node: &'a mut ClmNode, field: &str) -> Option<Slot<'a>> {
 
 fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
     Some(match kind {
+        ClmNodeKind::MotionResponse(r) => match field {
+            "period_s" => Slot::F32(&mut r.period_s),
+            "damping_ratio" => Slot::F32(&mut r.damping_ratio),
+            _ => return None,
+        },
         ClmNodeKind::Group => return None,
         ClmNodeKind::Part(p) => match field {
             "opacity" => Slot::F32(&mut p.opacity),

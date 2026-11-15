@@ -103,7 +103,22 @@ pub struct TraceFrame {
     pub clip: ClipSample,
     pub requested: BTreeMap<String, f32>,
     pub effective: BTreeMap<String, f32>,
+    /// Final spring state and contributing samples for explicitly selected responses.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub responses: BTreeMap<String, ResponseObservation>,
 }
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseObservation {
+    /// Id supplying a Parent input, when the response has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub followed_parent: Option<String>,
+    #[schemars(with = "std::collections::BTreeMap<String,serde_json::Value>")]
+    pub state: catchlight_core::ResponseTrace,
+    #[schemars(with = "Vec<std::collections::BTreeMap<String,serde_json::Value>>")]
+    pub inputs: Vec<catchlight_core::ResponseInputSample>,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClipSample {
@@ -142,6 +157,35 @@ impl TraceFrame {
             requested.insert(id.to_string(), a);
             effective.insert(id.to_string(), b);
         }
+        let mut responses = BTreeMap::new();
+        for id in &request.trace_responses {
+            let state = runtime
+                .puppet
+                .response_trace(id)
+                .ok_or_else(|| bad(format!("unknown response {id}")))?;
+            let inputs = runtime
+                .puppet
+                .response_inputs(id)
+                .ok_or_else(|| bad(format!("unknown response {id}")))?;
+            let followed_parent = inputs
+                .iter()
+                .any(|i| matches!(i.source, catchlight_core::ResponseSource::Parent))
+                .then(|| {
+                    model
+                        .node(id)
+                        .and_then(|n| n.parent())
+                        .map(ToString::to_string)
+                })
+                .flatten();
+            responses.insert(
+                id.to_string(),
+                ResponseObservation {
+                    followed_parent,
+                    state,
+                    inputs,
+                },
+            );
+        }
         if !sample.time.is_finite() || !sample.frame.is_finite() {
             return Err(bad("non-finite animation sample"));
         }
@@ -160,6 +204,7 @@ impl TraceFrame {
             },
             requested,
             effective,
+            responses,
         })
     }
 }
@@ -413,6 +458,20 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
             ModelParam::new(Name::truncated("Drive"), 0.0, 1.0, 0.0),
         )
         .map_err(|e| fail(&e))?;
+    let sensor = catchlight_core::MotionResponse {
+        inputs: vec![catchlight_core::ResponseInput {
+            source: catchlight_core::ResponseSource::PoseParam(param.clone()),
+            gain: 1.,
+        }],
+        ..Default::default()
+    };
+    model
+        .add_node_with_id(
+            NodeId::new("sensor").map_err(|e| fail(&e))?,
+            &root,
+            ModelNode::new("Sensor", ModelNodeKind::MotionResponse(sensor)),
+        )
+        .map_err(|e| fail(&e))?;
     let key = BindingKey::new(param, node, BindingTarget::Scalar(ScalarTarget::Tx));
     model
         .set_binding_key(&key, [0, 0], 0.0)
@@ -426,7 +485,7 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
             "detail":{"rect":[-10,-10,120,120],"scale":2,"physics":{"mode":"off"},
                       "pose":{"drive":0.5},"geometry":["panel-a"]},
             "pulse":{"extends":"detail","animation":{"source":"spec","name":"pulse"},
-                     "trace_params":["drive"]}
+                     "trace_params":["drive"],"trace_responses":["sensor"]}
         },
         "animations":{"pulse":{"name":"Pulse","timestep":0.016666667,"length":2,
             "lead_in":-1,"lead_out":-1,"lanes":[{"param":"drive","interpolation":"Linear",

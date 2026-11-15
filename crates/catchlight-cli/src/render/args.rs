@@ -221,6 +221,7 @@ impl ClipArgs {
         request.physics = match request.physics {
             Setting::Value(Physics::Off {}) => Setting::Value(Physics::Off {}),
             Setting::Value(_) => Setting::Value(Physics::Simulate {
+                response_clock: Default::default(),
                 initial: Initial::Settled,
                 warmup_frames: 0,
             }),

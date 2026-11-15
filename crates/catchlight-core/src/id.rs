@@ -264,6 +264,7 @@ pub enum NodeIdKind {
     Composite,
     /// A node whose mesh deforms the geometry beneath it.
     MeshGroup,
+    MotionResponse,
     /// A driver node holding a pendulum.
     SimplePhysics,
     /// A driver node holding a particle chain.
@@ -281,6 +282,7 @@ impl NodeIdKind {
             Self::Composite => "composite",
             Self::MeshGroup => "mesh-group",
             Self::SimplePhysics => "physics",
+            Self::MotionResponse => "response",
             Self::Chain => "chain",
             Self::Spine => "spine",
         }

@@ -35,6 +35,15 @@ impl FrameRuntime {
                 puppet.set_param_value(&lane.param, lane.value_at(0.0));
             }
         }
+        if matches!(
+            request.physics,
+            Physics::Simulate {
+                response_clock: super::spec::ResponseClock::Fixed60,
+                ..
+            }
+        ) {
+            puppet.set_response_clock(catchlight_core::ResponseClock::Fixed60);
+        }
         puppet.set_physics_enabled(!matches!(request.physics, Physics::Off {}));
         match request.physics {
             Physics::Settled {}

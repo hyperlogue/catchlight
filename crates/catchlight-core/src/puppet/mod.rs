@@ -94,6 +94,8 @@
 mod arena;
 mod bake;
 mod fold;
+mod response;
+pub use response::{ResponseClock, ResponseInputSample, ResponseTrace};
 
 pub use arena::GlobalTransforms;
 
@@ -265,9 +267,7 @@ pub struct ScratchTransform {
 /// edit is not motion: the caller made it and already knows to redraw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Motion {
-    /// A driver — a `SimplePhysics` pendulum or a particle chain — is away
-    /// from its rest pose, so the next tick will move it even if nothing else
-    /// changes.
+    /// A driver still has motion to simulate or display at the current pose.
     pub physics: bool,
     /// A playing animation wrote a param this tick.
     pub animation: bool,
@@ -360,6 +360,7 @@ pub struct Puppet {
     mesh_group_param_generation: u64,
     last_tick_mesh_group_generation: Option<u64>,
 
+    responses: response::Responses,
     physics_enabled: bool,
     /// Parallel to `arena.physics_node_ids`.
     physics_targets: Vec<[Option<u32>; 2]>,
@@ -440,6 +441,7 @@ impl Puppet {
             param_mesh_group_relevant: HashSet::new(),
             mesh_group_param_generation: 0,
             last_tick_mesh_group_generation: None,
+            responses: response::Responses::default(),
             physics_enabled: true,
             physics_targets: Vec::new(),
             physics_update_scratch: Vec::new(),
@@ -458,6 +460,7 @@ impl Puppet {
             located: Vec::new(),
         };
         puppet.install(bake::bake(model));
+        puppet.responses = response::Responses::bake(&puppet, model, Default::default());
         puppet
     }
 
@@ -502,6 +505,9 @@ impl Puppet {
             .param_contributions
             .iter()
             .filter_map(|c| {
+                if self.responses.owns(c.slot) {
+                    return None;
+                }
                 Some((
                     self.params.get(c.slot as usize)?.id.clone(),
                     self.id_of_node.get(c.source.0 as usize)?.clone(),
@@ -551,7 +557,9 @@ impl Puppet {
             .filter_map(|(idx, edit)| Some((self.id_of_node.get(idx.0 as usize)?.clone(), *edit)))
             .collect();
 
+        let previous = std::mem::take(&mut self.responses);
         self.install(bake::bake(model));
+        self.responses = response::Responses::bake(self, model, previous);
         self.baked_generation = model.generation();
 
         for (id, edit) in scratch {
@@ -569,6 +577,9 @@ impl Puppet {
             else {
                 continue;
             };
+            if self.responses.owns(slot) {
+                continue;
+            }
             self.record_contribution(Contribution {
                 slot,
                 source,
@@ -814,6 +825,9 @@ impl Puppet {
     /// It ends at [`Self::clear_scratch_deform`], or when the model changes
     /// and [`Self::sync`] rebakes the stack.
     pub fn set_scratch_deform(&mut self, id: NodeIdx, offsets: &[Vec2]) -> bool {
+        if let Some(sampler) = &mut self.responses.sampler {
+            sampler.set_scratch_deform(id, offsets);
+        }
         let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
@@ -834,6 +848,9 @@ impl Puppet {
     }
 
     pub fn clear_scratch_deform(&mut self, id: NodeIdx) -> bool {
+        if let Some(sampler) = &mut self.responses.sampler {
+            sampler.clear_scratch_deform(id);
+        }
         let Some(node) = self.arena.get_mut(id) else {
             return false;
         };
@@ -1114,6 +1131,9 @@ impl Puppet {
         let Some(slot) = self.slot_of_param.get(param).copied() else {
             return false;
         };
+        if self.responses.owns(slot) {
+            return false;
+        }
         self.contribute(slot, source, value, weight)
     }
 
@@ -1347,6 +1367,9 @@ impl Puppet {
         let mut changed = false;
         if let Some(anim) = animations.get(state.index) {
             for lane in &anim.lanes {
+                if self.physics_enabled && self.reserved_output(&lane.param) {
+                    continue;
+                }
                 let value = lane.value_at(frame);
                 if self.param_value_posed(&lane.param) != Some(value) {
                     self.set_param_value(&lane.param, value);
@@ -1379,12 +1402,9 @@ impl Puppet {
         !self.arena.chain_node_ids.is_empty()
     }
 
-    /// Whether the puppet carries any driver at all — a pendulum or a
-    /// particle chain. This, not either half, is what gates the anchor
-    /// pre-pass and the settle: both kinds hang from an anchor the pre-pass
-    /// poses, so a model whose only driver is a chain needs it just as much.
+    /// Whether the puppet has a pendulum, particle chain or motion response.
     pub fn has_drivers(&self) -> bool {
-        self.has_simple_physics() || self.has_particle_chains()
+        self.has_simple_physics() || self.has_particle_chains() || self.has_motion_responses()
     }
 
     /// When false, a tick skips physics entirely: drivers never overwrite
@@ -1398,6 +1418,7 @@ impl Puppet {
             // Otherwise each driver's last output would keep overriding the
             // pose for as long as physics stays frozen.
             self.clear_param_contributions();
+            self.responses.reset();
         }
     }
 
@@ -1820,6 +1841,7 @@ impl Puppet {
         // Settling writes driver outputs, and a frozen puppet never ticks
         // physics again to refresh or retire them — they would sit on the
         // pose forever, which is the override `set_physics_enabled` removes.
+        self.advance_responses(model, 0., true);
         if n == 0 || !self.physics_enabled {
             return;
         }
@@ -1922,7 +1944,8 @@ impl Puppet {
             physics: false,
         };
 
-        let has_physics = self.physics_enabled && self.has_drivers();
+        let has_physics =
+            self.physics_enabled && (self.has_simple_physics() || self.has_particle_chains());
         let mut pre_pass_ran = false;
         let mut anchor_generation = 0;
         if has_physics {
@@ -1956,6 +1979,7 @@ impl Puppet {
             motion.physics = self.drivers_moving();
         }
 
+        motion.physics |= self.advance_responses(model, dt, false);
         let params_changed = self.last_tick_folded_param_generation != Some(self.param_generation);
         let mesh_group_generation_changed =
             self.last_tick_mesh_group_generation != Some(self.mesh_group_param_generation);

@@ -656,6 +656,24 @@ class MaskDelete:
 
 
 @dataclass(frozen=True, kw_only=True)
+class MotionResponseSet:
+    """Replace a motion response's complete authored configuration atomically."""
+
+    TAG_FIELD: ClassVar[str] = "cmd"
+    TAG: ClassVar[str] = "motion_response_set"
+    CMD: ClassVar[str] = TAG
+    KIND: ClassVar[CommandKind] = CommandKind.EDIT
+
+    session: SessionId
+    node: NodeId
+    response: MotionResponseInfo
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
 class PhysicsSet:
     """Change fields on a SimplePhysics node; absent = unchanged."""
 
@@ -1735,6 +1753,7 @@ Command = (
     | RenameId
     | MaskAdd
     | MaskDelete
+    | MotionResponseSet
     | PhysicsSet
     | PhysicsGlobals
     | NodeDelete
@@ -1808,6 +1827,7 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "id_rename": RenameId,
     "mask_add": MaskAdd,
     "mask_delete": MaskDelete,
+    "motion_response_set": MotionResponseSet,
     "physics_set": PhysicsSet,
     "physics_globals_set": PhysicsGlobals,
     "node_delete": NodeDelete,
@@ -1894,6 +1914,7 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "id_rename": CommandKind.EDIT,
     "mask_add": CommandKind.EDIT,
     "mask_delete": CommandKind.EDIT,
+    "motion_response_set": CommandKind.EDIT,
     "physics_set": CommandKind.EDIT,
     "physics_globals_set": CommandKind.EDIT,
     "node_delete": CommandKind.EDIT,
@@ -2013,6 +2034,7 @@ EditCommand = (
     | RenameId
     | MaskAdd
     | MaskDelete
+    | MotionResponseSet
     | PhysicsSet
     | PhysicsGlobals
     | NodeDelete
@@ -2099,6 +2121,7 @@ QueryCommand = ReplicaQueryCommand | ServerQueryCommand
 
 
 class NodeKindArg(StrEnum):
+    MOTION_RESPONSE = "motion_response"
     GROUP = "group"
     PART = "part"
     COMPOSITE = "composite"
@@ -2114,6 +2137,7 @@ class NodeKind(StrEnum):
     PART = "part"
     COMPOSITE = "composite"
     MESH_GROUP = "mesh_group"
+    MOTION_RESPONSE = "motion_response"
     PHYSICS = "physics"
     SPINE = "spine"
 
@@ -4138,6 +4162,7 @@ class NodeInfo:
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
     mg_translate_children: bool | None = None
+    motion_response: MotionResponseInfo | None = None
     # A SimplePhysics driver's settings, absent on every other kind.
     physics: PhysicsInfo | None = None
     # A spine's settings, absent on every other kind.
@@ -4164,6 +4189,81 @@ class MaskInfo:
 
     source: NodeId
     mode: MaskMode
+
+
+@dataclass(frozen=True, kw_only=True)
+class MotionSourcePoseParam:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "pose_param"
+
+    param: ParamId
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MotionSourcePartSlot:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "part_slot"
+
+    part: NodeId
+    slot: SlotId
+    angle_deg: float
+    reference_length: float
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MotionSourceParent:
+    TAG_FIELD: ClassVar[str] = "kind"
+    TAG: ClassVar[str] = "parent"
+
+    def to_wire(self) -> dict[str, Any]:
+        """This value, as one JSON object: its tag, then every field it set."""
+        return _wire_fields(self)
+
+
+MotionSource = (
+    MotionSourcePoseParam
+    | MotionSourcePartSlot
+    | MotionSourceParent
+)
+
+MOTION_SOURCE_VARIANTS: dict[str, type[MotionSource]] = {
+    "pose_param": MotionSourcePoseParam,
+    "part_slot": MotionSourcePartSlot,
+    "parent": MotionSourceParent,
+}
+
+
+def parse_motion_source(message: Mapping[str, Any]) -> MotionSource:
+    """One JSON object as the MotionSource it is, by its "kind" tag."""
+    tag = message.get("kind")
+    found = MOTION_SOURCE_VARIANTS.get(tag) if isinstance(tag, str) else None
+    if found is None:
+        raise ValueError(f"no MotionSource carries the kind {tag!r}")
+    return _decode_class(found, message)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MotionInput:
+    source: MotionSource
+    gain: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class MotionResponseInfo:
+    """The complete authoring payload for a scalar response."""
+
+    inputs: list[MotionInput]
+    period_s: float
+    damping_ratio: float
+    output_param: ParamId | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4334,6 +4434,7 @@ __all__ = [
     "RenameId",
     "MaskAdd",
     "MaskDelete",
+    "MotionResponseSet",
     "PhysicsSet",
     "PhysicsGlobals",
     "NodeDelete",
@@ -4537,6 +4638,14 @@ __all__ = [
     "NodeInfo",
     "MeshInfo",
     "MaskInfo",
+    "MotionSourcePoseParam",
+    "MotionSourcePartSlot",
+    "MotionSourceParent",
+    "MotionSource",
+    "MOTION_SOURCE_VARIANTS",
+    "parse_motion_source",
+    "MotionInput",
+    "MotionResponseInfo",
     "PhysicsInfo",
     "SpineInfo",
     "TexInfo",

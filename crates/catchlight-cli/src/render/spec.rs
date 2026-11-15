@@ -219,6 +219,10 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     #[schemars(with = "Setting<Vec<ModelIdSchema>>")]
     pub trace_params: Setting<Vec<ParamId>>,
+    /// Inspect scalar response state and each external or parent input.
+    #[serde(default, skip_serializing_if = "Setting::is_inherit")]
+    #[schemars(with = "Setting<Vec<ModelIdSchema>>")]
+    pub trace_responses: Setting<Vec<NodeId>>,
     /// Retain color from exact Parts; omitted means all, [] means none.
     /// Mask contributions and authored enabled state are preserved.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
@@ -252,6 +256,7 @@ impl Request {
             camera,
             video,
             trace_params,
+            trace_responses,
             only_parts,
             hide_color,
             strip_masks,
@@ -291,11 +296,27 @@ pub enum Physics {
     Simulate {
         #[serde(default)]
         initial: Initial,
+        /// Scalar response clock. Legacy drivers retain their own stepping.
+        #[serde(default, skip_serializing_if = "ResponseClock::is_default")]
+        response_clock: ResponseClock,
         #[serde(default)]
         #[schemars(range(max = 100000))]
         warmup_frames: u32,
     },
 }
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseClock {
+    #[default]
+    InputIntervals,
+    Fixed60,
+}
+impl ResponseClock {
+    fn is_default(&self) -> bool {
+        matches!(self, Self::InputIntervals)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Initial {
@@ -570,6 +591,9 @@ pub struct ResolvedRequest {
     pub video: Option<Video>,
     #[schemars(with = "Vec<ModelIdSchema>")]
     pub trace_params: Vec<ParamId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "Vec<ModelIdSchema>")]
+    pub trace_responses: Vec<NodeId>,
     #[schemars(with = "Option<Vec<ModelIdSchema>>")]
     pub only_parts: Option<Vec<NodeId>>,
     #[schemars(with = "Vec<ModelIdSchema>")]
@@ -842,6 +866,16 @@ impl Document {
                 "reduce geometry selections/captures or split the spec",
             )?;
             if let Some(animation) = &request.animation {
+                let response_values = request.trace_responses.iter().fold(0_u64, |sum, id| {
+                    let Some(ModelNodeKind::MotionResponse(r)) = model.node(id).map(|n| &n.kind)
+                    else {
+                        return sum;
+                    };
+                    sum.saturating_add(6 + (r.inputs.len() as u64).saturating_mul(6))
+                });
+                trace_values = trace_values.saturating_add(
+                    response_values.saturating_mul(u64::from(animation.frames.count)),
+                );
                 trace_values = trace_values.saturating_add(
                     u64::from(animation.frames.count)
                         .saturating_mul(request.trace_params.len() as u64)
@@ -1014,6 +1048,7 @@ impl Document {
         if animation.is_none()
             && (request.frames.value().is_some()
                 || request.trace_params.clone().value().is_some()
+                || request.trace_responses.clone().value().is_some()
                 || request.camera.clone().value().is_some()
                 || request.video.clone().value().is_some())
         {
@@ -1046,6 +1081,7 @@ impl Document {
         let physics = request.physics.value().unwrap_or_else(|| {
             if animation.is_some() {
                 Physics::Simulate {
+                    response_clock: ResponseClock::default(),
                     initial: Initial::Fresh,
                     warmup_frames: 0,
                 }
@@ -1057,6 +1093,16 @@ impl Document {
             (Physics::Simulate { .. }, false) => return Err(bad("physics simulate requires an animation")),
             (Physics::Settled {}, true) => return Err(bad("animated requests use physics off or simulate; settled is a simulate initial setting")),
             _ => {}
+        }
+        let trace_responses = request.trace_responses.value().unwrap_or_default();
+        unique("trace_responses", &trace_responses)?;
+        for id in &trace_responses {
+            if !matches!(
+                model.node(id).map(|n| &n.kind),
+                Some(ModelNodeKind::MotionResponse(_))
+            ) {
+                return Err(bad(format!("unknown motion response {id}")));
+            }
         }
         let trace_params = request.trace_params.value().unwrap_or_default();
         unique("trace_params", &trace_params)?;
@@ -1121,6 +1167,7 @@ impl Document {
             camera,
             video,
             trace_params,
+            trace_responses,
             only_parts,
             hide_color,
             strip_masks,

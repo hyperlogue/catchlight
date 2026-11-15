@@ -1,4 +1,4 @@
-//! Physics drivers: pendulums and hair chains that write motion into params.
+//! Physics drivers: pendulums, particle chains and scalar motion responses.
 //!
 //! **SimplePhysics integrates in substeps sized by the driver.**
 //! `SimplePhysicsData::tick` clamps `dt` to `PHYSICS_MAX_DT` and splits it by
@@ -8,7 +8,7 @@
 //! `2 * 2 pi frequency`), applied as a continuous force, so the material does
 //! not change with frame rate or substep count.
 //!
-//! **Physics drivers work in a Y-down frame.** `Arena::physics_anchor` flips Y
+//! **Pendulums and particle chains work in a Y-down frame.** `Arena::physics_anchor` flips Y
 //! going in and `Puppet::write_physics_param_outputs` conjugates
 //! `world_inverse` by the same flip coming out. Gravity points toward +Y
 //! in that frame.
@@ -19,10 +19,18 @@
 //! reads its pose. Per-link limits clamp
 //! each step; the puppet also enforces the tightest bound after blending
 //! driver claims and animation.
+//!
+//! Motion responses project posed slots in model space (Y up), or follow a
+//! posed param or their direct parent. Their spring step lives in
+//! `physics/response.rs`; the puppet owns their state and sample clock.
 
 use crate::{Mat2, Mat4, Vec2};
 
+mod response;
 mod strand;
+
+pub(crate) use response::SpringState;
+pub use response::{MotionResponse, ResponseInput, ResponseSource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PendulumKind {

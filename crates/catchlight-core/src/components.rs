@@ -169,6 +169,7 @@ impl Default for Node {
 
 #[derive(Debug, Clone)]
 pub enum NodeKind {
+    MotionResponse,
     Group,
     Part(Box<PartData>),
     Composite(Box<CompositeData>),

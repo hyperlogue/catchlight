@@ -986,3 +986,44 @@ fn replica_and_server_share_the_request_byte_limit() {
         matches!(f.agree(command), Reply::Err { code: ErrorCode::LimitExceeded, limit: Some(catchlight_editor_protocol::LimitInfo { resource, limit: 1_048_576, .. }), .. } if resource == "request_bytes")
     );
 }
+
+#[test]
+fn response_settings_round_trip_through_edits_and_replica_inspection() {
+    use catchlight_editor_protocol::{MotionInput, MotionResponseInfo, MotionSource};
+    let f = Fixture::build();
+    let upper = f.node(Command::NodeAdd {
+        session: f.session,
+        parent: f.group.clone(),
+        kind: NodeKindArg::MotionResponse,
+        name: Some("upper".into()),
+        node: None,
+    });
+    let tip = f.node(Command::NodeAdd {
+        session: f.session,
+        parent: upper,
+        kind: NodeKindArg::MotionResponse,
+        name: Some("tip".into()),
+        node: None,
+    });
+    let settings = MotionResponseInfo {
+        inputs: vec![MotionInput {
+            source: MotionSource::Parent,
+            gain: 0.85,
+        }],
+        period_s: 0.6,
+        damping_ratio: 0.74,
+        output_param: None,
+    };
+    f.step(Command::MotionResponseSet {
+        session: f.session,
+        node: tip.clone(),
+        response: settings.clone(),
+    });
+    let ResponseBody::NodeInfo { node } = ok(f.agree(Command::NodeInfo {
+        session: f.session,
+        node: tip,
+    })) else {
+        panic!("expected node info")
+    };
+    assert_eq!(node.motion_response, Some(settings));
+}

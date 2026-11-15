@@ -315,6 +315,12 @@ pub enum Command {
         node: NodeId,
         index: u32,
     },
+    /// Replace a motion response's complete authored configuration atomically.
+    MotionResponseSet {
+        session: SessionId,
+        node: NodeId,
+        response: MotionResponseInfo,
+    },
     /// Change fields on a SimplePhysics node; absent = unchanged.
     PhysicsSet {
         session: SessionId,
@@ -944,6 +950,7 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("id_rename", CommandKind::Edit),
     ("mask_add", CommandKind::Edit),
     ("mask_delete", CommandKind::Edit),
+    ("motion_response_set", CommandKind::Edit),
     ("physics_set", CommandKind::Edit),
     ("physics_globals_set", CommandKind::Edit),
     ("node_delete", CommandKind::Edit),
@@ -1127,6 +1134,7 @@ impl Command {
             Command::RenameId { .. } => "id_rename",
             Command::MaskAdd { .. } => "mask_add",
             Command::MaskDelete { .. } => "mask_delete",
+            Command::MotionResponseSet { .. } => "motion_response_set",
             Command::PhysicsSet { .. } => "physics_set",
             Command::PhysicsGlobals { .. } => "physics_globals_set",
             Command::NodeDelete { .. } => "node_delete",
@@ -1255,6 +1263,7 @@ impl Command {
             | Command::RenameId { session, .. }
             | Command::MaskAdd { session, .. }
             | Command::MaskDelete { session, .. }
+            | Command::MotionResponseSet { session, .. }
             | Command::PhysicsSet { session, .. }
             | Command::PhysicsGlobals { session, .. }
             | Command::NodeDelete { session, .. }
@@ -1870,6 +1879,7 @@ pub struct SlotPair {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum NodeKindArg {
+    MotionResponse,
     Group,
     Part,
     Composite,
@@ -1886,6 +1896,7 @@ pub enum NodeKind {
     Part,
     Composite,
     MeshGroup,
+    MotionResponse,
     Physics,
     Spine,
 }
@@ -1898,6 +1909,7 @@ impl NodeKind {
             Self::Part => "part",
             Self::Composite => "composite",
             Self::MeshGroup => "mesh_group",
+            Self::MotionResponse => "motion_response",
             Self::Physics => "physics",
             Self::Spine => "spine",
         }
@@ -1911,6 +1923,7 @@ impl NodeKind {
             K::Part(_) => Self::Part,
             K::Composite(_) => Self::Composite,
             K::MeshGroup(_) => Self::MeshGroup,
+            K::MotionResponse(_) => Self::MotionResponse,
             K::SimplePhysics(_) => Self::Physics,
             K::Spine(_) => Self::Spine,
         }
@@ -3171,6 +3184,8 @@ pub struct NodeInfo {
     pub propagate_meshgroup: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mg_translate_children: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_response: Option<MotionResponseInfo>,
     /// A SimplePhysics driver's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physics: Option<PhysicsInfo>,
@@ -3199,6 +3214,105 @@ pub struct MeshInfo {
 pub struct MaskInfo {
     pub source: NodeId,
     pub mode: MaskMode,
+}
+
+/// The complete authoring payload for a scalar response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MotionResponseInfo {
+    pub inputs: Vec<MotionInput>,
+    pub period_s: f32,
+    pub damping_ratio: f32,
+    pub output_param: Option<ParamId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MotionInput {
+    pub source: MotionSource,
+    pub gain: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MotionSource {
+    PoseParam {
+        param: ParamId,
+    },
+    PartSlot {
+        part: NodeId,
+        slot: SlotId,
+        angle_deg: f32,
+        reference_length: f32,
+    },
+    Parent,
+}
+
+impl From<MotionResponseInfo> for catchlight_core::MotionResponse {
+    fn from(r: MotionResponseInfo) -> Self {
+        use catchlight_core::{ResponseInput, ResponseSource as S};
+        Self {
+            period_s: r.period_s,
+            damping_ratio: r.damping_ratio,
+            output_param: r.output_param,
+            inputs: r
+                .inputs
+                .into_iter()
+                .map(|i| ResponseInput {
+                    gain: i.gain,
+                    source: match i.source {
+                        MotionSource::PoseParam { param } => S::PoseParam(param),
+                        MotionSource::PartSlot {
+                            part,
+                            slot,
+                            angle_deg,
+                            reference_length,
+                        } => S::PartSlot {
+                            part,
+                            slot,
+                            angle_deg,
+                            reference_length,
+                        },
+                        MotionSource::Parent => S::Parent,
+                    },
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<catchlight_core::MotionResponse> for MotionResponseInfo {
+    fn from(r: catchlight_core::MotionResponse) -> Self {
+        use catchlight_core::ResponseSource as S;
+        Self {
+            period_s: r.period_s,
+            damping_ratio: r.damping_ratio,
+            output_param: r.output_param,
+            inputs: r
+                .inputs
+                .into_iter()
+                .map(|i| MotionInput {
+                    gain: i.gain,
+                    source: match i.source {
+                        S::PoseParam(param) => MotionSource::PoseParam { param },
+                        S::PartSlot {
+                            part,
+                            slot,
+                            angle_deg,
+                            reference_length,
+                        } => MotionSource::PartSlot {
+                            part,
+                            slot,
+                            angle_deg,
+                            reference_length,
+                        },
+                        S::Parent => MotionSource::Parent,
+                    },
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
@@ -3591,6 +3705,7 @@ mod tests {
             triangle_count: Some(2),
             propagate_meshgroup: None,
             mg_translate_children: None,
+            motion_response: None,
             physics: None,
             spine: None,
             masks: Vec::new(),
@@ -3656,6 +3771,7 @@ mod tests {
                 screen_tint: Some([0.0; 3]),
                 mask_threshold: Some(0.5),
                 texture: None,
+                motion_response: None,
                 physics: None,
                 spine: None,
                 masks: Vec::new(),

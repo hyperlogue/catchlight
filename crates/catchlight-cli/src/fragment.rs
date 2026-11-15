@@ -199,6 +199,37 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
                 }
                 &[]
             }
+            ClmNodeKind::MotionResponse(r) => {
+                for p in
+                    r.output_param
+                        .iter()
+                        .chain(r.inputs.iter().filter_map(|t| match &t.source {
+                            catchlight_core::ResponseSource::PoseParam(p) => Some(p),
+                            _ => None,
+                        }))
+                {
+                    if !has_param(p) {
+                        need(
+                            Required::Param(p.clone()),
+                            "motion response param",
+                            owner.clone(),
+                        );
+                    }
+                }
+                for t in &r.inputs {
+                    if let catchlight_core::ResponseSource::PartSlot { part, slot, .. } = &t.source
+                    {
+                        if !has_node(part) {
+                            need(
+                                Required::Slot(part.clone(), slot.clone()),
+                                "motion response slot",
+                                owner.clone(),
+                            );
+                        }
+                    }
+                }
+                &[]
+            }
             ClmNodeKind::Spine(sp) => {
                 for target in sp.targets.iter().flatten() {
                     if !has_param(target) {

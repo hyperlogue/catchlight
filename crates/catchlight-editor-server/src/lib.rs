@@ -311,7 +311,8 @@ impl EditorError {
                 },
                 InstallError::WeldUnknownSlot { .. } => ErrorCode::WeldUnknownSlot,
                 InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,
-                InstallError::NotAnAddon { .. }
+                InstallError::InvalidResponse(_)
+                | InstallError::NotAnAddon { .. }
                 | InstallError::CarriesParam { .. }
                 | InstallError::CarriesExtension { .. }
                 | InstallError::BindsOffAddon { .. } => ErrorCode::Edit,
@@ -1367,6 +1368,14 @@ impl Editor {
                 index,
             } => self.edit_session_captured(session, |s| {
                 edit::apply(&mut s.model, EditOp::MaskDelete { node, index })
+            }),
+            Command::MotionResponseSet {
+                session,
+                node,
+                response,
+            } => self.edit_session_captured(session, |s| {
+                s.model.set_motion_response(&node, response.into())?;
+                Ok(ResponseBody::Empty)
             }),
             Command::PhysicsSet {
                 session,
@@ -2616,6 +2625,7 @@ pub struct DocSnapshot {
 
 fn default_name(kind: NodeKindArg) -> String {
     match kind {
+        NodeKindArg::MotionResponse => "MotionResponse",
         NodeKindArg::Group => "Group",
         NodeKindArg::Part => "Part",
         NodeKindArg::Composite => "Composite",
@@ -2626,6 +2636,7 @@ fn default_name(kind: NodeKindArg) -> String {
 
 fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
     match kind {
+        NodeKindArg::MotionResponse => ModelNodeKind::MotionResponse(Default::default()),
         NodeKindArg::Group => ModelNodeKind::Group,
         NodeKindArg::Part => ModelNodeKind::Part(ModelPart::new(ClmMesh::default())),
         NodeKindArg::Composite => ModelNodeKind::Composite(ModelComposite::new()),

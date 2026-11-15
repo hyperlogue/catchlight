@@ -48,7 +48,7 @@ One element of a model's tree. Every node has an Id, a name, a transform, a
 z order and a kind.
 
 **Kind**:
-What a node is — group, part, composite, mesh group, simple physics or spine.
+What a node is — group, part, composite, mesh group, simple physics, motion response or spine.
 Fixed when the node is created.
 
 **Group**:
@@ -73,6 +73,12 @@ _Avoid_: deformer, warp, dynamic mesh group (every mesh group is)
 **Simple physics**:
 A driver node holding a pendulum hung at its own position; the pendulum's
 swing is written into params.
+
+**Motion response**:
+A driver node whose scalar spring follows a weighted combination of posed
+params, projected part slots and its immediate parent response. A child reads
+the parent's unclipped followed value. The lag (followed value minus target)
+drives an optional art param and returns to zero at a held pose.
 
 **Particle chain**:
 The simulation a spine may carry: a strand of particles hung at the spine's
@@ -150,7 +156,7 @@ _Avoid_: mask binding
 
 **Slot**:
 A named handle on a part, filled by one of the part's vertices or left
-unfilled, so that welds can refer to vertices by name. Whoever owns the part
+unfilled, so welds and motion responses can refer to vertices by name. Whoever owns the part
 fills its slots; re-authoring the mesh empties every slot, and the author must
 fill them again. A slot is unique within its part, never across a model.
 _Avoid_: seam, vertex ref

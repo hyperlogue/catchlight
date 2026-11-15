@@ -352,6 +352,7 @@ fn collect_mask_sources<S: DrawSource + ?Sized>(
                 });
             }
             NodeKind::MeshGroup(_)
+            | NodeKind::MotionResponse
             | NodeKind::Group
             | NodeKind::SimplePhysics(_)
             | NodeKind::Spine(_) => {}
@@ -550,6 +551,7 @@ impl Collector {
                     }
                 }
                 NodeKind::MeshGroup(_)
+                | NodeKind::MotionResponse
                 | NodeKind::Group
                 | NodeKind::SimplePhysics(_)
                 | NodeKind::Spine(_) => {}

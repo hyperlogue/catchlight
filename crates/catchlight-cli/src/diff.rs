@@ -272,6 +272,18 @@ fn node_fields(n: &ClmNode) -> Fields {
     }
 
     match &n.kind {
+        ClmNodeKind::MotionResponse(r) => {
+            f.insert("kind".into(), "MotionResponse".into());
+            f.insert("period_s".into(), r.period_s.to_string());
+            f.insert("damping_ratio".into(), r.damping_ratio.to_string());
+            f.insert("inputs".into(), format!("{:?}", r.inputs));
+            f.insert(
+                "output_param".into(),
+                r.output_param
+                    .as_ref()
+                    .map_or_else(|| "(none)".into(), ToString::to_string),
+            );
+        }
         ClmNodeKind::Group => {
             f.insert("kind".into(), "Group".into());
         }

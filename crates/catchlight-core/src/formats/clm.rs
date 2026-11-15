@@ -549,6 +549,7 @@ pub enum ClmNodeKind {
     Part(ClmPart),
     Composite(ClmComposite),
     MeshGroup(ClmMeshGroup),
+    MotionResponse(crate::MotionResponse),
     SimplePhysics(ClmSimplePhysics),
     Spine(ClmSpine),
 }

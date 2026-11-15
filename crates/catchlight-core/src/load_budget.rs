@@ -11,6 +11,7 @@ pub enum LoadResource {
     DeformOffsets,
     MeshGroupBitmapCells,
     ManifestGridCells,
+    ResponseInputs,
     Slots,
 }
 
@@ -30,6 +31,7 @@ impl LoadResource {
             Self::DeformOffsets => "deform offsets",
             Self::MeshGroupBitmapCells => "mesh-group bitmap cells",
             Self::ManifestGridCells => "manifest grid cells",
+            Self::ResponseInputs => "response inputs",
             Self::Slots => "slots",
         }
     }
@@ -48,6 +50,7 @@ pub struct LoadLimits {
     pub deform_offsets: u64,
     pub mesh_group_bitmap_cells: u64,
     pub manifest_grid_cells: u64,
+    pub response_inputs: u64,
     pub slots: u64,
 }
 
@@ -65,6 +68,7 @@ impl Default for LoadLimits {
             deform_offsets: 64_000_000,
             mesh_group_bitmap_cells: 32_000_000,
             manifest_grid_cells: 1_000_000,
+            response_inputs: 1_000_000,
             slots: 4_000_000,
         }
     }
@@ -106,6 +110,7 @@ impl LoadBudget {
                 deform_offsets: 0,
                 mesh_group_bitmap_cells: 0,
                 manifest_grid_cells: 0,
+                response_inputs: 0,
                 slots: 0,
             },
         }
@@ -135,6 +140,9 @@ impl LoadBudget {
                 &mut self.used.manifest_grid_cells,
                 self.limits.manifest_grid_cells,
             ),
+            LoadResource::ResponseInputs => {
+                (&mut self.used.response_inputs, self.limits.response_inputs)
+            }
             LoadResource::Slots => (&mut self.used.slots, self.limits.slots),
         };
         let got = used.checked_add(amount).ok_or_else(|| LoadLimitError {
@@ -204,6 +212,7 @@ impl LoadBudget {
             LoadResource::DeformOffsets => self.limits.deform_offsets,
             LoadResource::MeshGroupBitmapCells => self.limits.mesh_group_bitmap_cells,
             LoadResource::ManifestGridCells => self.limits.manifest_grid_cells,
+            LoadResource::ResponseInputs => self.limits.response_inputs,
             LoadResource::Slots => self.limits.slots,
         }
     }
@@ -267,6 +276,10 @@ pub fn charge_clm_structure(
     let mut meshes: HashMap<&crate::id::NodeId, &ClmMesh> = HashMap::new();
     for node in &doc.nodes {
         let mesh = match &node.kind {
+            ClmNodeKind::MotionResponse(r) => {
+                budget.charge(LoadResource::ResponseInputs, r.inputs.len() as u64)?;
+                None
+            }
             ClmNodeKind::Part(part) => {
                 budget.charge(LoadResource::Slots, part.slots.len() as u64)?;
                 Some(&part.mesh)

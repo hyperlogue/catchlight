@@ -1402,8 +1402,11 @@ fn parse_kind(s: &str) -> Result<NodeKindArg> {
         "group" => NodeKindArg::Group,
         "part" => NodeKindArg::Part,
         "composite" => NodeKindArg::Composite,
+        "motion_response" => NodeKindArg::MotionResponse,
         "meshgroup" | "mesh_group" => NodeKindArg::MeshGroup,
-        other => bail!("unknown node kind {other:?} (group|part|composite|meshgroup)"),
+        other => {
+            bail!("unknown node kind {other:?} (group|part|composite|meshgroup|motion_response)")
+        }
     })
 }
 

@@ -315,6 +315,7 @@ impl Model {
     /// carries except the texture payloads. Total for any Model whose deform
     /// cells are sized to the meshes they sit on.
     pub fn to_clm_structure(&self) -> Result<ClmStructure, ModelError> {
+        self.validate_responses()?;
         let order = self.nodes_in_order();
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
@@ -859,11 +860,15 @@ impl Model {
             .into());
         }
 
-        Ok(Model {
+        let model = Model {
             identity: super::next_identity(),
             generation: 0,
             physics: doc.physics,
             welds,
+            response_count: nodes
+                .values()
+                .filter(|n| matches!(n.kind, ModelNodeKind::MotionResponse(_)))
+                .count(),
             nodes,
             roots,
             params,
@@ -874,7 +879,9 @@ impl Model {
             animations: doc.animations.clone(),
             extensions,
             binding_index: OnceLock::new(),
-        })
+        };
+        model.validate_responses()?;
+        Ok(model)
     }
 
     /// Read a **complete model** from `.clm` bytes.
@@ -1126,6 +1133,7 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
             mesh: mg.mesh().clone(),
             translate_children: mg.translate_children,
         }),
+        ModelNodeKind::MotionResponse(r) => ClmNodeKind::MotionResponse(r.clone()),
         ModelNodeKind::SimplePhysics(ph) => ClmNodeKind::SimplePhysics(ClmSimplePhysics {
             kind: ph.kind,
             map_mode: ph.map_mode,
@@ -1229,6 +1237,7 @@ fn model_kind(
             group.translate_children = mg.translate_children;
             ModelNodeKind::MeshGroup(group)
         }
+        ClmNodeKind::MotionResponse(r) => ModelNodeKind::MotionResponse(r.clone()),
         ClmNodeKind::SimplePhysics(ph) => {
             let mut physics = ModelPhysics::new(ph.kind);
             physics.map_mode = ph.map_mode;

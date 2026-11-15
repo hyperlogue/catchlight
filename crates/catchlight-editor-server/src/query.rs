@@ -505,6 +505,10 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             _ => None,
         },
         mg_translate_children,
+        motion_response: match &node.kind {
+            ModelNodeKind::MotionResponse(r) => Some(r.clone().into()),
+            _ => None,
+        },
         physics: match &node.kind {
             ModelNodeKind::SimplePhysics(ph) => {
                 let targets = ph.target_params();
