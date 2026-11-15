@@ -375,12 +375,13 @@ try {
   if (!server) {
     await step("the demo preloads Lan", async () => {
       await page.locator("[data-catchlight-session][data-current]").waitFor();
-      const name = await page.evaluate(() => {
+      const tip = await page.evaluate(() => {
         const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
         const id = Number(document.querySelector("[data-catchlight-session][data-current]")!.getAttribute("data-session"));
-        return editor.session(id)?.tree().name;
+        return editor.session(id)?.nodeInfo("motion/front-hair-lock-2/tip");
       });
-      if (name !== "Lan") throw new Error(`expected Lan at startup, got ${name}`);
+      if (tip?.kind !== "motion_response" || tip.parent !== "motion/front-hair-lock-2")
+        throw new Error("expected the bundled Lan hair response at startup");
     });
   }
 
@@ -426,15 +427,9 @@ async function draws(): Promise<void> {
     // Before anything looks at a picture: a WebGPU run that quietly fell
     // back to WebGL2 draws a perfectly good frame, and every other check
     // here would pass while the tier under test went untested.
-    await page
-      .waitForFunction(
-        () =>
-          /^(webgpu|webgl2)$/.test(
-            document.querySelector("[data-catchlight-tier]")?.textContent ?? "",
-          ),
-        undefined,
-        { timeout: 20000 },
-      )
+    await page.locator("[data-catchlight-tier]")
+      .filter({ hasText: /^(webgpu|webgl2)$/ })
+      .waitFor()
       .catch(async (cause: unknown) => {
         // A device that never arrived says so in the problem line, and that
         // sentence is a better failure than this wait running out.

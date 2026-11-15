@@ -91,7 +91,6 @@ export async function workspaces(
     await pause();
   };
   let draftVertex = '[data-mesh-vertex="30"]';
-  let shapeVertex = '[data-catchlight-vertex-handle][data-vertex="30"]';
   const pickHandles = async (selector: string, minimum = 1) => {
     await handlesReady(selector, minimum);
     return page.locator(selector).evaluateAll(elements =>
@@ -290,10 +289,10 @@ export async function workspaces(
       await button("Start recording").click();
       await pause();
       assert.equal((await read()).revision, before.revision);
-      const handles = await pickHandles("[data-catchlight-vertex-handle]");
-      assert(handles.length, "Lan shape exposes draggable vertex handles");
-      shapeVertex = `[data-catchlight-vertex-handle][data-vertex="${handles[0]!.index}"]`;
-      await drag(shapeVertex, 8, 5);
+      // Recording can move a vertex behind another handle. Each subsequent
+      // gesture must start on a currently hittable vertex in the new pose.
+      const shapeHandle = "[data-catchlight-vertex-handle]";
+      await drag(shapeHandle, 8, 5);
       await changed(before.revision);
       const keyed = await read();
       assert.equal(keyed.revision, before.revision + 1);
@@ -305,7 +304,7 @@ export async function workspaces(
         1,
       );
       assert.equal(await armed(), 1);
-      await drag(shapeVertex, 5, 4, true);
+      await drag(shapeHandle, 5, 4, true);
       assert.equal((await read()).revision, keyed.revision);
       assert.equal(await armed(), 1);
       await page.screenshot({ path: `${shots}/${tag}-record-shape.png` });
@@ -319,7 +318,7 @@ export async function workspaces(
       await pause();
       assert.equal((await read()).revision, keyed.revision);
       assert.equal(await armed(), 1);
-      await drag(shapeVertex, 3, 2);
+      await drag(shapeHandle, 3, 2);
       await changed(keyed.revision);
       const inserted = await read();
       const deform = inserted.bindings.find((b) => b.target === "deform" && b.param === "test-drive")!;

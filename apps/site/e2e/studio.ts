@@ -27,6 +27,7 @@ export async function studio(
       const session = editor.session(id)!;
       return {
         revision: session.getRevision(),
+        textureCount: session.textures().length,
         info: session.nodeInfo(node),
         mesh: session.nodeInfo(node)?.vertex_count ? session.mesh(node) : undefined,
         params: session.params(),
@@ -101,7 +102,8 @@ export async function studio(
     await openModel(page);
     await prepareAuthoring(page);
     const search = page.getByRole("textbox", { name: "Search nodes" });
-    const revision = (await read()).revision;
+    const { revision, textureCount } = await read();
+    assert(textureCount > 0, "Lan carries artwork");
     await search.fill("front hair");
     assert(await page.locator('[data-catchlight-node][data-node="front-hair-lock-2"]').count());
     await search.fill("no such node");
@@ -110,7 +112,7 @@ export async function studio(
     assert(await search.evaluate((input) => input === document.activeElement));
     await selected("face");
     await page.getByRole("button", { name: "Artwork", exact: true }).click();
-    assert.equal(await page.locator("[data-catchlight-asset]").count(), 79);
+    assert.equal(await page.locator("[data-catchlight-asset]").count(), textureCount);
     assert.equal(await page.locator('[data-catchlight-asset][aria-pressed="true"]').count(), 1);
     assert(await page.locator('[data-catchlight-asset][aria-pressed="true"]').evaluate((asset) => {
       const swatch = document.createElement("span");
@@ -125,7 +127,7 @@ export async function studio(
     await page.getByText("No matching artwork", { exact: true }).waitFor();
     await artworkSearch.press("Escape");
     assert.equal(await artworkSearch.inputValue(), "");
-    assert.equal(await page.locator("[data-catchlight-asset]").count(), 79);
+    assert.equal(await page.locator("[data-catchlight-asset]").count(), textureCount);
     const paramSearch = page.getByRole("textbox", { name: "Search params" });
     const paramCount = await page.locator("[data-catchlight-param-card]").count();
     await paramSearch.fill("no such param");
