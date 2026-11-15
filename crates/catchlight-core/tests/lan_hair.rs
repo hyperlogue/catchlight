@@ -6,23 +6,12 @@
 //!
 //! Lan's head turns, tilts and bobs by mesh-group warps, never by turning a
 //! node. The head-roll warp carries the scalp and leaves the lengths hanging,
-//! so a held roll needs no strand to find gravity; the strands add the swing.
-//! Each strand hangs from where its art renders this frame, through every
-//! warp above it, and no hair spine is slid against its art.
+//! so the held pose supplies the hang. Responses sample the current posed
+//! art for transient motion, and no hair spine is slid against its art.
 //!
-//! Long locks keep a stiff root that follows the scalp and soft lengths that
-//! swing about the drawing: the strand's neutral rest is the drawing, so a
-//! settled pose renders as the rig poses it. Chain damping, not air drag,
-//! settles them, so they swing without trailing the head. Every guide runs
-//! along its lock's art from where the hair leaves the head to the painted
-//! tip, so a bend turns the art about the hair's own line.
-//!
-//! The swept fringe hangs on light, sprung two-link strands that keep it
-//! clear of the eyes. A warp cannot turn a strand, and a strand cannot
-//! stretch, so neither answers a nod or a bob: one weightless level link per
-//! hair layer senses the head moving up and down, and its bend drives a warp
-//! that lifts and drops the hair over the head (`front_hair_lift`,
-//! `back_hair_lift`).
+//! Long locks use a broad scalar response and its slower child. The short
+//! fringe uses one response. All read named vertices on pose-only art;
+//! the lift responses project vertical motion into the existing lift warps.
 
 use catchlight_core::{Model, NodeId, NodeKind, ParamId, Puppet, Vec2, Vec3};
 
@@ -79,45 +68,47 @@ fn rendered(model: &Model, puppet: &Puppet, part: &NodeId, rest: Vec2) -> Option
     None
 }
 
-/// The hair spines that carry a strand hung on a lock's art.
+/// The spines that bend the painted hair locks.
 fn lock_spines(model: &Model) -> impl Iterator<Item = &NodeId> {
     model
         .node_ids()
         .filter(|id| id.as_str().contains("Hair-Lock"))
 }
 
-/// The furthest any lock's simulation root sits from where its art renders
-/// the guide's root, over the parts whose mesh holds that point.
-fn worst_root_gap(model: &Model, puppet: &Puppet) -> (f32, String) {
-    let mut worst = (0.0_f32, String::new());
-    for id in lock_spines(model) {
-        let idx = puppet.node_idx(id).unwrap();
-        let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
+/// Read the same named root the driver samples, through an independently
+/// posed puppet. This checks the rendered warp and the slot reference together.
+fn root_on_art(model: &Model, puppet: &Puppet, part: &NodeId) -> Vec2 {
+    let slot = catchlight_core::SlotId::new("sway-root").unwrap();
+    let v = model.slot(part, &slot).unwrap().vertex().unwrap();
+    catchlight_core::geometry::EvaluatedGeometry::new(model, puppet)
+        .unwrap()
+        .mesh(part)
+        .unwrap()
+        .vertex(v as usize)
+        .unwrap()
+        .world
+        .truncate()
+}
+
+fn worst_root_gap(model: &Model, live: &Puppet, posed: &Puppet) -> (f32, String) {
+    let mut worst = (0.0, String::new());
+    let mut count = 0;
+    for id in model
+        .node_ids()
+        .filter(|id| id.as_str().starts_with("motion/") && !id.as_str().ends_with("/tip"))
+    {
+        let inputs = live.response_inputs(id).unwrap();
+        let catchlight_core::ResponseSource::PartSlot { part, .. } = &inputs[0].source else {
             continue;
         };
-        let chain = spine.chain.as_ref().unwrap();
-        let mut held = false;
-        for child in model.node(id).unwrap().children() {
-            let base = model.node(child).unwrap();
-            if !matches!(base.kind, catchlight_core::model::ModelNodeKind::Part(_)) {
-                continue;
-            }
-            // The spine's origin in the part's authored space.
-            let root = catchlight_core::components::Transform::from(&base.transform)
-                .to_matrix()
-                .inverse()
-                .transform_point3(Vec3::ZERO);
-            let Some(at) = rendered(model, puppet, child, Vec2::new(root.x, root.y)) else {
-                continue;
-            };
-            held = true;
-            let gap = chain.anchor.distance(Vec2::new(at.x, -at.y));
-            if gap > worst.0 {
-                worst = (gap, child.to_string());
-            }
+        let sample = Vec2::from_array(inputs[0].position.unwrap());
+        let gap = sample.distance(root_on_art(model, posed, part));
+        if gap > worst.0 {
+            worst = (gap, id.to_string());
         }
-        assert!(held, "{id}: the guide's root lies on none of its parts");
+        count += 1;
     }
+    assert!(count >= 17);
     worst
 }
 
@@ -183,7 +174,7 @@ fn front_locks_settle_promptly_after_a_head_roll() {
         ("front-hair-lock-18", 560.0),
         ("front-hair-lock-18", 430.0),
     ];
-    // Roll 12 units over a quarter second, then hold. The strand should come
+    // Roll 12 units over a quarter second, then hold. The tip should come
     // to within half a pixel of rest in about a second (the design measured
     // 1.2 s for a 10 degree step); much longer reads as goo.
     let mut held = Vec::new();
@@ -220,7 +211,7 @@ fn back_hair_falls_beside_the_neck_under_a_rolled_head() {
     // The outer back-hair contour beside the cheek and neck. Mesh boundaries
     // include a small transparent margin around the painted silhouette.
     // Measured on this build, where the roll warp and the length-keeping
-    // roll keys shape the fall: a settled strand adds nothing to a held pose.
+    // roll keys shape the fall: a settled response adds nothing to a held pose.
     for (y, expected_x) in [(775.0, -120.21), (725.0, -141.26), (675.0, -165.12)] {
         let mut left = f32::INFINITY;
         for id in model
@@ -250,7 +241,7 @@ fn back_hair_falls_beside_the_neck_under_a_rolled_head() {
 }
 
 /// **A lock's tip stays behind its root.** Head roll is a warp, so the art
-/// moves with the head before any strand does; what the strand adds to the
+/// moves with the head before a response acts; what the response adds to the
 /// tip must run against the way its root went.
 #[test]
 fn long_lock_mesh_tips_lag_their_roots_on_a_small_head_roll() {
@@ -265,21 +256,16 @@ fn long_lock_mesh_tips_lag_their_roots_on_a_small_head_roll() {
         ("Front-Hair-Lock-18-Spine", "front-hair-lock-18", 430.0),
         ("Back-Hair-Lock-19-Spine", "back-hair-lock-19", 350.0),
     ];
-    let root = |puppet: &Puppet, spine: &str| {
-        let idx = puppet.node_idx(&NodeId::new(spine).unwrap()).unwrap();
-        let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
-            unreachable!()
-        };
-        spine.chain.as_ref().unwrap().anchor
-    };
-    let before = samples.map(|(spine, ..)| root(&live, spine));
+    let root =
+        |puppet: &Puppet, part: &str| root_on_art(&model, puppet, &NodeId::new(part).unwrap());
+    let before = samples.map(|(_, part, _)| root(&live, part));
     let roll = ParamId::new("head_roll").unwrap();
     live.set_param_value(&roll, 1.0);
     carried.set_param_value(&roll, 1.0);
     live.tick(&model, DT);
     carried.tick(&model, DT);
     for (i, (spine, part, y)) in samples.into_iter().enumerate() {
-        let moved = root(&live, spine).x - before[i].x;
+        let moved = root(&live, part).x - before[i].x;
         let swing =
             section_center(&live, &model, part, y).x - section_center(&carried, &model, part, y).x;
         assert!(
@@ -288,7 +274,7 @@ fn long_lock_mesh_tips_lag_their_roots_on_a_small_head_roll() {
         );
         assert!(
             swing * moved < 0.0 && swing.abs() > moved.abs() * 0.25,
-            "{part}: root moved {moved}px, the strand moved the tip {swing}px"
+            "{part}: root moved {moved}px, the response moved the tip {swing}px"
         );
     }
 }
@@ -304,7 +290,7 @@ fn front_locks_do_not_ring_after_a_tiny_head_roll() {
     let samples = [("front-hair-lock-2", 432.0), ("front-hair-lock-18", 430.0)];
     let mut swing = Vec::new();
     // A half-unit roll over a quarter second, then hold the head still. What
-    // the strand adds to the visible tips is one lag and one follow-through;
+    // the response adds to the visible tips is one lag and one follow-through;
     // three quarters of a second after the head stops, under a seventh of
     // that swing may be left. Hair that keeps wobbling after a small
     // movement reads as jelly.
@@ -322,7 +308,7 @@ fn front_locks_do_not_ring_after_a_tiny_head_roll() {
     for (i, (id, _)) in samples.into_iter().enumerate() {
         let peak = swing.iter().map(|s| s[i]).fold(0.0_f32, f32::max);
         let left = swing[60..].iter().map(|s| s[i]).fold(0.0_f32, f32::max);
-        assert!(peak > 0.1, "{id}: the strand swung the tip only {peak}px");
+        assert!(peak > 0.1, "{id}: the response swung the tip only {peak}px");
         assert!(
             left < peak * 0.15,
             "{id}: still swinging {left}px of a {peak}px swing after the head stopped"
@@ -378,23 +364,24 @@ fn lan() -> Model {
     .unwrap()
 }
 
-/// **Every strand hangs from its art.** The simulation root is the guide's
-/// root where the art renders it, through every warp above the lock and on
-/// the frame it renders. The art near a root turns a little with the first
-/// link, which is the slack allowed while the head moves; the fastest roots
-/// here travel five pixels a frame, so a root one frame late would show.
+/// Each sampled root agrees with an independently posed copy of the part,
+/// including nested warps on this frame.
 #[test]
 fn simulation_roots_stay_on_the_art_through_every_warp() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
+    let mut posed = Puppet::new(&model);
+    posed.set_physics_enabled(false);
     let roll = ParamId::new("head_roll").unwrap();
     for angle in [-30.0, 30.0] {
         puppet.set_param_value(&roll, angle);
         puppet.settle_physics(&model);
         puppet.tick(&model, DT);
-        let (gap, part) = worst_root_gap(&model, &puppet);
+        posed.set_param_value(&roll, angle);
+        posed.tick(&model, DT);
+        let (gap, part) = worst_root_gap(&model, &puppet, &posed);
         assert!(
-            gap < 0.5,
+            gap < 0.01,
             "{part} at roll {angle}: simulation root is {gap}px off its art"
         );
     }
@@ -405,15 +392,18 @@ fn simulation_roots_stay_on_the_art_through_every_warp() {
         ("body_roll", 10.0),
     ] {
         let param = ParamId::new(name).unwrap();
+        posed.apply_pose(&Default::default());
         let mut puppet = Puppet::new(&model);
         puppet.settle_physics(&model);
         for frame in 0..120 {
             let value = reach * (std::f32::consts::TAU * frame as f32 * DT).sin();
             puppet.set_param_value(&param, value);
             puppet.tick(&model, DT);
-            let (gap, part) = worst_root_gap(&model, &puppet);
+            posed.set_param_value(&param, value);
+            posed.tick(&model, DT);
+            let (gap, part) = worst_root_gap(&model, &puppet, &posed);
             assert!(
-                gap < 3.0,
+                gap < 0.01,
                 "{part} on {name}, frame {frame}: simulation root is {gap}px off its art"
             );
         }
@@ -509,38 +499,6 @@ fn long_hair_hangs_down_under_a_rolled_head() {
     let mut puppet = Puppet::new(&model);
     let roll = ParamId::new("head_roll").unwrap();
     puppet.settle_physics(&model);
-    let initial: Vec<_> = model
-        .node_ids()
-        .filter_map(|id| {
-            let idx = puppet.node_idx(id)?;
-            let NodeKind::Spine(spine) = &puppet.get(idx)?.kind else {
-                return None;
-            };
-            let chain = spine.chain.as_ref()?;
-            (chain.links.len() > 2 && id.as_str().contains("Hair-Lock")).then(|| {
-                let tip = chain.particles.last().unwrap().pos;
-                (idx, tip, chain.carry.inverse() * (tip - chain.anchor))
-            })
-        })
-        .collect();
-    // On a small first movement the tip should lag the head, not be carried
-    // rigidly and only start moving on later frames.
-    puppet.set_param_value(&roll, 1.0);
-    puppet.tick(&model, DT);
-    for (idx, old_tip, local_tip) in initial {
-        let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
-            unreachable!()
-        };
-        let chain = spine.chain.as_ref().unwrap();
-        let carried_tip = chain.anchor + chain.carry * local_tip;
-        let tip = chain.particles.last().unwrap().pos;
-        assert!(
-            tip.distance(old_tip) < carried_tip.distance(old_tip) * 0.95,
-            "the tip must lag the head immediately: moved {}, rigid carry {}",
-            tip.distance(old_tip),
-            carried_tip.distance(old_tip)
-        );
-    }
     // Rest spans and directions of the long locks' lower lengths, and of the
     // face, read off the evaluated meshes by authored height.
     let long = [
@@ -594,19 +552,11 @@ fn long_hair_hangs_down_under_a_rolled_head() {
             let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
                 continue;
             };
-            let chain = spine.chain.as_ref().unwrap();
-            if chain.links.len() <= 2 {
+            if spine.joints.len() <= 2 {
                 continue;
             }
             locks += 1;
-            let particles = &chain.particles;
-            let root = particles[1].pos - particles[0].pos;
-            let drawn = chain.carry * chain.links[0].drawn;
-            let root_bend = root
-                .normalize()
-                .angle_to(drawn.normalize())
-                .abs()
-                .to_degrees();
+            let root_bend = spine.bends[0].abs() * 180.0;
             assert!(
                 root_bend < 5.0,
                 "{id} at {angle}: root detached from head direction by {root_bend} degrees"
@@ -620,7 +570,7 @@ fn long_hair_hangs_down_under_a_rolled_head() {
 }
 
 /// Body roll is a warp in Lan's rig: it moves the art without turning the
-/// spine nodes. The chain roots follow the warped art, so the long locks
+/// spine nodes. The responses follow the warped art, so the long locks
 /// swing with it, and since the move is a translation of the head they come
 /// back to their drawing once the body holds still.
 #[test]
@@ -637,9 +587,7 @@ fn long_locks_swing_with_a_body_roll_and_return_to_the_drawing() {
         let NodeKind::Spine(spine) = &puppet.get(idx).unwrap().kind else {
             unreachable!()
         };
-        let mut out = Vec::new();
-        spine.chain.as_ref().unwrap().link_bends(&mut out);
-        out
+        spine.bends.clone()
     };
     let mut swing = [0.0f32; 2];
     for frame in 1..=240 {
@@ -664,32 +612,6 @@ fn long_locks_swing_with_a_body_roll_and_return_to_the_drawing() {
     }
 }
 
-/// Where a lock's simulated tip renders in its node frame, from the bends the
-/// chain writes: the drawn links turned by each bend.
-fn simulated_tip(puppet: &Puppet, spine: &str) -> Vec2 {
-    let cmul = |a: Vec2, b: Vec2| Vec2::new(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
-    let idx = puppet
-        .node_idx(&catchlight_core::NodeId::new(spine).unwrap())
-        .unwrap();
-    let NodeKind::Spine(s) = &puppet.get(idx).unwrap().kind else {
-        panic!("{spine} is not a spine")
-    };
-    let chain = s.chain.as_ref().unwrap();
-    let mut bends = Vec::new();
-    chain.link_bends(&mut bends);
-    let (mut at, mut prev_drawn, mut prev_u) =
-        (Vec2::ZERO, chain.links[0].drawn, chain.links[0].drawn);
-    for (link, bend) in chain.links.iter().zip(bends) {
-        let rel = cmul(link.drawn, Vec2::new(prev_drawn.x, -prev_drawn.y));
-        let turn = Vec2::from_angle(-bend * std::f32::consts::PI);
-        let u = cmul(cmul(prev_u, rel), turn);
-        at += u * link.length;
-        prev_drawn = link.drawn;
-        prev_u = u;
-    }
-    at
-}
-
 /// **The frame rate does not change the swing.** A head roll ramp under a yaw
 /// sine reaches the hair through the warped root, the keyformed guide and
 /// the node transform, all evaluated on the frame they render; 30 and 60 fps
@@ -697,7 +619,7 @@ fn simulated_tip(puppet: &Puppet, spine: &str) -> Vec2 {
 #[test]
 fn hair_swings_alike_at_any_frame_rate() {
     let model = lan();
-    let locks = ["Front-Hair-Lock-2-Spine", "Back-Hair-Lock-19-Spine"];
+    let locks = [("front-hair-lock-2", 432.0), ("back-hair-lock-19", 350.0)];
     let run = |fps: f32| -> Vec<Vec<(f32, Vec2)>> {
         let mut puppet = Puppet::new(&model);
         puppet.settle_physics(&model);
@@ -707,8 +629,8 @@ fn hair_swings_alike_at_any_frame_rate() {
             puppet.set_param_value(&ParamId::new("head_roll").unwrap(), 40.0 * t.min(0.5));
             puppet.set_param_value(&ParamId::new("head_yaw").unwrap(), 15.0 * (3.0 * t).sin());
             puppet.tick(&model, 1.0 / fps);
-            for (i, lock) in locks.iter().enumerate() {
-                out[i].push((t, simulated_tip(&puppet, lock)));
+            for (i, &(lock, y)) in locks.iter().enumerate() {
+                out[i].push((t, section_center(&puppet, &model, lock, y)));
             }
         }
         out
@@ -721,7 +643,7 @@ fn hair_swings_alike_at_any_frame_rate() {
                 let off = tip.distance(truth[k].1);
                 assert!(
                     off < 0.1,
-                    "{lock} at {fps} fps, t={t:.3}: {off:.3} px off 240 fps"
+                    "{lock:?} at {fps} fps, t={t:.3}: {off:.3} px off 240 fps"
                 );
             }
         }
@@ -729,7 +651,7 @@ fn hair_swings_alike_at_any_frame_rate() {
 }
 
 /// **Hair sleeps wherever the caller places the puppet.** A viewport passes a
-/// root transform; the strands' inputs come from the physics pre-pass alone,
+/// root transform; the responses read posed slots in model space,
 /// so the render fold under that root cannot feed rounding back in and keep
 /// them awake.
 #[test]
@@ -754,7 +676,7 @@ fn hair_sleeps_under_a_placed_root() {
 }
 
 /// **A held drag on a lock lets the hair settle.** The physics pre-pass sees
-/// the same scratch transform the render does, so the strand hangs from the
+/// the same scratch transform the render does, so the slot follows the
 /// dragged art instead of alternating between it and the undragged one.
 #[test]
 fn a_held_drag_on_a_lock_lets_the_hair_settle() {
@@ -783,10 +705,8 @@ fn a_held_drag_on_a_lock_lets_the_hair_settle() {
     assert_eq!(awake, 0, "the hair never settled under a held drag");
 }
 
-/// **A nod lifts the hair.** The head's up and down is a warp no strand can
-/// answer, so each hair layer's level sensor link feels its root drop and
-/// its bend lifts the hair over the head, then lets it fall back to the
-/// drawing and sleep.
+/// The vertical response drives the authored lift warp during a nod and
+/// returns the fringe and long lock to the held drawing.
 #[test]
 fn hair_lifts_as_the_head_drops_and_comes_back_to_the_drawing() {
     let model = lan();
