@@ -242,6 +242,28 @@ impl Responses {
                         next = pose.tree().get_parent(i);
                     }
                 }
+                // Spines consume their guide meshes before group propagation;
+                // only the sampled part vertices are observed after that pass.
+                // Intermediate mesh groups still need every triangle vertex.
+                let mut selected: HashMap<NodeIdx, Vec<usize>> = HashMap::new();
+                for &(part, vertex) in &self.points {
+                    if let Some(v) = vertex {
+                        selected.entry(part).or_default().push(v as usize);
+                    }
+                }
+                let groups: HashSet<_> = pose.arena.mesh_group_node_ids.iter().copied().collect();
+                for node in &mut pose.arena.nodes {
+                    if let crate::NodeKind::MeshGroup(mg) = &mut node.kind {
+                        mg.pins.per_child.retain(|child, pins| {
+                            if let Some(vertices) = selected.get(child) {
+                                pins.sampled_vertices = Some(vertices.clone().into_boxed_slice());
+                                true
+                            } else {
+                                needed.contains(child) && groups.contains(child)
+                            }
+                        });
+                    }
+                }
                 pose.bindings.retain(|b| needed.contains(&b.node));
                 pose.rebuild_param_effect_cache();
             }

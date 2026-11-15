@@ -61,6 +61,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub(crate) struct ChildPins {
     pub(crate) vertices: Vec<u32>,
+    /// A pose-only slot sampler can request just these vertices on a Part.
+    /// Rendering and intermediate mesh groups always evaluate the full mesh.
+    pub(crate) sampled_vertices: Option<Box<[usize]>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -516,7 +519,13 @@ pub(crate) fn bake_mesh_group_pins(
             );
         }
         if !vertices.is_empty() {
-            out.per_child.insert(child_id, ChildPins { vertices });
+            out.per_child.insert(
+                child_id,
+                ChildPins {
+                    vertices,
+                    sampled_vertices: None,
+                },
+            );
         }
     }
 
@@ -1140,8 +1149,8 @@ fn propagate_to_child(
         let bitmap = mg.bitmap.as_ref();
         let n = child_verts.len();
         scratch.clear();
-        scratch.reserve(n);
-        for (i, &base_v) in child_verts.iter().enumerate() {
+        let offset = |i: usize| {
+            let base_v = child_verts[i];
             let cv_child_local = base_v - child_origin + cur_deform_scratch[i];
             let cv_mg_local = child_to_mg_2d.transform_point2(cv_child_local);
 
@@ -1154,8 +1163,7 @@ fn propagate_to_child(
                 None => find_triangle_strict_hint(&mg_local, mg_indices, cv_mg_local, hint),
             };
             let Some(tri_idx) = tri_idx else {
-                scratch.push(Vec2::ZERO);
-                continue;
+                return Vec2::ZERO;
             };
 
             let base_idx = tri_idx as usize * 3;
@@ -1169,8 +1177,7 @@ fn propagate_to_child(
                     (a, b_, c)
                 }
                 _ => {
-                    scratch.push(Vec2::ZERO);
-                    continue;
+                    return Vec2::ZERO;
                 }
             };
 
@@ -1181,8 +1188,7 @@ fn propagate_to_child(
                 mg_local[c_idx],
             );
             if weights[0].is_nan() {
-                scratch.push(Vec2::ZERO);
-                continue;
+                return Vec2::ZERO;
             }
 
             // `deformed_mg_vertices` is filled to exactly `mg_vertices.len()`
@@ -1193,7 +1199,15 @@ fn propagate_to_child(
                 + deformed_mg_vertices[c_idx] * weights[2];
 
             let new_pos_child_local = mg_to_child_2d.transform_point2(mg_local_pos);
-            scratch.push(new_pos_child_local - (base_v - child_origin) - cur_deform_scratch[i]);
+            new_pos_child_local - (base_v - child_origin) - cur_deform_scratch[i]
+        };
+        if let Some(indices) = &pins.sampled_vertices {
+            scratch.resize(n, Vec2::ZERO);
+            for &i in indices.iter() {
+                scratch[i] = offset(i);
+            }
+        } else {
+            scratch.extend((0..n).map(offset));
         }
         true
     };
