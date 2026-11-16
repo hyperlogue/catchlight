@@ -226,6 +226,24 @@ export async function studio(
         ?.keys[0]?.[0],
       -0.25,
     );
+    const output = (await read("motion/back-hair-lock-19/tip")).info!.motion_response!.output_param!;
+    const param = page.getByRole("combobox", { name: "Param", exact: true });
+    await param.selectOption(output);
+    const authorDeform = page.locator("[data-catchlight-bindings-panel] summary").filter({ hasText: "Author a mesh deform" });
+    if (!await authorDeform.evaluate(el => el.parentElement?.hasAttribute("open"))) await authorDeform.click();
+    const keys = page.getByRole("combobox", { name: "Deform key" });
+    const positions = await keys.locator("option").allTextContents();
+    assert.equal(positions.length, 3);
+    assert.equal(Number(positions[1]), 0);
+    await keys.selectOption("2");
+    await field("Deform X", "1", false);
+    const beforeDeform = (await read()).revision;
+    await page.getByRole("button", { name: "Set deform key" }).click();
+    await change(beforeDeform);
+    const deform = (await read("mg-head")).bindings.find(b => b.param === output && b.target === "deform");
+    assert.deepEqual(deform?.authored[0], [false, true, true]);
+    await undo();
+    await param.selectOption("test-drive");
     await page
       .getByRole("combobox", { name: "Binding target", exact: true })
       .selectOption("tx");

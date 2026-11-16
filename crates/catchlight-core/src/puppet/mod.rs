@@ -53,7 +53,7 @@ pub use arena::GlobalTransforms;
 
 pub(crate) use arena::Arena;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use glam::{Mat4, Vec2, Vec3};
 
@@ -62,7 +62,7 @@ use crate::components::{Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::formats::clm::ClmAnimation;
 use crate::id::{NodeId, ParamId};
-use crate::model::{BindingTarget, Model, Pose, ScalarTarget};
+use crate::model::{Model, Pose};
 use crate::node::NodeTree;
 
 use bake::{Baked, BakedBinding, BakedParam};
@@ -280,11 +280,6 @@ pub struct Puppet {
     last_tick_folded_param_generation: Option<u64>,
 
     bindings: Vec<BakedBinding>,
-    /// Param slots whose bindings reach a mesh group or something under one.
-    param_mesh_group_relevant: HashSet<u32>,
-    mesh_group_param_generation: u64,
-    last_tick_mesh_group_generation: Option<u64>,
-
     responses: response::Responses,
     physics_enabled: bool,
     spine_targets: Vec<Vec<Option<u32>>>,
@@ -335,9 +330,6 @@ impl Puppet {
             param_generation: 0,
             last_tick_folded_param_generation: None,
             bindings: Vec::new(),
-            param_mesh_group_relevant: HashSet::new(),
-            mesh_group_param_generation: 0,
-            last_tick_mesh_group_generation: None,
             responses: response::Responses::default(),
             physics_enabled: true,
             spine_targets: Vec::new(),
@@ -473,45 +465,6 @@ impl Puppet {
         self.transforms = GlobalTransforms::new();
         self.param_generation = self.param_generation.wrapping_add(1);
         self.last_tick_folded_param_generation = None;
-        self.last_tick_mesh_group_generation = None;
-        self.rebuild_param_effect_cache();
-    }
-
-    /// Param slots whose bindings can move a mesh group or something under
-    /// one, so a pose change that touches none of them can skip the
-    /// mesh-group passes.
-    fn rebuild_param_effect_cache(&mut self) {
-        self.param_mesh_group_relevant.clear();
-        if self.arena.mesh_group_node_ids.is_empty() {
-            return;
-        }
-        let mut related = HashSet::new();
-        for &mg_id in &self.arena.mesh_group_node_ids {
-            related.insert(mg_id);
-            related.extend(self.arena.tree.get_all_descendants(mg_id));
-        }
-        for b in &self.bindings {
-            let moves_geometry = matches!(
-                b.target,
-                BindingTarget::Deform
-                    | BindingTarget::Scalar(
-                        ScalarTarget::Tx
-                            | ScalarTarget::Ty
-                            | ScalarTarget::Tz
-                            | ScalarTarget::Sx
-                            | ScalarTarget::Sy
-                            | ScalarTarget::Rx
-                            | ScalarTarget::Ry
-                            | ScalarTarget::Rz
-                    )
-            );
-            if moves_geometry && related.contains(&b.node) {
-                self.param_mesh_group_relevant.insert(b.x);
-                if let Some(y) = b.y {
-                    self.param_mesh_group_relevant.insert(y);
-                }
-            }
-        }
     }
 
     // ---- the arena, at the edge ------------------------------------------
@@ -731,7 +684,6 @@ impl Puppet {
     /// without this the next tick would skip the fold that applies it.
     fn invalidate_fold(&mut self) {
         self.last_tick_folded_param_generation = None;
-        self.last_tick_mesh_group_generation = None;
     }
 
     /// Write every scratch transform over what the fold produced. Runs after
@@ -862,7 +814,7 @@ impl Puppet {
                 if let Some(v) = self.param_values.get_mut(slot as usize) {
                     *v = Some(value);
                 }
-                self.bump_param_generation_for_slot(slot);
+                self.bump_param_generation();
             }
             None => {
                 if self.param_values_overflow.get(param).copied() == Some(value) {
@@ -884,7 +836,7 @@ impl Puppet {
                     .and_then(|v| v.take())
                     .is_some()
                 {
-                    self.bump_param_generation_for_slot(slot);
+                    self.bump_param_generation();
                 }
             }
             None => {
@@ -983,11 +935,10 @@ impl Puppet {
         if before == self.resolved(slot) {
             return false;
         }
-        self.bump_param_generation_for_slot(slot);
+        self.bump_param_generation();
         true
     }
 
-    /// Put `slot_claims` back in step with `param_contributions`, which is
     /// Drop every driver claim, restoring each param to what was posed.
     pub fn clear_param_contributions(&mut self) {
         if self.param_contributions.is_empty() {
@@ -997,8 +948,8 @@ impl Puppet {
             if let Some(row) = self.slot_claims.get_mut(e.slot as usize) {
                 row.clear();
             }
-            self.bump_param_generation_for_slot(e.slot);
         }
+        self.bump_param_generation();
         for flag in self.param_contributed.iter_mut() {
             *flag = false;
         }
@@ -1036,11 +987,8 @@ impl Puppet {
         }
     }
 
-    fn bump_param_generation_for_slot(&mut self, slot: u32) {
+    fn bump_param_generation(&mut self) {
         self.param_generation = self.param_generation.wrapping_add(1);
-        if self.param_mesh_group_relevant.contains(&slot) {
-            self.mesh_group_param_generation = self.mesh_group_param_generation.wrapping_add(1);
-        }
     }
 
     // ---- animations -------------------------------------------------------
@@ -1071,6 +1019,7 @@ impl Puppet {
     pub fn play_animation(&mut self, name: &str) -> bool {
         if let Some(index) = self.animations.iter().position(|a| a.name == name) {
             self.sampled_animation = None;
+            self.responses.reset();
             self.play_state = Some(AnimationPlayState {
                 index,
                 time: 0.0,
@@ -1130,6 +1079,9 @@ impl Puppet {
             self.play_state = None;
             return false;
         };
+        if dt < 0. {
+            self.responses.reset();
+        }
         state.time += dt;
         // A looping animation snaps back to the loop region's start (the
         // lead-in plays once), and playback always clamps to the last frame.
@@ -1137,6 +1089,7 @@ impl Puppet {
             let (loop_begin, loop_end) = anim.loop_region();
             let frame = (state.time / anim.timestep).round() as i64;
             if state.looping && frame >= loop_end as i64 {
+                self.responses.reset();
                 state.time = loop_begin as f32 * anim.timestep;
             }
             let frame = (state.time / anim.timestep).round() as i64;
@@ -1226,23 +1179,13 @@ impl Puppet {
         let _span = tracing::trace_span!("tick").entered();
         self.sync(model);
         let mut out = std::mem::take(&mut self.transforms);
-        let mut motion = Motion {
+        let motion = Motion {
             animation: self.tick_animations(dt),
-            physics: false,
+            physics: self.advance_responses(model, dt, false),
         };
-
-        motion.physics = self.advance_responses(model, dt, false);
         let params_changed = self.last_tick_folded_param_generation != Some(self.param_generation);
-        let mesh_group_generation_changed =
-            self.last_tick_mesh_group_generation != Some(self.mesh_group_param_generation);
-        let has_mesh_group_work = !self.arena.mesh_group_node_ids.is_empty()
-            // A scratch transform moves a node no param names, so the
-            // param-relevance cache cannot see it; while one stands, the
-            // mesh-group passes run on their own account.
-            && (!self.param_mesh_group_relevant.is_empty() || !self.scratch_transforms.is_empty())
-            && (params_changed || mesh_group_generation_changed);
         if params_changed {
-            self.fold_frame(&mut out, root, has_mesh_group_work);
+            self.fold_frame(&mut out, root);
         } else {
             self.arena.compute_transforms_with_root(&mut out, root);
         }
@@ -1251,7 +1194,7 @@ impl Puppet {
     }
 
     /// Fold resolved params into transforms and geometry, then apply welds.
-    fn fold_frame(&mut self, out: &mut GlobalTransforms, root: Mat4, mesh_groups: bool) {
+    fn fold_frame(&mut self, out: &mut GlobalTransforms, root: Mat4) {
         self.reset_frame();
         self.apply_params();
         self.apply_scratch_transforms();
@@ -1266,9 +1209,8 @@ impl Puppet {
             self.apply_spine_bends();
             self.arena.propagate_spine_deforms(out);
         }
-        if mesh_groups {
+        if !self.arena.mesh_group_node_ids.is_empty() {
             self.arena.propagate_mesh_group_deforms(out, root);
-            self.last_tick_mesh_group_generation = Some(self.mesh_group_param_generation);
         }
         self.arena.apply_welds(out);
         self.arena.combine_deforms();

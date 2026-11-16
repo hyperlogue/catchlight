@@ -275,6 +275,7 @@ export class FakeEditor implements WasmEditor {
           min: request.min,
           max: request.max,
           default: request.default,
+          initial_positions: [0, 1],
           bindings: 0,
         });
         doc.rev += 1;

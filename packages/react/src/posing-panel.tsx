@@ -341,7 +341,7 @@ export function DeformPanel({
   const all = useParams(session);
   const p = all.find((p) => p.id === params.param);
   const binding = useBindings(session, node).find((b) => b.target === "deform" && b.param === params.param && b.param_y == params.param_y);
-  const positions = binding?.key_positions[0] ?? [0, 1];
+  const positions = binding?.key_positions[0] ?? p?.initial_positions ?? [];
   const [cell, setCell] = useState(0);
   const [x, setX] = useState(0);
   const [y, setY] = useState(0);
@@ -388,10 +388,10 @@ export function DeformPanel({
               const dx = vx - mesh.origin[0], dy = vy - mesh.origin[1];
               return [dx * cosine - dy * sine - dx + x, dx * sine + dy * cosine - dy + y];
             });
-            return run({ cmd: "edit_apply", if_rev: session.getRevision(), edits: [
-              { op: "binding_add", node, ...params, target: "deform", key_positions: binding?.key_positions ?? (params.param_y ? [positions, [0, 1]] : [positions]) },
-              { op: "binding_cells_set", node, ...params, target: "deform", cells: [{ cell: [cell, 0], value: { offsets } }] },
-            ] });
+            return run({
+              cmd: "binding_cells_set", node, ...params, target: "deform",
+              if_rev: session.getRevision(), cells: [{ cell: [cell, 0], value: { offsets } }],
+            });
           })()
         }
       >

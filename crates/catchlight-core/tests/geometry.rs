@@ -304,3 +304,82 @@ fn observation_rejects_missing_nodes_unmeshed_nodes_and_stale_frames() {
     puppet.tick(&model, 0.0);
     assert!(EvaluatedGeometry::new(&model, &puppet).is_ok());
 }
+
+#[test]
+fn a_response_slot_samples_the_complete_weld_chain() {
+    use catchlight_core::{MotionResponse, ResponseInput, ResponseSource};
+    let mut model = Model::new();
+    let root = model.root().unwrap().clone();
+    let mut ids = SeededHex::new(7);
+    let slot = SlotId::new("tip").unwrap();
+    let mut parts = Vec::new();
+    for x in [8., 4., 0., 50., 70.] {
+        let part = add_part(&mut model, &root, triangle(), &mut ids);
+        model
+            .update_node(&part, |n| n.transform.translation[0] = x)
+            .unwrap();
+        model.slot_add(&part, slot.clone()).unwrap();
+        model.slot_fill(&part, &slot, 0).unwrap();
+        parts.push(part);
+    }
+    // A second slot on B selects the same vertex for the later weld.
+    let second = SlotId::new("far").unwrap();
+    model.slot_add(&parts[1], second.clone()).unwrap();
+    model.slot_fill(&parts[1], &second, 0).unwrap();
+    let weld = |a: usize, b: usize, from: &SlotId| {
+        ModelWeld::new(
+            parts[a].clone(),
+            parts[b].clone(),
+            vec![SlotPair {
+                a: from.clone(),
+                b: slot.clone(),
+                weight: 0.5,
+            }],
+        )
+    };
+    model
+        .set_welds(vec![
+            weld(0, 1, &slot),
+            weld(3, 4, &slot),
+            weld(1, 2, &second),
+        ])
+        .unwrap();
+    let response = model
+        .add_node(
+            &root,
+            ModelNode::new(
+                "follow",
+                ModelNodeKind::MotionResponse(MotionResponse {
+                    inputs: vec![ResponseInput {
+                        gain: 1.,
+                        source: ResponseSource::PartSlot {
+                            part: parts[2].clone(),
+                            slot,
+                            angle_deg: 0.,
+                            reference_length: 1.,
+                        },
+                    }],
+                    ..Default::default()
+                }),
+            ),
+            &mut ids,
+        )
+        .unwrap();
+    let mut puppet = Puppet::new(&model);
+    for dx in [0., 4., -8.] {
+        puppet.set_scratch_deform(puppet.node_idx(&parts[0]).unwrap(), &[Vec2::new(dx, 0.); 3]);
+        puppet.tick(&model, 1. / 60.);
+        let world = EvaluatedGeometry::new(&model, &puppet)
+            .unwrap()
+            .mesh(&parts[2])
+            .unwrap()
+            .vertex(0)
+            .unwrap()
+            .world;
+        close(world, [3. + dx / 4., 0., 0.]);
+        assert_eq!(
+            puppet.response_inputs(&response).unwrap()[0].position,
+            Some(world.truncate().to_array())
+        );
+    }
+}

@@ -1736,6 +1736,10 @@ export type ParamInfo = {
   max: number,
   default: number,
   /**
+   * Normalized keys a new binding on this axis starts with.
+   */
+  initial_positions: Array<number>,
+  /**
    * Number of bindings driven by this input.
    */
   bindings: number,

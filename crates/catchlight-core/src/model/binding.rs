@@ -404,15 +404,30 @@ fn neutral_cells(zero: [Option<usize>; 2], w: usize, h: usize) -> impl Iterator<
 
 const DEFAULT_POSITIONS: [f32; 2] = [0.0, 1.0];
 
+fn normalized_zero(min: f32, max: f32) -> f32 {
+    if max - min > 1e-9 {
+        -min / (max - min)
+    } else {
+        0.
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingEdit {
+    Existing,
+    CreateIfMissing,
+    RestoreNeutralCells,
+}
+
 impl Model {
     fn response_zero(&self, param: &ParamId) -> Option<f32> {
+        self.response_owner(param)?;
         let p = self.param(param)?;
-        (self.response_count!=0 && self.nodes.values().any(|n|matches!(&n.kind,ModelNodeKind::MotionResponse(r) if r.output_param.as_ref()==Some(param)))).then(|| {
-            if p.max-p.min>1e-9 {-p.min/(p.max-p.min)} else {0.}
-        })
+        Some(normalized_zero(p.min, p.max))
     }
 
-    fn initial_positions(&self, param: &ParamId) -> Vec<f32> {
+    /// Normalized keys that creating a binding on this param will install.
+    pub fn initial_positions(&self, param: &ParamId) -> Vec<f32> {
         let mut a = DEFAULT_POSITIONS.to_vec();
         if let Some(zero) = self.response_zero(param).filter(|z| *z > 0. && *z < 1.) {
             a.insert(1, zero);
@@ -429,9 +444,10 @@ impl Model {
         for (axis, p) in key.params.iter().enumerate() {
             if let Some(z) = self.response_zero(p) {
                 result[axis] = Some(axes[axis].iter().position(|v| *v == z).ok_or_else(|| {
-                    ModelError::InvalidResponse {
+                    ModelError::InvalidResponseBinding {
                         node: key.node.clone(),
-                        reason: format!("binding needs a key position at zero {p}"),
+                        target: key.target.name(),
+                        reason: format!("output {p} needs a zero key at normalized position {z}"),
                     }
                 })?);
             }
@@ -439,37 +455,15 @@ impl Model {
         Ok(result)
     }
 
-    fn protected_cell(&self, key: &BindingKey, cell: [u32; 2]) -> bool {
-        if self.response_count == 0 {
-            return false;
-        }
-        let mut active = false;
-        for (axis, p) in key.params.iter().enumerate() {
-            if let Some(z) = self.response_zero(p) {
-                active = true;
-                let position = self.binding(key).map_or_else(
-                    || self.initial_positions(p).get(cell[axis] as usize).copied(),
-                    |b| b.key_positions[axis].get(cell[axis] as usize).copied(),
-                );
-                if position != Some(z) {
-                    return false;
-                }
-            }
-        }
-        active
-    }
-
-    fn seed_response_identity(&mut self, key: &BindingKey) -> Result<(), ModelError> {
-        if self.response_count == 0 {
-            return Ok(());
-        }
-        let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
+    fn seed_response_identity(&self, binding: &mut ModelBinding) -> Result<(), ModelError> {
+        let key = &binding.key;
         let zero = self.zero_indices(key, &binding.key_positions)?;
-        let (w, h) = self.binding_grid(key)?;
+        let w = binding.key_positions[0].len();
+        let h = binding.key_positions.get(1).map_or(1, Vec::len);
         if zero == [None, None] {
             return Ok(());
         }
-        let cells: Vec<_> = neutral_cells(zero, w as usize, h as usize).collect();
+        let cells: Vec<_> = neutral_cells(zero, w, h).collect();
         fn seed<T: Clone>(existing: &mut Vec<ClmCell<T>>, cells: &[[u32; 2]], identity: T) {
             let mut needed: std::collections::BTreeSet<_> = cells.iter().copied().collect();
             for c in existing.iter_mut() {
@@ -485,12 +479,12 @@ impl Model {
             existing.sort_by_key(|c| (c.y, c.x));
         }
         let len = self.deform_len(&key.node);
-        let binding = self.binding_mut(key)?;
+        let target = key.target;
         match binding.values_mut() {
             ClmBindingValues::Deform(c) => seed(&mut c.cells, &cells, vec![0.; len]),
             values => {
                 if let Some(c) = scalar_cells_mut(values) {
-                    seed(c, &cells, key.target.scalar()?.identity());
+                    seed(c, &cells, target.scalar()?.identity());
                 }
             }
         }
@@ -523,9 +517,10 @@ impl Model {
                 .any(|c| !missing.remove(&[c.x, c.y]) || c.value != t.identity()),
         };
         if invalid || !missing.is_empty() {
-            return Err(ModelError::InvalidResponse {
+            return Err(ModelError::InvalidResponseBinding {
                 node: b.key.node.clone(),
-                reason: "binding needs identity at every zero-lag cell".into(),
+                target: b.key.target.name(),
+                reason: "every zero-lag cell must have an authored identity value".into(),
             });
         }
         Ok(())
@@ -538,8 +533,7 @@ impl Model {
         Ok(binding.key_positions[axis].len() as u32)
     }
 
-    /// The binding's own cell grid. A missing binding uses the two-position
-    /// axes that an auto-creating write would create.
+    /// The grid of an existing binding, or the initial axes of an auto-creating write.
     pub fn binding_grid(&self, key: &BindingKey) -> Result<(u32, u32), ModelError> {
         let (x, y) = self.binding_axes(key)?;
         if self.response_count != 0 && self.binding(key).is_none() {
@@ -620,12 +614,47 @@ impl Model {
         })
     }
 
-    fn binding_mut(&mut self, key: &BindingKey) -> Result<&mut ModelBinding, ModelError> {
-        let i = *self
-            .binding_index()
-            .get(key)
-            .ok_or(ModelError::UnknownBinding)?;
-        self.bindings.get_mut(i).ok_or(ModelError::UnknownBinding)
+    /// The publication boundary for binding edits. Only a corrective binding
+    /// needs a candidate copy. A failed write, including an auto-creating
+    /// one, leaves the authored cells and generation untouched.
+    fn edit_binding(
+        &mut self,
+        key: &BindingKey,
+        mode: BindingEdit,
+        edit: impl FnOnce(&mut ModelBinding),
+    ) -> Result<(), ModelError> {
+        let index = self.binding_index().get(key).copied();
+        let corrective = key.params.iter().any(|p| self.response_owner(p).is_some());
+        match index {
+            Some(i) if !corrective => edit(&mut self.bindings[i]),
+            _ => {
+                let mut candidate = match index {
+                    Some(i) => self.bindings[i].clone(),
+                    None if mode == BindingEdit::CreateIfMissing => self.new_binding(
+                        key,
+                        key.params
+                            .iter()
+                            .map(|p| self.initial_positions(p))
+                            .collect(),
+                    )?,
+                    None => return Err(ModelError::UnknownBinding),
+                };
+                edit(&mut candidate);
+                if corrective {
+                    if mode == BindingEdit::RestoreNeutralCells {
+                        self.seed_response_identity(&mut candidate)?;
+                    }
+                    self.validate_response_binding(&candidate)?;
+                }
+                if let Some(i) = index {
+                    self.bindings[i] = candidate;
+                } else {
+                    self.bindings.push(candidate);
+                }
+            }
+        }
+        self.bump();
+        Ok(())
     }
 
     fn check_cell(&self, key: &BindingKey, cell: [u32; 2]) -> Result<(), ModelError> {
@@ -659,6 +688,19 @@ impl Model {
         key: &BindingKey,
         key_positions: Vec<Vec<f32>>,
     ) -> Result<(), ModelError> {
+        if self.binding(key).is_none() {
+            let binding = self.new_binding(key, key_positions)?;
+            self.bindings.push(binding);
+            self.bump();
+        }
+        Ok(())
+    }
+
+    fn new_binding(
+        &self,
+        key: &BindingKey,
+        key_positions: Vec<Vec<f32>>,
+    ) -> Result<ModelBinding, ModelError> {
         if key.params.y() == Some(key.params.x()) {
             return Err(ModelError::SelfPairedBinding);
         }
@@ -681,20 +723,16 @@ impl Model {
             }
         };
         self.binding_grid(key)?;
-        if self.binding(key).is_some() {
-            return Ok(());
-        }
         validate_binding_positions(key.params.iter().count(), &key_positions)?;
-        self.zero_indices(key, &key_positions)?;
-        self.bindings.push(ModelBinding {
+        let mut binding = ModelBinding {
             key: key.clone(),
             key_positions,
             interpolate_mode: InterpolateMode::Linear,
             values: values.into(),
             dense: OnceLock::new(),
-        });
-        self.bump();
-        self.seed_response_identity(key)
+        };
+        self.seed_response_identity(&mut binding)?;
+        Ok(binding)
     }
 
     /// Author one keypoint of a scalar binding (auto-creating the binding).
@@ -705,23 +743,18 @@ impl Model {
         cell: [u32; 2],
         value: f32,
     ) -> Result<(), ModelError> {
-        let target = key.target.scalar()?;
-        if self.protected_cell(key, cell) && value != target.identity() {
-            return Err(ModelError::CellOutOfRange);
-        }
+        key.target.scalar()?;
         if !value.is_finite() {
             return Err(ModelError::CellOutOfRange);
         }
         // Validate before creating anything — a failed key write must not
         // leave a phantom binding behind.
         self.check_cell(key, cell)?;
-        self.add_binding(key)?;
-        let binding = self.binding_mut(key)?;
-        if let Some(cells) = scalar_cells_mut(binding.values_mut()) {
-            upsert(cells, cell, value);
-        }
-        self.bump();
-        Ok(())
+        self.edit_binding(key, BindingEdit::CreateIfMissing, |binding| {
+            if let Some(cells) = scalar_cells_mut(binding.values_mut()) {
+                upsert(cells, cell, value);
+            }
+        })
     }
 
     /// Un-author a keypoint (the cell goes back to derived).
@@ -731,21 +764,17 @@ impl Model {
         cell: [u32; 2],
     ) -> Result<(), ModelError> {
         self.check_cell(key, cell)?;
-        if self.protected_cell(key, cell) {
-            return self.write_identity_at(key, cell);
-        }
-        let binding = self.binding_mut(key)?;
-        let [x, y] = cell;
-        match binding.values_mut() {
-            ClmBindingValues::Deform(c) => c.cells.retain(|c| !(c.x == x && c.y == y)),
-            other => {
-                if let Some(cells) = scalar_cells_mut(other) {
-                    cells.retain(|c| !(c.x == x && c.y == y));
+        self.edit_binding(key, BindingEdit::RestoreNeutralCells, |binding| {
+            let [x, y] = cell;
+            match binding.values_mut() {
+                ClmBindingValues::Deform(c) => c.cells.retain(|c| !(c.x == x && c.y == y)),
+                other => {
+                    if let Some(cells) = scalar_cells_mut(other) {
+                        cells.retain(|c| !(c.x == x && c.y == y));
+                    }
                 }
             }
-        }
-        self.bump();
-        Ok(())
+        })
     }
 
     /// Author the do-nothing identity value at a keypoint.
@@ -761,21 +790,20 @@ impl Model {
     fn write_identity_at(&mut self, key: &BindingKey, cell: [u32; 2]) -> Result<(), ModelError> {
         let vcount = self.deform_len(&key.node);
         let target = key.target;
-        let binding = self.binding_mut(key)?;
-        match binding.values_mut() {
-            ClmBindingValues::Deform(c) => upsert(&mut c.cells, cell, vec![0.0; vcount]),
-            other => {
-                let identity = match target {
-                    BindingTarget::Scalar(t) => t.identity(),
-                    BindingTarget::Deform => 0.0,
-                };
-                if let Some(cells) = scalar_cells_mut(other) {
-                    upsert(cells, cell, identity);
+        self.edit_binding(key, BindingEdit::Existing, |binding| {
+            match binding.values_mut() {
+                ClmBindingValues::Deform(c) => upsert(&mut c.cells, cell, vec![0.0; vcount]),
+                other => {
+                    let identity = match target {
+                        BindingTarget::Scalar(t) => t.identity(),
+                        BindingTarget::Deform => 0.0,
+                    };
+                    if let Some(cells) = scalar_cells_mut(other) {
+                        upsert(cells, cell, identity);
+                    }
                 }
             }
-        }
-        self.bump();
-        Ok(())
+        })
     }
 
     pub fn delete_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
@@ -793,32 +821,33 @@ impl Model {
         key: &BindingKey,
         mode: InterpolateMode,
     ) -> Result<(), ModelError> {
-        self.binding_mut(key)?.interpolate_mode = mode;
-        self.bump();
-        Ok(())
+        self.edit_binding(key, BindingEdit::Existing, |binding| {
+            binding.interpolate_mode = mode
+        })
     }
 
     /// Negate every authored value.
     pub fn invert_binding(&mut self, key: &BindingKey) -> Result<(), ModelError> {
-        let binding = self.binding_mut(key)?;
-        match binding.values_mut() {
-            ClmBindingValues::Deform(c) => {
-                for cell in &mut c.cells {
-                    for v in &mut cell.value {
-                        *v = -*v;
+        self.edit_binding(
+            key,
+            BindingEdit::RestoreNeutralCells,
+            |binding| match binding.values_mut() {
+                ClmBindingValues::Deform(c) => {
+                    for cell in &mut c.cells {
+                        for v in &mut cell.value {
+                            *v = -*v;
+                        }
                     }
                 }
-            }
-            other => {
-                if let Some(cells) = scalar_cells_mut(other) {
-                    for cell in cells {
-                        cell.value = -cell.value;
+                other => {
+                    if let Some(cells) = scalar_cells_mut(other) {
+                        for cell in cells {
+                            cell.value = -cell.value;
+                        }
                     }
                 }
-            }
-        }
-        self.bump();
-        self.seed_response_identity(key)
+            },
+        )
     }
 
     /// The binding's dense grid: the value at every cell of it, authored or
@@ -1015,19 +1044,15 @@ impl Model {
         if self.node_mesh(&key.node).is_none() || offsets.len() != expected {
             return Err(ModelError::NotMeshed);
         }
-        if offsets.iter().any(|v| !v.is_finite())
-            || (self.protected_cell(key, cell) && offsets.iter().any(|v| *v != 0.))
-        {
+        if offsets.iter().any(|v| !v.is_finite()) {
             return Err(ModelError::CellOutOfRange);
         }
         self.check_cell(key, cell)?;
-        self.add_binding(key)?;
-        let binding = self.binding_mut(key)?;
-        if let ClmBindingValues::Deform(c) = binding.values_mut() {
-            upsert(&mut c.cells, cell, offsets);
-        }
-        self.bump();
-        Ok(())
+        self.edit_binding(key, BindingEdit::CreateIfMissing, |binding| {
+            if let ClmBindingValues::Deform(c) = binding.values_mut() {
+                upsert(&mut c.cells, cell, offsets);
+            }
+        })
     }
 
     /// Author a deform keypoint by applying an affine (scale, then rotate, then
@@ -1097,17 +1122,19 @@ impl Model {
         if !param_range_is_valid(min, max) {
             return Err(ModelError::CellOutOfRange);
         }
-        if min > 0. || max < 0. {
-            self.check_response_writer(param)?;
-        }
-        if let Some(z) = self.response_zero(param) {
-            let new_zero = if max - min > 1e-9 {
-                -min / (max - min)
-            } else {
-                0.
+        if let Some(owner) = self.response_owner(param) {
+            let range_error = |reason| ModelError::InvalidResponse {
+                node: owner.clone(),
+                reason: format!("output {param} {reason}"),
             };
-            if new_zero != z && self.bindings_of_param(param).next().is_some() {
-                return Err(ModelError::CellOutOfRange);
+            if min > 0. || max < 0. {
+                return Err(range_error("needs a range containing zero"));
+            }
+            let p = self.param(param).ok_or(ModelError::UnknownParam)?;
+            if normalized_zero(min, max) != normalized_zero(p.min, p.max)
+                && self.bindings_of_param(param).next().is_some()
+            {
+                return Err(range_error("has a binding whose zero key would move"));
             }
         }
         let p = self.param_mut(param)?;
@@ -1142,17 +1169,16 @@ impl Model {
         let mut positions = binding.key_positions.clone();
         positions[axis as usize].insert(idx, value);
         validate_binding_positions(key.params.iter().count(), &positions)?;
-        let binding = self.binding_mut(key)?;
-        binding.key_positions = positions;
-        binding.cell_coords_mut().map_coords(axis, &|coord| {
-            if coord >= idx as u32 {
-                coord + 1
-            } else {
-                coord
-            }
-        });
-        self.bump();
-        self.seed_response_identity(key)?;
+        self.edit_binding(key, BindingEdit::RestoreNeutralCells, |binding| {
+            binding.key_positions = positions;
+            binding.cell_coords_mut().map_coords(axis, &|coord| {
+                if coord >= idx as u32 {
+                    coord + 1
+                } else {
+                    coord
+                }
+            });
+        })?;
         Ok(idx)
     }
 
@@ -1165,33 +1191,23 @@ impl Model {
         index: usize,
     ) -> Result<(), ModelError> {
         let axis = key.params.axis_of(param).ok_or(ModelError::UnknownParam)?;
-        if let Some(z) = self.response_zero(param) {
-            if self
-                .binding(key)
-                .and_then(|b| b.key_positions[axis as usize].get(index))
-                .copied()
-                == Some(z)
-            {
-                return Err(ModelError::CellOutOfRange);
-            }
-        }
-        let binding = self.binding_mut(key)?;
-        let points = &mut binding.key_positions[axis as usize];
+        let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
+        let points = &binding.key_positions[axis as usize];
         if points.len() <= 1 || index >= points.len() {
             return Err(ModelError::IndexOutOfRange);
         }
-        points.remove(index);
-        let cells = binding.cell_coords_mut();
-        cells.drop_at(axis, index as u32);
-        cells.map_coords(axis, &|coord| {
-            if coord > index as u32 {
-                coord - 1
-            } else {
-                coord
-            }
-        });
-        self.bump();
-        Ok(())
+        self.edit_binding(key, BindingEdit::Existing, |binding| {
+            binding.key_positions[axis as usize].remove(index);
+            let cells = binding.cell_coords_mut();
+            cells.drop_at(axis, index as u32);
+            cells.map_coords(axis, &|coord| {
+                if coord > index as u32 {
+                    coord - 1
+                } else {
+                    coord
+                }
+            });
+        })
     }
 
     /// Move one normalized position without crossing neighbors. Only this
@@ -1204,18 +1220,8 @@ impl Model {
         value: f32,
     ) -> Result<(), ModelError> {
         let axis = key.params.axis_of(param).ok_or(ModelError::UnknownParam)?;
-        if let Some(z) = self.response_zero(param) {
-            if self
-                .binding(key)
-                .and_then(|b| b.key_positions[axis as usize].get(index))
-                .copied()
-                == Some(z)
-            {
-                return Err(ModelError::CellOutOfRange);
-            }
-        }
-        let binding = self.binding_mut(key)?;
-        let points = &mut binding.key_positions[axis as usize];
+        let binding = self.binding(key).ok_or(ModelError::UnknownBinding)?;
+        let points = &binding.key_positions[axis as usize];
         if index >= points.len() {
             return Err(ModelError::IndexOutOfRange);
         }
@@ -1226,10 +1232,10 @@ impl Model {
         {
             return Err(ModelError::CellOutOfRange);
         }
-        points[index] = value;
-        binding.invalidate_dense();
-        self.bump();
-        Ok(())
+        self.edit_binding(key, BindingEdit::Existing, |binding| {
+            binding.key_positions[axis as usize][index] = value;
+            binding.invalidate_dense();
+        })
     }
 }
 

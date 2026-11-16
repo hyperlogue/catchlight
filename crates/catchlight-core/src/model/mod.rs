@@ -169,6 +169,12 @@ const ID_MINT_ATTEMPTS: usize = 64;
 pub enum ModelError {
     #[error("invalid motion response {node}: {reason}")]
     InvalidResponse { node: NodeId, reason: String },
+    #[error("{target} binding on {node}: {reason}")]
+    InvalidResponseBinding {
+        node: NodeId,
+        target: &'static str,
+        reason: String,
+    },
     #[error("unknown node id")]
     UnknownNode,
     #[error("unknown param id")]
@@ -335,6 +341,7 @@ pub struct Model {
     nodes: HashMap<NodeId, ModelNode>,
     /// Avoid scanning a model without responses for response ownership on every edit.
     response_count: usize,
+    response_index: OnceLock<Arc<response::ResponseIndex>>,
     /// The nodes whose parent this model does not carry, in tree order.
     /// A complete model has exactly one and its `parent` is `None`; a
     /// fragment has one or more, each naming a base node that is absent.
@@ -474,7 +481,8 @@ pub struct ModelNode {
     pub lock_to_root: bool,
     pub kind: ModelNodeKind,
     parent: Option<NodeId>,
-    children: Vec<NodeId>,
+    // Like meshes, node-owned lists are shared across snapshots and edit rollback.
+    children: Arc<Vec<NodeId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -572,11 +580,11 @@ pub struct ModelPart {
     mesh: ModelMesh,
     /// Albedo texture, or `None` for an unmapped part (the renderer culls it).
     albedo: Option<TexId>,
-    masks: Vec<ModelMask>,
+    masks: Arc<Vec<ModelMask>>,
     /// The vertex slots welds pair, filled by this part's author. Only
     /// [`Model`]'s slot methods build one, so a slot is always in mesh range
     /// or unfilled.
-    slots: Vec<Slot>,
+    slots: Arc<Vec<Slot>>,
 }
 
 impl ModelPart {
@@ -590,8 +598,8 @@ impl ModelPart {
             mask_threshold: 0.5,
             mesh: mesh.into(),
             albedo: None,
-            masks: Vec::new(),
-            slots: Vec::new(),
+            masks: Arc::default(),
+            slots: Arc::default(),
         }
     }
 
@@ -621,7 +629,7 @@ pub struct ModelComposite {
     pub screen_tint: [f32; 3],
     pub mask_threshold: f32,
     pub propagate_meshgroup: bool,
-    masks: Vec<ModelMask>,
+    masks: Arc<Vec<ModelMask>>,
 }
 
 impl ModelComposite {
@@ -634,7 +642,7 @@ impl ModelComposite {
             screen_tint: [0.0; 3],
             mask_threshold: 0.5,
             propagate_meshgroup: false,
-            masks: Vec::new(),
+            masks: Arc::default(),
         }
     }
 
@@ -684,14 +692,17 @@ impl ModelMask {
 /// origin for link 0 and `joints[i - 1]` after that. Both vectors use link order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelSpine {
-    joints: Vec<[f32; 2]>,
-    targets: Vec<Option<ParamId>>,
+    joints: Arc<Vec<[f32; 2]>>,
+    targets: Arc<Vec<Option<ParamId>>>,
 }
 
 impl ModelSpine {
     pub fn new(joints: Vec<[f32; 2]>) -> Self {
         let targets = vec![None; joints.len()];
-        Self { joints, targets }
+        Self {
+            joints: joints.into(),
+            targets: targets.into(),
+        }
     }
 
     /// The far end of each link, in the node's own space.
@@ -711,8 +722,8 @@ impl ModelSpine {
     }
 
     fn set_joints(&mut self, joints: Vec<[f32; 2]>) {
-        self.joints = joints;
-        self.targets.resize(self.joints.len(), None);
+        self.joints = joints.into();
+        Arc::make_mut(&mut self.targets).resize(self.joints.len(), None);
     }
 }
 
@@ -842,7 +853,7 @@ impl ModelNode {
             lock_to_root: false,
             kind,
             parent: None,
-            children: Vec::new(),
+            children: Arc::default(),
         }
     }
 
@@ -873,8 +884,8 @@ impl ModelNode {
 
     fn masks_mut(&mut self) -> Option<&mut Vec<ModelMask>> {
         match &mut self.kind {
-            ModelNodeKind::Part(p) => Some(&mut p.masks),
-            ModelNodeKind::Composite(c) => Some(&mut c.masks),
+            ModelNodeKind::Part(p) => Some(Arc::make_mut(&mut p.masks)),
+            ModelNodeKind::Composite(c) => Some(Arc::make_mut(&mut c.masks)),
             _ => None,
         }
     }
@@ -918,6 +929,7 @@ impl Model {
             welds: Vec::new(),
             nodes,
             response_count: 0,
+            response_index: OnceLock::new(),
             roots: vec![root],
             params: HashMap::new(),
             param_order: Vec::new(),
@@ -961,6 +973,7 @@ impl Model {
         // The binding index is derived from `bindings`, and this is the one
         // place every edit passes through.
         self.binding_index.take();
+        self.response_index.take();
     }
 
     // ---- tree ----
@@ -1008,7 +1021,7 @@ impl Model {
             Some(p) if self.nodes.contains_key(&p) => self
                 .nodes
                 .get_mut(&p)
-                .map(|n| &mut n.children)
+                .map(|n| Arc::make_mut(&mut n.children))
                 .ok_or(ModelError::UnknownNode),
             _ => Ok(&mut self.roots),
         }
@@ -1018,7 +1031,7 @@ impl Model {
     /// list when the parent is not in this model.
     fn attach_child(&mut self, parent: &NodeId, child: NodeId) {
         match self.nodes.get_mut(parent) {
-            Some(p) => p.children.push(child),
+            Some(p) => Arc::make_mut(&mut p.children).push(child),
             None => self.roots.push(child),
         }
     }
@@ -1047,14 +1060,29 @@ impl Model {
         let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
         let previous = node.clone();
         let out = f(node);
-        let previous_count = self.response_count;
-        self.response_count = self.response_count
-            - usize::from(matches!(previous.kind, ModelNodeKind::MotionResponse(_)))
-            + usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
-        if let Err(error) = self.validate_responses() {
-            self.response_count = previous_count;
-            self.nodes.insert(id.clone(), previous);
-            return Err(error);
+        // Only the kind, its part slots and the response configuration can
+        // change the response graph. Ordinary property edits skip validation.
+        let response_changed = match (&previous.kind, &node.kind) {
+            (ModelNodeKind::MotionResponse(a), ModelNodeKind::MotionResponse(b)) => a != b,
+            (ModelNodeKind::MotionResponse(_), _) | (_, ModelNodeKind::MotionResponse(_)) => true,
+            (ModelNodeKind::Part(a), ModelNodeKind::Part(b)) => {
+                !Arc::ptr_eq(&a.slots, &b.slots) && a.slots != b.slots
+            }
+            (ModelNodeKind::Part(_), _) | (_, ModelNodeKind::Part(_)) => true,
+            _ => false,
+        };
+        if response_changed || previous.parent != node.parent {
+            let previous_count = self.response_count;
+            self.response_count = previous_count
+                - usize::from(matches!(previous.kind, ModelNodeKind::MotionResponse(_)))
+                + usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
+            self.response_index.take();
+            if let Err(error) = self.validate_responses() {
+                self.response_count = previous_count;
+                self.nodes.insert(id.clone(), previous);
+                self.response_index.take();
+                return Err(error);
+            }
         }
         self.bump();
         Ok(out)
@@ -1117,12 +1145,14 @@ impl Model {
         // A node cloned out of another model carries that model's Ids.
         self.check_node_refs(&node)?;
         node.parent = Some(parent.clone());
-        node.children.clear();
+        node.children = Arc::default();
         let added = usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
         self.response_count += added;
+        self.response_index.take();
         self.nodes.insert(id.clone(), node);
         if let Err(error) = self.validate_responses() {
             self.response_count -= added;
+            self.response_index.take();
             self.nodes.remove(&id);
             return Err(error);
         }
@@ -1148,7 +1178,7 @@ impl Model {
         let removed: HashSet<NodeId> = self.subtree(id).into_iter().collect();
         if let Some(parent) = self.nodes.get(id).and_then(|n| n.parent.clone()) {
             if let Some(p) = self.nodes.get_mut(&parent) {
-                p.children.retain(|c| c != id);
+                Arc::make_mut(&mut p.children).retain(|c| c != id);
             }
         }
         self.roots.retain(|r| !removed.contains(r));
@@ -1197,7 +1227,7 @@ impl Model {
         }
         let old_parent = self.nodes.get(id).and_then(|n| n.parent.clone());
         match old_parent.and_then(|op| self.nodes.get_mut(&op)) {
-            Some(p) => p.children.retain(|c| c != id),
+            Some(p) => Arc::make_mut(&mut p.children).retain(|c| c != id),
             // A fragment root: its parent is not here to detach it from.
             None => self.roots.retain(|r| r != id),
         }
@@ -1270,7 +1300,7 @@ impl Model {
                 copy.name = Name::truncated(format!("{} copy", copy.name));
             }
             copy.parent = Some(new_parent.clone());
-            copy.children.clear();
+            copy.children = Arc::default();
             let kind = copy.kind.id_kind();
             let new_id = self.mint(
                 |h| NodeId::generate(&new_parent, kind, h),
@@ -1357,14 +1387,14 @@ impl Model {
         let children = node.children.clone();
         self.nodes.insert(new.clone(), node);
         if let Some(p) = parent.and_then(|p| self.nodes.get_mut(&p)) {
-            for c in &mut p.children {
+            for c in Arc::make_mut(&mut p.children) {
                 if c == old {
                     *c = new.clone();
                 }
             }
         }
-        for child in children {
-            if let Some(c) = self.nodes.get_mut(&child) {
+        for child in children.iter() {
+            if let Some(c) = self.nodes.get_mut(child) {
                 c.parent = Some(new.clone());
             }
         }
@@ -1454,7 +1484,7 @@ impl Model {
         for node in self.nodes.values_mut() {
             match &mut node.kind {
                 ModelNodeKind::Spine(spine) => {
-                    for t in &mut spine.targets {
+                    for t in Arc::make_mut(&mut spine.targets) {
                         if t.as_ref() == Some(old) {
                             *t = Some(new.clone());
                         }
@@ -1568,7 +1598,7 @@ impl Model {
                         joints: spine.joints.len(),
                     });
                 }
-                spine.targets = targets;
+                spine.targets = targets.into();
             }
             Some(_) => return Err(ModelError::NotSpine),
             None => return Err(ModelError::UnknownNode),
@@ -1620,10 +1650,7 @@ impl Model {
                 })
             }
         };
-        for b in &mut self.bindings {
-            if &b.key.node != id {
-                continue;
-            }
+        let mut refit_binding = |b: &mut ModelBinding| {
             // A deform's identity is sized to the mesh, so every binding on
             // the node loses its derived grid, authored cells or not.
             b.invalidate_dense();
@@ -1632,13 +1659,39 @@ impl Model {
                     cell.value = refit(&old, &mesh, &cell.value);
                 }
             }
+        };
+        // A custom mesh refit also edits binding cells. Stage this node's
+        // bindings together if one of them protects a response's rest pose.
+        if self.bindings_of_node(id).any(|b| {
+            b.target() == BindingTarget::Deform
+                && b.params().iter().any(|p| self.response_owner(p).is_some())
+        }) {
+            let mut edits = Vec::new();
+            for (index, binding) in self
+                .bindings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.node() == id)
+            {
+                let mut candidate = binding.clone();
+                refit_binding(&mut candidate);
+                self.validate_response_binding(&candidate)?;
+                edits.push((index, candidate));
+            }
+            for (index, binding) in edits {
+                self.bindings[index] = binding;
+            }
+        } else {
+            for binding in self.bindings.iter_mut().filter(|b| b.node() == id) {
+                refit_binding(binding);
+            }
         }
         if let Some(slot) = self.nodes.get_mut(id).and_then(ModelNode::mesh_mut) {
             *slot = mesh.into();
         }
         let mut emptied = Vec::new();
         if let Some(ModelNodeKind::Part(part)) = self.nodes.get_mut(id).map(|n| &mut n.kind) {
-            for slot in &mut part.slots {
+            for slot in Arc::make_mut(&mut part.slots) {
                 slot.vertex = None;
                 emptied.push(slot.id.clone());
             }
@@ -1769,7 +1822,7 @@ impl Model {
         if part.slots.iter().any(|s| s.id == slot) {
             return Err(ModelError::DuplicateSlot(slot.to_string()));
         }
-        part.slots.push(Slot {
+        Arc::make_mut(&mut part.slots).push(Slot {
             id: slot,
             vertex: None,
         });
@@ -1814,7 +1867,7 @@ impl Model {
         if &to != from && part.slots.iter().any(|s| s.id == to) {
             return Err(ModelError::DuplicateSlot(to.to_string()));
         }
-        part.slots[at].id = to.clone();
+        Arc::make_mut(&mut part.slots)[at].id = to.clone();
         for w in &mut self.welds {
             let (renames_a, renames_b) = (&w.a == id, &w.b == id);
             if !renames_a && !renames_b {
@@ -1875,7 +1928,7 @@ impl Model {
         let Some(at) = part.slots.iter().position(|s| &s.id == slot) else {
             return Err(ModelError::UnknownSlot);
         };
-        part.slots.remove(at);
+        Arc::make_mut(&mut part.slots).remove(at);
         for w in &mut self.welds {
             let (drops_a, drops_b) = (&w.a == id, &w.b == id);
             if !drops_a && !drops_b {
@@ -1904,8 +1957,7 @@ impl Model {
     }
 
     fn slot_mut(&mut self, id: &NodeId, slot: &SlotId) -> Result<&mut Slot, ModelError> {
-        self.part_mut(id)?
-            .slots
+        Arc::make_mut(&mut self.part_mut(id)?.slots)
             .iter_mut()
             .find(|s| &s.id == slot)
             .ok_or(ModelError::UnknownSlot)
@@ -1971,7 +2023,7 @@ impl Model {
                     }
                 }
                 ModelNodeKind::Spine(spine) => {
-                    for t in &mut spine.targets {
+                    for t in Arc::make_mut(&mut spine.targets) {
                         if t.as_ref() == Some(id) {
                             *t = None;
                         }
@@ -2402,7 +2454,7 @@ impl Model {
                         .capacity()
                         .saturating_mul(std::mem::size_of::<Slot>()),
                 );
-                for slot in &part.slots {
+                for slot in part.slots.iter() {
                     bytes = bytes.saturating_add(slot.id.as_str().len());
                 }
             }

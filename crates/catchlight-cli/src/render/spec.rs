@@ -296,7 +296,7 @@ pub enum Physics {
     Simulate {
         #[serde(default)]
         initial: Initial,
-        /// Scalar response clock. Legacy drivers retain their own stepping.
+        /// Time intervals used to advance motion responses between playback frames.
         #[serde(default, skip_serializing_if = "ResponseClock::is_default")]
         response_clock: ResponseClock,
         #[serde(default)]

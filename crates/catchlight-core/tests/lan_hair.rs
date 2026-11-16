@@ -4,14 +4,13 @@
 //! so attachments, output params, limits and visible deformation participate.
 //! Requires the Lan Git LFS object, like the visual suite.
 //!
-//! Lan's head turns, tilts and bobs by mesh-group warps, never by turning a
-//! node. The head-roll warp carries the scalp and leaves the lengths hanging,
+//! Lan's head turns, tilts and bobs through mesh group deforms. The head-roll deform carries the scalp and leaves the lengths hanging,
 //! so the held pose supplies the hang. Responses sample the current posed
 //! art for transient motion, and no hair spine is slid against its art.
 //!
 //! Long locks use a broad scalar response and its slower child. The short
 //! fringe uses one response. All read named vertices on pose-only art;
-//! the lift responses project vertical motion into the existing lift warps.
+//! the lift responses project vertical motion into the existing lift deforms.
 
 use catchlight_core::{Model, NodeId, NodeKind, ParamId, Puppet, Vec2, Vec3};
 
@@ -76,7 +75,7 @@ fn lock_spines(model: &Model) -> impl Iterator<Item = &NodeId> {
 }
 
 /// Read the same named root the driver samples, through an independently
-/// posed puppet. This checks the rendered warp and the slot reference together.
+/// posed puppet. This checks the rendered deform and the slot reference together.
 fn root_on_art(model: &Model, puppet: &Puppet, part: &NodeId) -> Vec2 {
     let slot = catchlight_core::SlotId::new("sway-root").unwrap();
     let v = model.slot(part, &slot).unwrap().vertex().unwrap();
@@ -137,7 +136,7 @@ fn front_locks_keep_their_length_while_the_head_rolls() {
     let mut rest = Puppet::new(&model);
     rest.set_physics_enabled(false);
     rest.tick(&model, DT);
-    // The roll warp holds the tips where they hang, which alone would stretch
+    // The roll deform holds the tips where they hang, which alone would stretch
     // a lock by up to a fourteenth; head-roll keys slide each lock's art
     // along its guide to keep its length. A strand that grows and shrinks
     // with the head reads as jelly.
@@ -210,7 +209,7 @@ fn back_hair_falls_beside_the_neck_under_a_rolled_head() {
     let geometry = catchlight_core::geometry::EvaluatedGeometry::new(&model, &puppet).unwrap();
     // The outer back-hair contour beside the cheek and neck. Mesh boundaries
     // include a small transparent margin around the painted silhouette.
-    // Measured on this build, where the roll warp and the length-keeping
+    // Measured on this build, where the roll deform and the length-keeping
     // roll keys shape the fall: a settled response adds nothing to a held pose.
     for (y, expected_x) in [(775.0, -120.21), (725.0, -141.26), (675.0, -165.12)] {
         let mut left = f32::INFINITY;
@@ -240,7 +239,7 @@ fn back_hair_falls_beside_the_neck_under_a_rolled_head() {
     }
 }
 
-/// **A lock's tip stays behind its root.** Head roll is a warp, so the art
+/// **A lock's tip stays behind its root.** Head roll is a mesh group deform, so the art
 /// moves with the head before a response acts; what the response adds to the
 /// tip must run against the way its root went.
 #[test]
@@ -316,7 +315,7 @@ fn front_locks_do_not_ring_after_a_tiny_head_roll() {
     }
 }
 
-/// The head reaches the hair through its warps alone: no hair spine, and no
+/// The head reaches the hair through its mesh group deforms alone: no hair spine, and no
 /// part directly under one, carries a translation key on a head param.
 /// A spine slid one way with its art slid back renders the same, but leaves
 /// the node somewhere the art is not.
@@ -365,9 +364,9 @@ fn lan() -> Model {
 }
 
 /// Each sampled root agrees with an independently posed copy of the part,
-/// including nested warps on this frame.
+/// including nested mesh groups on this frame.
 #[test]
-fn simulation_roots_stay_on_the_art_through_every_warp() {
+fn simulation_roots_stay_on_the_art_through_every_mesh_group() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
     let mut posed = Puppet::new(&model);
@@ -567,8 +566,8 @@ fn long_hair_hangs_down_under_a_rolled_head() {
     }
 }
 
-/// Body roll is a warp in Lan's rig: it moves the art without turning the
-/// spine nodes. The responses follow the warped art, so the long locks
+/// Body roll is a mesh group deform in Lan's rig: it moves the art without turning the
+/// spine nodes. The responses follow the deformed art, so the long locks
 /// swing with it, and since the move is a translation of the head they come
 /// back to their drawing once the body holds still.
 #[test]
@@ -611,7 +610,7 @@ fn long_locks_swing_with_a_body_roll_and_return_to_the_drawing() {
 }
 
 /// **The frame rate does not change the swing.** A head roll ramp under a yaw
-/// sine reaches the hair through the warped root, the keyformed guide and
+/// sine reaches the hair through the deformed root, the keyformed guide and
 /// the node transform, all evaluated on the frame they render; 30 and 60 fps
 /// land on the 240 fps trajectory at the same instants.
 #[test]
@@ -703,7 +702,7 @@ fn a_held_drag_on_a_lock_lets_the_hair_settle() {
     assert_eq!(awake, 0, "the hair never settled under a held drag");
 }
 
-/// The vertical response drives the authored lift warp during a nod and
+/// The vertical response drives the authored lift deform during a nod and
 /// returns the fringe and long lock to the held drawing.
 #[test]
 fn hair_lifts_as_the_head_drops_and_comes_back_to_the_drawing() {

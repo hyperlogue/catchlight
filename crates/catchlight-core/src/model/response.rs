@@ -6,7 +6,43 @@ use std::collections::HashMap;
 use super::{Model, ModelError, ModelNodeKind};
 use crate::{MotionResponse, NodeId, ParamId, ResponseSource};
 
+/// Derived once per model revision. Stable node order also fixes which
+/// diagnostic a native server and a separately loaded replica return first.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ResponseIndex {
+    rows: Vec<NodeId>,
+    owners: HashMap<ParamId, NodeId>,
+    validated: std::sync::OnceLock<()>,
+}
+
 impl Model {
+    fn response_index(&self) -> &ResponseIndex {
+        self.response_index.get_or_init(|| {
+            let mut index = ResponseIndex::default();
+            if self.response_count != 0 {
+                index.rows.extend(
+                    self.nodes
+                        .iter()
+                        .filter(|(_, node)| matches!(node.kind, ModelNodeKind::MotionResponse(_)))
+                        .map(|(id, _)| id.clone()),
+                );
+                index.rows.sort_unstable();
+                for id in &index.rows {
+                    if let Some(ModelNodeKind::MotionResponse(r)) = self.node(id).map(|n| &n.kind) {
+                        if let Some(p) = &r.output_param {
+                            index.owners.entry(p.clone()).or_insert_with(|| id.clone());
+                        }
+                    }
+                }
+            }
+            std::sync::Arc::new(index)
+        })
+    }
+
+    pub(super) fn response_owner(&self, param: &ParamId) -> Option<&NodeId> {
+        self.response_index().owners.get(param)
+    }
+
     pub(super) fn remove_counted_node(&mut self, id: &NodeId) {
         if self
             .nodes
@@ -35,17 +71,11 @@ impl Model {
     }
 
     pub(super) fn check_response_writer(&self, param: &ParamId) -> Result<(), ModelError> {
-        if self.response_count == 0 {
-            return Ok(());
-        }
-        for (id, node) in &self.nodes {
-            if matches!(&node.kind,ModelNodeKind::MotionResponse(r) if r.output_param.as_ref()==Some(param))
-            {
-                return Err(ModelError::InvalidResponse {
-                    node: id.clone(),
-                    reason: format!("reserved output {param}"),
-                });
-            }
+        if let Some(id) = self.response_owner(param) {
+            return Err(ModelError::InvalidResponse {
+                node: id.clone(),
+                reason: format!("reserved output {param}"),
+            });
         }
         Ok(())
     }
@@ -54,9 +84,13 @@ impl Model {
         if self.response_count == 0 {
             return Ok(());
         }
-        let mut owners = HashMap::new();
+        let index = self.response_index();
+        if index.validated.get().is_some() {
+            return Ok(());
+        }
         let fragment = self.is_fragment();
-        for (id, node) in &self.nodes {
+        for id in &index.rows {
+            let Some(node) = self.node(id) else { continue };
             let ModelNodeKind::MotionResponse(r) = &node.kind else {
                 continue;
             };
@@ -113,7 +147,7 @@ impl Model {
                 }
             }
             if let Some(p) = &r.output_param {
-                if let Some(other) = owners.insert(p, id) {
+                if let Some(other) = self.response_owner(p).filter(|other| *other != id) {
                     return Err(invalid(format!("{p} is already driven by {other}")));
                 }
                 match self.param(p) {
@@ -128,11 +162,8 @@ impl Model {
                 }
             }
         }
-        if owners.is_empty() {
-            return Ok(());
-        }
         let check = |p: &ParamId, reason: &str| -> Result<(), ModelError> {
-            if let Some(&id) = owners.get(p) {
+            if let Some(id) = self.response_owner(p) {
                 return Err(ModelError::InvalidResponse {
                     node: id.clone(),
                     reason: format!("{p} {reason}"),
@@ -140,7 +171,7 @@ impl Model {
             }
             Ok(())
         };
-        for node in self.nodes.values() {
+        for node in index.rows.iter().filter_map(|id| self.node(id)) {
             if let ModelNodeKind::MotionResponse(r) = &node.kind {
                 for t in &r.inputs {
                     if let ResponseSource::PoseParam(p) = &t.source {
@@ -150,13 +181,19 @@ impl Model {
             }
         }
         for binding in &self.bindings {
-            if binding.key.params.iter().any(|p| owners.contains_key(p)) {
+            if binding
+                .key
+                .params
+                .iter()
+                .any(|p| self.response_owner(p).is_some())
+            {
                 self.validate_response_binding(binding)?;
             }
         }
         for lane in self.animations.iter().flat_map(|a| &a.lanes) {
             check(&lane.param, "also has an animation lane")?;
         }
+        let _ = index.validated.set(());
         Ok(())
     }
 }

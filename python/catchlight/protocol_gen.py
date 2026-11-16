@@ -4062,6 +4062,8 @@ class ParamInfo:
     min: float
     max: float
     default: float = 0.0
+    # Normalized keys a new binding on this axis starts with.
+    initial_positions: list[float]
     # Number of bindings driven by this input.
     bindings: int = 0
 

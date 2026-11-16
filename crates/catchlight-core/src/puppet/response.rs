@@ -27,6 +27,8 @@ pub struct ResponseInputSample {
 pub enum ResponseClock {
     #[default]
     InputIntervals,
+    /// A continuous 60 Hz timeline for playback and export. An interval over
+    /// one minute is treated as a discontinuity to bound catch-up work.
     Fixed60,
 }
 
@@ -43,6 +45,7 @@ pub struct ResponseTrace {
 
 #[derive(Clone)]
 enum Source {
+    Unavailable,
     Pose(u32),
     Slot { point: usize, direction: [f64; 2] },
     Parent(usize),
@@ -83,6 +86,7 @@ pub(super) struct Responses {
     remainder: f64,
     points: Vec<(NodeIdx, Option<u32>)>,
     positions: Vec<Option<Vec2>>,
+    pose_slots: Vec<usize>,
     reserved: Vec<bool>,
     pub(super) sampler: Option<Box<Puppet>>,
 }
@@ -112,13 +116,18 @@ impl Responses {
             let mut keep = true;
             for input in &config.inputs {
                 let source = match &input.source {
-                    ResponseSource::PoseParam(p) => Source::Pose(puppet.slot_of_param[p]),
+                    ResponseSource::PoseParam(p) => puppet
+                        .slot_of_param
+                        .get(p)
+                        .copied()
+                        .map_or(Source::Unavailable, Source::Pose),
                     ResponseSource::Parent => {
-                        let Some(i) = node.parent().and_then(|p| indices.get(p)).copied() else {
-                            continue;
-                        };
-                        keep &= retained[i];
-                        Source::Parent(i)
+                        if let Some(i) = node.parent().and_then(|p| indices.get(p)).copied() {
+                            keep &= retained[i];
+                            Source::Parent(i)
+                        } else {
+                            Source::Unavailable
+                        }
                     }
                     ResponseSource::PartSlot {
                         part,
@@ -128,19 +137,24 @@ impl Responses {
                     } => {
                         let vertex = model.slot(part, slot).and_then(|s| s.vertex());
                         vertices.push(vertex);
-                        let point = *point_indices.entry((part, slot)).or_insert_with(|| {
-                            let index = out.points.len();
-                            out.points.push((puppet.node_of_id[part], vertex));
-                            index
-                        });
-                        let (s, c) = f64::from(*angle_deg).to_radians().sin_cos();
-                        let len = f64::from(*reference_length);
-                        Source::Slot {
-                            point,
-                            direction: [c / len, s / len],
+                        if let Some(&part_node) = puppet.node_of_id.get(part) {
+                            let point = *point_indices.entry((part, slot)).or_insert_with(|| {
+                                let index = out.points.len();
+                                out.points.push((part_node, vertex));
+                                index
+                            });
+                            let (s, c) = f64::from(*angle_deg).to_radians().sin_cos();
+                            let len = f64::from(*reference_length);
+                            Source::Slot {
+                                point,
+                                direction: [c / len, s / len],
+                            }
+                        } else {
+                            Source::Unavailable
                         }
                     }
                 };
+                keep &= !matches!(source, Source::Unavailable);
                 terms.push(Term {
                     source,
                     gain: input.gain.into(),
@@ -149,12 +163,12 @@ impl Responses {
                     boundary: 0.,
                 });
             }
-            let output = config.output_param.as_ref().map(|p| {
-                let slot = puppet.slot_of_param[p];
-                let param = &puppet.params[slot as usize];
+            let output = config.output_param.as_ref().and_then(|p| {
+                let &slot = puppet.slot_of_param.get(p)?;
+                let param = puppet.params.get(slot as usize)?;
                 out.reserved.resize(puppet.params.len(), false);
                 out.reserved[slot as usize] = true;
-                (slot, param.min, param.max)
+                Some((slot, param.min, param.max))
             });
             let mut row = Row {
                 id: id.clone(),
@@ -213,96 +227,101 @@ impl Responses {
         self.reserved.get(slot as usize) == Some(&true)
     }
 
+    fn bake_sampler(&mut self, puppet: &Puppet) {
+        // Isolate the pose-only geometry from the render arena's last driver
+        // claims and from a caller-supplied camera/world matrix. The sampler
+        // shares immutable binding grids and is only allocated for slot inputs.
+        let mut pose = puppet.clone();
+        pose.set_physics_enabled(false);
+        pose.stop_animation();
+        // Welds solve in sequence. Trace their inputs backwards so an
+        // earlier seam that moves a sampled endpoint is retained too.
+        let mut parts: HashSet<_> = self.points.iter().map(|&(part, _)| part).collect();
+        pose.arena.welds.reverse();
+        pose.arena.welds.retain(|weld| {
+            if parts.contains(&weld.a) || parts.contains(&weld.b) {
+                parts.extend([weld.a, weld.b]);
+                true
+            } else {
+                false
+            }
+        });
+        pose.arena.welds.reverse();
+        let mut needed = HashSet::new();
+        for part in parts {
+            let mut next = Some(part);
+            while let Some(node) = next {
+                needed.insert(node);
+                if matches!(
+                    pose.get(node).map(|n| &n.kind),
+                    Some(crate::NodeKind::Spine(_))
+                ) {
+                    needed.extend(pose.tree().get_all_descendants(node));
+                }
+                next = pose.tree().get_parent(node);
+            }
+        }
+        pose.arena.retain_geometry(&needed, &self.points);
+        pose.spine_targets = pose
+            .spine_targets
+            .into_iter()
+            .zip(&pose.arena.spine_node_ids)
+            .filter_map(|(row, node)| needed.contains(node).then_some(row))
+            .collect();
+        pose.arena.spine_node_ids.retain(|n| needed.contains(n));
+        pose.bindings.retain(|b| needed.contains(&b.node));
+        self.pose_slots = pose
+            .bindings
+            .iter()
+            .flat_map(|b| Some(b.x).into_iter().chain(b.y))
+            .chain(pose.spine_targets.iter().flatten().flatten().copied())
+            .filter(|&slot| !self.reserved.get(slot as usize).copied().unwrap_or(false))
+            .map(|slot| slot as usize)
+            .collect();
+        self.pose_slots.sort_unstable();
+        self.pose_slots.dedup();
+        // A render puppet may have an explicit pose on a reserved output.
+        for (slot, reserved) in self.reserved.iter().enumerate() {
+            if *reserved {
+                pose.param_values[slot] = None;
+            }
+        }
+        pose.invalidate_fold();
+        self.sampler = Some(Box::new(pose));
+    }
+
     fn sample_points(&mut self, puppet: &Puppet, model: &Model) {
         if self.points.is_empty() {
             return;
         }
-        // Isolate the pose-only geometry from the render arena's last driver
-        // claims and from a caller-supplied camera/world matrix. The sampler
-        // shares immutable binding grids and is only allocated for slot inputs.
-        let sample = self.sampler.get_or_insert_with(|| {
-            let mut pose = puppet.clone();
-            pose.set_physics_enabled(false);
-            pose.stop_animation();
-            // A slot sees transforms and geometry on its ancestor path. A
-            // spine also reads its guide part. Welds can reach across trees;
-            // keep the full pose in that case so the normal weld pass agrees.
-            if model.welds().is_empty() {
-                let mut needed = HashSet::new();
-                for &(node, _) in &self.points {
-                    let mut next = Some(node);
-                    while let Some(i) = next {
-                        needed.insert(i);
-                        if matches!(
-                            pose.get(i).map(|n| &n.kind),
-                            Some(crate::NodeKind::Spine(_))
-                        ) {
-                            needed.extend(pose.tree().get_all_descendants(i));
-                        }
-                        next = pose.tree().get_parent(i);
-                    }
-                }
-                // Spines consume their guide meshes before group propagation;
-                // only the sampled part vertices are observed after that pass.
-                // Intermediate mesh groups still need every triangle vertex.
-                let mut selected: HashMap<NodeIdx, Vec<usize>> = HashMap::new();
-                for &(part, vertex) in &self.points {
-                    if let Some(v) = vertex {
-                        selected.entry(part).or_default().push(v as usize);
-                    }
-                }
-                let groups: HashSet<_> = pose.arena.mesh_group_node_ids.iter().copied().collect();
-                for node in &mut pose.arena.nodes {
-                    if let crate::NodeKind::MeshGroup(mg) = &mut node.kind {
-                        mg.pins.per_child.retain(|child, pins| {
-                            if let Some(vertices) = selected.get(child) {
-                                pins.sampled_vertices = Some(vertices.clone().into_boxed_slice());
-                                true
-                            } else {
-                                needed.contains(child) && groups.contains(child)
-                            }
-                        });
-                    }
-                }
-                pose.bindings.retain(|b| needed.contains(&b.node));
-                pose.rebuild_param_effect_cache();
-            }
-            pose.last_tick_folded_param_generation = None;
-            Box::new(pose)
-        });
-        for (i, value) in puppet.param_values.iter().enumerate() {
-            let value = if self.reserved.get(i) == Some(&true) {
-                None
-            } else {
-                *value
-            };
+        if self.sampler.is_none() {
+            self.bake_sampler(puppet);
+        }
+        let Some(sample) = &mut self.sampler else {
+            return;
+        };
+        for &i in &self.pose_slots {
+            let value = puppet.param_values[i];
             if sample.param_values[i] != value {
                 sample.param_values[i] = value;
-                sample.bump_param_generation_for_slot(i as u32);
+                sample.bump_param_generation();
             }
         }
         if sample.scratch_transforms != puppet.scratch_transforms {
             sample
                 .scratch_transforms
                 .clone_from(&puppet.scratch_transforms);
-            sample.last_tick_folded_param_generation = None;
+            sample.invalidate_fold();
+        }
+        if sample.last_tick_folded_param_generation == Some(sample.param_generation) {
+            return;
         }
         sample.tick_with_root(model, Mat4::IDENTITY, 0.);
+        let geometry = crate::geometry::EvaluatedGeometry::new(model, sample).ok();
         for (dst, &(node, vertex)) in self.positions.iter_mut().zip(&self.points) {
             *dst = vertex.and_then(|v| {
-                let crate::NodeKind::Part(part) = &sample.get(node)?.kind else {
-                    return None;
-                };
-                let i = v as usize;
-                let local = *part.mesh.vertices.get(i)? - part.mesh.origin
-                    + *part.deform_stack.combined().get(i)?;
-                Some(
-                    sample
-                        .transforms()
-                        .get(node)
-                        .transform_point3(local.extend(0.))
-                        .truncate(),
-                )
+                let mesh = geometry.as_ref()?.mesh(sample.node_id(node)?).ok()?;
+                Some(mesh.vertex(v as usize)?.world.truncate())
             });
         }
     }
@@ -312,15 +331,17 @@ impl Responses {
         const STEP: f64 = 1.0 / 60.0;
         let dt = f64::from(dt);
         let fixed = self.clock == ResponseClock::Fixed60;
-        let reset = reset
-            || !dt.is_finite()
-            || !(0.0..=0.25).contains(&dt)
-            || (fixed && ((self.remainder + dt) / STEP).floor() > 4.);
+        // The fixed clock also drives offline clips. A slow frame can contain
+        // many solver boundaries. Bound exceptional gaps without resetting
+        // ordinary low-rate clips, including one-second frame intervals.
+        let max_interval = if fixed { 60. } else { 0.25 };
+        let reset = reset || !(0.0..=max_interval).contains(&dt);
         let old_remainder = self.remainder;
         for row in &mut self.rows {
             for term in &mut row.terms {
                 term.previous = term.current;
                 term.current = match term.source {
+                    Source::Unavailable => f64::NAN,
                     Source::Pose(slot) => f64::from(puppet.param_base(slot).unwrap_or_default()),
                     Source::Slot {
                         point,
@@ -473,6 +494,7 @@ impl Puppet {
                         _ => None,
                     };
                     let sample = match term.source {
+                        Source::Unavailable => None,
                         Source::Parent(j) => {
                             bank.rows[j].trace.active.then_some(bank.rows[j].state.x)
                         }
@@ -516,5 +538,75 @@ impl Puppet {
         self.slot_of_param
             .get(id)
             .is_some_and(|&slot| self.responses.owns(slot))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::{ModelNode, ModelParam, Name, ResponseInput};
+    #[test]
+    fn unresolved_sources_keep_their_authored_input_indices() {
+        let mut model = Model::new();
+        let root = model.root().unwrap().clone();
+        let parent = NodeId::new("parent").unwrap();
+        let child = NodeId::new("child").unwrap();
+        for name in ["input", "output"] {
+            model
+                .add_param_with_id(
+                    ParamId::new(name).unwrap(),
+                    ModelParam::new(Name::truncated(name), -1., 1., 0.),
+                )
+                .unwrap();
+        }
+        model
+            .add_node_with_id(
+                parent.clone(),
+                &root,
+                ModelNode::new("parent", ModelNodeKind::MotionResponse(Default::default())),
+            )
+            .unwrap();
+        let input = ParamId::new("input").unwrap();
+        let output = ParamId::new("output").unwrap();
+        let config = MotionResponse {
+            inputs: vec![
+                ResponseInput {
+                    source: ResponseSource::Parent,
+                    gain: 1.,
+                },
+                ResponseInput {
+                    source: ResponseSource::PoseParam(output.clone()),
+                    gain: 2.,
+                },
+                ResponseInput {
+                    source: ResponseSource::PoseParam(input.clone()),
+                    gain: 3.,
+                },
+            ],
+            ..Default::default()
+        };
+        model
+            .add_node_with_id(
+                child.clone(),
+                &parent,
+                ModelNode::new("child", ModelNodeKind::MotionResponse(config)),
+            )
+            .unwrap();
+        let mut puppet = Puppet::new(&model);
+        // Exercise a partial runtime map directly. A normally loaded complete
+        // model validates all these references before reaching the baker.
+        let index = puppet.node_idx(&parent).unwrap();
+        puppet.id_of_node[index.0 as usize] = NodeId::new("missing").unwrap();
+        puppet.slot_of_param.remove(&output);
+        puppet.responses = Responses::bake(&puppet, &model, Default::default());
+        puppet.set_param_value(&input, 0.25);
+        puppet.tick(&model, 1. / 60.);
+        let samples = puppet.response_inputs(&child).unwrap();
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples[0].sample, None);
+        assert_eq!(samples[1].sample, None);
+        assert_eq!(samples[2].contribution, Some(0.75));
+        assert!(!puppet.response_trace(&child).unwrap().active);
     }
 }

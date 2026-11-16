@@ -38,9 +38,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub(crate) struct ChildPins {
     pub(crate) vertices: Vec<u32>,
-    /// A pose-only slot sampler can request just these vertices on a Part.
-    /// Rendering and intermediate mesh groups always evaluate the full mesh.
-    pub(crate) sampled_vertices: Option<Box<[usize]>>,
+    /// A partial geometry observation only consumes these child indices.
+    observed_vertices: Option<Box<[usize]>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -500,7 +499,7 @@ pub(crate) fn bake_mesh_group_pins(
                 child_id,
                 ChildPins {
                     vertices,
-                    sampled_vertices: None,
+                    observed_vertices: None,
                 },
             );
         }
@@ -541,6 +540,64 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) ->
         )
     });
     targets
+}
+
+impl Arena {
+    /// Limit geometry passes to the nodes used by a pose-only observation.
+    /// The existing hierarchy and arena indices continue to locate transforms.
+    pub(super) fn retain_geometry(
+        &mut self,
+        needed: &std::collections::HashSet<NodeIdx>,
+        points: &[(NodeIdx, Option<u32>)],
+    ) {
+        let mut vertices: HashMap<NodeIdx, Vec<usize>> = HashMap::new();
+        for &(part, vertex) in points {
+            if let Some(v) = vertex {
+                vertices.entry(part).or_default().push(v as usize);
+            }
+        }
+        for weld in &self.welds {
+            for pair in &weld.pairs {
+                vertices
+                    .entry(weld.a)
+                    .or_default()
+                    .push(pair.a_vert as usize);
+                vertices
+                    .entry(weld.b)
+                    .or_default()
+                    .push(pair.b_vert as usize);
+            }
+        }
+        for indices in vertices.values_mut() {
+            indices.sort_unstable();
+            indices.dedup();
+        }
+        // Keep transform slots stable. Unobserved branches can release their
+        // meshes, deformation stacks and spine data from the pose copy.
+        for (slot, node) in self.nodes.iter_mut().enumerate() {
+            if !needed.contains(&NodeIdx(slot as u32)) {
+                node.kind = NodeKind::Group;
+            }
+        }
+        self.deform_node_ids.retain(|n| needed.contains(n));
+        self.mesh_group_node_ids.retain(|n| needed.contains(n));
+        let mut order = mesh_group_pre_order(self);
+        order.retain(|n| needed.contains(n));
+        let groups: std::collections::HashSet<_> = order.iter().copied().collect();
+        for &id in &order {
+            if let Some(NodeKind::MeshGroup(group)) = self.get_mut(id).map(|n| &mut n.kind) {
+                group.pins.per_child.retain(|child, pins| {
+                    pins.observed_vertices =
+                        vertices.get(child).map(|v| v.clone().into_boxed_slice());
+                    // Spines have already read their guide geometry by this
+                    // pass. Only observed vertices and intermediate lattices
+                    // need an inherited mesh group deform.
+                    pins.observed_vertices.is_some() || groups.contains(child)
+                });
+            }
+        }
+        self.mg_pre_order_cache = Some(order);
+    }
 }
 
 /// Pre-order (root-to-leaf among MeshGroups). The order is load-
@@ -972,10 +1029,12 @@ fn propagate_to_child(
             let new_pos_child_local = mg_to_child_2d.transform_point2(mg_local_pos);
             new_pos_child_local - (base_v - child_origin) - cur_deform_scratch[i]
         };
-        if let Some(indices) = &pins.sampled_vertices {
+        if let Some(vertices) = &pins.observed_vertices {
             scratch.resize(n, Vec2::ZERO);
-            for &i in indices.iter() {
-                scratch[i] = offset(i);
+            for &index in vertices.iter() {
+                if let Some(dst) = scratch.get_mut(index) {
+                    *dst = offset(index);
+                }
             }
         } else {
             scratch.extend((0..n).map(offset));

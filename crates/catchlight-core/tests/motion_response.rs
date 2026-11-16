@@ -160,6 +160,81 @@ fn fixed_clock_uses_boundaries_and_interpolates_across_display_rates() {
 }
 
 #[test]
+fn low_rate_fixed_clock_tracks_a_continuous_ramp() {
+    let m = model(0.75);
+    for fps in [1, 2, 4, 10, 12, 13, 14] {
+        let mut display = Puppet::new(&m);
+        display.set_response_clock(catchlight_core::ResponseClock::Fixed60);
+        display.settle_physics(&m);
+        let mut reference = display.clone();
+        for frame in 1..=fps {
+            display.set_param_value(&pid("roll"), frame as f32 / fps as f32);
+            display.tick(&m, 1. / fps as f32);
+            for sub in 1..=60 {
+                reference.set_param_value(
+                    &pid("roll"),
+                    ((frame - 1) * 60 + sub) as f32 / (60 * fps) as f32,
+                );
+                reference.tick(&m, 1. / (60 * fps) as f32);
+            }
+            let output = |p: &Puppet| p.param_value(&pid("bend")).unwrap();
+            assert!(
+                (output(&display) - output(&reference)).abs() < 2e-5,
+                "{fps} fps, frame {frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_and_restart_initialize_at_the_new_clip_sample() {
+    use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+    let m = model(0.75);
+    let mut p = Puppet::new(&m);
+    let dt = 1. / 60.;
+    p.set_animations(vec![ClmAnimation {
+        name: "turn".into(),
+        timestep: dt,
+        length: 6,
+        lead_in: 1,
+        lead_out: 4,
+        lanes: vec![ClmLane {
+            param: pid("roll"),
+            interpolation: catchlight_core::InterpolateMode::Linear,
+            keyframes: vec![
+                ClmKeyframe {
+                    frame: 0,
+                    value: -1.,
+                },
+                ClmKeyframe {
+                    frame: 4,
+                    value: 1.,
+                },
+            ],
+        }],
+    }]);
+    assert!(p.play_animation("turn"));
+    p.tick(&m, 0.);
+    for _ in 0..3 {
+        p.tick(&m, dt);
+    }
+    assert!(p.response_trace(&nid("tip")).unwrap().lag.abs() > 0.001);
+    p.tick(&m, dt);
+    assert_eq!(p.animation_sample().unwrap().frame, 1.);
+    for name in ["upper", "tip"] {
+        assert_eq!(p.response_trace(&nid(name)).unwrap().lag, 0.);
+    }
+    p.tick(&m, dt);
+    assert!(p.play_animation("turn"));
+    p.tick(&m, 0.);
+    assert_eq!(p.response_trace(&nid("tip")).unwrap().lag, 0.);
+    p.tick(&m, dt);
+    p.tick_animations(-dt);
+    p.tick(&m, 0.);
+    assert_eq!(p.response_trace(&nid("upper")).unwrap().lag, 0.);
+}
+
+#[test]
 fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() {
     use catchlight_core::{
         formats::clm::{ClmIndices, ClmMesh},
@@ -173,9 +248,22 @@ fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() 
         indices: ClmIndices::U16(vec![0, 1, 2]),
         origin: [0., 0.],
     };
+    let lattice = ClmMesh {
+        verts: vec![-100., -100., 200., -100., -100., 200.],
+        ..mesh.clone()
+    };
+    m.add_node_with_id(
+        nid("group"),
+        &root,
+        ModelNode::new(
+            "Group",
+            ModelNodeKind::MeshGroup(catchlight_core::ModelMeshGroup::new(lattice)),
+        ),
+    )
+    .unwrap();
     m.add_node_with_id(
         nid("art"),
-        &root,
+        &nid("group"),
         ModelNode::new("Art", ModelNodeKind::Part(ModelPart::new(mesh))),
     )
     .unwrap();
@@ -197,6 +285,17 @@ fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() 
         output_param: Some(pid("broad")),
     };
     m.set_motion_response(&nid("upper"), config).unwrap();
+    // A custom mesh refit is another binding writer. Reject a displaced
+    // neutral cell before changing the mesh, slot, or any other binding.
+    let corrective = BindingKey::new(pid("bend"), nid("art"), BindingTarget::Deform);
+    m.add_binding(&corrective).unwrap();
+    let before = m.to_clm_bytes().unwrap();
+    let mesh = m.node_mesh(&nid("art")).unwrap().clone();
+    assert!(matches!(
+        m.set_node_mesh_with(&nid("art"), mesh, |_, _, offsets| vec![1.; offsets.len()]),
+        Err(catchlight_core::ModelError::InvalidResponseBinding { .. })
+    ));
+    assert_eq!(m.to_clm_bytes().unwrap(), before);
     let mut p = Puppet::new(&m);
     p.settle_physics(&m);
     let read = |p: &Puppet| p.response_trace(&nid("upper")).unwrap();
@@ -204,6 +303,15 @@ fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() 
     let input = p.response_inputs(&nid("upper")).unwrap();
     assert_eq!(input[0].position, Some([30., 40.]));
     let idx = p.node_idx(&nid("art")).unwrap();
+    for node in [idx, p.node_idx(&nid("group")).unwrap()] {
+        assert!(p.set_scratch_deform(node, &[catchlight_core::Vec2::new(3., 4.); 3]));
+        p.combine_deforms();
+        p.tick(&m, 1. / 60.);
+        assert!((read(&p).target - 0.55).abs() < 1e-6, "scratch on {node:?}");
+        p.clear_scratch_deform(node);
+        p.tick(&m, 1. / 60.);
+        assert!((read(&p).target - 0.5).abs() < 1e-6);
+    }
     p.set_scratch_transform(
         idx,
         catchlight_core::ScratchTransform {
@@ -223,4 +331,72 @@ fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() 
     p.tick(&m, 1. / 60.);
     assert!(read(&p).active);
     assert_eq!(p.response_trace(&nid("tip")).unwrap().lag, 0.);
+}
+
+#[test]
+fn rejected_binding_edits_explain_the_zero_constraint_and_are_atomic() {
+    let mut m = model(0.7);
+    let key = BindingKey::new(
+        pid("bend"),
+        nid("upper"),
+        BindingTarget::Scalar(ScalarTarget::Tx),
+    );
+    let require = |err: catchlight_core::ModelError, text: &str| {
+        assert!(matches!(
+            err,
+            catchlight_core::ModelError::InvalidResponse { .. }
+                | catchlight_core::ModelError::InvalidResponseBinding { .. }
+        ));
+        assert!(err.to_string().contains(text), "{err}");
+    };
+    let generation = m.generation();
+    require(m.set_binding_key(&key, [1, 0], 5.).unwrap_err(), "zero-lag");
+    assert_eq!(m.generation(), generation);
+    assert!(m.binding(&key).is_none());
+    m.add_binding(&key).unwrap();
+    let generation = m.generation();
+    let bytes = m.to_clm_bytes().unwrap();
+    require(m.key_move(&key, &pid("bend"), 1, 0.4).unwrap_err(), "zero");
+    require(m.key_delete(&key, &pid("bend"), 1).unwrap_err(), "zero");
+    require(
+        m.set_param_range(&pid("bend"), -1., 2.).unwrap_err(),
+        "zero key",
+    );
+    assert_eq!(m.generation(), generation);
+    assert_eq!(m.to_clm_bytes().unwrap(), bytes);
+}
+
+#[test]
+fn addon_output_conflict_rolls_back_and_an_independent_reload_reports_the_same_error() {
+    let mut base = model(0.7);
+    let mut addon = base.extract(&[nid("tip")]);
+    addon.rename_node_id(&nid("tip"), nid("other-tip")).unwrap();
+    let before = base.to_clm_bytes().unwrap();
+    let generation = base.generation();
+    let mut replica = Model::from_clm_bytes(&before).unwrap();
+    let error = base.install(&addon).unwrap_err().to_string();
+    assert!(error.contains("already driven"), "{error}");
+    assert_eq!(replica.install(&addon).unwrap_err().to_string(), error);
+    assert_eq!(base.generation(), generation);
+    assert_eq!(base.to_clm_bytes().unwrap(), before);
+    base.delete_node(&nid("tip")).unwrap();
+    base.install(&addon).unwrap();
+    assert!(base.to_clm_bytes().is_ok());
+}
+
+#[test]
+fn invalid_file_reports_the_same_response_first_on_every_load() {
+    use catchlight_core::formats::clm::ClmNodeKind;
+    let mut file = model(0.75).to_clm_file().unwrap();
+    for n in &mut file.doc.nodes {
+        if let ClmNodeKind::MotionResponse(r) = &mut n.kind {
+            r.period_s = 0.;
+        }
+    }
+    for _ in 0..32 {
+        let err = Model::from_clm_file(&file).unwrap_err();
+        assert!(
+            matches!(err, catchlight_core::ModelError::InvalidResponse { node, .. } if node == nid("tip"))
+        );
+    }
 }

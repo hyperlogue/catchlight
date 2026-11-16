@@ -676,7 +676,7 @@ impl Model {
         for cn in &doc.nodes {
             if let Some(parent) = &cn.parent {
                 if let Some(pn) = nodes.get_mut(parent) {
-                    pn.children.push(cn.id.clone());
+                    Arc::make_mut(&mut pn.children).push(cn.id.clone());
                 }
             }
         }
@@ -829,6 +829,7 @@ impl Model {
             identity: super::next_identity(),
             generation: 0,
             welds,
+            response_index: OnceLock::new(),
             response_count: nodes
                 .values()
                 .filter(|n| matches!(n.kind, ModelNodeKind::MotionResponse(_)))
@@ -1146,9 +1147,9 @@ fn model_kind(
             part.blend_mode = p.blend_mode;
             part.tint = p.tint;
             part.screen_tint = p.screen_tint;
-            part.masks = model_masks(id, &p.masks, declared, shape)?;
+            part.masks = model_masks(id, &p.masks, declared, shape)?.into();
             part.mask_threshold = p.mask_threshold;
-            part.slots = slots;
+            part.slots = slots.into();
             ModelNodeKind::Part(part)
         }
         ClmNodeKind::Composite(c) => {
@@ -1157,7 +1158,7 @@ fn model_kind(
             composite.blend_mode = c.blend_mode;
             composite.tint = c.tint;
             composite.screen_tint = c.screen_tint;
-            composite.masks = model_masks(id, &c.masks, declared, shape)?;
+            composite.masks = model_masks(id, &c.masks, declared, shape)?.into();
             composite.mask_threshold = c.mask_threshold;
             composite.propagate_meshgroup = c.propagate_meshgroup;
             ModelNodeKind::Composite(composite)
@@ -1234,7 +1235,7 @@ fn model_spine(
                 .into());
             }
         }
-        spine.targets = sp.targets.clone();
+        spine.targets = sp.targets.clone().into();
     }
     Ok(spine)
 }

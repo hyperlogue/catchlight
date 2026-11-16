@@ -404,17 +404,6 @@ impl Model {
     /// textures and its animations, and the generation is bumped once.
     pub fn install(&mut self, addon: &Model) -> Result<Installed, InstallError> {
         self.check_install(addon)?;
-        if self.response_count > 0 || addon.response_count > 0 {
-            let mut combined = self.clone();
-            combined.response_count += addon.response_count;
-            combined.nodes.extend(addon.nodes.clone());
-            combined.bindings.extend(addon.bindings.iter().cloned());
-            combined.animations.extend(addon.animations.iter().cloned());
-            combined
-                .validate_responses()
-                .map_err(|e| InstallError::InvalidResponse(e.to_string()))?;
-        }
-
         let order = addon.nodes_in_order();
         let mut installed = Installed {
             nodes: Vec::with_capacity(order.len()),
@@ -433,6 +422,35 @@ impl Model {
             self.nodes.insert(id.clone(), node.clone());
             installed.nodes.push(id);
         }
+        for b in &addon.bindings {
+            self.bindings.push(ModelBinding {
+                key_positions: b.key_positions.clone(),
+                key: b.key.clone(),
+                interpolate_mode: b.interpolate_mode,
+                values: b.values.clone(),
+                // The addon has no params, so its grid was never derived; the
+                // base's key positions are what this binding fills against.
+                dense: OnceLock::new(),
+            });
+        }
+
+        self.animations.extend(addon.animations.iter().cloned());
+        // Only appended rows participate in this transaction. Validate with
+        // base params and addon references visible together, before attaching
+        // roots or changing assets. A refusal restores the original revision.
+        self.response_index.take();
+        if let Err(e) = self.validate_responses() {
+            self.bindings
+                .truncate(self.bindings.len() - addon.bindings.len());
+            self.animations
+                .truncate(self.animations.len() - addon.animations.len());
+            for node in &installed.nodes {
+                self.nodes.remove(node);
+            }
+            self.response_count -= addon.response_count;
+            self.response_index.take();
+            return Err(InstallError::InvalidResponse(e.to_string()));
+        }
         // Sibling order inside the addon rode along on the copied child lists;
         // only its roots need a place among the base's children, and they go
         // last — an addon records no position to be put back into.
@@ -449,20 +467,7 @@ impl Model {
             }
         }
 
-        for b in &addon.bindings {
-            self.bindings.push(ModelBinding {
-                key_positions: b.key_positions.clone(),
-                key: b.key.clone(),
-                interpolate_mode: b.interpolate_mode,
-                values: b.values.clone(),
-                // The addon has no params, so its grid was never derived; the
-                // base's key positions are what this binding fills against.
-                dense: OnceLock::new(),
-            });
-        }
-
         self.welds.extend(addon.welds.iter().cloned());
-        self.animations.extend(addon.animations.iter().cloned());
         self.bump();
         Ok(installed)
     }
@@ -626,6 +631,7 @@ impl Model {
                 .filter(|w| inside(&w.a) || inside(&w.b))
                 .cloned()
                 .collect(),
+            response_index: OnceLock::new(),
             response_count: nodes
                 .values()
                 .filter(|n| matches!(n.kind, ModelNodeKind::MotionResponse(_)))
@@ -665,7 +671,7 @@ impl Model {
         for r in &installed.roots {
             let parent = self.nodes.get(r).and_then(|n| n.parent.clone());
             match parent.and_then(|p| self.nodes.get_mut(&p)) {
-                Some(p) => p.children.retain(|c| c != r),
+                Some(p) => Arc::make_mut(&mut p.children).retain(|c| c != r),
                 None => self.roots.retain(|x| x != r),
             }
         }
@@ -674,7 +680,7 @@ impl Model {
         }
         self.roots.retain(|r| !removed.contains(r));
         for node in self.nodes.values_mut() {
-            node.children.retain(|c| !removed.contains(c));
+            Arc::make_mut(&mut node.children).retain(|c| !removed.contains(c));
             if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
                 r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,..} if removed.contains(part)));
             }

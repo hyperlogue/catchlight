@@ -2611,6 +2611,8 @@ pub struct ParamInfo {
     pub max: f32,
     #[serde(default)]
     pub default: f32,
+    /// Normalized keys a new binding on this axis starts with.
+    pub initial_positions: Vec<f32>,
     /// Number of bindings driven by this input.
     #[serde(default)]
     pub bindings: u32,
