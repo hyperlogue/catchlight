@@ -9,13 +9,10 @@ meshes.
 
 ### Ownership and placement
 
-Give each independently moving lock one spine, with its own bend params and
-particle chain. Short bangs and long hanging locks are sibling subtrees under
-their common head/body placement. Derive link lengths and material response
-from each lock's measured span; vary stiffness/damping where appropriate.
-Contribution weight controls authority, not response timing. Keep the current
-generated weight of 0.5; with one driver and zero posed bends this halves the
-simulated bends, but not necessarily the resulting vertex travel.
+Give each independently moving lock a spine and its own bend params. Use
+one response for the root bend and attach further responses as children to
+delay the tip. Select the same head control or projected slot for each root
+that shares the attachment. Tune each lock's period and damping separately.
 
 Carver owns semantic cuts, pixel ownership, neutral alpha reconstruction,
 underpaint, and assignment of reflections, shadows and mask sources. A painted
@@ -43,14 +40,10 @@ mesh group above the spine warps the width-adjusted, bent geometry afterwards.
 
 ### Same-frame contract
 
-`Puppet::tick` poses anchors, steps drivers and resolves their contributions
-and limits, folds ordinary bindings, applies spine bends, then runs mesh
-groups and welds. A width binding reads the **resolved bend param**, including
-the chain's weight and limits, which is also what the spine reads in that
-tick. Do not read raw particles, multiply by weight again, or feed a previous
-frame's bend back through an external pose loop. Bend values are half turns;
-convert to radians with `pi * bend` where an orientation prior needs it.
-Binding key positions instead use normalized param coordinates:
+`Puppet::tick` samples the pose, advances responses parent first, folds
+bindings, applies spine bends, then runs mesh groups and welds. Both the
+width binding and the spine read the same resolved bend value. Bend values
+are in half turns. Binding keys use normalized param coordinates
 `(value - min) / (max - min)`.
 
 For rest vertex `p`, binding offset `d`, and its rest-assigned spine transform
@@ -59,13 +52,6 @@ to a link and its ramp remains the one baked from rest geometry. Common
 ancestor transforms are accounted for in the coordinate conversions; they
 do not become a second deform. Width fields must preserve that rest
 assignment rather than sliding vertices along the lock.
-
-This same-frame result does **not** change physics-anchor dependencies.
-Directly posed ancestor transforms reach anchors immediately; another
-driver's output and mesh-group `translate_children` shifts reach dependent
-anchors one frame later. Avoid driving the same lock's attachment with its
-own bend outputs. Combined body movement must be reviewed under this existing
-rule, even though width and bending themselves use the same current values.
 
 ### Bake a bounded orientation prior
 
@@ -89,7 +75,7 @@ Keep `phi0` safely away from edge-on, bound `phi_i` to the supported facing
 range, and choose coefficients from paint/orientation evidence. Zero input
 must give `phi_i = phi0` and exactly zero offsets. A zero rest orientation
 only narrows; widening relative to rest requires a supported nonzero rest
-orientation. The chain already supplies response lag; no width oscillator is
+orientation. The bend response already supplies lag; no width oscillator is
 needed. This ratio describes projected width, not physical volume or stretch.
 
 A binding spans at most two params. Use one pair `(head_yaw, bend_i)` per
@@ -111,7 +97,9 @@ the small authored approximation matches the intended look.
 Bake a small fully authored grid using **Linear** interpolation, with keys at
 the neutral inputs and the supported extrema (add intermediate keys only
 when measured approximation error warrants them). Author the neutral cell as
-literal zeros. Linear/bilinear interpolation is a convex combination of the
+literal zeros. For a response output, the entire zero-bend slice must
+be identity. Bake the yaw-only component into a separate yaw binding and
+subtract it from every cell in the paired grid. Linear/bilinear interpolation is a convex combination of the
 bounded cells, so this fixed normal field keeps its width bound between keys.
 Cubic interpolation can overshoot; stepped or nearest interpolation jumps.
 Check the total field if the part already has Deform bindings: their offsets
@@ -133,18 +121,18 @@ mesh density or grid size. Re-bake the fields if simplification changes vertices
 
 The regression tests in `tests/spine_width_bindings.rs` exercise ordinary
 bindings through the public model/puppet interface: neutral identity,
-same-tick width and bend under live chains at 30/60/120 Hz, bounded overlapping
+same-tick width and bend under cascaded responses at 30/60/120 Hz, bounded overlapping
 fields, fixed roots, companion geometry, parent placement, independent lock
 response, and model-file round-trip. Existing `spine_node` tests cover the
-mesh group above the spine; `spine_chain_node` covers the anchor lag rule.
+mesh group above the spine.
 The CLI and editor-server `spine_width_roundtrip` tests pass the same synthetic
 model through a CLI file edit and editor import/export without losing fields.
 These are synthetic geometry checks, not a rendered hairstyle acceptance.
 
 Before enabling the Carver trial, compare neutral pixels and geometry against
 the source with all width/bend inputs zero and physics disabled. Separately
-check the settled dynamic pose: gravity and solver residuals need not give
-exactly zero bends. Exercise yaw/pitch/roll, combined head/body motion, fast
+check the settled dynamic pose: a held pose should return all response-driven bends
+to zero. Exercise yaw/pitch/roll, combined head/body motion, fast
 pulses and stopping at 30/60/120 Hz. Verify short/long timing, root coverage,
 painted-edge tangents, continuous local widths, clipping, reflection/shadow
 placement and no newly reversed paint-bearing triangles. Include editor

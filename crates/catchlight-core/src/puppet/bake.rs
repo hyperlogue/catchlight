@@ -20,8 +20,7 @@ use crate::deform::DeformStack;
 use crate::formats::clm::{ClmIndices, ClmMesh};
 use crate::id::{NodeId, ParamId};
 use crate::interpolate::InterpolateMode;
-use crate::model::{BindingKey, BindingTarget, DenseGrid, Model, ModelNodeKind, ModelPhysics};
-use crate::physics::{ParticleChainData, SimplePhysicsData};
+use crate::model::{BindingKey, BindingTarget, DenseGrid, Model, ModelNodeKind};
 
 use super::arena::Arena;
 
@@ -79,13 +78,6 @@ pub(super) struct Baked {
     pub(super) params: Vec<BakedParam>,
     pub(super) slot_of_param: HashMap<ParamId, u32>,
     pub(super) bindings: Vec<BakedBinding>,
-    /// Parallel to `arena.physics_node_ids`: the param slots each driver
-    /// writes, in the order its map mode produces them.
-    pub(super) physics_targets: Vec<[Option<u32>; 2]>,
-    /// Parallel to `arena.spine_node_ids`: the param slot each of a spine's
-    /// links reads its bend from, in link order. One list serves both
-    /// directions — the spine reads its bends from these params and the chain
-    /// it may carry writes them — because they are the same bends.
     pub(super) spine_targets: Vec<Vec<Option<u32>>>,
 }
 
@@ -98,7 +90,6 @@ pub(super) fn bake(model: &Model) -> Baked {
     // hanging a second node under it. An addon fragment has no single root,
     // so it bakes to a puppet holding nothing but that empty slot: a fragment
     // is installed into a model, never animated on its own.
-    let g_scale = model.physics().pixels_per_meter * model.physics().gravity;
     let Some(root_id) = model.root().cloned() else {
         return Baked {
             arena,
@@ -107,12 +98,11 @@ pub(super) fn bake(model: &Model) -> Baked {
             params: Vec::new(),
             slot_of_param: HashMap::new(),
             bindings: Vec::new(),
-            physics_targets: Vec::new(),
             spine_targets: Vec::new(),
         };
     };
     if let Some(root) = model.node(&root_id) {
-        arena.nodes[0] = build_node(model, root, g_scale);
+        arena.nodes[0] = build_node(model, root);
         arena.base_local_matrix[0] = arena.nodes[0].base_transform.to_matrix();
     }
     node_of_id.insert(root_id.clone(), arena.root());
@@ -134,7 +124,7 @@ pub(super) fn bake(model: &Model) -> Baked {
         let Some(node) = model.node(&id) else {
             continue;
         };
-        let idx = arena.insert_child(parent, build_node(model, node, g_scale));
+        let idx = arena.insert_child(parent, build_node(model, node));
         node_of_id.insert(id.clone(), idx);
         id_of_node.push(id.clone());
         push_children(&mut stack, node, idx);
@@ -213,24 +203,6 @@ pub(super) fn bake(model: &Model) -> Baked {
         }
     }
 
-    let physics_targets = arena
-        .physics_node_ids
-        .iter()
-        .map(|&idx| {
-            let id = &id_of_node[idx.0 as usize];
-            match model.node(id).map(|n| &n.kind) {
-                Some(ModelNodeKind::SimplePhysics(ph)) => {
-                    let slot = |p: &Option<ParamId>| {
-                        p.as_ref().and_then(|p| slot_of_param.get(p).copied())
-                    };
-                    let t = ph.target_params();
-                    [slot(&t[0]), slot(&t[1])]
-                }
-                _ => [None, None],
-            }
-        })
-        .collect();
-
     let spine_targets = arena
         .spine_node_ids
         .iter()
@@ -254,7 +226,6 @@ pub(super) fn bake(model: &Model) -> Baked {
         params,
         slot_of_param,
         bindings,
-        physics_targets,
         spine_targets,
     }
 }
@@ -309,7 +280,7 @@ fn bake_binding(
     })
 }
 
-fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> Node {
+fn build_node(model: &Model, node: &crate::model::ModelNode) -> Node {
     let transform = Transform {
         translation: Vec3::from_array(node.transform.translation),
         rotation: Vec3::from_array(node.transform.rotation),
@@ -365,23 +336,17 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
                 bitmap: None,
             }))
         }
-        ModelNodeKind::SimplePhysics(ph) => {
-            NodeKind::SimplePhysics(Box::new(build_physics(ph, &transform, g_scale)))
-        }
         // The per-vertex assignment is left empty here: it needs the rest
         // globals of every descendant, which only exist once the whole tree is
         // in the arena. `Arena::rebuild_spine_rest_state` fills it.
         ModelNodeKind::Spine(spine) => {
-            let mut data = crate::spine::SpineData::new(
+            let data = crate::spine::SpineData::new(
                 spine
                     .joints()
                     .iter()
                     .map(|j| Vec2::new(j[0], j[1]))
                     .collect(),
             );
-            data.chain = spine
-                .chain()
-                .map(|c| build_chain(c, &data, g_scale, model.physics().physics_rate));
             NodeKind::Spine(Box::new(data))
         }
     };
@@ -395,78 +360,6 @@ fn build_node(model: &Model, node: &crate::model::ModelNode, g_scale: f32) -> No
         lock_to_root: node.lock_to_root,
         kind,
     }
-}
-
-/// The authored driver plus a rest state. A driver's target params are not on
-/// the driver: they are resolved to param slots in [`Baked::physics_targets`],
-/// parallel to `Arena::physics_node_ids`.
-fn build_physics(ph: &ModelPhysics, transform: &Transform, g_scale: f32) -> SimplePhysicsData {
-    let anchor = Vec2::new(transform.translation.x, transform.translation.y);
-    SimplePhysicsData {
-        kind: ph.kind,
-        map_mode: ph.map_mode,
-        plane: ph.plane,
-        local_only: ph.local_only,
-        // The model stores authored, unscaled gravity; the integrator wants it
-        // pre-folded with the model-level pixelsPerMeter x gravity.
-        gravity: ph.gravity * g_scale,
-        length: ph.length,
-        frequency: ph.frequency,
-        angle_damping: ph.angle_damping,
-        length_damping: ph.length_damping,
-        output_scale: Vec2::from_array(ph.output_scale),
-        offset_output_scale: Vec2::ONE,
-        bob: anchor + Vec2::new(0.0, ph.length),
-        spring_vel: Vec2::ZERO,
-        d_angle: 0.0,
-        anchor,
-        anchor_initialized: false,
-    }
-}
-
-/// The chain a spine carries: the author's feel per link, laid on the lengths
-/// and drawn directions the spine's own joints give.
-///
-/// **The geometry comes from the spine and never from the chain.** A chain
-/// stores no rod lengths and no directions of its own, so the strand can only
-/// hang in the shape the art was drawn in.
-///
-/// The particles are left un-hung — `anchor_initialized` false — because a
-/// bake has only the node-local transform, and the chain wants the world
-/// anchor its first tick sees.
-fn build_chain(
-    chain: &crate::model::ModelChain,
-    spine: &crate::spine::SpineData,
-    g_scale: f32,
-    rate: f32,
-) -> ParticleChainData {
-    let links = spine
-        .link_geometry()
-        .zip(
-            chain
-                .links()
-                .iter()
-                .copied()
-                .chain(std::iter::repeat(crate::model::LinkFeel::default())),
-        )
-        .map(|((length, drawn), feel)| crate::physics::ChainLink {
-            length,
-            drawn,
-            gravity_scale: feel.gravity_scale,
-            stiffness: feel.stiffness,
-            limit: feel.limit,
-        })
-        .collect();
-    let mut data = ParticleChainData::new(links);
-    data.local_only = chain.local_only;
-    // The model stores authored, unscaled gravity; the solver wants it
-    // pre-folded with the model-level pixelsPerMeter x gravity.
-    data.gravity = chain.gravity * g_scale;
-    data.weight = chain.weight;
-    data.damping = chain.damping;
-    data.air_drag = chain.air_drag;
-    data.rate = rate;
-    data
 }
 
 fn build_mesh(m: &ClmMesh) -> Mesh {

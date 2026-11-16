@@ -10,11 +10,10 @@ use catchlight_core::formats::clm::{
 };
 use catchlight_core::id::{Name, NodeId, ParamId, SeededHex, SlotId, TexId};
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::physics::PendulumKind;
 use catchlight_core::{
     target_of, BindingKey, BindingTarget, HexSource, InstallError, MaskMode, Model, ModelComposite,
-    ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelPhysics, ModelTexture,
-    ModelWeld, Puppet, ScalarTarget, SlotPair,
+    ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelTexture, ModelWeld,
+    Puppet, ScalarTarget, SlotPair,
 };
 
 // ---------------------------------------------------------------- generator
@@ -97,7 +96,7 @@ fn random_model(rng: &mut Rng) -> Model {
             0 => ModelNodeKind::Group,
             1 => ModelNodeKind::Composite(ModelComposite::new()),
             2 => ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad(i as f32))),
-            3 => ModelNodeKind::SimplePhysics(ModelPhysics::new(PendulumKind::RigidPendulum)),
+            3 => ModelNodeKind::MotionResponse(Default::default()),
             _ => ModelNodeKind::Part(ModelPart::new(quad(i as f32))),
         };
         let is_part = matches!(kind, ModelNodeKind::Part(_));
@@ -142,9 +141,20 @@ fn random_model(rng: &mut Rng) -> Model {
 
     for id in nodes.clone() {
         let kind = m.node(&id).map(|n| n.kind.name()).unwrap_or_default();
-        if kind == "physics" && !params.is_empty() {
+        if kind == "motion_response" && !params.is_empty() {
             let x = rng.pick(&params).clone();
-            m.set_physics_targets(&id, [Some(x), None]).unwrap();
+            m.set_motion_response(
+                &id,
+                catchlight_core::MotionResponse {
+                    inputs: vec![catchlight_core::ResponseInput {
+                        source: catchlight_core::ResponseSource::PoseParam(x),
+                        gain: 1.0,
+                    }],
+                    output_param: None,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
         if (kind == "part" || kind == "composite") && !parts.is_empty() && rng.one_in(3) {
             let source = rng.pick(&parts).clone();
@@ -605,7 +615,13 @@ fn the_generator_builds_complete_models() {
                 .or_default() += 1;
         }
     }
-    for kind in ["group", "part", "composite", "mesh_group", "physics"] {
+    for kind in [
+        "group",
+        "part",
+        "composite",
+        "mesh_group",
+        "motion_response",
+    ] {
         assert!(
             seen_kinds.contains_key(kind),
             "no {kind} was ever generated"

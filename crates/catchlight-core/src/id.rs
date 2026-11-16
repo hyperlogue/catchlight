@@ -265,10 +265,6 @@ pub enum NodeIdKind {
     /// A node whose mesh deforms the geometry beneath it.
     MeshGroup,
     MotionResponse,
-    /// A driver node holding a pendulum.
-    SimplePhysics,
-    /// A driver node holding a particle chain.
-    Chain,
     /// A node whose joints turn the geometry beneath it.
     Spine,
 }
@@ -281,9 +277,7 @@ impl NodeIdKind {
             Self::Part => "part",
             Self::Composite => "composite",
             Self::MeshGroup => "mesh-group",
-            Self::SimplePhysics => "physics",
             Self::MotionResponse => "response",
-            Self::Chain => "chain",
             Self::Spine => "spine",
         }
     }
@@ -693,8 +687,6 @@ mod tests {
             (NodeIdKind::Part, "part"),
             (NodeIdKind::Composite, "composite"),
             (NodeIdKind::MeshGroup, "mesh-group"),
-            (NodeIdKind::SimplePhysics, "physics"),
-            (NodeIdKind::Chain, "chain"),
             (NodeIdKind::Spine, "spine"),
         ] {
             let id = NodeId::generate(&parent, kind, &mut hex);

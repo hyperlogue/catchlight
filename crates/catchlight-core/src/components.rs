@@ -174,7 +174,6 @@ pub enum NodeKind {
     Part(Box<PartData>),
     Composite(Box<CompositeData>),
     MeshGroup(Box<MeshGroupData>),
-    SimplePhysics(Box<crate::physics::SimplePhysicsData>),
     Spine(Box<crate::spine::SpineData>),
 }
 

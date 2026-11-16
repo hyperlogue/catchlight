@@ -22,7 +22,7 @@
 //!   it stays an opaque `u64` the server allocates.
 //!
 //! - **An add may name the Id it makes**, under the same word the reply names
-//!   it back with: `node` on [`Command::NodeAdd`], [`Command::PhysicsAdd`],
+//!   it back with: `node` on [`Command::NodeAdd`],
 //!   [`Command::SpineAdd`] and [`Command::SpineFit`], `param` on
 //!   [`Command::ParamAdd`], `texture` on [`Command::TextureAdd`],
 //!   `slot` on [`Command::SlotAdd`]. Absent, the editor draws a free
@@ -51,7 +51,7 @@
 //!   the session, nothing restores it downstream.
 //!
 //! - **A closed set travels as itself.** A mask mode, a blend mode, a
-//!   physics kind or map mode, an interpolation, a node kind, a binding
+//!   response source, an interpolation, a node kind, a binding
 //!   target: each is an enum here, so serde parses it and a client reads a
 //!   union rather than a string. The spelling is exact — there is no case
 //!   folding and there are no aliases — and a word outside the set is
@@ -320,50 +320,6 @@ pub enum Command {
         session: SessionId,
         node: NodeId,
         response: MotionResponseInfo,
-    },
-    /// Change fields on a SimplePhysics node; absent = unchanged.
-    PhysicsSet {
-        session: SessionId,
-        node: NodeId,
-        #[serde(default)]
-        kind: Option<PhysicsKind>,
-        #[serde(default)]
-        map_mode: Option<PhysicsMapMode>,
-        #[serde(default)]
-        plane: Option<PhysicsPlane>,
-        #[serde(default)]
-        local_only: Option<bool>,
-        /// The params the driver writes ([`PhysicsTargets`]). Absent leaves
-        /// both outputs as they are; present, both become exactly what it
-        /// says, so `{}` detaches both and `{"length": "len"}` binds the
-        /// second output and unbinds the first.
-        #[serde(default)]
-        target_params: Option<PhysicsTargets>,
-        #[serde(default)]
-        gravity: Option<f32>,
-        #[serde(default)]
-        length: Option<f32>,
-        #[serde(default)]
-        frequency: Option<f32>,
-        #[serde(default)]
-        angle_damping: Option<f32>,
-        #[serde(default)]
-        length_damping: Option<f32>,
-        #[serde(default)]
-        output_scale: Option<[f32; 2]>,
-    },
-    /// Model-level physics constants.
-    #[serde(rename = "physics_globals_set")]
-    PhysicsGlobals {
-        session: SessionId,
-        #[serde(default)]
-        gravity: Option<f32>,
-        #[serde(default)]
-        pixels_per_meter: Option<f32>,
-        /// Fixed hair-strand step rate for the whole model, in Hz, within
-        /// 30..=1000.
-        #[serde(default)]
-        physics_rate: Option<f32>,
     },
     NodeDelete {
         session: SessionId,
@@ -649,32 +605,6 @@ pub enum Command {
         a: NodeId,
         b: NodeId,
     },
-    /// Add a SimplePhysics node.
-    PhysicsAdd {
-        session: SessionId,
-        parent: NodeId,
-        #[serde(default)]
-        name: Option<String>,
-        kind: PhysicsKind,
-        /// The params the driver writes ([`PhysicsTargets`]). Absent binds
-        /// neither output.
-        #[serde(default)]
-        target_params: PhysicsTargets,
-        #[serde(default)]
-        length: Option<f32>,
-        #[serde(default)]
-        gravity: Option<f32>,
-        #[serde(default)]
-        frequency: Option<f32>,
-        #[serde(default)]
-        angle_damping: Option<f32>,
-        #[serde(default)]
-        length_damping: Option<f32>,
-        /// The Id to create it under. Absent generates one; an Id the model
-        /// already carries is [`ErrorCode::DuplicateId`].
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        node: Option<NodeId>,
-    },
     /// Add a spine node.
     ///
     /// The spine is `joints` links long and reads one bend param per link, in
@@ -693,10 +623,6 @@ pub enum Command {
         /// Absent binds none; present, it must be exactly as long as `joints`.
         #[serde(default)]
         targets: Option<Vec<Option<ParamId>>>,
-        /// The particle chain to hang on it. Absent is a spine that only
-        /// reads its params.
-        #[serde(default)]
-        chain: Option<ChainArg>,
         /// The Id to create it under. Absent generates one; an Id the model
         /// already carries is [`ErrorCode::DuplicateId`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -718,20 +644,9 @@ pub enum Command {
         /// is applied.
         #[serde(default)]
         targets: Option<Vec<Option<ParamId>>>,
-        /// The chain, in three states: absent leaves it as it is, `null`
-        /// takes it off, a value replaces it. The merge-patch idiom
-        /// [`NodePatch::texture`] already uses, and the only shape that can
-        /// say "remove" and "leave alone" in one optional field.
-        #[serde(
-            default,
-            deserialize_with = "present_as_some",
-            skip_serializing_if = "Option::is_none"
-        )]
-        #[cfg_attr(feature = "ts", ts(as = "Option<ChainArg>"))]
-        chain: Option<Option<ChainArg>>,
     },
-    /// Rig a strand of art to a spine in one edit: the spine, the params it
-    /// reads, and the chain that may drive them.
+    /// Rig a strand of art to a spine in one edit: the spine and the bend params
+    /// its links read.
     ///
     /// The editor measures the strand, because measuring it is reading the
     /// part's rest mesh and deciding where each joint falls — the same reason
@@ -743,8 +658,8 @@ pub enum Command {
     ///
     /// **The spine goes between the part and its parent**, and the part keeps
     /// the world placement it had. Re-fitting a part whose parent is already a
-    /// spine re-measures that spine instead of nesting another, keeps every
-    /// chain knob, and keeps the params where the count still matches.
+    /// spine re-measures that spine instead of nesting another, retaining
+    /// the existing params for links that survive.
     SpineFit {
         session: SessionId,
         /// The part whose rest mesh is measured. The fit reads its vertices
@@ -762,10 +677,6 @@ pub enum Command {
         node: Option<NodeId>,
         #[serde(default)]
         name: Option<String>,
-        /// The chain to hang on it. Absent leaves an existing spine's chain
-        /// alone and gives a fresh one none.
-        #[serde(default)]
-        chain: Option<ChainArg>,
     },
     #[serde(rename = "edit_undo")]
     Undo {
@@ -951,8 +862,6 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("mask_add", CommandKind::Edit),
     ("mask_delete", CommandKind::Edit),
     ("motion_response_set", CommandKind::Edit),
-    ("physics_set", CommandKind::Edit),
-    ("physics_globals_set", CommandKind::Edit),
     ("node_delete", CommandKind::Edit),
     ("texture_add", CommandKind::Edit),
     ("texture_list", CommandKind::ReplicaQuery),
@@ -977,7 +886,6 @@ pub const COMMAND_KINDS: &[(&str, CommandKind)] = &[
     ("weld_list", CommandKind::ReplicaQuery),
     ("weld_set", CommandKind::Edit),
     ("weld_delete", CommandKind::Edit),
-    ("physics_add", CommandKind::Edit),
     ("spine_add", CommandKind::Edit),
     ("spine_set", CommandKind::Edit),
     ("spine_fit", CommandKind::Edit),
@@ -1135,8 +1043,6 @@ impl Command {
             Command::MaskAdd { .. } => "mask_add",
             Command::MaskDelete { .. } => "mask_delete",
             Command::MotionResponseSet { .. } => "motion_response_set",
-            Command::PhysicsSet { .. } => "physics_set",
-            Command::PhysicsGlobals { .. } => "physics_globals_set",
             Command::NodeDelete { .. } => "node_delete",
             Command::TextureAdd { .. } => "texture_add",
             Command::TextureList { .. } => "texture_list",
@@ -1161,7 +1067,6 @@ impl Command {
             Command::Welds { .. } => "weld_list",
             Command::WeldSet { .. } => "weld_set",
             Command::WeldDelete { .. } => "weld_delete",
-            Command::PhysicsAdd { .. } => "physics_add",
             Command::SpineAdd { .. } => "spine_add",
             Command::SpineSet { .. } => "spine_set",
             Command::SpineFit { .. } => "spine_fit",
@@ -1264,8 +1169,6 @@ impl Command {
             | Command::MaskAdd { session, .. }
             | Command::MaskDelete { session, .. }
             | Command::MotionResponseSet { session, .. }
-            | Command::PhysicsSet { session, .. }
-            | Command::PhysicsGlobals { session, .. }
             | Command::NodeDelete { session, .. }
             | Command::TextureAdd { session, .. }
             | Command::TextureList { session }
@@ -1290,7 +1193,6 @@ impl Command {
             | Command::Welds { session }
             | Command::WeldSet { session, .. }
             | Command::WeldDelete { session, .. }
-            | Command::PhysicsAdd { session, .. }
             | Command::SpineAdd { session, .. }
             | Command::SpineSet { session, .. }
             | Command::SpineFit { session, .. }
@@ -1594,159 +1496,6 @@ pub struct BindingParams {
     pub param_y: Option<ParamId>,
 }
 
-/// The params a physics driver writes, one field per output.
-///
-/// A driver has exactly two outputs and never a third, so this is a struct
-/// rather than a list: there is no way to name an output that does not exist,
-/// and no positional hole to spell with a `null`. An absent field is an output
-/// bound to nothing, so `{"length": "len"}` is a driver whose second output
-/// drives a param and whose first drives none, and `{}` is a driver that
-/// writes nothing.
-///
-/// The names are the outputs under the `angle_length` map mode. Another map
-/// mode changes what each output *means* — `length_angle` swaps them, `xy` and
-/// `yx` make them a position — never how many there are.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct PhysicsTargets {
-    /// The param the driver's first output writes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub angle: Option<ParamId>,
-    /// The param the driver's second output writes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub length: Option<ParamId>,
-}
-
-/// One link's feel in a [`ChainArg`].
-///
-/// **Every field is optional, and none of the defaults are written here.**
-/// They live in `catchlight-core` beside the solver that reads them, the way
-/// [`AutoMesh`]'s live in `catchlight-editor-core`, so the wire cannot drift
-/// from what a chain actually does; absent means "what the editor would have
-/// used". `{}` is a link at every default.
-///
-/// Lengths and drawn directions come from the spine's joints.
-///
-/// A reply fills every one of them in, so a client can read a chain out of
-/// [`SpineInfo::chain`], change one number, and send the list straight back
-/// through [`Command::SpineSet`].
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct LinkFeelArg {
-    /// Multiplier on the chain's gravity for this link's particle.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gravity_scale: Option<f32>,
-    /// How strongly the link holds its drawn turn, in Hz, at or above zero.
-    /// Zero is limp; around `physics_rate / 2 pi` the link follows rigidly.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stiffness: Option<f32>,
-    /// The furthest this link's bend may reach either way, in half turns,
-    /// within `(0, 1]`. Absent uses the core's unrestricted default; `null`
-    /// explicitly means unlimited. The limit measures bend from the drawn curve, not
-    /// the link's world rotation. `links` replaces the whole list, so an
-    /// absent field does not preserve a previous limit.
-    #[serde(
-        default,
-        deserialize_with = "present_as_some",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(feature = "ts", ts(as = "Option<f32>"))]
-    pub limit: Option<Option<f32>>,
-}
-
-impl LinkFeelArg {
-    /// The feel the editor makes of this, absent fields at the core's own
-    /// defaults.
-    pub fn to_feel(&self) -> catchlight_core::LinkFeel {
-        let d = catchlight_core::LinkFeel::default();
-        catchlight_core::LinkFeel {
-            gravity_scale: self.gravity_scale.unwrap_or(d.gravity_scale),
-            stiffness: self.stiffness.unwrap_or(d.stiffness),
-            limit: self.limit.unwrap_or(d.limit),
-        }
-    }
-
-    /// A feel the model holds, with every field filled in — what a reply
-    /// carries, and what a client may send straight back.
-    pub fn of(feel: &catchlight_core::LinkFeel) -> Self {
-        Self {
-            gravity_scale: Some(feel.gravity_scale),
-            stiffness: Some(feel.stiffness),
-            limit: Some(feel.limit),
-        }
-    }
-}
-
-/// The particle chain a spine carries, as a command names it.
-///
-/// Absent fields are the core's own defaults, and `links` absent is one
-/// default feel per joint — so `{}` is "simulate this spine, and feel like
-/// hair". A list of another length than the spine's joints is fitted to it by
-/// repeating its last entry, because a rigger who tuned a strand and then
-/// added a joint wants the new one to feel like the strand.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ChainArg {
-    /// Integrate in the parent's frame rather than the world's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_only: Option<bool>,
-    /// A multiple of the model's own gravity; 1 hangs under one g.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gravity: Option<f32>,
-    /// How much of the params the solve decides, against what was posed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub weight: Option<f32>,
-    /// Per-second damping of motion relative to the root's own motion:
-    /// bounce and settle time, without trailing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub damping: Option<f32>,
-    /// Per-second drag on the strand's absolute motion: it trails the root.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub air_drag: Option<f32>,
-    /// One per joint, root to tip.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub links: Option<Vec<LinkFeelArg>>,
-}
-
-impl ChainArg {
-    /// The chain the editor makes of this over `joints` joints, absent fields
-    /// at the core's own defaults.
-    pub fn to_chain(&self, joints: usize) -> catchlight_core::ModelChain {
-        let mut chain = catchlight_core::ModelChain::new(joints);
-        if let Some(v) = self.local_only {
-            chain.local_only = v;
-        }
-        if let Some(v) = self.gravity {
-            chain.gravity = v;
-        }
-        if let Some(v) = self.weight {
-            chain.weight = v;
-        }
-        if let Some(v) = self.damping {
-            chain.damping = v;
-        }
-        if let Some(v) = self.air_drag {
-            chain.air_drag = v;
-        }
-        if let Some(links) = &self.links {
-            chain.set_links(links.iter().map(LinkFeelArg::to_feel).collect());
-        }
-        chain
-    }
-
-    /// A chain the model holds, with every field filled in.
-    pub fn of(chain: &catchlight_core::ModelChain) -> Self {
-        Self {
-            local_only: Some(chain.local_only),
-            gravity: Some(chain.gravity),
-            weight: Some(chain.weight),
-            damping: Some(chain.damping),
-            air_drag: Some(chain.air_drag),
-            links: Some(chain.links().iter().map(LinkFeelArg::of).collect()),
-        }
-    }
-}
-
 impl BindingParams {
     /// A binding keyed by one param.
     pub fn one(param: ParamId) -> Self {
@@ -1886,8 +1635,7 @@ pub enum NodeKindArg {
     MeshGroup,
 }
 
-/// What a node is, as a reply reports it. [`NodeKindArg`] is the add side and
-/// carries no `Physics`: [`Command::PhysicsAdd`] is what makes one.
+/// The kind reported by a node query. [`NodeKindArg`] selects a kind on creation.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1897,7 +1645,6 @@ pub enum NodeKind {
     Composite,
     MeshGroup,
     MotionResponse,
-    Physics,
     Spine,
 }
 
@@ -1910,7 +1657,6 @@ impl NodeKind {
             Self::Composite => "composite",
             Self::MeshGroup => "mesh_group",
             Self::MotionResponse => "motion_response",
-            Self::Physics => "physics",
             Self::Spine => "spine",
         }
     }
@@ -1924,7 +1670,6 @@ impl NodeKind {
             K::Composite(_) => Self::Composite,
             K::MeshGroup(_) => Self::MeshGroup,
             K::MotionResponse(_) => Self::MotionResponse,
-            K::SimplePhysics(_) => Self::Physics,
             K::Spine(_) => Self::Spine,
         }
     }
@@ -1963,129 +1708,6 @@ impl From<catchlight_core::components::MaskMode> for MaskMode {
         match mode {
             catchlight_core::components::MaskMode::Mask => Self::Mask,
             catchlight_core::components::MaskMode::DodgeMask => Self::Dodge,
-        }
-    }
-}
-
-/// The pendulum a physics driver swings.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub enum PhysicsKind {
-    Rigid,
-    Spring,
-}
-
-impl PhysicsKind {
-    /// The word this travels under.
-    pub fn wire_name(self) -> &'static str {
-        match self {
-            Self::Rigid => "rigid",
-            Self::Spring => "spring",
-        }
-    }
-}
-
-impl From<PhysicsKind> for catchlight_core::physics::PendulumKind {
-    fn from(kind: PhysicsKind) -> Self {
-        match kind {
-            PhysicsKind::Rigid => Self::RigidPendulum,
-            PhysicsKind::Spring => Self::SpringPendulum,
-        }
-    }
-}
-
-impl From<catchlight_core::physics::PendulumKind> for PhysicsKind {
-    fn from(kind: catchlight_core::physics::PendulumKind) -> Self {
-        match kind {
-            catchlight_core::physics::PendulumKind::RigidPendulum => Self::Rigid,
-            catchlight_core::physics::PendulumKind::SpringPendulum => Self::Spring,
-        }
-    }
-}
-
-/// The plane a physics driver swings in: across the screen, or toward and
-/// away from the viewer along the anchor's world z.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub enum PhysicsPlane {
-    #[default]
-    Screen,
-    Depth,
-}
-
-impl PhysicsPlane {
-    /// The word this travels under.
-    pub fn wire_name(self) -> &'static str {
-        match self {
-            Self::Screen => "screen",
-            Self::Depth => "depth",
-        }
-    }
-}
-
-impl From<PhysicsPlane> for catchlight_core::physics::PendulumPlane {
-    fn from(plane: PhysicsPlane) -> Self {
-        match plane {
-            PhysicsPlane::Screen => Self::Screen,
-            PhysicsPlane::Depth => Self::Depth,
-        }
-    }
-}
-
-impl From<catchlight_core::physics::PendulumPlane> for PhysicsPlane {
-    fn from(plane: catchlight_core::physics::PendulumPlane) -> Self {
-        use catchlight_core::physics::PendulumPlane as P;
-        match plane {
-            P::Screen => Self::Screen,
-            P::Depth => Self::Depth,
-        }
-    }
-}
-
-/// What a physics driver's two outputs mean; see [`PhysicsTargets`].
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub enum PhysicsMapMode {
-    Xy,
-    Yx,
-    AngleLength,
-    LengthAngle,
-}
-
-impl PhysicsMapMode {
-    /// The word this travels under.
-    pub fn wire_name(self) -> &'static str {
-        match self {
-            Self::Xy => "xy",
-            Self::Yx => "yx",
-            Self::AngleLength => "angle_length",
-            Self::LengthAngle => "length_angle",
-        }
-    }
-}
-
-impl From<PhysicsMapMode> for catchlight_core::physics::PhysicsParamMapMode {
-    fn from(mode: PhysicsMapMode) -> Self {
-        match mode {
-            PhysicsMapMode::Xy => Self::XY,
-            PhysicsMapMode::Yx => Self::YX,
-            PhysicsMapMode::AngleLength => Self::AngleLength,
-            PhysicsMapMode::LengthAngle => Self::LengthAngle,
-        }
-    }
-}
-
-impl From<catchlight_core::physics::PhysicsParamMapMode> for PhysicsMapMode {
-    fn from(mode: catchlight_core::physics::PhysicsParamMapMode) -> Self {
-        use catchlight_core::physics::PhysicsParamMapMode as M;
-        match mode {
-            M::XY => Self::Xy,
-            M::YX => Self::Yx,
-            M::AngleLength => Self::AngleLength,
-            M::LengthAngle => Self::LengthAngle,
         }
     }
 }
@@ -2343,10 +1965,6 @@ pub enum ScalarTarget {
     ScreenTintG,
     #[serde(rename = "screentintb")]
     ScreenTintB,
-    #[serde(rename = "outputscalex")]
-    OutputScaleX,
-    #[serde(rename = "outputscaley")]
-    OutputScaleY,
 }
 
 /// Any property a binding drives: one of [`ScalarTarget`]'s scalars, or the
@@ -2377,10 +1995,6 @@ pub enum BindingTarget {
     ScreenTintG,
     #[serde(rename = "screentintb")]
     ScreenTintB,
-    #[serde(rename = "outputscalex")]
-    OutputScaleX,
-    #[serde(rename = "outputscaley")]
-    OutputScaleY,
     Deform,
 }
 
@@ -2473,8 +2087,6 @@ scalar_targets!(
     ScreenTintR,
     ScreenTintG,
     ScreenTintB,
-    OutputScaleX,
-    OutputScaleY,
 );
 
 /// Every closed set prints as the word it travels under, so a tool shows a
@@ -2492,9 +2104,6 @@ macro_rules! display_as_wire {
 display_as_wire!(
     NodeKind,
     MaskMode,
-    PhysicsKind,
-    PhysicsMapMode,
-    PhysicsPlane,
     Interpolate,
     BlendMode,
     ScalarTarget,
@@ -2643,7 +2252,7 @@ pub enum ErrorCode {
     /// The request did not parse: bad JSON, an unknown command, or a string
     /// that is not a valid Id.
     BadRequest,
-    /// A target that does not fit the thing it names: a physics field on a
+    /// A target that does not fit the thing it names: a response field on a
     /// node that is not a driver, a `deform` where only a scalar can go. A
     /// *misspelled* one never gets this far — it is [`Self::BadRequest`].
     BadTarget,
@@ -2829,19 +2438,11 @@ pub enum ResponseBody {
         slots: Vec<SlotId>,
     },
     /// What a [`Command::SpineFit`] authored.
-    ///
-    /// `warnings` is the fit telling the rigger what the physics cannot do:
-    /// a limp weighted link drawn off gravity settles along gravity and not
-    /// along the art, and a link drawn upward under a spring too weak to hold
-    /// it falls over; saying so beats a strand that quietly falls out of its
-    /// pose. Empty when the drawing is one the chain can hold.
     SpineFit {
         /// The spine, whether this call made it or re-fitted one.
         node: NodeId,
         /// The param each link's bend is read from, in link order.
         params: Vec<ParamId>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        warnings: Vec<String>,
     },
     Extensions {
         extensions: Vec<ExtensionInfo>,
@@ -2986,12 +2587,6 @@ pub struct StatusInfo {
     pub undo_steps: u32,
     #[serde(default)]
     pub redo_steps: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gravity: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pixels_per_meter: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub physics_rate: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3130,13 +2725,6 @@ fn yes() -> bool {
 /// none, which `kind` tells apart from a node that could not have one — a
 /// reply has nothing to undo, so it never carries the `null` a patch spells
 /// "draw none" with.
-///
-/// A pendulum and a spine carry their settings nested, in
-/// [`NodeInfo::physics`] and [`NodeInfo::spine`], because those fields belong
-/// to no [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::SpineSet`] are
-/// what write them. The round-trip rule is the same one: each nested field carries
-/// the name its own command sets it under, so an inspector reads a value here
-/// and sends it straight back.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NodeInfo {
@@ -3186,9 +2774,6 @@ pub struct NodeInfo {
     pub mg_translate_children: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion_response: Option<MotionResponseInfo>,
-    /// A SimplePhysics driver's settings, absent on every other kind.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub physics: Option<PhysicsInfo>,
     /// A spine's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spine: Option<SpineInfo>,
@@ -3315,26 +2900,6 @@ impl From<catchlight_core::MotionResponse> for MotionResponseInfo {
     }
 }
 
-/// A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
-/// sets them by.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct PhysicsInfo {
-    pub kind: PhysicsKind,
-    pub map_mode: PhysicsMapMode,
-    pub plane: PhysicsPlane,
-    pub local_only: bool,
-    pub gravity: f32,
-    pub length: f32,
-    pub frequency: f32,
-    pub angle_damping: f32,
-    pub length_damping: f32,
-    pub output_scale: [f32; 2],
-    /// The params the driver's two outputs write, in the shape
-    /// [`Command::PhysicsSet`] takes them.
-    pub target_params: PhysicsTargets,
-}
-
 /// A spine in full, under the names [`Command::SpineSet`] sets them by.
 ///
 /// `joints` and `targets` are always the same length: a spine reads one bend
@@ -3345,11 +2910,6 @@ pub struct PhysicsInfo {
 pub struct SpineInfo {
     pub joints: Vec<[f32; 2]>,
     pub targets: Vec<Option<ParamId>>,
-    /// The particle chain the spine carries, absent for a spine that only
-    /// reads its params. Every field filled in, so the whole thing travels
-    /// back through [`Command::SpineSet`] unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chain: Option<ChainArg>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3706,7 +3266,6 @@ mod tests {
             propagate_meshgroup: None,
             mg_translate_children: None,
             motion_response: None,
-            physics: None,
             spine: None,
             masks: Vec::new(),
         };
@@ -3743,10 +3302,7 @@ mod tests {
         assert!(!line.contains("mg_translate_children"), "{line}");
         assert_eq!(patch.mg_translate_children, None);
         assert_eq!(patch.propagate_meshgroup, None);
-        // The two driver blocks are absent under the same rule, so a reply
-        // about a part is byte-identical to what it was before they existed.
-        assert!(!line.contains("physics"), "{line}");
-        assert!(!line.contains("chain"), "{line}");
+        assert!(!line.contains("motion_response"), "{line}");
     }
 
     /// A node's Id, kind and parent are not things a patch can set, so they
@@ -3772,7 +3328,6 @@ mod tests {
                 mask_threshold: Some(0.5),
                 texture: None,
                 motion_response: None,
-                physics: None,
                 spine: None,
                 masks: Vec::new(),
                 vertex_count: Some(0),
@@ -3815,16 +3370,10 @@ mod tests {
             NodeKind::Part,
             NodeKind::Composite,
             NodeKind::MeshGroup,
-            NodeKind::Physics,
+            NodeKind::MotionResponse,
+            NodeKind::Spine,
         ]);
         same(&[MaskMode::Mask, MaskMode::Dodge]);
-        same(&[PhysicsKind::Rigid, PhysicsKind::Spring]);
-        same(&[
-            PhysicsMapMode::Xy,
-            PhysicsMapMode::Yx,
-            PhysicsMapMode::AngleLength,
-            PhysicsMapMode::LengthAngle,
-        ]);
         same(&Interpolate::ALL);
         same(&BlendMode::ALL);
         same(&SCALAR_TARGETS);
@@ -3855,8 +3404,6 @@ mod tests {
                 "screentintr",
                 "screentintg",
                 "screentintb",
-                "outputscalex",
-                "outputscaley",
             ]
         );
         // `deform` is the one target no scalar command takes.
@@ -3864,7 +3411,7 @@ mod tests {
         assert_eq!(BindingTarget::from(ScalarTarget::Rz), BindingTarget::Rz);
     }
 
-    const SCALAR_TARGETS: [ScalarTarget; 18] = [
+    const SCALAR_TARGETS: [ScalarTarget; 16] = [
         ScalarTarget::Tx,
         ScalarTarget::Ty,
         ScalarTarget::Tz,
@@ -3881,11 +3428,9 @@ mod tests {
         ScalarTarget::ScreenTintR,
         ScalarTarget::ScreenTintG,
         ScalarTarget::ScreenTintB,
-        ScalarTarget::OutputScaleX,
-        ScalarTarget::OutputScaleY,
     ];
 
-    const BINDING_TARGETS: [BindingTarget; 19] = [
+    const BINDING_TARGETS: [BindingTarget; 17] = [
         BindingTarget::Tx,
         BindingTarget::Ty,
         BindingTarget::Tz,
@@ -3902,8 +3447,6 @@ mod tests {
         BindingTarget::ScreenTintR,
         BindingTarget::ScreenTintG,
         BindingTarget::ScreenTintB,
-        BindingTarget::OutputScaleX,
-        BindingTarget::OutputScaleY,
         BindingTarget::Deform,
     ];
 

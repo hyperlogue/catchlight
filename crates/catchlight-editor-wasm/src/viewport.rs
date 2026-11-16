@@ -63,7 +63,7 @@
 //!   settled puppet costs a predicate per frame and a swinging one keeps
 //!   drawing with nobody asking. Every viewport that frames hears that motion,
 //!   including the ones whose call did not tick, or a second canvas would go
-//!   clean and stop following a pendulum the first one is still swinging.
+//!   clean and stop following a response still moving in the first one.
 //!
 //! - **[`readback`] is the one asynchronous entry, and the loop cannot tell
 //!   it happened.** It draws the current frame again, at the timestamp the

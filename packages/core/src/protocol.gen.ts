@@ -189,39 +189,6 @@ export type Command =
     response: MotionResponseInfo,
   }
   | {
-    "cmd": "physics_set",
-    session: SessionId,
-    node: NodeId,
-    kind: PhysicsKind | null,
-    map_mode: PhysicsMapMode | null,
-    plane: PhysicsPlane | null,
-    local_only: boolean | null,
-    /**
-     * The params the driver writes ([`PhysicsTargets`]). Absent leaves
-     * both outputs as they are; present, both become exactly what it
-     * says, so `{}` detaches both and `{"length": "len"}` binds the
-     * second output and unbinds the first.
-     */
-    target_params: PhysicsTargets | null,
-    gravity: number | null,
-    length: number | null,
-    frequency: number | null,
-    angle_damping: number | null,
-    length_damping: number | null,
-    output_scale: [number, number] | null,
-  }
-  | {
-    "cmd": "physics_globals_set",
-    session: SessionId,
-    gravity: number | null,
-    pixels_per_meter: number | null,
-    /**
-     * Fixed hair-strand step rate for the whole model, in Hz, within
-     * 30..=1000.
-     */
-    physics_rate: number | null,
-  }
-  | {
     "cmd": "node_delete",
     session: SessionId,
     node: NodeId,
@@ -480,28 +447,6 @@ export type Command =
     b: NodeId,
   }
   | {
-    "cmd": "physics_add",
-    session: SessionId,
-    parent: NodeId,
-    name: string | null,
-    kind: PhysicsKind,
-    /**
-     * The params the driver writes ([`PhysicsTargets`]). Absent binds
-     * neither output.
-     */
-    target_params: PhysicsTargets,
-    length: number | null,
-    gravity: number | null,
-    frequency: number | null,
-    angle_damping: number | null,
-    length_damping: number | null,
-    /**
-     * The Id to create it under. Absent generates one; an Id the model
-     * already carries is [`ErrorCode::DuplicateId`].
-     */
-    node?: NodeId | null,
-  }
-  | {
     "cmd": "spine_add",
     session: SessionId,
     parent: NodeId,
@@ -516,11 +461,6 @@ export type Command =
      * Absent binds none; present, it must be exactly as long as `joints`.
      */
     targets: Array<ParamId | null> | null,
-    /**
-     * The particle chain to hang on it. Absent is a spine that only
-     * reads its params.
-     */
-    chain: ChainArg | null,
     /**
      * The Id to create it under. Absent generates one; an Id the model
      * already carries is [`ErrorCode::DuplicateId`].
@@ -541,13 +481,6 @@ export type Command =
      * is applied.
      */
     targets: Array<ParamId | null> | null,
-    /**
-     * The chain, in three states: absent leaves it as it is, `null`
-     * takes it off, a value replaces it. The merge-patch idiom
-     * [`NodePatch::texture`] already uses, and the only shape that can
-     * say "remove" and "leave alone" in one optional field.
-     */
-    chain?: ChainArg | null,
   }
   | {
     "cmd": "spine_fit",
@@ -572,11 +505,6 @@ export type Command =
      */
     node?: NodeId | null,
     name: string | null,
-    /**
-     * The chain to hang on it. Absent leaves an existing spine's chain
-     * alone and gives a fresh one none.
-     */
-    chain: ChainArg | null,
   }
   | {
     "cmd": "edit_undo",
@@ -656,8 +584,7 @@ export type NodeKindArg =
   | "mesh_group";
 
 /**
- * What a node is, as a reply reports it. [`NodeKindArg`] is the add side and
- * carries no `Physics`: [`Command::PhysicsAdd`] is what makes one.
+ * The kind reported by a node query. [`NodeKindArg`] selects a kind on creation.
  */
 export type NodeKind =
   | "group"
@@ -665,7 +592,6 @@ export type NodeKind =
   | "composite"
   | "mesh_group"
   | "motion_response"
-  | "physics"
   | "spine";
 
 /**
@@ -674,30 +600,6 @@ export type NodeKind =
 export type MaskMode =
   | "mask"
   | "dodge";
-
-/**
- * The pendulum a physics driver swings.
- */
-export type PhysicsKind =
-  | "rigid"
-  | "spring";
-
-/**
- * What a physics driver's two outputs mean; see [`PhysicsTargets`].
- */
-export type PhysicsMapMode =
-  | "xy"
-  | "yx"
-  | "angle_length"
-  | "length_angle";
-
-/**
- * The plane a physics driver swings in: across the screen, or toward and
- * away from the viewer along the anchor's world z.
- */
-export type PhysicsPlane =
-  | "screen"
-  | "depth";
 
 /**
  * How a binding reads between the cells its author keyed.
@@ -770,9 +672,7 @@ export type ScalarTarget =
   | "tintb"
   | "screentintr"
   | "screentintg"
-  | "screentintb"
-  | "outputscalex"
-  | "outputscaley";
+  | "screentintb";
 
 /**
  * Any property a binding drives: one of [`ScalarTarget`]'s scalars, or the
@@ -795,8 +695,6 @@ export type BindingTarget =
   | "screentintr"
   | "screentintg"
   | "screentintb"
-  | "outputscalex"
-  | "outputscaley"
   | "deform";
 
 /**
@@ -833,103 +731,6 @@ export type NodePatch = {
    */
   propagate_meshgroup?: boolean | null,
   mg_translate_children?: boolean | null,
-};
-
-/**
- * The params a physics driver writes, one field per output.
- *
- * A driver has exactly two outputs and never a third, so this is a struct
- * rather than a list: there is no way to name an output that does not exist,
- * and no positional hole to spell with a `null`. An absent field is an output
- * bound to nothing, so `{"length": "len"}` is a driver whose second output
- * drives a param and whose first drives none, and `{}` is a driver that
- * writes nothing.
- *
- * The names are the outputs under the `angle_length` map mode. Another map
- * mode changes what each output *means* — `length_angle` swaps them, `xy` and
- * `yx` make them a position — never how many there are.
- */
-export type PhysicsTargets = {
-  /**
-   * The param the driver's first output writes.
-   */
-  angle?: ParamId | null,
-  /**
-   * The param the driver's second output writes.
-   */
-  length?: ParamId | null,
-};
-
-/**
- * One link's feel in a [`ChainArg`].
- *
- * **Every field is optional, and none of the defaults are written here.**
- * They live in `catchlight-core` beside the solver that reads them, the way
- * [`AutoMesh`]'s live in `catchlight-editor-core`, so the wire cannot drift
- * from what a chain actually does; absent means "what the editor would have
- * used". `{}` is a link at every default.
- *
- * Lengths and drawn directions come from the spine's joints.
- *
- * A reply fills every one of them in, so a client can read a chain out of
- * [`SpineInfo::chain`], change one number, and send the list straight back
- * through [`Command::SpineSet`].
- */
-export type LinkFeelArg = {
-  /**
-   * Multiplier on the chain's gravity for this link's particle.
-   */
-  gravity_scale?: number | null,
-  /**
-   * How strongly the link holds its drawn turn, in Hz, at or above zero.
-   * Zero is limp; around `physics_rate / 2 pi` the link follows rigidly.
-   */
-  stiffness?: number | null,
-  /**
-   * The furthest this link's bend may reach either way, in half turns,
-   * within `(0, 1]`. Absent uses the core's unrestricted default; `null`
-   * explicitly means unlimited. The limit measures bend from the drawn curve, not
-   * the link's world rotation. `links` replaces the whole list, so an
-   * absent field does not preserve a previous limit.
-   */
-  limit?: number | null,
-};
-
-/**
- * The particle chain a spine carries, as a command names it.
- *
- * Absent fields are the core's own defaults, and `links` absent is one
- * default feel per joint — so `{}` is "simulate this spine, and feel like
- * hair". A list of another length than the spine's joints is fitted to it by
- * repeating its last entry, because a rigger who tuned a strand and then
- * added a joint wants the new one to feel like the strand.
- */
-export type ChainArg = {
-  /**
-   * Integrate in the parent's frame rather than the world's.
-   */
-  local_only?: boolean | null,
-  /**
-   * A multiple of the model's own gravity; 1 hangs under one g.
-   */
-  gravity?: number | null,
-  /**
-   * How much of the params the solve decides, against what was posed.
-   */
-  weight?: number | null,
-  /**
-   * Per-second damping of motion relative to the root's own motion:
-   * bounce and settle time, without trailing.
-   */
-  damping?: number | null,
-  /**
-   * Per-second drag on the strand's absolute motion: it trails the root.
-   */
-  air_drag?: number | null,
-  /**
-   * One per joint, root to tip.
-   */
-  links?: Array<LinkFeelArg> | null,
 };
 
 /**
@@ -1714,7 +1515,6 @@ export type ResponseBody =
      * The param each link's bend is read from, in link order.
      */
     params: Array<ParamId>,
-    warnings?: Array<string>,
   }
   | {
     "result": "extensions",
@@ -1757,9 +1557,6 @@ export type StatusInfo = {
    */
   undo_steps: number,
   redo_steps: number,
-  gravity?: number | null,
-  pixels_per_meter?: number | null,
-  physics_rate?: number | null,
 };
 
 export type TreeNode = {
@@ -1793,13 +1590,6 @@ export type TreeNode = {
  * none, which `kind` tells apart from a node that could not have one — a
  * reply has nothing to undo, so it never carries the `null` a patch spells
  * "draw none" with.
- *
- * A pendulum and a spine carry their settings nested, in
- * [`NodeInfo::physics`] and [`NodeInfo::spine`], because those fields belong
- * to no [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::SpineSet`] are
- * what write them. The round-trip rule is the same one: each nested field carries
- * the name its own command sets it under, so an inspector reads a value here
- * and sends it straight back.
  */
 export type NodeInfo = {
   /**
@@ -1852,10 +1642,6 @@ export type NodeInfo = {
   propagate_meshgroup?: boolean | null,
   mg_translate_children?: boolean | null,
   motion_response?: MotionResponseInfo | null,
-  /**
-   * A SimplePhysics driver's settings, absent on every other kind.
-   */
-  physics?: PhysicsInfo | null,
   /**
    * A spine's settings, absent on every other kind.
    */
@@ -1917,28 +1703,6 @@ export type MotionResponseInfo = {
 };
 
 /**
- * A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
- * sets them by.
- */
-export type PhysicsInfo = {
-  kind: PhysicsKind,
-  map_mode: PhysicsMapMode,
-  plane: PhysicsPlane,
-  local_only: boolean,
-  gravity: number,
-  length: number,
-  frequency: number,
-  angle_damping: number,
-  length_damping: number,
-  output_scale: [number, number],
-  /**
-   * The params the driver's two outputs write, in the shape
-   * [`Command::PhysicsSet`] takes them.
-   */
-  target_params: PhysicsTargets,
-};
-
-/**
  * A spine in full, under the names [`Command::SpineSet`] sets them by.
  *
  * `joints` and `targets` are always the same length: a spine reads one bend
@@ -1948,12 +1712,6 @@ export type PhysicsInfo = {
 export type SpineInfo = {
   joints: Array<[number, number]>,
   targets: Array<ParamId | null>,
-  /**
-   * The particle chain the spine carries, absent for a spine that only
-   * reads its params. Every field filled in, so the whole thing travels
-   * back through [`Command::SpineSet`] unchanged.
-   */
-  chain?: ChainArg | null,
 };
 
 export type TexInfo = {
@@ -2093,8 +1851,6 @@ export type EditCommandTag =
   | "mask_add"
   | "mask_delete"
   | "motion_response_set"
-  | "physics_set"
-  | "physics_globals_set"
   | "node_delete"
   | "texture_add"
   | "param_add"
@@ -2117,7 +1873,6 @@ export type EditCommandTag =
   | "slot_delete"
   | "weld_set"
   | "weld_delete"
-  | "physics_add"
   | "spine_add"
   | "spine_set"
   | "spine_fit"

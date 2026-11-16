@@ -73,9 +73,8 @@ and diff checks.
 - Render fixtures and baselines use Git LFS; fetch the objects before render
   suites. The dev shell supplies lavapipe for machines without a hardware GPU.
 - For visual comparisons or intentional baseline updates, use the harness
-  documentation in `crates/visual-tests/src/lib.rs`. Frame and physics
-  baselines are documented in `crates/catchlight-core/tests/evaluated_frame.rs`
-  and `crates/catchlight-core/tests/physics_trajectory.rs`.
+  documentation in `crates/visual-tests/src/lib.rs`. Frame baselines are documented
+  in `crates/catchlight-core/tests/evaluated_frame.rs`.
 - For browser integration checks, `apps/site/e2e/run.ts` and
   `apps/site/e2e/drive.ts` document the built-site, backend, browser, and
   GPU-tier requirements.

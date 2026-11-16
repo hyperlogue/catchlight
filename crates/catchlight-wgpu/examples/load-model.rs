@@ -436,7 +436,7 @@ impl ApplicationHandler for App {
 
                     // Control mode with physics off freezes the drivers, so
                     // the pose is exactly what the sliders say. Every other
-                    // case leaves them running, so SimplePhysics still
+                    // case leaves them running, so each response still
                     // responds to whatever the sliders (or the demo animation)
                     // set.
                     let physics = !self.control_enabled

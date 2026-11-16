@@ -202,10 +202,6 @@ pub fn inspect(bytes: &[u8], path: &Path) -> Result<Report, Error> {
         "param_definitions".into(),
         encoded_size(&model.doc.params, path)?,
     );
-    categories.insert(
-        "physics_settings".into(),
-        encoded_size(&model.doc.physics, path)?,
-    );
     categories.insert("welds".into(), encoded_size(&model.doc.welds, path)?);
     categories.insert(
         "animations".into(),

@@ -28,11 +28,7 @@ pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 pub struct CachedModel {
     pub model: Model,
     pub puppet: Puppet,
-    /// Pristine clone captured at load time. Cloned-into `puppet` before
-    /// each config so SimplePhysics persistent state (anchor_initialized,
-    /// d_angle, spring_vel, pendulum) starts identical regardless of any
-    /// previous config's settle outcome — otherwise the harness is
-    /// ordering-dependent.
+    /// Restore the same starting pose and response state before every config.
     pub pristine: Puppet,
     /// The model's params by [`catchlight_core::id::Name`], resolved once at
     /// load: a config names a param the way its author does, and nothing in a
@@ -139,10 +135,7 @@ pub fn prepare_puppet(
         cached.puppet.settle_physics(&cached.model);
         cached.puppet.tick_with_root(&cached.model, world, 0.0);
     } else {
-        // Transient baselines start after five seconds of fixed-step warm-up.
-        for _ in 0..500 {
-            cached.puppet.tick_with_root(&cached.model, world, 0.01);
-        }
+        cached.puppet.settle_physics(&cached.model);
         cached.puppet.apply_pose(&pose);
         for _ in 0..ticks_after_pose {
             cached

@@ -674,59 +674,6 @@ class MotionResponseSet:
 
 
 @dataclass(frozen=True, kw_only=True)
-class PhysicsSet:
-    """Change fields on a SimplePhysics node; absent = unchanged."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "physics_set"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    node: NodeId
-    kind: PhysicsKind | None = None
-    map_mode: PhysicsMapMode | None = None
-    plane: PhysicsPlane | None = None
-    local_only: bool | None = None
-    # The params the driver writes ([`PhysicsTargets`]). Absent leaves
-    # both outputs as they are; present, both become exactly what it
-    # says, so `{}` detaches both and `{"length": "len"}` binds the
-    # second output and unbinds the first.
-    target_params: PhysicsTargets | None = None
-    gravity: float | None = None
-    length: float | None = None
-    frequency: float | None = None
-    angle_damping: float | None = None
-    length_damping: float | None = None
-    output_scale: tuple[float, float] | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
-class PhysicsGlobals:
-    """Model-level physics constants."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "physics_globals_set"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    gravity: float | None = None
-    pixels_per_meter: float | None = None
-    # Fixed hair-strand step rate for the whole model, in Hz, within
-    # 30..=1000.
-    physics_rate: float | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class NodeDelete:
     TAG_FIELD: ClassVar[str] = "cmd"
     TAG: ClassVar[str] = "node_delete"
@@ -1330,36 +1277,6 @@ class WeldDelete:
 
 
 @dataclass(frozen=True, kw_only=True)
-class PhysicsAdd:
-    """Add a SimplePhysics node."""
-
-    TAG_FIELD: ClassVar[str] = "cmd"
-    TAG: ClassVar[str] = "physics_add"
-    CMD: ClassVar[str] = TAG
-    KIND: ClassVar[CommandKind] = CommandKind.EDIT
-
-    session: SessionId
-    parent: NodeId
-    name: str | None = None
-    kind: PhysicsKind
-    # The params the driver writes ([`PhysicsTargets`]). Absent binds
-    # neither output.
-    target_params: PhysicsTargets | None = None
-    length: float | None = None
-    gravity: float | None = None
-    frequency: float | None = None
-    angle_damping: float | None = None
-    length_damping: float | None = None
-    # The Id to create it under. Absent generates one; an Id the model
-    # already carries is [`ErrorCode::DuplicateId`].
-    node: NodeId | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """This value, as one JSON object: its tag, then every field it set."""
-        return _wire_fields(self)
-
-
-@dataclass(frozen=True, kw_only=True)
 class SpineAdd:
     """Add a spine node.
 
@@ -1383,9 +1300,6 @@ class SpineAdd:
     # One param per link, in link order, `None` where a link is rigid.
     # Absent binds none; present, it must be exactly as long as `joints`.
     targets: list[ParamId | None] | None = None
-    # The particle chain to hang on it. Absent is a spine that only
-    # reads its params.
-    chain: ChainArg | None = None
     # The Id to create it under. Absent generates one; an Id the model
     # already carries is [`ErrorCode::DuplicateId`].
     node: NodeId | None = None
@@ -1417,11 +1331,6 @@ class SpineSet:
     # One param per link, exactly as long as the spine is after `joints`
     # is applied.
     targets: list[ParamId | None] | None = None
-    # The chain, in three states: absent leaves it as it is, `null`
-    # takes it off, a value replaces it. The merge-patch idiom
-    # [`NodePatch::texture`] already uses, and the only shape that can
-    # say "remove" and "leave alone" in one optional field.
-    chain: ChainArg | Clear | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1430,8 +1339,8 @@ class SpineSet:
 
 @dataclass(frozen=True, kw_only=True)
 class SpineFit:
-    """Rig a strand of art to a spine in one edit: the spine, the params it
-    reads, and the chain that may drive them.
+    """Rig a strand of art to a spine in one edit: the spine and the bend params
+    its links read.
 
     The editor measures the strand, because measuring it is reading the
     part's rest mesh and deciding where each joint falls — the same reason
@@ -1443,8 +1352,8 @@ class SpineFit:
 
     **The spine goes between the part and its parent**, and the part keeps
     the world placement it had. Re-fitting a part whose parent is already a
-    spine re-measures that spine instead of nesting another, keeps every
-    chain knob, and keeps the params where the count still matches.
+    spine re-measures that spine instead of nesting another, retaining
+    the existing params for links that survive.
     """
 
     TAG_FIELD: ClassVar[str] = "cmd"
@@ -1465,9 +1374,6 @@ class SpineFit:
     # The Id to create the spine under, when one is being created.
     node: NodeId | None = None
     name: str | None = None
-    # The chain to hang on it. Absent leaves an existing spine's chain
-    # alone and gives a fresh one none.
-    chain: ChainArg | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -1754,8 +1660,6 @@ Command = (
     | MaskAdd
     | MaskDelete
     | MotionResponseSet
-    | PhysicsSet
-    | PhysicsGlobals
     | NodeDelete
     | TextureAdd
     | TextureList
@@ -1785,7 +1689,6 @@ Command = (
     | Welds
     | WeldSet
     | WeldDelete
-    | PhysicsAdd
     | SpineAdd
     | SpineSet
     | SpineFit
@@ -1828,8 +1731,6 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "mask_add": MaskAdd,
     "mask_delete": MaskDelete,
     "motion_response_set": MotionResponseSet,
-    "physics_set": PhysicsSet,
-    "physics_globals_set": PhysicsGlobals,
     "node_delete": NodeDelete,
     "texture_add": TextureAdd,
     "texture_list": TextureList,
@@ -1859,7 +1760,6 @@ COMMAND_VARIANTS: dict[str, type[Command]] = {
     "weld_list": Welds,
     "weld_set": WeldSet,
     "weld_delete": WeldDelete,
-    "physics_add": PhysicsAdd,
     "spine_add": SpineAdd,
     "spine_set": SpineSet,
     "spine_fit": SpineFit,
@@ -1915,8 +1815,6 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "mask_add": CommandKind.EDIT,
     "mask_delete": CommandKind.EDIT,
     "motion_response_set": CommandKind.EDIT,
-    "physics_set": CommandKind.EDIT,
-    "physics_globals_set": CommandKind.EDIT,
     "node_delete": CommandKind.EDIT,
     "texture_add": CommandKind.EDIT,
     "texture_list": CommandKind.REPLICA_QUERY,
@@ -1946,7 +1844,6 @@ COMMAND_KINDS: dict[str, CommandKind] = {
     "weld_list": CommandKind.REPLICA_QUERY,
     "weld_set": CommandKind.EDIT,
     "weld_delete": CommandKind.EDIT,
-    "physics_add": CommandKind.EDIT,
     "spine_add": CommandKind.EDIT,
     "spine_set": CommandKind.EDIT,
     "spine_fit": CommandKind.EDIT,
@@ -2035,8 +1932,6 @@ EditCommand = (
     | MaskAdd
     | MaskDelete
     | MotionResponseSet
-    | PhysicsSet
-    | PhysicsGlobals
     | NodeDelete
     | TextureAdd
     | ParamAdd
@@ -2059,7 +1954,6 @@ EditCommand = (
     | SlotDelete
     | WeldSet
     | WeldDelete
-    | PhysicsAdd
     | SpineAdd
     | SpineSet
     | SpineFit
@@ -2129,16 +2023,13 @@ class NodeKindArg(StrEnum):
 
 
 class NodeKind(StrEnum):
-    """What a node is, as a reply reports it. [`NodeKindArg`] is the add side and
-    carries no `Physics`: [`Command::PhysicsAdd`] is what makes one.
-    """
+    """The kind reported by a node query. [`NodeKindArg`] selects a kind on creation."""
 
     GROUP = "group"
     PART = "part"
     COMPOSITE = "composite"
     MESH_GROUP = "mesh_group"
     MOTION_RESPONSE = "motion_response"
-    PHYSICS = "physics"
     SPINE = "spine"
 
 
@@ -2147,31 +2038,6 @@ class MaskMode(StrEnum):
 
     MASK = "mask"
     DODGE = "dodge"
-
-
-class PhysicsKind(StrEnum):
-    """The pendulum a physics driver swings."""
-
-    RIGID = "rigid"
-    SPRING = "spring"
-
-
-class PhysicsMapMode(StrEnum):
-    """What a physics driver's two outputs mean; see [`PhysicsTargets`]."""
-
-    XY = "xy"
-    YX = "yx"
-    ANGLE_LENGTH = "angle_length"
-    LENGTH_ANGLE = "length_angle"
-
-
-class PhysicsPlane(StrEnum):
-    """The plane a physics driver swings in: across the screen, or toward and
-    away from the viewer along the anchor's world z.
-    """
-
-    SCREEN = "screen"
-    DEPTH = "depth"
 
 
 class Interpolate(StrEnum):
@@ -2248,8 +2114,6 @@ class ScalarTarget(StrEnum):
     SCREENTINTR = "screentintr"
     SCREENTINTG = "screentintg"
     SCREENTINTB = "screentintb"
-    OUTPUTSCALEX = "outputscalex"
-    OUTPUTSCALEY = "outputscaley"
 
 
 class BindingTarget(StrEnum):
@@ -2273,8 +2137,6 @@ class BindingTarget(StrEnum):
     SCREENTINTR = "screentintr"
     SCREENTINTG = "screentintg"
     SCREENTINTB = "screentintb"
-    OUTPUTSCALEX = "outputscalex"
-    OUTPUTSCALEY = "outputscaley"
     DEFORM = "deform"
 
 
@@ -2307,84 +2169,6 @@ class NodePatch:
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
     mg_translate_children: bool | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class PhysicsTargets:
-    """The params a physics driver writes, one field per output.
-
-    A driver has exactly two outputs and never a third, so this is a struct
-    rather than a list: there is no way to name an output that does not exist,
-    and no positional hole to spell with a `null`. An absent field is an output
-    bound to nothing, so `{"length": "len"}` is a driver whose second output
-    drives a param and whose first drives none, and `{}` is a driver that
-    writes nothing.
-
-    The names are the outputs under the `angle_length` map mode. Another map
-    mode changes what each output *means* — `length_angle` swaps them, `xy` and
-    `yx` make them a position — never how many there are.
-    """
-
-    # The param the driver's first output writes.
-    angle: ParamId | None = None
-    # The param the driver's second output writes.
-    length: ParamId | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class LinkFeelArg:
-    """One link's feel in a [`ChainArg`].
-
-    **Every field is optional, and none of the defaults are written here.**
-    They live in `catchlight-core` beside the solver that reads them, the way
-    [`AutoMesh`]'s live in `catchlight-editor-core`, so the wire cannot drift
-    from what a chain actually does; absent means "what the editor would have
-    used". `{}` is a link at every default.
-
-    Lengths and drawn directions come from the spine's joints.
-
-    A reply fills every one of them in, so a client can read a chain out of
-    [`SpineInfo::chain`], change one number, and send the list straight back
-    through [`Command::SpineSet`].
-    """
-
-    # Multiplier on the chain's gravity for this link's particle.
-    gravity_scale: float | None = None
-    # How strongly the link holds its drawn turn, in Hz, at or above zero.
-    # Zero is limp; around `physics_rate / 2 pi` the link follows rigidly.
-    stiffness: float | None = None
-    # The furthest this link's bend may reach either way, in half turns,
-    # within `(0, 1]`. Absent uses the core's unrestricted default; `null`
-    # explicitly means unlimited. The limit measures bend from the drawn curve, not
-    # the link's world rotation. `links` replaces the whole list, so an
-    # absent field does not preserve a previous limit.
-    limit: float | Clear | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class ChainArg:
-    """The particle chain a spine carries, as a command names it.
-
-    Absent fields are the core's own defaults, and `links` absent is one
-    default feel per joint — so `{}` is "simulate this spine, and feel like
-    hair". A list of another length than the spine's joints is fitted to it by
-    repeating its last entry, because a rigger who tuned a strand and then
-    added a joint wants the new one to feel like the strand.
-    """
-
-    # Integrate in the parent's frame rather than the world's.
-    local_only: bool | None = None
-    # A multiple of the model's own gravity; 1 hangs under one g.
-    gravity: float | None = None
-    # How much of the params the solve decides, against what was posed.
-    weight: float | None = None
-    # Per-second damping of motion relative to the root's own motion:
-    # bounce and settle time, without trailing.
-    damping: float | None = None
-    # Per-second drag on the strand's absolute motion: it trails the root.
-    air_drag: float | None = None
-    # One per joint, root to tip.
-    links: list[LinkFeelArg] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3446,7 +3230,7 @@ class ErrorCode(StrEnum):
     # The request did not parse: bad JSON, an unknown command, or a string
     # that is not a valid Id.
     BAD_REQUEST = "bad_request"
-    # A target that does not fit the thing it names: a physics field on a
+    # A target that does not fit the thing it names: a response field on a
     # node that is not a driver, a `deform` where only a scalar can go. A
     # *misspelled* one never gets this far — it is [`Self::BadRequest`].
     BAD_TARGET = "bad_target"
@@ -3882,14 +3666,7 @@ class ResponseBodyEmptied:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseBodySpineFit:
-    """What a [`Command::SpineFit`] authored.
-
-    `warnings` is the fit telling the rigger what the physics cannot do:
-    a limp weighted link drawn off gravity settles along gravity and not
-    along the art, and a link drawn upward under a spring too weak to hold
-    it falls over; saying so beats a strand that quietly falls out of its
-    pose. Empty when the drawing is one the chain can hold.
-    """
+    """What a [`Command::SpineFit`] authored."""
 
     TAG_FIELD: ClassVar[str] = "result"
     TAG: ClassVar[str] = "spine_fit"
@@ -3898,7 +3675,6 @@ class ResponseBodySpineFit:
     node: NodeId
     # The param each link's bend is read from, in link order.
     params: list[ParamId]
-    warnings: list[str] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -4086,9 +3862,6 @@ class StatusInfo:
     # History belongs to the editor, so only this server query can answer it.
     undo_steps: int = 0
     redo_steps: int = 0
-    gravity: float | None = None
-    pixels_per_meter: float | None = None
-    physics_rate: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4120,13 +3893,6 @@ class NodeInfo:
     none, which `kind` tells apart from a node that could not have one — a
     reply has nothing to undo, so it never carries the `null` a patch spells
     "draw none" with.
-
-    A pendulum and a spine carry their settings nested, in
-    [`NodeInfo::physics`] and [`NodeInfo::spine`], because those fields belong
-    to no [`NodePatch`] — [`Command::PhysicsSet`] and [`Command::SpineSet`] are
-    what write them. The round-trip rule is the same one: each nested field carries
-    the name its own command sets it under, so an inspector reads a value here
-    and sends it straight back.
     """
 
     # What the node is addressed by, here and in the file.
@@ -4163,8 +3929,6 @@ class NodeInfo:
     propagate_meshgroup: bool | None = None
     mg_translate_children: bool | None = None
     motion_response: MotionResponseInfo | None = None
-    # A SimplePhysics driver's settings, absent on every other kind.
-    physics: PhysicsInfo | None = None
     # A spine's settings, absent on every other kind.
     spine: SpineInfo | None = None
     # Ordered clipping rules. Empty on nodes that do not draw.
@@ -4267,27 +4031,6 @@ class MotionResponseInfo:
 
 
 @dataclass(frozen=True, kw_only=True)
-class PhysicsInfo:
-    """A SimplePhysics driver in full, under the names [`Command::PhysicsSet`]
-    sets them by.
-    """
-
-    kind: PhysicsKind
-    map_mode: PhysicsMapMode
-    plane: PhysicsPlane
-    local_only: bool
-    gravity: float
-    length: float
-    frequency: float
-    angle_damping: float
-    length_damping: float
-    output_scale: tuple[float, float]
-    # The params the driver's two outputs write, in the shape
-    # [`Command::PhysicsSet`] takes them.
-    target_params: PhysicsTargets
-
-
-@dataclass(frozen=True, kw_only=True)
 class SpineInfo:
     """A spine in full, under the names [`Command::SpineSet`] sets them by.
 
@@ -4298,10 +4041,6 @@ class SpineInfo:
 
     joints: list[tuple[float, float]]
     targets: list[ParamId | None]
-    # The particle chain the spine carries, absent for a spine that only
-    # reads its params. Every field filled in, so the whole thing travels
-    # back through [`Command::SpineSet`] unchanged.
-    chain: ChainArg | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4435,8 +4174,6 @@ __all__ = [
     "MaskAdd",
     "MaskDelete",
     "MotionResponseSet",
-    "PhysicsSet",
-    "PhysicsGlobals",
     "NodeDelete",
     "TextureAdd",
     "TextureList",
@@ -4466,7 +4203,6 @@ __all__ = [
     "Welds",
     "WeldSet",
     "WeldDelete",
-    "PhysicsAdd",
     "SpineAdd",
     "SpineSet",
     "SpineFit",
@@ -4495,9 +4231,6 @@ __all__ = [
     "NodeKindArg",
     "NodeKind",
     "MaskMode",
-    "PhysicsKind",
-    "PhysicsMapMode",
-    "PhysicsPlane",
     "Interpolate",
     "BlendMode",
     "TextureEncoding",
@@ -4505,9 +4238,6 @@ __all__ = [
     "ScalarTarget",
     "BindingTarget",
     "NodePatch",
-    "PhysicsTargets",
-    "LinkFeelArg",
-    "ChainArg",
     "AutoMeshContour",
     "AutoMeshGrid",
     "AutoMesh",
@@ -4646,7 +4376,6 @@ __all__ = [
     "parse_motion_source",
     "MotionInput",
     "MotionResponseInfo",
-    "PhysicsInfo",
     "SpineInfo",
     "TexInfo",
     "ParamInfo",

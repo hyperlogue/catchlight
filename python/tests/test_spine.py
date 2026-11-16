@@ -48,7 +48,6 @@ def test_a_spine_reopens_as_what_was_authored(client: Client, tmp_path: Path) ->
 
     info = _info(client, reopened, node)
     assert info.kind == "spine"
-    assert info.physics is None, "a spine is not a pendulum"
     spine = info.spine
     assert spine is not None
     assert list(spine.joints) == [(0.0, -50.0), (8.0, -95.0)]

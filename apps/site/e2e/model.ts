@@ -28,9 +28,9 @@ export async function openModel(page: Page): Promise<void> {
   }, previous, { timeout: 90000 });
 }
 
-export async function selectNode(page: Page, id: string): Promise<void> {
+export async function selectNode(page: Page, id: string, label = id.replaceAll("-", " ")): Promise<void> {
   const search = page.getByRole("textbox", { name: "Search nodes", exact: true });
-  await search.fill(id.replaceAll("-", " "));
+  await search.fill(label);
   const node = page.locator(`[data-catchlight-node][data-node="${id}"] [data-catchlight-node-label]`).first();
   // Some display names differ from their stable IDs.
   if (!await node.count()) await search.fill("");

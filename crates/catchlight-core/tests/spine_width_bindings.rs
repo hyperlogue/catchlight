@@ -204,16 +204,13 @@ fn neutral_width_is_exactly_inactive_and_the_recipe_round_trips() {
 }
 
 #[test]
-fn kicking_one_lock_does_not_drive_its_sibling() {
+fn moving_one_lock_does_not_drive_its_sibling() {
     let f = Fixture::new();
     let mut puppet = Puppet::new(&f.model);
     puppet.settle_physics(&f.model);
     puppet.tick(&f.model, 1.0 / 60.0);
     let untouched = world_positions(&puppet, &f.locks[1].parts[0]);
-    assert!(puppet.kick_chain(
-        puppet.node_idx(&f.locks[0].spine).unwrap(),
-        Vec2::new(2.0, 0.0)
-    ));
+    puppet.set_param_value(&f.locks[0].nudge, 1.0);
     puppet.tick(&f.model, 1.0 / 60.0);
     assert!(puppet.param_value(&f.locks[0].bends[0]).unwrap().abs() > 1e-4);
     assert_eq!(world_positions(&puppet, &f.locks[1].parts[0]), untouched);

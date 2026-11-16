@@ -119,13 +119,11 @@ impl CatchlightPuppet {
             .or_else(|| self.puppet.as_ref().map(Puppet::pose));
         let mut puppet = Puppet::new(model);
         puppet.set_animations_from(model);
-        // A freshly baked model renders settled rather than swinging into
-        // place. `settle_physics` leaves the puppet unposed, so the carried
-        // pose goes on after it.
-        puppet.settle_physics(model);
         if let Some(pose) = carried {
             puppet.apply_pose(&pose);
         }
+        // A loaded or replaced asset starts at equilibrium in its carried pose.
+        puppet.settle_physics(model);
         self.puppet = Some(puppet);
         self.baked_from = Some(id);
     }

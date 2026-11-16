@@ -177,8 +177,6 @@ export class FakeEditor implements WasmEditor {
               rev: doc.rev,
               undo_steps: Math.max(0, doc.rev - 1),
               redo_steps: 0,
-              gravity: 9.8,
-              pixels_per_meter: 1000,
             },
           },
           doc.rev,

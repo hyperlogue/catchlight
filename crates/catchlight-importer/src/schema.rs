@@ -29,14 +29,6 @@ where
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct SchemaPuppetPhysics {
-    #[serde(default, rename = "pixelsPerMeter")]
-    pub(super) pixels_per_meter: Option<f32>,
-    #[serde(default)]
-    pub(super) gravity: Option<f32>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct SchemaTransform {
     #[serde(default, deserialize_with = "de_lenient_vec")]
     pub(super) trans: Vec<f32>,
@@ -101,27 +93,6 @@ pub(super) struct SchemaNode {
 
     #[serde(default, deserialize_with = "de_lenient")]
     pub(super) translate_children: Option<bool>,
-
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) model_type: Option<String>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) map_mode: Option<String>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) local_only: Option<bool>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) param: Option<u32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) gravity: Option<f32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) length: Option<f32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) frequency: Option<f32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) angle_damping: Option<f32>,
-    #[serde(default, deserialize_with = "de_lenient")]
-    pub(super) length_damping: Option<f32>,
-    #[serde(default, deserialize_with = "de_lenient_vec")]
-    pub(super) output_scale: Vec<f32>,
 
     // The authored Composite flag the old runtime path hardcoded to true;
     // the `.clm` importer reads it.

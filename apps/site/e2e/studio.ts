@@ -317,27 +317,28 @@ export async function studio(
     const lockSpine = (await read("front-hair-lock-2")).info!.parent!;
     const lockTargets = (await read(lockSpine)).info!.spine!.targets;
     assert.equal(Number(await page.getByRole("spinbutton", { name: "Spine links" }).inputValue()), lockTargets.length);
-    assert.equal(await page.getByRole("checkbox", { name: "Simulate movement" }).isChecked(), false);
     rev = (await read()).revision;
     await page.getByRole("button", { name: "Fit spine to artwork", exact: true }).click();
     await change(rev);
     const refitted = (await read(lockSpine)).info!.spine!;
     assert.deepEqual(refitted.targets, lockTargets);
-    assert(!refitted.chain, "the refit keeps the response-driven bends");
+    const tip = "motion/back-hair-lock-19/tip";
+    await selectNode(page, tip, "tip");
+    await disclosure("Motion response");
+    const original = (await read(tip)).info!.motion_response!;
+    await field("Period", "0.75");
+    const tuned = (await read(tip)).info!.motion_response!;
+    assert.equal(tuned.period_s, 0.75);
+    assert.deepEqual(tuned.inputs, original.inputs);
+    await undo();
+    assert.deepEqual((await read(tip)).info!.motion_response, original);
     await selected("neck");
     await disclosure("Fit a spine");
-    assert(await page.getByRole("checkbox", { name: "Simulate movement" }).isChecked());
     rev = (await read()).revision;
     await page.getByRole("button", { name: "Fit spine to artwork", exact: true }).click();
     await change(rev);
-    assert((await read((await read("neck")).info!.parent!)).info!.spine?.chain);
+    assert((await read((await read("neck")).info!.parent!)).info!.spine!.joints.length);
     await right.getByRole("button", { name: "Model", exact: true }).click();
-    await disclosure("Physics environment");
-    rev = (await read()).revision;
-    await field("Global gravity", "7.5");
-    await change(rev);
-    const status = (await read()).status;
-    assert(status.result === "status" && status.status.gravity === 7.5);
     await disclosure("Metadata");
     await page
       .getByRole("button", { name: "Add metadata", exact: true })

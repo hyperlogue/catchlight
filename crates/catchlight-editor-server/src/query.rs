@@ -429,12 +429,12 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
 /// ignored. So what comes back is exactly what a `node_set` on this node
 /// would keep.
 ///
-/// A pendulum's and a spine's own settings are nested rather than flattened,
-/// in [`NodeInfo::physics`] and [`NodeInfo::spine`], because no `node_set`
-/// writes them: the round-trip they answer is to `physics_set` and `spine_set`, whose
+/// A motion response's and a spine's settings are nested rather than flattened,
+/// in [`NodeInfo::motion_response`] and [`NodeInfo::spine`], because no `node_set`
+/// writes them: the round-trip they answer is to `motion_response_set` and `spine_set`, whose
 /// field names they carry.
 fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
-    // The colour a drawable carries. A group, mesh group or physics node is
+    // The colour a drawable carries. A group, mesh group or motion response is
     // never drawn, so it reports none rather than a default a patch would
     // then write back into it.
     let (opacity, blend_mode, tint, screen_tint, mask_threshold) = match &node.kind {
@@ -509,33 +509,10 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
             ModelNodeKind::MotionResponse(r) => Some(r.clone().into()),
             _ => None,
         },
-        physics: match &node.kind {
-            ModelNodeKind::SimplePhysics(ph) => {
-                let targets = ph.target_params();
-                Some(PhysicsInfo {
-                    kind: ph.kind.into(),
-                    map_mode: ph.map_mode.into(),
-                    plane: ph.plane.into(),
-                    local_only: ph.local_only,
-                    gravity: ph.gravity,
-                    length: ph.length,
-                    frequency: ph.frequency,
-                    angle_damping: ph.angle_damping,
-                    length_damping: ph.length_damping,
-                    output_scale: ph.output_scale,
-                    target_params: PhysicsTargets {
-                        angle: targets[0].clone(),
-                        length: targets[1].clone(),
-                    },
-                })
-            }
-            _ => None,
-        },
         spine: match &node.kind {
             ModelNodeKind::Spine(spine) => Some(SpineInfo {
                 joints: spine.joints().to_vec(),
                 targets: spine.targets().to_vec(),
-                chain: spine.chain().map(ChainArg::of),
             }),
             _ => None,
         },

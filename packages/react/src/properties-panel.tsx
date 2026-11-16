@@ -8,7 +8,7 @@ import { InspectorRoot } from "./inspector.js";
 import { Disclosure, EmptyState, Icon, IconButton, SearchField } from "./controls.js";
 import { flattenTree, kindLabels, kindIcons, useCommand, type ErrorHandler } from "./authoring.js";
 import { MaskPanel, SlotsPanel } from "./model-panels.js";
-import { MeshPanel, PhysicsPanel, SpinePanel } from "./rigging.js";
+import { MeshPanel, MotionResponsePanel, SpinePanel } from "./rigging.js";
 
 export function PropertiesPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
   const { node } = useSelection();
@@ -33,7 +33,7 @@ export function PropertiesPanel({ session, onError }: { session: Session; onErro
       <MaskPanel session={session} info={info} onError={onError} />
       <MeshPanel session={session} info={info} onError={onError} />
       <SpinePanel session={session} info={info} onError={onError} />
-      <PhysicsPanel session={session} info={info} onError={onError} />
+      <MotionResponsePanel session={session} info={info} onError={onError} />
       {info.kind === "part" && <SlotsPanel session={session} info={info} onError={onError} />}
       <Disclosure title="Identity" defaultOpen={false}>
         <p data-catchlight-hint="">Node ID</p>

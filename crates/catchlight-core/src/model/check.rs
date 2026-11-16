@@ -32,7 +32,7 @@ pub struct CheckWarning {
 
 impl Model {
     /// Walk the model and report likely-unintended states: parts that render to
-    /// nothing, malformed meshes, physics nodes that drive nothing, and bindings
+    /// nothing, malformed meshes, spines with no bend targets, and bindings
     /// whose value matrix does not match their param's axis grid.
     pub fn check(&self) -> Vec<CheckWarning> {
         let mut out = Vec::new();
@@ -72,14 +72,6 @@ impl Model {
                             ),
                         ));
                     }
-                }
-                ModelNodeKind::SimplePhysics(ph)
-                    if ph.target_params().iter().all(Option::is_none) =>
-                {
-                    out.push(warn(
-                        id,
-                        format!("physics node {:?} drives no target param", n.name.as_str()),
-                    ));
                 }
                 // Only an entirely rigid spine: one that reads some of its
                 // links and not others is an ordinary rig, not a mistake.
@@ -209,8 +201,7 @@ fn cells_outside(values: &ClmBindingValues, w: u32, h: u32) -> usize {
         Deform(c) => c.cells.iter().filter(|c| c.x >= w || c.y >= h).count(),
         ZOrder(c) | TransformTX(c) | TransformTY(c) | TransformTZ(c) | TransformSX(c)
         | TransformSY(c) | TransformRX(c) | TransformRY(c) | TransformRZ(c) | Opacity(c)
-        | TintR(c) | TintG(c) | TintB(c) | ScreenTintR(c) | ScreenTintG(c) | ScreenTintB(c)
-        | OutputScaleX(c) | OutputScaleY(c) => {
+        | TintR(c) | TintG(c) | TintB(c) | ScreenTintR(c) | ScreenTintG(c) | ScreenTintB(c) => {
             c.cells.iter().filter(|c| c.x >= w || c.y >= h).count()
         }
     }

@@ -1,16 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Binding-owned sampling grids preserve independent authoring over shared
-//! inputs. Version-2 container fixtures exercise binding positions and asset
-//! preservation through decoding.
+//! inputs.
 
-use catchlight_core::formats::{clm, container};
+use catchlight_core::formats::clm;
 use catchlight_core::id::SeededHex;
 use catchlight_core::{
-    BindingKey, BindingTarget, ExtensionKey, ExtensionValue, InterpolateMode, Model, ModelNode,
-    ModelNodeKind, ModelParam, ModelPart, ModelTexture, Name, NodeId, ParamId, Pose, Puppet,
-    ScalarTarget,
+    BindingKey, BindingTarget, InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam,
+    ModelPart, Name, NodeId, ParamId, Pose, Puppet, ScalarTarget,
 };
-use serde_json::{json, Value};
 
 fn fixture() -> (Model, ParamId, NodeId) {
     let mut model = Model::new();
@@ -251,151 +248,4 @@ fn grid_budget_and_file_validation_use_binding_axes() {
         ],
     });
     assert!(Model::from_clm_file(&bad).is_err());
-}
-
-/// Rewrite only the Structure section into the historical v2 shape, retaining
-/// every encoded asset section byte for byte.
-fn v2_bytes(bytes: &[u8], axes: Value, omit_params: bool) -> Vec<u8> {
-    let parsed = container::read(bytes, &clm::MAGIC).unwrap();
-    let mut structure: Value = ciborium::from_reader(parsed.section(0).unwrap()).unwrap();
-    for param in structure["params"].as_array_mut().unwrap() {
-        param["key_positions"] = axes.clone();
-    }
-    if omit_params {
-        structure["params"] = json!([]);
-    }
-    for binding in structure["bindings"].as_array_mut().unwrap() {
-        binding.as_object_mut().unwrap().remove("key_positions");
-    }
-    let mut payload = Vec::new();
-    ciborium::into_writer(&structure, &mut payload).unwrap();
-    let sections: Vec<_> = parsed
-        .sections
-        .iter()
-        .map(|s| container::Section {
-            kind: s.kind,
-            data: if s.kind == 0 { &payload } else { s.data },
-        })
-        .collect();
-    container::write(&clm::MAGIC, 2, &sections)
-}
-
-#[test]
-fn v2_migration_preserves_samples_assets_and_structure_feed() {
-    let (mut model, param, node) = fixture();
-    let tx = key(&param, &node, ScalarTarget::Tx);
-    model
-        .add_binding_with_positions(&tx, vec![vec![0.0, 0.25, 1.0]])
-        .unwrap();
-    model.set_binding_key(&tx, [0, 0], -2.0).unwrap();
-    model.set_binding_key(&tx, [2, 0], 6.0).unwrap();
-    let mut ids = SeededHex::new(84);
-    model
-        .add_texture(
-            &node,
-            ModelTexture {
-                encoding: clm::TextureEncoding::Tga,
-                alpha: clm::TextureAlpha::Straight,
-                data: vec![3, 1, 4, 1, 5].into(),
-            },
-            &mut ids,
-        )
-        .unwrap();
-    model
-        .set_extension(
-            ExtensionKey::new("tests.binary").unwrap(),
-            ExtensionValue::Bytes(vec![9, 2, 6].into()),
-        )
-        .unwrap();
-    let bytes = v2_bytes(
-        &model.to_clm_bytes().unwrap(),
-        json!([0.0, 0.25, 1.0]),
-        false,
-    );
-    let migrated = Model::from_clm_bytes(&bytes).unwrap();
-    assert!(model.authored_eq(&migrated).unwrap());
-    for value in [0.0, 0.125, 0.25, 0.75, 1.0] {
-        let pose = [(param.clone(), value)].into_iter().collect();
-        assert_eq!(
-            model.eval_scalar(&tx, &pose),
-            migrated.eval_scalar(&tx, &pose)
-        );
-    }
-    let out = migrated.to_clm_bytes().unwrap();
-    assert_eq!(container::read(&out, &clm::MAGIC).unwrap().version, 3);
-    assert_eq!(out, model.to_clm_bytes().unwrap());
-
-    let feed = v2_bytes(
-        &model.to_structure_bytes().unwrap(),
-        json!([0.0, 0.25, 1.0]),
-        false,
-    );
-    let decoded = clm::decode_structure(&feed).unwrap();
-    assert_eq!(decoded.doc, model.to_clm_structure().unwrap());
-    assert_eq!(clm::structure_texture_ids(&feed).unwrap(), decoded.textures);
-}
-
-#[test]
-fn legacy_empty_axis_is_constant_and_missing_base_axis_is_an_error() {
-    let (mut model, param, node) = fixture();
-    let tx = key(&param, &node, ScalarTarget::Tx);
-    model
-        .add_binding_with_positions(&tx, vec![vec![0.0]])
-        .unwrap();
-    model.set_binding_key(&tx, [0, 0], 7.0).unwrap();
-    let bytes = model.to_clm_bytes().unwrap();
-    let migrated = Model::from_clm_bytes(&v2_bytes(&bytes, json!([]), false)).unwrap();
-    assert_eq!(migrated.binding(&tx).unwrap().key_positions(), &[vec![0.0]]);
-    assert_eq!(
-        migrated.eval_scalar(&tx, &[(param.clone(), 0.7)].into_iter().collect()),
-        Some(7.0)
-    );
-    assert!(
-        matches!(clm::decode(&v2_bytes(&bytes, json!([]), true)), Err(clm::ClmError::LegacyBindingAxisMissing { node: n, param: p }) if n == node.to_string() && p == param.to_string())
-    );
-}
-
-#[test]
-fn legacy_shared_axes_are_preflighted_before_expansion_without_double_charge() {
-    use catchlight_core::load_budget::{
-        charge_clm_structure, LoadBudget, LoadLimits, LoadResource,
-    };
-    let (mut model, param, node) = fixture();
-    for target in [ScalarTarget::Tx, ScalarTarget::Ty] {
-        model.add_binding(&key(&param, &node, target)).unwrap();
-    }
-    let axes = json!([0.0, 0.25, 0.5, 0.75, 1.0]);
-    let full = v2_bytes(&model.to_clm_bytes().unwrap(), axes.clone(), false);
-    let feed = v2_bytes(&model.to_structure_bytes().unwrap(), axes, false);
-    let budget = |cells| {
-        LoadBudget::new(LoadLimits {
-            binding_cells: cells,
-            ..LoadLimits::default()
-        })
-    };
-    // Each five-position source axis expands to five cells in each binding.
-    for structure_only in [false, true] {
-        let mut too_small = budget(9);
-        let result = if structure_only {
-            clm::decode_structure_with_budget(&feed, &mut too_small).map(|file| file.doc)
-        } else {
-            clm::decode_with_budget(&full, &mut too_small).map(|file| file.doc)
-        };
-        assert!(
-            matches!(result, Err(clm::ClmError::LoadLimit(error)) if error.resource == "binding cells" && error.got == 10)
-        );
-        let mut exact = budget(10);
-        let doc = if structure_only {
-            clm::decode_structure_with_budget(&feed, &mut exact)
-                .unwrap()
-                .doc
-        } else {
-            clm::decode_with_budget(&full, &mut exact).unwrap().doc
-        };
-        charge_clm_structure(&doc, &mut exact).unwrap();
-        assert!(exact.charge(LoadResource::BindingCells, 1).is_err());
-    }
-    let mut used = budget(10);
-    used.charge(LoadResource::BindingCells, 1).unwrap();
-    assert!(clm::decode_with_budget(&full, &mut used).is_err());
 }

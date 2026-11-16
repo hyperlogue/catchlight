@@ -116,16 +116,6 @@ pub(crate) struct Arena {
     // deform sum, read without disturbing the stack memos.
     pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
     pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
-    pub(crate) physics_node_ids: Vec<NodeIdx>,
-    /// The spines that carry a particle chain, in the same arena order
-    /// `physics_node_ids` keeps its own in. A separate list from
-    /// `spine_node_ids` because most spines carry nothing and the solver pass
-    /// should not walk them; the two are otherwise the same nodes.
-    pub(crate) chain_node_ids: Vec<NodeIdx>,
-    /// Parallel to `chain_node_ids`: each chain's index into `spine_node_ids`,
-    /// so the solver reaches its spine's row of `Baked::spine_targets` without
-    /// a lookup — the hot loops never search.
-    pub(crate) chain_spine: Vec<usize>,
     /// Spine nodes, in arena order. `Baked::spine_targets` is parallel to it.
     pub(crate) spine_node_ids: Vec<NodeIdx>,
     // Frame-persistent scratch for the spine pass, the same pair
@@ -136,48 +126,6 @@ pub(crate) struct Arena {
     pub(crate) spine_scratch: Vec<glam::Vec2>,
     pub(crate) spine_cur_deform_scratch: Vec<glam::Vec2>,
     pub(crate) mesh_group_node_ids: Vec<NodeIdx>,
-    // Puppet-local (root=IDENTITY) transform scratch used when sampling
-    // SimplePhysics anchors. Decouples the physics integrator from any
-    // host world-scale: pendulum length and gravity are loaded in
-    // puppet-local units, so anchors must be in matching units.
-    pub(crate) physics_transforms: GlobalTransforms,
-    /// Per-node `translate_children` shift from the **previous** frame's
-    /// mesh-group pass, in the node's own parent space; zero for a node no
-    /// such group shifted. `meshgroup::shift_translate_children` overwrites
-    /// every target's entry each frame — the delta it applied, or zero for a
-    /// target it skipped — and the physics anchor pre-pass adds it back
-    /// (`apply_previous_tc_shifts`), so a driver anchored under a shifted
-    /// node samples the shifted place one frame late. A rebake builds a new
-    /// arena, so this starts at zero and never outlives the tree it measured.
-    tc_shift_deltas: Vec<glam::Vec2>,
-    /// How many entries of `tc_shift_deltas` are non-zero, so a model with no
-    /// shifted node costs nothing per frame.
-    tc_shift_nonzero: usize,
-    /// Whether any entry of `tc_shift_deltas` actually moved since the last
-    /// `take_tc_shift_changed`. The tick consumes it to force one more anchor
-    /// pre-pass, so a shift that has just appeared reaches the anchors even if
-    /// the pose then stands still.
-    tc_shift_changed: bool,
-    /// Slots that are a driver node — SimplePhysics or particle chain — a
-    /// chain's guide part, or an ancestor of one: the only slots the physics
-    /// pre-pass transform walk
-    /// needs to fill (see `compute_physics_ancestor_transforms`). Invalidated
-    /// on `insert_child`.
-    physics_ancestor_mask: Option<Vec<bool>>,
-    /// Parallel to `chain_node_ids`: the mesh group whose warp moves the
-    /// chain's art directly (the nearest one reached through parts,
-    /// propagating composites and spines only), if any. Invalidated with the
-    /// structure caches.
-    pub(crate) chain_warp_groups: Option<Vec<Option<NodeIdx>>>,
-    /// Parallel to `chain_node_ids`: how far the mesh groups warp each
-    /// chain's posed guide root, in puppet-local (Y-up) units. The physics
-    /// pre-pass records it for the pose it is about to step
-    /// (`Puppet::pose_chain_roots`); nothing else writes it.
-    pub(crate) chain_root_shifts: Vec<glam::Vec2>,
-    /// What the physics pre-pass poses so chain roots and guides are this
-    /// frame's (`meshgroup::chain_root_groups`). Invalidated with the
-    /// structure caches.
-    pub(crate) chain_root_groups: Option<crate::meshgroup::ChainRootGroups>,
 }
 
 impl Arena {
@@ -202,21 +150,10 @@ impl Arena {
             welds: Vec::new(),
             weld_cur_a_scratch: Vec::new(),
             weld_cur_b_scratch: Vec::new(),
-            physics_node_ids: Vec::new(),
-            chain_node_ids: Vec::new(),
-            chain_spine: Vec::new(),
             spine_node_ids: Vec::new(),
             spine_scratch: Vec::new(),
             spine_cur_deform_scratch: Vec::new(),
             mesh_group_node_ids: Vec::new(),
-            physics_transforms: GlobalTransforms::new(),
-            tc_shift_deltas: vec![glam::Vec2::ZERO],
-            tc_shift_nonzero: 0,
-            tc_shift_changed: false,
-            physics_ancestor_mask: None,
-            chain_warp_groups: None,
-            chain_root_shifts: Vec::new(),
-            chain_root_groups: None,
         }
     }
 
@@ -262,9 +199,6 @@ impl Arena {
     /// Rebuild the five kind registries from the current node kinds.
     pub(crate) fn rebuild_kind_registries(&mut self) {
         self.deform_node_ids.clear();
-        self.physics_node_ids.clear();
-        self.chain_node_ids.clear();
-        self.chain_spine.clear();
         self.spine_node_ids.clear();
         self.mesh_group_node_ids.clear();
         for (slot, node) in self.nodes.iter().enumerate() {
@@ -274,13 +208,6 @@ impl Arena {
                 crate::NodeKind::Part(_) | crate::NodeKind::MeshGroup(_)
             ) {
                 self.deform_node_ids.push(id);
-            }
-            if matches!(&node.kind, crate::NodeKind::SimplePhysics(_)) {
-                self.physics_node_ids.push(id);
-            }
-            if matches!(&node.kind, crate::NodeKind::Spine(sp) if sp.chain.is_some()) {
-                self.chain_node_ids.push(id);
-                self.chain_spine.push(self.spine_node_ids.len());
             }
             if matches!(&node.kind, crate::NodeKind::Spine(_)) {
                 self.spine_node_ids.push(id);
@@ -295,10 +222,6 @@ impl Arena {
     /// Drop every cache that depends on tree shape or node kinds.
     pub(crate) fn invalidate_structure_caches(&mut self) {
         self.mg_pre_order_cache = None;
-        self.physics_ancestor_mask = None;
-        self.chain_warp_groups = None;
-        self.chain_root_shifts.clear();
-        self.chain_root_groups = None;
     }
 
     pub(crate) fn rebuild_all_mesh_group_pins(&mut self) {
@@ -358,9 +281,6 @@ impl Arena {
                     c.tint = c.base_tint;
                     c.screen_tint = c.base_screen_tint;
                 }
-                crate::NodeKind::SimplePhysics(p) => {
-                    p.offset_output_scale = glam::Vec2::ONE;
-                }
                 _ => {}
             }
         }
@@ -412,17 +332,12 @@ impl Arena {
             .map(|&id| (id, crate::spine::bake_spine_pins(self, &transforms, id)))
             .collect();
         for (id, pins) in baked {
-            let rest_carry = self.chain_carry(&transforms, id);
             let Some(crate::NodeKind::Spine(spine)) =
                 self.nodes.get_mut(id.0 as usize).map(|node| &mut node.kind)
             else {
                 continue;
             };
             spine.pins = pins;
-            // The chain's neutral rest is measured in the authored pose.
-            if let (Some(chain), Some(rest_carry)) = (&mut spine.chain, rest_carry) {
-                chain.rest_carry = rest_carry;
-            }
         }
     }
 
@@ -460,8 +375,7 @@ impl Arena {
     pub(crate) fn insert_child(&mut self, parent: NodeIdx, node: Node) -> NodeIdx {
         let id = self.allocate_id();
         // An unresolvable parent would leave the node registered in every side
-        // index (deform / mesh-group / physics) but absent from the tree, so it
-        // never renders while its physics driver still perturbs the model.
+        // index but absent from tree walks.
         if let Err(err) = self.tree.add_child(parent, id) {
             tracing::warn!(
                 "insert_child: {err:?}; node {} attached to the root instead",
@@ -480,25 +394,15 @@ impl Arena {
             crate::NodeKind::Part(_) | crate::NodeKind::MeshGroup(_)
         );
         let is_mesh_group = matches!(&node.kind, crate::NodeKind::MeshGroup(_));
-        let is_physics = matches!(&node.kind, crate::NodeKind::SimplePhysics(_));
-        let is_chain = matches!(&node.kind, crate::NodeKind::Spine(sp) if sp.chain.is_some());
         let is_spine = matches!(&node.kind, crate::NodeKind::Spine(_));
         self.base_local_matrix.push(node.base_transform.to_matrix());
         self.node_transform_dirty.push(false);
-        self.tc_shift_deltas.push(glam::Vec2::ZERO);
         self.nodes.push(node);
         if is_deform_node {
             self.deform_node_ids.push(id);
         }
         if is_mesh_group {
             self.mesh_group_node_ids.push(id);
-        }
-        if is_physics {
-            self.physics_node_ids.push(id);
-        }
-        if is_chain {
-            self.chain_node_ids.push(id);
-            self.chain_spine.push(self.spine_node_ids.len());
         }
         if is_spine {
             self.spine_node_ids.push(id);
@@ -601,213 +505,6 @@ impl Arena {
             };
             out.insert(id, parent_matrix * local_matrix);
         }
-    }
-
-    /// Anchor point for a driver — a pendulum or a particle chain — in the
-    /// driver's own **Y-down** frame (gravity toward +Y). The
-    /// node world is Y-up, so the Y is flipped here; the driver's output
-    /// conjugates `world_inverse` by the same flip to undo it.
-    ///
-    /// Both kinds hang from the same point and answer to the same
-    /// `local_only`, so one function serves both: the anchor is a property of
-    /// the node, not of what is dangling off it.
-    ///
-    /// The `local_only` branch uses `node.transform.translation`, including
-    /// parameter-driven offsets from the anchor pre-pass rather than the
-    /// frozen load pose — and, for a node a mesh group shifts, the previous
-    /// frame's shift the pre-pass replayed (`apply_previous_tc_shifts`).
-    pub(crate) fn physics_anchor(
-        &self,
-        transforms: &GlobalTransforms,
-        id: NodeIdx,
-    ) -> Option<crate::Vec2> {
-        let node = self.nodes.get(id.0 as usize)?;
-        let (local_only, plane) = match &node.kind {
-            crate::NodeKind::SimplePhysics(p) => (p.local_only, p.plane),
-            crate::NodeKind::Spine(sp) => (
-                sp.chain.as_ref()?.local_only,
-                crate::physics::PendulumPlane::Screen,
-            ),
-            _ => return None,
-        };
-        let at = if local_only {
-            node.transform.translation
-        } else {
-            transforms.get(id).w_axis.truncate()
-        };
-        // A depth pendulum's horizontal is the world's z (see `PendulumPlane`).
-        let across = match plane {
-            crate::physics::PendulumPlane::Screen => at.x,
-            crate::physics::PendulumPlane::Depth => at.z,
-        };
-        Some(crate::Vec2::new(across, -at.y))
-    }
-
-    /// The node's full linear map, including scale and mirrors, conjugated
-    /// into the physics Y-down frame. This carries the chain's rest geometry
-    /// and matches the inverse used to read its bends. `local_only` uses
-    /// identity because that simulation omits the node's linear transform.
-    pub(crate) fn chain_carry(
-        &self,
-        transforms: &GlobalTransforms,
-        id: NodeIdx,
-    ) -> Option<crate::Mat2> {
-        let node = self.nodes.get(id.0 as usize)?;
-        let crate::NodeKind::Spine(sp) = &node.kind else {
-            return None;
-        };
-        let chain = sp.chain.as_ref()?;
-        if chain.local_only {
-            return Some(crate::Mat2::IDENTITY);
-        }
-        let world = transforms.get(id);
-        let m = crate::Mat2::from_cols(
-            crate::Vec2::new(world.x_axis.x, world.x_axis.y),
-            crate::Vec2::new(world.y_axis.x, world.y_axis.y),
-        );
-        let flip = crate::Mat2::from_cols(crate::Vec2::new(1.0, 0.0), crate::Vec2::new(0.0, -1.0));
-        Some(flip * m * flip)
-    }
-
-    /// Record what `translate_children` shift a mesh group applied to one of
-    /// its targets this frame, overwriting the last one. A target the pass
-    /// skipped is recorded as zero, so a stale delta never survives a frame.
-    pub(crate) fn set_tc_shift_delta(&mut self, id: NodeIdx, delta: glam::Vec2) {
-        let Some(slot) = self.tc_shift_deltas.get_mut(id.0 as usize) else {
-            return;
-        };
-        let previous = *slot;
-        if previous == delta {
-            return;
-        }
-        *slot = delta;
-        self.tc_shift_changed = true;
-        match (previous != glam::Vec2::ZERO, delta != glam::Vec2::ZERO) {
-            (false, true) => self.tc_shift_nonzero += 1,
-            (true, false) => self.tc_shift_nonzero -= 1,
-            _ => {}
-        }
-    }
-
-    /// Whether a `translate_children` shift moved since this was last asked,
-    /// clearing the flag.
-    ///
-    /// The anchor pre-pass replays the *stored* shift, so a frame whose
-    /// mesh-group pass records a different one has left the anchors a frame
-    /// behind a shift that has genuinely changed. The tick answers that by
-    /// dropping its cached anchor pose, which costs one extra pre-pass while a
-    /// shift is settling and nothing once it has: the shift is a function of
-    /// the pose, so a still pose recomputes the same delta and stops asking.
-    pub(crate) fn take_tc_shift_changed(&mut self) -> bool {
-        std::mem::take(&mut self.tc_shift_changed)
-    }
-
-    /// Add the **previous** frame's `translate_children` shift back onto every
-    /// node one moved. The physics anchor pre-pass calls this after folding the
-    /// anchor bindings and before walking the transforms, so a driver whose
-    /// ancestor chain runs through a shifted node — or which is itself a target
-    /// and reads `node.transform.translation` — samples a shifted anchor rather
-    /// than a pre-shift one. The anchor is therefore one frame late;
-    /// running the mesh-group pass inside the
-    /// pre-pass instead would need the deform bindings folded and a second
-    /// transform walk every frame.
-    ///
-    /// `reset_dynamic_state` has restored each node's base transform first, so
-    /// this adds one frame's shift and never accumulates.
-    ///
-    /// **Why the pre-pass may still be skipped.** It is skipped when the pose
-    /// has not moved since the frame that built the cached anchor pose, and
-    /// `take_tc_shift_changed` has forced one more rebuild after any frame
-    /// whose shift moved. So a skipped frame is one where this ran with the
-    /// same deltas the last mesh-group pass recorded. A `local_only` driver
-    /// then reads `node.transform.translation` as the last final fold left it
-    /// — base plus bindings plus that shift — and a world-anchored one reads
-    /// the cached `physics_transforms`, built by that same pre-pass from base
-    /// plus the same bindings plus the same stored deltas. Both match what a
-    /// fresh pre-pass would produce, so neither pops. A `local_only` driver
-    /// that is itself a shift target needs no special case of its own.
-    pub(crate) fn apply_previous_tc_shifts(&mut self) {
-        if self.tc_shift_nonzero == 0 {
-            return;
-        }
-        for slot in 0..self.tc_shift_deltas.len() {
-            let delta = self.tc_shift_deltas[slot];
-            if delta == glam::Vec2::ZERO {
-                continue;
-            }
-            if let Some(node) = self.nodes.get_mut(slot) {
-                node.transform.translation.x += delta.x;
-                node.transform.translation.y += delta.y;
-            }
-            if let Some(dirty) = self.node_transform_dirty.get_mut(slot) {
-                *dirty = true;
-            }
-        }
-    }
-
-    pub(crate) fn ensure_physics_ancestor_mask(&mut self) {
-        if self.physics_ancestor_mask.is_some() {
-            return;
-        }
-        let mut mask = vec![false; self.nodes.len()];
-        // A chain's guide part too, so the pre-pass can pose its guide.
-        let guides: Vec<NodeIdx> = self
-            .chain_node_ids
-            .iter()
-            .filter_map(|&id| match &self.nodes.get(id.0 as usize)?.kind {
-                crate::NodeKind::Spine(sp) => sp.guide_part(),
-                _ => None,
-            })
-            .collect();
-        for &pid in self
-            .physics_node_ids
-            .iter()
-            .chain(&self.chain_node_ids)
-            .chain(&guides)
-        {
-            let mut cur = Some(pid);
-            while let Some(id) = cur {
-                match mask.get_mut(id.0 as usize) {
-                    // Already marked -> its ancestors are marked too.
-                    Some(true) => break,
-                    Some(slot) => *slot = true,
-                    None => break,
-                }
-                cur = self.tree.get_parent(id);
-            }
-        }
-        self.physics_ancestor_mask = Some(mask);
-    }
-
-    /// Physics pre-pass transform walk restricted to physics nodes and
-    /// their ancestors — the only slots the driver step reads (both the
-    /// anchor and `world_inverse`). Same per-node logic as
-    /// `compute_transforms_with_root` with `root = IDENTITY`; a member's
-    /// parent is always a member, so parent transforms are ready when
-    /// needed, and stale non-member slots are never read.
-    pub(crate) fn compute_physics_ancestor_transforms(&self, out: &mut GlobalTransforms) {
-        out.ensure_size(self.nodes.len());
-        let mask = self.physics_ancestor_mask.as_deref().unwrap_or(&[]);
-        self.tree.with_dfs_order(|order| {
-            for &id in order {
-                let slot = id.0 as usize;
-                if !mask.get(slot).copied().unwrap_or(false) {
-                    continue;
-                }
-                let node = self.nodes.get(slot);
-                let local_matrix = self.local_matrix(slot, node);
-                let lock_to_root = node.map(|n| n.lock_to_root).unwrap_or(false);
-                let parent_matrix = if lock_to_root {
-                    Mat4::IDENTITY
-                } else {
-                    self.tree
-                        .get_parent(id)
-                        .map(|parent| out.get(parent))
-                        .unwrap_or(Mat4::IDENTITY)
-                };
-                out.insert(id, parent_matrix * local_matrix);
-            }
-        });
     }
 }
 

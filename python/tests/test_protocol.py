@@ -26,12 +26,14 @@ from catchlight import (
     EventModelChanged,
     MeshAuto,
     MeshSet,
+    MotionResponseSet,
+    MotionResponseInfo,
+    MotionInput,
+    MotionSourceParent,
     NodeAdd,
     NodeKindArg,
     NodeSet,
     ParamPose,
-    PhysicsSet,
-    PhysicsTargets,
     PresenceSet,
     RenameId,
     RenameParam,
@@ -200,6 +202,26 @@ def test_a_mesh_travels_as_lists_of_points() -> None:
     }
 
 
+def test_a_response_carries_nested_sources() -> None:
+    response = MotionResponseInfo(
+        inputs=[MotionInput(source=MotionSourceParent(), gain=0.75)],
+        period_s=0.5,
+        damping_ratio=1.0,
+        output_param="bend",
+    )
+    assert MotionResponseSet(session=1, node="tip", response=response).to_wire() == {
+        "cmd": "motion_response_set",
+        "session": 1,
+        "node": "tip",
+        "response": {
+            "inputs": [{"source": {"kind": "parent"}, "gain": 0.75}],
+            "period_s": 0.5,
+            "damping_ratio": 1.0,
+            "output_param": "bend",
+        },
+    }
+
+
 def test_a_python_keyword_still_travels_under_its_real_name() -> None:
     assert RenameId(session=1, rename=RenameParam(from_="old", to="new")).to_wire() == {
         "cmd": "id_rename",
@@ -215,53 +237,6 @@ def test_a_nested_tagged_enum_carries_its_own_tag() -> None:
         "node": "hair",
         "mode": {"mode": "grid", "cols": 4, "rows": 3},
     }
-
-
-def test_a_nested_optional_struct_travels_as_an_object() -> None:
-    """`target_params` is one object per output, and an output bound to
-    nothing is simply not in it — so the empty object says "neither"."""
-    assert PhysicsSet(
-        session=1, node="hair", target_params=PhysicsTargets(length="len")
-    ).to_wire() == {
-        "cmd": "physics_set",
-        "session": 1,
-        "node": "hair",
-        "target_params": {"length": "len"},
-    }
-    assert PhysicsSet(session=1, node="hair", target_params=PhysicsTargets()).to_wire() == {
-        "cmd": "physics_set",
-        "session": 1,
-        "node": "hair",
-        "target_params": {},
-    }
-    # Absent is a third thing again: leave both outputs alone.
-    assert PhysicsSet(session=1, node="hair").to_wire() == {
-        "cmd": "physics_set",
-        "session": 1,
-        "node": "hair",
-    }
-
-
-def test_a_nested_struct_parses_back() -> None:
-    """The decoder `parse_reply` uses for every nested struct, on this one."""
-    decode = protocol_gen._decode
-    assert decode(PhysicsTargets | None, {"length": "len"}) == PhysicsTargets(
-        angle=None, length="len"
-    )
-    assert decode(PhysicsTargets | None, {}) == PhysicsTargets()
-    assert decode(PhysicsTargets | None, None) is None
-
-
-@pytest.mark.parametrize(
-    "limit, wire", [(None, {}), (CLEAR, {"limit": None}), (0.25, {"limit": 0.25})]
-)
-def test_link_limits_distinguish_default_unlimited_and_custom(limit, wire) -> None:
-    feel = protocol_gen.LinkFeelArg(limit=limit)
-    command = protocol_gen.SpineSet(
-        session=1, node="hair", chain=protocol_gen.ChainArg(links=[feel])
-    )
-    assert command.to_wire()["chain"]["links"] == [wire]
-    assert protocol_gen._decode(protocol_gen.LinkFeelArg, wire) == feel
 
 
 def test_an_ok_reply_parses() -> None:

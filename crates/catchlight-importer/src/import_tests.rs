@@ -202,7 +202,7 @@ fn a_mask_whose_source_is_never_drawn_is_dropped() {
                 "children": [
                     {"uuid": 7, "name": "lattice", "type": "MeshGroup",
                      "mesh": {"verts": [0.0, 0.0, 1.0, 0.0], "uvs": [], "indices": [0, 1]}},
-                    {"uuid": 8, "name": "sway", "type": "SimplePhysics"},
+                    {"uuid": 8, "name": "sway", "type": "UnknownContainer"},
                     {"uuid": 9, "name": "holder", "type": "Node"},
                     {"uuid": 10, "name": "face", "type": "Composite"},
                     {"uuid": 11, "name": "drawn", "type": "Part", "textures": [0],

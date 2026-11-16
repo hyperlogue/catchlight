@@ -40,10 +40,7 @@ fn keys(map: &std::collections::BTreeMap<u32, impl Sized>) -> Vec<u32> {
 }
 
 fn is_empty(cap: &Cap) -> bool {
-    cap.verts.is_empty()
-        && cap.opacity.is_empty()
-        && cap.z_order.is_empty()
-        && cap.anchors.is_empty()
+    cap.verts.is_empty() && cap.opacity.is_empty() && cap.z_order.is_empty()
 }
 
 #[test]
@@ -59,9 +56,6 @@ fn the_parts_table_is_every_part_in_tree_order() {
         dumped.parts.iter().map(|p| &p.name).collect::<Vec<_>>(),
         vec!["upper", "lower"]
     );
-    // No physics node in this fixture, so no anchors anywhere.
-    assert!(dumped.physics.is_empty());
-    assert!(dumped.rest.anchors.is_empty());
 }
 
 #[test]
@@ -149,7 +143,6 @@ fn a_sweep_names_the_parts_it_moved_and_no_others() {
     );
     assert!(far.cap.opacity.is_empty(), "no opacity binding on grid_x");
     assert!(far.cap.z_order.is_empty(), "no z binding on grid_x");
-    assert!(far.cap.anchors.is_empty(), "grid_x moves no transform");
 
     // The sweep param drives one binding of every other kind, so its far key
     // is the one pose that fills all four maps.
@@ -161,11 +154,6 @@ fn a_sweep_names_the_parts_it_moved_and_no_others() {
         "the driven part faded"
     );
     assert_eq!(keys(&sweep.cap.z_order), vec![swept], "the swept part rose");
-    assert_eq!(
-        keys(&sweep.cap.anchors),
-        vec![0],
-        "the pendulum moved with it"
-    );
 }
 
 #[test]

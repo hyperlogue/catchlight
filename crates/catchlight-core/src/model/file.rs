@@ -38,7 +38,7 @@
 //!   parent, and nothing dangling. [`Model::from_clm_bytes_fragment`] reads an
 //!   *addon fragment*: every node names a parent, the ones the file does not
 //!   carry are its roots, and every other reference into a base — mask
-//!   source, physics target, binding param, weld end, animation lane — may
+//!   source, response output, binding param, weld end, animation lane — may
 //!   dangle for [`Model::install`] to resolve. A part's albedo is the one
 //!   that may not: an addon carries the textures its own parts draw, so that
 //!   reference resolves inside the fragment in both shapes. The two shapes
@@ -70,10 +70,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::formats::clm::{
-    self as clm, ClmBinding, ClmChain, ClmComposite, ClmExtension, ClmExtensionBlob,
-    ClmExtensionMarker, ClmFile, ClmLinkFeel, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind,
-    ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure, ClmTexture,
-    ClmTextureRef, ClmWeld,
+    self as clm, ClmBinding, ClmComposite, ClmExtension, ClmExtensionBlob, ClmExtensionMarker,
+    ClmFile, ClmMask, ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSlot, ClmSlotPair,
+    ClmSpine, ClmStructure, ClmTexture, ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
 use crate::{charge_clm_file, charge_clm_structure, charge_texture_payloads, LoadBudget};
@@ -168,32 +167,6 @@ pub enum ClmLoadError {
     DuplicateWeld { a: String, b: String },
     #[error("param {param:?} has a range that is not finite and increasing")]
     ParamRange { param: String },
-    #[error(
-        "spine {node:?} carries a chain of {links} links for {joints} joints; a chain is one \
-             link per joint"
-    )]
-    ChainLinkCount {
-        node: String,
-        links: usize,
-        joints: usize,
-    },
-    #[error("spine {node:?} carries a chain whose gravity is not finite and above zero")]
-    ChainGravity { node: String },
-    #[error("spine {node:?} carries a chain whose weight is not finite and at or above zero")]
-    ChainWeight { node: String },
-    #[error("spine {node:?} carries a chain whose air drag is not finite and at or above zero")]
-    ChainAirDrag { node: String },
-    #[error("spine {node:?} carries a chain whose damping is not finite and at or above zero")]
-    ChainDamping { node: String },
-    #[error("the physics rate {rate} Hz is outside 30..=1000")]
-    PhysicsRate { rate: String },
-    #[error("spine {node:?} chain link {link}: {field} {reason}")]
-    ChainLinkField {
-        node: String,
-        link: usize,
-        field: &'static str,
-        reason: &'static str,
-    },
     #[error("spine {node:?} carries no joints; a spine is at least one link")]
     SpineNoJoints { node: String },
     #[error("spine {node:?} joint {joint}: a coordinate is not finite")]
@@ -391,7 +364,6 @@ impl Model {
         }
 
         Ok(ClmStructure {
-            physics: self.physics,
             nodes,
             params,
             bindings,
@@ -853,17 +825,9 @@ impl Model {
             }
         }
 
-        if !crate::formats::clm::PHYSICS_RATE_RANGE.contains(&doc.physics.physics_rate) {
-            return Err(ClmLoadError::PhysicsRate {
-                rate: doc.physics.physics_rate.to_string(),
-            }
-            .into());
-        }
-
         let model = Model {
             identity: super::next_identity(),
             generation: 0,
-            physics: doc.physics,
             welds,
             response_count: nodes
                 .values()
@@ -1134,41 +1098,8 @@ fn clm_kind(kind: &ModelNodeKind) -> ClmNodeKind {
             translate_children: mg.translate_children,
         }),
         ModelNodeKind::MotionResponse(r) => ClmNodeKind::MotionResponse(r.clone()),
-        ModelNodeKind::SimplePhysics(ph) => ClmNodeKind::SimplePhysics(ClmSimplePhysics {
-            kind: ph.kind,
-            map_mode: ph.map_mode,
-            plane: ph.plane,
-            local_only: ph.local_only,
-            target_params: ph.target_params().clone(),
-            gravity: ph.gravity,
-            length: ph.length,
-            frequency: ph.frequency,
-            angle_damping: ph.angle_damping,
-            length_damping: ph.length_damping,
-            output_scale: ph.output_scale,
-        }),
         ModelNodeKind::Spine(spine) => ClmNodeKind::Spine(ClmSpine {
             joints: spine.joints().to_vec(),
-            chain: spine.chain().map(|c| ClmChain {
-                local_only: c.local_only,
-                gravity: c.gravity,
-                weight: c.weight,
-                damping: c.damping,
-                air_drag: c.air_drag,
-                links: c
-                    .links()
-                    .iter()
-                    .map(|l| ClmLinkFeel {
-                        gravity_scale: l.gravity_scale,
-                        stiffness: l.stiffness,
-                        limit: l.limit,
-                    })
-                    .collect(),
-            }),
-            // Written in full for the reason a chain's outputs are: the
-            // model's targets are always as long as its joints, so the
-            // shortest encoding would be the one shape a reader has to
-            // reconstruct.
             targets: spine.targets().to_vec(),
         }),
     }
@@ -1238,29 +1169,6 @@ fn model_kind(
             ModelNodeKind::MeshGroup(group)
         }
         ClmNodeKind::MotionResponse(r) => ModelNodeKind::MotionResponse(r.clone()),
-        ClmNodeKind::SimplePhysics(ph) => {
-            let mut physics = ModelPhysics::new(ph.kind);
-            physics.map_mode = ph.map_mode;
-            physics.plane = ph.plane;
-            physics.local_only = ph.local_only;
-            for target in ph.target_params.iter().flatten() {
-                if !params.contains_key(target) && !shape.allows_dangling() {
-                    return Err(ClmLoadError::DanglingParam {
-                        owner: format!("physics node {id}"),
-                        id: target.to_string(),
-                    }
-                    .into());
-                }
-            }
-            physics.target_params = ph.target_params.clone();
-            physics.gravity = ph.gravity;
-            physics.length = ph.length;
-            physics.frequency = ph.frequency;
-            physics.angle_damping = ph.angle_damping;
-            physics.length_damping = ph.length_damping;
-            physics.output_scale = ph.output_scale;
-            ModelNodeKind::SimplePhysics(physics)
-        }
         ClmNodeKind::Spine(sp) => ModelNodeKind::Spine(model_spine(id, sp, params, shape)?),
     })
 }
@@ -1327,90 +1235,6 @@ fn model_spine(
             }
         }
         spine.targets = sp.targets.clone();
-    }
-    if let Some(c) = &sp.chain {
-        // Every number here is one the solver divides by, damps with, or hangs
-        // a rod on, so a file that gets one wrong does not produce a
-        // strange-looking chain — it produces `NaN` that spreads through the
-        // particles and out into the params the spine reads. Refusing at the
-        // door is the only place the bad value is still attributable to a
-        // field of a node.
-        if c.links.len() != sp.joints.len() {
-            return Err(ClmLoadError::ChainLinkCount {
-                node: id.to_string(),
-                links: c.links.len(),
-                joints: sp.joints.len(),
-            }
-            .into());
-        }
-        if !c.gravity.is_finite() || c.gravity <= 0.0 {
-            return Err(ClmLoadError::ChainGravity {
-                node: id.to_string(),
-            }
-            .into());
-        }
-        if !c.weight.is_finite() || c.weight < 0.0 {
-            return Err(ClmLoadError::ChainWeight {
-                node: id.to_string(),
-            }
-            .into());
-        }
-        if !c.air_drag.is_finite() || c.air_drag < 0.0 {
-            return Err(ClmLoadError::ChainAirDrag {
-                node: id.to_string(),
-            }
-            .into());
-        }
-        let bad = |link: usize, field: &'static str, reason: &'static str| -> ModelError {
-            ClmLoadError::ChainLinkField {
-                node: id.to_string(),
-                link,
-                field,
-                reason,
-            }
-            .into()
-        };
-        for (i, link) in c.links.iter().enumerate() {
-            if !link.gravity_scale.is_finite() {
-                return Err(bad(i, "gravity_scale", "is not finite"));
-            }
-            if !link.stiffness.is_finite() || link.stiffness < 0.0 {
-                return Err(bad(i, "stiffness", "is not finite and at or above zero"));
-            }
-            // A limit is a bend, in the same half turns a bend param carries,
-            // so a whole turn is the widest one that means anything and zero
-            // would be a joint that cannot move at all — which is a spine
-            // without that link, not a limit.
-            if let Some(limit) = link.limit {
-                if !limit.is_finite() || limit <= 0.0 || limit > 1.0 {
-                    return Err(bad(i, "limit", "is outside 0 exclusive to 1"));
-                }
-            }
-        }
-        let damping = c.damping;
-        if !damping.is_finite() || damping < 0.0 {
-            return Err(ClmLoadError::ChainDamping {
-                node: id.to_string(),
-            }
-            .into());
-        }
-        let mut chain = ModelChain::new(c.links.len());
-        chain.local_only = c.local_only;
-        chain.gravity = c.gravity;
-        chain.weight = c.weight;
-        chain.damping = damping;
-        chain.air_drag = c.air_drag;
-        chain.set_links(
-            c.links
-                .iter()
-                .map(|l| LinkFeel {
-                    gravity_scale: l.gravity_scale,
-                    stiffness: l.stiffness,
-                    limit: l.limit,
-                })
-                .collect(),
-        );
-        spine.set_chain(Some(chain));
     }
     Ok(spine)
 }
@@ -1574,7 +1398,6 @@ mod tests {
     };
     use crate::id::SeededHex;
     use crate::interpolate::InterpolateMode;
-    use crate::physics::PendulumKind;
 
     fn slot(id: &str) -> SlotId {
         SlotId::new(id).unwrap()
@@ -1590,7 +1413,7 @@ mod tests {
     }
 
     /// One model touching every Id-bearing field the wire has: a textured part
-    /// with a mask, a composite, a mesh group, a pendulum driving two params, a
+    /// with a mask, a composite, a mesh group, a motion response, a
     /// two-param deform binding, a weld, and an animation.
     fn sample() -> Model {
         let mut hex = SeededHex::new(9);
@@ -1660,18 +1483,12 @@ mod tests {
             )
             .unwrap();
 
-        let pendulum = m
-            .add_node(
-                &root,
-                ModelNode::new(
-                    "Sway",
-                    ModelNodeKind::SimplePhysics(ModelPhysics::new(PendulumKind::RigidPendulum)),
-                ),
-                &mut hex,
-            )
-            .unwrap();
-        m.set_physics_targets(&pendulum, [Some(x.clone()), Some(y.clone())])
-            .unwrap();
+        m.add_node(
+            &root,
+            ModelNode::new("Sway", ModelNodeKind::MotionResponse(Default::default())),
+            &mut hex,
+        )
+        .unwrap();
 
         let key = BindingKey::pair(x.clone(), y.clone(), upper.clone(), BindingTarget::Deform);
         m.add_binding(&key).unwrap();
@@ -2173,7 +1990,7 @@ mod tests {
     /// cells of length zero, and a file that carries none agrees.
     #[test]
     fn a_deform_binding_on_a_node_with_no_mesh_is_a_structured_error() {
-        for (name, kind) in [("Face", "composite"), ("Sway", "physics")] {
+        for (name, kind) in [("Face", "composite"), ("Sway", "motion_response")] {
             let mut file = sample().to_clm_file().unwrap();
             let node = node_named(&file, name).id.clone();
             file.doc.bindings[0].node = node.clone();
@@ -2263,7 +2080,6 @@ mod tests {
             let mut spine = ClmSpine {
                 joints: vec![[0.0, -50.0], [0.0, -100.0]],
                 targets: vec![Some(param), None],
-                chain: None,
             };
             build(&mut spine);
             let root = file.doc.nodes[0].id.clone();
@@ -2330,131 +2146,10 @@ mod tests {
             ClmLoadError::DanglingParam { ref owner, ref id }
                 if owner.starts_with("spine") && id == "gone"
         ));
-
-        // And the chain it may carry: one feel per joint, and every knob in
-        // the range the solver can step.
-        let chain = |links: usize| ClmChain {
-            local_only: false,
-            gravity: 1.0,
-            weight: 1.0,
-            damping: 6.0,
-            air_drag: 0.0,
-            links: vec![
-                ClmLinkFeel {
-                    gravity_scale: 1.0,
-                    stiffness: 0.0,
-                    limit: None,
-                };
-                links
-            ],
-        };
-        let (ok, node) = spine_file(|sp| sp.chain = Some(chain(2)));
-        let loaded = Model::from_clm_file(&ok).expect("a well-formed chain loads");
-        let node = NodeId::new(node).unwrap();
-        let ModelNodeKind::Spine(spine) = &loaded.node(&node).unwrap().kind else {
-            panic!("a spine loads as a spine");
-        };
-        assert!(
-            spine
-                .chain()
-                .unwrap()
-                .links()
-                .iter()
-                .all(|l| l.limit.is_none()),
-            "existing unlimited links do not acquire the authoring default"
-        );
-
-        let (file, node) = spine_file(|sp| sp.chain = Some(chain(1)));
-        assert_eq!(
-            load_err(&file),
-            ClmLoadError::ChainLinkCount {
-                node,
-                links: 1,
-                joints: 2,
-            }
-        );
-
-        let (file, node) = spine_file(|sp| {
-            let mut c = chain(2);
-            c.gravity = 0.0;
-            sp.chain = Some(c);
-        });
-        assert_eq!(load_err(&file), ClmLoadError::ChainGravity { node });
-
-        let (file, node) = spine_file(|sp| {
-            let mut c = chain(2);
-            c.weight = f32::NAN;
-            sp.chain = Some(c);
-        });
-        assert_eq!(load_err(&file), ClmLoadError::ChainWeight { node });
-
-        let (file, node) = spine_file(|sp| {
-            let mut c = chain(2);
-            c.air_drag = -1.0;
-            sp.chain = Some(c);
-        });
-        assert_eq!(load_err(&file), ClmLoadError::ChainAirDrag { node });
-        let (file, node) = spine_file(|sp| {
-            let mut c = chain(2);
-            c.damping = -1.0;
-            sp.chain = Some(c);
-        });
-        assert_eq!(load_err(&file), ClmLoadError::ChainDamping { node });
-
-        /// One way to break a link's feel, and the refusal it has to produce.
-        type BreakFeel = (fn(&mut ClmChain), &'static str, &'static str);
-        let cases: [BreakFeel; 5] = [
-            (
-                |c| c.links[1].gravity_scale = f32::NAN,
-                "gravity_scale",
-                "is not finite",
-            ),
-            (
-                |c| c.links[1].stiffness = -1.0,
-                "stiffness",
-                "is not finite and at or above zero",
-            ),
-            // A limit is a bend in half turns: zero is a joint that cannot
-            // move, past one is more than a whole turn, and neither is a
-            // thing to ask for.
-            (
-                |c| c.links[1].limit = Some(0.0),
-                "limit",
-                "is outside 0 exclusive to 1",
-            ),
-            (
-                |c| c.links[1].limit = Some(1.5),
-                "limit",
-                "is outside 0 exclusive to 1",
-            ),
-            (
-                |c| c.links[1].limit = Some(f32::NAN),
-                "limit",
-                "is outside 0 exclusive to 1",
-            ),
-        ];
-        for (break_it, field, reason) in cases {
-            let (file, node) = spine_file(|sp| {
-                let mut c = chain(2);
-                break_it(&mut c);
-                sp.chain = Some(c);
-            });
-            assert_eq!(
-                load_err(&file),
-                ClmLoadError::ChainLinkField {
-                    node,
-                    link: 1,
-                    field,
-                    reason,
-                },
-                "breaking {field}",
-            );
-        }
     }
 
     /// A file with no `targets` key at all is a spine every link of which is
-    /// rigid — and the model still holds one slot per link, for the reason a
-    /// chain holds one per link.
+    /// rigid. The model still holds one optional target per link.
     #[test]
     fn a_spine_with_no_targets_key_loads_one_slot_per_link() {
         let mut file = sample().to_clm_file().unwrap();
@@ -2472,7 +2167,6 @@ mod tests {
                 joints: vec![[0.0, -40.0], [0.0, -80.0], [10.0, -120.0]],
                 // What `#[serde(default)]` hands the reader for an absent key.
                 targets: Vec::new(),
-                chain: None,
             }),
         });
 
@@ -2488,118 +2182,6 @@ mod tests {
         };
         assert_eq!(spine.targets(), [None, None, None]);
         assert_eq!(spine.joints(), [[0.0, -40.0], [0.0, -80.0], [10.0, -120.0]]);
-    }
-
-    /// A chain map written before a chain could hold back has no `weight`
-    /// key, and reads back as the full-authority chain it describes. The key
-    /// is additive under the format's CBOR-map rule, which is why no version
-    /// bump goes with it.
-    /// A link with no limit writes no `limit` key, and a link map that has
-    /// none reads back as unlimited. Both halves matter: the first is what
-    /// keeps every file written before there were limits byte for byte what
-    /// this writer produces, and the second is what lets those files load.
-    #[test]
-    fn a_limitless_link_writes_no_limit_key() {
-        let feel = ClmLinkFeel {
-            gravity_scale: 1.0,
-            stiffness: 0.0,
-            limit: None,
-        };
-        let mut bytes = Vec::new();
-        ciborium::into_writer(&feel, &mut bytes).unwrap();
-        let map: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
-        let keys: Vec<String> = map
-            .as_map()
-            .expect("a feel is a map")
-            .iter()
-            .filter_map(|(k, _)| k.as_text().map(str::to_string))
-            .collect();
-        assert_eq!(
-            keys,
-            ["gravity_scale", "stiffness"],
-            "a link with no limit carries no key for one",
-        );
-        assert_eq!(
-            ciborium::from_reader::<ClmLinkFeel, _>(bytes.as_slice()).unwrap(),
-            feel,
-            "and reads back as the link it was",
-        );
-
-        // The other way round: a limit that is there is written and read.
-        let limited = ClmLinkFeel {
-            limit: Some(0.5),
-            ..feel
-        };
-        let mut bytes = Vec::new();
-        ciborium::into_writer(&limited, &mut bytes).unwrap();
-        assert_eq!(
-            ciborium::from_reader::<ClmLinkFeel, _>(bytes.as_slice()).unwrap(),
-            limited,
-        );
-    }
-
-    #[test]
-    fn a_chain_map_without_weight_reads_as_full_authority() {
-        /// A chain map from before the weight and chain damping, its link
-        /// still carrying the retired damping key.
-        #[derive(serde::Serialize)]
-        struct ChainBeforeTheWeight {
-            local_only: bool,
-            gravity: f32,
-            links: Vec<LinkBeforeChainDamping>,
-        }
-        #[derive(serde::Serialize)]
-        struct LinkBeforeChainDamping {
-            gravity_scale: f32,
-            damping: f32,
-            stiffness: f32,
-        }
-
-        let mut bytes = Vec::new();
-        ciborium::into_writer(
-            &ChainBeforeTheWeight {
-                local_only: false,
-                gravity: 9.8,
-                links: vec![LinkBeforeChainDamping {
-                    gravity_scale: 1.0,
-                    damping: 0.5,
-                    stiffness: 0.0,
-                }],
-            },
-            &mut bytes,
-        )
-        .unwrap();
-        let chain: ClmChain = ciborium::from_reader(bytes.as_slice()).unwrap();
-        assert_eq!(
-            chain,
-            ClmChain {
-                local_only: false,
-                gravity: 9.8,
-                weight: 1.0,
-                damping: -(0.5f32.ln()),
-                air_drag: 0.0,
-                links: vec![ClmLinkFeel {
-                    gravity_scale: 1.0,
-                    stiffness: 0.0,
-                    limit: None,
-                }],
-            },
-        );
-    }
-
-    #[test]
-    fn a_dangling_physics_target_is_a_structured_error() {
-        let mut file = sample().to_clm_file().unwrap();
-        for node in &mut file.doc.nodes {
-            if let ClmNodeKind::SimplePhysics(ph) = &mut node.kind {
-                ph.target_params[1] = Some(ParamId::new("gone").unwrap());
-            }
-        }
-
-        assert!(matches!(
-            load_err(&file),
-            ClmLoadError::DanglingParam { id, .. } if id == "gone"
-        ));
     }
 
     #[test]
@@ -3153,9 +2735,6 @@ mod tests {
         }
     }
 
-    /// A puppet's gate reads a replaced model as "the same model moved", so
-    /// its rebake carries what a rebake is documented to carry: the pose, and
-    /// every `SimplePhysics` runtime field.
     #[test]
     fn a_puppet_carries_its_pose_and_its_drivers_across_a_replace() {
         let mut server = sample();
@@ -3169,8 +2748,6 @@ mod tests {
             puppet.tick(&replica, 1.0 / 60.0);
         }
         let posed = puppet.param_value(&param).unwrap();
-        let swung = physics_state(&puppet);
-        assert!(swung.anchor_initialized, "the pendulum has run");
 
         // The server edits, and only the structure crosses.
         let root = server.root().unwrap().clone();
@@ -3194,21 +2771,5 @@ mod tests {
             "it rebaked"
         );
         assert_eq!(puppet.param_value(&param), Some(posed), "the pose crossed");
-        let after = physics_state(&puppet);
-        assert_eq!(after.bob, swung.bob);
-        assert_eq!(after.d_angle, swung.d_angle);
-        assert_eq!(after.spring_vel, swung.spring_vel);
-        assert_eq!(after.anchor, swung.anchor);
-        assert!(after.anchor_initialized);
-    }
-
-    fn physics_state(puppet: &crate::Puppet) -> crate::physics::SimplePhysicsData {
-        puppet
-            .iter()
-            .find_map(|(_, node)| match &node.kind {
-                crate::components::NodeKind::SimplePhysics(p) => Some((**p).clone()),
-                _ => None,
-            })
-            .expect("the sample carries a pendulum")
     }
 }

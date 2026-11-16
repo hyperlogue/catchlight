@@ -153,7 +153,6 @@ def make_puppet(children: list[dict]) -> dict:
             "version": "v0.7.2",
             "preservePixels": False,
         },
-        "physics": {"pixelsPerMeter": 1000.0, "gravity": 9.8},
         "nodes": {
             "uuid": uuid(),
             "name": "root",

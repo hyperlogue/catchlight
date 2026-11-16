@@ -47,8 +47,6 @@ export const BINDING_TARGETS: readonly ScalarTarget[] = [
   "screentintr",
   "screentintg",
   "screentintb",
-  "outputscalex",
-  "outputscaley",
 ];
 
 export const BINDING_LABELS: Record<ScalarTarget | "deform", string> = {
@@ -68,8 +66,6 @@ export const BINDING_LABELS: Record<ScalarTarget | "deform", string> = {
   screentintr: "Screen red",
   screentintg: "Screen green",
   screentintb: "Screen blue",
-  outputscalex: "Physics output X",
-  outputscaley: "Physics output Y",
   deform: "Mesh deform",
 };
 

@@ -18,12 +18,17 @@ use catchlight_core::id::NodeId;
 use common::{copy_fixture, decode, fixtures, read, tmp, write_clm};
 
 #[test]
-fn decoding_and_re_encoding_a_fixture_is_stable_after_format_upgrade() {
+fn decoding_and_re_encoding_a_fixture_is_byte_stable() {
     for path in fixtures() {
         let file = decode(&path);
         let canonical =
             catchlight_core::formats::clm::encode(&file.doc, &file.textures, &file.extensions)
                 .unwrap();
+        assert!(
+            canonical == read(&path),
+            "noncanonical fixture {}",
+            path.display()
+        );
         let reloaded = catchlight_core::formats::clm::decode(&canonical).unwrap();
         assert!(diff(&file, &reloaded).is_empty());
         let again = catchlight_core::formats::clm::encode(
@@ -62,12 +67,10 @@ type Mutation = (&'static str, fn(&mut ClmFile));
 fn the_result_is_empty_exactly_when_the_files_are_equal() {
     let base = decode(&common::fixture("composite_masks"));
 
-    let mutations: [Mutation; 7] = [
+    let mutations: [Mutation; 5] = [
         ("nothing", |_| {}),
         ("a z order", |f| f.doc.nodes[1].z_order += 1.0),
         ("a texture byte", |f| f.textures[0].data[10] ^= 0xff),
-        ("the world's gravity", |f| f.doc.physics.gravity = 1.0),
-        ("the physics rate", |f| f.doc.physics.physics_rate = 60.0),
         ("the texture order", |f| f.textures.swap(0, 1)),
         ("a dropped node", |f| {
             f.doc.nodes.pop();

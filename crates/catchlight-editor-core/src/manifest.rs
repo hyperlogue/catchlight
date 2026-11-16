@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use catchlight_core::formats::clm::{
-    ClmIndices, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha, TextureEncoding,
+    ClmIndices, ClmMesh, ClmTransform, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::{LoadBudget, LoadLimitError, LoadResource};
 
@@ -68,16 +68,12 @@ pub struct Manifest {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub physics: ManifestPhysics,
-    #[serde(default)]
     pub textures: Vec<ManifestTexture>,
     #[serde(default)]
     pub nodes: Vec<ManifestNode>,
     #[serde(default)]
     pub params: Vec<ManifestParam>,
 }
-
-pub type ManifestPhysics = ClmPhysics;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestTexture {
@@ -208,7 +204,6 @@ impl ModelManifestExt for Model {
         // one set of Ids.
         let mut hex = SeededHex::new(IMPORT_SEED);
         let mut m = Model::new();
-        m.set_physics(manifest.physics);
 
         // Nothing is added to the model here. A texture goes to the part that
         // draws it, so this pass only decodes the dimensions the generated
@@ -400,7 +395,6 @@ impl ModelManifestExt for Model {
 
         Manifest {
             name: String::new(),
-            physics: *self.physics(),
             textures,
             nodes,
             params,

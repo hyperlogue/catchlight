@@ -48,7 +48,6 @@ pub const UNRENDERED: &str = "~ (the two files differ in a way this summary does
 pub fn diff(a: &ClmFile, b: &ClmFile) -> Vec<String> {
     let mut out = Vec::new();
 
-    physics(&a.doc, &b.doc, &mut out);
     compare(
         "node",
         keyed(&a.doc.nodes, |n| n.id.to_string()),
@@ -201,27 +200,6 @@ fn field_diff(a: &Fields, b: &Fields) -> Vec<(String, String, String)> {
 
 // ---- rendering one value's fields ----------------------------------------
 
-fn physics(a: &ClmStructure, b: &ClmStructure, out: &mut Vec<String>) {
-    if a.physics.pixels_per_meter != b.physics.pixels_per_meter {
-        out.push(format!(
-            "~ physics pixels_per_meter: {} -> {}",
-            a.physics.pixels_per_meter, b.physics.pixels_per_meter
-        ));
-    }
-    if a.physics.gravity != b.physics.gravity {
-        out.push(format!(
-            "~ physics gravity: {} -> {}",
-            a.physics.gravity, b.physics.gravity
-        ));
-    }
-    if a.physics.physics_rate != b.physics.physics_rate {
-        out.push(format!(
-            "~ physics physics_rate: {} -> {}",
-            a.physics.physics_rate, b.physics.physics_rate
-        ));
-    }
-}
-
 /// One line per extension key, not one per field: a value is a single thing
 /// a vendor owns, and half of it is bytes nothing here can render anyway.
 /// A JSON value is shown whole; a byte value as the size and hash its marker
@@ -326,31 +304,8 @@ fn node_fields(n: &ClmNode) -> Fields {
             );
             mesh(&mut f, &g.mesh);
         }
-        ClmNodeKind::SimplePhysics(p) => {
-            f.insert("kind".into(), "SimplePhysics".into());
-            f.insert("pendulum".into(), enum_name(&p.kind));
-            f.insert("map_mode".into(), enum_name(&p.map_mode));
-            f.insert("plane".into(), enum_name(&p.plane));
-            f.insert("local_only".into(), p.local_only.to_string());
-            for (i, slot) in p.target_params.iter().enumerate() {
-                f.insert(
-                    format!("target_params.{i}"),
-                    slot.as_ref()
-                        .map_or_else(|| "(none)".to_string(), |t| format!("{:?}", t.as_str())),
-                );
-            }
-            f.insert("gravity".into(), p.gravity.to_string());
-            f.insert("length".into(), p.length.to_string());
-            f.insert("frequency".into(), p.frequency.to_string());
-            f.insert("angle_damping".into(), p.angle_damping.to_string());
-            f.insert("length_damping".into(), p.length_damping.to_string());
-            f.insert("output_scale.x".into(), p.output_scale[0].to_string());
-            f.insert("output_scale.y".into(), p.output_scale[1].to_string());
-        }
         ClmNodeKind::Spine(sp) => {
             f.insert("kind".into(), "Spine".into());
-            // One row per joint and per target, for the reason a chain's links
-            // get one each: a diff names the joint that moved.
             for (i, joint) in sp.joints.iter().enumerate() {
                 f.insert(format!("joints.{i}.x"), joint[0].to_string());
                 f.insert(format!("joints.{i}.y"), joint[1].to_string());
@@ -361,30 +316,6 @@ fn node_fields(n: &ClmNode) -> Fields {
                     slot.as_ref()
                         .map_or_else(|| "(none)".to_string(), |t| format!("{:?}", t.as_str())),
                 );
-            }
-            // The chain the spine carries, one row per scalar and per link, so
-            // a diff names the link whose feel changed.
-            if let Some(c) = &sp.chain {
-                f.insert("chain.local_only".into(), c.local_only.to_string());
-                f.insert("chain.gravity".into(), c.gravity.to_string());
-                f.insert("chain.weight".into(), c.weight.to_string());
-                f.insert("chain.damping".into(), c.damping.to_string());
-                f.insert("chain.air_drag".into(), c.air_drag.to_string());
-                for (i, link) in c.links.iter().enumerate() {
-                    f.insert(
-                        format!("chain.links.{i}.gravity_scale"),
-                        link.gravity_scale.to_string(),
-                    );
-                    f.insert(
-                        format!("chain.links.{i}.stiffness"),
-                        link.stiffness.to_string(),
-                    );
-                    f.insert(
-                        format!("chain.links.{i}.limit"),
-                        link.limit
-                            .map_or_else(|| "(none)".to_string(), |l| l.to_string()),
-                    );
-                }
             }
         }
     }

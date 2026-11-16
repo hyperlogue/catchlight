@@ -10,6 +10,7 @@ use std::{
 };
 
 use super::*;
+use catchlight_core::Vec2;
 
 fn new_session(editor: &Editor) -> SessionId {
     let id = editor.alloc_id();
@@ -547,9 +548,14 @@ fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
             &root,
             ModelNode::new(
                 "Driver",
-                ModelNodeKind::SimplePhysics(ModelPhysics::new(
-                    catchlight_core::physics::PendulumKind::RigidPendulum,
-                )),
+                ModelNodeKind::MotionResponse(catchlight_core::MotionResponse {
+                    inputs: vec![catchlight_core::ResponseInput {
+                        source: catchlight_core::ResponseSource::PoseParam(param.clone()),
+                        gain: 1.0,
+                    }],
+                    output_param: None,
+                    ..Default::default()
+                }),
             ),
         )
         .unwrap();
@@ -577,7 +583,11 @@ fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
                 Some(&[Vec2::new(5.0, 6.0)][..])
             );
             puppet.set_physics_enabled(true);
-            assert!(puppet.place_driver(puppet.node_idx(&driver).unwrap(), Vec2::new(80.0, 20.0),));
+            puppet.settle_physics(model);
+            puppet.set_param_value(&param, 0.5);
+            puppet.tick(model, 0.016);
+            assert!(puppet.response_trace(&driver).unwrap().lag.abs() > 0.0);
+            puppet.set_param_value(&param, 0.75);
         })
         .unwrap();
 
@@ -594,16 +604,7 @@ fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
         .with_puppet(session, |model, puppet| {
             assert_eq!(puppet.param_value(&param), Some(0.75));
             assert!(!puppet.physics_enabled());
-            let driver = puppet.node_idx(&driver).unwrap();
-            let catchlight_core::NodeKind::SimplePhysics(physics) =
-                &puppet.get(driver).unwrap().kind
-            else {
-                panic!("driver kind changed");
-            };
-            assert!(
-                !physics.anchor_initialized,
-                "history must not carry simulated state"
-            );
+            assert!(!puppet.response_trace(&driver).unwrap().active);
             puppet.tick(model, 0.0);
             let part = puppet.node_idx(&part).unwrap();
             assert_eq!(puppet.scratch_transform(part), None);

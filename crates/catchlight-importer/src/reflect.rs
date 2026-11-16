@@ -248,8 +248,7 @@ pub(crate) fn convert_binding_values(
         "zSort" | "transform.t.y" | "transform.r.x" | "transform.r.z"
     );
     let identity = match kind {
-        "transform.s.x" | "transform.s.y" | "opacity" | "tint.r" | "tint.g" | "tint.b"
-        | "outputScale.x" | "outputScale.y" => 1.0f32,
+        "transform.s.x" | "transform.s.y" | "opacity" | "tint.r" | "tint.g" | "tint.b" => 1.0f32,
         _ => 0.0,
     };
     let mut d = matrix_f32(v);
@@ -279,8 +278,6 @@ pub(crate) fn convert_binding_values(
         "screenTint.r" => ClmBindingValues::ScreenTintR(cells),
         "screenTint.g" => ClmBindingValues::ScreenTintG(cells),
         "screenTint.b" => ClmBindingValues::ScreenTintB(cells),
-        "outputScale.x" => ClmBindingValues::OutputScaleX(cells),
-        "outputScale.y" => ClmBindingValues::OutputScaleY(cells),
         // emissionStrength and any unknown target are folded by no renderer path,
         // so they are dropped here.
         _ => return None,

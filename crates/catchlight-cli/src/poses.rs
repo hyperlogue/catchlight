@@ -7,15 +7,14 @@
 //! # What a pose is here
 //!
 //! Physics is switched off ([`Puppet::set_physics_enabled`]) and never
-//! ticked, so a param a pendulum drives sweeps like any other. Each pose is
+//! ticked, so a response output sweeps like any other. Each pose is
 //! one [`Pose`] applied whole and one `tick(model, 0.0)`; `apply_pose` resets
 //! every param to its default first, so a sweep of one param holds every
 //! other at rest by construction.
 //!
 //! The rest pose is captured in full. Every other pose is a **diff against
-//! rest**, and each of the four maps is sparse by its own threshold: a
-//! vertex moved by more than 1e-3, an opacity by 1e-5, a z by 1e-4, an anchor
-//! by 1e-3. A part absent from a map did not move that field.
+//! rest**, and each map is sparse by its own threshold: a
+//! vertex moved by more than 1e-3, an opacity by 1e-5 or a z by 1e-4. A part absent from a map did not move that field.
 //!
 //! # The schema
 //!
@@ -26,16 +25,14 @@
 //!
 //! ```text
 //! { parts:   [{ id, name }…],   # every Part, tree order
-//!   physics: [{ id, name }…],   # every SimplePhysics node, tree order
 //!   rest:    Cap,               # in full
 //!   params:  [{ id, name, min, max, default, key_positions, poses }…],
 //!   pairs:   [{ a, b, poses }…] }
 //! Cap = { verts: {idx: bytes}, opacity: {idx: f32},
-//!         z_order: {idx: f32}, anchors: {idx: [x, y]} }
+//!         z_order: {idx: f32} }
 //! ```
 //!
-//! An `idx` in `verts`, `opacity` and `z_order` indexes `parts`; one in
-//! `anchors` indexes `physics`. Ids are what a reader resolves against; the
+//! An `idx` in `verts`, `opacity` and `z_order` indexes `parts`. Ids are what a reader resolves against; the
 //! indices only keep a hundred-part, sixty-param dump in the low megabytes.
 //!
 //! - **`verts`** are little-endian f32 `x0 y0 x1 y1 …` in mesh vertex order,
@@ -46,9 +43,6 @@
 //!   which is the rule the collector sorts by.
 //! - **`opacity`** is the part's own. It is not inherited; see
 //!   [`Puppet::opacity`].
-//! - **`anchors`** is the translation column of a physics node's world
-//!   transform, **not negated** — unlike the node's internal `anchor`, which
-//!   is stored in the driver's Y-down frame and so carries a flipped Y.
 //!
 //! # Params and pairs
 //!
@@ -86,7 +80,6 @@ use crate::Error;
 const VERT_EPS: f32 = 1e-3;
 const OPACITY_EPS: f32 = 1e-5;
 const Z_EPS: f32 = 1e-4;
-const ANCHOR_EPS: f32 = 1e-3;
 const MAX_SAMPLES: u64 = 100_000;
 const MAX_SAMPLE_WORK: u64 = 250_000_000;
 
@@ -105,8 +98,6 @@ pub struct Cap {
     pub verts: BTreeMap<u32, serde_bytes::ByteBuf>,
     pub opacity: BTreeMap<u32, f32>,
     pub z_order: BTreeMap<u32, f32>,
-    /// Keyed by index into `physics`, not `parts`.
-    pub anchors: BTreeMap<u32, [f32; 2]>,
 }
 
 /// One key of one param.
@@ -149,7 +140,6 @@ pub struct PairPoses {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Poses {
     pub parts: Vec<NodeEntry>,
-    pub physics: Vec<NodeEntry>,
     pub rest: Cap,
     pub params: Vec<ParamPoses>,
     pub pairs: Vec<PairPoses>,
@@ -204,14 +194,13 @@ pub fn build(model: &Model) -> Result<Poses, Error> {
     let pairs = pairs_of(model);
     check_work(model, &positions, &pairs)?;
     let mut puppet = Puppet::new(model);
-    // Never ticked, so a param a pendulum drives sweeps like any other.
+    // Never ticked, so a response output sweeps like any other.
     puppet.set_physics_enabled(false);
 
-    let (parts, physics) = tables(&puppet);
+    let parts = parts_table(&puppet);
     let part_ids: Vec<NodeIdx> = parts.iter().map(|(idx, _)| *idx).collect();
-    let physics_ids: Vec<NodeIdx> = physics.iter().map(|(idx, _)| *idx).collect();
 
-    let rest_full = pose_at(&mut puppet, model, &Pose::new(), &part_ids, &physics_ids);
+    let rest_full = pose_at(&mut puppet, model, &Pose::new(), &part_ids);
     let rest = rest_full.whole();
 
     let params = model
@@ -226,7 +215,7 @@ pub fn build(model: &Model) -> Result<Poses, Error> {
                     let value = value_at(param.min, param.max, *position);
                     let mut pose = Pose::new();
                     pose.set(id.clone(), value);
-                    let full = pose_at(&mut puppet, model, &pose, &part_ids, &physics_ids);
+                    let full = pose_at(&mut puppet, model, &pose, &part_ids);
                     KeyPose {
                         value,
                         cap: full.diff(&rest_full),
@@ -259,7 +248,7 @@ pub fn build(model: &Model) -> Result<Poses, Error> {
                     let mut pose = Pose::new();
                     pose.set(a.clone(), av);
                     pose.set(b.clone(), bv);
-                    let full = pose_at(&mut puppet, model, &pose, &part_ids, &physics_ids);
+                    let full = pose_at(&mut puppet, model, &pose, &part_ids);
                     poses.push(PairPose {
                         value: [av, bv],
                         cap: full.diff(&rest_full),
@@ -272,7 +261,6 @@ pub fn build(model: &Model) -> Result<Poses, Error> {
 
     Ok(Poses {
         parts: parts.into_iter().map(|(_, entry)| entry).collect(),
-        physics: physics.into_iter().map(|(_, entry)| entry).collect(),
         rest,
         params,
         pairs,
@@ -324,22 +312,16 @@ fn value_at(min: f32, max: f32, position: f32) -> f32 {
     min + position * (max - min)
 }
 
-/// The Parts and the physics nodes, both in tree order — a `NodeIdx` is a
-/// node's position in the bake's pre-order walk, so slot order is tree order.
-#[allow(clippy::type_complexity)]
-fn tables(puppet: &Puppet) -> (Vec<(NodeIdx, NodeEntry)>, Vec<(NodeIdx, NodeEntry)>) {
+fn parts_table(puppet: &Puppet) -> Vec<(NodeIdx, NodeEntry)> {
     let mut parts = Vec::new();
-    let mut physics = Vec::new();
     for (idx, node) in puppet.iter() {
-        let table = match node.kind {
-            NodeKind::Part(_) => &mut parts,
-            NodeKind::SimplePhysics(_) => &mut physics,
-            _ => continue,
-        };
+        if !matches!(node.kind, NodeKind::Part(_)) {
+            continue;
+        }
         let Some(id) = puppet.node_id(idx) else {
             continue;
         };
-        table.push((
+        parts.push((
             idx,
             NodeEntry {
                 id: id.clone(),
@@ -347,7 +329,7 @@ fn tables(puppet: &Puppet) -> (Vec<(NodeIdx, NodeEntry)>, Vec<(NodeIdx, NodeEntr
             },
         ));
     }
-    (parts, physics)
+    parts
 }
 
 /// Every field of every pose, dense. Diffing two of these is what makes a
@@ -356,7 +338,6 @@ struct Full {
     verts: Vec<Vec<f32>>,
     opacity: Vec<f32>,
     z_order: Vec<f32>,
-    anchors: Vec<[f32; 2]>,
 }
 
 impl Full {
@@ -366,7 +347,6 @@ impl Full {
             verts: enumerate(self.verts.iter().map(|v| pack(v))),
             opacity: enumerate(self.opacity.iter().copied()),
             z_order: enumerate(self.z_order.iter().copied()),
-            anchors: enumerate(self.anchors.iter().copied()),
         }
     }
 
@@ -389,12 +369,6 @@ impl Full {
             z_order: sparse(
                 changed(&self.z_order, &rest.z_order, |a, b| (a - b).abs() > Z_EPS),
                 self.z_order.iter().copied(),
-            ),
-            anchors: sparse(
-                changed(&self.anchors, &rest.anchors, |a, b| {
-                    (a[0] - b[0]).abs() > ANCHOR_EPS || (a[1] - b[1]).abs() > ANCHOR_EPS
-                }),
-                self.anchors.iter().copied(),
             ),
         }
     }
@@ -437,13 +411,7 @@ fn pack(values: &[f32]) -> serde_bytes::ByteBuf {
 }
 
 /// Apply `pose` and evaluate one frame, then read everything off it.
-fn pose_at(
-    puppet: &mut Puppet,
-    model: &Model,
-    pose: &Pose,
-    parts: &[NodeIdx],
-    physics: &[NodeIdx],
-) -> Full {
+fn pose_at(puppet: &mut Puppet, model: &Model, pose: &Pose, parts: &[NodeIdx]) -> Full {
     puppet.apply_pose(pose);
     puppet.tick(model, 0.0);
     Full {
@@ -453,13 +421,6 @@ fn pose_at(
             .map(|idx| puppet.opacity(*idx).unwrap_or(1.0))
             .collect(),
         z_order: parts.iter().map(|idx| puppet.accumulated_z(*idx)).collect(),
-        anchors: physics
-            .iter()
-            .map(|idx| {
-                let t = puppet.transforms().get(*idx).w_axis;
-                [t.x, t.y]
-            })
-            .collect(),
     }
 }
 

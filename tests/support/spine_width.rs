@@ -2,17 +2,18 @@
 
 #![allow(dead_code, clippy::unwrap_used)]
 
-use catchlight_core::formats::clm::{ClmIndices, ClmMesh, ClmPhysics};
+use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
-    BindingKey, BindingTarget, LinkFeel, MaskMode, Mat2, Model, ModelChain, ModelNode,
-    ModelNodeKind, ModelParam, ModelPart, ModelSpine, Name, NodeId, ParamId, ScalarTarget,
-    SeededHex, Vec2,
+    BindingKey, BindingTarget, MaskMode, Mat2, Model, ModelNode, ModelNodeKind, ModelParam,
+    ModelPart, ModelSpine, MotionResponse, Name, NodeId, ParamId, ResponseInput, ResponseSource,
+    ScalarTarget, SeededHex, Vec2,
 };
 
 pub const ROWS: usize = 9;
 pub const LIMIT: f32 = 0.06;
 
 pub struct Lock {
+    pub nudge: ParamId,
     pub spine: NodeId,
     pub parts: [NodeId; 2],
     pub bends: [ParamId; 2],
@@ -53,11 +54,6 @@ impl Fixture {
     pub fn new() -> Self {
         let mut model = Model::new();
         let mut hex = SeededHex::new(84);
-        model.set_physics(ClmPhysics {
-            pixels_per_meter: 1.0,
-            gravity: 981.0,
-            ..ClmPhysics::default()
-        });
         let yaw = param(&mut model, &mut hex, "yaw", 1.0);
         let body = param(&mut model, &mut hex, "body", 1.0);
         let root = model.root().unwrap().clone();
@@ -95,18 +91,39 @@ impl Fixture {
                 param(&mut model, &mut hex, "upper bend", LIMIT),
                 param(&mut model, &mut hex, "lower bend", LIMIT),
             ];
-            let mut chain = ModelChain::new(2);
-            chain.weight = 0.5;
-            chain.set_links(vec![
-                LinkFeel {
-                    stiffness: response,
-                    limit: Some(LIMIT),
-                    ..LinkFeel::default()
+            let nudge = param(&mut model, &mut hex, "nudge", 1.0);
+            let mut parent = head.clone();
+            for (index, bend) in bends.iter().enumerate() {
+                let inputs = if index == 0 {
+                    [&yaw, &nudge]
+                        .map(|p| ResponseInput {
+                            source: ResponseSource::PoseParam(p.clone()),
+                            gain: 0.10,
+                        })
+                        .to_vec()
+                } else {
+                    vec![ResponseInput {
+                        source: ResponseSource::Parent,
+                        gain: 0.75,
+                    }]
                 };
-                2
-            ]);
-            let mut spine_data = ModelSpine::new(vec![[0.0, -length / 2.0], [0.0, -length]]);
-            spine_data.set_chain(Some(chain));
+                parent = model
+                    .add_node(
+                        &parent,
+                        ModelNode::new(
+                            "bend response",
+                            ModelNodeKind::MotionResponse(MotionResponse {
+                                inputs,
+                                period_s: 1.0 / response,
+                                damping_ratio: 0.7,
+                                output_param: Some(bend.clone()),
+                            }),
+                        ),
+                        &mut hex,
+                    )
+                    .unwrap();
+            }
+            let spine_data = ModelSpine::new(vec![[0.0, -length / 2.0], [0.0, -length]]);
             let spine = model
                 .add_node(
                     &head,
@@ -157,6 +174,26 @@ impl Fixture {
                 model
                     .update_node(&part, |n| n.transform.rotation[2] = angle)
                     .unwrap();
+                // The pose alone changes width even when every response is at rest.
+                let base = BindingKey::new(yaw.clone(), part.clone(), BindingTarget::Deform);
+                model
+                    .add_binding_with_positions(&base, vec![vec![0.0, 0.5, 1.0]])
+                    .unwrap();
+                for (ix, h) in [-1.0, 0.0, 1.0].into_iter().enumerate() {
+                    let mut offsets = Vec::new();
+                    for row in 0..ROWS {
+                        let t = row as f32 / (ROWS - 1) as f32;
+                        for x in [-5.0, 5.0] {
+                            offsets.extend(
+                                (to_local * Vec2::new(x * envelope(t) * width_delta(h, 0.0), 0.0))
+                                    .to_array(),
+                            );
+                        }
+                    }
+                    model
+                        .set_deform_vertices(&base, [ix as u32, 0], offsets)
+                        .unwrap();
+                }
                 for (link, bend) in bends.iter().enumerate() {
                     let key = BindingKey::pair(
                         yaw.clone(),
@@ -180,7 +217,9 @@ impl Fixture {
                                 for x in [-5.0, 5.0] {
                                     let d = to_local
                                         * Vec2::new(
-                                            x * envelope(t) * share * width_delta(h, b),
+                                            x * envelope(t)
+                                                * share
+                                                * (width_delta(h, b) - width_delta(h, 0.0)),
                                             0.0,
                                         );
                                     offsets.extend_from_slice(&d.to_array());
@@ -198,6 +237,7 @@ impl Fixture {
                 .mask_add(&parts[1], &parts[0], MaskMode::Mask)
                 .unwrap();
             locks.push(Lock {
+                nudge,
                 spine,
                 parts,
                 bends,

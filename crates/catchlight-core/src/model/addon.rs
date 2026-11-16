@@ -68,11 +68,7 @@
 //!   "over" a subtree and `extract` returns none. An addon that *was* authored
 //!   with animations installs them, and its lanes' params are requirements
 //!   like any others.
-//! - **The world is the base's.** An addon carries the physics settings of
-//!   whatever it was cut from; install keeps the base model's and ignores the
-//!   addon's.
-//! - **What an addon cannot express is a change to a base node.** A mask lives
-//!   on the node it clips, so a *base* drawable masked by an addon's part is
+//! - A mask lives on the node it clips, so a *base* drawable masked by an addon's part is
 //!   not something an addon can carry: [`Model::extract`] leaves that mask
 //!   behind and deleting the subtree drops it. That is the same rule as
 //!   [`InstallError::BindsOffAddon`] and as "an addon never adds a param" —
@@ -119,7 +115,7 @@ impl fmt::Display for Required {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Requirement {
     pub id: Required,
-    /// `"parent"`, `"mask source"`, `"physics target"`, `"binding param"`,
+    /// `"parent"`, `"mask source"`, `"motion response param"`, `"binding param"`,
     /// `"binding node"`, `"weld end"` or `"animation lane"`. Never an
     /// albedo: an addon carries the textures its own parts draw.
     pub field: &'static str,
@@ -298,13 +294,6 @@ impl Model {
             if let Some(parent) = node.parent() {
                 if !self.nodes.contains_key(parent) {
                     need(Required::Node(parent.clone()), "parent", &id);
-                }
-            }
-            if let ModelNodeKind::SimplePhysics(ph) = &node.kind {
-                for t in ph.target_params().iter().flatten() {
-                    if !self.params.contains_key(t) {
-                        need(Required::Param(t.clone()), "physics target", &id);
-                    }
                 }
             }
             if let ModelNodeKind::MotionResponse(r) = &node.kind {
@@ -631,7 +620,6 @@ impl Model {
             // identity: a puppet of the base model is not a puppet of this.
             identity: super::next_identity(),
             generation: 0,
-            physics: self.physics,
             welds: self
                 .welds
                 .iter()
@@ -757,7 +745,6 @@ mod tests {
     use crate::formats::clm::{ClmIndices, ClmKeyframe, ClmLane, ClmMesh};
     use crate::id::SeededHex;
     use crate::interpolate::InterpolateMode;
-    use crate::physics::PendulumKind;
 
     fn quad() -> ClmMesh {
         ClmMesh {
@@ -844,7 +831,7 @@ mod tests {
 
     /// A hat under `head` that reaches into the base every way a fragment can:
     /// a base parent, a base part as a mask source, a base param through a
-    /// binding and through a pendulum, and a weld into the base's `Body`. Its
+    /// binding and through a motion response, and a weld into the base's `Body`. Its
     /// texture is its own — that is the one reference an addon never makes.
     fn hat_addon(b: &Base) -> Model {
         author(b, |m, hex| {
@@ -890,14 +877,17 @@ mod tests {
                     &b.head,
                     ModelNode::new(
                         "Sway",
-                        ModelNodeKind::SimplePhysics(ModelPhysics::new(
-                            PendulumKind::RigidPendulum,
-                        )),
+                        ModelNodeKind::MotionResponse(crate::MotionResponse {
+                            inputs: vec![crate::ResponseInput {
+                                source: crate::ResponseSource::PoseParam(b.param.clone()),
+                                gain: 1.0,
+                            }],
+                            output_param: None,
+                            ..Default::default()
+                        }),
                     ),
                     hex,
                 )
-                .unwrap();
-            m.set_physics_targets(&sway, [Some(b.param.clone()), None])
                 .unwrap();
             vec![hat, sway]
         })
@@ -947,7 +937,7 @@ mod tests {
                 ),
                 (
                     format!("param {:?}", b.param.as_str()),
-                    "physics target",
+                    "motion response param",
                     sway.to_string()
                 ),
                 (

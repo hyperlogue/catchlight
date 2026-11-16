@@ -16,10 +16,9 @@ use catchlight_cli::diff::diff;
 use catchlight_cli::patch::{self, node_fields, Kind, PARAM_FIELDS};
 use catchlight_cli::Error;
 use catchlight_core::formats::clm::{
-    ClmComposite, ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmSimplePhysics, ClmTransform,
+    ClmComposite, ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmTransform,
 };
 use catchlight_core::id::{NodeId, ParamId, TexId, MAX_NAME_BYTES};
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::Model;
 
 use common::{copy_fixture, decode, read, tmp, write_clm};
@@ -499,11 +498,8 @@ fn value_for(field: &str) -> &'static str {
         "enabled" => "false",
         "name" => "Renamed",
         "blend_mode" => "Multiply",
-        "pendulum" => "SpringPendulum",
-        "map_mode" => "XY",
-        "plane" => "Depth",
         "albedo" => "none",
-        "lock_to_root" | "local_only" | "propagate_meshgroup" | "translate_children" => "true",
+        "lock_to_root" | "propagate_meshgroup" | "translate_children" => "true",
         _ => "0.25",
     }
 }
@@ -557,24 +553,12 @@ fn kitchen_sink() -> ClmFile {
     clm.doc.nodes.push(ClmNode {
         id: NodeId::new("node-4").unwrap(),
         parent: Some(root),
-        name: "Pendulum".into(),
+        name: "Response".into(),
         enabled: true,
         z_order: 0.0,
         transform: ClmTransform::default(),
         lock_to_root: false,
-        kind: ClmNodeKind::SimplePhysics(ClmSimplePhysics {
-            kind: PendulumKind::RigidPendulum,
-            map_mode: PhysicsParamMapMode::AngleLength,
-            plane: catchlight_core::physics::PendulumPlane::Screen,
-            local_only: false,
-            target_params: [None, None],
-            gravity: 9.8,
-            length: 100.0,
-            frequency: 1.0,
-            angle_damping: 0.5,
-            length_damping: 0.5,
-            output_scale: [1.0, 1.0],
-        }),
+        kind: ClmNodeKind::MotionResponse(Default::default()),
     });
     clm.doc.params.push(ClmParam {
         id: ParamId::new("param-0").unwrap(),

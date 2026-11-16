@@ -1962,23 +1962,27 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        let driver = call(
+        let drive = call(
             &editor,
-            json!({"id": 31, "cmd": "physics_add", "session": session.0, "parent": ROOT,
-                   "kind": "rigid", "target_params": {"angle": param.clone()},
-                   "length": 1.0, "gravity": 1.0}),
+            json!({"id":31, "cmd":"param_add","session":session.0,"name":"drive","min":-1,"max":1}),
+        )["body"]["param"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let driver = add_node(&editor, session, ROOT, "motion_response", "follow");
+        let reply = call(
+            &editor,
+            json!({"id":32, "cmd":"motion_response_set","session":session.0,"node":driver,
+            "response":{"inputs":[{"source":{"kind":"pose_param","param":drive},"gain":1}],"period_s":0.4,"damping_ratio":0.7,"output_param":param}}),
         );
-        assert_eq!(driver["reply"], "ok", "reply was {driver}");
-        let driver = driver["body"]["node"].as_str().unwrap().to_string();
-
-        // A pendulum hanging straight down never moves, so displace the bob:
-        // now every tick is a step of a swing whose position depends on how
-        // much time the puppet was told has passed.
+        assert_eq!(reply["reply"], "ok");
         let swinging = |editor: &CatchlightEditor| {
             let mut replica = ReplicaState::new();
             replica.sync_from_editor(editor.editor(), session);
-            let idx = replica.node_idx(&driver).expect("the driver was baked");
-            assert!(replica.puppet.place_driver(idx, Vec2::new(0.7, 0.7)));
+            replica.tick(0.0);
+            replica
+                .puppet
+                .set_param_value(&ParamId::new(drive.as_str()).unwrap(), 1.0);
             replica
         };
 

@@ -1,28 +1,5 @@
-//! What one tick of a chain-driven puppet costs, and which part of the tick
-//! spends it.
-//!
-//! A flop count says the chain solver is negligible; this measures instead.
-//! The scenarios are the split, because the pieces are not separable from
-//! outside the crate. Three cuts, each the one below it plus a layer:
-//! `chains_unbound_*` solves the chains and claims nothing, so it is the
-//! integrator alone; `chains_solver_only_*` gives every link a param to claim
-//! but binds nothing to it, so the difference is what a driver claim costs;
-//! `bindings_only` folds the same bindings with the params posed by hand, and
-//! the two full scenarios are all of it. The 10 / 100 / 400 rows separate the
-//! per-claim linear scans in `Puppet::contribute` and
-//! `retire_stale_driver_contributions`, which grow with the number of driver
-//! outputs, from the solver, which does not.
-//!
-//! `spine_100x5` is the same hundred strands turned by a spine instead: the
-//! same params posed the same way, composed at runtime rather than folded out
-//! of per-link deform grids. It is the row `bindings_only` is there to be
-//! compared against.
-//!
-//! Std only, no harness: `cargo bench -p catchlight-core`, optionally with a
-//! substring to select scenarios. Numbers belong in the issue that asked for
-//! them, not in a doc comment — a machine is not a baseline. The minimum is
-//! printed beside the median because a tick is a fixed amount of work: on a
-//! busy machine the low end is the code and the tail is the neighbours.
+//! Measure the solver alone, its art outputs and the final geometry fold.
+//! Pass a scenario substring to select individual workloads.
 
 // A bench is not a test, so the workspace deny on these does not lift by
 // itself; a build helper that cannot build has nothing to measure.
@@ -35,14 +12,15 @@ use std::time::Instant;
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::id::SeededHex;
 use catchlight_core::{
-    BindingKey, BindingTarget, InterpolateMode, LinkFeel, Model, ModelChain, ModelNode,
-    ModelNodeKind, ModelParam, ModelPart, ModelSpine, Name, NodeId, ParamId, Puppet, ScalarTarget,
+    BindingKey, BindingTarget, InterpolateMode, Model, ModelNode, ModelNodeKind, ModelParam,
+    ModelPart, ModelSpine, MotionResponse, Name, NodeId, ParamId, Puppet, ResponseInput,
+    ResponseSource, ScalarTarget,
 };
 
 /// Seconds a tick advances: one frame at 60 Hz.
 const DT: f32 = 1.0 / 60.0;
 /// Ticks timed per scenario, and untimed ticks run first so the caches the
-/// tick keeps (fold memos, the chain's scratch, the allocator's) are warm.
+/// tick keeps (fold memos and scratch allocations) are warm.
 const TICKS: usize = 600;
 const WARMUP: usize = 60;
 
@@ -64,30 +42,18 @@ const BEND_MIN: f32 = -0.5;
 const BEND_MAX: f32 = 0.5;
 
 /// How far `turn` slides the strands at either end of its range, in model
-/// pixels: far enough that the step swings a chain rather than nudging it.
+/// pixels.
 const TURN_SHIFT: f32 = 120.0;
-/// Chain damping per second. Low enough that a chain is still moving frames
-/// after the anchor steps.
-const DAMPING: f32 = 0.36;
-
 /// One measured configuration.
 struct Scenario {
     name: &'static str,
-    /// Strands: one chain, one strip part, or both.
     strands: usize,
     links: usize,
-    /// Bend-spring frequency in Hz on every link; 0 is no spring.
-    stiffness: f32,
     /// Build each strand's strip part and the per-link deform bindings on it.
     parts: bool,
-    /// Build each strand's chain. Without one the bench poses the bend params
-    /// itself, so the fold runs over the same values with no solver behind it.
-    chains: bool,
-    /// Aim the spine's links at the bend params — which is both the chain
-    /// writing them and the spine reading them, since they are the same
-    /// params. A chain that claims nothing still solves every tick, so this
-    /// is the switch that isolates the integrator from the claim bookkeeping
-    /// around it.
+    /// Drive consecutive links with a cascade of motion responses.
+    responses: bool,
+    /// Publish each response to its bend parameter.
     outputs: bool,
     /// Hang the strip off the spine, so the spine's own composition moves the
     /// art. Mutually exclusive with `parts`, which is the historical path that
@@ -97,22 +63,11 @@ struct Scenario {
 
 const SCENARIOS: &[Scenario] = &[
     Scenario {
-        name: "chains_unsprung_100x5",
+        name: "responses_spine_100x5",
         strands: 100,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: true,
-        outputs: true,
-        spines: true,
-    },
-    Scenario {
-        name: "chains_sprung_100x5",
-        strands: 100,
-        links: 5,
-        stiffness: 4.0,
-        parts: false,
-        chains: true,
+        responses: true,
         outputs: true,
         spines: true,
     },
@@ -120,69 +75,62 @@ const SCENARIOS: &[Scenario] = &[
         name: "bindings_only",
         strands: 100,
         links: 5,
-        stiffness: 0.0,
         parts: true,
-        chains: false,
+        responses: false,
         outputs: false,
         spines: false,
     },
     Scenario {
-        name: "chains_unbound_10x5",
+        name: "responses_unbound_10x5",
         strands: 10,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: true,
+        responses: true,
         outputs: false,
         spines: false,
     },
     Scenario {
-        name: "chains_unbound_100x5",
+        name: "responses_unbound_100x5",
         strands: 100,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: true,
+        responses: true,
         outputs: false,
         spines: false,
     },
     Scenario {
-        name: "chains_unbound_400x5",
+        name: "responses_unbound_400x5",
         strands: 400,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: true,
+        responses: true,
         outputs: false,
         spines: false,
     },
     Scenario {
-        name: "chains_solver_only_10x5",
+        name: "responses_solver_only_10x5",
         strands: 10,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: true,
+        responses: true,
         outputs: true,
         spines: false,
     },
     Scenario {
-        name: "chains_solver_only_100x5",
+        name: "responses_solver_only_100x5",
         strands: 100,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: true,
+        responses: true,
         outputs: true,
         spines: false,
     },
     Scenario {
-        name: "chains_solver_only_400x5",
+        name: "responses_solver_only_400x5",
         strands: 400,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: true,
+        responses: true,
         outputs: true,
         spines: false,
     },
@@ -190,9 +138,8 @@ const SCENARIOS: &[Scenario] = &[
         name: "spine_100x5",
         strands: 100,
         links: 5,
-        stiffness: 0.0,
         parts: false,
-        chains: false,
+        responses: false,
         outputs: true,
         spines: true,
     },
@@ -233,7 +180,7 @@ fn main() {
 /// Build the scenario, settle it, then time `TICKS` ticks of it. Returns the
 /// minimum, median and p90 tick in microseconds.
 ///
-/// Posing sits outside the timed region in every scenario, so what a chain
+/// Posing sits outside the timed region in every scenario, so what a response
 /// costs to write its params is inside the number and what the harness costs
 /// to stand in for one is not.
 fn run(s: &Scenario) -> (f64, f64, f64) {
@@ -264,7 +211,7 @@ fn run(s: &Scenario) -> (f64, f64, f64) {
     if built.bends_move {
         assert!(hi - lo > 1e-4, "{}: the bends never moved", s.name);
     } else {
-        assert!(moving, "{}: the chains never moved", s.name);
+        assert!(moving, "{}: the responses never moved", s.name);
     }
     if let Some(part) = &built.first_part {
         let idx = puppet.node_idx(part).unwrap();
@@ -288,14 +235,14 @@ fn run(s: &Scenario) -> (f64, f64, f64) {
 /// A scenario's model and the params the bench poses on it.
 struct Built {
     model: Model,
-    /// Moves every strand's anchor, so the chains swing.
+    /// Feeds the root of each response cascade.
     turn: ParamId,
-    /// One per link per strand. A chain writes these; without one the bench
+    /// One per link per strand. A response writes these; without one the bench
     /// does.
     bends: Vec<ParamId>,
     /// Whether the bench poses `bends` itself.
     pose_bends: bool,
-    /// Whether anything writes the bends this run — the bench or a chain.
+    /// Whether anything writes the bends this run — the bench or a response.
     bends_move: bool,
     /// The first strand's strip, when the scenario has parts: what the
     /// post-run check reads to see the fold produced offsets.
@@ -398,45 +345,52 @@ impl Built {
                 }
             }
 
-            // A spine, optionally carrying a chain, optionally over art.
-            if s.spines || s.chains {
+            if s.responses {
+                let mut parent = head.clone();
+                for (link, bend) in strand.iter().enumerate() {
+                    let source = if link == 0 {
+                        ResponseSource::PoseParam(turn.clone())
+                    } else {
+                        ResponseSource::Parent
+                    };
+                    let driver = MotionResponse {
+                        inputs: vec![ResponseInput { source, gain: 0.75 }],
+                        output_param: s.outputs.then(|| bend.clone()),
+                        ..Default::default()
+                    };
+                    parent = model
+                        .add_node(
+                            &parent,
+                            ModelNode::new(
+                                format!("response {i}.{link}"),
+                                ModelNodeKind::MotionResponse(driver),
+                            ),
+                            &mut hex,
+                        )
+                        .unwrap();
+                }
+            }
+            if s.spines {
                 // The joints are in the spine's own space, and the spine sits
                 // on the strip's top edge.
-                let mut spine = ModelSpine::new(
+                let spine = ModelSpine::new(
                     (0..s.links)
                         .map(|l| [0.0, -link_len * (l + 1) as f32])
                         .collect(),
                 );
-                if s.chains {
-                    let mut chain = ModelChain::new(s.links);
-                    chain.damping = DAMPING;
-                    chain.set_links(vec![
-                        LinkFeel {
-                            gravity_scale: 1.0,
-                            stiffness: s.stiffness,
-                            limit: None,
-                        };
-                        s.links
-                    ]);
-                    spine.set_chain(Some(chain));
-                }
                 let mut node = ModelNode::new(format!("spine {i}"), ModelNodeKind::Spine(spine));
                 node.transform.translation = [i as f32 * SPACING, TOP, 0.0];
                 let id = model.add_node(&head, node, &mut hex).unwrap();
-                if s.outputs {
-                    model
-                        .set_spine_targets(&id, strand.iter().cloned().map(Some).collect())
-                        .unwrap();
-                }
-                if s.spines {
-                    let mut art = ModelNode::new(
-                        format!("strand {i}"),
-                        ModelNodeKind::Part(ModelPart::new(mesh.clone())),
-                    );
-                    art.transform.translation = [0.0, -TOP, 0.0];
-                    let part = model.add_node(&id, art, &mut hex).unwrap();
-                    first_part.get_or_insert(part);
-                }
+                model
+                    .set_spine_targets(&id, strand.iter().cloned().map(Some).collect())
+                    .unwrap();
+                let mut art = ModelNode::new(
+                    format!("strand {i}"),
+                    ModelNodeKind::Part(ModelPart::new(mesh.clone())),
+                );
+                art.transform.translation = [0.0, -TOP, 0.0];
+                let part = model.add_node(&id, art, &mut hex).unwrap();
+                first_part.get_or_insert(part);
             }
         }
 
@@ -444,14 +398,14 @@ impl Built {
             model,
             turn,
             bends,
-            pose_bends: !s.chains,
-            bends_move: !s.chains || s.outputs,
+            pose_bends: !s.responses,
+            bends_move: !s.responses || s.outputs,
             first_part,
         }
     }
 
     /// Pose the frame: a one-hertz sinusoid on `turn`, and on each bend param
-    /// when no chain is writing it. The bends are spread in phase so no two
+    /// when no response is writing it. The bends are spread in phase so no two
     /// bindings fold the same value.
     fn pose(&self, puppet: &mut Puppet, frame: usize) {
         let t = frame as f32 * DT;

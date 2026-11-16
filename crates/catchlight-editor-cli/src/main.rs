@@ -112,11 +112,6 @@ enum Cmd {
         #[command(subcommand)]
         action: BindingCmd,
     },
-    /// Add a SimplePhysics node.
-    Physics {
-        #[command(subcommand)]
-        action: PhysicsCmd,
-    },
     /// Mask-source list operations on a Part/Composite.
     Mask {
         #[command(subcommand)]
@@ -658,88 +653,6 @@ enum BindingCmd {
 }
 
 #[derive(Subcommand)]
-enum PhysicsCmd {
-    /// Add a physics node under `--parent`. `--kind rigid|spring`.
-    Add {
-        #[arg(long)]
-        parent: NodeId,
-        #[arg(long, value_parser = wire_enum::<PhysicsKind>)]
-        kind: PhysicsKind,
-        #[arg(long)]
-        name: Option<String>,
-        /// The param the driver's first output writes. Absent binds it to
-        /// nothing.
-        #[arg(long = "target-angle")]
-        target_angle: Option<ParamId>,
-        /// The param the driver's second output writes. Absent binds it to
-        /// nothing.
-        #[arg(long = "target-length")]
-        target_length: Option<ParamId>,
-        #[arg(long, allow_hyphen_values = true)]
-        length: Option<f32>,
-        #[arg(long, allow_hyphen_values = true)]
-        gravity: Option<f32>,
-        #[arg(long, allow_hyphen_values = true)]
-        frequency: Option<f32>,
-        #[arg(long = "angle-damping", allow_hyphen_values = true)]
-        angle_damping: Option<f32>,
-        #[arg(long = "length-damping", allow_hyphen_values = true)]
-        length_damping: Option<f32>,
-        /// The Id to create it under; without one the editor draws a free one.
-        #[arg(long)]
-        id: Option<NodeId>,
-    },
-    /// Change fields on a physics node. `--kind rigid|spring`,
-    /// `--map-mode xy|yx|angle_length|length_angle`.
-    Set {
-        node: NodeId,
-        #[arg(long, value_parser = wire_enum::<PhysicsKind>)]
-        kind: Option<PhysicsKind>,
-        #[arg(long = "map-mode", value_parser = wire_enum::<PhysicsMapMode>)]
-        map_mode: Option<PhysicsMapMode>,
-        #[arg(long, value_parser = wire_enum::<PhysicsPlane>)]
-        plane: Option<PhysicsPlane>,
-        #[arg(long = "local-only")]
-        local_only: Option<bool>,
-        /// Rebind both of the driver's outputs, to whatever the two flags
-        /// below name and to nothing where they name nothing — so this alone
-        /// detaches both. Either flag implies it; with none of the three the
-        /// driver's outputs are left as they are.
-        #[arg(long = "targets")]
-        targets: bool,
-        /// The param the driver's first output writes. Implies `--targets`.
-        #[arg(long = "target-angle")]
-        target_angle: Option<ParamId>,
-        /// The param the driver's second output writes. Implies `--targets`.
-        #[arg(long = "target-length")]
-        target_length: Option<ParamId>,
-        #[arg(long, allow_hyphen_values = true)]
-        gravity: Option<f32>,
-        #[arg(long, allow_hyphen_values = true)]
-        length: Option<f32>,
-        #[arg(long, allow_hyphen_values = true)]
-        frequency: Option<f32>,
-        #[arg(long = "angle-damping", allow_hyphen_values = true)]
-        angle_damping: Option<f32>,
-        #[arg(long = "length-damping", allow_hyphen_values = true)]
-        length_damping: Option<f32>,
-        /// `x,y`
-        #[arg(long = "output-scale", allow_hyphen_values = true)]
-        output_scale: Option<String>,
-    },
-    /// Model-level physics constants.
-    Globals {
-        #[arg(long, allow_hyphen_values = true)]
-        gravity: Option<f32>,
-        #[arg(long = "pixels-per-meter", allow_hyphen_values = true)]
-        pixels_per_meter: Option<f32>,
-        /// Fixed hair-strand step rate in Hz, 30..=1000 (default 120).
-        #[arg(long)]
-        physics_rate: Option<f32>,
-    },
-}
-
-#[derive(Subcommand)]
 enum MaskCmd {
     /// Append a mask source (a Part) to a Part/Composite. `--mode mask|dodge`.
     Add {
@@ -1027,85 +940,6 @@ fn build_command(cli: &Cli) -> Result<Command> {
                     node: node.clone(),
                 },
                 BindingCmd::CopyKey { .. } => unreachable!("composed before building"),
-            }
-        }
-        Cmd::Physics { action } => {
-            let session = resolve_session(cli)?;
-            match action {
-                PhysicsCmd::Add {
-                    parent,
-                    kind,
-                    name,
-                    target_angle,
-                    target_length,
-                    length,
-                    gravity,
-                    frequency,
-                    angle_damping,
-                    length_damping,
-                    id,
-                } => Command::PhysicsAdd {
-                    session,
-                    parent: parent.clone(),
-                    name: name.clone(),
-                    kind: *kind,
-                    target_params: PhysicsTargets {
-                        angle: target_angle.clone(),
-                        length: target_length.clone(),
-                    },
-                    length: *length,
-                    gravity: *gravity,
-                    frequency: *frequency,
-                    angle_damping: *angle_damping,
-                    length_damping: *length_damping,
-                    node: id.clone(),
-                },
-                PhysicsCmd::Set {
-                    node,
-                    kind,
-                    map_mode,
-                    plane,
-                    local_only,
-                    targets,
-                    target_angle,
-                    target_length,
-                    gravity,
-                    length,
-                    frequency,
-                    angle_damping,
-                    length_damping,
-                    output_scale,
-                } => Command::PhysicsSet {
-                    session,
-                    node: node.clone(),
-                    kind: *kind,
-                    map_mode: *map_mode,
-                    plane: *plane,
-                    local_only: *local_only,
-                    // Naming an output is itself a request to rebind, so the
-                    // bare flag is only needed to detach both.
-                    target_params: (*targets || target_angle.is_some() || target_length.is_some())
-                        .then(|| PhysicsTargets {
-                            angle: target_angle.clone(),
-                            length: target_length.clone(),
-                        }),
-                    gravity: *gravity,
-                    length: *length,
-                    frequency: *frequency,
-                    angle_damping: *angle_damping,
-                    length_damping: *length_damping,
-                    output_scale: output_scale.as_deref().map(parse_vec2).transpose()?,
-                },
-                PhysicsCmd::Globals {
-                    gravity,
-                    pixels_per_meter,
-                    physics_rate,
-                } => Command::PhysicsGlobals {
-                    session,
-                    gravity: *gravity,
-                    pixels_per_meter: *pixels_per_meter,
-                    physics_rate: *physics_rate,
-                },
             }
         }
         Cmd::Mesh { action } => {
@@ -1839,17 +1673,10 @@ fn print_body(body: &ResponseBody) {
                 }
             }
         }
-        ResponseBody::SpineFit {
-            node,
-            params,
-            warnings,
-        } => {
+        ResponseBody::SpineFit { node, params } => {
             println!("spine {node}");
             for (link, param) in params.iter().enumerate() {
                 println!("  link {} <- {param}", link + 1);
-            }
-            for warning in warnings {
-                println!("warning: {warning}");
             }
         }
     }

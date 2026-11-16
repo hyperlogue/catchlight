@@ -51,8 +51,7 @@ pub enum ScalarTarget {
     Ty,
     /// Depth, toward the viewer. Under a parent no `Rx` or `Ry` turns, a drawing
     /// does not move on screen for it (the camera is orthographic, and clips
-    /// only past 1000 either way); a depth pendulum
-    /// ([`crate::physics::PendulumPlane::Depth`]) is what feels it.
+    /// only past 1000 either way).
     Tz,
     Sx,
     Sy,
@@ -67,8 +66,6 @@ pub enum ScalarTarget {
     ScreenTintR,
     ScreenTintG,
     ScreenTintB,
-    OutputScaleX,
-    OutputScaleY,
 }
 
 /// Any binding target — the per-vertex deform or one of the scalars.
@@ -198,8 +195,6 @@ impl ScalarTarget {
             "screentintr" => Self::ScreenTintR,
             "screentintg" => Self::ScreenTintG,
             "screentintb" => Self::ScreenTintB,
-            "outputscalex" => Self::OutputScaleX,
-            "outputscaley" => Self::OutputScaleY,
             _ => return None,
         })
     }
@@ -224,8 +219,6 @@ impl ScalarTarget {
             Self::ScreenTintR => "screentintr",
             Self::ScreenTintG => "screentintg",
             Self::ScreenTintB => "screentintb",
-            Self::OutputScaleX => "outputscalex",
-            Self::OutputScaleY => "outputscaley",
         }
     }
 
@@ -250,14 +243,7 @@ impl ScalarTarget {
     /// targets (scale, opacity, tint, output-scale) rest at 1; additive at 0.
     pub fn identity(self) -> f32 {
         match self {
-            Self::Sx
-            | Self::Sy
-            | Self::Opacity
-            | Self::TintR
-            | Self::TintG
-            | Self::TintB
-            | Self::OutputScaleX
-            | Self::OutputScaleY => 1.0,
+            Self::Sx | Self::Sy | Self::Opacity | Self::TintR | Self::TintG | Self::TintB => 1.0,
             _ => 0.0,
         }
     }
@@ -281,8 +267,6 @@ impl ScalarTarget {
             Self::ScreenTintR => V::ScreenTintR(c),
             Self::ScreenTintG => V::ScreenTintG(c),
             Self::ScreenTintB => V::ScreenTintB(c),
-            Self::OutputScaleX => V::OutputScaleX(c),
-            Self::OutputScaleY => V::OutputScaleY(c),
         }
     }
 }
@@ -307,8 +291,6 @@ pub fn target_of(v: &ClmBindingValues) -> BindingTarget {
         V::ScreenTintR(_) => ScalarTarget::ScreenTintR,
         V::ScreenTintG(_) => ScalarTarget::ScreenTintG,
         V::ScreenTintB(_) => ScalarTarget::ScreenTintB,
-        V::OutputScaleX(_) => ScalarTarget::OutputScaleX,
-        V::OutputScaleY(_) => ScalarTarget::OutputScaleY,
     })
 }
 
@@ -331,9 +313,7 @@ fn scalar_cells_mut(v: &mut ClmBindingValues) -> Option<&mut Vec<ClmCell<f32>>> 
         | V::TintB(c)
         | V::ScreenTintR(c)
         | V::ScreenTintG(c)
-        | V::ScreenTintB(c)
-        | V::OutputScaleX(c)
-        | V::OutputScaleY(c) => Some(&mut c.cells),
+        | V::ScreenTintB(c) => Some(&mut c.cells),
     }
 }
 
@@ -356,9 +336,7 @@ pub fn scalar_cells(v: &ClmBindingValues) -> Option<&[ClmCell<f32>]> {
         | V::TintB(c)
         | V::ScreenTintR(c)
         | V::ScreenTintG(c)
-        | V::ScreenTintB(c)
-        | V::OutputScaleX(c)
-        | V::OutputScaleY(c) => Some(&c.cells),
+        | V::ScreenTintB(c) => Some(&c.cells),
     }
 }
 
@@ -1274,9 +1252,7 @@ impl ModelBinding {
             | ClmBindingValues::TintB(c)
             | ClmBindingValues::ScreenTintR(c)
             | ClmBindingValues::ScreenTintG(c)
-            | ClmBindingValues::ScreenTintB(c)
-            | ClmBindingValues::OutputScaleX(c)
-            | ClmBindingValues::OutputScaleY(c) => &mut c.cells,
+            | ClmBindingValues::ScreenTintB(c) => &mut c.cells,
         }
     }
 }

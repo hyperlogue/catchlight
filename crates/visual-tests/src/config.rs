@@ -60,11 +60,8 @@ pub struct Config {
     /// The puppet settles at its param defaults, `params` is applied to the
     /// already-resting puppet, and the frame rendered is the one this many
     /// fixed-length ticks later — so the baseline pins a driver *in motion*.
-    /// A physics driver is the reason the mode exists: a chain or a pendulum
-    /// hangs to the same rest shape whatever pose put it there, so a settled
-    /// render of one says nothing about how it got there. The count is a
-    /// count and never a wall clock, which is what makes the captured instant
-    /// reproducible.
+    /// Motion responses return to zero at a held pose. A fixed tick count
+    /// captures the transfer of motion down a strand reproducibly.
     ///
     /// Single-puppet only: a multi-puppet frame renders every puppet at rest,
     /// the same reason it ignores `params`.
@@ -200,16 +197,10 @@ pub fn default_models(repo_root: &Path) -> Vec<ModelSpec> {
             default_zoom: 0.25,
             texture_halvings: 0,
         },
-        // One strip of art hung off a three-link spine carrying a particle
-        // chain, with a `turn` param that moves the spine's anchor (`cargo
-        // xtask gen-fixture strand_chain`). The only model here with a chain:
-        // it pins the whole path from a solved chain through its per-link
-        // bend params to the spine that composes them into vertices. There
-        // are no deform bindings in it at all. `zoom` 1.25 frames the
-        // strand's full swing to the right of centre without clipping it.
+        // Three cascaded responses drive separate bends on the fitted strip.
         ModelSpec {
-            stem: "strand_chain".into(),
-            path: repro.join("strand_chain.clm"),
+            stem: "strand_response".into(),
+            path: repro.join("strand_response.clm"),
             width: 512,
             height: 512,
             default_zoom: 1.25,
@@ -295,7 +286,7 @@ struct Curated {
     /// Every stem must name an entry in `default_models()`.
     frame_puppets: &'static [(&'static str, f32, f32)],
     /// Frames to tick after posing; see [`Config::ticks_after_pose`]. Zero on
-    /// every static pose, which is all of them but the chain's swing.
+    /// every static pose, which is all of them but the strand's swing.
     ticks_after_pose: u32,
 }
 
@@ -422,8 +413,8 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
                 ticks_after_pose: 0,
             },
         ],
-        "strand_chain" => vec![
-            // Settled: a chain hangs straight, so this pins the strip's
+        "strand_response" => vec![
+            // Settled responses leave the strip straight, so this pins the strip's
             // undeformed art and the geometry the fit was measured off.
             Curated {
                 label: "rest",
@@ -432,26 +423,13 @@ fn curated_configs(stem: &str) -> Vec<Curated> {
                 frame_puppets: &[],
                 ticks_after_pose: 0,
             },
-            // Mid-swing. `turn` steps the head 120 model pixels aside on an
-            // already-settled chain, and what the baseline pins is the frame
-            // 7 ticks later: the strand reads as one smooth curve rather than
-            // the hook it folds into a few frames on, and it sits wholly
-            // inside the frame this model's camera promises. Nothing but a
-            // transient can pin this — settled, a chain stands on its drawing
-            // at `turn` 1 exactly as it does at 0, which is why the `rest`
-            // baseline is the undeformed art.
-            //
-            // It was frame 11 while a step in the anchor was a teleport. The
-            // solver now reads 120 px in one frame as 7200 px/s of anchor and
-            // flings the chain right round. Frames 3 to 6 are either hanging
-            // out over the right edge or back so near straight that the shape
-            // stops saying anything the settled pose does not.
+            // At 50 ms the root has moved 120 px and the tip still trails it.
             Curated {
                 label: "swing",
                 params: &[("turn", 1.0, 0.0)],
                 camera_preset: "default",
                 frame_puppets: &[],
-                ticks_after_pose: 7,
+                ticks_after_pose: 3,
             },
         ],
         "composite_masks" => vec![

@@ -106,9 +106,9 @@ hover, keyboard focus, recording and errors are separate states.
   breathing room around the artwork and follows resizing until the user pans
   or zooms.
 - Fitting artwork already under a spine starts with its current link count and
-  preserves its driver settings. A new fit offers a particle chain by default.
+  preserves its bend targets. Motion response nodes drive these targets.
 - Properties follow the selected node's capabilities. Model-wide checks,
-  welds, physics constants and metadata live in the Model tab.
+  welds and metadata live in the Model tab.
 - The bottom shelf holds params and bindings. Pose previews never author
   model data. A sweep previews the selected param and restores its old value.
 - Panels resize by pointer or keyboard and remember their dimensions.
@@ -151,8 +151,7 @@ boundaries keep future tools consistent:
 | `apps/site`              | Backend choice, bundled Lan demo and an optional development starter override                                                |
 
 No component maintains a second authored model. Queries read the replica;
-edits go to the editor. Status reads provide actual undo/redo availability
-and global physics values. Commands carrying attachments or reply payloads go through `sendWith`. Empty
+edits go to the editor. Status reads provide actual undo/redo availability. Commands carrying attachments or reply payloads go through `sendWith`. Empty
 session creation and JSON metadata use ordinary `send`.
 
 | User workflow                        | React parts                                                   | Protocol families                                                                      |
@@ -166,7 +165,7 @@ session creation and JSON metadata use ordinary `send`.
 | Define and pose controls             | `ParamsPanel`, param parts                                    | Param add/set/delete and continuous local pose                         |
 | Author bindings                      | `BindingsPanel`, `BindingGrid`, `DeformPanel`                 | Binding-local axes, exact cells, interpolation and composed copy/reset/unset/invert |
 | Clip and connect artwork             | `MaskPanel`, `SlotsPanel`, `WeldsPanel`                       | Masks, slots, whole weld set/delete                                                   |
-| Tune motion                          | `SpinePanel`, `PhysicsPanel`, `PhysicsSettings`               | Joint and chain settings, pendulum outputs, global constants                           |
+| Tune motion                          | `SpinePanel`, `MotionResponsePanel`               | Spine joints, response inputs, timing and output                           |
 | Inspect model health and annotations | `ModelHealth`, `ExtensionsPanel`                              | Check, extensions, JSON metadata set/delete                                            |
 | Export the visible preview           | `usePreviewExport`                                            | Viewport readback followed by a PNG download                                           |
 

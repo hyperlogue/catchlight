@@ -14,8 +14,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use catchlight_editor_protocol::{
-    Command, ErrorCode, NodeId, NodeKind, NodeKindArg, ParamId, PhysicsKind, PhysicsTargets, Reply,
-    Request, ResponseBody, SessionId, TexId, TextureEncoding,
+    Command, ErrorCode, NodeId, NodeKind, NodeKindArg, ParamId, Reply, Request, ResponseBody,
+    SessionId, TexId, TextureEncoding,
 };
 use catchlight_editor_server::{Attachments, Editor, Storage};
 
@@ -147,29 +147,20 @@ fn an_add_creates_under_the_id_it_was_given() {
         ResponseBody::Texture { texture, .. } if texture == albedo,
     ));
 
-    let pendulum = NodeId::new("hair.swing").unwrap();
+    let response = NodeId::new("hair.swing").unwrap();
     assert_eq!(
         node_of(body(
             &ed,
             5,
-            Command::PhysicsAdd {
+            Command::NodeAdd {
                 session,
                 parent: hair.clone(),
                 name: None,
-                kind: PhysicsKind::Rigid,
-                target_params: PhysicsTargets {
-                    angle: Some(pull.clone()),
-                    length: None,
-                },
-                length: None,
-                gravity: None,
-                frequency: None,
-                angle_damping: None,
-                length_damping: None,
-                node: Some(pendulum.clone()),
+                kind: NodeKindArg::MotionResponse,
+                node: Some(response.clone()),
             }
         )),
-        pendulum,
+        response,
     );
 
     // Every one of them answers to the Id the script chose, with no rename in
@@ -180,10 +171,10 @@ fn an_add_creates_under_the_id_it_was_given() {
             6,
             Command::NodeInfo {
                 session,
-                node: pendulum,
+                node: response,
             }
         ),
-        ResponseBody::NodeInfo { node } if node.kind == NodeKind::Physics && node.parent == Some(hair),
+        ResponseBody::NodeInfo { node } if node.kind == NodeKind::MotionResponse && node.parent == Some(hair),
     ));
     assert!(matches!(
         body(&ed, 7, Command::TextureList { session }),

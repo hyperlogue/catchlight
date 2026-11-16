@@ -4,10 +4,8 @@
 //! Each fixture here is a synthetic model exercising one part of the pipeline the
 //! committed `.clm` fixtures do not reach: mesh groups in both
 //! `translate_children` states, two-param bindings in all
-//! four interpolation modes, two params deforming one node, welds, chained
-//! physics drivers, a `translate_children` group over a `local_only` driver, a
-//! spine composing two joint turns, and a playing animation. For a grid of poses (plus, where a fixture has
-//! drivers, a settle and a run of simulated frames) the whole evaluated frame
+//! four interpolation modes, two params deforming one node, welds, a spine
+//! composing two turns, and a playing animation. Each evaluated frame
 //! — every node's global transform, z order, enabled flag, colour and
 //! combined deform — is compared against
 //! `tests/fixtures/evaluated_frame.json`.
@@ -17,14 +15,6 @@
 //! targets, and the weld solve all land in a node's deform stack or in a
 //! shifted node's transform, so a difference in any of them shows up here.
 //! Nothing else observes them.
-//!
-//! A driver's anchor carries the **previous** frame's `translate_children`
-//! shift, not this frame's: the anchor pre-pass runs before the mesh groups,
-//! so it replays the shift the last pass recorded rather than running that
-//! pass twice a frame. The `tc over local driver` numbers are the ones
-//! that show it — a pose
-//! change moves the group's shift, the anchor follows a frame later, and the
-//! driver swings in response.
 //!
 //! **Where the numbers came from.** They are the output of the runtime this
 //! suite used to compare against the one it replaced, frame for frame, at the
@@ -38,15 +28,13 @@
 
 use catchlight_core::components::{BlendMode, MaskMode};
 use catchlight_core::formats::clm::{
-    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChain, ClmComposite, ClmFile,
-    ClmIndices, ClmKeyframe, ClmLane, ClmLinkFeel, ClmMask, ClmMesh, ClmMeshGroup, ClmNode,
-    ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure,
-    ClmTransform, ClmWeld,
+    ClmAnimation, ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile,
+    ClmIndices, ClmKeyframe, ClmLane, ClmMask, ClmMesh, ClmMeshGroup, ClmNode, ClmNodeKind,
+    ClmParam, ClmPart, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure, ClmTransform, ClmWeld,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::physics::{PendulumKind, PhysicsParamMapMode};
 use catchlight_core::puppet::Puppet;
-use catchlight_core::{Model, NodeId, NodeIdx, NodeKind, ParamId, SlotId, Vec2};
+use catchlight_core::{Model, NodeId, NodeIdx, NodeKind, ParamId, SlotId};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -110,33 +98,6 @@ impl Fixture {
 
     fn tick(&mut self) {
         self.puppet.tick(&self.model, DT);
-    }
-
-    /// Displace every driver so the run that follows is a swing rather than a
-    /// fixed point: a pendulum's bob is moved outright, a chain's particles
-    /// are bent off the anchor they hang from.
-    fn kick_drivers(&mut self) {
-        for (i, node) in self.file.file.doc.nodes.iter().enumerate() {
-            match node.kind {
-                ClmNodeKind::SimplePhysics(_) => assert!(
-                    self.puppet
-                        .place_driver(self.nodes[i], Vec2::new(40.0, 40.0)),
-                    "node {i} is a driver"
-                ),
-                ClmNodeKind::Spine(ref sp) if sp.chain.is_some() => assert!(
-                    self.puppet.kick_chain(self.nodes[i], Vec2::new(40.0, 0.0)),
-                    "node {i} carries a chain"
-                ),
-                _ => {}
-            }
-        }
-    }
-
-    fn has_drivers(&self) -> bool {
-        self.file.file.doc.nodes.iter().any(|n| {
-            matches!(n.kind, ClmNodeKind::SimplePhysics(_))
-                || matches!(n.kind, ClmNodeKind::Spine(ref sp) if sp.chain.is_some())
-        })
     }
 
     /// The evaluated frame, flattened for the baseline.
@@ -204,14 +165,9 @@ fn pose_grid(file: &FixtureFile) -> Vec<Vec<(f32, f32)>> {
 
 /// Run one fixture's whole schedule into `out`.
 ///
-/// A fixture with no drivers is ticked twice per pose and the second frame has to
-/// equal the first — that is the memo that lets an unchanged pose skip the
-/// fold, and it is a property rather than a captured number. A fixture with
-/// drivers moves between the two ticks by design, so both frames are captured
-/// instead, and a settle plus a simulated run follows.
+/// Tick twice per pose to verify that the memoized frame matches the first.
 fn capture(label: &str, file: FixtureFile, out: &mut Baseline) {
     let mut fixture = Fixture::load(file);
-    let drivers = fixture.has_drivers();
 
     for (k, pose) in pose_grid(&fixture.file).into_iter().enumerate() {
         fixture.pose(&pose);
@@ -219,41 +175,10 @@ fn capture(label: &str, file: FixtureFile, out: &mut Baseline) {
         let first = fixture.frame();
         out.insert(format!("{label} pose {k}"), first.clone());
         fixture.tick();
-        if drivers {
-            out.insert(format!("{label} pose {k} (second tick)"), fixture.frame());
-        } else {
-            compare(
-                &format!("{label} pose {k}: an unchanged pose re-evaluates the same"),
-                &first,
-                &fixture.frame(),
-            );
-        }
-    }
-
-    if drivers {
-        let mut fixture = Fixture::load(fixture.file);
-        fixture.puppet.settle_physics(&fixture.model);
-        fixture.tick();
-        let settled = fixture.frame();
-        out.insert(format!("{label} settled"), settled.clone());
-
-        // Settling leaves the pendulums at the fixed point of the rest pose,
-        // where they would sit still forever — and posing cannot move them,
-        // because a driver claims its target params at full authority and
-        // overwrites whatever was posed. Displacing each bob is what makes
-        // the frames below a swing decaying back to rest, which is the
-        // transient nothing else in the suite pins.
-        fixture.kick_drivers();
-        for frame in 0..90 {
-            fixture.tick();
-            if frame % SAMPLE_EVERY == 0 {
-                out.insert(format!("{label} frame {frame}"), fixture.frame());
-            }
-        }
-        assert_ne!(
-            out[&format!("{label} frame 0")],
-            out[&format!("{label} frame 80")],
-            "{label}: the simulated run has to actually move"
+        compare(
+            &format!("{label} pose {k}: an unchanged pose re-evaluates the same"),
+            &first,
+            &fixture.frame(),
         );
     }
 }
@@ -302,14 +227,7 @@ fn current() -> Baseline {
         );
     }
     capture("welds", weld_fixture(), &mut out);
-    capture("chained physics", chained_physics_fixture(), &mut out);
-    capture("particle chain", particle_chain_fixture(), &mut out);
     capture("spine", spine_fixture(), &mut out);
-    capture(
-        "tc over local driver",
-        tc_over_local_driver_fixture(),
-        &mut out,
-    );
     animation_frames(&mut out);
     out
 }
@@ -905,136 +823,6 @@ fn weld_fixture() -> FixtureFile {
     file(nodes, params, welds)
 }
 
-fn physics(targets: Vec<ParamId>, local_only: bool) -> ClmSimplePhysics {
-    let mut target_params: [Option<ParamId>; 2] = [None, None];
-    for (slot, id) in target_params.iter_mut().zip(targets) {
-        *slot = Some(id);
-    }
-    ClmSimplePhysics {
-        kind: PendulumKind::RigidPendulum,
-        map_mode: PhysicsParamMapMode::AngleLength,
-        plane: catchlight_core::physics::PendulumPlane::Screen,
-        local_only,
-        target_params,
-        gravity: 1.0,
-        length: 60.0,
-        frequency: 1.0,
-        angle_damping: 0.2,
-        length_damping: 0.5,
-        output_scale: [1.0, 1.0],
-    }
-}
-
-/// Two drivers, the first's output translating the second's anchor: the
-/// chained-physics case the contribution table exists for. The first writes a
-/// pair of params, the second a single one.
-fn chained_physics_fixture() -> FixtureFile {
-    let nodes = vec![
-        node(None, "Root", ClmNodeKind::Group),
-        at(
-            Some(0),
-            "Upper",
-            [0.0, 40.0],
-            ClmNodeKind::SimplePhysics(physics(two(0), false)),
-        ),
-        at(Some(0), "Mid", [0.0, 10.0], ClmNodeKind::Group),
-        at(
-            Some(2),
-            "Lower",
-            [5.0, -20.0],
-            ClmNodeKind::SimplePhysics(physics(one(1), true)),
-        ),
-        at(
-            Some(0),
-            "Hair",
-            [0.0, 0.0],
-            ClmNodeKind::Part(part(quad(6.0, 20.0))),
-        ),
-    ];
-    let swing = |node: usize, values: ClmBindingValues| {
-        binding(node, InterpolateMode::Linear, two(0), values)
-    };
-    let params = vec![
-        FixtureParam::pair(
-            "Swing",
-            [-1.0, 0.0],
-            [1.0, 2.0],
-            [0.0, 1.0],
-            vec![0.0, 0.5, 1.0],
-            vec![0.0, 1.0],
-        )
-        .driving(vec![
-            // The upper driver's output moves the lower driver's anchor.
-            swing(
-                2,
-                ClmBindingValues::TransformTX(cells(vec![(0, 0, -30.0), (2, 1, 30.0)])),
-            ),
-            swing(
-                4,
-                ClmBindingValues::Deform(cells(vec![
-                    (0, 0, vec![-4.0, 0.0, 4.0, 0.0, 0.0, 2.0, 0.0, -2.0]),
-                    (2, 1, vec![4.0, 1.0, -4.0, 1.0, 0.0, -2.0, 0.0, 2.0]),
-                ])),
-            ),
-            // An output-scale binding, so the pre-pass's second target
-            // kind is exercised too.
-            swing(3, ClmBindingValues::OutputScaleX(cells(vec![(0, 0, 0.5)]))),
-        ]),
-        FixtureParam::scalar("Tip", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
-            4,
-            InterpolateMode::Linear,
-            one(1),
-            ClmBindingValues::TransformTY(cells(vec![(1, 0, 12.0)])),
-        )]),
-    ];
-    file(nodes, params, Vec::new())
-}
-
-/// A spine carrying a chain over a strip of art.
-///
-/// The only fixture whose driver writes more than two numbers, and the only
-/// one where a driver's output is a *vector* the length of something the
-/// author shaped. It is also the only one where a param moves vertices with no
-/// binding at all: the chain writes the bends and the spine composes them.
-fn particle_chain_fixture() -> FixtureFile {
-    let nodes = vec![
-        node(None, "Root", ClmNodeKind::Group),
-        at(
-            Some(0),
-            "Chain",
-            [0.0, 30.0],
-            ClmNodeKind::Spine(ClmSpine {
-                joints: vec![[0.0, -60.0], [0.0, -110.0], [0.0, -150.0]],
-                targets: (0..3).map(|i| Some(one(i)[0].clone())).collect(),
-                chain: Some(ClmChain {
-                    local_only: false,
-                    gravity: 1.0,
-                    weight: 1.0,
-                    damping: 0.36,
-                    air_drag: 0.0,
-                    links: (0..3)
-                        .map(|_| ClmLinkFeel {
-                            gravity_scale: 1.0,
-                            stiffness: 0.0,
-                            limit: None,
-                        })
-                        .collect(),
-                }),
-            }),
-        ),
-        at(
-            Some(1),
-            "Strand",
-            [0.0, 0.0],
-            ClmNodeKind::Part(part(quad(6.0, 80.0))),
-        ),
-    ];
-    let params = (0..3)
-        .map(|_| FixtureParam::scalar("Bend", -1.0, 1.0, 0.0, vec![0.0, 1.0]))
-        .collect();
-    file(nodes, params, Vec::new())
-}
-
 /// A spine turning a strip that reaches past both its links and above its
 /// root.
 ///
@@ -1054,7 +842,6 @@ fn spine_fixture() -> FixtureFile {
             ClmNodeKind::Spine(ClmSpine {
                 joints: vec![[0.0, -35.0], [0.0, -70.0]],
                 targets: (0..2).map(|i| Some(one(i)[0].clone())).collect(),
-                chain: None,
             }),
         ),
         at(
@@ -1069,62 +856,6 @@ fn spine_fixture() -> FixtureFile {
     let params = (0..2)
         .map(|_| FixtureParam::scalar("Bend", -0.5, 0.5, 0.0, vec![0.0, 0.5, 1.0]))
         .collect();
-    file(nodes, params, Vec::new())
-}
-
-/// A mesh group whose `translate_children` shift targets a `local_only`
-/// driver — the case where the driver's own anchor is the thing being shifted,
-/// so it sees the shift a frame late.
-fn tc_over_local_driver_fixture() -> FixtureFile {
-    let nodes = vec![
-        node(None, "Root", ClmNodeKind::Group),
-        node(
-            Some(0),
-            "MG",
-            ClmNodeKind::MeshGroup(ClmMeshGroup {
-                mesh: quad(30.0, 30.0),
-                translate_children: true,
-            }),
-        ),
-        at(
-            Some(1),
-            "Driver",
-            [3.0, 6.0],
-            ClmNodeKind::SimplePhysics(physics(two(1), true)),
-        ),
-        at(
-            Some(1),
-            "Skin",
-            [0.0, 0.0],
-            ClmNodeKind::Part(part(quad(8.0, 8.0))),
-        ),
-    ];
-    let params = vec![
-        FixtureParam::scalar("Bend", -1.0, 1.0, 0.0, vec![0.0, 1.0]).driving(vec![binding(
-            1,
-            InterpolateMode::Linear,
-            one(0),
-            ClmBindingValues::Deform(cells(vec![(
-                1,
-                0,
-                vec![6.0, -2.0, 6.0, -2.0, 6.0, -2.0, 6.0, -2.0],
-            )])),
-        )]),
-        FixtureParam::pair(
-            "Sway",
-            [-1.0, 0.0],
-            [1.0, 2.0],
-            [0.0, 1.0],
-            vec![0.0, 1.0],
-            vec![0.0, 1.0],
-        )
-        .driving(vec![binding(
-            3,
-            InterpolateMode::Linear,
-            two(1),
-            ClmBindingValues::TransformTX(cells(vec![(0, 0, -7.0), (1, 1, 7.0)])),
-        )]),
-    ];
     file(nodes, params, Vec::new())
 }
 
@@ -1186,68 +917,6 @@ fn a_model_edit_between_ticks_rebakes_and_keeps_the_pose() {
             "a transform edit must not change the folded deform: {a:?} vs {b:?}"
         );
     }
-}
-
-/// A driver's state has to survive a rebake too, or an edit would visibly
-/// restart every pendulum.
-#[test]
-fn a_model_edit_keeps_the_drivers_running() {
-    let f = {
-        let nodes = vec![
-            node(None, "Root", ClmNodeKind::Group),
-            at(
-                Some(0),
-                "Driver",
-                [0.0, 40.0],
-                ClmNodeKind::SimplePhysics(physics(two(0), false)),
-            ),
-            at(
-                Some(0),
-                "Hair",
-                [0.0, 0.0],
-                ClmNodeKind::Part(part(quad(6.0, 20.0))),
-            ),
-        ];
-        let params = vec![FixtureParam::pair(
-            "Swing",
-            [-1.0, 0.0],
-            [1.0, 2.0],
-            [0.0, 1.0],
-            vec![0.0, 1.0],
-            vec![0.0, 1.0],
-        )
-        .driving(vec![binding(
-            2,
-            InterpolateMode::Linear,
-            two(0),
-            ClmBindingValues::TransformTX(cells(vec![(1, 1, 20.0)])),
-        )])];
-        file(nodes, params, Vec::new())
-    };
-    let mut model = Model::from_clm_file(&f.file).unwrap();
-    let mut puppet = Puppet::new(&model);
-    puppet.settle_physics(&model);
-    // Kick the pendulum away from rest and let it swing.
-    let driver = NodeId::new("node-1").unwrap();
-    model
-        .update_node(&driver, |n| n.transform.translation[0] = 60.0)
-        .unwrap();
-    for _ in 0..10 {
-        puppet.tick(&model, DT);
-    }
-    let swinging = puppet.param_value(&ParamId::new("param-0.x").unwrap());
-
-    // An unrelated edit: the driver must keep its bob, not snap back to rest.
-    model
-        .update_node(&NodeId::new("node-2").unwrap(), |n| n.z_order += 1.0)
-        .unwrap();
-    puppet.tick(&model, DT);
-    let after = puppet.param_value(&ParamId::new("param-0.x").unwrap());
-    let (a, b) = (swinging.unwrap(), after.unwrap());
-    assert!(
-        (a - b).abs() < 0.05,
-        "the driver kept swinging across the rebake: {a} -> {b}"
-    );
 }
 
 /// A part whose transform and deform a single param drives, for a clip's lane

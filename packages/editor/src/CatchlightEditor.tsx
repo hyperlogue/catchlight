@@ -29,7 +29,6 @@ import {
   ParamsPanel,
   PresenceProvider,
   PropertiesPanel,
-  PhysicsSettings,
   SearchField,
   SessionList,
   WeldsPanel,
@@ -869,7 +868,7 @@ function Workspace({
                       "composite",
                       "mesh_group",
                       "spine",
-                      "physics",
+                      "motion_response",
                     ] as const
                   ).map((kind) => (
                     <button
@@ -1299,7 +1298,6 @@ function Workspace({
             ) : (
               <>
                 <ModelHealth session={session} />
-                <PhysicsSettings session={session} onError={onError} />
                 <Disclosure title="Connections">
                   <WeldsPanel session={session} onError={onError} />
                 </Disclosure>

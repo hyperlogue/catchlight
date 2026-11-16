@@ -395,68 +395,6 @@ export function ModelHealth({ session }: { session: Session }) {
   );
 }
 
-export function PhysicsSettings({ session, onError }: { session: Session; onError: ErrorHandler }) {
-  const status = useSessionStatus(session);
-  const { run, busy } = useCommand(session, onError);
-  if (status?.gravity == null || status.pixels_per_meter == null) return null;
-  return (
-    <Disclosure title="Physics environment" defaultOpen={false}>
-      <fieldset disabled={busy}>
-        <Field label="Gravity">
-          <NumberField
-            label="Global gravity"
-            value={status.gravity}
-            min={0}
-            unit="m/s²"
-            onCommit={(gravity) =>
-              void run({
-                cmd: "physics_globals_set",
-                physics_rate: null,
-                gravity,
-                pixels_per_meter: null,
-              })
-            }
-          />
-        </Field>
-        <Field label="World scale">
-          <NumberField
-            label="Pixels per meter"
-            value={status.pixels_per_meter}
-            min={0.001}
-            unit="px/m"
-            onCommit={(pixels_per_meter) =>
-              void run({
-                cmd: "physics_globals_set",
-                physics_rate: null,
-                pixels_per_meter,
-                gravity: null,
-              })
-            }
-          />
-        </Field>
-        <Field label="Hair step rate">
-          <NumberField
-            label="Hair physics step rate"
-            value={status.physics_rate ?? 120}
-            min={30}
-            max={1000}
-            step={10}
-            unit="Hz"
-            onCommit={(physics_rate) => void run({
-              cmd: "physics_globals_set",
-              physics_rate,
-              gravity: null,
-              pixels_per_meter: null,
-            })}
-          />
-        </Field>
-        <p data-catchlight-hint="">
-          Gravity and world scale apply to all physics. The step rate applies to every hair chain in this model; a link stiffer than about a sixth of it follows rigidly.
-        </p>
-      </fieldset>
-    </Disclosure>
-  );
-}
 
 export function ExtensionsPanel({ session, onError }: { session: Session; onError: ErrorHandler }) {
   const { extensions } = useModelQuery(session, { cmd: "extension_list" }, "extensions");

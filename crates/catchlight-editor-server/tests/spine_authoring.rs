@@ -13,8 +13,8 @@
 //! transport, a texture or a GPU.
 
 use catchlight_editor_protocol::{
-    ChainArg, Command, ErrorCode, LinkFeelArg, NodeId, NodeInfo, NodeKind, ParamId, Reply, Request,
-    ResponseBody, SessionId, SpineInfo,
+    Command, ErrorCode, NodeId, NodeInfo, NodeKind, ParamId, Reply, Request, ResponseBody,
+    SessionId, SpineInfo,
 };
 use catchlight_editor_server::Editor;
 
@@ -106,7 +106,6 @@ fn add(
             name: None,
             joints,
             targets,
-            chain: None,
             node: at,
         },
     )
@@ -149,14 +148,13 @@ fn a_spine_reads_back_as_what_was_added() {
 
     let read = info(&ed, session, &made);
     assert_eq!(read.kind, NodeKind::Spine);
-    assert!(read.physics.is_none(), "a spine is not a pendulum");
+    assert!(read.motion_response.is_none());
     let spine = read.spine.expect("a spine reports its settings");
     assert_eq!(
         spine,
         SpineInfo {
             joints: joints.clone(),
             targets: vec![Some(bend), None],
-            chain: None,
         }
     );
 
@@ -169,7 +167,6 @@ fn a_spine_reads_back_as_what_was_added() {
             node: made.clone(),
             joints: Some(spine.joints.clone()),
             targets: Some(spine.targets.clone()),
-            chain: Some(spine.chain.clone()),
         },
     );
     assert_eq!(info(&ed, session, &made).spine, Some(spine));
@@ -265,7 +262,6 @@ fn targets_that_do_not_match_the_links_are_refused() {
                 node: made.clone(),
                 joints: None,
                 targets: Some(vec![None, None, None]),
-                chain: None,
             },
         ),
         ErrorCode::BadTarget
@@ -300,7 +296,6 @@ fn a_set_reshapes_before_it_re_aims() {
             node: made.clone(),
             joints: Some(vec![[0.0, -40.0], [0.0, -80.0], [0.0, -120.0]]),
             targets: Some(vec![Some(bend.clone()), None, Some(bend.clone())]),
-            chain: None,
         },
     );
     let spine = info(&ed, session, &made).spine.expect("a spine");
@@ -323,217 +318,12 @@ fn a_spine_command_refuses_another_kind() {
                 node: node("root"),
                 joints: Some(vec![[0.0, -10.0]]),
                 targets: None,
-                chain: None,
             },
         ),
         ErrorCode::BadTarget
     );
 }
 
-/// A chain's weight is refused at the door on every command that hangs one,
-/// so a number the file would refuse to read back never reaches the model.
-#[test]
-fn a_chains_bad_weight_is_refused_wherever_it_is_hung() {
-    let ed = Editor::new();
-    let session = session(&ed);
-    let bad = ChainArg {
-        weight: Some(-1.0),
-        ..ChainArg::default()
-    };
-    assert_eq!(
-        code(
-            &ed,
-            5,
-            Command::SpineAdd {
-                session,
-                parent: node("root"),
-                name: None,
-                joints: vec![[0.0, -10.0]],
-                targets: None,
-                chain: Some(bad.clone()),
-                node: Some(node("root/sp")),
-            },
-        ),
-        ErrorCode::BadTarget
-    );
-    assert!(
-        children(&ed, session).is_empty(),
-        "a refused add makes no node"
-    );
-
-    let made = match add(&ed, session, vec![[0.0, -10.0]], None, None) {
-        Reply::Ok {
-            body: ResponseBody::Node { node, .. },
-            ..
-        } => node,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(
-        code(
-            &ed,
-            6,
-            Command::SpineSet {
-                session,
-                node: made.clone(),
-                joints: None,
-                targets: None,
-                chain: Some(Some(bad)),
-            },
-        ),
-        ErrorCode::BadTarget
-    );
-    assert!(
-        info(&ed, session, &made)
-            .spine
-            .expect("a spine")
-            .chain
-            .is_none(),
-        "a refused set hangs nothing"
-    );
-}
-
-/// Every knob the file reader refuses is refused at the command that named
-/// it. Writing is total, so a number the model took would land in the file and
-/// be refused on the next load, with the command long gone; a script wants to
-/// hear about it now, and on every door a chain comes through.
-#[test]
-fn every_chain_knob_the_file_refuses_is_refused_at_the_door() {
-    let ed = Editor::new();
-    let session = session(&ed);
-    let with_feel = |feel: LinkFeelArg| ChainArg {
-        links: Some(vec![feel]),
-        ..ChainArg::default()
-    };
-    let bad: Vec<(&str, ChainArg)> = vec![
-        (
-            "gravity 0",
-            ChainArg {
-                gravity: Some(0.0),
-                ..ChainArg::default()
-            },
-        ),
-        (
-            "gravity NaN",
-            ChainArg {
-                gravity: Some(f32::NAN),
-                ..ChainArg::default()
-            },
-        ),
-        (
-            "weight -1",
-            ChainArg {
-                weight: Some(-1.0),
-                ..ChainArg::default()
-            },
-        ),
-        (
-            "gravity_scale NaN",
-            with_feel(LinkFeelArg {
-                gravity_scale: Some(f32::NAN),
-                ..Default::default()
-            }),
-        ),
-        (
-            "damping -0.1",
-            ChainArg {
-                damping: Some(-0.1),
-                ..ChainArg::default()
-            },
-        ),
-        (
-            "damping NaN",
-            ChainArg {
-                damping: Some(f32::NAN),
-                ..ChainArg::default()
-            },
-        ),
-        (
-            "stiffness -1",
-            with_feel(LinkFeelArg {
-                stiffness: Some(-1.0),
-                ..Default::default()
-            }),
-        ),
-        (
-            "stiffness NaN",
-            with_feel(LinkFeelArg {
-                stiffness: Some(f32::NAN),
-                ..Default::default()
-            }),
-        ),
-        (
-            "limit 0",
-            with_feel(LinkFeelArg {
-                limit: Some(Some(0.0)),
-                ..Default::default()
-            }),
-        ),
-    ];
-
-    for (i, (what, chain)) in bad.iter().enumerate() {
-        assert_eq!(
-            code(
-                &ed,
-                200 + i as u64,
-                Command::SpineAdd {
-                    session,
-                    parent: node("root"),
-                    name: None,
-                    joints: vec![[0.0, -10.0]],
-                    targets: None,
-                    chain: Some(chain.clone()),
-                    node: None,
-                },
-            ),
-            ErrorCode::BadTarget,
-            "{what} on spine_add",
-        );
-    }
-    assert!(
-        children(&ed, session).is_empty(),
-        "no refused add made a node"
-    );
-
-    // The same door on a set.
-    let made = match add(&ed, session, vec![[0.0, -10.0]], None, None) {
-        Reply::Ok {
-            body: ResponseBody::Node { node, .. },
-            ..
-        } => node,
-        other => panic!("{other:?}"),
-    };
-    for (i, (what, chain)) in bad.iter().enumerate() {
-        assert_eq!(
-            code(
-                &ed,
-                300 + i as u64,
-                Command::SpineSet {
-                    session,
-                    node: made.clone(),
-                    joints: None,
-                    targets: None,
-                    chain: Some(Some(chain.clone())),
-                },
-            ),
-            ErrorCode::BadTarget,
-            "{what} on spine_set",
-        );
-    }
-    assert!(
-        info(&ed, session, &made)
-            .spine
-            .expect("a spine")
-            .chain
-            .is_none(),
-        "no refused set hung a chain"
-    );
-}
-
-// -------------------------------------------------------------- spine_fit
-
-/// A tall strip: 20 wide, 100 tall, hanging from y = 60 down to y = -40, with
-/// a mesh origin that is deliberately not the vertex origin so the placement
-/// arithmetic has something to correct for.
 const STRIP: [[f32; 2]; 8] = [
     [-10.0, 60.0],
     [10.0, 60.0],
@@ -665,7 +455,6 @@ fn a_fit_leaves_the_parts_world_placement_alone() {
             axis: None,
             node: None,
             name: None,
-            chain: None,
         },
     ) {
         ResponseBody::SpineFit { node, .. } => node,
@@ -695,7 +484,7 @@ fn a_fit_authors_a_spine_its_params_and_no_bindings() {
     let part = node("root/hair");
     strip_part(&ed, session, &part, [0.0; 3], 0.0, [1.0, 1.0]);
 
-    let (made, params, warnings) = match body(
+    let (made, params) = match body(
         &ed,
         30,
         Command::SpineFit {
@@ -705,22 +494,13 @@ fn a_fit_authors_a_spine_its_params_and_no_bindings() {
             axis: None,
             node: Some(node("root/tail")),
             name: Some("Ponytail".into()),
-            chain: Some(ChainArg::default()),
         },
     ) {
-        ResponseBody::SpineFit {
-            node,
-            params,
-            warnings,
-        } => (node, params, warnings),
+        ResponseBody::SpineFit { node, params } => (node, params),
         other => panic!("{other:?}"),
     };
     assert_eq!(made, node("root/tail"), "a fit may name the Id it makes");
     assert_eq!(params.len(), 3);
-    assert!(
-        warnings.is_empty(),
-        "a strand drawn along gravity rests as drawn: {warnings:?}"
-    );
 
     let read = info(&ed, session, &made);
     assert_eq!(read.kind, NodeKind::Spine);
@@ -731,8 +511,6 @@ fn a_fit_authors_a_spine_its_params_and_no_bindings() {
         spine.targets,
         params.iter().cloned().map(Some).collect::<Vec<_>>()
     );
-    let chain = spine.chain.expect("the fit hung a chain");
-    assert_eq!(chain.links.expect("links").len(), 3);
 
     // No binding was authored on the part: a spine composes its joints.
     match body(
@@ -749,16 +527,15 @@ fn a_fit_authors_a_spine_its_params_and_no_bindings() {
 }
 
 /// A re-fit reuses the spine the part already hangs from rather than nesting a
-/// second one, keeps its params, and keeps every knob the rigger tuned on its
-/// chain.
+/// second one. Surviving links keep their bend params.
 #[test]
-fn a_refit_reuses_the_spine_and_keeps_the_chains_knobs() {
+fn a_refit_reuses_the_spine_and_its_params() {
     let ed = Editor::new();
     let session = session(&ed);
     let part = node("root/hair");
     strip_part(&ed, session, &part, [0.0; 3], 0.0, [1.0, 1.0]);
 
-    let fit = |id: u64, links: u32, chain: Option<ChainArg>| match body(
+    let fit = |id: u64, links: u32| match body(
         &ed,
         id,
         Command::SpineFit {
@@ -768,337 +545,14 @@ fn a_refit_reuses_the_spine_and_keeps_the_chains_knobs() {
             axis: None,
             node: None,
             name: None,
-            chain,
         },
     ) {
         ResponseBody::SpineFit { node, params, .. } => (node, params),
         other => panic!("{other:?}"),
     };
 
-    let (first, first_params) = fit(
-        30,
-        3,
-        Some(ChainArg {
-            gravity: Some(4.5),
-            weight: Some(0.25),
-            links: Some(vec![LinkFeelArg {
-                stiffness: Some(3.0),
-                limit: Some(Some(0.25)),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        }),
-    );
-    let (again, again_params) = fit(31, 3, None);
+    let (first, first_params) = fit(30, 3);
+    let (again, again_params) = fit(31, 3);
     assert_eq!(again, first, "a re-fit does not nest a second spine");
     assert_eq!(again_params, first_params, "and it keeps the params");
-
-    let chain = info(&ed, session, &first)
-        .spine
-        .expect("a spine")
-        .chain
-        .expect("a chain");
-    assert_eq!(chain.gravity, Some(4.5), "the knobs survive a re-fit");
-    assert_eq!(chain.weight, Some(0.25));
-    let links = chain.links.expect("links");
-    assert_eq!(links.len(), 3);
-    // The one feel the caller named was repeated onto the joints it did not.
-    assert!(links.iter().all(|l| l.stiffness == Some(3.0)));
-    assert!(
-        links.iter().all(|l| l.limit == Some(Some(0.25))),
-        "a bend limit reads back with the rest of the feel: {links:?}",
-    );
-}
-
-#[test]
-fn new_chain_limits_default_but_explicit_choices_survive_an_edit() {
-    use serde_json::json;
-
-    for (wire, expected) in [
-        (json!({}), None),
-        (json!({"links": [{"stiffness": 2.0}]}), None),
-        (json!({"links": [{"limit": null}]}), None),
-        (json!({"links": [{"limit": 0.25}]}), Some(0.25)),
-    ] {
-        let ed = Editor::new();
-        let session = session(&ed);
-        let part = node("root/hair");
-        strip_part(&ed, session, &part, [0.0; 3], 0.0, [1.0, 1.0]);
-        let ResponseBody::SpineFit { node: made, .. } = body(
-            &ed,
-            30,
-            Command::SpineFit {
-                session,
-                part,
-                links: 2,
-                axis: None,
-                node: None,
-                name: None,
-                chain: Some(serde_json::from_value(wire.clone()).unwrap()),
-            },
-        ) else {
-            panic!("a chain can be fitted");
-        };
-        let chain = info(&ed, session, &made).spine.unwrap().chain.unwrap();
-        assert!(
-            chain
-                .links
-                .as_ref()
-                .unwrap()
-                .iter()
-                .all(|l| l.limit == Some(expected)),
-            "wrong limit for {wire}: {chain:?}"
-        );
-
-        // Read, change stiffness, send back: null must stay explicit so an
-        // unlimited chain never acquires the default during an unrelated edit.
-        let mut read: ChainArg =
-            serde_json::from_value(serde_json::to_value(&chain).unwrap()).unwrap();
-        for feel in read.links.as_mut().unwrap() {
-            feel.stiffness = Some(0.8);
-        }
-        body(
-            &ed,
-            31,
-            Command::SpineSet {
-                session,
-                node: made.clone(),
-                joints: None,
-                targets: None,
-                chain: Some(Some(read)),
-            },
-        );
-        let read = info(&ed, session, &made).spine.unwrap().chain.unwrap();
-        assert!(
-            read.links
-                .unwrap()
-                .iter()
-                .all(|l| l.limit == Some(expected) && l.stiffness == Some(0.8)),
-            "editing stiffness changed the limit for {wire}"
-        );
-    }
-}
-
-/// A limit is a bend in half turns, so zero would be a joint that cannot
-/// move and anything past one is more than a whole turn. The editor refuses
-/// both at the door rather than authoring a model the file would refuse on
-/// its next load.
-#[test]
-fn a_limit_outside_its_range_is_refused() {
-    let ed = Editor::new();
-    let session = session(&ed);
-    let part = node("root/hair");
-    strip_part(&ed, session, &part, [0.0; 3], 0.0, [1.0, 1.0]);
-
-    let fit = |id: u64, limit: f32| Command::SpineFit {
-        session,
-        part: part.clone(),
-        links: 2,
-        axis: None,
-        node: Some(node(&format!("root/s{id}"))),
-        name: None,
-        chain: Some(ChainArg {
-            links: Some(vec![LinkFeelArg {
-                limit: Some(Some(limit)),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        }),
-    };
-
-    for (i, bad) in [0.0f32, 1.5, f32::NAN, -0.25].into_iter().enumerate() {
-        let id = 80 + i as u64;
-        assert_eq!(
-            code(&ed, id, fit(id, bad)),
-            ErrorCode::BadTarget,
-            "a limit of {bad} is refused",
-        );
-    }
-
-    // The widest limit that means anything is fine, and so is a tiny one.
-    for (i, ok) in [1.0f32, 0.001].into_iter().enumerate() {
-        let id = 90 + i as u64;
-        let ResponseBody::SpineFit { node: made, .. } = body(&ed, id, fit(id, ok)) else {
-            panic!("a limit of {ok} was refused");
-        };
-        let chain = info(&ed, session, &made)
-            .spine
-            .expect("a spine")
-            .chain
-            .expect("a chain");
-        assert!(chain
-            .links
-            .expect("links")
-            .iter()
-            .all(|l| l.limit == Some(Some(ok))));
-    }
-}
-
-/// A limp weighted link drawn off gravity cannot settle where it is drawn, and
-/// the fit says so rather than letting the strand fall out of its pose.
-#[test]
-fn a_fit_warns_about_a_link_that_cannot_rest_as_drawn() {
-    let ed = Editor::new();
-    let session = session(&ed);
-    let part = node("root/hair");
-    // The art hangs along the node's own -Y, but the node is turned a quarter
-    // turn, so in the world the strand lies sideways.
-    strip_part(
-        &ed,
-        session,
-        &part,
-        [0.0; 3],
-        std::f32::consts::FRAC_PI_2,
-        [1.0, 1.0],
-    );
-
-    let warnings = match body(
-        &ed,
-        30,
-        Command::SpineFit {
-            session,
-            part,
-            links: 2,
-            axis: None,
-            node: None,
-            name: None,
-            chain: Some(ChainArg::default()),
-        },
-    ) {
-        ResponseBody::SpineFit { warnings, .. } => warnings,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(warnings.len(), 2, "both links are limp and sideways");
-    assert!(
-        warnings[0].contains("link 1") && warnings[0].contains("cannot rest as drawn"),
-        "{warnings:?}"
-    );
-}
-
-#[test]
-fn a_fit_warns_when_weak_springs_cannot_hold_an_upward_drawing() {
-    let ed = Editor::new();
-    let session = session(&ed);
-    let part = node("root/hair");
-    strip_part(
-        &ed,
-        session,
-        &part,
-        [0.0; 3],
-        std::f32::consts::PI,
-        [1.0, 1.0],
-    );
-    let ResponseBody::SpineFit { warnings, .. } = body(
-        &ed,
-        30,
-        Command::SpineFit {
-            session,
-            part,
-            links: 2,
-            axis: None,
-            node: None,
-            name: None,
-            chain: Some(ChainArg {
-                links: Some(vec![LinkFeelArg {
-                    stiffness: Some(0.1),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }),
-        },
-    ) else {
-        panic!("expected a fitted spine");
-    };
-    assert_eq!(warnings.len(), 2, "{warnings:?}");
-    assert!(warnings.iter().all(|w| w.contains("cannot rest as drawn")));
-}
-
-/// The chain is a tri-state on a set: absent leaves it, a value replaces it,
-/// `null` takes it off.
-#[test]
-fn a_set_can_leave_replace_or_remove_the_chain() {
-    let ed = Editor::new();
-    let session = session(&ed);
-    let made = match add(&ed, session, vec![[0.0, -40.0], [0.0, -80.0]], None, None) {
-        Reply::Ok {
-            body: ResponseBody::Node { node, .. },
-            ..
-        } => node,
-        other => panic!("{other:?}"),
-    };
-    let chain_of = || info(&ed, session, &made).spine.expect("a spine").chain;
-    assert!(chain_of().is_none(), "an add without one carries none");
-
-    let set = |id: u64, chain: Option<Option<ChainArg>>| {
-        body(
-            &ed,
-            id,
-            Command::SpineSet {
-                session,
-                node: made.clone(),
-                joints: None,
-                targets: None,
-                chain,
-            },
-        );
-    };
-
-    set(
-        40,
-        Some(Some(ChainArg {
-            gravity: Some(2.0),
-            ..Default::default()
-        })),
-    );
-    assert_eq!(chain_of().expect("a chain").gravity, Some(2.0));
-
-    set(41, None);
-    assert_eq!(
-        chain_of().expect("a chain").gravity,
-        Some(2.0),
-        "absent leaves it alone"
-    );
-
-    set(42, Some(None));
-    assert!(chain_of().is_none(), "null takes it off");
-}
-
-#[test]
-fn model_physics_rate_is_reported_validated_and_undoable() {
-    let ed = Editor::new();
-    let session = session(&ed);
-    let steps = || match body(&ed, 1, Command::Status { session }) {
-        ResponseBody::Status { status } => status.physics_rate.unwrap(),
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(steps(), 120.0);
-    let edit = |rate| Command::PhysicsGlobals {
-        session,
-        gravity: None,
-        pixels_per_meter: None,
-        physics_rate: Some(rate),
-    };
-    body(&ed, 2, edit(240.0));
-    assert_eq!(steps(), 240.0);
-    assert!(matches!(reply(&ed, 3, edit(0.0)), Reply::Err { .. }));
-    assert!(matches!(reply(&ed, 3, edit(f32::NAN)), Reply::Err { .. }));
-    assert_eq!(steps(), 240.0);
-    body(
-        &ed,
-        4,
-        Command::Undo {
-            session,
-            if_rev: ed.revision(session).unwrap(),
-        },
-    );
-    assert_eq!(steps(), 120.0);
-    body(
-        &ed,
-        5,
-        Command::Redo {
-            session,
-            if_rev: ed.revision(session).unwrap(),
-        },
-    );
-    assert_eq!(steps(), 240.0);
 }

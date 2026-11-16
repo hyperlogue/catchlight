@@ -226,8 +226,8 @@ fn swapping_the_model_rebases_the_puppet_and_keeps_the_pose() {
 
 #[test]
 fn a_pose_set_before_the_model_loads_lands_on_the_bake() {
-    let model = fixture("welded_seam");
-    let param = deform_param(&model);
+    let model = fixture("strand_response");
+    let param = ParamId::new("param-3").unwrap();
     let posed = model.param(&param).unwrap().max;
 
     let mut app = headless_app();
@@ -261,7 +261,13 @@ fn a_pose_set_before_the_model_loads_lands_on_the_bake() {
         .set_model(loaded);
     app.update();
 
-    assert_eq!(puppet(&app, entity).param_value(&param), Some(posed));
+    let puppet = puppet(&app, entity);
+    assert_eq!(puppet.param_value(&param), Some(posed));
+    let root = puppet
+        .response_trace(&catchlight_core::NodeId::new("node-4").unwrap())
+        .unwrap();
+    assert!((root.target - 0.24).abs() < 1e-6);
+    assert_eq!(root.lag, 0.0);
 }
 
 #[test]

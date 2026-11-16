@@ -4,8 +4,7 @@
 //! The inx node *tree* is flattened DFS pre-order, so the structure is
 //! topologically ordered (a parent is written before its children) with the
 //! root first and sibling order preserved. inochi's globally-unique `uuid`s
-//! resolve against that flattening — `binding.node` / `mask.source` to a node,
-//! `SimplePhysics.param` to a param — and are then dropped. References that do
+//! resolve binding and mask references against that flattening. References that do
 //! not resolve are dropped; duplicate uuids collapse to the first occurrence,
 //! so a reference always names the node that claimed the uuid first.
 //!
@@ -19,7 +18,7 @@
 //!
 //! **A source 2-D param becomes two scalar params**, `<name>.x` and
 //! `<name>.y`, adjacent in param order, and every binding under it becomes a
-//! two-param binding over the pair. A pendulum aimed at one is aimed at both.
+//! two-param binding over the pair.
 //!
 //! **A deform binding has to have vertices to move**, so `convert_binding`
 //! drops one whose node carries no mesh: it moves nothing in the source
@@ -51,11 +50,10 @@ use std::collections::{HashMap, HashSet};
 
 use catchlight_core::formats::clm::{
     ClmAnimation, ClmBinding, ClmComposite, ClmFile, ClmKeyframe, ClmLane, ClmMask, ClmMesh,
-    ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmPhysics, ClmSimplePhysics,
-    ClmStructure, ClmTexture, TextureAlpha, TextureEncoding,
+    ClmMeshGroup, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmStructure, ClmTexture, TextureAlpha,
+    TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 use catchlight_core::texture::TextureFormat;
 use catchlight_core::{Model, NodeId, ParamId, TexId};
 
@@ -67,7 +65,7 @@ use crate::reflect::{
 };
 use crate::schema::{
     source_binding_is_color, SchemaAnimation, SchemaAnimationLane, SchemaBinding, SchemaMask,
-    SchemaNode, SchemaParam, SchemaPuppetPhysics,
+    SchemaNode, SchemaParam,
 };
 
 /// Import a parsed `.inx` into a [`Model`].
@@ -91,16 +89,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
         .payload
         .as_object()
         .ok_or_else(|| ImportError::MalformedPayload("inx payload root is not an object".into()))?;
-
-    let physics = obj
-        .get("physics")
-        .and_then(|v| serde_json::from_value::<SchemaPuppetPhysics>(v.clone()).ok())
-        .map(|p| ClmPhysics {
-            pixels_per_meter: p.pixels_per_meter.unwrap_or(1000.0),
-            gravity: p.gravity.unwrap_or(9.8),
-            ..ClmPhysics::default()
-        })
-        .unwrap_or_default();
 
     // Flatten the node tree, recording each node's parent position and a
     // uuid → position map for resolving cross-references.
@@ -225,7 +213,6 @@ pub fn from_inx_model(model: &InxModel) -> Result<ClmFile, ImportError> {
 
     Ok(ClmFile {
         doc: ClmStructure {
-            physics,
             nodes,
             params,
             bindings,
@@ -272,14 +259,6 @@ impl Slot {
     fn head(&self) -> &ParamId {
         match self {
             Slot::One(id) | Slot::Pair(id, _) => id,
-        }
-    }
-
-    /// The two params a pendulum aimed at this slot writes.
-    fn targets(&self) -> [Option<ParamId>; 2] {
-        match self {
-            Slot::One(id) => [Some(id.clone()), None],
-            Slot::Pair(x, y) => [Some(x.clone()), Some(y.clone())],
         }
     }
 }
@@ -449,7 +428,6 @@ fn convert_node_kind(
         "Part" => ClmNodeKind::Part(convert_part(s, node, refs)?),
         "Composite" => ClmNodeKind::Composite(convert_composite(s, node, refs)?),
         "MeshGroup" => ClmNodeKind::MeshGroup(convert_mesh_group(s, node)?),
-        "SimplePhysics" => ClmNodeKind::SimplePhysics(convert_simple_physics(s, refs)),
         // Node, Camera, and any unmodeled type all become a container Group.
         _ => ClmNodeKind::Group,
     })
@@ -464,7 +442,7 @@ fn convert_masks(masks: &[SchemaMask], node: NodeRef<'_>, refs: &Refs<'_>) -> Ve
             let source = m.source?;
             // A source catchlight never draws goes for the same reason: a mask
             // is the source's own drawing rasterized into a stencil, and a mesh
-            // group, a plain node and a pendulum each draw nothing, here and in
+            // group and a plain node each draw nothing, here and in
             // the source runtime alike. `Model::mask_add` and the `.clm` reader
             // both take only a part or a composite.
             if !refs.draws(source) {
@@ -575,36 +553,6 @@ fn convert_mesh_group(s: &SchemaNode, node: NodeRef<'_>) -> Result<ClmMeshGroup,
     })
 }
 
-fn convert_simple_physics(s: &SchemaNode, refs: &Refs<'_>) -> ClmSimplePhysics {
-    ClmSimplePhysics {
-        // Inochi2D pendulums only ever swing on the screen.
-        plane: PendulumPlane::Screen,
-        kind: s
-            .model_type
-            .as_deref()
-            .and_then(PendulumKind::from_str)
-            .unwrap_or_default(),
-        map_mode: s
-            .map_mode
-            .as_deref()
-            .and_then(PhysicsParamMapMode::from_str)
-            .unwrap_or_default(),
-        local_only: s.local_only.unwrap_or(false),
-        target_params: s
-            .param
-            .and_then(|uuid| refs.slot_of_uuid(uuid))
-            .map(Slot::targets)
-            .unwrap_or_default(),
-        // Authored, unscaled — the global g-scale fold is a build step.
-        gravity: s.gravity.unwrap_or(1.0),
-        length: s.length.unwrap_or(100.0),
-        frequency: s.frequency.unwrap_or(1.0),
-        angle_damping: s.angle_damping.unwrap_or(0.5),
-        length_damping: s.length_damping.unwrap_or(0.5),
-        output_scale: vec2_arr(&s.output_scale, [1.0, 1.0]),
-    }
-}
-
 fn convert_binding(
     b: &SchemaBinding,
     slot: &Slot,
@@ -641,7 +589,7 @@ fn convert_binding(
     let deform_len = target
         .and_then(|n| mesh_of(&n.kind))
         .map_or(0, |m| m.verts.len());
-    // A node with no vertices — a group, a composite, a pendulum, a part whose
+    // A node with no vertices — a group, a composite, a part whose
     // mesh is empty — has nothing for a deform to move, so the binding drives
     // no pixel and dropping it draws the same frame. Keeping it would write a
     // `.clm` the loader refuses (`add_binding`'s `NotMeshed`).
@@ -1072,13 +1020,6 @@ mod tests {
                 }
                 ClmNodeKind::Composite(c) => {
                     assert!(c.masks.iter().all(|m| written.contains(&m.source)))
-                }
-                ClmNodeKind::SimplePhysics(sp) => {
-                    assert!(sp
-                        .target_params
-                        .iter()
-                        .flatten()
-                        .all(|t| params.contains(t)));
                 }
                 _ => {}
             }

@@ -27,7 +27,7 @@
 //! ([`Model::from_clm_bytes`](crate::Model::from_clm_bytes)) enforce:
 //!
 //! - **Everything is keyed by Id.** A node's `parent`, a mask's `source`, a
-//!   binding's `node` and `params`, a physics node's `target_params`, a part's
+//!   binding's `node` and `params`, a response's input and output references, a part's
 //!   `albedo`, a weld's ends: all Ids, never positions. Nodes are still
 //!   written in topological order — a node's parent appears before it, and
 //!   exactly one node has none — so a streaming reader can build the tree in
@@ -39,8 +39,7 @@
 //!   are kept sorted by `(y, x)`. Save→save is a no-op, which is what the
 //!   editor's dirty check rests on.
 //! - **Params are scalar.** A binding names one or two of them and its grid is
-//!   product of its own key-position axes; a physics node writes two scalar
-//!   params. Bindings carry their axes even when referencing base params.
+//!   the product of its own key-position axes. Bindings carry their axes even when referencing base params.
 //! - **No vertex index outside a slot.** A part carries named slots, each
 //!   filled by one of its vertices; a weld names two parts and pairs their
 //!   slots. A slot may also be *unfilled* (`vertex: null`) — what re-authoring
@@ -78,7 +77,7 @@
 //!   rather than at the next open.
 //!
 //! This module also holds the leaf value types that are the same in memory and
-//! on the wire — meshes, transforms, authored physics, binding cells — so a
+//! on the wire — meshes, transforms, motion responses, binding cells — so a
 //! Model stores exactly what the file stores and neither side owns a
 //! translation of the other.
 //!
@@ -86,17 +85,8 @@
 //! returns as `#[serde(default)]` and old/new readers interoperate. **Never**
 //! add `deny_unknown_fields`; a breaking change bumps [`FORMAT_VERSION`].
 //!
-//! **A new node kind is additive and does not bump the version.** The kind
-//! enums are externally tagged, so a variant this build has never heard of is
-//! not an unknown *field* to skip — it is an unknown variant, and CBOR
-//! decoding of the whole file fails on it. An older reader therefore refuses a
-//! file carrying a newer kind outright; what it never does is misread that
-//! node as some kind it does know, or load the model with the node silently
-//! dropped. Refusing to open beats opening wrong, so the version stays where
-//! it is and the failure stays honest. **The same rule runs backwards**: a
-//! file carrying the retired `ParticleChain` kind is refused outright by this
-//! reader, which is the honest answer now that a chain is something a
-//! [`ClmSpine`] carries rather than a node of its own.
+//! The version is checked before reading a full file or a structure feed.
+//! Externally tagged node kinds also cause an unknown variant to fail decoding.
 
 use std::collections::BTreeMap;
 
@@ -107,7 +97,6 @@ use super::container::{self, ContainerError, Section};
 use crate::components::{BlendMode, MaskMode};
 use crate::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
-use crate::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 
 /// Alpha convention of a texture's stored bytes. The compile/preview step
 /// normalizes either representation to premultiplied linear color.
@@ -121,48 +110,6 @@ pub enum TextureAlpha {
 pub enum TextureEncoding {
     Png,
     Tga,
-}
-
-/// Authored global physics; the build folds `pixels_per_meter * gravity` into
-/// each pendulum and hair chain's gravity. The hair step rate applies
-/// model-wide.
-///
-/// Files from before `physics_rate` carry `chain_substeps` instead; it is
-/// ignored, and they read at the default rate.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ClmPhysics {
-    pub pixels_per_meter: f32,
-    pub gravity: f32,
-    /// Fixed hair-strand step rate in Hz, finite and within
-    /// [`PHYSICS_RATE_RANGE`]. A link stiffer than about `rate / 2 pi` Hz
-    /// follows rigidly.
-    #[serde(
-        default = "default_physics_rate",
-        skip_serializing_if = "is_default_rate"
-    )]
-    pub physics_rate: f32,
-}
-
-/// The step rates a file may carry, in Hz.
-pub const PHYSICS_RATE_RANGE: std::ops::RangeInclusive<f32> = 30.0..=1000.0;
-
-fn default_physics_rate() -> f32 {
-    crate::physics::DEFAULT_PHYSICS_RATE
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_default_rate(value: &f32) -> bool {
-    *value == crate::physics::DEFAULT_PHYSICS_RATE
-}
-
-impl Default for ClmPhysics {
-    fn default() -> Self {
-        Self {
-            pixels_per_meter: 1000.0,
-            gravity: 9.8,
-            physics_rate: default_physics_rate(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -253,8 +200,6 @@ pub enum ClmBindingValues {
     ScreenTintR(ClmCells<f32>),
     ScreenTintG(ClmCells<f32>),
     ScreenTintB(ClmCells<f32>),
-    OutputScaleX(ClmCells<f32>),
-    OutputScaleY(ClmCells<f32>),
 }
 
 /// Sparse authored cells over the binding's key grid. Kept sorted by `(y, x)`
@@ -327,10 +272,7 @@ pub struct ClmKeyframe {
 // ---- the file ------------------------------------------------------------
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
-/// Writers emit version 3. Readers also accept version 2, copying each driving
-/// param's positions into its bindings without changing asset bytes. Version-2
-/// fragments that omit those params are rejected.
-pub const FORMAT_VERSION: u16 = 3;
+pub const FORMAT_VERSION: u16 = 4;
 
 const SECTION_STRUCTURE: u32 = 0;
 const SECTION_TEXTURES: u32 = 1;
@@ -374,8 +316,6 @@ pub enum ClmError {
     MissingSection(&'static str),
     #[error("unsupported .clm format_version {0}")]
     UnsupportedVersion(u16),
-    #[error("v2 binding on node {node:?} references param {param:?} without its key positions; re-export with the original base param grids as v3 binding axes")]
-    LegacyBindingAxisMissing { node: String, param: String },
     #[error(
         "these bytes carry a texture manifest, so they are a structure-only container rather \
          than a complete .clm; read them with decode_structure"
@@ -437,8 +377,6 @@ impl From<&ClmTexture> for ClmTextureRef {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClmStructure {
-    #[serde(default)]
-    pub physics: ClmPhysics,
     /// Every node, in topological order: a node's `parent` names one that
     /// appeared before it, and exactly one node has no parent. Order is a
     /// reading and streaming convenience — nothing addresses a node by
@@ -550,7 +488,6 @@ pub enum ClmNodeKind {
     Composite(ClmComposite),
     MeshGroup(ClmMeshGroup),
     MotionResponse(crate::MotionResponse),
-    SimplePhysics(ClmSimplePhysics),
     Spine(ClmSpine),
 }
 
@@ -605,189 +542,6 @@ pub struct ClmMeshGroup {
     pub translate_children: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClmSimplePhysics {
-    pub kind: PendulumKind,
-    pub map_mode: PhysicsParamMapMode,
-    /// Added after the format shipped, so it defaults: a pendulum without the
-    /// key swings on the screen, as every earlier file's does, and one on the
-    /// screen writes no key.
-    #[serde(default, skip_serializing_if = "is_screen")]
-    pub plane: PendulumPlane,
-    pub local_only: bool,
-    /// The two params the pendulum's swing is written into, in the order the
-    /// map mode produces them. Either may be unset.
-    #[serde(default)]
-    pub target_params: [Option<ParamId>; 2],
-    /// Authored, unscaled — the global g-scale fold is a build step.
-    pub gravity: f32,
-    pub length: f32,
-    pub frequency: f32,
-    pub angle_damping: f32,
-    pub length_damping: f32,
-    pub output_scale: [f32; 2],
-}
-
-/// Whether a pendulum swings on the screen, and so needs no `plane` key.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_screen(plane: &PendulumPlane) -> bool {
-    *plane == PendulumPlane::Screen
-}
-
-/// One link's feel in a [`ClmChain`], mirroring [`crate::model::LinkFeel`]
-/// rather than reusing it: the file's shape is the file's to keep stable,
-/// exactly as [`ClmSimplePhysics`] mirrors the driver it describes.
-///
-/// Lengths and drawn directions come from the spine's joints.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ClmLinkFeel {
-    /// Multiplier on the chain's gravity for this link's particle.
-    pub gravity_scale: f32,
-    /// How strongly the link holds its drawn turn, in Hz, finite and at or
-    /// above zero. Zero is limp.
-    ///
-    /// Files from the coupled solver stored the link's spring frequency
-    /// against its subtree's inertia; it reads unchanged as the frequency of
-    /// the link's own pull, the closest per-link meaning.
-    pub stiffness: f32,
-    /// The furthest this link's bend may reach either way, in half turns,
-    /// within `(0, 1]`. Absent is a joint with no limit on it.
-    ///
-    /// Added after the format shipped, so it is optional and elided when
-    /// there is none: a file written before there were limits is still byte
-    /// for byte what this writer would write for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<f32>,
-}
-
-/// What a chain's authority over its params is when a file does not say.
-fn full_weight() -> f32 {
-    1.0
-}
-
-/// Whether a chain decides its params outright, and so needs no `weight` key.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_full_weight(weight: &f32) -> bool {
-    *weight == 1.0
-}
-
-/// The simulation a [`ClmSpine`] may carry: a strand of particles hung at the
-/// spine's root, one per joint, whose bends are written into the spine's
-/// params.
-///
-/// The spine's joints define lengths and bend zero; gravity, spring targets
-/// and limits determine the settled pose. Particle positions are runtime
-/// state owned by a puppet and are not stored in the file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "ChainOnDisk")]
-pub struct ClmChain {
-    pub local_only: bool,
-    /// Authored, unscaled — the global g-scale fold is a build step, as it is
-    /// for [`ClmSimplePhysics::gravity`].
-    pub gravity: f32,
-    /// How much the chain's own solve decides the params it writes, against
-    /// what the caller posed. Finite and at or above zero.
-    #[serde(default = "full_weight", skip_serializing_if = "is_full_weight")]
-    pub weight: f32,
-    /// Per-second damping of motion relative to the root's own motion,
-    /// finite and at or above zero: it sets bounce and settle time without
-    /// making the strand trail a moving head.
-    ///
-    /// Absent in files from before chain damping, which damped each link
-    /// instead with a retired `damping` in `0..=1`; the reader migrates those
-    /// into this key on read and never keeps the link keys.
-    pub damping: f32,
-    /// Per-second drag on each particle's absolute velocity, in world space:
-    /// a moving root leaves the strand trailing. Finite and at or above zero.
-    ///
-    /// Added after the format shipped, so it defaults: a chain without the
-    /// key feels no air, which is what every earlier file describes, and a
-    /// chain at zero writes no key.
-    #[serde(default, skip_serializing_if = "is_still")]
-    pub air_drag: f32,
-    /// Material settings for each joint of the spine, in link order.
-    pub links: Vec<ClmLinkFeel>,
-}
-
-/// A [`ClmChain`] as any file may spell it, including one written before
-/// chains carried damping.
-///
-/// Such a chain damped each link with a `damping` in `0..=1`; it reads as the
-/// mean over links of the per-second rate `-ln(1 - d)` each stood for, every
-/// term capped at 10/s, and a chain with no damping anywhere reads as
-/// [`crate::physics::DEFAULT_CHAIN_DAMPING`]. A chain key, once present,
-/// wins over any link keys left beside it. Either way the link keys are
-/// dropped, so the next write carries only the chain key.
-#[derive(Deserialize)]
-struct ChainOnDisk {
-    local_only: bool,
-    gravity: f32,
-    #[serde(default = "full_weight")]
-    weight: f32,
-    #[serde(default)]
-    damping: Option<f32>,
-    #[serde(default)]
-    air_drag: f32,
-    links: Vec<LinkOnDisk>,
-}
-
-#[derive(Deserialize)]
-struct LinkOnDisk {
-    gravity_scale: f32,
-    #[serde(default)]
-    damping: Option<f32>,
-    stiffness: f32,
-    #[serde(default)]
-    limit: Option<f32>,
-}
-
-impl TryFrom<ChainOnDisk> for ClmChain {
-    type Error = String;
-
-    fn try_from(c: ChainOnDisk) -> Result<Self, String> {
-        let mut rates = Vec::new();
-        for (i, link) in c.links.iter().enumerate() {
-            if let Some(d) = link.damping {
-                if !(0.0..=1.0).contains(&d) {
-                    return Err(format!(
-                        "chain link {i} carries a retired damping {d} outside 0..=1"
-                    ));
-                }
-                rates.push((-(1.0 - d).ln()).min(10.0));
-            }
-        }
-        let damping = c.damping.unwrap_or_else(|| {
-            if rates.is_empty() {
-                crate::physics::DEFAULT_CHAIN_DAMPING
-            } else {
-                rates.iter().sum::<f32>() / rates.len() as f32
-            }
-        });
-        Ok(Self {
-            local_only: c.local_only,
-            gravity: c.gravity,
-            weight: c.weight,
-            damping,
-            air_drag: c.air_drag,
-            links: c
-                .links
-                .into_iter()
-                .map(|l| ClmLinkFeel {
-                    gravity_scale: l.gravity_scale,
-                    stiffness: l.stiffness,
-                    limit: l.limit,
-                })
-                .collect(),
-        })
-    }
-}
-
-/// Whether a chain feels no air, and so needs no `air_drag` key.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_still(air_drag: &f32) -> bool {
-    *air_drag == 0.0
-}
-
 /// A chain of joints drawn on the art, turning the geometry beneath the node.
 ///
 /// Only the authored half: the per-vertex assignment the runtime derives from
@@ -805,14 +559,6 @@ pub struct ClmSpine {
     /// the length of `joints`, which is the one length it may ever have.
     #[serde(default)]
     pub targets: Vec<Option<ParamId>>,
-    /// The particle chain the spine carries, or absent for a spine that only
-    /// reads its params.
-    ///
-    /// Added after the spine shipped, so it is skipped when absent: a spine
-    /// nothing simulates writes no key, and a file that predates the chain is
-    /// still byte for byte what this writer would write for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chain: Option<ClmChain>,
 }
 
 /// A drawable's clipping rule: whose shape clips it, and whether what that
@@ -1018,7 +764,7 @@ pub fn decode_structure_with_budget(
         crate::load_budget::LoadResource::EncodedBytes,
         bytes.len() as u64,
     )?;
-    let file = container::read(bytes, &MAGIC)?;
+    let file = read_container(bytes)?;
     if file.section(SECTION_TEXTURES).is_some() {
         return Err(ClmError::NotAStructure);
     }
@@ -1030,7 +776,7 @@ pub fn decode_structure_with_budget(
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = decode_section(file.version, structure, budget)?;
+    let doc = cbor_from_slice(structure)?;
     let manifest = file
         .section(SECTION_TEXTURE_MANIFEST)
         .ok_or(ClmError::MissingSection("TextureManifest"))?;
@@ -1047,10 +793,7 @@ pub fn decode_structure_with_budget(
 /// it lacks before it applies the structure. Each entry carries the encoding
 /// and alpha convention the fetched bytes are read with.
 pub fn structure_texture_ids(bytes: &[u8]) -> Result<Vec<ClmTextureRef>, ClmError> {
-    let file = container::read(bytes, &MAGIC)?;
-    if !matches!(file.version, 2 | FORMAT_VERSION) {
-        return Err(ClmError::UnsupportedVersion(file.version));
-    }
+    let file = read_container(bytes)?;
     let manifest = file
         .section(SECTION_TEXTURE_MANIFEST)
         .ok_or(ClmError::MissingSection("TextureManifest"))?;
@@ -1065,14 +808,14 @@ pub fn decode_with_budget(
         crate::load_budget::LoadResource::EncodedBytes,
         bytes.len() as u64,
     )?;
-    let file = container::read(bytes, &MAGIC)?;
+    let file = read_container(bytes)?;
     if file.section(SECTION_TEXTURE_MANIFEST).is_some() {
         return Err(ClmError::StructureOnly);
     }
     let structure = file
         .section(SECTION_STRUCTURE)
         .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = decode_section(file.version, structure, budget)?;
+    let doc = cbor_from_slice(structure)?;
     let textures = match file.section(SECTION_TEXTURES) {
         Some(b) => cbor_from_slice(b)?,
         None => Vec::new(),
@@ -1089,135 +832,12 @@ pub fn decode_with_budget(
     })
 }
 
-fn decode_section(
-    version: u16,
-    bytes: &[u8],
-    budget: &crate::load_budget::LoadBudget,
-) -> Result<ClmStructure, ClmError> {
-    match version {
-        FORMAT_VERSION => cbor_from_slice(bytes),
-        2 => migrate_v2(cbor_from_slice(bytes)?, budget),
-        other => Err(ClmError::UnsupportedVersion(other)),
+fn read_container(bytes: &[u8]) -> Result<container::Container<'_>, ClmError> {
+    let file = container::read(bytes, &MAGIC)?;
+    if file.version != FORMAT_VERSION {
+        return Err(ClmError::UnsupportedVersion(file.version));
     }
-}
-
-// Version 2 stores positions on params. Keep its decoding shape private so
-// newly authored structure JSON and v3 containers cannot silently omit axes.
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct LegacyStructure {
-    physics: ClmPhysics,
-    nodes: Vec<ClmNode>,
-    params: Vec<LegacyParam>,
-    bindings: Vec<LegacyBinding>,
-    welds: Vec<ClmWeld>,
-    animations: Vec<ClmAnimation>,
-    extensions: BTreeMap<ExtensionKey, ClmExtension>,
-}
-
-#[derive(Deserialize)]
-struct LegacyParam {
-    #[serde(flatten)]
-    param: ClmParam,
-    #[serde(default)]
-    key_positions: Vec<f32>,
-}
-
-#[derive(Deserialize)]
-struct LegacyBinding {
-    params: Vec<ParamId>,
-    node: NodeId,
-    interpolate_mode: InterpolateMode,
-    values: ClmBindingValues,
-}
-
-fn migrate_v2(
-    legacy: LegacyStructure,
-    budget: &crate::load_budget::LoadBudget,
-) -> Result<ClmStructure, ClmError> {
-    let axes: BTreeMap<_, _> = legacy
-        .params
-        .iter()
-        .map(|p| (&p.param.id, &p.key_positions))
-        .collect();
-    // A v2 axis can be shared by many bindings. Check its expanded footprint
-    // against the caller's remaining budget before cloning any axis. This is
-    // a preflight only: model construction charges the real budget once.
-    // With at most two nonempty axes, their total length is at most twice
-    // their grid product, so the binding-cell bound also bounds axis storage.
-    let mut preflight = budget.clone();
-    for binding in &legacy.bindings {
-        if binding.params.len() > 2 {
-            return Err(crate::load_budget::LoadLimitError {
-                resource: "binding axes",
-                limit: 2,
-                got: binding.params.len() as u64,
-            }
-            .into());
-        }
-        let axis_lengths = binding
-            .params
-            .iter()
-            .map(|param| {
-                axes.get(param)
-                    .map(|axis| axis.len().max(1) as u64)
-                    .ok_or_else(|| ClmError::LegacyBindingAxisMissing {
-                        node: binding.node.to_string(),
-                        param: param.to_string(),
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let cells = crate::load_budget::binding_grid_cells(axis_lengths.into_iter())?;
-        let authored = match &binding.values {
-            ClmBindingValues::Deform(values) => values.cells.len(),
-            other => crate::model::scalar_cells(other).map_or(0, <[_]>::len),
-        };
-        preflight.charge(crate::load_budget::LoadResource::BindingCells, cells)?;
-        preflight.charge(
-            crate::load_budget::LoadResource::BindingCells,
-            authored as u64,
-        )?;
-    }
-    let bindings = legacy
-        .bindings
-        .into_iter()
-        .map(|binding| {
-            let key_positions = binding
-                .params
-                .iter()
-                .map(|param| {
-                    let positions =
-                        axes.get(param)
-                            .ok_or_else(|| ClmError::LegacyBindingAxisMissing {
-                                node: binding.node.to_string(),
-                                param: param.to_string(),
-                            })?;
-                    // Version 2 defines an empty axis as a constant grid.
-                    Ok(if positions.is_empty() {
-                        vec![0.0]
-                    } else {
-                        (*positions).clone()
-                    })
-                })
-                .collect::<Result<_, ClmError>>()?;
-            Ok(ClmBinding {
-                params: binding.params,
-                key_positions,
-                node: binding.node,
-                interpolate_mode: binding.interpolate_mode,
-                values: binding.values,
-            })
-        })
-        .collect::<Result<Vec<_>, ClmError>>()?;
-    Ok(ClmStructure {
-        physics: legacy.physics,
-        nodes: legacy.nodes,
-        params: legacy.params.into_iter().map(|p| p.param).collect(),
-        bindings,
-        welds: legacy.welds,
-        animations: legacy.animations,
-        extensions: legacy.extensions,
-    })
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -1280,7 +900,6 @@ mod tests {
         };
         let mouth = ParamId::new("param-mouth").unwrap();
         let doc = ClmStructure {
-            physics: ClmPhysics::default(),
             extensions: Default::default(),
             nodes: vec![root, part],
             params: vec![ClmParam {
@@ -1407,15 +1026,12 @@ mod tests {
         assert_eq!(doc, ClmStructure::default());
     }
 
-    /// v0 is the pre-public arena format and v1 grouped a part's slots into
-    /// named seams; nothing reads either any more, so a file carrying one has
-    /// to be refused by version rather than misread as v3 — they share a
-    /// magic.
+    /// All containers share a magic. Check the version before decoding sections.
     #[test]
     fn an_older_or_newer_version_is_refused_not_silently_misread() {
         let (doc, textures) = sample();
         let bytes = encode(&doc, &textures, &[]).unwrap();
-        for version in [0u16, 1, 4, 0xFFFF] {
+        for version in [0u16, 1, 2, 3, 5, 0xFFFF] {
             let mut bytes = bytes.clone();
             bytes[8..10].copy_from_slice(&version.to_le_bytes());
             match decode(&bytes) {

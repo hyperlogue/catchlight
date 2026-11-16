@@ -19,7 +19,7 @@ one are ignored.
 
 **Model**:
 A complete character — its node tree, params and their bindings, textures,
-welds, physics settings, animations and extensions — as authored, plus what
+welds, animations and extensions — as authored, plus what
 is derived from them without any pose. The one form everything else comes
 from: the file stores it, the editor changes it, puppets animate it, render
 caches are built from it.
@@ -48,7 +48,7 @@ One element of a model's tree. Every node has an Id, a name, a transform, a
 z order and a kind.
 
 **Kind**:
-What a node is — group, part, composite, mesh group, simple physics, motion response or spine.
+What a node is — group, part, composite, mesh group, motion response or spine.
 Fixed when the node is created.
 
 **Group**:
@@ -70,24 +70,14 @@ own deforms, so a child's deforms compose with the group's. A mesh group is
 never drawn.
 _Avoid_: deformer, warp, dynamic mesh group (every mesh group is)
 
-**Simple physics**:
-A driver node holding a pendulum hung at its own position; the pendulum's
-swing is written into params.
-
 **Motion response**:
 A driver node whose scalar spring follows a weighted combination of posed
 params, projected part slots and its immediate parent response. A child reads
 the parent's unclipped followed value. The lag (followed value minus target)
 drives an optional art param and returns to zero at a held pose.
 
-**Particle chain**:
-The simulation a spine may carry: a strand of particles hung at the spine's
-root, one per joint, whose bends are written into the spine's params.
-_Avoid_: chain (alone), hair physics, spring bone
-
 **Link**:
-One fixed-length segment of a spine between two joints, with its own feel when
-the spine carries a particle chain.
+One fixed-length segment of a spine between two joints.
 _Avoid_: segment, bone
 
 **Spine**:
@@ -125,7 +115,7 @@ ignoring every ancestor's transform.
 
 **Translate children**:
 A mesh group setting, on unless turned off: descendants without a mesh
-(groups, simple physics nodes) are moved as whole nodes by the group's
+(groups and motion responses) are moved as whole nodes by the group's
 deform. Turned off, they stay where they are.
 
 **Propagate mesh group**:
@@ -225,8 +215,7 @@ Computed from authored values by a rule; it can always be recomputed and is
 never edited directly.
 
 **Driver**:
-A writer of param values other than the pose. Simple physics is a driver that
-happens to be a node; a driver need not be one.
+A writer of param values other than the pose. A motion response is a driver.
 
 **Contribution**:
 One driver's weighted claim on a param, blended by weight with the posed

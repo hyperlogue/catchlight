@@ -1,9 +1,9 @@
-/** The authoring panels for meshes, spines and pendulums. Each reads the same
+/** The authoring panels for meshes, spines and motion responses. Each reads the same
  * protocol types it writes; opening a panel never authors defaults. */
 import type {
-  ChainArg,
-  LinkFeelArg,
   NodeInfo,
+  MotionResponseInfo,
+  MotionSource,
   Session,
 } from "@catchlight/core";
 import { useState } from "react";
@@ -14,8 +14,8 @@ import {
   Icon,
   NumberField,
 } from "./controls.js";
-import { useCommand, type ErrorHandler } from "./authoring.js";
-import { useParams } from "./replica.js";
+import { flattenTree, useCommand, type ErrorHandler } from "./authoring.js";
+import { useParams, useReplica } from "./replica.js";
 import { useEditing } from "./editing.js";
 
 export interface AuthoringPanelProps {
@@ -32,15 +32,11 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
   const [margin, setMargin] = useState(4);
   const [cols, setCols] = useState(6);
   const [rows, setRows] = useState(8);
-  const fittedSpine = info.parent ? session.nodeInfo(info.parent)?.spine : undefined;
+  const fittedSpine = info.parent
+    ? session.nodeInfo(info.parent)?.spine
+    : undefined;
   const [linkOverride, setLinks] = useState<number>();
   const links = linkOverride ?? fittedSpine?.joints.length ?? 3;
-  const [spring, setSpring] = useState(2);
-  // An omitted chain on a refit preserves the spine's existing driver and
-  // bend params. A new fit offers a particle chain by default.
-  const [chainOverride, setSimulate] = useState<boolean>();
-  const simulate = chainOverride ?? !fittedSpine;
-  const [warnings, setWarnings] = useState<string[]>([]);
   if (info.vertex_count == null) return null;
   return (
     <>
@@ -168,27 +164,6 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                 onCommit={setLinks}
               />
             </Field>
-            <Field label="Physics">
-              <label data-catchlight-toggle="">
-                <input
-                  type="checkbox"
-                  checked={simulate}
-                  onChange={(e) => setSimulate(e.currentTarget.checked)}
-                />
-                {fittedSpine?.chain ? "Replace chain settings" : "Simulate movement"}
-              </label>
-            </Field>
-            {simulate && (
-              <Field label="Stiffness">
-                <NumberField
-                  label="Fit stiffness"
-                  value={spring}
-                  min={0}
-                  unit="Hz"
-                  onCommit={setSpring}
-                />
-              </Field>
-            )}
             <button
               type="button"
               data-catchlight-action=""
@@ -199,16 +174,6 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
                   links,
                   axis: null,
                   name: `${info.name} spine`,
-                  chain: simulate
-                    ? {
-                        links: Array.from({ length: links }, () => ({
-                          stiffness: spring,
-                        })),
-                      }
-                    : null,
-                }).then((body) => {
-                  if (body?.result === "spine_fit")
-                    setWarnings(body.warnings ?? []);
                 })
               }
             >
@@ -216,11 +181,6 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
               Fit spine to artwork
             </button>
           </fieldset>
-          {warnings.map((w) => (
-            <p key={w} data-catchlight-warning="">
-              {w}
-            </p>
-          ))}
         </Disclosure>
       )}
     </>
@@ -232,23 +192,6 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
   const params = useParams(session);
   const spine = info.spine;
   if (!spine) return null;
-  const chain = spine.chain;
-  const setChain = (next: ChainArg | null) =>
-    void run({
-      cmd: "spine_set",
-      node: info.id,
-      joints: null,
-      targets: null,
-      chain: next,
-    });
-  const feel = (index: number, patch: LinkFeelArg) => {
-    if (!chain) return;
-    const links = spine.joints.map((_, i) => ({
-      ...chain.links?.[i],
-      ...(i === index ? patch : {}),
-    }));
-    setChain({ ...chain, links });
-  };
   return (
     <fieldset disabled={busy}>
       <Disclosure
@@ -315,265 +258,6 @@ export function SpinePanel({ session, info, onError }: AuthoringPanelProps) {
           </div>
         ))}
       </Disclosure>
-      <Disclosure title="Particle chain">
-        <label data-catchlight-toggle="">
-          <input
-            type="checkbox"
-            aria-label="Enable particle chain"
-            checked={!!chain}
-            onChange={(e) =>
-              setChain(
-                e.currentTarget.checked
-                  ? {
-                      links: spine.joints.map(() => ({
-                        stiffness: 2,
-                      })),
-                    }
-                  : null,
-              )
-            }
-          />
-          Simulate this spine
-        </label>
-        {!chain ? (
-          <p data-catchlight-hint="">
-            Add natural follow-through while keeping every bend editable through
-            params.
-          </p>
-        ) : (
-          <>
-            <Field label="Weight">
-              <NumberField
-                label="Physics weight"
-                value={chain.weight ?? 1}
-                min={0}
-                max={1}
-                step={0.05}
-                onCommit={(weight) => setChain({ ...chain, weight })}
-              />
-            </Field>
-            <Field label="Gravity">
-              <NumberField
-                label="Chain gravity"
-                value={chain.gravity ?? 1}
-                min={0.001}
-                unit="g"
-                onCommit={(gravity) => setChain({ ...chain, gravity })}
-              />
-            </Field>
-            <Field label="Damping">
-              <NumberField
-                label="Chain damping"
-                value={chain.damping ?? 6}
-                min={0}
-                step={0.5}
-                unit="/s"
-                onCommit={(damping) => setChain({ ...chain, damping })}
-              />
-            </Field>
-            <Field label="Air drag">
-              <NumberField
-                label="Chain air drag"
-                value={chain.air_drag ?? 0}
-                min={0}
-                step={0.5}
-                unit="/s"
-                onCommit={(air_drag) => setChain({ ...chain, air_drag })}
-              />
-            </Field>
-            <label data-catchlight-toggle="">
-              <input
-                type="checkbox"
-                checked={chain.local_only ?? false}
-                onChange={(e) =>
-                  setChain({ ...chain, local_only: e.currentTarget.checked })
-                }
-              />
-              Use local motion only
-            </label>
-            {spine.joints.map((_, i) => {
-              const link = chain.links?.[i];
-              return (
-                <Disclosure
-                  key={i}
-                  title={`Link ${i + 1}`}
-                  defaultOpen={i === 0}
-                >
-                  <Field label="Stiffness">
-                    <NumberField
-                      label={`Link ${i + 1} stiffness`}
-                      unit="Hz"
-                      value={link?.stiffness ?? 0}
-                      min={0}
-                      onCommit={(stiffness) => feel(i, { stiffness })}
-                    />
-                  </Field>
-                  <Field label="Gravity">
-                    <NumberField
-                      label={`Link ${i + 1} gravity`}
-                      value={link?.gravity_scale ?? 1}
-                      unit="×"
-                      onCommit={(gravity_scale) => feel(i, { gravity_scale })}
-                    />
-                  </Field>
-                  <label data-catchlight-toggle="">
-                    <input
-                      type="checkbox"
-                      checked={link?.limit != null}
-                      onChange={(e) => {
-                        const links = spine.joints.map((_, j) => {
-                          const next = { ...chain.links?.[j] };
-                          if (i === j) {
-                            // Omit to restore the core's default; null is unlimited.
-                            if (e.currentTarget.checked) delete next.limit;
-                            else next.limit = null;
-                          }
-                          return next;
-                        });
-                        setChain({ ...chain, links });
-                      }}
-                    />
-                    Limit bend
-                  </label>
-                  {link?.limit != null && (
-                    <Field label="Max bend">
-                      <NumberField
-                        label={`Link ${i + 1} max bend from rest`}
-                        value={link.limit * 180}
-                        min={1}
-                        max={180}
-                        unit="°"
-                        onCommit={(v) => feel(i, { limit: v / 180 })}
-                      />
-                    </Field>
-                  )}
-                </Disclosure>
-              );
-            })}
-          </>
-        )}
-      </Disclosure>
-    </fieldset>
-  );
-}
-
-export function PhysicsPanel({ session, info, onError }: AuthoringPanelProps) {
-  const { run, busy } = useCommand(session, onError);
-  const params = useParams(session);
-  const p = info.physics;
-  if (!p) return null;
-  const set = (patch: Partial<typeof p>) =>
-    void run({ cmd: "physics_set", node: info.id, ...p, ...patch });
-  return (
-    <fieldset disabled={busy}>
-      <Disclosure title="Simple physics">
-        <Field label="Type">
-          <select
-            aria-label="Physics type"
-            value={p.kind}
-            onChange={(e) =>
-              set({ kind: e.currentTarget.value as typeof p.kind })
-            }
-          >
-            <option value="rigid">Pendulum</option>
-            <option value="spring">Spring pendulum</option>
-          </select>
-        </Field>
-        {(
-          [
-            ["length", "Length", "px"],
-            ["gravity", "Gravity", "g"],
-            ["frequency", "Frequency", "Hz"],
-            ["angle_damping", "Angle damping", ""],
-            ["length_damping", "Length damping", ""],
-          ] as const
-        ).map(([key, label, unit]) => (
-          <Field key={key} label={label}>
-            <NumberField
-              label={label}
-              value={p[key]}
-              min={0}
-              {...(key.includes("damping") ? { max: 1 } : {})}
-              unit={unit}
-              onCommit={(v) => set({ [key]: v })}
-            />
-          </Field>
-        ))}
-        <label data-catchlight-toggle="">
-          <input
-            type="checkbox"
-            checked={p.local_only}
-            onChange={(e) => set({ local_only: e.currentTarget.checked })}
-          />
-          Use local motion only
-        </label>
-        <Field label="Swing plane">
-          <select
-            aria-label="Physics swing plane"
-            value={p.plane}
-            onChange={(e) => set({ plane: e.currentTarget.value as typeof p.plane })}
-          >
-            {["screen", "depth"].map((v) => (
-              <option key={v}>{v}</option>
-            ))}
-          </select>
-        </Field>
-      </Disclosure>
-      <Disclosure title="Param outputs">
-        <Field label="Mapping">
-          <select
-            aria-label="Physics mapping"
-            value={p.map_mode}
-            onChange={(e) =>
-              set({ map_mode: e.currentTarget.value as typeof p.map_mode })
-            }
-          >
-            {["xy", "yx", "angle_length", "length_angle"].map((v) => (
-              <option key={v}>{v}</option>
-            ))}
-          </select>
-        </Field>
-        {(["angle", "length"] as const).map((key) => (
-          <Field key={key} label={key === "angle" ? "Angle" : "Length"}>
-            <select
-              aria-label={`${key} output param`}
-              value={p.target_params[key] ?? ""}
-              onChange={(e) =>
-                set({
-                  target_params: {
-                    ...p.target_params,
-                    [key]: e.currentTarget.value || null,
-                  },
-                })
-              }
-            >
-              <option value="">None</option>
-              {params.map((param) => (
-                <option key={param.id} value={param.id}>
-                  {param.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        ))}
-        <Field label="Output scale">
-          {p.output_scale.map((v, i) => (
-            <NumberField
-              key={i}
-              label={`Output scale ${i + 1}`}
-              prefix={i === 0 ? "X" : "Y"}
-              value={v}
-              onCommit={(n) =>
-                set({
-                  output_scale: p.output_scale.map((old, axis) =>
-                    axis === i ? n : old,
-                  ) as [number, number],
-                })
-              }
-            />
-          ))}
-        </Field>
-      </Disclosure>
     </fieldset>
   );
 }
@@ -581,7 +265,220 @@ export function PhysicsPanel({ session, info, onError }: AuthoringPanelProps) {
 export function RiggingEmpty() {
   return (
     <EmptyState icon="spine" title="Bring the drawing to life">
-      Select a part to fit a spine, or select a spine to tune its movement.
+      Select a part to fit a spine, or a motion response to tune its movement.
     </EmptyState>
+  );
+}
+
+export function MotionResponsePanel(props: AuthoringPanelProps) {
+  const response = props.info.motion_response;
+  return response ? <ResponseFields {...props} response={response} /> : null;
+}
+
+function ResponseFields({
+  session,
+  info,
+  onError,
+  response,
+}: AuthoringPanelProps & { response: MotionResponseInfo }) {
+  const { run, busy } = useCommand(session, onError);
+  const { sources, outputCandidates } = useReplica(session, (s) => {
+    const nodes = flattenTree(s.tree());
+    const owners = new Map<string, string>();
+    const poseInputs = new Set<string>();
+    for (const node of nodes) {
+      if (node.kind !== "motion_response") continue;
+      const driver = s.nodeInfo(node.id)?.motion_response;
+      if (!driver) continue;
+      if (driver.output_param) owners.set(driver.output_param, node.id);
+      for (const { source } of driver.inputs) {
+        if (source.kind === "pose_param") poseInputs.add(source.param);
+      }
+    }
+    const params = s.params();
+    const choices: { label: string; source: MotionSource }[] = params
+      .filter((p) => !owners.has(p.id))
+      .map((p) => ({
+        label: p.name,
+        source: { kind: "pose_param", param: p.id },
+      }));
+    for (const part of nodes.filter((node) => node.kind === "part")) {
+      const body = s.query({ cmd: "slot_list", node: part.id });
+      if (body.result !== "slots") continue;
+      for (const slot of body.slots) {
+        choices.push({
+          label: part.name + " / " + slot.id,
+          source: {
+            kind: "part_slot",
+            part: part.id,
+            slot: slot.id,
+            angle_deg: 0,
+            reference_length: 100,
+          },
+        });
+      }
+    }
+    const outputCandidates = params
+      .filter((p) => p.default === 0 && !poseInputs.has(p.id))
+      .map((p) => ({ param: p, owner: owners.get(p.id) }));
+    return { sources: choices, outputCandidates };
+  });
+  const choices =
+    info.parent && session.nodeInfo(info.parent)?.motion_response
+      ? [
+          { label: "Parent response", source: { kind: "parent" } as const },
+          ...sources,
+        ]
+      : sources;
+  const set = (patch: Partial<MotionResponseInfo>) =>
+    void run({
+      cmd: "motion_response_set",
+      node: info.id,
+      response: { ...response, ...patch },
+    });
+  const setInput = (i: number, input: MotionResponseInfo["inputs"][number]) =>
+    set({
+      inputs: response.inputs.map((current, j) => (j === i ? input : current)),
+    });
+  const sourceKey = (s: MotionSource) =>
+    s.kind === "parent"
+      ? "parent"
+      : JSON.stringify(s.kind === "pose_param" ? [s.param] : [s.part, s.slot]);
+  return (
+    <fieldset disabled={busy}>
+      <Disclosure title="Motion response">
+        <Field label="Period">
+          <NumberField
+            label="Period"
+            value={response.period_s}
+            min={0.001}
+            step={0.01}
+            unit="s"
+            onCommit={(period_s) => set({ period_s })}
+          />
+        </Field>
+        <Field label="Damping ratio">
+          <NumberField
+            label="Damping ratio"
+            value={response.damping_ratio}
+            min={0.001}
+            step={0.01}
+            onCommit={(damping_ratio) => set({ damping_ratio })}
+          />
+        </Field>
+        <Field label="Output">
+          <select
+            aria-label="Response output"
+            value={response.output_param ?? ""}
+            onChange={(e) =>
+              set({ output_param: e.currentTarget.value || null })
+            }
+          >
+            <option value="">No art output</option>
+            {outputCandidates
+              .filter(({ owner }) => !owner || owner === info.id)
+              .map(({ param: p }) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+          </select>
+        </Field>
+        {response.inputs.map((input, i) => {
+          const { source } = input;
+          return (
+            <div key={i}>
+              <Field label="Input">
+                <select
+                  aria-label={`Input ${i + 1}`}
+                  value={sourceKey(source)}
+                  onChange={(e) => {
+                    const next = choices.find(
+                      (c) => sourceKey(c.source) === e.currentTarget.value,
+                    );
+                    if (next) setInput(i, { ...input, source: next.source });
+                  }}
+                >
+                  {choices.map((c) => (
+                    <option
+                      key={sourceKey(c.source)}
+                      value={sourceKey(c.source)}
+                    >
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Gain">
+                <NumberField
+                  label={`Input ${i + 1} gain`}
+                  value={input.gain}
+                  step={0.01}
+                  onCommit={(gain) => setInput(i, { ...input, gain })}
+                />
+              </Field>
+              {source.kind === "part_slot" && (
+                <>
+                  <Field label="Angle">
+                    <NumberField
+                      label="Projection angle"
+                      value={source.angle_deg}
+                      unit="°"
+                      onCommit={(angle_deg) =>
+                        setInput(i, {
+                          ...input,
+                          source: { ...source, angle_deg },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Reference length">
+                    <NumberField
+                      label="Reference length"
+                      value={source.reference_length}
+                      min={0.001}
+                      onCommit={(reference_length) =>
+                        setInput(i, {
+                          ...input,
+                          source: { ...source, reference_length },
+                        })
+                      }
+                    />
+                  </Field>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() =>
+                  set({ inputs: response.inputs.filter((_, j) => i !== j) })
+                }
+              >
+                Remove input
+              </button>
+            </div>
+          );
+        })}
+        <select
+          aria-label="Add response input"
+          value=""
+          onChange={(e) => {
+            const next = choices.find(
+              (c) => sourceKey(c.source) === e.currentTarget.value,
+            );
+            if (next)
+              set({
+                inputs: [...response.inputs, { source: next.source, gain: 1 }],
+              });
+          }}
+        >
+          <option value="">Add input…</option>
+          {choices.map((c) => (
+            <option key={sourceKey(c.source)} value={sourceKey(c.source)}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </Disclosure>
+    </fieldset>
   );
 }

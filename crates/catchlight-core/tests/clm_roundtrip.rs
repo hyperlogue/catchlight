@@ -72,29 +72,21 @@ fn identity(model: &Model) -> Vec<String> {
 }
 
 /// Every supported fixture preserves authored identity and assets, and has
-/// a stable canonical encoding. Version-3 files are already canonical.
+/// a stable canonical encoding. All bundled files use the current format.
 #[test]
-fn every_committed_fixture_round_trips_after_any_required_migration() {
+fn every_committed_fixture_round_trips_byte_for_byte() {
     for path in fixtures() {
         let bytes = std::fs::read(&path).expect("read fixture");
         let model =
             Model::from_clm_bytes(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 
         let encoded = model.to_clm_bytes().unwrap();
-        let version = catchlight_core::formats::container::read(
-            &bytes,
-            &catchlight_core::formats::clm::MAGIC,
-        )
-        .unwrap()
-        .version;
-        if version == catchlight_core::formats::clm::FORMAT_VERSION {
-            assert_eq!(
-                encoded,
-                bytes,
-                "{} is not what the writer would write",
-                path.display()
-            );
-        }
+        assert_eq!(
+            encoded,
+            bytes,
+            "{} is not what the writer would write",
+            path.display()
+        );
         let reopened = Model::from_clm_bytes(&encoded).unwrap();
         assert_eq!(reopened.to_clm_bytes().unwrap(), encoded);
         assert!(model.authored_eq(&reopened).unwrap());
@@ -218,9 +210,7 @@ fn a_five_hundred_node_model_round_trips() {
     );
 }
 
-/// A model carrying a spine and the chain it hangs: the joints, the targets
-/// and every knob come back, `None` for a rigid link included, and the file is
-/// the one the writer would write.
+/// Every joint and optional bend target survives a round trip.
 #[test]
 fn a_spine_round_trips_byte_for_byte() {
     use catchlight_core::model::ModelSpine;
@@ -257,31 +247,6 @@ fn a_spine_round_trips_byte_for_byte() {
             vec![Some(params[0].clone()), None, Some(params[2].clone())],
         )
         .unwrap();
-    let mut chain = catchlight_core::ModelChain::new(3);
-    chain.local_only = true;
-    chain.gravity = 12.5;
-    chain.weight = 0.25;
-    chain.damping = 3.5;
-    chain.air_drag = 6.5;
-    chain.set_links(vec![
-        catchlight_core::LinkFeel {
-            gravity_scale: 1.0,
-            stiffness: 0.0,
-            limit: None,
-        },
-        catchlight_core::LinkFeel {
-            gravity_scale: 0.8,
-            stiffness: 2.5,
-            limit: Some(0.375),
-        },
-        catchlight_core::LinkFeel {
-            gravity_scale: 0.6,
-            stiffness: 0.0,
-            limit: None,
-        },
-    ]);
-    model.set_spine_chain(&node, Some(chain)).unwrap();
-
     let bytes = model.to_clm_bytes().unwrap();
     let reopened = Model::from_clm_bytes(&bytes).unwrap();
     assert_eq!(reopened.to_clm_bytes().unwrap(), bytes, "writing is stable");
@@ -295,136 +260,4 @@ fn a_spine_round_trips_byte_for_byte() {
         back.targets(),
         [Some(params[0].clone()), None, Some(params[2].clone())]
     );
-    let chain = back.chain().expect("the spine carries a chain");
-    assert!(chain.local_only);
-    assert_eq!(chain.gravity, 12.5);
-    assert_eq!(chain.weight, 0.25);
-    assert_eq!(chain.damping, 3.5);
-    assert_eq!(chain.air_drag, 6.5);
-    assert_eq!(chain.links().len(), 3);
-    assert_eq!(chain.links()[1].stiffness, 2.5);
-    assert_eq!(
-        chain.links()[0].stiffness,
-        0.0,
-        "an unsprung link stays one"
-    );
-    assert_eq!(chain.links()[2].gravity_scale, 0.6);
-    assert_eq!(chain.links()[1].limit, Some(0.375), "the limit came back");
-    assert_eq!(
-        chain.links()[0].limit,
-        None,
-        "and a link with no limit still has none"
-    );
-}
-
-#[test]
-fn physics_rate_defaults_round_trips_and_ignores_retired_substeps() {
-    use catchlight_core::formats::clm::ClmPhysics;
-    let old = serde_json::json!({"gravity": 9.8, "pixels_per_meter": 1000.0, "chain_substeps": 8});
-    let defaults: ClmPhysics = serde_json::from_value(old).unwrap();
-    assert_eq!(
-        defaults.physics_rate, 120.0,
-        "substeps read as the default rate"
-    );
-    let written = serde_json::to_value(defaults).unwrap();
-    assert!(
-        written.get("physics_rate").is_none(),
-        "the default writes no key"
-    );
-    assert!(written.get("chain_substeps").is_none());
-    for rate in [30.0, 60.0, 240.0, 1000.0] {
-        let mut model = Model::new();
-        let mut physics = *model.physics();
-        physics.physics_rate = rate;
-        model.set_physics(physics);
-        let bytes = model.to_clm_bytes().unwrap();
-        let reopened = Model::from_clm_bytes(&bytes).unwrap();
-        assert_eq!(reopened.physics().physics_rate, rate);
-        assert_eq!(reopened.to_clm_bytes().unwrap(), bytes);
-    }
-    for rate in [0.0, 29.0, 1001.0, f32::NAN] {
-        let mut model = Model::new();
-        let mut physics = *model.physics();
-        physics.physics_rate = rate;
-        model.set_physics(physics);
-        let bytes = model.to_clm_bytes().unwrap();
-        assert!(Model::from_clm_bytes(&bytes).is_err(), "rate {rate} loads");
-    }
-}
-
-/// A chain written before chains carried damping takes the mean per-second
-/// rate `-ln(1 - d)` of its links' retired damping, each capped at 10, and
-/// the next write carries only the chain key.
-#[test]
-fn a_chain_without_damping_migrates_from_its_links() {
-    use catchlight_core::formats::clm::{ClmNodeKind, ClmStructure};
-    let mut hex = SeededHex::new(4);
-    let mut model = Model::new();
-    let root = model.root().unwrap().clone();
-    let mut spine =
-        catchlight_core::ModelSpine::new(vec![[0.0, -10.0], [0.0, -20.0], [0.0, -30.0]]);
-    spine.set_chain(Some(catchlight_core::ModelChain::new(3)));
-    let node = model
-        .add_node(
-            &root,
-            catchlight_core::ModelNode::new("hair", ModelNodeKind::Spine(spine)),
-            &mut hex,
-        )
-        .unwrap();
-    let file = model.to_clm_file().unwrap();
-    // Spell the chain as an old file did: no chain key, one per link.
-    let old_chain = |d: Option<f32>| {
-        let mut chain = serde_json::to_value(&file.doc).unwrap();
-        for n in chain["nodes"].as_array_mut().unwrap() {
-            let Some(c) = n["kind"].get_mut("Spine").map(|sp| &mut sp["chain"]) else {
-                continue;
-            };
-            let c = c.as_object_mut().unwrap();
-            match d {
-                Some(d) => c.insert("damping".into(), d.into()),
-                None => c.remove("damping"),
-            };
-            for (link, d) in c["links"]
-                .as_array_mut()
-                .unwrap()
-                .iter_mut()
-                .zip([0.5, 0.1, 1.0])
-            {
-                link["damping"] = d.into();
-            }
-        }
-        chain
-    };
-    let doc: ClmStructure = serde_json::from_value(old_chain(None)).unwrap();
-    let mut migrated_file = file.clone();
-    migrated_file.doc = doc;
-    let migrated = Model::from_clm_file(&migrated_file).unwrap();
-    let ModelNodeKind::Spine(sp) = &migrated.node(&node).unwrap().kind else {
-        panic!("spine");
-    };
-    let want = ((-(0.5f32.ln())) + (-(0.9f32.ln())) + 10.0) / 3.0;
-    assert!((sp.chain().unwrap().damping - want).abs() < 1e-5);
-
-    let rewritten = serde_json::to_string(&migrated_file.doc).unwrap();
-    assert_eq!(
-        rewritten.matches("\"damping\"").count(),
-        1,
-        "only the chain key is written back: {rewritten}"
-    );
-
-    // A chain key beside leftover link keys wins, and the link keys go.
-    let doc: ClmStructure = serde_json::from_value(old_chain(Some(2.0))).unwrap();
-    let ClmNodeKind::Spine(sp) = &doc.nodes.iter().find(|n| n.id == node).unwrap().kind else {
-        panic!("spine");
-    };
-    assert_eq!(sp.chain.as_ref().map(|c| c.damping), Some(2.0));
-
-    // A retired damping outside its range is refused, not read as NaN.
-    let mut bad = old_chain(None);
-    for n in bad["nodes"].as_array_mut().unwrap() {
-        if let Some(sp) = n["kind"].get_mut("Spine") {
-            sp["chain"]["links"][1]["damping"] = 1.5.into();
-        }
-    }
-    assert!(serde_json::from_value::<ClmStructure>(bad).is_err());
 }

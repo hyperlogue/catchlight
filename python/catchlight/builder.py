@@ -58,7 +58,6 @@ from .protocol_gen import (
     EditOpBindingCellsSet,
     ErrorCode,
     ResponseBodyBindings,
-    ChainArg,
     Check,
     CommandNodeInfo,
     MeshAuto,
@@ -185,7 +184,6 @@ class Builder:
         *,
         name: str | None = None,
         targets: Sequence[ParamId | None] | None = None,
-        chain: ChainArg | None = None,
         node: NodeId | None = None,
     ) -> NodeId:
         """Add a spine under `parent` and return its Id.
@@ -194,9 +192,7 @@ class Builder:
         tip, so the first one ends the link that starts at the node itself.
         `targets` names the param each link's bend is read from, in link
         order, and has to be exactly as long as `joints` — `None` where a link
-        is rigid. Absent, every link is rigid. `chain` hangs a particle chain
-        on the spine, whose links are the joints and whose rest shape is the
-        drawing.
+        is rigid. Absent, every link is rigid.
         """
         made = self.client.send(
             SpineAdd(
@@ -205,7 +201,6 @@ class Builder:
                 name=name,
                 joints=[[float(j[0]), float(j[1])] for j in joints],
                 targets=None if targets is None else list(targets),
-                chain=chain,
                 node=node,
             )
         )
@@ -220,7 +215,6 @@ class Builder:
         *,
         axis: tuple[float, float] | None = None,
         name: str | None = None,
-        chain: ChainArg | None = None,
         node: NodeId | None = None,
     ) -> ResponseBodySpineFit:
         """Rig `part`'s art to a spine of `links` links, in one edit.
@@ -231,10 +225,7 @@ class Builder:
         spine turns the art by composing its joints.
 
         `axis` is the direction the strand hangs in the part's own frame,
-        absent being straight down. `chain` hangs a particle chain on the
-        spine. Re-fitting a part that already hangs from a spine re-measures
-        that spine rather than nesting another. The reply names the spine, the
-        params in link order, and anything the physics cannot hold.
+        absent being straight down. Refitting preserves the existing spine and bend params.
         """
         body = self.client.send(
             SpineFit(
@@ -243,7 +234,6 @@ class Builder:
                 links=links,
                 axis=axis,
                 name=name,
-                chain=chain,
                 node=node,
             )
         )

@@ -118,7 +118,6 @@ def minimal_structure(texture: str = "tex-0") -> dict:
     structure and holds its images, with no container anywhere.
     """
     return {
-        "physics": {"pixels_per_meter": 1000.0, "gravity": 9.8},
         "nodes": [
             _node("root", None, "root", "Group"),
             _node(

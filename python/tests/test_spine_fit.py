@@ -19,11 +19,8 @@ import pytest
 from catchlight import (
     BindingList,
     Builder,
-    Check,
-    ChainArg,
     Client,
     CommandNodeInfo,
-    LinkFeelArg,
     ParamList,
     SessionId,
 )
@@ -32,7 +29,6 @@ from catchlight.protocol_gen import (
     ResponseBodyBindings,
     ResponseBodyNodeInfo,
     ResponseBodyParams,
-    ResponseBodyWarnings,
 )
 from support import write_png
 
@@ -55,12 +51,6 @@ def _bindings(client: Client, session: SessionId, node: str) -> ResponseBodyBind
     return body
 
 
-def _warnings(client: Client, session: SessionId) -> list[str]:
-    body = client.send(Check(session=session))
-    assert isinstance(body, ResponseBodyWarnings)
-    return body.warnings
-
-
 def _strand(tmp_path: Path) -> Path:
     """A tall, narrow image: art a strand can be fitted to."""
     return write_png(tmp_path / "hair.png", width=16, height=64)
@@ -73,9 +63,8 @@ def test_a_fitted_spine_reopens_as_what_was_fitted(
     part = built.part("Hair", _strand(tmp_path))
     parent_before = _info(client, built.session, part).parent
 
-    fit = built.fit_spine(part, 3, chain=ChainArg())
+    fit = built.fit_spine(part, 3)
     assert len(fit.params) == 3
-    assert fit.warnings == [], "a strand drawn along gravity rests as drawn"
     assert built.check() == [], "a spine reading its links is not a lint"
 
     saved = built.save_to(tmp_path / "doll.clm")
@@ -101,9 +90,6 @@ def test_a_fitted_spine_reopens_as_what_was_fitted(
     assert spine.spine is not None
     assert spine.spine.targets == fit.params
     assert len(spine.spine.joints) == 3
-    assert spine.spine.chain is not None
-    assert spine.spine.chain.links is not None
-    assert len(spine.spine.chain.links) == 3
 
 
 def test_a_refit_reuses_the_spine_and_keeps_its_params(
@@ -122,7 +108,7 @@ def test_a_refit_reuses_the_spine_and_keeps_its_params(
 def test_a_spine_added_by_hand_reads_the_params_it_names(
     client: Client, tmp_path: Path
 ) -> None:
-    """`spine` is the plain half: the joints, their targets and a chain."""
+    """`spine` is the plain half: the joints, their targets."""
     built = Builder.new(client)
     sway = built.param("Sway", min=-1.0, max=1.0)
     node = built.spine(
@@ -130,24 +116,11 @@ def test_a_spine_added_by_hand_reads_the_params_it_names(
         [(0.0, -40.0), (0.0, -70.0)],
         name="Ponytail",
         targets=[sway, None],
-        chain=ChainArg(
-            gravity=4.5,
-            weight=0.5,
-            damping=4.0,
-            links=[LinkFeelArg(stiffness=2.0), LinkFeelArg(gravity_scale=0.25)],
-        ),
     )
 
     held = built.info(node).spine
     assert held is not None
     assert held.targets == [sway, None]
-    assert held.chain is not None
-    assert held.chain.gravity == pytest.approx(4.5)
-    assert held.chain.weight == pytest.approx(0.5)
-    assert held.chain.damping == pytest.approx(4.0)
-    assert held.chain.links is not None
-    assert held.chain.links[0].stiffness == pytest.approx(2.0)
-    assert held.chain.links[1].gravity_scale == pytest.approx(0.25)
 
     # An add may name the Id it makes, as every other add here may.
     plain = built.spine("root", [(0.0, -20.0)], node="root/tail")

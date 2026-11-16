@@ -93,7 +93,6 @@ export const kindLabels: Record<NodeKind, string> = {
   part: "Part",
   composite: "Composite",
   mesh_group: "Mesh group",
-  physics: "Simple physics",
   motion_response: "Motion response",
   spine: "Spine",
 };
@@ -102,8 +101,7 @@ export const kindIcons: Record<NodeKind, IconName> = {
   part: "part",
   composite: "composite",
   mesh_group: "mesh",
-  physics: "physics",
-  motion_response: "physics",
+  motion_response: "response",
   spine: "spine",
 };
 

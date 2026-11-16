@@ -11,13 +11,7 @@
 //! so a future change that wants posed geometry needs that record revisited
 //! first, not a wider signature.
 //!
-//! **The frame is Y-up, so a strand hangs toward -Y.** Model and node space
-//! are Y-up: the physics drivers are the exception and they convert at their
-//! own boundary, where `Arena::physics_anchor` flips Y going in and
-//! `Puppet::write_physics_param_outputs` conjugates the inverse by the same
-//! flip coming out (`crates/catchlight-core/src/physics.rs`). So gravity
-//! points toward +Y *inside a driver only*; everywhere in this module, down is
-//! -Y, which is [`DEFAULT_AXIS`].
+//! The frame is Y-up. The default strand direction is straight down, along -Y.
 //!
 //! **A vertex position and a node translation are not the same coordinate.**
 //! [`StrandFit::root`] is in the same space as `mesh.verts` — node-local,
@@ -48,7 +42,7 @@ const MIN_EXTENT: f32 = 1e-3;
 /// Shortest vector accepted as a hang direction, before normalisation.
 const MIN_AXIS_LENGTH: f64 = 1e-6;
 
-/// Where a particle chain hangs on a part, and how its links divide the art.
+/// Where a spine hangs on a part, and how its links divide the art.
 ///
 /// Every field is in the mesh's own node-local space and in model pixels; see
 /// the module doc for how `root` relates to a node's translation.
@@ -87,7 +81,7 @@ pub enum StrandError {
     DegenerateExtent,
 }
 
-/// Fit a particle chain of `links` links to a part's rest mesh.
+/// Fit a spine of `links` links to a part's rest mesh.
 ///
 /// The mesh is measured in a box oriented to `axis` (defaulting to
 /// [`DEFAULT_AXIS`], and normalised when given). The extent is the box's

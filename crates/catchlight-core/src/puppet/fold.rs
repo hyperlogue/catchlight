@@ -185,13 +185,6 @@ impl Puppet {
                         &mut c.screen_tint,
                         value,
                     ),
-                    NodeKind::SimplePhysics(p) => match other {
-                        ScalarTarget::OutputScaleX => p.offset_output_scale.x *= value,
-                        ScalarTarget::OutputScaleY => p.offset_output_scale.y *= value,
-                        _ => {}
-                    },
-                    // A mesh group is never drawn, so it has no colour to fold
-                    // into; a z order on it orders nothing.
                     _ => {}
                 }
                 if other == ScalarTarget::ZOrder {

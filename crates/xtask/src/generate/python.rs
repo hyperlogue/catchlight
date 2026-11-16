@@ -1420,8 +1420,9 @@ mod tests {
 #[cfg(test)]
 mod wire_shapes {
     use catchlight_editor_protocol::{
-        AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, NodeKindArg, NodePatch,
-        ParamId, ParamPose, PhysicsTargets, Presence, Rename, SessionId, TexId,
+        AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, MotionInput,
+        MotionResponseInfo, MotionSource, NodeKindArg, NodePatch, ParamPose, Presence, Rename,
+        SessionId, TexId,
     };
     use serde_json::{json, Value};
 
@@ -1631,46 +1632,26 @@ mod wire_shapes {
         );
     }
 
-    /// A struct inside a command is one nested object, and a field it leaves
-    /// unset is simply not in it — so the empty object is the whole of "this
-    /// driver writes nothing".
     #[test]
-    fn a_nested_struct_travels_as_an_object() {
-        let set = |target_params| Command::PhysicsSet {
-            session: SessionId(1),
-            node: id("hair"),
-            kind: None,
-            map_mode: None,
-            plane: None,
-            local_only: None,
-            target_params,
-            gravity: None,
-            length: None,
-            frequency: None,
-            angle_damping: None,
-            length_damping: None,
-            output_scale: None,
-        };
+    fn a_response_carries_nested_sources() {
         assert_wire(
-            set(Some(PhysicsTargets {
-                angle: None,
-                length: Some(id::<ParamId>("len")),
-            })),
-            json!({
-                "cmd": "physics_set",
-                "session": 1,
-                "node": "hair",
-                "target_params": {"length": "len"},
-            }),
-        );
-        assert_wire(
-            set(Some(PhysicsTargets::default())),
-            json!({
-                "cmd": "physics_set",
-                "session": 1,
-                "node": "hair",
-                "target_params": {},
-            }),
+            Command::MotionResponseSet {
+                session: SessionId(1),
+                node: id("tip"),
+                response: MotionResponseInfo {
+                    inputs: vec![MotionInput {
+                        source: MotionSource::Parent,
+                        gain: 0.75,
+                    }],
+                    period_s: 0.5,
+                    damping_ratio: 1.0,
+                    output_param: Some(id("bend")),
+                },
+            },
+            json!({"cmd":"motion_response_set","session":1,"node":"tip","response":{
+                "inputs":[{"source":{"kind":"parent"},"gain":0.75}],"period_s":0.5,
+                "damping_ratio":1.0,"output_param":"bend"
+            }}),
         );
     }
 }

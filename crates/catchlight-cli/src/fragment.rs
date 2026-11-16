@@ -154,12 +154,8 @@ pub fn requirements(path: &Path) -> Result<Vec<Requirement>, Error> {
 /// own reference fields.
 ///
 /// This is [`Model::requirements`](catchlight_core::Model::requirements) with the
-/// file's tables in place of a
-/// Model's, and it walks exactly the same eight fields: `nodes[].parent`,
-/// `nodes[].kind.*.masks[].source`,
-/// `nodes[].kind.SimplePhysics.target_params`, `nodes[].kind.Spine.targets`,
-/// `bindings[].node`, `bindings[].params`, `welds[].{a,b}` and
-/// `animations[].lanes[].param`.
+/// file's tables in place of a Model's. It walks parent and mask references,
+/// spine targets, response inputs and outputs, bindings, welds and animation lanes.
 /// `nodes[].kind.Part.albedo` is not among them: an addon carries the textures
 /// its own parts draw, so a texture is not something a base can supply.
 /// Sorted and deduplicated, so the same Id appears once per field that names
@@ -187,18 +183,6 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
             // reader refuses one that dangles.
             ClmNodeKind::Part(p) => p.masks.as_slice(),
             ClmNodeKind::Composite(c) => c.masks.as_slice(),
-            ClmNodeKind::SimplePhysics(s) => {
-                for target in s.target_params.iter().flatten() {
-                    if !has_param(target) {
-                        need(
-                            Required::Param(target.clone()),
-                            "physics target",
-                            owner.clone(),
-                        );
-                    }
-                }
-                &[]
-            }
             ClmNodeKind::MotionResponse(r) => {
                 for p in
                     r.output_param

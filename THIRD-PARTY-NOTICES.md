@@ -19,7 +19,7 @@ credit everywhere else.
   cell fill match the reference's `isComposite`, `postProcessFilter` and
   `axisPoint()`.
 - `catchlight-core`'s `puppet/mod.rs`, `physics.rs` and `animation.rs` —
-  tick order, the pendulum's frame and keyframe timing match the reference's.
+  tick order and keyframe timing match the reference's.
 - `catchlight-importer`'s `to_clm.rs` — the reader is pinned to
   inochi2d v0.8.6 and v0.8.7 behaviour and cites its source files.
 

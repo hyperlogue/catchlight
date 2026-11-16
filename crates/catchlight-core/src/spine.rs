@@ -10,9 +10,7 @@
 //! of link `i`, so link 0 runs from the node's own origin to `joints[0]`; the
 //! hinge link `i` turns about is the node's origin for link 0 and
 //! `joints[i - 1]` after that. Positive bend turns a downward link toward +X:
-//! the turn is `bend * pi` counterclockwise in the model's Y-up frame,
-//! which is the convention `ParticleChainData::link_bends` reports its bends
-//! in, so the chain a spine carries writes the params the spine reads.
+//! the turn is `bend * pi` counterclockwise in the model's Y-up frame.
 //!
 //! **The joint path is composed; the visible strand rounds its corners.**
 //! The physical links still turn rigidly about their parent joints, root to
@@ -33,12 +31,9 @@
 //! art beyond the tip follows the last link. All-zero bends remain exactly
 //! inactive. This is O(N) per spine and O(1) per vertex.
 //!
-//! **This is surface reconstruction, not another force.** The simulated
-//! particles, their lengths, gravity and inertia are untouched. The authored
-//! guide must follow the artwork: a painted tip far from its guide will still
-//! be offset from the simulated tip. Coarse triangles and discontinuous rest
-//! assignments can still create visible corners; sufficiently sampled art and
-//! accurate guides are required.
+//! The authored guide should follow the painted strand. Its tip controls the
+//! centerline of the deformation. Coarse triangles and discontinuous rest
+//! assignments can still produce visible corners.
 //!
 //! **The guide is embedded in the art.** The bake binds the root and every
 //! joint to the rest triangle of the spine's guide part (its largest meshed
@@ -50,11 +45,7 @@
 //! bends turn it about. Where no guide point moves off the drawing by more
 //! than rounding (`GUIDE_STILL_SQ`), the posed guide is left empty and reads
 //! as the drawing exactly; with no deform and the part placed as at rest,
-//! reading it costs one transform compare. A chain reads the posed guide as
-//! its root offset and shape target (`Puppet::chain_root`,
-//! `Puppet::chain_posed_bends`); bends stay relative to the guide. The physics
-//! pre-pass poses it for the frame it steps (`pose_chain_guides`), so the
-//! strand and the transport agree on the same frame's guide.
+//! reading it costs one transform compare.
 //!
 //! **The assignment comes from rest geometry, once per bake.** Each descendant
 //! vertex is mapped into spine space through the rest transforms and projected
@@ -137,8 +128,6 @@ pub(crate) struct SpinePins {
 }
 
 /// The runtime half of a spine: the polyline as drawn, this frame's bends,
-/// the assignment the bake derived, and the particle chain the spine may
-/// carry.
 ///
 /// `bends` is written from the params every frame the fold runs, so nothing
 /// here needs resetting; `joints` and `pins` are rest data a rebake replaces.
@@ -149,20 +138,11 @@ pub struct SpineData {
     pub joints: Vec<Vec2>,
     /// This frame's bend per link, in half turns. As long as `joints`.
     pub bends: Vec<f32>,
-    /// The simulation hung on these joints, if the author asked for one. Its
-    /// links carry the joints' lengths and drawn directions, defining bend
-    /// zero. Gravity, spring targets and limits determine the settled pose.
-    pub chain: Option<crate::physics::ParticleChainData>,
     pub(crate) pins: SpinePins,
     /// The last fold's posed guide in the node's own space: the root, then
     /// each joint. Empty reads as the drawing, the root at the origin. What
     /// the transport turns the art about.
     pub(crate) posed_guide: Vec<Vec2>,
-    /// The guide as the physics pre-pass posed it, in the same layout: what
-    /// a chain hangs from and targets. Kept apart from `posed_guide` so the
-    /// final fold, which runs under the caller's root, never feeds rounding
-    /// noise back into the strand's input and keeps it awake.
-    pub(crate) chain_guide: Vec<Vec2>,
 }
 
 impl SpineData {
@@ -172,84 +152,16 @@ impl SpineData {
         Self {
             joints,
             bends,
-            chain: None,
             pins: SpinePins::default(),
             posed_guide: Vec::new(),
-            chain_guide: Vec::new(),
         }
-    }
-
-    /// The rod length and drawn direction of each link, in the physics
-    /// (Y-down) frame: link `i` runs from the joint above it — the node's own
-    /// origin for the first — to `joints[i]`.
-    ///
-    /// This is the whole of the geometry a chain needs, which is why a chain
-    /// stores none of its own: the drawing is the shape it hangs in.
-    pub fn link_geometry(&self) -> impl Iterator<Item = (f32, Vec2)> + '_ {
-        let mut above = Vec2::ZERO;
-        self.joints.iter().map(move |&joint| {
-            let v = joint - above;
-            above = joint;
-            // Model space is Y-up and the solver is Y-down.
-            let flipped = Vec2::new(v.x, -v.y);
-            let length = flipped.length();
-            let drawn = if length > 1e-12 {
-                flipped / length
-            } else {
-                Vec2::new(0.0, 1.0)
-            };
-            (length, drawn)
-        })
     }
 
     /// The last render fold's posed guide in the node's own space, root
     /// first, then each joint; empty while it is the drawing. The transport
-    /// turns the art about it; chains read the pre-pass's copy instead.
+    /// turns the art about it.
     pub fn posed_guide(&self) -> &[Vec2] {
         &self.posed_guide
-    }
-
-    /// The part the guide is embedded in, if the spine has one.
-    pub(crate) fn guide_part(&self) -> Option<NodeIdx> {
-        self.pins.guide.as_ref().map(|g| g.part)
-    }
-
-    /// The guide's root in the node's own space as the physics pre-pass
-    /// posed it: where a chain the spine carries hangs from.
-    pub fn guide_root(&self) -> Vec2 {
-        self.chain_guide.first().copied().unwrap_or(Vec2::ZERO)
-    }
-
-    /// How far the pre-pass's guide turns link `k` off the drawing, in half
-    /// turns relative to the link above: the bend that would draw the guide's
-    /// shape, in the convention the params use. Zero while the guide is the
-    /// drawing.
-    pub(crate) fn guide_turn(&self, k: usize) -> f32 {
-        if self.chain_guide.len() != self.joints.len() + 1 || k >= self.joints.len() {
-            return 0.0;
-        }
-        let absolute = |k: usize| {
-            let above = if k == 0 {
-                Vec2::ZERO
-            } else {
-                self.joints[k - 1]
-            };
-            let drawn = self.joints[k] - above;
-            let posed = self.chain_guide[k + 1] - self.chain_guide[k];
-            let turn = drawn.perp_dot(posed).atan2(drawn.dot(posed));
-            if turn.is_finite() {
-                turn
-            } else {
-                0.0
-            }
-        };
-        let parent = if k == 0 { 0.0 } else { absolute(k - 1) };
-        // Each absolute turn is in (-pi, pi]; their difference is wrapped back
-        // into that range, so links either side of a half turn read a small
-        // relative turn rather than nearly a full one.
-        let turn = absolute(k) - parent;
-        let turn = turn - std::f32::consts::TAU * (turn / std::f32::consts::TAU).round();
-        turn / std::f32::consts::PI
     }
 }
 
@@ -690,24 +602,6 @@ fn pose_guide(
     }
 }
 
-/// Pose every chain spine's guide against `transforms` (which must hold the
-/// spine and its guide part) and the guide parts' current deforms: the
-/// physics pre-pass's half of what `propagate_spine_deforms` records.
-pub(crate) fn pose_chain_guides(arena: &mut Arena, transforms: &GlobalTransforms) {
-    let mut guide = Vec::new();
-    for c in 0..arena.chain_node_ids.len() {
-        let spine_id = arena.chain_node_ids[c];
-        let Some(spine_global_inv) = checked_affine_inverse(transforms.get(spine_id)) else {
-            continue;
-        };
-        pose_guide(arena, transforms, spine_id, spine_global_inv, &mut guide);
-        if let Some(NodeKind::Spine(spine)) = arena.get_mut(spine_id).map(|n| &mut n.kind) {
-            std::mem::swap(&mut spine.chain_guide, &mut guide);
-        }
-    }
-}
-
-/// Turn every spine's descendants by this frame's bends.
 ///
 /// Runs in its own pre-order pass after the transforms are computed and before
 /// the mesh groups, and writes `DeformSource::Node(spine_id)` on each meshed

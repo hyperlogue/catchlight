@@ -78,7 +78,7 @@
 //!   (`convert_part`)
 //! - a texture no part draws is dropped from the file (`from_inx_model`)
 //! - a mask whose source is not a part or a composite is dropped; catchlight
-//!   draws neither a mesh group nor a plain node nor a pendulum, so a source
+//!   draws neither a mesh group nor a plain node, so a source
 //!   that is one rasterized into no stencil in the source runtime either
 //!   (`convert_masks`, `to_clm.rs`)
 //! - a mesh group's UVs are dropped when they do not pair with its vertices;

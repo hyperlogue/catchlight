@@ -8,7 +8,7 @@
 //! What this module is responsible for:
 //!
 //! - **One field, named by its path.** `z_order`, `translation.x`, `tint.g`,
-//!   `angle_damping`; on a param `min`, `max`, `default`, `name`. Which fields
+//!   `period_s`; on a param `min`, `max`, `default`, `name`. Which fields
 //!   a node has depends on its kind, and an unknown one is refused with the
 //!   list it does have rather than being silently ignored.
 //! - **The value is parsed to the field's own type.** A number, `true`/`false`,
@@ -34,7 +34,6 @@ use std::path::Path;
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{ClmFile, ClmNode, ClmNodeKind, ClmParam, ClmTexture};
 use catchlight_core::id::{TexId, MAX_NAME_BYTES};
-use catchlight_core::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 
 use crate::diff::enum_name;
 use crate::{file, Error};
@@ -238,9 +237,6 @@ enum Slot<'a> {
     Bool(&'a mut bool),
     Text(&'a mut String),
     Blend(&'a mut BlendMode),
-    Pendulum(&'a mut PendulumKind),
-    MapMode(&'a mut PhysicsParamMapMode),
-    Plane(&'a mut PendulumPlane),
     Albedo(&'a mut Option<TexId>),
 }
 
@@ -261,9 +257,6 @@ const BLEND_MODES: &[&str] = &[
     "Inverse",
     "Subtract",
 ];
-const PENDULUM_KINDS: &[&str] = &["RigidPendulum", "SpringPendulum"];
-const MAP_MODES: &[&str] = &["XY", "YX", "AngleLength", "LengthAngle"];
-const PLANES: &[&str] = &["Screen", "Depth"];
 
 /// Fields every node has, whatever its kind.
 const COMMON_FIELDS: &[&str] = &[
@@ -305,31 +298,6 @@ const COMPOSITE_FIELDS: &[&str] = &[
     "tint.r",
 ];
 const MESH_GROUP_FIELDS: &[&str] = &["translate_children"];
-const PHYSICS_FIELDS: &[&str] = &[
-    "angle_damping",
-    "frequency",
-    "gravity",
-    "length",
-    "length_damping",
-    "local_only",
-    "map_mode",
-    "output_scale.x",
-    "output_scale.y",
-    "pendulum",
-    "plane",
-];
-/// A spine's own scalars — the scalars the chain it may carry holds. Its
-/// `joints` are a list of points, its `targets` a list of Ids and its links a
-/// list of structs, and none of those fits this command's `field=value`
-/// shape. A spine
-/// carrying no chain accepts none of them.
-const SPINE_FIELDS: &[&str] = &[
-    "chain.air_drag",
-    "chain.damping",
-    "chain.gravity",
-    "chain.local_only",
-    "chain.weight",
-];
 /// Scalar param fields. Key positions belong to bindings.
 pub const PARAM_FIELDS: &[&str] = &["default", "max", "min", "name"];
 
@@ -345,12 +313,10 @@ pub fn node_fields(kind: &ClmNodeKind) -> Vec<&'static str> {
 fn kind_fields(kind: &ClmNodeKind) -> &'static [&'static str] {
     match kind {
         ClmNodeKind::MotionResponse(_) => &["period_s", "damping_ratio"],
-        ClmNodeKind::Group => &[],
+        ClmNodeKind::Group | ClmNodeKind::Spine(_) => &[],
         ClmNodeKind::Part(_) => PART_FIELDS,
         ClmNodeKind::Composite(_) => COMPOSITE_FIELDS,
         ClmNodeKind::MeshGroup(_) => MESH_GROUP_FIELDS,
-        ClmNodeKind::SimplePhysics(_) => PHYSICS_FIELDS,
-        ClmNodeKind::Spine(_) => SPINE_FIELDS,
     }
 }
 
@@ -361,7 +327,6 @@ fn kind_name(kind: &ClmNodeKind) -> &'static str {
         ClmNodeKind::Part(_) => "part",
         ClmNodeKind::Composite(_) => "composite",
         ClmNodeKind::MeshGroup(_) => "mesh group",
-        ClmNodeKind::SimplePhysics(_) => "simple physics",
         ClmNodeKind::Spine(_) => "spine",
     }
 }
@@ -398,7 +363,7 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
             "damping_ratio" => Slot::F32(&mut r.damping_ratio),
             _ => return None,
         },
-        ClmNodeKind::Group => return None,
+        ClmNodeKind::Group | ClmNodeKind::Spine(_) => return None,
         ClmNodeKind::Part(p) => match field {
             "opacity" => Slot::F32(&mut p.opacity),
             "blend_mode" => Slot::Blend(&mut p.blend_mode),
@@ -427,30 +392,6 @@ fn kind_slot<'a>(kind: &'a mut ClmNodeKind, field: &str) -> Option<Slot<'a>> {
         },
         ClmNodeKind::MeshGroup(g) => match field {
             "translate_children" => Slot::Bool(&mut g.translate_children),
-            _ => return None,
-        },
-        ClmNodeKind::SimplePhysics(s) => match field {
-            "pendulum" => Slot::Pendulum(&mut s.kind),
-            "map_mode" => Slot::MapMode(&mut s.map_mode),
-            "plane" => Slot::Plane(&mut s.plane),
-            "local_only" => Slot::Bool(&mut s.local_only),
-            "gravity" => Slot::F32(&mut s.gravity),
-            "length" => Slot::F32(&mut s.length),
-            "frequency" => Slot::F32(&mut s.frequency),
-            "angle_damping" => Slot::F32(&mut s.angle_damping),
-            "length_damping" => Slot::F32(&mut s.length_damping),
-            "output_scale.x" => Slot::F32(&mut s.output_scale[0]),
-            "output_scale.y" => Slot::F32(&mut s.output_scale[1]),
-            _ => return None,
-        },
-        // A spine's own fields are its chain's, and a spine carrying none has
-        // nothing to patch.
-        ClmNodeKind::Spine(sp) => match (sp.chain.as_mut(), field) {
-            (Some(c), "chain.local_only") => Slot::Bool(&mut c.local_only),
-            (Some(c), "chain.gravity") => Slot::F32(&mut c.gravity),
-            (Some(c), "chain.weight") => Slot::F32(&mut c.weight),
-            (Some(c), "chain.air_drag") => Slot::F32(&mut c.air_drag),
-            (Some(c), "chain.damping") => Slot::F32(&mut c.damping),
             _ => return None,
         },
     })
@@ -510,24 +451,6 @@ fn apply(
             *slot = parsed;
             (before, enum_name(slot))
         }
-        Slot::Pendulum(slot) => {
-            let parsed = parse_enum(value).ok_or_else(|| bad(&one_of(PENDULUM_KINDS)))?;
-            let before = enum_name(slot);
-            *slot = parsed;
-            (before, enum_name(slot))
-        }
-        Slot::MapMode(slot) => {
-            let parsed = parse_enum(value).ok_or_else(|| bad(&one_of(MAP_MODES)))?;
-            let before = enum_name(slot);
-            *slot = parsed;
-            (before, enum_name(slot))
-        }
-        Slot::Plane(slot) => {
-            let parsed = parse_enum(value).ok_or_else(|| bad(&one_of(PLANES)))?;
-            let before = enum_name(slot);
-            *slot = parsed;
-            (before, enum_name(slot))
-        }
         Slot::Albedo(slot) => {
             let parsed = match value {
                 "none" | "null" => None,
@@ -571,9 +494,7 @@ mod tests {
 
     #[test]
     fn every_listed_field_resolves_to_a_slot() {
-        use catchlight_core::formats::clm::{
-            ClmComposite, ClmMeshGroup, ClmPart, ClmSimplePhysics, ClmTransform,
-        };
+        use catchlight_core::formats::clm::{ClmComposite, ClmMeshGroup, ClmPart, ClmTransform};
         use catchlight_core::id::NodeId;
 
         let kinds = [
@@ -601,19 +522,6 @@ mod tests {
             ClmNodeKind::MeshGroup(ClmMeshGroup {
                 mesh: Default::default(),
                 translate_children: false,
-            }),
-            ClmNodeKind::SimplePhysics(ClmSimplePhysics {
-                kind: PendulumKind::RigidPendulum,
-                map_mode: PhysicsParamMapMode::AngleLength,
-                plane: PendulumPlane::Screen,
-                local_only: false,
-                target_params: [None, None],
-                gravity: 1.0,
-                length: 1.0,
-                frequency: 1.0,
-                angle_damping: 0.5,
-                length_damping: 0.5,
-                output_scale: [1.0, 1.0],
             }),
         ];
 

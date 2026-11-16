@@ -1,7 +1,7 @@
 //! The authored model: the character as a person made it.
 //!
 //! [`Model`] holds what a model file holds — the node tree, params and their
-//! bindings, textures, welds and physics settings — and nothing that animating
+//! bindings, textures and welds — and nothing that animating
 //! it produces. A puppet animates a Model; a render cache is prepared from
 //! one. Both read it, neither owns it.
 //!
@@ -35,7 +35,7 @@
 //!   that named it, and deleting a param or texture nulls out whatever
 //!   referenced it. Renaming rewrites instead — a node's new Id reaches its
 //!   weld ends like everything else. Cross-references (a part's albedo, a
-//!   mask's source, a physics target, a weld's ends) are private and only
+//!   mask's source, a response output, a weld's ends) are private and only
 //!   reachable through methods that check them, which is what makes
 //!   [`Model::to_clm_file`] total.
 //! - **Every texture has a user, and a part's albedo is the only user kind.**
@@ -63,7 +63,7 @@
 //! - **A mask source is a drawable.** The renderer rasterizes a source's own
 //!   drawing into the mask, so [`Model::mask_add`] takes a part or a
 //!   composite and refuses everything else — a mesh group is never drawn, and
-//!   a group or a physics node has nothing to draw. The `.clm` reader refuses
+//!   a group or a motion response has nothing to draw. The `.clm` reader refuses
 //!   the same shapes.
 //! - **What the writer emits, the reader takes.** A param's range and a
 //!   mesh's shape are checked wherever they enter the model — a new param and
@@ -149,14 +149,13 @@ use std::sync::{Arc, OnceLock};
 
 use crate::components::{BlendMode, MaskMode};
 use crate::formats::clm::{
-    self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmPhysics, ClmTransform, TextureAlpha,
+    self as clm, ClmAnimation, ClmBindingValues, ClmMesh, ClmTransform, TextureAlpha,
     TextureEncoding,
 };
 use crate::id::{
     ExtensionKey, HexSource, IdError, Name, NodeId, NodeIdKind, ParamId, SlotId, TexId,
 };
 use crate::interpolate::InterpolateMode;
-use crate::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
 
 /// How many times a generated Id is re-drawn before the model gives up. The
 /// 32 bits collide by birthday around 2^16 siblings, so a handful of retries
@@ -220,8 +219,6 @@ pub enum ModelError {
     NotMaskable,
     #[error("a node cannot mask itself")]
     SelfMask,
-    #[error("node is not a simple physics node")]
-    NotPhysics,
     #[error("node is not a spine node")]
     NotSpine,
     #[error("a spine reads one param per link: {targets} targets for {joints} joints")]
@@ -327,17 +324,16 @@ impl ExtensionValue {
 }
 
 /// The authored model: a tree of nodes by Id, ordered params and textures, the
-/// bindings params drive nodes through, and authored physics. The tree is
+/// bindings params drive nodes through, and motion responses. The tree is
 /// always valid (single root, no cycles, no dangling cross-references), so
 /// [`Model::to_clm_file`] is total.
 #[derive(Debug, Clone)]
 pub struct Model {
     identity: u64,
     generation: u64,
-    physics: ClmPhysics,
     welds: Vec<ModelWeld>,
     nodes: HashMap<NodeId, ModelNode>,
-    /// Avoid scanning a legacy model for response ownership on every edit.
+    /// Avoid scanning a model without responses for response ownership on every edit.
     response_count: usize,
     /// The nodes whose parent this model does not carry, in tree order.
     /// A complete model has exactly one and its `parent` is `None`; a
@@ -488,7 +484,6 @@ pub enum ModelNodeKind {
     Composite(ModelComposite),
     MeshGroup(ModelMeshGroup),
     MotionResponse(crate::MotionResponse),
-    SimplePhysics(ModelPhysics),
     Spine(ModelSpine),
 }
 
@@ -501,7 +496,6 @@ impl ModelNodeKind {
             Self::Composite(_) => "composite",
             Self::MeshGroup(_) => "mesh_group",
             Self::MotionResponse(_) => "motion_response",
-            Self::SimplePhysics(_) => "physics",
             Self::Spine(_) => "spine",
         }
     }
@@ -514,7 +508,6 @@ impl ModelNodeKind {
             Self::Composite(_) => NodeIdKind::Composite,
             Self::MeshGroup(_) => NodeIdKind::MeshGroup,
             Self::MotionResponse(_) => NodeIdKind::MotionResponse,
-            Self::SimplePhysics(_) => NodeIdKind::SimplePhysics,
             Self::Spine(_) => NodeIdKind::Spine,
         }
     }
@@ -675,157 +668,6 @@ impl ModelMask {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ModelPhysics {
-    pub kind: PendulumKind,
-    pub map_mode: PhysicsParamMapMode,
-    pub plane: PendulumPlane,
-    pub local_only: bool,
-    pub gravity: f32,
-    pub length: f32,
-    pub frequency: f32,
-    pub angle_damping: f32,
-    pub length_damping: f32,
-    pub output_scale: [f32; 2],
-    target_params: [Option<ParamId>; 2],
-}
-
-impl ModelPhysics {
-    /// A pendulum at the default settings, driving no param yet.
-    pub fn new(kind: PendulumKind) -> Self {
-        Self {
-            kind,
-            map_mode: PhysicsParamMapMode::default(),
-            plane: PendulumPlane::default(),
-            local_only: false,
-            gravity: 9.8,
-            length: 100.0,
-            frequency: 1.0,
-            angle_damping: 0.5,
-            length_damping: 0.5,
-            output_scale: [1.0, 1.0],
-            target_params: [None, None],
-        }
-    }
-
-    /// The two params the pendulum's swing is written into, in the order the
-    /// map mode produces them. Either may be unset — a pendulum aimed at one
-    /// param writes only the first.
-    pub fn target_params(&self) -> &[Option<ParamId>; 2] {
-        &self.target_params
-    }
-
-    /// Whether the pendulum writes `param`.
-    pub fn drives(&self, param: &ParamId) -> bool {
-        self.target_params.iter().flatten().any(|p| p == param)
-    }
-}
-
-/// One link's feel, when a spine carries a particle chain.
-///
-/// Lengths and drawn directions come from the spine's joints.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LinkFeel {
-    /// Multiplier on the chain's gravity for this link's particle.
-    pub gravity_scale: f32,
-    /// How strongly the link holds its drawn (or posed) turn, in Hz, at or
-    /// above zero. Zero is limp; around `physics_rate / 2 pi` and above the
-    /// link follows rigidly. A whole strand swings slower than its links.
-    pub stiffness: f32,
-    /// The furthest this link's bend may reach either way, in half turns,
-    /// within `(0, 1]`. `None` is a joint that turns as far as the forces
-    /// take it, which is every link written before there was a limit.
-    /// New links are unrestricted. Author a limit explicitly when a physical
-    /// joint stop or an artistic restriction is wanted. Saved links keep
-    /// their authored limit, including no limit.
-    ///
-    /// A limit binds the pose as well as the physics, **at every weight**: a
-    /// param posed past it moves the spring's target out there, the link still
-    /// stops at the boundary, and the combined driver claims and pose are
-    /// clamped after blending. Drivers sharing a param must satisfy its
-    /// tightest limit, even when the chain carrying that limit has weight
-    /// zero. A limit is a promise about the art, independent of authority.
-    pub limit: Option<f32>,
-}
-
-impl Default for LinkFeel {
-    fn default() -> Self {
-        Self {
-            gravity_scale: 1.0,
-            stiffness: 0.0,
-            limit: None,
-        }
-    }
-}
-
-/// The simulation a spine may carry: a strand of particles hung at the
-/// spine's root, one per joint, whose bends are written into the spine's
-/// params.
-///
-/// The authored half of [`crate::physics::ParticleChainData`]. The spine's
-/// joints define lengths and bend zero; gravity, spring targets and limits
-/// determine the settled pose. Particle positions belong to the puppet.
-///
-/// **`links` is as long as the spine's joints, always.** [`ModelSpine`]
-/// restores the pairing whenever either can change, so no caller ever sees
-/// them disagree.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModelChain {
-    pub local_only: bool,
-    /// Authored as a multiple of the model's gravity, like
-    /// [`ModelPhysics::gravity`]: the bake folds `pixels_per_meter * gravity`
-    /// from the model-level physics into it, so 1.0 hangs under one g.
-    pub gravity: f32,
-    /// The chain's authority over the params the spine names, at or above
-    /// zero: `1` gives full authority, `0` contributes no simulated bend,
-    /// and intermediate values blend with the pose. Authored limits still
-    /// constrain the result at every weight.
-    pub weight: f32,
-    /// Per-second damping of motion relative to the root's own motion, at or
-    /// above zero: bounce and settle time, without trailing.
-    pub damping: f32,
-    /// Per-second drag on absolute motion, at or above zero: the strand
-    /// trails a moving root. Use only when that look is wanted.
-    pub air_drag: f32,
-    links: Vec<LinkFeel>,
-}
-
-impl ModelChain {
-    /// A chain of `links` links, every one at the default feel.
-    pub fn new(links: usize) -> Self {
-        Self {
-            local_only: false,
-            gravity: 1.0,
-            weight: 1.0,
-            damping: crate::physics::DEFAULT_CHAIN_DAMPING,
-            air_drag: 0.0,
-            links: vec![LinkFeel::default(); links],
-        }
-    }
-
-    pub fn links(&self) -> &[LinkFeel] {
-        &self.links
-    }
-
-    /// Set every link's feel at once. The length is the spine's to decide, so
-    /// this restores it: a short list repeats its last entry and a long one is
-    /// truncated.
-    pub fn set_links(&mut self, links: Vec<LinkFeel>) {
-        let want = self.links.len();
-        self.links = links;
-        self.fit_len(want);
-    }
-
-    /// Bring the list to `n` entries, **repeating the last feel** rather than
-    /// dropping back to the default: a rigger who tuned a strand and then
-    /// added a joint to it wants the new one to feel like the strand, not like
-    /// a fresh chain.
-    fn fit_len(&mut self, n: usize) {
-        let last = self.links.last().copied().unwrap_or_default();
-        self.links.resize(n, last);
-    }
-}
-
 /// A chain of joints drawn on the art, turning the geometry beneath the node.
 ///
 /// The authored half of [`crate::spine::SpineData`]: the per-vertex
@@ -839,40 +681,17 @@ impl ModelChain {
 ///
 /// **`joints[i]` is the far end of link `i`, and `targets[i]` is link `i`'s
 /// own bend** — the turn at the joint *above* it, which is the node's own
-/// origin for link 0 and `joints[i - 1]` after that. The two vectors are
-/// parallel by index and offset by one joint on the art, exactly as
-/// [`crate::physics::ParticleChainData::link_bends`] reports one bend per link
-/// measured at the joint above it.
+/// origin for link 0 and `joints[i - 1]` after that. Both vectors use link order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelSpine {
     joints: Vec<[f32; 2]>,
     targets: Vec<Option<ParamId>>,
-    chain: Option<ModelChain>,
 }
 
 impl ModelSpine {
-    /// A spine over `joints`, reading no param and carrying no chain yet.
     pub fn new(joints: Vec<[f32; 2]>) -> Self {
         let targets = vec![None; joints.len()];
-        Self {
-            joints,
-            targets,
-            chain: None,
-        }
-    }
-
-    /// The particle chain this spine carries, if any.
-    pub fn chain(&self) -> Option<&ModelChain> {
-        self.chain.as_ref()
-    }
-
-    /// Hang a chain on the spine, or take one off. The link list is brought to
-    /// one per joint on the way in, so the two can never disagree.
-    pub fn set_chain(&mut self, chain: Option<ModelChain>) {
-        self.chain = chain.map(|mut c| {
-            c.fit_len(self.joints.len());
-            c
-        });
+        Self { joints, targets }
     }
 
     /// The far end of each link, in the node's own space.
@@ -891,15 +710,9 @@ impl ModelSpine {
         self.targets.iter().flatten().any(|p| p == param)
     }
 
-    /// Reshape the spine. **Targets follow the joints**, for the reason
-    /// [`ModelChain::fit_len`] keeps: an author may pull a joint off
-    /// a rigged spine without first unhooking its param.
     fn set_joints(&mut self, joints: Vec<[f32; 2]>) {
         self.joints = joints;
         self.targets.resize(self.joints.len(), None);
-        if let Some(chain) = &mut self.chain {
-            chain.fit_len(self.joints.len());
-        }
     }
 }
 
@@ -1102,7 +915,6 @@ impl Model {
         Self {
             identity: next_identity(),
             generation: 0,
-            physics: ClmPhysics::default(),
             welds: Vec::new(),
             nodes,
             response_count: 0,
@@ -1225,7 +1037,7 @@ impl Model {
 
     /// Edit one node's own properties: name, transform, z order, enabled,
     /// lock-to-root and the plain values on its kind. Cross-references (the
-    /// albedo, masks, the physics target) and the mesh have their own methods,
+    /// albedo, masks, response references) and the mesh have their own methods,
     /// because they have to be checked against the rest of the model.
     pub fn update_node<R>(
         &mut self,
@@ -1599,7 +1411,7 @@ impl Model {
     }
 
     /// Give a param a different Id, rewriting the bindings it drives and any
-    /// physics node aimed at it.
+    /// response that reads or writes it.
     pub fn rename_param_id(&mut self, old: &ParamId, new: ParamId) -> Result<(), ModelError> {
         if old == &new {
             return Ok(());
@@ -1634,15 +1446,13 @@ impl Model {
                 }
             }
         }
+        for lane in self.animations.iter_mut().flat_map(|a| &mut a.lanes) {
+            if &lane.param == old {
+                lane.param = new.clone();
+            }
+        }
         for node in self.nodes.values_mut() {
             match &mut node.kind {
-                ModelNodeKind::SimplePhysics(ph) => {
-                    for t in &mut ph.target_params {
-                        if t.as_ref() == Some(old) {
-                            *t = Some(new.clone());
-                        }
-                    }
-                }
                 ModelNodeKind::Spine(spine) => {
                     for t in &mut spine.targets {
                         if t.as_ref() == Some(old) {
@@ -1650,26 +1460,19 @@ impl Model {
                         }
                     }
                 }
-                _ => {}
-            }
-        }
-        for lane in self.animations.iter_mut().flat_map(|a| &mut a.lanes) {
-            if &lane.param == old {
-                lane.param = new.clone();
-            }
-        }
-        for node in self.nodes.values_mut() {
-            if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
-                if r.output_param.as_ref() == Some(old) {
-                    r.output_param = Some(new.clone());
-                }
-                for t in &mut r.inputs {
-                    if let crate::ResponseSource::PoseParam(p) = &mut t.source {
-                        if p == old {
-                            *p = new.clone();
+                ModelNodeKind::MotionResponse(r) => {
+                    if r.output_param.as_ref() == Some(old) {
+                        r.output_param = Some(new.clone());
+                    }
+                    for t in &mut r.inputs {
+                        if let crate::ResponseSource::PoseParam(p) = &mut t.source {
+                            if p == old {
+                                *p = new.clone();
+                            }
                         }
                     }
                 }
+                _ => {}
             }
         }
         self.bump();
@@ -1739,32 +1542,6 @@ impl Model {
         Ok(())
     }
 
-    /// Aim a simple physics node at up to two params — the pendulum writes
-    /// one value into each — or at nothing.
-    pub fn set_physics_targets(
-        &mut self,
-        id: &NodeId,
-        targets: [Option<ParamId>; 2],
-    ) -> Result<(), ModelError> {
-        if targets
-            .iter()
-            .flatten()
-            .any(|p| !self.params.contains_key(p))
-        {
-            return Err(ModelError::UnknownParam);
-        }
-        for p in targets.iter().flatten() {
-            self.check_response_writer(p)?;
-        }
-        match self.nodes.get_mut(id).map(|n| &mut n.kind) {
-            Some(ModelNodeKind::SimplePhysics(ph)) => ph.target_params = targets,
-            Some(_) => return Err(ModelError::NotPhysics),
-            None => return Err(ModelError::UnknownNode),
-        }
-        self.bump();
-        Ok(())
-    }
-
     /// Aim a spine's links at params — one param per link, in link order,
     /// `None` where a link is rigid.
     ///
@@ -1782,12 +1559,6 @@ impl Model {
             .any(|p| !self.params.contains_key(p))
         {
             return Err(ModelError::UnknownParam);
-        }
-        if matches!(self.node(node).map(|n| &n.kind),Some(ModelNodeKind::Spine(s)) if s.chain().is_some())
-        {
-            for p in targets.iter().flatten() {
-                self.check_response_writer(p)?;
-            }
         }
         match self.nodes.get_mut(node).map(|n| &mut n.kind) {
             Some(ModelNodeKind::Spine(spine)) => {
@@ -1815,29 +1586,6 @@ impl Model {
     ) -> Result<(), ModelError> {
         match self.nodes.get_mut(node).map(|n| &mut n.kind) {
             Some(ModelNodeKind::Spine(spine)) => spine.set_joints(joints),
-            Some(_) => return Err(ModelError::NotSpine),
-            None => return Err(ModelError::UnknownNode),
-        }
-        self.bump();
-        Ok(())
-    }
-
-    /// Hang a particle chain on a spine, or take one off. The link list is
-    /// brought to one feel per joint, so the two can never disagree.
-    pub fn set_spine_chain(
-        &mut self,
-        node: &NodeId,
-        chain: Option<ModelChain>,
-    ) -> Result<(), ModelError> {
-        if chain.is_some() {
-            if let Some(ModelNodeKind::Spine(s)) = self.node(node).map(|n| &n.kind) {
-                for p in s.targets().iter().flatten() {
-                    self.check_response_writer(p)?;
-                }
-            }
-        }
-        match self.nodes.get_mut(node).map(|n| &mut n.kind) {
-            Some(ModelNodeKind::Spine(spine)) => spine.set_chain(chain),
             Some(_) => return Err(ModelError::NotSpine),
             None => return Err(ModelError::UnknownNode),
         }
@@ -1922,7 +1670,7 @@ impl Model {
     /// Append a mask source. A source has to be something the renderer draws
     /// — a part, whose mesh and texture it rasterizes into the mask, or a
     /// composite, whose whole subtree it rasterizes. A mesh group, a group or
-    /// a physics node draws nothing and cannot be one.
+    /// a motion response draws nothing and cannot be one.
     pub fn mask_add(
         &mut self,
         id: &NodeId,
@@ -2202,7 +1950,7 @@ impl Model {
     }
 
     /// Remove a param, every binding that named it (a two-param binding loses
-    /// half its grid, so it goes too), and any physics node that drove it.
+    /// half its grid, so it goes too), and references to it in spines, responses and animation lanes.
     pub fn delete_param(&mut self, id: &ParamId) -> Result<(), ModelError> {
         if self.params.remove(id).is_none() {
             return Err(ModelError::UnknownParam);
@@ -2222,14 +1970,6 @@ impl Model {
                         r.output_param = None;
                     }
                 }
-                ModelNodeKind::SimplePhysics(ph) => {
-                    for t in &mut ph.target_params {
-                        if t.as_ref() == Some(id) {
-                            *t = None;
-                        }
-                    }
-                }
-                // Same reasoning: the slot is a link's, not the param's.
                 ModelNodeKind::Spine(spine) => {
                     for t in &mut spine.targets {
                         if t.as_ref() == Some(id) {
@@ -2378,17 +2118,6 @@ impl Model {
         let drawn: HashSet<TexId> = self.nodes.values().filter_map(albedo_of).cloned().collect();
         self.textures.retain(|id, _| drawn.contains(id));
         self.texture_order.retain(|id| drawn.contains(id));
-    }
-
-    // ---- physics and welds ----
-
-    pub fn physics(&self) -> &ClmPhysics {
-        &self.physics
-    }
-
-    pub fn set_physics(&mut self, physics: ClmPhysics) {
-        self.physics = physics;
-        self.bump();
     }
 
     /// The model's animations, in authored order.
@@ -2740,16 +2469,6 @@ impl Model {
         if self.is_fragment() {
             return Ok(());
         }
-        if let ModelNodeKind::SimplePhysics(ph) = &node.kind {
-            if ph
-                .target_params
-                .iter()
-                .flatten()
-                .any(|p| !self.params.contains_key(p))
-            {
-                return Err(ModelError::UnknownParam);
-            }
-        }
         if let ModelNodeKind::Spine(spine) = &node.kind {
             if spine
                 .targets
@@ -2881,9 +2600,7 @@ fn binding_values_size(values: &ClmBindingValues) -> usize {
         | V::TintB(cells)
         | V::ScreenTintR(cells)
         | V::ScreenTintG(cells)
-        | V::ScreenTintB(cells)
-        | V::OutputScaleX(cells)
-        | V::OutputScaleY(cells) => cells
+        | V::ScreenTintB(cells) => cells
             .cells
             .capacity()
             .saturating_mul(std::mem::size_of::<clm::ClmCell<f32>>()),
@@ -2909,7 +2626,7 @@ mod tests {
         pub part: NodeId,
         pub other: NodeId,
         pub composite: NodeId,
-        pub physics: NodeId,
+        pub response: NodeId,
         pub param: ParamId,
         pub tex: TexId,
         pub hex: SeededHex,
@@ -2952,7 +2669,7 @@ mod tests {
             part: NodeId::new("placeholder").unwrap(),
             other: NodeId::new("placeholder").unwrap(),
             composite: NodeId::new("placeholder").unwrap(),
-            physics: NodeId::new("placeholder").unwrap(),
+            response: NodeId::new("placeholder").unwrap(),
             param,
             tex: TexId::new("placeholder").unwrap(),
             hex,
@@ -2977,9 +2694,9 @@ mod tests {
             .unwrap();
         fixture.composite =
             fixture.node("composite", ModelNodeKind::Composite(ModelComposite::new()));
-        fixture.physics = fixture.node(
-            "physics",
-            ModelNodeKind::SimplePhysics(ModelPhysics::new(PendulumKind::RigidPendulum)),
+        fixture.response = fixture.node(
+            "response",
+            ModelNodeKind::MotionResponse(Default::default()),
         );
         let (composite, part) = (fixture.composite.clone(), fixture.part.clone());
         fixture
@@ -3142,7 +2859,7 @@ mod tests {
         let mut model = Model::new();
         let snapshot = model.clone();
 
-        model.set_physics(ClmPhysics::default());
+        model.set_animations(Vec::new()).unwrap();
         let undone = model.generation();
 
         // The undo.
@@ -3150,7 +2867,7 @@ mod tests {
         assert_ne!(model.generation(), undone);
 
         // A *different* edit, forward from the restored state.
-        model.set_physics(ClmPhysics::default());
+        model.set_animations(Vec::new()).unwrap();
         assert_ne!(
             model.generation(),
             undone,
@@ -3242,10 +2959,20 @@ mod tests {
                 }),
             ),
             (
-                "set_physics_target",
+                "set_motion_response",
                 Box::new(|r| {
                     r.model
-                        .set_physics_targets(&r.physics, [Some(r.param.clone()), None])
+                        .set_motion_response(
+                            &r.response,
+                            crate::MotionResponse {
+                                inputs: vec![crate::ResponseInput {
+                                    source: crate::ResponseSource::PoseParam(r.param.clone()),
+                                    gain: 1.0,
+                                }],
+                                output_param: None,
+                                ..Default::default()
+                            },
+                        )
                         .unwrap()
                 }),
             ),
@@ -3264,15 +2991,6 @@ mod tests {
                     let spine = r.spine();
                     r.model
                         .set_spine_joints(&spine, vec![[0.0, -10.0]])
-                        .unwrap()
-                }),
-            ),
-            (
-                "set_spine_chain",
-                Box::new(|r| {
-                    let spine = r.spine();
-                    r.model
-                        .set_spine_chain(&spine, Some(ModelChain::new(2)))
                         .unwrap()
                 }),
             ),
@@ -3383,10 +3101,6 @@ mod tests {
             (
                 "delete_texture",
                 Box::new(|r| r.model.delete_texture(&r.tex).unwrap()),
-            ),
-            (
-                "set_physics",
-                Box::new(|r| r.model.set_physics(ClmPhysics::default())),
             ),
             (
                 "set_animations",
@@ -4176,11 +3890,11 @@ mod tests {
     #[test]
     fn renaming_rewrites_every_reference_to_the_id() {
         let mut r = fixture();
-        let (part, other, composite, physics) = (
+        let (part, other, composite, response) = (
             r.part.clone(),
             r.other.clone(),
             r.composite.clone(),
-            r.physics.clone(),
+            r.response.clone(),
         );
         let (param, tex) = (r.param.clone(), r.tex.clone());
         let child = r
@@ -4189,7 +3903,17 @@ mod tests {
             .unwrap();
         r.model.set_part_albedo(&part, Some(tex.clone())).unwrap();
         r.model
-            .set_physics_targets(&physics, [Some(param.clone()), None])
+            .set_motion_response(
+                &response,
+                crate::MotionResponse {
+                    inputs: vec![crate::ResponseInput {
+                        source: crate::ResponseSource::PoseParam(param.clone()),
+                        gain: 1.0,
+                    }],
+                    output_param: None,
+                    ..Default::default()
+                },
+            )
             .unwrap();
         r.model
             .set_welds(vec![ModelWeld::new(part.clone(), other, Vec::new())])
@@ -4239,9 +3963,9 @@ mod tests {
             &BindingParams::One(new_param.clone())
         );
         assert_eq!(
-            physics_target(&r.model, &physics),
+            response_input(&r.model, &response),
             Some(new_param),
-            "the physics node follows its param",
+            "the response node follows its param",
         );
 
         let new_tex = TexId::new("skin").unwrap();
@@ -4545,11 +4269,6 @@ mod tests {
             Err(ModelError::NotAPart)
         ));
         assert!(matches!(
-            r.model
-                .set_physics_targets(&r.physics, [Some(orphan_param), None]),
-            Err(ModelError::UnknownParam)
-        ));
-        assert!(matches!(
             r.model.set_welds(vec![ModelWeld::new(
                 r.part.clone(),
                 orphan_node,
@@ -4603,9 +4322,12 @@ mod tests {
         assert!(ModelMeshGroup::new(quad()).translate_children);
     }
 
-    fn physics_target(m: &Model, node: &NodeId) -> Option<ParamId> {
+    fn response_input(m: &Model, node: &NodeId) -> Option<ParamId> {
         match &m.node(node)?.kind {
-            ModelNodeKind::SimplePhysics(ph) => ph.target_params()[0].clone(),
+            ModelNodeKind::MotionResponse(r) => match &r.inputs.first()?.source {
+                crate::ResponseSource::PoseParam(p) => Some(p.clone()),
+                _ => None,
+            },
             _ => None,
         }
     }

@@ -135,11 +135,10 @@ use catchlight_core::formats::clm::{
 use catchlight_core::id::{HexSource as _, Name, SeededHex};
 use catchlight_core::LoadBudget;
 
-use catchlight_core::Vec2;
 use catchlight_core::{
     BindingKey, BindingTarget as CoreBindingTarget, ExtensionValue, InstallError, Mat4, Model,
-    ModelChain, ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam,
-    ModelPart, ModelPhysics, ModelSpine, ModelTexture, ModelWeld, Pose, Puppet, Required, Vec3,
+    ModelComposite, ModelError, ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart,
+    ModelSpine, ModelTexture, ModelWeld, Pose, Puppet, Required, Vec3,
 };
 // The wire's camera and the renderer's framing are the same shape and not the
 // same type; the conversion happens here, at the edge.
@@ -335,12 +334,6 @@ impl EditorError {
                 ModelError::Fragment => ErrorCode::Fragment,
                 ModelError::UnknownExtension(_) => ErrorCode::NoExtension,
                 ModelError::ReservedExtension(_) => ErrorCode::ReservedExtension,
-                // Both are an argument that does not fit the node it names —
-                // a chain command aimed at something that is not a chain, and
-                // an output list of the wrong length for the chain it is
-                // aimed at. That is what `bad_target` says, and it is the
-                // code a client already branches on for a physics field set
-                // on a node that is not a driver.
                 ModelError::NotSpine => ErrorCode::BadTarget,
                 ModelError::SpineTargetArity { .. } => ErrorCode::BadTarget,
                 // The size cap has no code of its own: a client that hit it
@@ -1180,9 +1173,6 @@ impl Editor {
                         title: s.title.clone(),
                         undo_steps: s.history.depths().0 as u32,
                         redo_steps: s.history.depths().1 as u32,
-                        gravity: Some(s.model.physics().gravity),
-                        pixels_per_meter: Some(s.model.physics().pixels_per_meter),
-                        physics_rate: Some(s.model.physics().physics_rate),
                         node_count: s.model.node_count() as u32,
                         param_count: s.model.param_ids().len() as u32,
                         texture_count: s.model.texture_ids().len() as u32,
@@ -1375,87 +1365,6 @@ impl Editor {
                 response,
             } => self.edit_session_captured(session, |s| {
                 s.model.set_motion_response(&node, response.into())?;
-                Ok(ResponseBody::Empty)
-            }),
-            Command::PhysicsSet {
-                session,
-                node,
-                kind,
-                map_mode,
-                plane,
-                local_only,
-                target_params,
-                gravity,
-                length,
-                frequency,
-                angle_damping,
-                length_damping,
-                output_scale,
-            } => self.edit_session_captured(session, |s| {
-                if let Some(t) = target_params {
-                    let targets = physics_targets(&s.model, t)?;
-                    s.model.set_physics_targets(&node, targets)?;
-                }
-                s.model.update_node(&node, |n| {
-                    let ModelNodeKind::SimplePhysics(ph) = &mut n.kind else {
-                        return Err(EditorError::BadTarget("not a physics node".into()));
-                    };
-                    if let Some(m) = kind {
-                        ph.kind = m.into();
-                    }
-                    if let Some(m) = map_mode {
-                        ph.map_mode = m.into();
-                    }
-                    if let Some(p) = plane {
-                        ph.plane = p.into();
-                    }
-                    if let Some(v) = local_only {
-                        ph.local_only = v;
-                    }
-                    if let Some(v) = gravity {
-                        ph.gravity = v;
-                    }
-                    if let Some(v) = length {
-                        ph.length = v;
-                    }
-                    if let Some(v) = frequency {
-                        ph.frequency = v;
-                    }
-                    if let Some(v) = angle_damping {
-                        ph.angle_damping = v;
-                    }
-                    if let Some(v) = length_damping {
-                        ph.length_damping = v;
-                    }
-                    if let Some(v) = output_scale {
-                        ph.output_scale = v;
-                    }
-                    Ok(())
-                })??;
-                Ok(ResponseBody::Empty)
-            }),
-            Command::PhysicsGlobals {
-                session,
-                gravity,
-                pixels_per_meter,
-                physics_rate,
-            } => self.edit_session_captured(session, |s| {
-                let mut physics = *s.model.physics();
-                if let Some(g) = gravity {
-                    physics.gravity = g;
-                }
-                if let Some(ppm) = pixels_per_meter {
-                    physics.pixels_per_meter = ppm;
-                }
-                if let Some(rate) = physics_rate {
-                    if !catchlight_core::formats::clm::PHYSICS_RATE_RANGE.contains(&rate) {
-                        return Err(EditorError::BadTarget(
-                            "physics_rate must be in 30..=1000 Hz".into(),
-                        ));
-                    }
-                    physics.physics_rate = rate;
-                }
-                s.model.set_physics(physics);
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDelete { session, node } => self.edit_session_captured(session, |s| {
@@ -1759,58 +1668,15 @@ impl Editor {
                     })
                 })
             }
-            Command::PhysicsAdd {
-                session,
-                parent,
-                name,
-                kind,
-                target_params,
-                length,
-                gravity,
-                frequency,
-                angle_damping,
-                length_damping,
-                node: id,
-            } => self.edit_session_captured(session, |s| {
-                let targets = physics_targets(&s.model, target_params)?;
-                let mut phys = ModelPhysics::new(kind.into());
-                if let Some(v) = gravity {
-                    phys.gravity = v;
-                }
-                if let Some(v) = length {
-                    phys.length = v;
-                }
-                if let Some(v) = frequency {
-                    phys.frequency = v;
-                }
-                if let Some(v) = angle_damping {
-                    phys.angle_damping = v;
-                }
-                if let Some(v) = length_damping {
-                    phys.length_damping = v;
-                }
-                let node = ModelNode::new(
-                    name.unwrap_or_else(|| "Physics".into()),
-                    ModelNodeKind::SimplePhysics(phys),
-                );
-                let node = s.add_node(&parent, id, node)?;
-                s.model.set_physics_targets(&node, targets)?;
-                Ok(ResponseBody::Node {
-                    node,
-                    dropped: Vec::new(),
-                })
-            }),
             Command::SpineAdd {
                 session,
                 parent,
                 name,
                 joints,
                 targets,
-                chain,
                 node: id,
             } => self.edit_session_captured(session, |s| {
                 let joints = spine_joints(joints)?;
-                let count = joints.len();
                 let node = ModelNode::new(
                     name.unwrap_or_else(|| "Spine".into()),
                     ModelNodeKind::Spine(ModelSpine::new(joints)),
@@ -1818,10 +1684,6 @@ impl Editor {
                 let node = s.add_node(&parent, id, node)?;
                 if let Some(targets) = targets {
                     s.model.set_spine_targets(&node, targets)?;
-                }
-                if let Some(chain) = chain {
-                    s.model
-                        .set_spine_chain(&node, Some(chain_of(&chain, count)?))?;
                 }
                 Ok(ResponseBody::Node {
                     node,
@@ -1833,21 +1695,12 @@ impl Editor {
                 node,
                 joints,
                 targets,
-                chain,
             } => self.edit_session_captured(session, |s| {
-                // Joints first: a set that reshapes and re-aims in one command
-                // has its `targets` and its chain measured against the length
-                // it just asked for rather than the one it replaced.
                 if let Some(joints) = joints {
                     s.model.set_spine_joints(&node, spine_joints(joints)?)?;
                 }
                 if let Some(targets) = targets {
                     s.model.set_spine_targets(&node, targets)?;
-                }
-                if let Some(chain) = chain {
-                    let count = spine_joint_count(&s.model, &node)?;
-                    let chain = chain.map(|c| chain_of(&c, count)).transpose()?;
-                    s.model.set_spine_chain(&node, chain)?;
                 }
                 Ok(ResponseBody::Empty)
             }),
@@ -1858,10 +1711,9 @@ impl Editor {
                 axis,
                 node: id,
                 name,
-                chain,
-            } => self.edit_session_captured(session, |s| {
-                spine_fit(s, &part, links, axis, id, name, chain.as_ref())
-            }),
+            } => {
+                self.edit_session_captured(session, |s| spine_fit(s, &part, links, axis, id, name))
+            }
             Command::PresenceSet { session, presence } => {
                 self.with_session_captured(session, |s| {
                     s.presence = Some(presence);
@@ -2052,101 +1904,6 @@ fn binding_key(
     })
 }
 
-/// [`PhysicsTargets`] as the model stores them: the driver's two outputs, in
-/// order.
-///
-/// The wire type already rules out a third output and a positional hole, so
-/// all that is left to check is that each param named exists.
-/// `set_physics_targets` would refuse a dangling one anyway, but this says
-/// which param was missing.
-fn physics_targets(
-    model: &Model,
-    targets: PhysicsTargets,
-) -> Result<[Option<ParamId>; 2], EditorError> {
-    let check = |id: Option<ParamId>| match id {
-        Some(id) if model.param(&id).is_none() => Err(EditorError::NoParam(id)),
-        bound => Ok(bound),
-    };
-    Ok([check(targets.angle)?, check(targets.length)?])
-}
-
-/// A chain's authority over its params, refused at the door rather than on
-/// the next load: a command that names a number the file format would not
-/// take back is answered now, with the field in the message.
-fn chain_weight(weight: Option<f32>) -> Result<Option<f32>, EditorError> {
-    match weight {
-        Some(w) if !w.is_finite() || w < 0.0 => Err(EditorError::BadTarget(
-            "weight is not finite and at or above zero".into(),
-        )),
-        other => Ok(other),
-    }
-}
-
-/// The wire's chain as the model holds it over `joints` joints, with every
-/// refusal the file reader would make on the next load made here instead.
-///
-/// Writing is total, so a knob the model accepts is a knob the file carries,
-/// and the reader is what would refuse it — on the next load, with the
-/// command that named it long gone. Every command that hangs a chain comes
-/// through here, so a script hears about a bad number now, with the field and
-/// the link named the way `ClmLoadError::ChainLinkField` names them.
-fn chain_of(arg: &ChainArg, joints: usize) -> Result<ModelChain, EditorError> {
-    chain_weight(arg.weight)?;
-    if let Some(c) = arg.air_drag {
-        if !c.is_finite() || c < 0.0 {
-            return Err(EditorError::BadTarget(
-                "chain air drag is not finite and at or above zero".into(),
-            ));
-        }
-    }
-    if let Some(c) = arg.damping {
-        if !c.is_finite() || c < 0.0 {
-            return Err(EditorError::BadTarget(
-                "chain damping is not finite and at or above zero".into(),
-            ));
-        }
-    }
-    if let Some(g) = arg.gravity {
-        if !g.is_finite() || g <= 0.0 {
-            return Err(EditorError::BadTarget(
-                "chain gravity is not finite and above zero".into(),
-            ));
-        }
-    }
-    for (i, feel) in arg.links.iter().flatten().enumerate() {
-        let bad = |field: &str, reason: &str| {
-            EditorError::BadTarget(format!("chain link {i}: {field} {reason}"))
-        };
-        if let Some(v) = feel.gravity_scale {
-            if !v.is_finite() {
-                return Err(bad("gravity_scale", "is not finite"));
-            }
-        }
-        if let Some(v) = feel.stiffness {
-            if !v.is_finite() || v < 0.0 {
-                return Err(bad("stiffness", "is not finite and at or above zero"));
-            }
-        }
-        if let Some(Some(v)) = feel.limit {
-            if !v.is_finite() || v <= 0.0 || v > 1.0 {
-                return Err(bad("limit", "is outside 0 exclusive to 1"));
-            }
-        }
-    }
-    Ok(arg.to_chain(joints))
-}
-
-/// How many joints a spine holds, or the refusal for a node that is not one.
-fn spine_joint_count(model: &Model, node: &NodeId) -> Result<usize, EditorError> {
-    match model.node(node).map(|n| &n.kind) {
-        Some(ModelNodeKind::Spine(sp)) => Ok(sp.joints().len()),
-        Some(_) => Err(EditorError::BadTarget(format!(
-            "node {node} is not a spine"
-        ))),
-        None => Err(EditorError::NoNode(node.clone())),
-    }
-}
-
 /// The joints of a spine the turn pass can compose, or the refusal that says
 /// which one is wrong.
 ///
@@ -2177,116 +1934,14 @@ fn spine_joints(joints: Vec<[f32; 2]>) -> Result<Vec<[f32; 2]>, EditorError> {
     Ok(joints)
 }
 
-/// A node's world matrix at rest, walking the model's own transforms up the
-/// tree. `lock_to_root` is not honoured: a locked node's world rotation is the
-/// root's, and the one caller here only wants an orientation to warn about.
-fn rest_world(model: &Model, id: &NodeId) -> Mat4 {
-    let mut chain: Vec<Mat4> = Vec::new();
-    let mut at = Some(id.clone());
-    while let Some(current) = at {
-        let Some(node) = model.node(&current) else {
-            break;
-        };
-        chain.push(clm_transform_matrix(&node.transform));
-        at = node.parent().cloned();
-    }
-    chain.iter().rev().fold(Mat4::IDENTITY, |acc, m| acc * *m)
-}
-
 /// One authored transform as a matrix, through the core's own conversion so it
 /// is the same composition a bake would build.
 fn clm_transform_matrix(t: &catchlight_core::formats::clm::ClmTransform) -> Mat4 {
     catchlight_core::Transform::from(t).to_matrix()
 }
 
-/// The node's world linear map in the physics frame — what
-/// `Arena::chain_carry` computes from a puppet's transforms, computed here
-/// from the model's, so a command can warn about a fit before anything is
-/// baked.
-fn rest_carry(model: &Model, id: &NodeId) -> catchlight_core::Mat2 {
-    use catchlight_core::Mat2;
-    let world = rest_world(model, id);
-    let m = Mat2::from_cols(
-        Vec2::new(world.x_axis.x, world.x_axis.y),
-        Vec2::new(world.y_axis.x, world.y_axis.y),
-    );
-    let flip = Mat2::from_cols(Vec2::new(1.0, 0.0), Vec2::new(0.0, -1.0));
-    flip * m * flip
-}
-
-/// Ask the runtime how far the chain sags off its drawing at rest, so
-/// authoring feedback uses the same forces and limits as playback. Playback
-/// subtracts that sag, so a large one is a strand that swings about a shape
-/// it cannot hold.
-/// Sag, in half turns (9°), past which a fit warns that a link cannot hold
-/// its drawing.
-const SAG_WARNING: f32 = 0.05;
-
-fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
-    let Some(ModelNodeKind::Spine(spine)) = model.node(node).map(|n| &n.kind) else {
-        return Vec::new();
-    };
-    let Some(chain) = spine.chain() else {
-        return Vec::new();
-    };
-    let g_scale = model.physics().pixels_per_meter * model.physics().gravity;
-    let gravity = chain.gravity * g_scale;
-    let carry = rest_carry(model, node);
-    let data = catchlight_core::SpineData::new(
-        spine
-            .joints()
-            .iter()
-            .map(|j| Vec2::new(j[0], j[1]))
-            .collect(),
-    );
-    let links = data
-        .link_geometry()
-        .zip(chain.links())
-        .map(
-            |((length, drawn), feel)| catchlight_core::physics::ChainLink {
-                length,
-                drawn,
-                gravity_scale: feel.gravity_scale,
-                stiffness: feel.stiffness,
-                limit: feel.limit,
-            },
-        )
-        .collect();
-    let mut runtime = catchlight_core::physics::ParticleChainData::new(links);
-    runtime.gravity = gravity;
-    runtime.damping = chain.damping;
-    runtime.air_drag = chain.air_drag;
-    runtime.rate = model.physics().physics_rate;
-    runtime.rest_carry = carry;
-    runtime.settle_to_rest(Vec2::ZERO, carry, &[]);
-    runtime
-        .rest_sag()
-        .iter()
-        // A root bend rotates all lower links even if their own relative
-        // hinges remain straight. Report the departure of each link's
-        // orientation from its drawing, not just its local joint angle.
-        .scan(0.0_f32, |turn, bend| {
-            *turn += bend;
-            Some(*turn)
-        })
-        .enumerate()
-        // Playback offsets the sag, so a soft strand that droops a few
-        // degrees still renders its drawing; warn only where the shape it
-        // swings about is far from the one drawn.
-        .filter(|(_, bend)| bend.abs() > SAG_WARNING)
-        .map(|(i, bend)| {
-            format!(
-                "link {} cannot rest as drawn: it sags {:.0}° under gravity, so it swings \
-                 about a shape it cannot hold; raise its stiffness",
-                i + 1,
-                bend.abs() * 180.0
-            )
-        })
-        .collect()
-}
-
 /// Rig a strand of art to a spine: the spine between the part and its parent,
-/// the params its links read, and the chain that may drive them.
+/// and the bend params its links read.
 ///
 /// **The part keeps the world placement it had.** The spine is inserted at the
 /// identity transform under the part's own parent and the part is reparented
@@ -2297,9 +1952,8 @@ fn chain_warnings(model: &Model, node: &NodeId) -> Vec<String> {
 ///
 /// **A re-fit reuses the spine the part already hangs from.** Nesting a second
 /// one would compose two turns where the rigger asked for one, so a part whose
-/// parent is a spine has that spine re-measured: its chain keeps every knob,
-/// its link list is refitted by repeating the last feel, and its params are
-/// kept wherever the count still matches.
+/// parent is a spine has that spine re-measured, retaining existing bend params
+/// for the links that survive.
 fn spine_fit(
     s: &mut Session,
     part: &NodeId,
@@ -2307,7 +1961,6 @@ fn spine_fit(
     axis: Option<[f32; 2]>,
     id: Option<NodeId>,
     name: Option<String>,
-    chain: Option<&ChainArg>,
 ) -> Result<ResponseBody, EditorError> {
     if links == 0 {
         return Err(EditorError::BadTarget(
@@ -2437,19 +2090,7 @@ fn spine_fit(
     })?;
     s.model
         .set_spine_targets(&node, params.iter().cloned().map(Some).collect())?;
-    // A named chain replaces what stood there; an absent one leaves a re-fit's
-    // chain alone, and `set_spine_joints` has already refitted its link list.
-    if let Some(arg) = chain {
-        s.model
-            .set_spine_chain(&node, Some(chain_of(arg, count)?))?;
-    }
-
-    let warnings = chain_warnings(&s.model, &node);
-    Ok(ResponseBody::SpineFit {
-        node,
-        params,
-        warnings,
-    })
+    Ok(ResponseBody::SpineFit { node, params })
 }
 
 /// The wire's mesh as the model stores one.

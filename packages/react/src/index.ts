@@ -178,7 +178,7 @@ export type { ErrorHandler } from "./authoring.js";
 export {
   MeshPanel,
   SpinePanel,
-  PhysicsPanel,
+  MotionResponsePanel,
   RiggingEmpty,
 } from "./rigging.js";
 export {
@@ -210,7 +210,6 @@ export {
   usePreviewExport,
 } from "./workspace-layout.js";
 export { SelectionOverlay } from "./gizmo.js";
-export { PhysicsSettings } from "./model-panels.js";
 
 export { EditingProvider, useEditing } from "./editing.js";
 export type { Editing, EditingMode } from "./editing.js";

@@ -201,33 +201,32 @@ fn animation_decimation_reuses_native_clock_and_does_not_change_physics_or_image
         ModelParam::new(Name::new("Response").unwrap(), -1.0, 1.0, 0.0),
     )
     .unwrap();
-    let driver = NodeId::new("pendulum").unwrap();
-    let mut physics =
-        catchlight_core::ModelPhysics::new(catchlight_core::physics::PendulumKind::RigidPendulum);
-    physics.map_mode = catchlight_core::physics::PhysicsParamMapMode::XY;
-    physics.length = 20.0;
+    let driver = NodeId::new("follow").unwrap();
     m.add_node_with_id(
         driver.clone(),
         &NodeId::new("parent").unwrap(),
-        ModelNode::new("Pendulum", ModelNodeKind::SimplePhysics(physics)),
+        ModelNode::new(
+            "Follow",
+            ModelNodeKind::MotionResponse(catchlight_core::MotionResponse {
+                inputs: vec![catchlight_core::ResponseInput {
+                    source: catchlight_core::ResponseSource::PoseParam(
+                        ParamId::new("drive").unwrap(),
+                    ),
+                    gain: 1.0,
+                }],
+                output_param: Some(response.clone()),
+                ..Default::default()
+            }),
+        ),
     )
     .unwrap();
-    m.set_physics_targets(&driver, [Some(response.clone()), None])
-        .unwrap();
-    let drive_anchor = BindingKey::new(
-        ParamId::new("drive").unwrap(),
-        driver,
-        BindingTarget::Scalar(ScalarTarget::Tx),
-    );
-    m.set_binding_key(&drive_anchor, [0, 0], 0.0).unwrap();
-    m.set_binding_key(&drive_anchor, [1, 0], 30.0).unwrap();
     let response_mesh = BindingKey::new(
         response,
         NodeId::new("child").unwrap(),
         BindingTarget::Scalar(ScalarTarget::Ty),
     );
     m.set_binding_key(&response_mesh, [0, 0], -8.0).unwrap();
-    m.set_binding_key(&response_mesh, [1, 0], 8.0).unwrap();
+    m.set_binding_key(&response_mesh, [2, 0], 8.0).unwrap();
     std::fs::write(dir.join("model.clm"), m.to_clm_bytes().unwrap()).unwrap();
     let mut full = spec();
     full["animations"] = json!({"pulse":{"name":"Pulse","timestep":0.125,"length":8,"lead_in":2,"lead_out":6,

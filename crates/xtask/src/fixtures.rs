@@ -26,14 +26,14 @@ use std::path::{Path, PathBuf};
 
 use catchlight_core::components::BlendMode;
 use catchlight_core::formats::clm::{
-    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmChain, ClmComposite, ClmFile, ClmIndices,
-    ClmLinkFeel, ClmMesh, ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSimplePhysics, ClmSlot,
-    ClmSlotPair, ClmSpine, ClmStructure, ClmTexture, ClmTransform, ClmWeld, TextureAlpha,
-    TextureEncoding,
+    ClmBinding, ClmBindingValues, ClmCell, ClmCells, ClmComposite, ClmFile, ClmIndices, ClmMesh,
+    ClmNode, ClmNodeKind, ClmParam, ClmPart, ClmSlot, ClmSlotPair, ClmSpine, ClmStructure,
+    ClmTexture, ClmTransform, ClmWeld, TextureAlpha, TextureEncoding,
 };
 use catchlight_core::interpolate::InterpolateMode;
-use catchlight_core::physics::{PendulumKind, PendulumPlane, PhysicsParamMapMode};
-use catchlight_core::{Model, NodeId, ParamId, SlotId, TexId};
+use catchlight_core::{
+    Model, MotionResponse, NodeId, ParamId, ResponseInput, ResponseSource, SlotId, TexId,
+};
 use catchlight_editor_core::fit_strand;
 
 /// Builds a fixture's structure and its texture table.
@@ -43,7 +43,7 @@ type Build = fn() -> (ClmStructure, Vec<ClmTexture>);
 const FIXTURES: &[(&str, Build)] = &[
     ("composite_blit_uniforms", composite_blit_uniforms),
     ("mip_checker", mip_checker),
-    ("strand_chain", strand_chain),
+    ("strand_response", strand_response),
     ("two_param_grid", two_param_grid),
     ("welded_seam", welded_seam),
 ];
@@ -208,21 +208,6 @@ fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
             ..part_node(quad_part(1, GRID_QUAD_HALF))
         },
     );
-    // Parented under the swept part so the sweep param moves its world
-    // transform, which is the whole of what an anchor is.
-    push(
-        &mut nodes,
-        Some(swept),
-        ClmNode {
-            name: "pendulum".into(),
-            transform: ClmTransform {
-                translation: [0.0, -GRID_QUAD_HALF, 0.0],
-                ..identity_transform()
-            },
-            kind: ClmNodeKind::SimplePhysics(pendulum()),
-            ..blank_node()
-        },
-    );
 
     let params = PARAMS
         .iter()
@@ -313,25 +298,6 @@ fn sweep_binding(
                 },
             ],
         }),
-    }
-}
-
-/// A pendulum with no target params: `poses` never ticks physics, so what
-/// this node is for is its world transform, which is the anchor.
-fn pendulum() -> ClmSimplePhysics {
-    ClmSimplePhysics {
-        kind: PendulumKind::RigidPendulum,
-        map_mode: PhysicsParamMapMode::AngleLength,
-        // On the screen writes no `plane` key either.
-        plane: PendulumPlane::Screen,
-        local_only: false,
-        target_params: [None, None],
-        gravity: 9.8,
-        length: 100.0,
-        frequency: 1.0,
-        angle_damping: 0.5,
-        length_damping: 0.5,
-        output_scale: [1.0, 1.0],
     }
 }
 
@@ -794,7 +760,7 @@ fn grid_part(albedo: usize, growth: Growth) -> ClmPart {
     }
 }
 
-// --- strand_chain ----------------------------------------------------------
+// --- strand_response ----------------------------------------------------------
 
 /// The strip the strand is drawn on, in model pixels: half its width, its top
 /// and bottom edge in node-local vertex space, and how many rows of vertices
@@ -806,50 +772,22 @@ const STRAND_TOP: f32 = 80.0;
 const STRAND_BOTTOM: f32 = -80.0;
 const STRAND_ROWS: usize = 9;
 
-/// Links the chain hangs the strip on, and so bend params the fixture carries.
 const STRAND_LINKS: u32 = 3;
-/// The chain's damping, per second. Low enough that a swing is still moving
-/// several frames after the anchor steps, which is what a mid-swing baseline
-/// needs to be a transient rather than a rest shape.
-const STRAND_DAMPING: f32 = 0.36;
-/// The chain's authored gravity. The bake folds the model's
-/// `pixels_per_meter * gravity` into this, so 1.0 is one g at the model's own
-/// scale — 9800 px/s^2 under the default 1000 px/m — and not a pixel
-/// acceleration. The importer defaults a physics node's gravity to the same
-/// 1.0 for the same reason.
-const STRAND_GRAVITY: f32 = 1.0;
 /// How far `turn` slides the head at either end of its range, in model
 /// pixels — three quarters of the strand's own length, so the step it hands
-/// the chain's anchor swings the strip visibly rather than nudging it.
+/// the head moves a visible distance in the frame.
 const TURN_SHIFT_X: f32 = 120.0;
-/// `turn`'s position in `strand_chain`'s param list, after one bend param per
+/// `turn`'s position in `strand_response`'s param list, after one bend param per
 /// link.
 const TURN: usize = STRAND_LINKS as usize;
 
-/// The particle-chain regression model: one strip of art hung off a
-/// three-link spine that carries a chain, with a `turn` param that moves the
-/// spine's anchor.
-///
-/// Nothing else in the fixture set carries a chain, so without this the whole
-/// path from a solved chain to moved vertices is unpinned: the chain writes a
-/// bend per link into `bend 1`..`bend 3`, and the spine composes those bends
-/// into the strip's vertices. **No deform bindings**: a spine turns the art
-/// itself, so there is nothing to key. The bend params are the chain's
-/// outputs and are never posed by hand — a config moves the head with `turn`
-/// and the chain writes the rest.
-///
-/// A settled chain stands on its drawing whatever `turn` is, so a baseline of
-/// this model is only interesting mid-swing; `Config::ticks_after_pose` in
-/// `visual-tests` is what captures that.
-fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
+fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
     let mesh = strand_mesh();
     // The strip is a literal, so this is a fit of known-good rest geometry.
     let fit = fit_strand(&mesh, STRAND_LINKS, None).expect("the strip is a fittable strand");
 
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));
-    // The spine's anchor is this group's world position, so `turn` moving the
-    // group is what starts a swing.
     let head = push(&mut nodes, Some(root), group_node("Head"));
     // The spine sits at the strand's root and the art hangs under it, which is
     // the shape `spine_fit` authors.
@@ -876,25 +814,6 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
                     })
                     .collect(),
                 targets: (0..fit.lengths.len()).map(|i| Some(pid(i))).collect(),
-                chain: Some(ClmChain {
-                    local_only: false,
-                    gravity: STRAND_GRAVITY,
-                    // The chain decides the bends it writes, so the file
-                    // carries no `weight` key.
-                    weight: 1.0,
-                    damping: STRAND_DAMPING,
-                    // Still air writes no `air_drag` key either.
-                    air_drag: 0.0,
-                    links: (0..fit.lengths.len())
-                        .map(|_| ClmLinkFeel {
-                            gravity_scale: 1.0,
-                            stiffness: 0.0,
-                            // No limit, so the file carries no `limit` key
-                            // and the fixture's bytes do not move.
-                            limit: None,
-                        })
-                        .collect(),
-                }),
             }),
             ..blank_node()
         },
@@ -917,6 +836,33 @@ fn strand_chain() -> (ClmStructure, Vec<ClmTexture>) {
             ..part_node(strand_part(&mesh))
         },
     );
+
+    // Each downstream link follows its parent's unclipped motion.
+    let mut parent = head;
+    for (i, period_s) in [0.32, 0.42, 0.54].into_iter().enumerate() {
+        let source = if i == 0 {
+            ResponseSource::PoseParam(pid(TURN))
+        } else {
+            ResponseSource::Parent
+        };
+        parent = push(
+            &mut nodes,
+            Some(parent),
+            ClmNode {
+                name: format!("Bend response {}", i + 1),
+                kind: ClmNodeKind::MotionResponse(MotionResponse {
+                    inputs: vec![ResponseInput {
+                        source,
+                        gain: if i == 0 { 0.24 } else { 0.85 },
+                    }],
+                    output_param: Some(pid(i)),
+                    period_s,
+                    damping_ratio: 0.72,
+                }),
+                ..blank_node()
+            },
+        );
+    }
 
     let mut params: Vec<ClmParam> = (0..STRAND_LINKS as usize).map(bend_param).collect();
     params.push(ClmParam {

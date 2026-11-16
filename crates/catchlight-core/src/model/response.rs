@@ -141,25 +141,12 @@ impl Model {
             Ok(())
         };
         for node in self.nodes.values() {
-            match &node.kind {
-                ModelNodeKind::SimplePhysics(p) => {
-                    for p in p.target_params().iter().flatten() {
-                        check(p, "is also driven by a pendulum")?;
+            if let ModelNodeKind::MotionResponse(r) = &node.kind {
+                for t in &r.inputs {
+                    if let ResponseSource::PoseParam(p) = &t.source {
+                        check(p, "is a response output and cannot be a pose input")?;
                     }
                 }
-                ModelNodeKind::Spine(s) if s.chain().is_some() => {
-                    for p in s.targets().iter().flatten() {
-                        check(p, "is also driven by a particle chain")?;
-                    }
-                }
-                ModelNodeKind::MotionResponse(r) => {
-                    for t in &r.inputs {
-                        if let ResponseSource::PoseParam(p) = &t.source {
-                            check(p, "is a response output and cannot be a pose input")?;
-                        }
-                    }
-                }
-                _ => {}
             }
         }
         for binding in &self.bindings {

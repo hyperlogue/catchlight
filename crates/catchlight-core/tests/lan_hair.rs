@@ -18,7 +18,7 @@ use catchlight_core::{Model, NodeId, NodeKind, ParamId, Puppet, Vec2, Vec3};
 const DT: f32 = 1.0 / 60.0;
 
 /// Cross-section midpoint in the evaluated mesh, selected by authored Y.
-/// This observes the visible deformation, not the particle-chain endpoint.
+/// Measures the strand on its rendered mesh.
 fn section_center(puppet: &Puppet, model: &Model, id: &str, y: f32) -> Vec2 {
     let geometry = catchlight_core::geometry::EvaluatedGeometry::new(model, puppet).unwrap();
     let mesh = geometry
@@ -416,9 +416,7 @@ fn shaped_fringe_stays_close_to_its_drawing_across_head_poses() {
     let mut simulated = Puppet::new(&model);
     let mut drawn = Puppet::new(&model);
     drawn.set_physics_enabled(false);
-    // The short swept fringe is shaped hair, not a long loose lock: gravity
-    // does not pull a held pose off the drawing, so it cannot turn into a
-    // curtain over the eyes.
+    // Held poses keep the shaped fringe close to its painted position.
     for (name, value) in [
         ("head_roll", 0.0),
         ("head_roll", -30.0),
@@ -675,7 +673,7 @@ fn hair_sleeps_under_a_placed_root() {
     }
 }
 
-/// **A held drag on a lock lets the hair settle.** The physics pre-pass sees
+/// **A held drag on a lock lets the hair settle.** The slot sampler sees
 /// the same scratch transform the render does, so the slot follows the
 /// dragged art instead of alternating between it and the undragged one.
 #[test]

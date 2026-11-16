@@ -110,38 +110,24 @@ export function useWorkspaceActions(
       run(async () => {
         const parent = node ?? session.tree().id;
         const reply =
-          kind === "physics"
+          kind === "spine"
             ? await session.send({
-                cmd: "physics_add",
+                cmd: "spine_add",
                 parent,
-                name: "Pendulum",
-                kind: "rigid",
-                target_params: {},
-                length: 100,
-                gravity: 1,
-                frequency: null,
-                angle_damping: null,
-                length_damping: null,
+                name: "Spine",
+                joints: [
+                  [0, -50],
+                  [0, -100],
+                  [0, -150],
+                ],
+                targets: null,
               })
-            : kind === "spine"
-              ? await session.send({
-                  cmd: "spine_add",
-                  parent,
-                  name: "Spine",
-                  joints: [
-                    [0, -50],
-                    [0, -100],
-                    [0, -150],
-                  ],
-                  targets: null,
-                  chain: null,
-                })
-              : await session.send({
-                  cmd: "node_add",
-                  parent,
-                  name: null,
-                  kind,
-                });
+            : await session.send({
+                cmd: "node_add",
+                parent,
+                name: null,
+                kind,
+              });
         if (reply.result === "node") select(reply.node);
       }),
     importImages: (files: readonly File[]) =>
