@@ -57,6 +57,35 @@ Run `cargo test -p visual-tests` for the full native suite, including synthetic
 renderer cases. See `crates/visual-tests/src/lib.rs` for baseline review and
 update commands.
 
+## Rust releases
+
+The **Publish Rust crates** GitHub Actions workflow is manually dispatched and
+defaults to a dry run. It packages and builds the eight crates listed in
+[the release script](.github/scripts/publish-crates.sh), using Cargo's workspace
+publishing support to resolve unpublished dependencies together and publish in
+dependency order. The importer, browser WASM boundary, visual tests, and xtask
+are excluded.
+
+1. Update `workspace.package.version` and the internal dependency versions in
+   `Cargo.toml` together, update `Cargo.lock`, and merge after CI passes.
+2. Run **Publish Rust crates** on the release commit with `dry_run` enabled.
+3. Configure the repository Actions secret `CRATES_IO_TOKEN` with a crates.io
+   API token authorized to publish all eight crates, including creating them
+   for the initial release.
+4. Tag the validated commit `v<workspace version>` (initially `v0.1.0`) and
+   push the tag. Select that tag when dispatching the workflow with `dry_run`
+   disabled. The workflow checks the tag against the manifest version and
+   repeats package verification before publishing.
+
+Tag pushes alone do not publish. Publishing is not atomic across crates: if
+an upload fails, inspect crates.io and the run logs before retrying; uploaded
+versions cannot be overwritten. The workflow does not create tags or GitHub
+releases. To run the same package verification locally:
+
+```sh
+nix develop -c bash .github/scripts/publish-crates.sh dry-run
+```
+
 ## Acknowledgement
 
 Catchlight is heavily inspired by
