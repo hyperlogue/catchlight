@@ -1,7 +1,7 @@
 //! Portable JSON records and durable atomic artifacts. Records contain relative
 //! output names and input hashes, never input paths or adapter/device identity.
 use super::frame::{color_retained, FrameRuntime};
-use super::spec::{bad, Framing, Physics, ResolvedRequest, ResolvedSpec};
+use super::spec::{bad, Framing, MotionResponseMode, ResolvedRequest, ResolvedSpec};
 use crate::Error;
 use catchlight_core::geometry::EvaluatedGeometry;
 use catchlight_core::{Model, ModelNodeKind, ParamId, Puppet};
@@ -216,7 +216,7 @@ pub struct BoundsOutput {
     pub schema: u32,
     pub space: String,
     pub pose: BTreeMap<String, f32>,
-    pub physics: Physics,
+    pub motion_responses: MotionResponseMode,
     pub frame: Option<u32>,
     pub overall: Option<Bounds>,
     pub parts: BTreeMap<String, PartBounds>,
@@ -281,7 +281,7 @@ impl BoundsOutput {
             schema: 1,
             space: "world".into(),
             pose: effective_pose(model, &runtime.puppet)?,
-            physics: request.physics.clone(),
+            motion_responses: request.motion_responses.clone(),
             frame: request.animation.as_ref().map(|_| runtime.index),
             overall: overall.map(|b| Bounds {
                 min: b.min.to_array(),
@@ -484,7 +484,7 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
     let authored = serde_json::json!({
         "schema":1,
         "requests":{
-            "detail":{"rect":[-10,-10,120,120],"scale":2,"physics":{"mode":"off"},
+            "detail":{"rect":[-10,-10,120,120],"scale":2,"motion_responses":{"mode":"off"},
                       "pose":{"drive":0.5},"geometry":["panel-a"]},
             "pulse":{"extends":"detail","animation":{"source":"spec","name":"pulse"},
                      "trace_params":["drive"],"trace_responses":["sensor"]}

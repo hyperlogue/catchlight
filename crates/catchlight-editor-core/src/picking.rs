@@ -45,7 +45,7 @@ pub fn pick_all(model: &Model, puppet: &Puppet, world: Vec2) -> Vec<u32> {
     }
     // Descending z = front first; equal z: later visit draws on top, so it wins.
     // total_cmp, not partial_cmp: a NaN z_order (a degenerate ZOrder binding, a
-    // NaN-poisoned physics driver) makes the partial_cmp form non-transitive,
+    // non-finite response output) makes the partial_cmp form non-transitive,
     // which sort_by can detect and panic on.
     hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
     hits.into_iter().map(|(_, _, id)| id).collect()

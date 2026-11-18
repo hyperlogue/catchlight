@@ -95,7 +95,7 @@ fn pose_from(cached: &CachedModel, params: &[ParamSetting]) -> Result<Pose> {
     Ok(pose)
 }
 
-/// Restore `cached` to its pristine state, apply `params`, settle the physics,
+/// Restore `cached` to its pristine state, apply `params`, reset the motion responses,
 /// refresh the render cache, and collect the frame's drawables — everything a
 /// render needs except the render pass itself. `world` is the puppet's root
 /// transform: identity for a lone puppet, a translation when several share

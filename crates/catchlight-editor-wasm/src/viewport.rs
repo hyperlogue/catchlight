@@ -57,7 +57,7 @@
 //!   stale.** A started viewport still wakes on every animation frame, but a
 //!   clean one returns without touching the GPU or acquiring a surface
 //!   texture. A frame that drew stays dirty exactly while the replica's tick
-//!   reports [`Motion`](catchlight_core::Motion): physics settling and an
+//!   reports [`Motion`](catchlight_core::Motion): responses settling and an
 //!   animation playing draw themselves, and everything else — a pose change, a
 //!   scratch edit, a structure push — is someone calling [`invalidate`]. So a
 //!   settled puppet costs a predicate per frame and a swinging one keeps
@@ -101,8 +101,8 @@
 //!   *timestamp* rather than a `dt` of its own:
 //!   [`ReplicaState::frame`](crate::ReplicaState::frame) ticks once per
 //!   timestamp and the second canvas in the batch only collects and draws.
-//!   Two viewports advancing the same puppet would run its physics and its
-//!   animations at twice the rate.
+//!   Advancing the puppet from both viewports would double the speed of
+//!   its animations and motion responses.
 //!
 //! [`invalidate`]: Viewport::invalidate
 //! [`readback`]: Viewport::readback
@@ -744,8 +744,8 @@ impl Inner {
         // step from its own last one, so a second canvas in this same
         // animation frame redraws without advancing anything.
         //
-        // Stale again while the puppet is still moving itself, so physics
-        // settles and an animation plays with nobody calling `invalidate`.
+        // Stale again while the puppet is still moving itself, so motion responses
+        // settle and an animation plays with nobody calling `invalidate`.
         if replica.frame(now_ms, &mut self.list)?.any() {
             self.dirty = true;
         }

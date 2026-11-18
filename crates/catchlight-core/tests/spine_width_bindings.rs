@@ -135,7 +135,7 @@ fn live_bends_drive_width_before_bending_in_the_same_frame_at_three_rates() {
 fn combined_extreme_and_intermediate_inputs_keep_one_width_budget() {
     let f = Fixture::new();
     let mut puppet = Puppet::new(&f.model);
-    puppet.set_physics_enabled(false);
+    puppet.set_motion_responses_enabled(false);
     for yaw in [-1.0, -0.35, 0.0, 0.65, 1.0] {
         for body in [-1.0, 0.0, 1.0] {
             for upper in [-LIMIT, 0.0, LIMIT] {
@@ -162,7 +162,7 @@ fn neutral_width_is_exactly_inactive_and_the_recipe_round_trips() {
     assert!(f.model.authored_eq(&reopened).unwrap());
     assert_eq!(reopened.to_clm_bytes().unwrap(), encoded);
     let mut puppet = Puppet::new(&reopened);
-    puppet.set_physics_enabled(false);
+    puppet.set_motion_responses_enabled(false);
     puppet.tick(&reopened, 0.0);
     for lock in &f.locks {
         for part in &lock.parts {

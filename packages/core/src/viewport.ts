@@ -33,7 +33,7 @@
  * for; running is that *and* the canvas being on screen *and* the page being
  * visible. A background tab already stops firing `requestAnimationFrame`, but
  * an editor scrolled off screen, behind a full-screen dialog, or in a collapsed
- * panel does not — it keeps ticking physics on a GPU nobody is looking at. The
+ * panel does not — it keeps advancing motion responses on a GPU nobody is looking at. The
  * two observers below are what close that gap; the renderer itself is told
  * nothing more than `start` and `stop`, which it already had to make
  * repeatable.

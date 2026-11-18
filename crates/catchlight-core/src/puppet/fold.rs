@@ -162,7 +162,6 @@ impl Puppet {
         let Some(node) = self.arena.get_mut(b.node) else {
             return;
         };
-        let mut moved_transform = true;
         match target {
             ScalarTarget::Tx => node.transform.translation.x += value,
             ScalarTarget::Ty => node.transform.translation.y += value,
@@ -173,7 +172,6 @@ impl Puppet {
             ScalarTarget::Ry => node.transform.rotation.y += value,
             ScalarTarget::Rz => node.transform.rotation.z += value,
             other => {
-                moved_transform = false;
                 match &mut node.kind {
                     NodeKind::Part(p) => write_colour(
                         other,
@@ -189,6 +187,8 @@ impl Puppet {
                         &mut c.screen_tint,
                         value,
                     ),
+                    // A mesh group has no colour of its own. Its z order still
+                    // contributes to the draw order of its descendants below.
                     _ => {}
                 }
                 if other == ScalarTarget::ZOrder {
@@ -196,7 +196,7 @@ impl Puppet {
                 }
             }
         }
-        if moved_transform {
+        if target.moves_geometry() {
             self.arena.mark_transform_dirty(b.node);
         }
     }

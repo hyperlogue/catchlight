@@ -514,12 +514,8 @@ pub(crate) fn bake_mesh_group_pins(
 /// receive vertex deformation through `descendant_meshed_nodes`; applying a
 /// Node-level shift to them too would double the deform.
 fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
-    // Descend only through Parts and Composites: the stop condition
-    // halts descent at (but still includes) everything else, so a nested
-    // MG or a collected Node never has its subtree walked. The retain
-    // then drops the Parts/Composites/MGs, leaving the Node-level targets.
-    // A Composite with `propagate_mesh_group` unset does not propagate,
-    // so the walk halts there too.
+    // Walk through parts, participating composites, spines and motion
+    // responses. A group carries its subtree with its own translation.
     let descends = |id: NodeIdx| match arena.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(_)) => true,
         Some(NodeKind::Composite(c)) => c.propagate_mesh_group,

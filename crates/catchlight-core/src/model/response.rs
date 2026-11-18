@@ -221,3 +221,27 @@ impl Model {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::SeededHex;
+
+    #[test]
+    fn duplicate_includes_all_copied_responses_in_the_index_immediately() {
+        let mut model = Model::new();
+        let root = model.root().unwrap().clone();
+        let mut ids = SeededHex::new(17);
+        let row = || {
+            ModelNode::new(
+                "response",
+                ModelNodeKind::MotionResponse(MotionResponse::default()),
+            )
+        };
+        let parent = model.add_node(&root, row(), &mut ids).unwrap();
+        model.add_node(&parent, row(), &mut ids).unwrap();
+        assert_eq!(model.responses().count(), 2);
+        model.duplicate_subtree(&parent, &mut ids).unwrap();
+        assert_eq!(model.responses().count(), 4);
+    }
+}

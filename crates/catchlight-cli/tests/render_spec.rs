@@ -78,7 +78,7 @@ fn defaults_resolve_independently_and_materialize_all_base_controls() {
     assert_eq!(r.framing.rect, DEFAULT_RECT);
     assert_eq!(r.framing.scale, DEFAULT_SCALE);
     assert_eq!(r.framing.size, [960, 1600]);
-    assert_eq!(r.physics, Physics::Settled {});
+    assert_eq!(r.motion_responses, MotionResponseMode::default());
     assert_eq!(r.background, Background::default());
     assert_eq!(r.pose.len(), 3);
     assert!(r.pose.values().all(|v| *v == 0.25));
@@ -94,9 +94,9 @@ fn defaults_resolve_independently_and_materialize_all_base_controls() {
 fn inheritance_is_shallow_null_resets_and_all_names_execute_in_sorted_order() {
     let r = resolve(json!({"schema":1,"requests":{
         "z-base":{"rect":[10,20,100,100],"scale":2,"pose":{"drive":0.5,"closure":1},
-            "background":{"srgb":[0,0,0],"alpha":0},"physics":{"mode":"off"},"only_parts":["panel-a"]},
+            "background":{"srgb":[0,0,0],"alpha":0},"motion_responses":{"mode":"off"},"only_parts":["panel-a"]},
         "a-child":{"extends":"z-base","scale":null,"pose":{"drive":1},"only_parts":[],"background":null},
-        "b-reset":{"extends":"a-child","rect":null,"physics":null,"pose":null,"only_parts":null}
+        "b-reset":{"extends":"a-child","rect":null,"motion_responses":null,"pose":null,"only_parts":null}
     }}));
     assert_eq!(
         r.requests.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -111,7 +111,7 @@ fn inheritance_is_shallow_null_resets_and_all_names_execute_in_sorted_order() {
     assert_eq!(child.background, Background::default());
     let reset = &r.requests["b-reset"];
     assert_eq!(reset.framing.rect, DEFAULT_RECT);
-    assert_eq!(reset.physics, Physics::Settled {});
+    assert_eq!(reset.motion_responses, MotionResponseMode::default());
     assert_eq!(reset.only_parts, None);
     assert!(reset.pose.values().all(|v| *v == 0.25));
     assert_eq!(r.requests["z-base"].framing.scale, 2.0);
@@ -140,14 +140,14 @@ fn inheritance_reports_missing_bases_cycles_and_does_not_use_call_stack() {
 #[test]
 fn single_request_discovery_uses_inheritance_without_charging_other_render_work() {
     let document = parse(json!({"schema":1,"requests":{
-        "base":{"rect":[0,0,4096,4096],"scale":1,"physics":{"mode":"off"}},
+        "base":{"rect":[0,0,4096,4096],"scale":1,"motion_responses":{"mode":"off"}},
         "detail":{"extends":"base","rect":[0,0,32,32]},
         "unrelated":{"rect":[0,0,8192,8192],"scale":1}
     }}));
     assert!(document.resolve(&model()).is_err());
     let detail = document.resolve_one(&model(), "detail").unwrap();
     assert_eq!(detail.framing.size, [32, 32]);
-    assert_eq!(detail.physics, Physics::Off {});
+    assert_eq!(detail.motion_responses, MotionResponseMode::Off {});
     assert!(document.resolve_one(&model(), "missing").is_err());
 }
 
@@ -162,10 +162,6 @@ fn framing_rounds_positive_halves_up_and_preserves_scale_and_center() {
         Framing::resolve([0.0, 0.0, 0.01, 0.01], 1.0).unwrap().size,
         [1, 1]
     );
-    let f = Framing::legacy(64, 96, 5000.0).unwrap();
-    assert_eq!(f.size, [64, 96]);
-    assert_eq!(f.center, [0.0, 0.0]);
-    assert!((f.height - 5000.0).abs() < 0.001);
     for (rect, scale) in [
         ([0.0, 0.0, 0.0, 1.0], 1.0),
         ([0.0, 0.0, 1.0, 1.0], 0.0),
@@ -192,8 +188,8 @@ fn filenames_and_animation_decimation_include_zero_without_changing_updates() {
         }
     );
     assert_eq!(
-        req.physics,
-        Physics::Simulate {
+        req.motion_responses,
+        MotionResponseMode::On {
             response_clock: Default::default(),
         }
     );
@@ -216,7 +212,7 @@ fn filenames_and_animation_decimation_include_zero_without_changing_updates() {
         ]
     );
     let r = resolve(animated(
-        json!({"physics":{"mode":"simulate"},"frames":{"count":1}}),
+        json!({"motion_responses":{"mode":"on"},"frames":{"count":1}}),
     ));
     assert_eq!(r.simulation_updates, 0);
     assert_eq!(
@@ -226,27 +222,31 @@ fn filenames_and_animation_decimation_include_zero_without_changing_updates() {
 }
 
 #[test]
-fn static_and_animated_physics_have_distinct_valid_defaults() {
-    assert_bad(
-        json!({"schema":1,"requests":{"a":{"physics":{"mode":"simulate"}}}}),
-        "requires an animation",
-    );
+fn static_and_animated_requests_enable_motion_responses_by_default() {
+    for doc in [
+        json!({"schema":1,"requests":{"pulse":{}}}),
+        animated(json!({})),
+    ] {
+        assert_eq!(
+            resolve(doc).requests["pulse"].motion_responses,
+            MotionResponseMode::default()
+        );
+    }
     for field in [json!({"frames":{}}), json!({"trace_params":[]})] {
         assert_bad(
             json!({"schema":1,"requests":{"a":field}}),
             "require an animation",
         );
     }
-    assert_bad(
-        animated(json!({"physics":{"mode":"settled"}})),
-        "animated requests",
+    let r = resolve(animated(json!({"motion_responses":{"mode":"off"}})));
+    assert_eq!(
+        r.requests["pulse"].motion_responses,
+        MotionResponseMode::Off {}
     );
-    let r = resolve(animated(json!({"physics":{"mode":"off"}})));
-    assert_eq!(r.requests["pulse"].physics, Physics::Off {});
     assert_bad(animated(json!({"frames":{"count":0}})), "must be positive");
     assert_bad(animated(json!({"frames":{"every":0}})), "must be positive");
     assert_bad(
-        animated(json!({"physics":{"mode":"simulate","warmup_frames":10}})),
+        animated(json!({"motion_responses":{"mode":"on","warmup_frames":10}})),
         "unknown field",
     );
 }
@@ -464,7 +464,7 @@ fn budgets_fail_before_output_allocation_with_named_limits() {
     assert_eq!(r.simulation_updates, MAX_UPDATES);
     assert_bad(
         animated(
-            json!({"frames":{"count":100001,"every":100000},"physics":{"mode":"simulate","initial":"fresh"}}),
+            json!({"frames":{"count":100001,"every":100000},"motion_responses":{"mode":"on","initial":"fresh"}}),
         ),
         "unknown field",
     );
@@ -501,7 +501,7 @@ fn documented_shortcuts_and_specs_normalize_identically_without_mutation() {
         scale: Some(0.512),
         set: vec!["drive=0.5".into()],
         background: Some(catchlight_cli::render::args::BackgroundArg::Transparent),
-        physics: Some(catchlight_cli::render::args::PhysicsArg::Off),
+        motion_responses: Some(catchlight_cli::render::args::MotionResponsesArg::Off),
     };
     let flag_request = Document::single(flags.request(&m).unwrap())
         .resolve(&m)

@@ -2093,9 +2093,7 @@ class TextureAlpha(StrEnum):
 class ScalarTarget(StrEnum):
     """A property a binding drives with one number per cell.
 
-    The spellings are the model file's own, which is why the colour and
-    output-scale channels run their words together rather than reading as
-    snake_case.
+    The colour channel names use the model file's spellings.
     """
 
     TX = "tx"

@@ -11,10 +11,8 @@
 //! and diffs it against `tests/baselines/<model>/<config>.png` under the
 //! thresholds in `Thresholds::default`; failures land as
 //! expected/actual/diff/summary under `tmp/visual-test-failures/<config>/`.
-//! A case renders settled unless it asks for a transient with
-//! [`Config::ticks_after_pose`], which is how a physics driver gets a
-//! baseline at all: settled, one hangs to the same shape whatever pose put
-//! it there.
+//! A still frame samples motion responses at equilibrium. A transient case
+//! uses [`Config::ticks_after_pose`] to capture the lag after a pose change.
 //!
 //! To **update baselines** after an intended change, run
 //! `cargo run -p visual-tests --release -- update` (add `--filter SUBSTR` to

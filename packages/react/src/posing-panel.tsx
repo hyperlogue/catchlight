@@ -255,7 +255,7 @@ export function BindingsPanel({
   if (!params.length)
     return (
       <EmptyState icon="key" title="Create your first param">
-        Params give your model controls you can pose, animate, and drive with physics.
+        Params give your model controls you can pose, animate, and drive with motion responses.
       </EmptyState>
     );
   return (

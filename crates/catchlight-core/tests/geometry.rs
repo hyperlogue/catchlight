@@ -198,7 +198,7 @@ fn spine_bends_are_in_the_observed_positions_without_an_extra_tick() {
     mesh.verts = vec![0.0, -100.0, 1.0, -100.0, 0.0, -99.0];
     let part = add_part(&mut model, &spine, mesh, &mut ids);
     let mut puppet = Puppet::new(&model);
-    puppet.set_physics_enabled(false);
+    puppet.set_motion_responses_enabled(false);
     puppet.set_param_value(&bend, 0.5);
     puppet.tick(&model, 0.0);
     let frame = EvaluatedGeometry::new(&model, &puppet).unwrap();
@@ -207,7 +207,7 @@ fn spine_bends_are_in_the_observed_positions_without_an_extra_tick() {
     assert_eq!(tip.rest, Vec2::new(0.0, -100.0));
     close(tip.world, [100.0, 0.0, 0.0]);
     assert_eq!(puppet.param_value(&bend), Some(0.5));
-    assert!(!puppet.physics_enabled());
+    assert!(!puppet.motion_responses_enabled());
 }
 
 #[test]

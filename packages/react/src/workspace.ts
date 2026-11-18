@@ -308,7 +308,7 @@ export function useCanvasSelection(
   };
 }
 
-/** The overlay follows the evaluated mesh, including live physics. State only
+/** The overlay follows the evaluated mesh, including motion responses. State only
  * changes when coordinates do, and a hidden tab pauses requestAnimationFrame. */
 export function useSelectionVertices(
   session: Session | undefined,

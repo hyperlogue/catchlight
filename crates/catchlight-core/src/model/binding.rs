@@ -154,6 +154,13 @@ impl BindingKey {
 }
 
 impl BindingTarget {
+    pub(crate) fn moves_geometry(self) -> bool {
+        match self {
+            Self::Deform => true,
+            Self::Scalar(s) => s.moves_geometry(),
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         if s.eq_ignore_ascii_case("deform") {
             return Some(Self::Deform);
@@ -177,6 +184,27 @@ impl BindingTarget {
 }
 
 impl ScalarTarget {
+    pub(crate) fn moves_geometry(self) -> bool {
+        match self {
+            Self::Tx
+            | Self::Ty
+            | Self::Tz
+            | Self::Sx
+            | Self::Sy
+            | Self::Rx
+            | Self::Ry
+            | Self::Rz => true,
+            Self::Opacity
+            | Self::ZOrder
+            | Self::TintR
+            | Self::TintG
+            | Self::TintB
+            | Self::ScreenTintR
+            | Self::ScreenTintG
+            | Self::ScreenTintB => false,
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s.to_ascii_lowercase().as_str() {
             "tx" | "translatex" => Self::Tx,
@@ -240,7 +268,7 @@ impl ScalarTarget {
     }
 
     /// The value a cell holds when the binding has no effect. Multiplicative
-    /// targets (scale, opacity, tint, output-scale) rest at 1; additive at 0.
+    /// targets (scale, opacity, tint) rest at 1; additive at 0.
     pub fn identity(self) -> f32 {
         match self {
             Self::Sx | Self::Sy | Self::Opacity | Self::TintR | Self::TintG | Self::TintB => 1.0,
@@ -1134,9 +1162,16 @@ impl Model {
                 return Err(range_error("needs a range containing zero"));
             }
             let p = self.param(param).ok_or(ModelError::UnknownParam)?;
-            if normalized_zero(min, max) != normalized_zero(p.min, p.max)
-                && self.bindings_of_param(param).next().is_some()
-            {
+            let old_zero = normalized_zero(p.min, p.max);
+            let new_zero = normalized_zero(min, max);
+            if self.bindings_of_param(param).any(|binding| {
+                let Some(axis) = binding.params().axis_of(param) else {
+                    return false;
+                };
+                let keys = &binding.key_positions()[axis as usize];
+                crate::interpolate::neutral_key(keys, old_zero)
+                    != crate::interpolate::neutral_key(keys, new_zero)
+            }) {
                 return Err(range_error("has a binding whose zero key would move"));
             }
         }

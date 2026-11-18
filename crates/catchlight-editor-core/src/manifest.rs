@@ -731,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn check_flags_untextured_part_and_physics_without_target() {
+    fn check_flags_a_part_without_a_texture() {
         let mut m = Model::new();
         let root = m.root().unwrap().clone();
         m.add_node(

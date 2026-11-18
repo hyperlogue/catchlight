@@ -6,7 +6,7 @@
 //! file; array/map headers and field names live in explicit overhead buckets.
 //! `canonical_matches_input` is a byte comparison, not a size comparison. Only
 //! when it is true are the canonical element counts exact on-disk attribution.
-//! Historical formats, unknown fields and noncanonical CBOR remain inspectable
+//! Unknown fields and noncanonical CBOR remain inspectable
 //! without silently presenting re-encoded sizes as original storage sizes.
 //!
 //! Texture references are not charged repeatedly to nodes. The texture table

@@ -18,7 +18,7 @@ pub fn draw(
         Positions::Posed => puppet,
         Positions::Rest => {
             neutral = Puppet::new(model);
-            neutral.set_physics_enabled(false);
+            neutral.set_motion_responses_enabled(false);
             neutral.tick(model, 0.0);
             &neutral
         }

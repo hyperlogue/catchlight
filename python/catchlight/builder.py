@@ -428,7 +428,7 @@ class Builder:
         A part is meshed when this is not `(0, 0)`, which is the question
         `check`'s "textured but its mesh has no triangles" lint answers in
         prose. A node of a kind that holds no mesh at all — a group, a
-        composite, a physics driver — raises, because the answer for one of
+        composite, a motion response — raises, because the answer for one of
         those is not a count.
         """
         info = self.info(node)

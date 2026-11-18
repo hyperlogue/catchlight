@@ -74,12 +74,12 @@ fn child_reads_the_same_interval_unclipped_and_all_damping_regimes_settle() {
             p.tick(&m, 1. / 60.);
         }
         assert_eq!(p.param_value(&pid("bend")), Some(0.));
-        assert!(!p.tick(&m, 1. / 60.).physics);
-        p.set_physics_enabled(false);
+        assert!(!p.tick(&m, 1. / 60.).motion_responses);
+        p.set_motion_responses_enabled(false);
         p.set_param_value(&pid("bend"), 0.5);
         p.tick(&m, 0.);
         assert_eq!(p.param_value(&pid("bend")), Some(0.5));
-        p.set_physics_enabled(true);
+        p.set_motion_responses_enabled(true);
         p.tick(&m, 1. / 60.);
         assert_eq!(p.param_value(&pid("bend")), Some(0.));
     }
@@ -188,15 +188,11 @@ fn low_rate_fixed_clock_tracks_a_continuous_ramp() {
     }
 }
 
-#[test]
-fn loop_and_restart_initialize_at_the_new_clip_sample() {
+fn cut_clip() -> catchlight_core::formats::clm::ClmAnimation {
     use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
-    let m = model(0.75);
-    let mut p = Puppet::new(&m);
-    let dt = 1. / 60.;
-    p.set_animations(vec![ClmAnimation {
+    ClmAnimation {
         name: "turn".into(),
-        timestep: dt,
+        timestep: 1. / 60.,
         length: 6,
         lead_in: 1,
         lead_out: 4,
@@ -214,7 +210,16 @@ fn loop_and_restart_initialize_at_the_new_clip_sample() {
                 },
             ],
         }],
-    }]);
+    }
+}
+
+#[test]
+fn loop_and_restart_initialize_at_the_new_clip_sample() {
+    let m = model(0.75);
+    let mut p = Puppet::new(&m);
+    let clip = cut_clip();
+    let dt = clip.timestep;
+    p.set_animations(vec![clip]);
     assert!(p.play_animation("turn"));
     p.tick(&m, 0.);
     for _ in 0..3 {
@@ -236,8 +241,7 @@ fn loop_and_restart_initialize_at_the_new_clip_sample() {
     assert_eq!(p.response_trace(&nid("upper")).unwrap().lag, 0.);
 }
 
-#[test]
-fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() {
+fn slot_model() -> (Model, catchlight_core::SlotId) {
     use catchlight_core::{
         formats::clm::{ClmIndices, ClmMesh},
         ModelPart, SlotId,
@@ -287,6 +291,41 @@ fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() 
         output_param: Some(pid("broad")),
     };
     m.set_motion_response(&nid("upper"), config).unwrap();
+    (m, slot)
+}
+
+#[test]
+fn rebaking_on_a_loop_cut_resets_slot_input_and_its_follower() {
+    let (mut m, _) = slot_model();
+    let key = BindingKey::new(
+        pid("roll"),
+        nid("art"),
+        BindingTarget::Scalar(ScalarTarget::Tx),
+    );
+    m.set_binding_key(&key, [0, 0], -100.).unwrap();
+    m.set_binding_key(&key, [1, 0], 100.).unwrap();
+    let mut p = Puppet::new(&m);
+    let clip = cut_clip();
+    let dt = clip.timestep;
+    p.set_animations(vec![clip]);
+    p.play_animation("turn");
+    p.tick(&m, 0.);
+    for _ in 0..3 {
+        p.tick(&m, dt);
+    }
+    assert!(p.response_trace(&nid("tip")).unwrap().lag.abs() > 0.001);
+    m.update_node(&nid("art"), |n| n.name = Name::truncated("renamed"))
+        .unwrap();
+    p.tick(&m, dt);
+    assert_eq!(p.animation_sample().unwrap().frame, 1.);
+    for name in ["upper", "tip"] {
+        assert_eq!(p.response_trace(&nid(name)).unwrap().lag, 0.);
+    }
+}
+
+#[test]
+fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() {
+    let (mut m, slot) = slot_model();
     // A custom mesh refit is another binding writer. Reject a displaced
     // neutral cell before changing the mesh, slot, or any other binding.
     let corrective = BindingKey::new(pid("bend"), nid("art"), BindingTarget::Deform);
@@ -496,4 +535,69 @@ fn resolving_a_fragment_output_checks_its_range_before_the_edit_lands() {
         .rename_param_id(&pid("control"), pid("bend"))
         .is_err());
     assert_eq!(fragment.to_clm_bytes().unwrap(), before);
+}
+
+#[test]
+fn sampled_sine_carries_lag_across_its_fastest_step() {
+    use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+    let m = model(0.75);
+    let dt = 1. / 60.;
+    let count = 32;
+    let value = |i: i32| ((i as f32 + 0.5) * std::f32::consts::TAU / count as f32).sin();
+    let mut p = Puppet::new(&m);
+    let mut reference = Puppet::new(&m);
+    p.set_animations(vec![ClmAnimation {
+        name: "sine".into(),
+        timestep: dt,
+        length: count,
+        lead_in: -1,
+        lead_out: -1,
+        lanes: vec![ClmLane {
+            param: pid("roll"),
+            interpolation: catchlight_core::InterpolateMode::Linear,
+            keyframes: (0..count)
+                .map(|frame| ClmKeyframe {
+                    frame,
+                    value: value(frame),
+                })
+                .collect(),
+        }],
+    }]);
+    p.play_animation("sine");
+    for i in 0..=2 * count {
+        let step = if i == 0 { 0. } else { dt };
+        reference.set_param_value(&pid("roll"), value(i % count));
+        reference.tick(&m, step);
+        p.tick(&m, step);
+        assert!(
+            (p.response_trace(&nid("upper")).unwrap().lag
+                - reference.response_trace(&nid("upper")).unwrap().lag)
+                .abs()
+                < 1e-5,
+            "frame {i}"
+        );
+    }
+    p.set_param_value(&pid("roll"), value(0).next_up());
+    p.play_animation("sine");
+    p.tick(&m, 0.);
+    assert!(
+        (p.response_trace(&nid("upper")).unwrap().lag
+            - reference.response_trace(&nid("upper")).unwrap().lag)
+            .abs()
+            < 1e-5
+    );
+}
+
+#[test]
+fn proportional_output_range_edits_keep_the_authored_neutral_cell() {
+    let mut m = model(0.7);
+    let key = BindingKey::new(
+        pid("bend"),
+        nid("upper"),
+        BindingTarget::Scalar(ScalarTarget::Tx),
+    );
+    m.set_param_range(&pid("bend"), -0.1, 0.2).unwrap();
+    m.add_binding(&key).unwrap();
+    m.set_param_range(&pid("bend"), -0.3, 0.6).unwrap();
+    assert!(m.set_binding_key(&key, [1, 0], 1.).is_err());
 }

@@ -35,7 +35,7 @@ fn sample_matches_fractional_and_looped_values_without_advancing_playback() {
         }],
     };
     let mut puppet = Puppet::new(&model);
-    puppet.set_physics_enabled(false);
+    puppet.set_motion_responses_enabled(false);
     puppet.set_animations(vec![clip.clone()]);
     assert!(puppet.play_animation("Pulse"));
     assert!(puppet.animation_sample().is_none());

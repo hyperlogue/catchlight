@@ -1331,29 +1331,43 @@ impl Model {
             order.push(n);
         }
 
-        let mut map: HashMap<NodeId, NodeId> = HashMap::new();
+        // Reserve every ID first. An exhausted generator must leave neither
+        // partial copies nor an index referring to the old response graph.
+        let mut map = HashMap::new();
+        let mut reserved = HashSet::new();
         for old in &order {
-            let mut copy = self.nodes.get(old).ok_or(ModelError::UnknownNode)?.clone();
-            let new_parent = match &copy.parent {
-                Some(p) if old != id => map.get(p).ok_or(ModelError::UnknownNode)?.clone(),
-                _ => parent.clone(),
-            };
+            let node = self.node(old).ok_or(ModelError::UnknownNode)?;
+            let parent_id = node.parent().and_then(|p| map.get(p)).unwrap_or(&parent);
+            let kind = node.kind.id_kind();
+            let new_id = self.mint(
+                |h| NodeId::generate(parent_id, kind, h),
+                |m, id| {
+                    reserved.contains(id)
+                        || m.nodes.contains_key(id)
+                        || m.resolves_response_node(id)
+                },
+                hex,
+            )?;
+            reserved.insert(new_id.clone());
+            map.insert(old.clone(), new_id);
+        }
+        let previous_response_count = self.response_count;
+        for old in &order {
+            let mut copy = self.node(old).ok_or(ModelError::UnknownNode)?.clone();
+            let new_id = map.get(old).ok_or(ModelError::UnknownNode)?;
+            let new_parent = copy.parent().and_then(|p| map.get(p)).unwrap_or(&parent);
             if old == id {
                 copy.name = Name::truncated(format!("{} copy", copy.name));
             }
             copy.parent = Some(new_parent.clone());
             copy.children = Arc::default();
-            let kind = copy.kind.id_kind();
-            let new_id = self.mint(
-                |h| NodeId::generate(&new_parent, kind, h),
-                |m, id| m.nodes.contains_key(id) || m.resolves_response_node(id),
-                hex,
-            )?;
             self.response_count +=
                 usize::from(matches!(copy.kind, ModelNodeKind::MotionResponse(_)));
             self.nodes.insert(new_id.clone(), copy);
-            self.attach_child(&new_parent, new_id.clone());
-            map.insert(old.clone(), new_id);
+            self.attach_child(new_parent, new_id.clone());
+        }
+        if self.response_count != previous_response_count {
+            self.response_index.take();
         }
 
         for new_id in map.values() {
@@ -1485,16 +1499,7 @@ impl Model {
                 }
             }
         }
-        self.response_index.take();
-        self.response_index.take();
-        if let Some(before) = rollback {
-            if let Err(error) = self.validate_responses() {
-                *self = before;
-                return Err(error);
-            }
-        }
-        self.bump();
-        Ok(())
+        self.finish_response_rename(rollback)
     }
 
     /// Give a param a different Id, rewriting the bindings it drives and any
@@ -1563,6 +1568,10 @@ impl Model {
                 _ => {}
             }
         }
+        self.finish_response_rename(rollback)
+    }
+
+    fn finish_response_rename(&mut self, rollback: Option<Self>) -> Result<(), ModelError> {
         self.response_index.take();
         if let Some(before) = rollback {
             if let Err(error) = self.validate_responses() {

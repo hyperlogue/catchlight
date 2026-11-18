@@ -384,7 +384,7 @@ struct Session {
     /// Lazily baked from `model` for preview. Rebaked by its own generation
     /// gate on the next use after an edit, so nothing has to invalidate it.
     puppet: Option<Puppet>,
-    /// Navigation discards scratch and physics, but carries the preview pose
+    /// Navigation discards scratch and response state, but carries the preview pose
     /// into the next lazy runtime. Also held while a renderer owns the Puppet
     /// outside the session lock, so navigation cannot lose that captured pose.
     pending_preview_pose: Option<Pose>,
@@ -521,10 +521,10 @@ impl Session {
         } = self;
         let puppet = puppet.get_or_insert_with(|| {
             let mut built = Puppet::new(model);
-            // Frozen physics keeps the authoring preview deterministic (the
-            // dt=0 tick can't integrate anyway) and lets physics-driven
+            // Disabling motion responses keeps the authoring preview deterministic (the
+            // dt=0 tick can't integrate anyway) and lets response-driven
             // params be posed by hand.
-            built.set_physics_enabled(false);
+            built.set_motion_responses_enabled(false);
             if let Some(pose) = pending_preview_pose.take() {
                 built.apply_pose(&pose);
             }

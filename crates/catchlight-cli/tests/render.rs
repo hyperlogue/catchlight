@@ -24,9 +24,11 @@ fn the_binary_writes_a_png_of_the_requested_size_and_prints_the_render_list() {
     let (code, stdout, stderr) = common::run(&[
         "render",
         common::fixture(MODEL).to_str().unwrap(),
+        "--out",
         out.to_str().unwrap(),
-        "64",
-        "96",
+        "--rect=-1600,-2400,3200,4800",
+        "--scale",
+        "0.02",
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
 
@@ -57,6 +59,7 @@ fn a_file_that_is_not_a_clm_is_refused_before_any_gpu_work() {
     let (code, _, stderr) = common::run(&[
         "render",
         input.to_str().unwrap(),
+        "--out",
         dir.join("out.png").to_str().unwrap(),
     ]);
     assert_eq!(code, 2, "an error exits 2");

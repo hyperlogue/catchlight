@@ -44,7 +44,7 @@ const MAX_CAMERA_HEIGHT: f32 = 40000.0;
 
 /// One puppet param's slider state. Values are owned here rather than read
 /// back from the puppet, so they stay a stable, single source of truth even
-/// when physics overwrites its own target params on the frames it runs.
+/// when motion responses write their output params during playback.
 struct ParamSlider {
     param: ParamId,
     name: String,
@@ -64,7 +64,7 @@ struct ControlUi {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
-    physics_enabled: bool,
+    motion_responses_enabled: bool,
     param_sliders: Vec<ParamSlider>,
 }
 
@@ -110,7 +110,7 @@ impl ControlUi {
             egui_ctx,
             egui_state,
             egui_renderer,
-            physics_enabled: true,
+            motion_responses_enabled: true,
             param_sliders,
         }
     }
@@ -119,14 +119,14 @@ impl ControlUi {
     /// `param_sliders` for the caller to fold into the puppet's params.
     fn prepare(&mut self, window: &Window) -> egui::FullOutput {
         let raw_input = self.egui_state.take_egui_input(window);
-        let physics_enabled = &mut self.physics_enabled;
+        let motion_responses_enabled = &mut self.motion_responses_enabled;
         let param_sliders = &mut self.param_sliders;
         let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
             egui::Panel::right("catchlight-control-panel")
                 .default_size(340.0)
                 .show_inside(ui, |ui| {
                     ui.heading("Direct Control");
-                    ui.checkbox(physics_enabled, "Physics");
+                    ui.checkbox(motion_responses_enabled, "Motion responses");
                     if ui.button("Reset all to defaults").clicked() {
                         for slider in param_sliders.iter_mut() {
                             slider.value = slider.default;
@@ -434,15 +434,18 @@ impl ApplicationHandler for App {
                         self.puppet.set_param_value(param, v);
                     }
 
-                    // Control mode with physics off freezes the drivers, so
+                    // Control mode with motion responses off releases the outputs, so
                     // the pose is exactly what the sliders say. Every other
                     // case leaves them running, so each response still
                     // responds to whatever the sliders (or the demo animation)
                     // set.
-                    let physics = !self.control_enabled
-                        || self.control.as_ref().is_some_and(|c| c.physics_enabled);
-                    if self.puppet.physics_enabled() != physics {
-                        self.puppet.set_physics_enabled(physics);
+                    let responses_enabled = !self.control_enabled
+                        || self
+                            .control
+                            .as_ref()
+                            .is_some_and(|c| c.motion_responses_enabled);
+                    if self.puppet.motion_responses_enabled() != responses_enabled {
+                        self.puppet.set_motion_responses_enabled(responses_enabled);
                     }
                     self.puppet.tick(&self.model, dt);
                     if let Err(e) = cache.refresh(renderer, &self.model, &self.puppet) {

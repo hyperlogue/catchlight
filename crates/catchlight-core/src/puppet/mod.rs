@@ -53,7 +53,7 @@ pub use arena::GlobalTransforms;
 
 pub(crate) use arena::Arena;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Mat4, Vec2, Vec3};
 
@@ -62,7 +62,7 @@ use crate::components::{Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::formats::clm::ClmAnimation;
 use crate::id::{NodeId, ParamId};
-use crate::model::{BindingTarget, Model, Pose, ScalarTarget};
+use crate::model::{Model, Pose};
 use crate::node::NodeTree;
 
 use bake::{Baked, BakedBinding, BakedParam};
@@ -202,7 +202,7 @@ pub struct ScratchTransform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Motion {
     /// A driver still has motion to simulate or display at the current pose.
-    pub physics: bool,
+    pub motion_responses: bool,
     /// A playing animation wrote a param this tick.
     pub animation: bool,
 }
@@ -210,7 +210,7 @@ pub struct Motion {
 impl Motion {
     /// Whether anything at all is moving.
     pub fn any(self) -> bool {
-        self.physics || self.animation
+        self.motion_responses || self.animation
     }
 }
 
@@ -285,7 +285,7 @@ pub struct Puppet {
     mesh_group_inputs: Vec<bool>,
     mesh_groups_dirty: bool,
     responses: response::Responses,
-    physics_enabled: bool,
+    motion_responses_enabled: bool,
     spine_targets: Vec<Vec<Option<u32>>>,
 
     animations: Vec<ClmAnimation>,
@@ -337,7 +337,7 @@ impl Puppet {
             mesh_group_inputs: Vec::new(),
             mesh_groups_dirty: true,
             responses: response::Responses::default(),
-            physics_enabled: true,
+            motion_responses_enabled: true,
             spine_targets: Vec::new(),
             animations: Vec::new(),
             play_state: None,
@@ -997,55 +997,53 @@ impl Puppet {
         }
     }
 
+    /// Geometry depends on ancestor transforms and on any guide read by an
+    /// ancestor spine, including guides in a sibling branch.
+    fn geometry_ancestors(&self, seeds: impl IntoIterator<Item = NodeIdx>) -> HashSet<NodeIdx> {
+        let mut nodes = HashSet::new();
+        for seed in seeds {
+            let mut next = Some(seed);
+            while let Some(id) = next {
+                nodes.insert(id);
+                if matches!(self.get(id).map(|n| &n.kind), Some(NodeKind::Spine(_))) {
+                    nodes.extend(self.tree().get_all_descendants(id));
+                }
+                next = self.tree().get_parent(id);
+            }
+        }
+        nodes
+    }
+
+    fn geometry_slots<'a>(&'a self, nodes: &'a HashSet<NodeIdx>) -> impl Iterator<Item = u32> + 'a {
+        let binding_slots = self
+            .bindings
+            .iter()
+            .filter(|b| nodes.contains(&b.node) && b.target.moves_geometry())
+            .flat_map(|b| std::iter::once(b.x).chain(b.y));
+        let bends = self
+            .arena
+            .spine_node_ids
+            .iter()
+            .zip(&self.spine_targets)
+            .filter(|(id, _)| nodes.contains(id))
+            .flat_map(|(_, targets)| targets.iter().flatten().copied());
+        binding_slots.chain(bends)
+    }
+
     fn bake_mesh_group_inputs(&mut self) {
         self.mesh_groups_dirty = true;
-        self.mesh_group_inputs = vec![false; self.params.len()];
-        if self.arena.mesh_group_node_ids.is_empty() {
-            return;
-        }
-        let mut related = std::collections::HashSet::new();
-        for &id in &self.arena.mesh_group_node_ids {
-            related.insert(id);
-            related.extend(self.arena.tree.get_all_descendants(id));
-            let mut parent = self.arena.tree.get_parent(id);
-            while let Some(p) = parent {
-                related.insert(p);
-                // A spine above the group can use a guide on a sibling part.
-                if matches!(self.arena.get(p).map(|n| &n.kind), Some(NodeKind::Spine(_))) {
-                    related.extend(self.arena.tree.get_all_descendants(p));
-                }
-                parent = self.arena.tree.get_parent(p);
+        let mut inputs = vec![false; self.params.len()];
+        if !self.arena.mesh_group_node_ids.is_empty() {
+            let mut related =
+                self.geometry_ancestors(self.arena.mesh_group_node_ids.iter().copied());
+            for &group in &self.arena.mesh_group_node_ids {
+                related.extend(self.tree().get_all_descendants(group));
+            }
+            for slot in self.geometry_slots(&related) {
+                inputs[slot as usize] = true;
             }
         }
-        for b in &self.bindings {
-            let geometry = matches!(
-                b.target,
-                BindingTarget::Deform
-                    | BindingTarget::Scalar(
-                        ScalarTarget::Tx
-                            | ScalarTarget::Ty
-                            | ScalarTarget::Tz
-                            | ScalarTarget::Sx
-                            | ScalarTarget::Sy
-                            | ScalarTarget::Rx
-                            | ScalarTarget::Ry
-                            | ScalarTarget::Rz
-                    )
-            );
-            if geometry && related.contains(&b.node) {
-                self.mesh_group_inputs[b.x as usize] = true;
-                if let Some(y) = b.y {
-                    self.mesh_group_inputs[y as usize] = true;
-                }
-            }
-        }
-        for (&id, targets) in self.arena.spine_node_ids.iter().zip(&self.spine_targets) {
-            if related.contains(&id) {
-                for slot in targets.iter().flatten() {
-                    self.mesh_group_inputs[*slot as usize] = true;
-                }
-            }
-        }
+        self.mesh_group_inputs = inputs;
     }
 
     fn bump_param_generation(&mut self, slot: u32) {
@@ -1090,10 +1088,16 @@ impl Puppet {
                 .iter()
                 .filter_map(|lane| {
                     let &slot = self.slot_of_param.get(&lane.param)?;
-                    (self.param_base(slot)? != lane.value_at(0.)).then_some(slot)
+                    let p = self.params.get(slot as usize)?;
+                    (!crate::animation::same_sample(
+                        self.param_base(slot)?,
+                        lane.value_at(0.),
+                        p.min.abs().max(p.max.abs()),
+                    ))
+                    .then_some(slot)
                 })
                 .collect();
-            self.responses.reset_changed_inputs(&jumps);
+            self.reset_changed_response_inputs(&jumps);
             self.play_state = Some(AnimationPlayState {
                 index,
                 time: 0.0,
@@ -1156,6 +1160,7 @@ impl Puppet {
         if dt < 0. {
             self.responses.reset();
         }
+        let mut jumps = smallvec::SmallVec::<[u32; 4]>::new();
         state.time += dt;
         // A looping animation snaps back to the loop region's start (the
         // lead-in plays once), and playback always clamps to the last frame.
@@ -1163,13 +1168,12 @@ impl Puppet {
             let (loop_begin, loop_end) = anim.loop_region();
             let frame = (state.time / anim.timestep).round() as i64;
             if state.looping && frame >= loop_end as i64 {
-                let jumps: smallvec::SmallVec<[u32; 4]> = anim
+                jumps = anim
                     .lanes
                     .iter()
                     .filter(|lane| lane.jumps_at_wrap(loop_begin, loop_end))
                     .filter_map(|lane| self.slot_of_param.get(&lane.param).copied())
                     .collect();
-                self.responses.reset_changed_inputs(&jumps);
                 state.time = loop_begin as f32 * anim.timestep;
             }
             let frame = (state.time / anim.timestep).round() as i64;
@@ -1182,6 +1186,7 @@ impl Puppet {
         } else {
             0.0
         };
+        self.reset_changed_response_inputs(&jumps);
         self.sampled_animation = Some((state, frame));
         // Move the list out so the writes below can take `&mut self`; nothing
         // here can early-return before it is put back.
@@ -1189,7 +1194,7 @@ impl Puppet {
         let mut changed = false;
         if let Some(anim) = animations.get(state.index) {
             for lane in &anim.lanes {
-                if self.physics_enabled && self.reserved_output(&lane.param) {
+                if self.motion_responses_enabled && self.reserved_output(&lane.param) {
                     continue;
                 }
                 let value = lane.value_at(frame);
@@ -1216,23 +1221,19 @@ impl Puppet {
 
     // ---- drivers ----------------------------------------------------------
 
-    /// When false, a tick skips physics entirely: drivers never overwrite
-    /// their target params, so the same pose always yields the same frame.
-    /// The editor freezes physics this way — its dt=0 preview cannot
-    /// integrate, and chained drivers would otherwise leave
-    /// pose-history-dependent residue in the authoring view.
-    pub fn set_physics_enabled(&mut self, enabled: bool) {
-        self.physics_enabled = enabled;
+    /// Disable motion responses to release their output params and evaluate
+    /// only the authored pose. The editor uses this for its zero-time preview.
+    pub fn set_motion_responses_enabled(&mut self, enabled: bool) {
+        self.motion_responses_enabled = enabled;
         if !enabled {
-            // Otherwise each driver's last output would keep overriding the
-            // pose for as long as physics stays frozen.
+            // Release the last output so authoring edits take effect immediately.
             self.clear_param_contributions();
             self.responses.reset();
         }
     }
 
-    pub fn physics_enabled(&self) -> bool {
-        self.physics_enabled
+    pub fn motion_responses_enabled(&self) -> bool {
+        self.motion_responses_enabled
     }
 
     // ---- the tick ---------------------------------------------------------
@@ -1256,7 +1257,7 @@ impl Puppet {
         let mut out = std::mem::take(&mut self.transforms);
         let motion = Motion {
             animation: self.tick_animations(dt),
-            physics: self.advance_responses(model, dt, false),
+            motion_responses: self.advance_responses(model, dt, false),
         };
         let params_changed = self.last_tick_folded_param_generation != Some(self.param_generation);
         if params_changed {
@@ -1406,11 +1407,11 @@ mod tests {
         let opacity = crate::BindingKey::new(
             control.clone(),
             part.clone(),
-            BindingTarget::Scalar(ScalarTarget::Opacity),
+            crate::BindingTarget::Scalar(crate::ScalarTarget::Opacity),
         );
         model.set_binding_key(&opacity, [0, 0], 0.).unwrap();
         let mut cached = Puppet::new(&model);
-        cached.set_physics_enabled(false);
+        cached.set_motion_responses_enabled(false);
         cached.set_param_value(&ParamId::new("head_roll").unwrap(), 20.);
         cached.tick(&model, 0.);
         assert!(!cached.arena.mg_written_sources.is_empty());
@@ -1639,7 +1640,7 @@ mod tests {
             "the lane drove the param it names"
         );
         assert!(motion.animation, "a lane that wrote a param is motion");
-        assert!(!motion.physics, "this model has no drivers");
+        assert!(!motion.motion_responses, "this model has no drivers");
 
         puppet.stop_animation();
         assert_eq!(puppet.playing_animation(), None);

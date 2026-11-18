@@ -449,7 +449,7 @@ mod tests {
         position: f32,
     ) -> Recording {
         let mut puppet = Puppet::new(model);
-        puppet.set_physics_enabled(false);
+        puppet.set_motion_responses_enabled(false);
         puppet.set_param_value(param, position);
         puppet.tick(model, 0.0);
         Recording::capture(
@@ -469,7 +469,7 @@ mod tests {
         mut position: [f32; 2],
     ) -> Recording {
         let mut puppet = Puppet::new(model);
-        puppet.set_physics_enabled(false);
+        puppet.set_motion_responses_enabled(false);
         for (axis, id) in params.iter().enumerate() {
             let param = model.param(id).unwrap();
             puppet.set_param_value(id, param.min + position[axis] * (param.max - param.min));

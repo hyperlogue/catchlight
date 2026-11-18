@@ -1,4 +1,4 @@
-//! Isolated explicit-pose geometry: no preview scratch, animation or physics.
+//! Isolated explicit-pose geometry: no preview scratch, animation or motion responses.
 
 use super::{check_count, page, MAX_QUERY_ITEMS};
 use crate::EditorError;
@@ -72,7 +72,7 @@ pub(super) fn sample(model: &Model, command: &Command) -> Result<ResponseBody, E
     }
     check_evaluation_work(model)?;
     let mut puppet = Puppet::new(model);
-    puppet.set_physics_enabled(false);
+    puppet.set_motion_responses_enabled(false);
     for input in pose {
         puppet.set_param_value(&input.param, input.value);
     }

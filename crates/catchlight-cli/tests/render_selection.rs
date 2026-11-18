@@ -276,10 +276,10 @@ fn solid_texture(rgba: [u8; 4]) -> ModelTexture {
     }
 }
 
-// Fix physics, background and framing so selection tests compare the same view.
+// Fix motion responses, background and framing so selection tests compare the same view.
 fn run(args: &[&str]) -> (i32, String, String) {
     let mut args = args.to_vec();
-    args.extend(["--background", "transparent", "--physics", "off"]);
+    args.extend(["--background", "transparent", "--motion-responses", "off"]);
     if !args.contains(&"--scale") {
         args.extend(["--scale", "1"]);
     }

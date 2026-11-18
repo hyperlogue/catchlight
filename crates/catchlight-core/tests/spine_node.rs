@@ -316,6 +316,46 @@ fn an_unbent_spine_is_exactly_the_art() {
     }
 }
 
+#[test]
+fn art_and_its_posed_guide_are_visible_through_a_response_chain() {
+    let mut f = Fixture::new(1, 100., 3);
+    let observe = |f: &Fixture| {
+        let mut p = Puppet::new(&f.model);
+        let part = p.node_idx(&f.part).unwrap();
+        p.set_scratch_transform(
+            part,
+            catchlight_core::ScratchTransform {
+                translation: Some(catchlight_core::Vec3::new(5., 0., 0.)),
+                ..Default::default()
+            },
+        );
+        p.set_param_value(&f.params[0], 0.5);
+        p.tick(&f.model, DT);
+        let catchlight_core::NodeKind::Spine(spine) =
+            &p.get(p.node_idx(&f.spine).unwrap()).unwrap().kind
+        else {
+            panic!("expected spine")
+        };
+        (f.positions(&p), spine.posed_guide().to_vec())
+    };
+    let expected = observe(&f);
+    assert_ne!(expected.0, f.bend(&[0.]));
+    assert_eq!(expected.1.len(), 2);
+    let mut parent = f.spine.clone();
+    for name in ["upper", "tip"] {
+        parent = f
+            .model
+            .add_node(
+                &parent,
+                ModelNode::new(name, ModelNodeKind::MotionResponse(Default::default())),
+                &mut f.hex,
+            )
+            .unwrap();
+    }
+    f.model.reparent(&f.part, &parent).unwrap();
+    assert_eq!(observe(&f), expected);
+}
+
 /// A part turned under its spine still bends about the spine's own joints:
 /// the mapping is rebuilt from the current globals every frame, exactly as a
 /// mesh group's is.

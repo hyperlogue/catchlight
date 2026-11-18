@@ -66,8 +66,7 @@ pub struct Change {
 
 impl Change {
     /// Whether the value actually moved. A patch that sets a field to what it
-    /// already held still rewrites the file in the current `.clm` format;
-    /// after a historical container's first upgrade the bytes stay identical.
+    /// already held preserves the canonical file bytes.
     pub fn changed(&self) -> bool {
         self.before != self.after
     }

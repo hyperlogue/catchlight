@@ -228,7 +228,7 @@ def run(client: Client, out: Path, cli: Path) -> dict:
     (out / "edits.json").write_text(json.dumps([e.to_wire() for e in edits], indent=2) + "\n")
     spec = {"schema": 1, "requests": {
         f"pose-{i}": {"rect": [-0.25, -0.25, 3.5, 3], "scale": 128,
-                      "physics": {"mode": "off"}, "pose": {"shape": shape, "turn": turn},
+                      "motion_responses": {"mode": "off"}, "pose": {"shape": shape, "turn": turn},
                       "geometry": ["panel-a"]}
         for i, (shape, turn) in enumerate(POSES)
     }}

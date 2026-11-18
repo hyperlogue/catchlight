@@ -1937,9 +1937,7 @@ impl From<catchlight_core::components::BlendMode> for BlendMode {
 
 /// A property a binding drives with one number per cell.
 ///
-/// The spellings are the model file's own, which is why the colour and
-/// output-scale channels run their words together rather than reading as
-/// snake_case.
+/// The colour channel names use the model file's spellings.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

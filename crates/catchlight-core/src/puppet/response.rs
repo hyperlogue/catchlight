@@ -257,7 +257,7 @@ impl Responses {
         // claims and from a caller-supplied camera/world matrix. The sampler
         // shares immutable binding grids and is only allocated for slot inputs.
         let mut pose = puppet.clone();
-        pose.set_physics_enabled(false);
+        pose.set_motion_responses_enabled(false);
         pose.responses.reserved.clone_from(&self.reserved);
         pose.stop_animation();
         // Welds solve in sequence. Trace their inputs backwards so an
@@ -273,20 +273,14 @@ impl Responses {
             }
         });
         pose.arena.welds.reverse();
-        let mut needed = HashSet::new();
-        for part in parts {
-            let mut next = Some(part);
-            while let Some(node) = next {
-                needed.insert(node);
-                if matches!(
-                    pose.get(node).map(|n| &n.kind),
-                    Some(crate::NodeKind::Spine(_))
-                ) {
-                    needed.extend(pose.tree().get_all_descendants(node));
-                }
-                next = pose.tree().get_parent(node);
-            }
-        }
+        let needed = pose.geometry_ancestors(parts);
+        self.pose_slots = pose
+            .geometry_slots(&needed)
+            .filter(|&slot| !self.owns(slot))
+            .map(|slot| slot as usize)
+            .collect();
+        self.pose_slots.sort_unstable();
+        self.pose_slots.dedup();
         pose.arena.retain_geometry(&needed, &self.points);
         pose.spine_targets = pose
             .spine_targets
@@ -296,16 +290,6 @@ impl Responses {
             .collect();
         pose.arena.spine_node_ids.retain(|n| needed.contains(n));
         pose.bindings.retain(|b| needed.contains(&b.node));
-        self.pose_slots = pose
-            .bindings
-            .iter()
-            .flat_map(|b| Some(b.x).into_iter().chain(b.y))
-            .chain(pose.spine_targets.iter().flatten().flatten().copied())
-            .filter(|&slot| !self.reserved.get(slot as usize).copied().unwrap_or(false))
-            .map(|slot| slot as usize)
-            .collect();
-        self.pose_slots.sort_unstable();
-        self.pose_slots.dedup();
         // A render puppet may have an explicit pose on a reserved output.
         for (slot, reserved) in self.reserved.iter().enumerate() {
             if *reserved {
@@ -497,6 +481,20 @@ impl Responses {
 }
 
 impl Puppet {
+    pub(super) fn reset_changed_response_inputs(&mut self, jumps: &[u32]) {
+        if jumps.is_empty() || !self.motion_responses_enabled || self.responses.rows.is_empty() {
+            return;
+        }
+        let mut bank = std::mem::take(&mut self.responses);
+        // A rebake can retain a moving row while invalidating its slot sampler.
+        // Resolve the new pose dependencies before deciding which rows to reset.
+        if !bank.points.is_empty() && bank.sampler.is_none() {
+            bank.bake_sampler(self);
+        }
+        bank.reset_changed_inputs(jumps);
+        self.responses = bank;
+    }
+
     pub fn set_response_clock(&mut self, clock: ResponseClock) {
         if self.responses.clock != clock {
             self.responses.clock = clock;
@@ -543,7 +541,7 @@ impl Puppet {
             .map(|r| r.trace)
     }
     pub(super) fn advance_responses(&mut self, model: &Model, dt: f32, reset: bool) -> bool {
-        if !self.physics_enabled || self.responses.rows.is_empty() {
+        if !self.motion_responses_enabled || self.responses.rows.is_empty() {
             return false;
         }
         let mut bank = std::mem::take(&mut self.responses);

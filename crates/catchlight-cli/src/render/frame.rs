@@ -1,6 +1,6 @@
 //! One continuing Puppet per request. Bounds, sidecars, overlays and traces
 //! observe the same evaluated frame; capture decimation never changes ticks.
-use super::spec::{bad, Physics, ResolvedRequest};
+use super::spec::{bad, MotionResponseMode, ResolvedRequest};
 use crate::Error;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
 use std::collections::BTreeMap;
@@ -31,10 +31,13 @@ impl FrameRuntime {
                 puppet.set_param_value(&lane.param, lane.value_at(0.0));
             }
         }
-        if let Physics::Simulate { response_clock } = request.physics {
+        if let MotionResponseMode::On { response_clock } = request.motion_responses {
             puppet.set_response_clock(response_clock);
         }
-        puppet.set_physics_enabled(!matches!(request.physics, Physics::Off {}));
+        puppet.set_motion_responses_enabled(!matches!(
+            request.motion_responses,
+            MotionResponseMode::Off {}
+        ));
         if let Some(animation) = &request.animation {
             puppet.set_animations(vec![animation.clip.0.clone()]);
             if !puppet.play_animation(&animation.clip.0.name) {

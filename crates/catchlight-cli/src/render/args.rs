@@ -2,8 +2,8 @@
 //! mask-source shortcuts become explicit edges before ordinary validation.
 
 use super::spec::{
-    self, AnimationRef, AnimationSource, Background, Document, Frames, MaskEdge, Physics, Request,
-    Setting, Video, VideoFormat,
+    self, AnimationRef, AnimationSource, Background, Document, Frames, MaskEdge,
+    MotionResponseMode, Request, Setting, Video, VideoFormat,
 };
 use crate::Error;
 use catchlight_core::{Model, ModelNodeKind, NodeId};
@@ -26,9 +26,9 @@ pub enum BackgroundArg {
     Transparent,
 }
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum PhysicsArg {
+pub enum MotionResponsesArg {
     Off,
-    Settled,
+    On,
 }
 
 /// Per-image flags have identical defaults and validation to JSON requests.
@@ -53,10 +53,9 @@ pub struct ImageArgs {
     /// Opaque white (default) or transparent black.
     #[arg(long, value_enum)]
     pub background: Option<BackgroundArg>,
-    /// Static frames default to settled. Animations simulate from their opening pose.
-    /// Select off to disable motion responses.
+    /// Enable or disable motion responses (default on).
     #[arg(long, value_enum)]
-    pub physics: Option<PhysicsArg>,
+    pub motion_responses: Option<MotionResponsesArg>,
 }
 impl ImageArgs {
     pub fn request(&self, model: &Model) -> Result<Request, Error> {
@@ -76,10 +75,10 @@ impl ImageArgs {
                 },
             });
         }
-        if let Some(physics) = self.physics {
-            request.physics = Setting::Value(match physics {
-                PhysicsArg::Off => Physics::Off {},
-                PhysicsArg::Settled => Physics::Settled {},
+        if let Some(motion_responses) = self.motion_responses {
+            request.motion_responses = Setting::Value(match motion_responses {
+                MotionResponsesArg::Off => MotionResponseMode::Off {},
+                MotionResponsesArg::On => MotionResponseMode::default(),
             });
         }
         let mut pose = BTreeMap::new();
@@ -158,7 +157,7 @@ impl ImageArgs {
 #[derive(Debug, Clone, Default, Args)]
 #[group(id = "clip_settings", multiple = true)]
 pub struct ClipArgs {
-    /// Play this model clip, by display name. Physics simulates by default.
+    /// Play this model clip, by display name. Motion responses run by default.
     #[arg(long)]
     pub animation: Option<String>,
     /// First captured playback time, in seconds. Earlier frames still simulate.
@@ -218,13 +217,6 @@ impl ClipArgs {
             count,
             every: self.every.unwrap_or(1),
         });
-        request.physics = match request.physics {
-            Setting::Value(Physics::Off {}) => Setting::Value(Physics::Off {}),
-            Setting::Value(_) => Setting::Value(Physics::Simulate {
-                response_clock: Default::default(),
-            }),
-            _ => Setting::Inherit,
-        };
         Ok(())
     }
 }
@@ -235,15 +227,6 @@ pub struct RenderArgs {
     /// Input .clm model. Schema discovery needs no file.
     #[arg(required_unless_present = "schema")]
     pub file: Option<PathBuf>,
-    /// Compatibility output: model.clm out.png [width height camera_height].
-    #[arg(conflicts_with_all = ["schema", "validate", "spec", "image_settings", "clip_settings", "out", "out_dir"])]
-    pub legacy_out: Option<PathBuf>,
-    #[arg(requires = "legacy_out")]
-    pub width: Option<u32>,
-    #[arg(requires = "width")]
-    pub height: Option<u32>,
-    #[arg(requires = "height")]
-    pub camera_height: Option<f32>,
     /// Named render requests JSON; rendering requires --out-dir.
     #[arg(long, conflicts_with_all = ["image_settings", "clip_settings", "out"])]
     pub spec: Option<PathBuf>,
@@ -259,7 +242,7 @@ pub struct RenderArgs {
     pub out_dir: Option<PathBuf>,
     /// Discover authoring or resolved planning schema, without a model or GPU.
     #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "spec",
-        conflicts_with_all = ["file", "legacy_out", "spec", "validate", "image_settings", "clip_settings", "out", "out_dir"])]
+        conflicts_with_all = ["file", "spec", "validate", "image_settings", "clip_settings", "out", "out_dir"])]
     pub schema: Option<SchemaKind>,
     #[command(flatten)]
     pub image: ImageArgs,
@@ -296,20 +279,6 @@ impl RenderArgs {
                 Document::parse(&bytes)?,
                 directory.then(|| super::execute::hash(&bytes)),
             )
-        } else if self.legacy_out.is_some() {
-            let framing = spec::Framing::legacy(
-                self.width.unwrap_or(super::DEFAULT_WIDTH),
-                self.height.unwrap_or(super::DEFAULT_HEIGHT),
-                self.camera_height.unwrap_or(super::DEFAULT_CAMERA_HEIGHT),
-            )?;
-            (
-                Document::single(Request {
-                    rect: Setting::Value(framing.rect),
-                    scale: Setting::Value(framing.scale),
-                    ..Default::default()
-                }),
-                None,
-            )
         } else {
             let mut request = self.image.request(&loaded.model)?;
             self.clip.apply(&loaded.model, &mut request)?;
@@ -337,7 +306,7 @@ impl RenderArgs {
         if self.validate {
             return print_json(&plan);
         }
-        let output = self.out.or(self.legacy_out);
+        let output = self.out;
         if let Some(output) = &output {
             super::execute::check_output_path(file, output)?;
         }

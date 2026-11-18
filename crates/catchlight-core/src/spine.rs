@@ -68,6 +68,7 @@
 //! **Descent halts at a mesh group and at a nested spine.** A mesh group
 //! carries the deform to its own children, so binding them here too would
 //! apply it twice — the same rule `meshgroup::descendant_meshed_nodes` keeps.
+//! The walk passes through motion responses to reach the art below them.
 //! A composite with `propagate_mesh_group` unset halts the walk for the same
 //! reason it halts a group's. **Nested spines do not compose exactly:** an
 //! outer spine's walk stops at an inner one, so the subtree below the inner
@@ -343,9 +344,9 @@ fn assign(joints: &[Vec2], spans: &[(f32, f32)], p: Vec2) -> VertexBend {
     }
 }
 
-/// Meshed descendants a spine turns: recurse through parts and composites,
-/// collect parts and mesh groups, and stop at each mesh group and each nested
-/// spine. See the module doc for why each halt is there.
+/// Collect parts and mesh groups a spine turns. Descend through parts,
+/// propagating composites and motion responses. Mesh groups and nested
+/// spines handle their own children.
 fn descendant_turned_nodes(tree: &NodeTree, spine_id: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeIdx> = tree.get_children(spine_id);
@@ -360,6 +361,7 @@ fn descendant_turned_nodes(tree: &NodeTree, spine_id: NodeIdx, arena: &Arena) ->
                     stack.extend(tree.get_children(id));
                 }
             }
+            Some(NodeKind::MotionResponse) => stack.extend(tree.get_children(id)),
             Some(NodeKind::MeshGroup(_)) => out.push(id),
             _ => {}
         }

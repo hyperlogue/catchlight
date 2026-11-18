@@ -175,7 +175,7 @@ pub struct Document {
 }
 
 /// A request's top-level settings. Omitted fields inherit; null resets the
-/// whole setting. In particular pose, frames, physics and arrays never merge.
+/// whole setting. In particular pose, frames, motion responses and arrays never merge.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -194,11 +194,11 @@ pub struct Request {
     /// Straight sRGB color and alpha, each 0..1. Default opaque white.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub background: Setting<Background>,
-    /// Static requests default to settled and animations to simulate.
+    /// Motion responses run by default for both still frames and clips.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
-    pub physics: Setting<Physics>,
+    pub motion_responses: Setting<MotionResponseMode>,
     /// Fixed parameter overrides. Unspecified params take model defaults;
-    /// animation lanes and then physics resolve after these base controls.
+    /// animation lanes and then motion responses resolve after these base controls.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     #[schemars(with = "Setting<BTreeMap<ModelIdSchema, f32>>")]
     pub pose: Setting<BTreeMap<ParamId, f32>>,
@@ -250,7 +250,7 @@ impl Request {
             rect,
             scale,
             background,
-            physics,
+            motion_responses,
             pose,
             animation,
             frames,
@@ -289,16 +289,20 @@ impl Default for Background {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Physics {
+pub enum MotionResponseMode {
     Off {},
-    /// Static requests only.
-    Settled {},
-    /// Animation requests only.
-    Simulate {
+    On {
         /// Time intervals used to advance motion responses between playback frames.
         #[serde(default, skip_serializing_if = "default_response_clock")]
         response_clock: ResponseClock,
     },
+}
+impl Default for MotionResponseMode {
+    fn default() -> Self {
+        Self::On {
+            response_clock: ResponseClock::default(),
+        }
+    }
 }
 fn default_response_clock(clock: &ResponseClock) -> bool {
     *clock == ResponseClock::default()
@@ -526,20 +530,6 @@ impl Framing {
             ],
         })
     }
-
-    /// Compatibility form: W H camera_height, centered at the origin.
-    pub fn legacy(width: u32, height: u32, camera_height: f32) -> Result<Self, Error> {
-        if width == 0 || height == 0 || !camera_height.is_finite() || camera_height <= 0.0 {
-            return Err(bad(
-                "legacy width, height and camera_height must be finite and positive",
-            ));
-        }
-        let w = camera_height * width as f32 / height as f32;
-        Self::resolve(
-            [-w * 0.5, -camera_height * 0.5, w, camera_height],
-            height as f32 / camera_height,
-        )
-    }
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -560,8 +550,8 @@ pub struct ResolvedSpec {
 pub struct ResolvedRequest {
     pub framing: Framing,
     pub background: Background,
-    pub physics: Physics,
-    /// Complete model-default-plus-override base controls, before animation/physics.
+    pub motion_responses: MotionResponseMode,
+    /// Base controls after applying pose overrides and before advancing animation or motion responses.
     #[schemars(with = "BTreeMap<ModelIdSchema, f32>")]
     pub pose: BTreeMap<ParamId, f32>,
     pub animation: Option<ResolvedAnimation>,
@@ -1053,24 +1043,7 @@ impl Document {
                 "mp4 cannot carry transparency; use an opaque background or webm",
             ));
         }
-        let physics = request.physics.value().unwrap_or_else(|| {
-            if animation.is_some() {
-                Physics::Simulate {
-                    response_clock: ResponseClock::default(),
-                }
-            } else {
-                Physics::Settled {}
-            }
-        });
-        match (&physics, animation.is_some()) {
-            (Physics::Simulate { .. }, false) => {
-                return Err(bad("physics simulate requires an animation"))
-            }
-            (Physics::Settled {}, true) => {
-                return Err(bad("animated requests use physics off or simulate"))
-            }
-            _ => {}
-        }
+        let motion_responses = request.motion_responses.value().unwrap_or_default();
         let trace_responses = request.trace_responses.value().unwrap_or_default();
         unique("trace_responses", &trace_responses)?;
         for id in &trace_responses {
@@ -1138,7 +1111,7 @@ impl Document {
         Ok(ResolvedRequest {
             framing,
             background,
-            physics,
+            motion_responses,
             pose,
             animation,
             camera,

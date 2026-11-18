@@ -16,7 +16,7 @@
 //! [`render`] builds the puppet, draws it on a
 //! headless device through [`catchlight_wgpu::RenderContext`] and prints the
 //! render list it drew. The same command renders selected Parts, pose batches
-//! and continuous physics sequences. [`poses`]
+//! and animation clips with motion responses. [`poses`]
 //! walks every key pose on the CPU and writes what each one moves as CBOR,
 //! which is what a rig evaluator scores against. These inspection paths decode textures,
 //! which is why the no-decode rule below is a property of the file operations
@@ -54,9 +54,6 @@
 //!   the value it already has rewrites the file unchanged. Callers rest on
 //!   that: it is how `diff` on a round-tripped file is empty, and it is what
 //!   makes "did this tool touch anything?" answerable with `cmp`.
-//!   Historical `.clm` versions upgrade to the current format on the first
-//!   write, preserving encoded texture bytes. Compare against that canonical
-//!   serialization when testing a historical input's round trip.
 //! - **A write is atomic and never leaves an unopenable file.** Output goes
 //!   to a temporary file beside the destination and is renamed over it, and
 //!   `patch` rebuilds a [`Model`](catchlight_core::Model) from the edited

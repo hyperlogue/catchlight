@@ -223,9 +223,8 @@ export interface WasmReplica extends WasmOwned {
    * The world-space box the last tick left the drawn geometry in:
    * `[min_x, min_y, max_x, max_y]` in world units, Y-up. `undefined` when the
    * model draws nothing — an empty model, or one whose every part is
-   * disabled, untextured or fully transparent. What a "frame the model" camera
-   * is computed from, and posed rather than at rest, so a limb physics has
-   * swung out is inside the box.
+   * disabled, untextured or fully transparent. A camera framing the model uses
+   * this posed box so it includes limbs displaced by motion responses.
    */
   bounds(): Float32Array | undefined;
 }

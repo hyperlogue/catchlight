@@ -196,13 +196,13 @@ fn run(s: &Scenario) -> (f64, f64, f64) {
         let start = Instant::now();
         let motion = puppet.tick(&built.model, DT);
         let elapsed = start.elapsed();
-        let physics = motion.physics;
+        let responses_moving = motion.motion_responses;
         black_box(motion);
         if frame >= WARMUP {
             samples.push(elapsed.as_nanos());
             // Outside the timed window: a scenario whose rig sits still is
             // measuring nothing, and a number off one is worse than none.
-            moving |= physics;
+            moving |= responses_moving;
             if let Some(v) = puppet.param_value(&built.bends[0]) {
                 (lo, hi) = (lo.min(v), hi.max(v));
             }

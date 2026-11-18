@@ -513,7 +513,7 @@ fn navigation_replaces_model_generation_and_clears_retained_runtime() {
 }
 
 #[test]
-fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
+fn navigation_keeps_preview_pose_but_resets_scratch_and_motion_responses() {
     let editor = Editor::new();
     let session = editor.alloc_id();
     let mut model = Model::new();
@@ -584,7 +584,7 @@ fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
                 puppet.combined_deform(part),
                 Some(&[Vec2::new(5.0, 6.0)][..])
             );
-            puppet.set_physics_enabled(true);
+            puppet.set_motion_responses_enabled(true);
             puppet.reset_motion_responses(model);
             puppet.set_param_value(&param, 0.5);
             puppet.tick(model, 0.016);
@@ -605,7 +605,7 @@ fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
     editor
         .with_puppet(session, |model, puppet| {
             assert_eq!(puppet.param_value(&param), Some(0.75));
-            assert!(!puppet.physics_enabled());
+            assert!(!puppet.motion_responses_enabled());
             assert!(!puppet.response_trace(&driver).unwrap().active);
             puppet.tick(model, 0.0);
             let part = puppet.node_idx(&part).unwrap();

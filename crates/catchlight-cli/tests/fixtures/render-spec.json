@@ -25,7 +25,7 @@
       "rect": [-500, -500, 1000, 1000],
       "scale": 0.512,
       "background": {"srgb": [0, 0, 0], "alpha": 0},
-      "physics": {"mode": "off"},
+      "motion_responses": {"mode": "off"},
       "pose": {"drive": 0.5},
       "only_parts": ["panel-a"],
       "strip_masks": [{"node": "panel-a", "source": "mask-a"}]
@@ -34,7 +34,7 @@
       "rect": [-500, -500, 1000, 1000],
       "scale": 0.512,
       "background": {"srgb": [1, 1, 1], "alpha": 1},
-      "physics": {"mode": "off"},
+      "motion_responses": {"mode": "off"},
       "pose": {"closure": 1}
     },
     "closed-hidden": {
@@ -45,7 +45,7 @@
       "rect": [-500, -500, 1000, 1000],
       "scale": 0.512,
       "background": {"srgb": [1, 1, 1], "alpha": 1},
-      "physics": {"mode": "off"},
+      "motion_responses": {"mode": "off"},
       "pose": {"drive": 0.5},
       "only_parts": ["panel-a", "panel-b"],
       "overlay": {
@@ -62,7 +62,7 @@
       "rect": [-500, -500, 1000, 1000],
       "scale": 0.512,
       "background": {"srgb": [1, 1, 1], "alpha": 1},
-      "physics": {"mode": "simulate"},
+      "motion_responses": {"mode": "on"},
       "animation": {"source": "spec", "name": "pulse"},
       "frames": {"count": 61, "every": 1},
       "trace_params": ["drive", "response"]

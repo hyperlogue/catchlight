@@ -1,7 +1,7 @@
 //! Geometry observed from a frame the caller has already evaluated.
 //!
 //! This module never poses, ticks, synchronizes or mutates a Puppet. The caller
-//! chooses the pose, physics, animation and scratch policy, then evaluates the
+//! chooses the pose, motion responses, animation and scratch policy, then evaluates the
 //! frame before borrowing it here. A model identity/generation check prevents
 //! mixing authored geometry with a different or outdated bake; a frame without
 //! computed transforms is rejected. Changes to pose or scratch still require

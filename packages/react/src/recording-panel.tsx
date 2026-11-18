@@ -121,7 +121,7 @@ export function EditingBar() {
           ? edit.mesh?.dirty
             ? "Draft modified"
             : "Mesh draft"
-          : "Physics paused"}
+          : "Motion responses paused"}
       </span>
       {edit.mode === "mesh" ? (
         <div data-catchlight-editing-actions="">

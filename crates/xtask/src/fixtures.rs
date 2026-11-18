@@ -174,13 +174,8 @@ const GRID_QUAD_GAP: f32 = 160.0;
 /// `driven` quad, which is the only fixture here with a joint grid: a
 /// per-param sweep of either param samples one row or column of it, and the
 /// rest of the grid is reachable only as a pair. Three **one-param** bindings
-/// hang off `sweep`: it translates `swept` (moving its world vertices and,
-/// with them, the physics node parented under it), pushes `swept` forward in
-/// z, and fades `driven`.
-///
-/// So `sweep` alone moves vertices, opacity, z and a physics anchor — the
-/// four things `catchlight-cli poses` records — and the joint grid is what
-/// tells a per-param sweep apart from a pair.
+/// use `sweep` to translate `swept`, raise its z order and fade `driven`.
+/// Sampling both grid axes exercises poses a one-param sweep cannot reach.
 fn two_param_grid() -> (ClmStructure, Vec<ClmTexture>) {
     let mut nodes = Vec::new();
     let root = push(&mut nodes, None, group_node("root"));

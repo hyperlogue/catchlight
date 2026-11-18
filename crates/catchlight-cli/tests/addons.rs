@@ -73,12 +73,6 @@ fn an_extracted_subtree_is_an_addon_and_not_a_complete_model() {
 fn installing_an_extract_back_restores_the_model() {
     let dir = tmp("addons-round-trip");
     let original = common::fixture("composite_masks");
-    // Historical containers upgrade once; compare the current-format bytes.
-    let canonical = Model::from_clm_bytes(&read(&original))
-        .unwrap()
-        .to_clm_bytes()
-        .unwrap();
-
     let base = base_without(&["node-9"], &dir, "base");
     assert!(!diff(&decode(&original), &decode(&base)).is_empty());
 
@@ -98,7 +92,7 @@ fn installing_an_extract_back_restores_the_model() {
     );
     assert_eq!(
         read(&merged),
-        canonical,
+        read(&original),
         "the round trip restored the model but not its bytes"
     );
 }

@@ -48,8 +48,7 @@
 //!   Two viewports on one session are two callbacks in one
 //!   `requestAnimationFrame` batch carrying the same `DOMHighResTimeStamp`, so
 //!   the second one finds the puppet already advanced and only redraws it —
-//!   otherwise a second canvas would double every session's physics and
-//!   animation rate. The [`Motion`] the tick reported is remembered and
+//!   otherwise both canvases would advance the same responses and animation. The [`Motion`] the tick reported is remembered and
 //!   returned to *every* caller that frames at that timestamp, not only to the
 //!   one that ticked, or the viewports that did not tick would go clean and
 //!   stop redrawing a puppet that is still moving.
@@ -441,7 +440,7 @@ impl ReplicaState {
     ///
     /// A tick combines, but only on a frame that folded, and a scratch deform
     /// moves neither the pose nor the model: it sets the stack's dirty flag
-    /// and nothing else. So on a still session — no physics, no animation, the
+    /// and nothing else. So on a still session — no moving responses, no animation, the
     /// pointer the only thing moving — no later tick would ever sum it, and
     /// the drag would reach neither [`Self::bounds`] nor the deform generation
     /// a render cache gates its upload on. Every scratch-deform write here
@@ -535,7 +534,7 @@ impl ReplicaState {
 
     /// Editing pauses motion responses in this tab.
     pub fn set_editing(&mut self, editing: bool) {
-        self.puppet.set_physics_enabled(!editing);
+        self.puppet.set_motion_responses_enabled(!editing);
         self.tick(0.0);
     }
 
@@ -607,7 +606,7 @@ impl ReplicaState {
     /// in column-major order. `None` for a node the model does not have.
     ///
     /// This is where a handle is drawn, so it is the *evaluated* transform —
-    /// bindings, physics, mesh groups and any standing scratch already folded
+    /// bindings, motion responses, mesh groups and any standing scratch already folded
     /// in — and not the authored one. A puppet that has never ticked reports
     /// the identity, which is what an unposed model is.
     pub fn node_world_transform(&self, node: &str) -> Option<[f32; 16]> {
@@ -699,7 +698,7 @@ impl ReplicaState {
     /// deform and its evaluated world transform, the same
     /// `world · (vertex − origin + deform)` the vertex shader computes — for
     /// the same reason: a fit frames what is on screen, and a rest-pose box
-    /// would cut off a limb that physics or a param has swung outside it.
+    /// would cut off a limb that a motion response or a param has swung outside it.
     ///
     /// What counts as drawn is what the render list counts: a part whose
     /// `enabled` holds all the way up the tree, whose albedo names a texture
@@ -2033,7 +2032,7 @@ mod tests {
              would hold however the puppet was ticked",
         );
         assert!(
-            motions.iter().any(|m: &Motion| m.physics),
+            motions.iter().any(|m: &Motion| m.motion_responses),
             "the driver never reported motion, so nothing was being compared",
         );
     }
@@ -2137,11 +2136,11 @@ mod tests {
         send(json!({"cmd":"node_set", "node":face, "name":"renamed"}));
         replica.sync_from_editor(editor.editor(), session);
         assert!(
-            !replica.puppet.physics_enabled(),
-            "rebaking keeps editing physics paused"
+            !replica.puppet.motion_responses_enabled(),
+            "rebaking keeps motion responses paused while editing"
         );
         replica.set_editing(false);
-        assert!(replica.puppet.physics_enabled());
+        assert!(replica.puppet.motion_responses_enabled());
     }
 
     #[test]

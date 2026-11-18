@@ -6,7 +6,7 @@
 //!
 //! # What a pose is here
 //!
-//! Physics is switched off ([`Puppet::set_physics_enabled`]) and never
+//! Motion response evaluation is switched off ([`Puppet::set_motion_responses_enabled`]) and never
 //! ticked, so a response output sweeps like any other. Each pose is
 //! one [`Pose`] applied whole and one `tick(model, 0.0)`; `apply_pose` resets
 //! every param to its default first, so a sweep of one param holds every
@@ -195,7 +195,7 @@ pub fn build(model: &Model) -> Result<Poses, Error> {
     check_work(model, &positions, &pairs)?;
     let mut puppet = Puppet::new(model);
     // Never ticked, so a response output sweeps like any other.
-    puppet.set_physics_enabled(false);
+    puppet.set_motion_responses_enabled(false);
 
     let parts = parts_table(&puppet);
     let part_ids: Vec<NodeIdx> = parts.iter().map(|(idx, _)| *idx).collect();

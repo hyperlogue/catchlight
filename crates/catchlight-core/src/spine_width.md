@@ -130,7 +130,7 @@ model through a CLI file edit and editor import/export without losing fields.
 These are synthetic geometry checks, not a rendered hairstyle acceptance.
 
 Before enabling the Carver trial, compare neutral pixels and geometry against
-the source with all width/bend inputs zero and physics disabled. Separately
+the source with all width/bend inputs zero and motion responses disabled. Separately
 check the settled dynamic pose: a held pose should return all response-driven bends
 to zero. Exercise yaw/pitch/roll, combined head/body motion, fast
 pulses and stopping at 30/60/120 Hz. Verify short/long timing, root coverage,
