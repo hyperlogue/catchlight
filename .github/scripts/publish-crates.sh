@@ -4,6 +4,7 @@ set -euo pipefail
 # Cargo verifies unpublished workspace dependencies together, then uploads in
 # dependency order. On retry only the versions still absent are selected.
 crates=(
+  catchlight
   catchlight-core catchlight-wgpu catchlight-bevy catchlight-cli
   catchlight-editor-core catchlight-editor-protocol catchlight-editor-server catchlight-editor-cli
 )

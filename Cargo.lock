@@ -1416,6 +1416,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "catchlight"
+version = "0.1.0"
+dependencies = [
+ "catchlight-bevy",
+ "catchlight-core",
+ "catchlight-wgpu",
+]
+
+[[package]]
 name = "catchlight-bevy"
 version = "0.1.0"
 dependencies = [

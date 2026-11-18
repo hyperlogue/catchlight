@@ -1,0 +1,26 @@
+[package]
+name = "catchlight"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "2.5D character animation through mesh deformation, with optional wgpu and Bevy integration"
+readme = "README.md"
+keywords = ["animation", "2d", "mesh", "wgpu", "bevy"]
+categories = ["graphics", "game-development"]
+
+[features]
+default = []
+wgpu = ["dep:catchlight-wgpu"]
+bevy = ["dep:catchlight-bevy", "wgpu"]
+
+[dependencies]
+catchlight-core.workspace = true
+catchlight-wgpu = { workspace = true, optional = true }
+catchlight-bevy = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

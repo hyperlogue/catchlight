@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/catchlight",
     "crates/catchlight-core",
     "crates/catchlight-importer",
     "crates/catchlight-cli",

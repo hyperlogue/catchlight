@@ -32,6 +32,18 @@ Fetch Git LFS objects before building. The empty-state starter action reopens
 the same model. `CATCHLIGHT_LOCAL_MODEL` can override it for loopback development
 only; production always bundles the repository model.
 
+## Rust runtime
+
+Start with [`catchlight`](crates/catchlight/README.md), the entry point for
+embedding the animation runtime. Its default API re-exports `catchlight-core`.
+Enable `wgpu` for `catchlight::wgpu`, or `bevy` for `catchlight::bevy` and the
+renderer. Editor tools and command-line applications remain separate crates.
+
+```toml
+[dependencies]
+catchlight = "0.1.0"
+```
+
 ## Testing
 
 Lan (`tests/models/lan.clm`) and image baselines are stored in Git LFS. Fetch
@@ -60,7 +72,7 @@ update commands.
 ## Rust releases
 
 The **Publish Rust crates** GitHub Actions workflow is manually dispatched and
-defaults to a dry run. It packages and builds the eight crates listed in
+defaults to a dry run. It packages and builds the nine crates listed in
 [the release script](.github/scripts/publish-crates.sh), using Cargo's workspace
 publishing support to resolve unpublished dependencies together and publish in
 dependency order. The importer, browser WASM boundary, visual tests, and xtask
