@@ -56,6 +56,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Select the verified Rust toolchain
+        run: |
+          toolchain=$(nix build --no-link --print-out-paths --no-update-lock-file .#rust-toolchain)
+          echo "$toolchain/bin" >> "$GITHUB_PATH"
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
       - name: Upload verified versions
