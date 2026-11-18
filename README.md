@@ -69,18 +69,23 @@ are excluded.
 1. Update `workspace.package.version` and the internal dependency versions in
    `Cargo.toml` together, update `Cargo.lock`, and merge after CI passes.
 2. Run **Publish Rust crates** on the release commit with `dry_run` enabled.
-3. Configure the repository Actions secret `CRATES_IO_TOKEN` with a crates.io
-   API token authorized to publish all eight crates, including creating them
-   for the initial release.
-4. Tag the validated commit `v<workspace version>` (initially `v0.1.0`) and
-   push the tag. Select that tag when dispatching the workflow with `dry_run`
-   disabled. The workflow checks the tag against the manifest version and
-   repeats package verification before publishing.
+3. Configure the GitHub environment `crates-io` with required reviewers and
+   release-tag restrictions. In each crate's crates.io settings, add a trusted
+   publisher for this repository, workflow `crates-io.yml` and environment
+   `crates-io`. Crates.io requires the owner to publish a new crate's first
+   version before registering its trusted publisher.
+4. Tag the validated commit `v<workspace version>` and push the tag. Select
+   that tag when dispatching with `dry_run` disabled. Verification builds the
+   packages in a read-only job. After environment approval, a fresh runner
+   exchanges its GitHub identity for a short-lived token and uploads them.
 
-Tag pushes alone do not publish. Publishing is not atomic across crates: if
-an upload fails, inspect crates.io and the run logs before retrying; uploaded
-versions cannot be overwritten. The workflow does not create tags or GitHub
-releases. To run the same package verification locally:
+Re-dispatching the same tag resumes a partial release. Both jobs skip exact
+versions already on crates.io and stop on registry lookup errors.
+See the [crates.io trusted publishing guide](https://crates.io/docs/trusted-publishing).
+
+To verify a clean checkout locally, run the command below. When rechecking
+a changed crate at the same unpublished version, set `CARGO_TARGET_DIR` to
+a fresh directory so Cargo unpacks the new archive.
 
 ```sh
 nix develop -c bash .github/scripts/publish-crates.sh dry-run
