@@ -10,8 +10,8 @@ pub mod load;
 pub mod load_budget;
 pub(crate) mod meshgroup;
 pub mod model;
+pub mod motion_response;
 pub mod node;
-pub mod physics;
 pub mod puppet;
 pub mod spine;
 pub mod texture;
@@ -28,11 +28,11 @@ pub use model::{
     BindingParams, BindingTarget, CheckWarning, ExtensionValue, InstallError, Installed, Model,
     ModelBinding, ModelBindingValues, ModelComposite, ModelError, ModelMask, ModelMesh,
     ModelMeshGroup, ModelNode, ModelNodeKind, ModelParam, ModelPart, ModelSpine, ModelTexture,
-    ModelWeld, ModelWeldPair, Pose, Required, Requirement, Requirements, ScalarTarget, Slot,
-    SlotPair, DEFAULT_SLOT_WEIGHT,
+    ModelWeld, ModelWeldPair, NodeProperties, Pose, Required, Requirement, Requirements,
+    ScalarTarget, Slot, SlotPair, DEFAULT_SLOT_WEIGHT,
 };
+pub use motion_response::*;
 pub use node::*;
-pub use physics::*;
 pub use puppet::*;
 pub use spine::SpineData;
 pub use texture::{

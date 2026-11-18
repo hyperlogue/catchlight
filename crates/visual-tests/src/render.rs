@@ -132,10 +132,10 @@ pub fn prepare_puppet(
     // frames after it are the motion that pose change starts.
     if ticks_after_pose == 0 {
         cached.puppet.apply_pose(&pose);
-        cached.puppet.settle_physics(&cached.model);
+        cached.puppet.reset_motion_responses(&cached.model);
         cached.puppet.tick_with_root(&cached.model, world, 0.0);
     } else {
-        cached.puppet.settle_physics(&cached.model);
+        cached.puppet.reset_motion_responses(&cached.model);
         cached.puppet.apply_pose(&pose);
         for _ in 0..ticks_after_pose {
             cached

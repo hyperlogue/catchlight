@@ -23,7 +23,9 @@ pub struct ResponseInputSample {
 
 /// Time is supplied by the caller. Fixed stepping interpolates emitted art
 /// by the accumulator fraction; dependency edges always read solver values.
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum ResponseClock {
     #[default]
     InputIntervals,
@@ -116,7 +118,7 @@ impl Responses {
             let mut keep = true;
             for input in &config.inputs {
                 let source = match &input.source {
-                    ResponseSource::PoseParam(p) => puppet
+                    ResponseSource::PoseParam { param: p } => puppet
                         .slot_of_param
                         .get(p)
                         .copied()
@@ -223,6 +225,29 @@ impl Responses {
         }
     }
 
+    /// On a clip cut, initialize affected rows and their followers at the new
+    /// pose. Independent springs keep both velocity and fixed-clock phase.
+    pub(super) fn reset_changed_inputs(&mut self, jumps: &[u32]) {
+        if jumps.is_empty() {
+            return;
+        }
+        let slot_pose_changed = self
+            .pose_slots
+            .iter()
+            .any(|&slot| jumps.contains(&(slot as u32)));
+        for i in 0..self.rows.len() {
+            let affected = self.rows[i].terms.iter().any(|t| match t.source {
+                Source::Pose(slot) => jumps.contains(&slot),
+                Source::Slot { .. } => slot_pose_changed,
+                Source::Parent(parent) => !self.rows[parent].sampled,
+                Source::Unavailable => false,
+            });
+            if affected {
+                self.rows[i].sampled = false;
+            }
+        }
+    }
+
     pub(super) fn owns(&self, slot: u32) -> bool {
         self.reserved.get(slot as usize) == Some(&true)
     }
@@ -233,6 +258,7 @@ impl Responses {
         // shares immutable binding grids and is only allocated for slot inputs.
         let mut pose = puppet.clone();
         pose.set_physics_enabled(false);
+        pose.responses.reserved.clone_from(&self.reserved);
         pose.stop_animation();
         // Welds solve in sequence. Trace their inputs backwards so an
         // earlier seam that moves a sampled endpoint is retained too.
@@ -304,7 +330,7 @@ impl Responses {
             let value = puppet.param_values[i];
             if sample.param_values[i] != value {
                 sample.param_values[i] = value;
-                sample.bump_param_generation();
+                sample.bump_param_generation(i as u32);
             }
         }
         if sample.scratch_transforms != puppet.scratch_transforms {
@@ -478,9 +504,6 @@ impl Puppet {
         }
     }
 
-    pub fn has_motion_responses(&self) -> bool {
-        !self.responses.rows.is_empty()
-    }
     pub fn response_inputs(&self, id: &NodeId) -> Option<Vec<ResponseInputSample>> {
         let bank = &self.responses;
         let row = bank.rows.iter().find(|row| &row.id == id)?;
@@ -576,11 +599,15 @@ mod tests {
                     gain: 1.,
                 },
                 ResponseInput {
-                    source: ResponseSource::PoseParam(output.clone()),
+                    source: ResponseSource::PoseParam {
+                        param: output.clone(),
+                    },
                     gain: 2.,
                 },
                 ResponseInput {
-                    source: ResponseSource::PoseParam(input.clone()),
+                    source: ResponseSource::PoseParam {
+                        param: input.clone(),
+                    },
                     gain: 3.,
                 },
             ],

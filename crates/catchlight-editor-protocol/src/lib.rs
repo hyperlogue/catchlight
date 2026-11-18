@@ -137,6 +137,7 @@
 //!   retain this revision with the data they read, then submit one guarded
 //!   edit or batch. A stale edit is never retried blindly.
 
+pub use catchlight_core::{MotionResponse, ResponseInput, ResponseSource};
 use serde::{Deserialize, Serialize};
 
 pub use catchlight_core::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
@@ -319,7 +320,7 @@ pub enum Command {
     MotionResponseSet {
         session: SessionId,
         node: NodeId,
-        response: MotionResponseInfo,
+        response: MotionResponse,
     },
     NodeDelete {
         session: SessionId,
@@ -2775,7 +2776,7 @@ pub struct NodeInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mg_translate_children: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub motion_response: Option<MotionResponseInfo>,
+    pub motion_response: Option<MotionResponse>,
     /// A spine's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spine: Option<SpineInfo>,
@@ -2801,105 +2802,6 @@ pub struct MeshInfo {
 pub struct MaskInfo {
     pub source: NodeId,
     pub mode: MaskMode,
-}
-
-/// The complete authoring payload for a scalar response.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct MotionResponseInfo {
-    pub inputs: Vec<MotionInput>,
-    pub period_s: f32,
-    pub damping_ratio: f32,
-    pub output_param: Option<ParamId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct MotionInput {
-    pub source: MotionSource,
-    pub gain: f32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum MotionSource {
-    PoseParam {
-        param: ParamId,
-    },
-    PartSlot {
-        part: NodeId,
-        slot: SlotId,
-        angle_deg: f32,
-        reference_length: f32,
-    },
-    Parent,
-}
-
-impl From<MotionResponseInfo> for catchlight_core::MotionResponse {
-    fn from(r: MotionResponseInfo) -> Self {
-        use catchlight_core::{ResponseInput, ResponseSource as S};
-        Self {
-            period_s: r.period_s,
-            damping_ratio: r.damping_ratio,
-            output_param: r.output_param,
-            inputs: r
-                .inputs
-                .into_iter()
-                .map(|i| ResponseInput {
-                    gain: i.gain,
-                    source: match i.source {
-                        MotionSource::PoseParam { param } => S::PoseParam(param),
-                        MotionSource::PartSlot {
-                            part,
-                            slot,
-                            angle_deg,
-                            reference_length,
-                        } => S::PartSlot {
-                            part,
-                            slot,
-                            angle_deg,
-                            reference_length,
-                        },
-                        MotionSource::Parent => S::Parent,
-                    },
-                })
-                .collect(),
-        }
-    }
-}
-
-impl From<catchlight_core::MotionResponse> for MotionResponseInfo {
-    fn from(r: catchlight_core::MotionResponse) -> Self {
-        use catchlight_core::ResponseSource as S;
-        Self {
-            period_s: r.period_s,
-            damping_ratio: r.damping_ratio,
-            output_param: r.output_param,
-            inputs: r
-                .inputs
-                .into_iter()
-                .map(|i| MotionInput {
-                    gain: i.gain,
-                    source: match i.source {
-                        S::PoseParam(param) => MotionSource::PoseParam { param },
-                        S::PartSlot {
-                            part,
-                            slot,
-                            angle_deg,
-                            reference_length,
-                        } => MotionSource::PartSlot {
-                            part,
-                            slot,
-                            angle_deg,
-                            reference_length,
-                        },
-                        S::Parent => MotionSource::Parent,
-                    },
-                })
-                .collect(),
-        }
-    }
 }
 
 /// A spine in full, under the names [`Command::SpineSet`] sets them by.

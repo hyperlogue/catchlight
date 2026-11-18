@@ -533,7 +533,7 @@ impl ReplicaState {
         Some(decoded)
     }
 
-    /// Editing pauses this tab's simulation, without changing model physics.
+    /// Editing pauses motion responses in this tab.
     pub fn set_editing(&mut self, editing: bool) {
         self.puppet.set_physics_enabled(!editing);
         self.tick(0.0);

@@ -18,7 +18,7 @@ credit everywhere else.
 - `catchlight-core`'s `meshgroup.rs` and `fill.rs` — mesh-group descent and
   cell fill match the reference's `isComposite`, `postProcessFilter` and
   `axisPoint()`.
-- `catchlight-core`'s `puppet/mod.rs`, `physics.rs` and `animation.rs` —
+- `catchlight-core`'s `puppet/mod.rs` and `animation.rs` —
   tick order and keyframe timing match the reference's.
 - `catchlight-importer`'s `to_clm.rs` — the reader is pinned to
   inochi2d v0.8.6 and v0.8.7 behaviour and cites its source files.

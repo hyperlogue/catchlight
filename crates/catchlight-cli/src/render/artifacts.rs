@@ -460,7 +460,9 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
         .map_err(|e| fail(&e))?;
     let sensor = catchlight_core::MotionResponse {
         inputs: vec![catchlight_core::ResponseInput {
-            source: catchlight_core::ResponseSource::PoseParam(param.clone()),
+            source: catchlight_core::ResponseSource::PoseParam {
+                param: param.clone(),
+            },
             gain: 1.,
         }],
         ..Default::default()
@@ -497,7 +499,7 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
         return serde_json::to_value(plan).map_err(|e| fail(&e));
     }
     let detail = &plan.requests["detail"];
-    let runtime = FrameRuntime::new(&model, detail, || false)?;
+    let runtime = FrameRuntime::new(&model, detail)?;
     match kind {
         "geometry" => {
             serde_json::to_value(GeometryOutput::observe("detail", detail, &model, &runtime)?)
@@ -505,7 +507,7 @@ pub(super) fn schema_example(kind: &str) -> Result<serde_json::Value, Error> {
         "bounds" => serde_json::to_value(BoundsOutput::observe(detail, &model, &runtime)?),
         "trace" => {
             let pulse = &plan.requests["pulse"];
-            let mut runtime = FrameRuntime::new(&model, pulse, || false)?;
+            let mut runtime = FrameRuntime::new(&model, pulse)?;
             runtime.advance(&model);
             serde_json::to_value(TraceFrame::observe("pulse", pulse, &model, &runtime)?)
         }

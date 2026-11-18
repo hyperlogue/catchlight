@@ -123,7 +123,7 @@ impl CatchlightPuppet {
             puppet.apply_pose(&pose);
         }
         // A loaded or replaced asset starts at equilibrium in its carried pose.
-        puppet.settle_physics(model);
+        puppet.reset_motion_responses(model);
         self.puppet = Some(puppet);
         self.baked_from = Some(id);
     }

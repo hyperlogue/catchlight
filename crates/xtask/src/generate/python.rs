@@ -8,7 +8,7 @@
 //!   `f32` are both `number` in it, and Python must keep `int` and `float`
 //!   apart. Reading the crate's own `lib.rs` is the shortest route to the
 //!   distinction and to the serde attributes that decide a field's default.
-//!   See [`SOURCE`] for the one file it reads and what it assumes about it.
+//!   The parser reads the protocol and its shared core motion response types.
 //!
 //! - **The five Id types are not in that file.** They come from
 //!   `catchlight-core`, and this module takes them from the `ts-rs`
@@ -65,7 +65,7 @@ use super::{
 /// can import a file with a `.` in its stem.
 const OUT: &str = "python/catchlight/protocol_gen.py";
 
-/// The one file this generator reads, and the only place the wire types live.
+/// The protocol source. Its shared response types are parsed from core alongside it.
 ///
 /// It is parsed, not scanned: `syn` gives the field types with `u32` and `f32`
 /// still distinct, and the serde attributes that say which fields may be
@@ -146,7 +146,7 @@ enum Default_ {
 
 // --------------------------------------------------------------- the parser
 
-/// Everything read out of [`SOURCE`], keyed by ident.
+/// Protocol and shared core declarations, keyed by ident.
 struct Source {
     file: File,
     items: BTreeMap<String, Item>,
@@ -156,7 +156,11 @@ impl Source {
     fn read() -> Result<Self> {
         let path = crate::workspace_root()?.join(SOURCE);
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {SOURCE}"))?;
-        let file = syn::parse_file(&text).with_context(|| format!("parsing {SOURCE}"))?;
+        let mut file = syn::parse_file(&text).with_context(|| format!("parsing {SOURCE}"))?;
+        let path = crate::workspace_root()?.join("crates/catchlight-core/src/motion_response.rs");
+        let source = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        file.items.extend(syn::parse_file(&source)?.items);
         let mut items = BTreeMap::new();
         for item in &file.items {
             let ident = match item {
@@ -1420,9 +1424,8 @@ mod tests {
 #[cfg(test)]
 mod wire_shapes {
     use catchlight_editor_protocol::{
-        AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, MotionInput,
-        MotionResponseInfo, MotionSource, NodeKindArg, NodePatch, ParamPose, Presence, Rename,
-        SessionId, TexId,
+        AutoMesh, BindingCellValue, BindingIdentity, Camera, Command, MotionResponse, NodeKindArg,
+        NodePatch, ParamPose, Presence, Rename, ResponseInput, ResponseSource, SessionId, TexId,
     };
     use serde_json::{json, Value};
 
@@ -1638,9 +1641,9 @@ mod wire_shapes {
             Command::MotionResponseSet {
                 session: SessionId(1),
                 node: id("tip"),
-                response: MotionResponseInfo {
-                    inputs: vec![MotionInput {
-                        source: MotionSource::Parent,
+                response: MotionResponse {
+                    inputs: vec![ResponseInput {
+                        source: ResponseSource::Parent,
                         gain: 0.75,
                     }],
                     period_s: 0.5,

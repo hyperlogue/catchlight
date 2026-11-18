@@ -3,16 +3,15 @@
 //! one driver may own an art output; an ordinary spine can still consume it.
 use std::collections::HashMap;
 
-use super::{Model, ModelError, ModelNodeKind};
+use super::{Model, ModelError, ModelNode, ModelNodeKind};
 use crate::{MotionResponse, NodeId, ParamId, ResponseSource};
 
-/// Derived once per model revision. Stable node order also fixes which
+/// Rebuilt when response rows or their output IDs change. Stable order fixes which
 /// diagnostic a native server and a separately loaded replica return first.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ResponseIndex {
     rows: Vec<NodeId>,
     owners: HashMap<ParamId, NodeId>,
-    validated: std::sync::OnceLock<()>,
 }
 
 impl Model {
@@ -43,6 +42,37 @@ impl Model {
         self.response_index().owners.get(param)
     }
 
+    fn responses(&self) -> impl Iterator<Item = (&ModelNode, &MotionResponse)> {
+        self.response_index().rows.iter().filter_map(|id| {
+            let node = self.node(id)?;
+            match &node.kind {
+                ModelNodeKind::MotionResponse(response) => Some((node, response)),
+                _ => None,
+            }
+        })
+    }
+
+    /// A new ID can satisfy a fragment's previously external input or output.
+    pub(super) fn resolves_response_node(&self, id: &NodeId) -> bool {
+        self.is_fragment()
+            && self.responses().any(|(node, r)| {
+                r.inputs.iter().any(|input| match &input.source {
+                    ResponseSource::Parent => node.parent() == Some(id),
+                    ResponseSource::PartSlot { part, .. } => part == id,
+                    _ => false,
+                })
+            })
+    }
+
+    pub(super) fn resolves_response_param(&self, id: &ParamId) -> bool {
+        self.is_fragment()
+            && self.responses().any(|(_, r)| {
+                r.output_param.as_ref() == Some(id) || r.inputs.iter().any(|input| {
+                matches!(&input.source, ResponseSource::PoseParam { param } if param == id)
+            })
+            })
+    }
+
     pub(super) fn remove_counted_node(&mut self, id: &NodeId) {
         if self
             .nodes
@@ -50,6 +80,7 @@ impl Model {
             .is_some_and(|n| matches!(n.kind, ModelNodeKind::MotionResponse(_)))
         {
             self.response_count -= 1;
+            self.response_index.take();
         }
     }
 
@@ -59,15 +90,12 @@ impl Model {
         value: MotionResponse,
     ) -> Result<(), ModelError> {
         if !matches!(
-            self.node(id).map(|n| &n.kind),
-            Some(ModelNodeKind::MotionResponse(_))
+            self.node(id).ok_or(ModelError::UnknownNode)?.kind,
+            ModelNodeKind::MotionResponse(_)
         ) {
-            return Err(ModelError::InvalidResponse {
-                node: id.clone(),
-                reason: "expected a motion response node".into(),
-            });
+            return Err(ModelError::NotMotionResponse);
         }
-        self.update_node(id, |node| node.kind = ModelNodeKind::MotionResponse(value))
+        self.update_node_kind(id, |kind| *kind = ModelNodeKind::MotionResponse(value))
     }
 
     pub(super) fn check_response_writer(&self, param: &ParamId) -> Result<(), ModelError> {
@@ -85,9 +113,6 @@ impl Model {
             return Ok(());
         }
         let index = self.response_index();
-        if index.validated.get().is_some() {
-            return Ok(());
-        }
         let fragment = self.is_fragment();
         for id in &index.rows {
             let Some(node) = self.node(id) else { continue };
@@ -122,7 +147,9 @@ impl Model {
                             ));
                         }
                     }
-                    ResponseSource::PoseParam(p) if self.param(p).is_none() && !fragment => {
+                    ResponseSource::PoseParam { param: p }
+                        if self.param(p).is_none() && !fragment =>
+                    {
                         return Err(invalid(format!("unknown input param {p}")))
                     }
                     ResponseSource::PartSlot {
@@ -171,12 +198,10 @@ impl Model {
             }
             Ok(())
         };
-        for node in index.rows.iter().filter_map(|id| self.node(id)) {
-            if let ModelNodeKind::MotionResponse(r) = &node.kind {
-                for t in &r.inputs {
-                    if let ResponseSource::PoseParam(p) = &t.source {
-                        check(p, "is a response output and cannot be a pose input")?;
-                    }
+        for (_, response) in self.responses() {
+            for term in &response.inputs {
+                if let ResponseSource::PoseParam { param } = &term.source {
+                    check(param, "is a response output and cannot be a pose input")?;
                 }
             }
         }
@@ -193,7 +218,6 @@ impl Model {
         for lane in self.animations.iter().flat_map(|a| &a.lanes) {
             check(&lane.param, "also has an animation lane")?;
         }
-        let _ = index.validated.set(());
         Ok(())
     }
 }

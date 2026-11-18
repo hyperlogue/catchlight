@@ -98,7 +98,7 @@ fn live_bends_drive_width_before_bending_in_the_same_frame_at_three_rates() {
     let f = Fixture::new();
     for hz in [30, 60, 120] {
         let mut puppet = Puppet::new(&f.model);
-        puppet.settle_physics(&f.model);
+        puppet.reset_motion_responses(&f.model);
         let mut max_difference = 0.0f32;
         let mut max_change = 0.0f32;
         let mut previous = 0.0;
@@ -207,7 +207,7 @@ fn neutral_width_is_exactly_inactive_and_the_recipe_round_trips() {
 fn moving_one_lock_does_not_drive_its_sibling() {
     let f = Fixture::new();
     let mut puppet = Puppet::new(&f.model);
-    puppet.settle_physics(&f.model);
+    puppet.reset_motion_responses(&f.model);
     puppet.tick(&f.model, 1.0 / 60.0);
     let untouched = world_positions(&puppet, &f.locks[1].parts[0]);
     puppet.set_param_value(&f.locks[0].nudge, 1.0);

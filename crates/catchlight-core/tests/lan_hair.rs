@@ -146,7 +146,7 @@ fn front_locks_keep_their_length_while_the_head_rolls() {
             puppet.set_physics_enabled(physics);
             puppet.set_param_value(&roll, angle);
             if physics {
-                puppet.settle_physics(&model);
+                puppet.reset_motion_responses(&model);
             }
             puppet.tick(&model, DT);
             for (id, ys) in &samples {
@@ -165,7 +165,7 @@ fn front_locks_keep_their_length_while_the_head_rolls() {
 fn front_locks_settle_promptly_after_a_head_roll() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
-    puppet.settle_physics(&model);
+    puppet.reset_motion_responses(&model);
     let roll = ParamId::new("head_roll").unwrap();
     let samples = [
         ("front-hair-lock-2", 540.0),
@@ -204,7 +204,7 @@ fn back_hair_falls_beside_the_neck_under_a_rolled_head() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
     puppet.set_param_value(&ParamId::new("head_roll").unwrap(), -30.0);
-    puppet.settle_physics(&model);
+    puppet.reset_motion_responses(&model);
     puppet.tick(&model, DT);
     let geometry = catchlight_core::geometry::EvaluatedGeometry::new(&model, &puppet).unwrap();
     // The outer back-hair contour beside the cheek and neck. Mesh boundaries
@@ -246,7 +246,7 @@ fn back_hair_falls_beside_the_neck_under_a_rolled_head() {
 fn long_lock_mesh_tips_lag_their_roots_on_a_small_head_roll() {
     let model = lan();
     let mut live = Puppet::new(&model);
-    live.settle_physics(&model);
+    live.reset_motion_responses(&model);
     live.tick(&model, DT);
     let mut carried = Puppet::new(&model);
     carried.set_physics_enabled(false);
@@ -282,7 +282,7 @@ fn long_lock_mesh_tips_lag_their_roots_on_a_small_head_roll() {
 fn front_locks_do_not_ring_after_a_tiny_head_roll() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
-    puppet.settle_physics(&model);
+    puppet.reset_motion_responses(&model);
     let mut carried = Puppet::new(&model);
     carried.set_physics_enabled(false);
     let roll = ParamId::new("head_roll").unwrap();
@@ -374,7 +374,7 @@ fn simulation_roots_stay_on_the_art_through_every_mesh_group() {
     let roll = ParamId::new("head_roll").unwrap();
     for angle in [-30.0, 30.0] {
         puppet.set_param_value(&roll, angle);
-        puppet.settle_physics(&model);
+        puppet.reset_motion_responses(&model);
         puppet.tick(&model, DT);
         posed.set_param_value(&roll, angle);
         posed.tick(&model, DT);
@@ -393,7 +393,7 @@ fn simulation_roots_stay_on_the_art_through_every_mesh_group() {
         let param = ParamId::new(name).unwrap();
         posed.apply_pose(&Default::default());
         let mut puppet = Puppet::new(&model);
-        puppet.settle_physics(&model);
+        puppet.reset_motion_responses(&model);
         for frame in 0..120 {
             let value = reach * (std::f32::consts::TAU * frame as f32 * DT).sin();
             puppet.set_param_value(&param, value);
@@ -428,7 +428,7 @@ fn shaped_fringe_stays_close_to_its_drawing_across_head_poses() {
         let param = ParamId::new(name).unwrap();
         simulated.set_param_value(&param, value);
         drawn.set_param_value(&param, value);
-        simulated.settle_physics(&model);
+        simulated.reset_motion_responses(&model);
         simulated.tick(&model, DT);
         drawn.tick(&model, DT);
         assert_fringe_shape(&model, &simulated, &drawn, &format!("{name}={value}"), 0.5);
@@ -469,7 +469,7 @@ fn fringe_keeps_its_shape_while_the_head_rolls() {
     let mut simulated = Puppet::new(&model);
     let mut drawn = Puppet::new(&model);
     drawn.set_physics_enabled(false);
-    simulated.settle_physics(&model);
+    simulated.reset_motion_responses(&model);
     let roll = ParamId::new("head_roll").unwrap();
     // A full roll each way within a second is the hardest shake the head
     // has. The fringe swings with it, and its stops hold the swing well
@@ -495,7 +495,7 @@ fn long_hair_hangs_down_under_a_rolled_head() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
     let roll = ParamId::new("head_roll").unwrap();
-    puppet.settle_physics(&model);
+    puppet.reset_motion_responses(&model);
     // Rest spans and directions of the long locks' lower lengths, and of the
     // face, read off the evaluated meshes by authored height.
     let long = [
@@ -525,11 +525,11 @@ fn long_hair_hangs_down_under_a_rolled_head() {
         .normalize()
     };
     let mut drawn = Puppet::new(&model);
-    drawn.settle_physics(&model);
+    drawn.reset_motion_responses(&model);
     drawn.tick(&model, DT);
     for angle in [-30.0, 30.0] {
         puppet.set_param_value(&roll, angle);
-        puppet.settle_physics(&model);
+        puppet.reset_motion_responses(&model);
         puppet.tick(&model, DT);
         let tilt = face(&puppet).angle_to(face(&drawn)).abs().to_degrees();
         assert!(tilt > 10.0, "roll {angle} tilts the face {tilt} degrees");
@@ -574,7 +574,7 @@ fn long_hair_hangs_down_under_a_rolled_head() {
 fn long_locks_swing_with_a_body_roll_and_return_to_the_drawing() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
-    puppet.settle_physics(&model);
+    puppet.reset_motion_responses(&model);
     let roll = ParamId::new("body_roll").unwrap();
     let locks = ["Front-Hair-Lock-2-Spine", "Back-Hair-Lock-19-Spine"];
     let bends = |puppet: &Puppet, id: &str| -> Vec<f32> {
@@ -619,7 +619,7 @@ fn hair_swings_alike_at_any_frame_rate() {
     let locks = [("front-hair-lock-2", 432.0), ("back-hair-lock-19", 350.0)];
     let run = |fps: f32| -> Vec<Vec<(f32, Vec2)>> {
         let mut puppet = Puppet::new(&model);
-        puppet.settle_physics(&model);
+        puppet.reset_motion_responses(&model);
         let mut out = vec![Vec::new(); locks.len()];
         for f in 1..=(2.0 * fps) as usize {
             let t = f as f32 / fps;
@@ -660,7 +660,7 @@ fn hair_sleeps_under_a_placed_root() {
     for yaw in [0.0, 20.0] {
         let mut puppet = Puppet::new(&model);
         puppet.set_param_value(&ParamId::new("head_yaw").unwrap(), yaw);
-        puppet.settle_physics(&model);
+        puppet.reset_motion_responses(&model);
         let mut awake = 0;
         for frame in 0..600 {
             let motion = puppet.tick_with_root(&model, root, DT);
@@ -679,7 +679,7 @@ fn hair_sleeps_under_a_placed_root() {
 fn a_held_drag_on_a_lock_lets_the_hair_settle() {
     let model = lan();
     let mut puppet = Puppet::new(&model);
-    puppet.settle_physics(&model);
+    puppet.reset_motion_responses(&model);
     let lock = puppet
         .node_idx(&catchlight_core::NodeId::new("front-hair-lock-2").unwrap())
         .unwrap();
@@ -724,7 +724,7 @@ fn hair_lifts_as_the_head_drops_and_comes_back_to_the_drawing() {
     };
     carried.set_param_value(&pitch, 0.0);
     let mut live = Puppet::new(&model);
-    live.settle_physics(&model);
+    live.reset_motion_responses(&model);
     let mut lift = [0.0_f32; 2];
     let mut awake = true;
     for frame in 0..240 {

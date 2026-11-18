@@ -432,8 +432,8 @@ fn editing_a_composites_blend_or_masks_re_routes_it() {
         let set_blend = |scene: &mut Scene, mode: BlendMode| {
             scene
                 .model
-                .update_node(&inner, |n| {
-                    if let ModelNodeKind::Composite(c) = &mut n.kind {
+                .update_node_kind(&inner, |kind| {
+                    if let ModelNodeKind::Composite(c) = kind {
                         c.blend_mode = mode;
                     }
                 })

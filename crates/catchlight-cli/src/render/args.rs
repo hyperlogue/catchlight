@@ -2,8 +2,8 @@
 //! mask-source shortcuts become explicit edges before ordinary validation.
 
 use super::spec::{
-    self, AnimationRef, AnimationSource, Background, Document, Frames, Initial, MaskEdge, Physics,
-    Request, Setting, Video, VideoFormat,
+    self, AnimationRef, AnimationSource, Background, Document, Frames, MaskEdge, Physics, Request,
+    Setting, Video, VideoFormat,
 };
 use crate::Error;
 use catchlight_core::{Model, ModelNodeKind, NodeId};
@@ -53,8 +53,8 @@ pub struct ImageArgs {
     /// Opaque white (default) or transparent black.
     #[arg(long, value_enum)]
     pub background: Option<BackgroundArg>,
-    /// Physics policy, default settled. With --animation, settled starts the
-    /// simulation settled and off disables it.
+    /// Static frames default to settled. Animations simulate from their opening pose.
+    /// Select off to disable motion responses.
     #[arg(long, value_enum)]
     pub physics: Option<PhysicsArg>,
 }
@@ -222,8 +222,6 @@ impl ClipArgs {
             Setting::Value(Physics::Off {}) => Setting::Value(Physics::Off {}),
             Setting::Value(_) => Setting::Value(Physics::Simulate {
                 response_clock: Default::default(),
-                initial: Initial::Settled,
-                warmup_frames: 0,
             }),
             _ => Setting::Inherit,
         };
@@ -419,8 +417,7 @@ impl BoundsArgs {
         };
         let cancel = super::execute::Cancellation::default();
         cancel.install()?;
-        let mut runtime =
-            super::frame::FrameRuntime::new(&loaded.model, &request, || cancel.is_cancelled())?;
+        let mut runtime = super::frame::FrameRuntime::new(&loaded.model, &request)?;
         for _ in 0..frame {
             if cancel.is_cancelled() {
                 return Err(spec::bad("bounds cancelled"));

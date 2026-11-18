@@ -384,7 +384,7 @@ fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec
             }
             // A spine carries no mesh and does not pass a group's deform on,
             // so the walk goes through it rather than stopping at it.
-            Some(NodeKind::Spine(_)) => {
+            Some(NodeKind::Spine(_) | NodeKind::MotionResponse) => {
                 stack.extend(tree.get_children(id));
             }
             _ => {}
@@ -509,8 +509,8 @@ pub(crate) fn bake_mesh_group_pins(
 }
 
 /// Descendants without a mesh, reached from a `translateChildren=true` MG.
-/// Walk through Parts and Composites, collecting grouping and motion response
-/// nodes without descending past them. Nested MGs
+/// Motion responses pass deformation through to drawable descendants. Groups
+/// receive a single transform shift for their subtree. Nested MGs
 /// receive vertex deformation through `descendant_meshed_nodes`; applying a
 /// Node-level shift to them too would double the deform.
 fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
@@ -526,7 +526,7 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) ->
         // A spine's meshed descendants are reached by `descendant_meshed_nodes`
         // and warped there, so the walk goes through it and the retain below
         // drops the spine itself.
-        Some(NodeKind::Spine(_)) => true,
+        Some(NodeKind::Spine(_) | NodeKind::MotionResponse) => true,
         _ => false,
     };
     let mut targets = tree.get_descendants_until(mg_id, |id| !descends(id));
@@ -536,13 +536,43 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) ->
             Some(NodeKind::Part(_))
                 | Some(NodeKind::Composite(_))
                 | Some(NodeKind::MeshGroup(_))
-                | Some(NodeKind::Spine(_))
+                | Some(NodeKind::Spine(_) | NodeKind::MotionResponse)
         )
     });
     targets
 }
 
 impl Arena {
+    /// Restore the previous group pass after a fold changed only unrelated
+    /// inputs. Spines have already run and welds will read these same sources.
+    pub(super) fn restore_mesh_group_deforms(
+        &mut self,
+        transforms: &mut GlobalTransforms,
+        root: Mat4,
+    ) {
+        for i in 0..self.mg_written_sources.len() {
+            let (child, group) = self.mg_written_sources[i];
+            let Some(node) = self.get_mut(child) else {
+                continue;
+            };
+            let stack = match &mut node.kind {
+                NodeKind::Part(p) => &mut p.deform_stack,
+                NodeKind::MeshGroup(g) => &mut g.deform_stack,
+                _ => continue,
+            };
+            stack.reactivate(DeformSource::Node(group));
+        }
+        for i in 0..self.mg_shifts.len() {
+            let (id, shift) = self.mg_shifts[i];
+            if let Some(node) = self.get_mut(id) {
+                node.transform.translation.x += shift.x;
+                node.transform.translation.y += shift.y;
+            }
+            self.mark_transform_dirty(id);
+            self.recompute_subtree_transforms(transforms, id, root);
+        }
+    }
+
     /// Limit geometry passes to the nodes used by a pose-only observation.
     /// The existing hierarchy and arena indices continue to locate transforms.
     pub(super) fn retain_geometry(
@@ -652,6 +682,8 @@ pub(crate) fn propagate_mesh_group_deforms(
     root: Mat4,
 ) {
     let _span = tracing::debug_span!("propagate_mesh_group_deforms").entered();
+    arena.mg_written_sources.clear();
+    arena.mg_shifts.clear();
     let order = take_mg_pre_order(arena);
 
     // Pull the arena-owned scratch out so we can interleave borrows of
@@ -753,7 +785,7 @@ pub(crate) fn propagate_mesh_group_deforms(
 }
 
 /// Shift one MG's `translate_children` targets — its descendants without a
-/// mesh (group and motion response nodes) — as a Node-level transform shift,
+/// mesh (groups) — as a Node-level transform shift,
 /// then bring the globals under each shifted node up to date.
 ///
 /// For each target:
@@ -810,6 +842,7 @@ fn shift_translate_children(
             node.transform.translation.x += delta_parent.x;
             node.transform.translation.y += delta_parent.y;
         }
+        arena.mg_shifts.push((target_id, delta_parent));
         arena.mark_transform_dirty(target_id);
         arena.recompute_subtree_transforms(transforms, target_id, root);
     }
@@ -1058,6 +1091,7 @@ fn propagate_to_child(
         if scratch.len() == stack.vert_count {
             let buf = stack.source_buf_mut(DeformSource::Node(mg_id));
             buf.copy_from_slice(scratch);
+            arena.mg_written_sources.push((child_id, mg_id));
         }
     }
 }
@@ -1065,6 +1099,42 @@ fn propagate_to_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_response_chain_passes_group_deformation_through_to_its_art() {
+        use crate::components::Node;
+        let mut arena = Arena::new();
+        let group = arena.insert_child(
+            arena.root(),
+            Node {
+                kind: NodeKind::MeshGroup(Box::default()),
+                ..Node::default()
+            },
+        );
+        let row = arena.insert_child(
+            group,
+            Node {
+                kind: NodeKind::MotionResponse,
+                ..Node::default()
+            },
+        );
+        let tip = arena.insert_child(
+            row,
+            Node {
+                kind: NodeKind::MotionResponse,
+                ..Node::default()
+            },
+        );
+        let art = arena.insert_child(
+            tip,
+            Node {
+                kind: NodeKind::Part(Box::default()),
+                ..Node::default()
+            },
+        );
+        assert_eq!(descendant_meshed_nodes(&arena.tree, group, &arena), [art]);
+        assert!(translate_children_targets(&arena.tree, group, &arena).is_empty());
+    }
 
     /// A Composite with `propagate_mesh_group` unset does not propagate, so
     /// the MeshGroup must not bind the Parts

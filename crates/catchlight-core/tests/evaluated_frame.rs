@@ -44,8 +44,7 @@ const TOL: f32 = 1e-5;
 
 const DT: f32 = 1.0 / 60.0;
 
-/// Frames between samples of a simulated run. The drivers move slowly enough
-/// at 60 Hz that every tenth frame still pins the curve.
+/// Frames between samples of clip playback at 60 Hz.
 const SAMPLE_EVERY: usize = 10;
 
 /// One evaluated frame, flattened: per node, the global transform's sixteen

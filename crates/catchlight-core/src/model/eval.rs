@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use crate::id::ParamId;
-use crate::interpolate::{bracket, cubic, frac, InterpolateMode};
+use crate::interpolate::{cubic, frac, InterpolateMode};
 
 use super::{BindingKey, BindingTarget, DenseGrid, Model, ModelError};
 
@@ -154,7 +154,11 @@ impl Model {
         } else {
             0.0
         };
-        let (lo, hi) = bracket(axis, normed);
+        let (lo, hi) = crate::interpolate::binding_bracket(
+            axis,
+            normed,
+            value == 0. && self.response_owner(param).is_some(),
+        );
         Ok(Located {
             lo,
             hi,
@@ -175,9 +179,9 @@ impl Model {
             return None;
         }
         let (axis_x, axis_y) = self.binding_axes(key).ok()?;
-        let x = self.locate(key.params.x(), axis_x, pose).ok()?;
+        let x = self.locate(key.params.x(), &axis_x, pose).ok()?;
         let y = match key.params.y() {
-            Some(p) => self.locate(p, axis_y, pose).ok()?,
+            Some(p) => self.locate(p, &axis_y, pose).ok()?,
             None => Located {
                 lo: 0,
                 hi: 0,

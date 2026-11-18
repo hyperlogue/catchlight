@@ -23,7 +23,7 @@ fn model(damping: f32) -> Model {
         (
             "upper",
             root,
-            ResponseSource::PoseParam(pid("roll")),
+            ResponseSource::PoseParam { param: pid("roll") },
             "broad",
         ),
         ("tip", nid("upper"), ResponseSource::Parent, "bend"),
@@ -52,7 +52,7 @@ fn child_reads_the_same_interval_unclipped_and_all_damping_regimes_settle() {
         let mut m = model(damping);
         m.set_param_range(&pid("broad"), -0.01, 0.01).unwrap();
         let mut p = Puppet::new(&m);
-        p.settle_physics(&m);
+        p.reset_motion_responses(&m);
         p.set_param_value(&pid("roll"), 1.);
         p.tick(&m, 1. / 60.);
         let upper = p.response_trace(&nid("upper")).unwrap();
@@ -97,7 +97,9 @@ fn writer_and_tree_errors_leave_the_model_unchanged() {
     };
     r.output_param = Some(pid("broad"));
     assert!(m.set_motion_response(&nid("tip"), r.clone()).is_err());
-    r.inputs[0].source = ResponseSource::PoseParam(pid("broad"));
+    r.inputs[0].source = ResponseSource::PoseParam {
+        param: pid("broad"),
+    };
     r.output_param = None;
     assert!(m.set_motion_response(&nid("tip"), r).is_err());
     assert_eq!(m.generation(), generation);
@@ -143,7 +145,7 @@ fn fixed_clock_uses_boundaries_and_interpolates_across_display_rates() {
     let run = |rate: u32| {
         let mut p = Puppet::new(&m);
         p.set_response_clock(catchlight_core::ResponseClock::Fixed60);
-        p.settle_physics(&m);
+        p.reset_motion_responses(&m);
         let mut trace = Vec::new();
         for i in 1..=rate {
             p.set_param_value(&pid("roll"), (i as f32 / rate as f32 * 2.).min(1.));
@@ -165,7 +167,7 @@ fn low_rate_fixed_clock_tracks_a_continuous_ramp() {
     for fps in [1, 2, 4, 10, 12, 13, 14] {
         let mut display = Puppet::new(&m);
         display.set_response_clock(catchlight_core::ResponseClock::Fixed60);
-        display.settle_physics(&m);
+        display.reset_motion_responses(&m);
         let mut reference = display.clone();
         for frame in 1..=fps {
             display.set_param_value(&pid("roll"), frame as f32 / fps as f32);
@@ -297,7 +299,7 @@ fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() 
     ));
     assert_eq!(m.to_clm_bytes().unwrap(), before);
     let mut p = Puppet::new(&m);
-    p.settle_physics(&m);
+    p.reset_motion_responses(&m);
     let read = |p: &Puppet| p.response_trace(&nid("upper")).unwrap();
     assert!((read(&p).target - 0.5).abs() < 1e-6);
     let input = p.response_inputs(&nid("upper")).unwrap();
@@ -399,4 +401,99 @@ fn invalid_file_reports_the_same_response_first_on_every_load() {
             matches!(err, catchlight_core::ModelError::InvalidResponse { node, .. } if node == nid("tip"))
         );
     }
+}
+
+#[test]
+fn seamless_playback_preserves_the_same_cascade_as_uninterrupted_input() {
+    use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
+    let m = model(0.7);
+    let dt = 1. / 60.;
+    let values = [0., 1., 0.5, 0.];
+    for clock in [
+        catchlight_core::ResponseClock::InputIntervals,
+        catchlight_core::ResponseClock::Fixed60,
+    ] {
+        let mut playing = Puppet::new(&m);
+        let mut direct = Puppet::new(&m);
+        playing.set_response_clock(clock);
+        direct.set_response_clock(clock);
+        playing.set_animations(vec![ClmAnimation {
+            name: "turn".into(),
+            timestep: dt,
+            length: 4,
+            lead_in: -1,
+            lead_out: -1,
+            lanes: vec![ClmLane {
+                param: pid("roll"),
+                interpolation: catchlight_core::InterpolateMode::Linear,
+                keyframes: values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &value)| ClmKeyframe {
+                        frame: i as i32,
+                        value,
+                    })
+                    .collect(),
+            }],
+        }]);
+        assert!(playing.play_animation("turn"));
+        for i in 0..16 {
+            let step = if i == 0 { 0. } else { dt };
+            direct.set_param_value(&pid("roll"), values[i % 4]);
+            direct.tick(&m, step);
+            playing.tick(&m, step);
+            for id in ["upper", "tip"] {
+                assert_eq!(
+                    playing.response_trace(&nid(id)).unwrap().lag,
+                    direct.response_trace(&nid(id)).unwrap().lag,
+                    "frame {i}"
+                );
+            }
+        }
+        let before = playing.response_trace(&nid("tip")).unwrap().lag;
+        assert!(before.abs() > 0.001);
+        assert!(playing.play_animation("turn"));
+        playing.tick(&m, 0.);
+        direct.tick(&m, 0.);
+        assert_eq!(
+            playing.response_trace(&nid("tip")).unwrap().lag,
+            direct.response_trace(&nid("tip")).unwrap().lag
+        );
+    }
+}
+
+#[test]
+fn rounded_neutral_key_is_protected_and_evaluates_to_exact_rest() {
+    let mut model = model(0.7);
+    let root = model.root().unwrap().clone();
+    let key = BindingKey::new(
+        pid("bend"),
+        root.clone(),
+        BindingTarget::Scalar(ScalarTarget::Tx),
+    );
+    assert_eq!(model.binding_grid(&key).unwrap(), (3, 1));
+    model
+        .add_binding_with_positions(&key, vec![vec![0., 0.5_f32.next_up(), 1.]])
+        .unwrap();
+    model.set_binding_key(&key, [0, 0], 1e8).unwrap();
+    assert!(model.set_binding_key(&key, [1, 0], 1.).is_err());
+    assert_eq!(model.eval_scalar(&key, &Pose::default()), Some(0.));
+    let mut p = Puppet::new(&model);
+    p.tick(&model, 0.);
+    assert_eq!(p.transforms().get(p.node_idx(&root).unwrap()).w_axis.x, 0.);
+}
+
+#[test]
+fn resolving_a_fragment_output_checks_its_range_before_the_edit_lands() {
+    let mut fragment = model(0.7).extract(&[nid("upper")]);
+    let invalid = ModelParam::new(Name::truncated("control"), 0., 1., 1.);
+    assert!(fragment
+        .add_param_with_id(pid("bend"), invalid.clone())
+        .is_err());
+    fragment.add_param_with_id(pid("control"), invalid).unwrap();
+    let before = fragment.to_clm_bytes().unwrap();
+    assert!(fragment
+        .rename_param_id(&pid("control"), pid("bend"))
+        .is_err());
+    assert_eq!(fragment.to_clm_bytes().unwrap(), before);
 }

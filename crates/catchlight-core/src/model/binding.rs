@@ -402,6 +402,8 @@ fn neutral_cells(zero: [Option<usize>; 2], w: usize, h: usize) -> impl Iterator<
         .flat_map(move |y| xs.clone().map(move |x| [x as u32, y as u32]))
 }
 
+type AxisPositions<'a> = std::borrow::Cow<'a, [f32]>;
+
 const DEFAULT_POSITIONS: [f32; 2] = [0.0, 1.0];
 
 fn normalized_zero(min: f32, max: f32) -> f32 {
@@ -428,11 +430,15 @@ impl Model {
 
     /// Normalized keys that creating a binding on this param will install.
     pub fn initial_positions(&self, param: &ParamId) -> Vec<f32> {
-        let mut a = DEFAULT_POSITIONS.to_vec();
+        self.initial_axis(param).into_owned()
+    }
+
+    fn initial_axis(&self, param: &ParamId) -> AxisPositions<'static> {
         if let Some(zero) = self.response_zero(param).filter(|z| *z > 0. && *z < 1.) {
-            a.insert(1, zero);
+            vec![0., zero, 1.].into()
+        } else {
+            DEFAULT_POSITIONS.as_slice().into()
         }
-        a
     }
 
     fn zero_indices(
@@ -443,13 +449,13 @@ impl Model {
         let mut result = [None, None];
         for (axis, p) in key.params.iter().enumerate() {
             if let Some(z) = self.response_zero(p) {
-                result[axis] = Some(axes[axis].iter().position(|v| *v == z).ok_or_else(|| {
-                    ModelError::InvalidResponseBinding {
+                result[axis] = Some(crate::interpolate::neutral_key(&axes[axis], z).ok_or_else(
+                    || ModelError::InvalidResponseBinding {
                         node: key.node.clone(),
                         target: key.target.name(),
                         reason: format!("output {p} needs a zero key at normalized position {z}"),
-                    }
-                })?);
+                    },
+                )?);
             }
         }
         Ok(result)
@@ -536,38 +542,33 @@ impl Model {
     /// The grid of an existing binding, or the initial axes of an auto-creating write.
     pub fn binding_grid(&self, key: &BindingKey) -> Result<(u32, u32), ModelError> {
         let (x, y) = self.binding_axes(key)?;
-        if self.response_count != 0 && self.binding(key).is_none() {
-            return Ok((
-                self.initial_positions(key.params.x()).len() as u32,
-                key.params
-                    .y()
-                    .map_or(1, |p| self.initial_positions(p).len() as u32),
-            ));
-        }
         Ok((x.len() as u32, y.len() as u32))
     }
 
     /// Normalized binding-owned positions, in driving-param order.
-    pub(super) fn binding_axes(&self, key: &BindingKey) -> Result<(&[f32], &[f32]), ModelError> {
+    pub(super) fn binding_axes(
+        &self,
+        key: &BindingKey,
+    ) -> Result<(AxisPositions<'_>, AxisPositions<'_>), ModelError> {
         for param in key.params.iter() {
             self.param(param).ok_or(ModelError::UnknownParam)?;
         }
         if let Some(binding) = self.binding(key) {
             Ok((
-                &binding.key_positions[0],
+                binding.key_positions[0].as_slice().into(),
                 binding
                     .key_positions
                     .get(1)
-                    .map_or(&SINGLE_POSITION[..], Vec::as_slice),
+                    .map_or(&SINGLE_POSITION[..], Vec::as_slice)
+                    .into(),
             ))
         } else {
             Ok((
-                &DEFAULT_POSITIONS,
-                if key.params.y().is_some() {
-                    &DEFAULT_POSITIONS
-                } else {
-                    &SINGLE_POSITION
-                },
+                self.initial_axis(key.params.x()),
+                key.params.y().map_or_else(
+                    || SINGLE_POSITION.as_slice().into(),
+                    |p| self.initial_axis(p),
+                ),
             ))
         }
     }
@@ -864,11 +865,13 @@ impl Model {
     }
 
     fn derive_grid(&self, key: &BindingKey) -> DenseGrid {
-        let (w, h) = self.binding_grid(key).unwrap_or((1, 1));
-        let (axis_x, axis_y) = self
-            .binding_axes(key)
-            .unwrap_or((&SINGLE_POSITION[..], &SINGLE_POSITION[..]));
-        let (w, h) = (w as usize, h as usize);
+        let (axis_x, axis_y) = self.binding_axes(key).unwrap_or_else(|_| {
+            (
+                SINGLE_POSITION.as_slice().into(),
+                SINGLE_POSITION.as_slice().into(),
+            )
+        });
+        let (w, h) = (axis_x.len(), axis_y.len());
         let values = self.binding(key).map(|b| &b.values);
         match values.map(|v| &**v) {
             Some(ClmBindingValues::Deform(c)) => {
@@ -878,7 +881,7 @@ impl Model {
                     .iter()
                     .map(|c| ((c.x, c.y), c.value.clone()))
                     .collect();
-                DenseGrid::Deform(derive_dense(w, h, axis_x, axis_y, &authored, &identity))
+                DenseGrid::Deform(derive_dense(w, h, &axis_x, &axis_y, &authored, &identity))
             }
             other => {
                 let identity = match key.target {
@@ -891,7 +894,7 @@ impl Model {
                     .iter()
                     .map(|c| ((c.x, c.y), c.value))
                     .collect();
-                DenseGrid::Scalar(derive_dense(w, h, axis_x, axis_y, &authored, &identity))
+                DenseGrid::Scalar(derive_dense(w, h, &axis_x, &axis_y, &authored, &identity))
             }
         }
     }
@@ -995,7 +998,7 @@ impl Model {
             })
             .collect::<Result<_, _>>()?;
         let (x, y) = self.binding_axes(key)?;
-        let mut values = derive_dense(x.len(), y.len(), x, y, &authored, &identity);
+        let mut values = derive_dense(x.len(), y.len(), &x, &y, &authored, &identity);
         let at = cell[1] as usize * x.len() + cell[0] as usize;
         values
             .get_mut(at)

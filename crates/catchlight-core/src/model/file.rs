@@ -9,7 +9,7 @@
 //!   and its cross-references are always live, so the only thing
 //!   [`Model::to_clm_file`] can refuse is a deform cell whose length its
 //!   node's mesh cannot take. (It also refuses a weld whose end is no longer
-//!   a part, which only [`Model::update_node`] swapping a welded node's kind
+//!   a part, which only [`Model::update_node_kind`] swapping a welded node's kind
 //!   can produce, so that a file this writes is always one this reader takes.)
 //!   The orders it
 //!   writes — nodes pre-order from the root, params, textures and bindings in
@@ -288,7 +288,6 @@ impl Model {
     /// carries except the texture payloads. Total for any Model whose deform
     /// cells are sized to the meshes they sit on.
     pub fn to_clm_structure(&self) -> Result<ClmStructure, ModelError> {
-        self.validate_responses()?;
         let order = self.nodes_in_order();
         let mut nodes = Vec::with_capacity(order.len());
         for id in &order {
@@ -1454,8 +1453,8 @@ mod tests {
             )
             .unwrap();
         m.mask_add(&composite, &lower, MaskMode::DodgeMask).unwrap();
-        m.update_node(&composite, |n| {
-            if let ModelNodeKind::Composite(c) = &mut n.kind {
+        m.update_node_kind(&composite, |kind| {
+            if let ModelNodeKind::Composite(c) = kind {
                 c.blend_mode = BlendMode::Multiply;
             }
         })

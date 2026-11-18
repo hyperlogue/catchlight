@@ -201,7 +201,7 @@ pub fn run(
             active_request = Some(name.clone());
             cancel.check()?;
             frame::configure_masks(&mut model, original, &mut previous_masks, request)?;
-            let mut runtime = FrameRuntime::new(&model, request, || cancel.is_cancelled())?;
+            let mut runtime = FrameRuntime::new(&model, request)?;
             let mut trace = directory
                 .as_ref()
                 .filter(|_| request.animation.is_some())

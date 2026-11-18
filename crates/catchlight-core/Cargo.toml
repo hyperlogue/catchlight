@@ -23,13 +23,14 @@ serde_bytes = "0.11.19"
 # is already cleared; `default-features = false` drops std and rayon, which
 # this needs none of and which keep it wasm-safe.
 blake3 = { version = "1", default-features = false }
-# Only `id.rs` uses it, and only to say an Id crosses the wire as a string.
-# See the `ts` feature below.
 ts-rs = { workspace = true, optional = true }
 
+schemars = { version = "1", optional = true }
+
 [features]
+schema = ["dep:schemars"]
 # Emit TypeScript declarations for the types the editor protocol re-exports —
-# the five Id newtypes. Off by default: nothing in a normal build, a wasm build
+# IDs and motion responses. Off by default: nothing in a normal build, a wasm build
 # or a consumer's dependency graph pulls it in. `cargo xtask generate` turns it on.
 ts = ["dep:ts-rs"]
 

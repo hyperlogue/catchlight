@@ -1,6 +1,6 @@
 //! One continuing Puppet per request. Bounds, sidecars, overlays and traces
 //! observe the same evaluated frame; capture decimation never changes ticks.
-use super::spec::{bad, Initial, Physics, ResolvedRequest};
+use super::spec::{bad, Physics, ResolvedRequest};
 use crate::Error;
 use catchlight_core::{Model, NodeId, Pose, Puppet};
 use std::collections::BTreeMap;
@@ -11,11 +11,7 @@ pub struct FrameRuntime {
     pub index: u32,
 }
 impl FrameRuntime {
-    pub fn new(
-        model: &Model,
-        request: &ResolvedRequest,
-        mut cancelled: impl FnMut() -> bool,
-    ) -> Result<Self, Error> {
+    pub fn new(model: &Model, request: &ResolvedRequest) -> Result<Self, Error> {
         let mut puppet = Puppet::new(model);
         puppet.apply_pose(
             &request
@@ -35,32 +31,10 @@ impl FrameRuntime {
                 puppet.set_param_value(&lane.param, lane.value_at(0.0));
             }
         }
-        if matches!(
-            request.physics,
-            Physics::Simulate {
-                response_clock: super::spec::ResponseClock::Fixed60,
-                ..
-            }
-        ) {
-            puppet.set_response_clock(catchlight_core::ResponseClock::Fixed60);
+        if let Physics::Simulate { response_clock } = request.physics {
+            puppet.set_response_clock(response_clock);
         }
         puppet.set_physics_enabled(!matches!(request.physics, Physics::Off {}));
-        match request.physics {
-            Physics::Settled {}
-            | Physics::Simulate {
-                initial: Initial::Settled,
-                ..
-            } => puppet.settle_physics(model),
-            _ => {}
-        }
-        if let Physics::Simulate { warmup_frames, .. } = request.physics {
-            for _ in 0..warmup_frames {
-                if cancelled() {
-                    return Err(bad("render cancelled"));
-                }
-                puppet.tick(model, timestep);
-            }
-        }
         if let Some(animation) = &request.animation {
             puppet.set_animations(vec![animation.clip.0.clone()]);
             if !puppet.play_animation(&animation.clip.0.name) {

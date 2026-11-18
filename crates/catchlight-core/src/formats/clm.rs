@@ -272,7 +272,8 @@ pub struct ClmKeyframe {
 // ---- the file ------------------------------------------------------------
 
 pub const MAGIC: [u8; 8] = *b"NYANPASU";
-pub const FORMAT_VERSION: u16 = 4;
+/// Version 5 shares the tagged response source representation with the editor.
+pub const FORMAT_VERSION: u16 = 5;
 
 const SECTION_STRUCTURE: u32 = 0;
 const SECTION_TEXTURES: u32 = 1;
@@ -1031,7 +1032,7 @@ mod tests {
     fn an_older_or_newer_version_is_refused_not_silently_misread() {
         let (doc, textures) = sample();
         let bytes = encode(&doc, &textures, &[]).unwrap();
-        for version in [0u16, 1, 2, 3, 5, 0xFFFF] {
+        for version in (0..FORMAT_VERSION).chain([FORMAT_VERSION + 1, u16::MAX]) {
             let mut bytes = bytes.clone();
             bytes[8..10].copy_from_slice(&version.to_le_bytes());
             match decode(&bytes) {

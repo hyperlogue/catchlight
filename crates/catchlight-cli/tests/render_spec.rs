@@ -195,8 +195,6 @@ fn filenames_and_animation_decimation_include_zero_without_changing_updates() {
         req.physics,
         Physics::Simulate {
             response_clock: Default::default(),
-            initial: Initial::Fresh,
-            warmup_frames: 0
         }
     );
     assert_eq!(r.simulation_updates, 5);
@@ -218,9 +216,9 @@ fn filenames_and_animation_decimation_include_zero_without_changing_updates() {
         ]
     );
     let r = resolve(animated(
-        json!({"physics":{"mode":"simulate","initial":"settled","warmup_frames":7},"frames":{"count":1}}),
+        json!({"physics":{"mode":"simulate"},"frames":{"count":1}}),
     ));
-    assert_eq!(r.simulation_updates, 7);
+    assert_eq!(r.simulation_updates, 0);
     assert_eq!(
         r.requests["pulse"].outputs,
         ["pulse--000000.png", "pulse--trace.jsonl"]
@@ -248,7 +246,7 @@ fn static_and_animated_physics_have_distinct_valid_defaults() {
     assert_bad(animated(json!({"frames":{"count":0}})), "must be positive");
     assert_bad(animated(json!({"frames":{"every":0}})), "must be positive");
     assert_bad(
-        animated(json!({"physics":{"mode":"off","warmup_frames":10}})),
+        animated(json!({"physics":{"mode":"simulate","warmup_frames":10}})),
         "unknown field",
     );
 }
@@ -466,9 +464,9 @@ fn budgets_fail_before_output_allocation_with_named_limits() {
     assert_eq!(r.simulation_updates, MAX_UPDATES);
     assert_bad(
         animated(
-            json!({"frames":{"count":100001,"every":100000},"physics":{"mode":"simulate","warmup_frames":1}}),
+            json!({"frames":{"count":100001,"every":100000},"physics":{"mode":"simulate","initial":"fresh"}}),
         ),
-        "simulation_updates",
+        "unknown field",
     );
     assert_bad(animated(json!({"frames":{"count":100000}})), "output_files");
     assert_bad(

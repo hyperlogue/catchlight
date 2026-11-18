@@ -83,7 +83,7 @@ const Z_EPS: f32 = 1e-4;
 const MAX_SAMPLES: u64 = 100_000;
 const MAX_SAMPLE_WORK: u64 = 250_000_000;
 
-/// One row of the `parts` or `physics` table.
+/// One row of the `parts` table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeEntry {
     pub id: NodeId,

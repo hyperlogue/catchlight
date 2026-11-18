@@ -68,8 +68,8 @@
 //!   "over" a subtree and `extract` returns none. An addon that *was* authored
 //!   with animations installs them, and its lanes' params are requirements
 //!   like any others.
-//! - A mask lives on the node it clips, so a *base* drawable masked by an addon's part is
-//!   not something an addon can carry: [`Model::extract`] leaves that mask
+//! - **Masks travel with their owner.** When an addon's part masks a *base*
+//!   drawable, the mask belongs to that drawable. [`Model::extract`] leaves that mask
 //!   behind and deleting the subtree drops it. That is the same rule as
 //!   [`InstallError::BindsOffAddon`] and as "an addon never adds a param" —
 //!   an addon adds to a base model, it does not edit one — and
@@ -301,7 +301,7 @@ impl Model {
                     r.output_param
                         .iter()
                         .chain(r.inputs.iter().filter_map(|t| match &t.source {
-                            crate::ResponseSource::PoseParam(p) => Some(p),
+                            crate::ResponseSource::PoseParam { param: p } => Some(p),
                             _ => None,
                         }))
                 {
@@ -680,13 +680,13 @@ impl Model {
         }
         self.roots.retain(|r| !removed.contains(r));
         for node in self.nodes.values_mut() {
-            Arc::make_mut(&mut node.children).retain(|c| !removed.contains(c));
+            if node.children.iter().any(|c| removed.contains(c)) {
+                Arc::make_mut(&mut node.children).retain(|c| !removed.contains(c));
+            }
             if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
                 r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,..} if removed.contains(part)));
             }
-            if let Some(masks) = node.masks_mut() {
-                masks.retain(|m| !removed.contains(&m.source));
-            }
+            node.remove_masks(|id| removed.contains(id));
             if let ModelNodeKind::Part(p) = &mut node.kind {
                 if p.albedo
                     .as_ref()
@@ -885,7 +885,9 @@ mod tests {
                         "Sway",
                         ModelNodeKind::MotionResponse(crate::MotionResponse {
                             inputs: vec![crate::ResponseInput {
-                                source: crate::ResponseSource::PoseParam(b.param.clone()),
+                                source: crate::ResponseSource::PoseParam {
+                                    param: b.param.clone(),
+                                },
                                 gain: 1.0,
                             }],
                             output_param: None,

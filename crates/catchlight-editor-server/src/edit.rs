@@ -80,7 +80,7 @@ pub fn apply(model: &mut Model, edit: EditOp) -> Result<ResponseBody, EditorErro
                     model.set_part_albedo(&node, albedo.clone())?;
                 }
             }
-            model.update_node(&node, |n| apply_patch(n, &patch))??;
+            apply_patch(model, &node, &patch)?;
             return Ok(ResponseBody::Node { node, dropped });
         }
         EditOp::NodeReparent { node, to } => model.reparent(&node, &to)?,

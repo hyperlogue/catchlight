@@ -206,6 +206,12 @@ impl DeformStack {
         Ok(())
     }
 
+    pub(crate) fn reactivate(&mut self, source: DeformSource) {
+        if let Some(slot) = self.sources.iter_mut().find(|s| s.source == source) {
+            slot.active = true;
+        }
+    }
+
     pub fn clear_source(&mut self, source: DeformSource) {
         if let Some(slot) = self.sources.iter_mut().find(|s| s.source == source) {
             slot.active = false;

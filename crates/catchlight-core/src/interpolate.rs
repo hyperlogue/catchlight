@@ -39,6 +39,27 @@ pub(crate) fn bracket(axis: &[f32], t: f32) -> (usize, usize) {
     }
 }
 
+/// A normalized neutral key may round one f32 step differently in another client.
+pub(crate) fn neutral_key(axis: &[f32], zero: f32) -> Option<usize> {
+    axis.iter().position(|&p| p == zero).or_else(|| {
+        axis.iter()
+            .position(|&p| p >= zero.next_down() && p <= zero.next_up())
+    })
+}
+
+pub(crate) fn binding_bracket(
+    axis: &[f32],
+    normalized: f32,
+    neutral_output: bool,
+) -> (usize, usize) {
+    if neutral_output {
+        if let Some(index) = neutral_key(axis, normalized) {
+            return (index, index);
+        }
+    }
+    bracket(axis, normalized)
+}
+
 /// Fractional position of `t` inside `[a, b]`. Returns 0 when a == b, so a
 /// degenerate (single-key-position) axis doesn't NaN. Shared with
 /// `crate::model::eval`.

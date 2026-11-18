@@ -2,8 +2,8 @@
  * protocol types it writes; opening a panel never authors defaults. */
 import type {
   NodeInfo,
-  MotionResponseInfo,
-  MotionSource,
+  MotionResponse,
+  ResponseSource,
   Session,
 } from "@catchlight/core";
 import { useState } from "react";
@@ -280,7 +280,7 @@ function ResponseFields({
   info,
   onError,
   response,
-}: AuthoringPanelProps & { response: MotionResponseInfo }) {
+}: AuthoringPanelProps & { response: MotionResponse }) {
   const { run, busy } = useCommand(session, onError);
   const { sources, outputCandidates } = useReplica(session, (s) => {
     const nodes = flattenTree(s.tree());
@@ -296,7 +296,7 @@ function ResponseFields({
       }
     }
     const params = s.params();
-    const choices: { label: string; source: MotionSource }[] = params
+    const choices: { label: string; source: ResponseSource }[] = params
       .filter((p) => !owners.has(p.id))
       .map((p) => ({
         label: p.name,
@@ -330,17 +330,17 @@ function ResponseFields({
           ...sources,
         ]
       : sources;
-  const set = (patch: Partial<MotionResponseInfo>) =>
+  const set = (patch: Partial<MotionResponse>) =>
     void run({
       cmd: "motion_response_set",
       node: info.id,
       response: { ...response, ...patch },
     });
-  const setInput = (i: number, input: MotionResponseInfo["inputs"][number]) =>
+  const setInput = (i: number, input: MotionResponse["inputs"][number]) =>
     set({
       inputs: response.inputs.map((current, j) => (j === i ? input : current)),
     });
-  const sourceKey = (s: MotionSource) =>
+  const sourceKey = (s: ResponseSource) =>
     s.kind === "parent"
       ? "parent"
       : JSON.stringify(s.kind === "pose_param" ? [s.param] : [s.part, s.slot]);

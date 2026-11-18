@@ -97,7 +97,7 @@ impl Fixture {
                 let inputs = if index == 0 {
                     [&yaw, &nudge]
                         .map(|p| ResponseInput {
-                            source: ResponseSource::PoseParam(p.clone()),
+                            source: ResponseSource::PoseParam { param: p.clone() },
                             gain: 0.10,
                         })
                         .to_vec()

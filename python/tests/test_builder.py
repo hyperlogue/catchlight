@@ -312,3 +312,28 @@ def test_bad_deform_cell_rolls_back_its_binding_creation(client: Client, tmp_pat
     assert failure.value.op_index == 1
     assert built.revision == before
     assert client.send(BindingList(session=built.session, node=part)).bindings == []
+
+
+def test_response_output_creates_scalar_and_deform_grids_with_neutral_keys(
+    client: Client, tmp_path: Path
+) -> None:
+    from catchlight.protocol_gen import MotionResponse, MotionResponseSet
+
+    built = Builder.new(client)
+    part = built.part("Hair", write_png(tmp_path / "hair.png"))
+    built.mesh(part)
+    bend = built.param("Bend", min=-1.0, max=1.0)
+    turn = built.param("Turn")
+    row = client.send(NodeAdd(session=built.session, parent=part, kind=NodeKindArg.MOTION_RESPONSE))
+    assert isinstance(row, ResponseBodyNode)
+    client.send(MotionResponseSet(session=built.session, node=row.node, response=MotionResponse(
+        inputs=[], period_s=0.4, damping_ratio=0.7, output_param=bend,
+    )))
+    built.bind(bend, part, ScalarTarget.TY, [(1.0, 4.0)])
+    vertices, _ = built.mesh_size(part)
+    built.bind_deform(turn, part, {(0, 2): [(2.0, 0.0)] * vertices}, param_y=bend)
+    reply = client.send(BindingList(session=built.session, node=part))
+    assert isinstance(reply, ResponseBodyBindings)
+    scalar, deform = reply.bindings
+    assert scalar.key_positions == [[0.0, 0.5, 1.0]]
+    assert deform.key_positions == [[0.0, 1.0], [0.0, 0.5, 1.0]]

@@ -188,7 +188,7 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
                     r.output_param
                         .iter()
                         .chain(r.inputs.iter().filter_map(|t| match &t.source {
-                            catchlight_core::ResponseSource::PoseParam(p) => Some(p),
+                            catchlight_core::ResponseSource::PoseParam { param: p } => Some(p),
                             _ => None,
                         }))
                 {

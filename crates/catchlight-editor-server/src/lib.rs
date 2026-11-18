@@ -334,7 +334,7 @@ impl EditorError {
                 ModelError::Fragment => ErrorCode::Fragment,
                 ModelError::UnknownExtension(_) => ErrorCode::NoExtension,
                 ModelError::ReservedExtension(_) => ErrorCode::ReservedExtension,
-                ModelError::NotSpine => ErrorCode::BadTarget,
+                ModelError::NotSpine | ModelError::NotMotionResponse => ErrorCode::BadTarget,
                 ModelError::SpineTargetArity { .. } => ErrorCode::BadTarget,
                 // The size cap has no code of its own: a client that hit it
                 // has nothing to branch on, only a value to shrink.
@@ -1364,7 +1364,7 @@ impl Editor {
                 node,
                 response,
             } => self.edit_session_captured(session, |s| {
-                s.model.set_motion_response(&node, response.into())?;
+                s.model.set_motion_response(&node, response)?;
                 Ok(ResponseBody::Empty)
             }),
             Command::NodeDelete { session, node } => self.edit_session_captured(session, |s| {
@@ -2285,70 +2285,83 @@ fn make_kind(kind: NodeKindArg) -> ModelNodeKind {
     }
 }
 
-fn apply_patch(n: &mut ModelNode, patch: &NodePatch) -> Result<(), EditorError> {
-    let blend = patch.blend_mode.map(CoreBlendMode::from);
-    if let Some(name) = &patch.name {
-        n.name = Name::truncated(name);
-    }
-    if let Some(t) = patch.translate {
-        n.transform.translation = t;
-    }
-    if let Some(r) = patch.rotate {
-        n.transform.rotation = r;
-    }
-    if let Some(sc) = patch.scale {
-        n.transform.scale = sc;
-    }
-    if let Some(z) = patch.z_order {
-        n.z_order = z;
-    }
-    if let Some(en) = patch.enabled {
-        n.enabled = en;
-    }
-    if let Some(v) = patch.lock_to_root {
-        n.lock_to_root = v;
-    }
-    if let Some(op) = patch.opacity {
-        set_opacity(&mut n.kind, op);
-    }
-    if let Some(mode) = blend {
-        match &mut n.kind {
-            ModelNodeKind::Part(p) => p.blend_mode = mode,
-            ModelNodeKind::Composite(c) => c.blend_mode = mode,
-            _ => {}
+fn apply_patch(model: &mut Model, id: &NodeId, patch: &NodePatch) -> Result<(), EditorError> {
+    model.update_node(id, |n| {
+        if let Some(name) = &patch.name {
+            n.name = Name::truncated(name);
         }
-    }
-    if let Some(t) = patch.tint {
-        match &mut n.kind {
-            ModelNodeKind::Part(p) => p.tint = t,
-            ModelNodeKind::Composite(c) => c.tint = t,
-            _ => {}
+        if let Some(t) = patch.translate {
+            n.transform.translation = t;
         }
-    }
-    if let Some(t) = patch.screen_tint {
-        match &mut n.kind {
-            ModelNodeKind::Part(p) => p.screen_tint = t,
-            ModelNodeKind::Composite(c) => c.screen_tint = t,
-            _ => {}
+        if let Some(r) = patch.rotate {
+            n.transform.rotation = r;
         }
-    }
-    if let Some(th) = patch.mask_threshold {
-        match &mut n.kind {
-            ModelNodeKind::Part(p) => p.mask_threshold = th,
-            ModelNodeKind::Composite(c) => c.mask_threshold = th,
-            _ => {}
+        if let Some(sc) = patch.scale {
+            n.transform.scale = sc;
         }
-    }
-    if let Some(v) = patch.propagate_meshgroup {
-        if let ModelNodeKind::Composite(c) = &mut n.kind {
-            c.propagate_meshgroup = v;
+        if let Some(z) = patch.z_order {
+            n.z_order = z;
         }
-    }
-    if let Some(v) = patch.mg_translate_children {
-        if let ModelNodeKind::MeshGroup(mg) = &mut n.kind {
-            mg.translate_children = v;
+        if let Some(en) = patch.enabled {
+            n.enabled = en;
         }
+        if let Some(v) = patch.lock_to_root {
+            n.lock_to_root = v;
+        }
+    })?;
+    if patch.opacity.is_none()
+        && patch.blend_mode.is_none()
+        && patch.tint.is_none()
+        && patch.screen_tint.is_none()
+        && patch.mask_threshold.is_none()
+        && patch.propagate_meshgroup.is_none()
+        && patch.mg_translate_children.is_none()
+    {
+        return Ok(());
     }
+    model.update_node_kind(id, |kind| {
+        if let Some(op) = patch.opacity {
+            set_opacity(kind, op);
+        }
+        if let Some(mode) = patch.blend_mode.map(CoreBlendMode::from) {
+            match kind {
+                ModelNodeKind::Part(p) => p.blend_mode = mode,
+                ModelNodeKind::Composite(c) => c.blend_mode = mode,
+                _ => {}
+            }
+        }
+        if let Some(t) = patch.tint {
+            match kind {
+                ModelNodeKind::Part(p) => p.tint = t,
+                ModelNodeKind::Composite(c) => c.tint = t,
+                _ => {}
+            }
+        }
+        if let Some(t) = patch.screen_tint {
+            match kind {
+                ModelNodeKind::Part(p) => p.screen_tint = t,
+                ModelNodeKind::Composite(c) => c.screen_tint = t,
+                _ => {}
+            }
+        }
+        if let Some(th) = patch.mask_threshold {
+            match kind {
+                ModelNodeKind::Part(p) => p.mask_threshold = th,
+                ModelNodeKind::Composite(c) => c.mask_threshold = th,
+                _ => {}
+            }
+        }
+        if let Some(v) = patch.propagate_meshgroup {
+            if let ModelNodeKind::Composite(c) = kind {
+                c.propagate_meshgroup = v;
+            }
+        }
+        if let Some(v) = patch.mg_translate_children {
+            if let ModelNodeKind::MeshGroup(mg) = kind {
+                mg.translate_children = v;
+            }
+        }
+    })?;
     Ok(())
 }
 

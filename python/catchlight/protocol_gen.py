@@ -666,7 +666,7 @@ class MotionResponseSet:
 
     session: SessionId
     node: NodeId
-    response: MotionResponseInfo
+    response: MotionResponse
 
     def to_wire(self) -> dict[str, Any]:
         """This value, as one JSON object: its tag, then every field it set."""
@@ -3928,7 +3928,7 @@ class NodeInfo:
     # Composite: forward mesh-group deformation to children.
     propagate_meshgroup: bool | None = None
     mg_translate_children: bool | None = None
-    motion_response: MotionResponseInfo | None = None
+    motion_response: MotionResponse | None = None
     # A spine's settings, absent on every other kind.
     spine: SpineInfo | None = None
     # Ordered clipping rules. Empty on nodes that do not draw.
@@ -3956,7 +3956,7 @@ class MaskInfo:
 
 
 @dataclass(frozen=True, kw_only=True)
-class MotionSourcePoseParam:
+class ResponseSourcePoseParam:
     TAG_FIELD: ClassVar[str] = "kind"
     TAG: ClassVar[str] = "pose_param"
 
@@ -3968,7 +3968,7 @@ class MotionSourcePoseParam:
 
 
 @dataclass(frozen=True, kw_only=True)
-class MotionSourcePartSlot:
+class ResponseSourcePartSlot:
     TAG_FIELD: ClassVar[str] = "kind"
     TAG: ClassVar[str] = "part_slot"
 
@@ -3983,7 +3983,7 @@ class MotionSourcePartSlot:
 
 
 @dataclass(frozen=True, kw_only=True)
-class MotionSourceParent:
+class ResponseSourceParent:
     TAG_FIELD: ClassVar[str] = "kind"
     TAG: ClassVar[str] = "parent"
 
@@ -3992,39 +3992,37 @@ class MotionSourceParent:
         return _wire_fields(self)
 
 
-MotionSource = (
-    MotionSourcePoseParam
-    | MotionSourcePartSlot
-    | MotionSourceParent
+ResponseSource = (
+    ResponseSourcePoseParam
+    | ResponseSourcePartSlot
+    | ResponseSourceParent
 )
 
-MOTION_SOURCE_VARIANTS: dict[str, type[MotionSource]] = {
-    "pose_param": MotionSourcePoseParam,
-    "part_slot": MotionSourcePartSlot,
-    "parent": MotionSourceParent,
+RESPONSE_SOURCE_VARIANTS: dict[str, type[ResponseSource]] = {
+    "pose_param": ResponseSourcePoseParam,
+    "part_slot": ResponseSourcePartSlot,
+    "parent": ResponseSourceParent,
 }
 
 
-def parse_motion_source(message: Mapping[str, Any]) -> MotionSource:
-    """One JSON object as the MotionSource it is, by its "kind" tag."""
+def parse_response_source(message: Mapping[str, Any]) -> ResponseSource:
+    """One JSON object as the ResponseSource it is, by its "kind" tag."""
     tag = message.get("kind")
-    found = MOTION_SOURCE_VARIANTS.get(tag) if isinstance(tag, str) else None
+    found = RESPONSE_SOURCE_VARIANTS.get(tag) if isinstance(tag, str) else None
     if found is None:
-        raise ValueError(f"no MotionSource carries the kind {tag!r}")
+        raise ValueError(f"no ResponseSource carries the kind {tag!r}")
     return _decode_class(found, message)
 
 
 @dataclass(frozen=True, kw_only=True)
-class MotionInput:
-    source: MotionSource
+class ResponseInput:
+    source: ResponseSource
     gain: float
 
 
 @dataclass(frozen=True, kw_only=True)
-class MotionResponseInfo:
-    """The complete authoring payload for a scalar response."""
-
-    inputs: list[MotionInput]
+class MotionResponse:
+    inputs: list[ResponseInput]
     period_s: float
     damping_ratio: float
     output_param: ParamId | None = None
@@ -4370,14 +4368,14 @@ __all__ = [
     "NodeInfo",
     "MeshInfo",
     "MaskInfo",
-    "MotionSourcePoseParam",
-    "MotionSourcePartSlot",
-    "MotionSourceParent",
-    "MotionSource",
-    "MOTION_SOURCE_VARIANTS",
-    "parse_motion_source",
-    "MotionInput",
-    "MotionResponseInfo",
+    "ResponseSourcePoseParam",
+    "ResponseSourcePartSlot",
+    "ResponseSourceParent",
+    "ResponseSource",
+    "RESPONSE_SOURCE_VARIANTS",
+    "parse_response_source",
+    "ResponseInput",
+    "MotionResponse",
     "SpineInfo",
     "TexInfo",
     "ParamInfo",

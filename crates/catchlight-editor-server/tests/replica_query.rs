@@ -989,7 +989,7 @@ fn replica_and_server_share_the_request_byte_limit() {
 
 #[test]
 fn response_settings_round_trip_through_edits_and_replica_inspection() {
-    use catchlight_editor_protocol::{MotionInput, MotionResponseInfo, MotionSource};
+    use catchlight_editor_protocol::{MotionResponse, ResponseInput, ResponseSource};
     let f = Fixture::build();
     let upper = f.node(Command::NodeAdd {
         session: f.session,
@@ -1005,15 +1005,29 @@ fn response_settings_round_trip_through_edits_and_replica_inspection() {
         name: Some("tip".into()),
         node: None,
     });
-    let settings = MotionResponseInfo {
-        inputs: vec![MotionInput {
-            source: MotionSource::Parent,
+    let settings = MotionResponse {
+        inputs: vec![ResponseInput {
+            source: ResponseSource::Parent,
             gain: 0.85,
         }],
         period_s: 0.6,
         damping_ratio: 0.74,
         output_param: None,
     };
+    for (node, expected) in [
+        (NodeId::new("missing").unwrap(), ErrorCode::NoNode),
+        (f.group.clone(), ErrorCode::BadTarget),
+    ] {
+        let reply = f.editor.handle(Request {
+            id: f.id(),
+            command: Command::MotionResponseSet {
+                session: f.session,
+                node,
+                response: settings.clone(),
+            },
+        });
+        assert!(matches!(reply, Reply::Err {code, ..} if code == expected));
+    }
     f.step(Command::MotionResponseSet {
         session: f.session,
         node: tip.clone(),

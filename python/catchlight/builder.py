@@ -289,7 +289,7 @@ class Builder:
                 ErrorCode.REVISION_CONFLICT,
                 "model changed between parameter and binding reads; read again",
             )
-        axis = list(binding.key_positions[0]) if binding else [0.0, 1.0]
+        axis = list(binding.key_positions[0]) if binding else list(info.initial_positions)
         positions = [self._normalize(info, at) for at, _ in keys]
         edits: list[EditOp] = []
         if binding is None:
@@ -331,7 +331,7 @@ class Builder:
         """Create or update a deform binding and exact cells atomically.
 
         `key_positions` belongs to this binding: one normalized axis per
-        driving input. A new binding defaults to endpoints [0, 1]. On an
+        driving input. A new binding uses each input's initial positions, including neutral lag. On an
         existing binding, omitted positions preserve its grid; supplied
         positions must match it. Use binding-key operations to reshape it.
 
@@ -354,7 +354,7 @@ class Builder:
             edits.append(EditOpBindingAdd(
                 node=node, param=param, param_y=param_y,
                 target=BindingTarget.DEFORM,
-                key_positions=positions if positions is not None else [[0.0, 1.0] for _ in range(1 if param_y is None else 2)],
+                key_positions=positions,
             ))
         values = {
             (cell, 0) if isinstance(cell, int) else cell: list(map(tuple, offsets))

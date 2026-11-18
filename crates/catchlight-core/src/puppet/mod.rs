@@ -62,7 +62,7 @@ use crate::components::{Node, NodeIdx, NodeKind};
 use crate::deform::DeformSource;
 use crate::formats::clm::ClmAnimation;
 use crate::id::{NodeId, ParamId};
-use crate::model::{Model, Pose};
+use crate::model::{BindingTarget, Model, Pose, ScalarTarget};
 use crate::node::NodeTree;
 
 use bake::{Baked, BakedBinding, BakedParam};
@@ -280,6 +280,10 @@ pub struct Puppet {
     last_tick_folded_param_generation: Option<u64>,
 
     bindings: Vec<BakedBinding>,
+    // True for slots that can change a mesh group's input pose. Ordinary
+    // writes and driver claims invalidate the same baked slot.
+    mesh_group_inputs: Vec<bool>,
+    mesh_groups_dirty: bool,
     responses: response::Responses,
     physics_enabled: bool,
     spine_targets: Vec<Vec<Option<u32>>>,
@@ -330,6 +334,8 @@ impl Puppet {
             param_generation: 0,
             last_tick_folded_param_generation: None,
             bindings: Vec::new(),
+            mesh_group_inputs: Vec::new(),
+            mesh_groups_dirty: true,
             responses: response::Responses::default(),
             physics_enabled: true,
             spine_targets: Vec::new(),
@@ -457,6 +463,7 @@ impl Puppet {
         self.slot_of_param = slot_of_param;
         self.bindings = bindings;
         self.spine_targets = spine_targets;
+        self.bake_mesh_group_inputs();
         self.param_values_overflow.clear();
         self.param_contributions.clear();
         // Keyed by slot, and the slots have moved. `sync` re-keys the entries
@@ -683,6 +690,7 @@ impl Puppet {
     /// generation, and a scratch edit moves neither the pose nor the model, so
     /// without this the next tick would skip the fold that applies it.
     fn invalidate_fold(&mut self) {
+        self.mesh_groups_dirty = true;
         self.last_tick_folded_param_generation = None;
     }
 
@@ -750,6 +758,7 @@ impl Puppet {
     /// the scratch transforms, so it wins over them on any field they share.
     pub fn refold_with_node_edits(&mut self, edit: impl FnOnce(&mut NodeEdits<'_>)) {
         let _span = tracing::trace_span!("refold_with_node_edits").entered();
+        self.invalidate_fold();
         self.reset_frame();
         self.apply_params();
         self.apply_scratch_transforms();
@@ -814,7 +823,7 @@ impl Puppet {
                 if let Some(v) = self.param_values.get_mut(slot as usize) {
                     *v = Some(value);
                 }
-                self.bump_param_generation();
+                self.bump_param_generation(slot);
             }
             None => {
                 if self.param_values_overflow.get(param).copied() == Some(value) {
@@ -836,7 +845,7 @@ impl Puppet {
                     .and_then(|v| v.take())
                     .is_some()
                 {
-                    self.bump_param_generation();
+                    self.bump_param_generation(slot);
                 }
             }
             None => {
@@ -935,7 +944,7 @@ impl Puppet {
         if before == self.resolved(slot) {
             return false;
         }
-        self.bump_param_generation();
+        self.bump_param_generation(slot);
         true
     }
 
@@ -949,7 +958,8 @@ impl Puppet {
                 row.clear();
             }
         }
-        self.bump_param_generation();
+        self.mesh_groups_dirty = true;
+        self.param_generation = self.param_generation.wrapping_add(1);
         for flag in self.param_contributed.iter_mut() {
             *flag = false;
         }
@@ -987,7 +997,63 @@ impl Puppet {
         }
     }
 
-    fn bump_param_generation(&mut self) {
+    fn bake_mesh_group_inputs(&mut self) {
+        self.mesh_groups_dirty = true;
+        self.mesh_group_inputs = vec![false; self.params.len()];
+        if self.arena.mesh_group_node_ids.is_empty() {
+            return;
+        }
+        let mut related = std::collections::HashSet::new();
+        for &id in &self.arena.mesh_group_node_ids {
+            related.insert(id);
+            related.extend(self.arena.tree.get_all_descendants(id));
+            let mut parent = self.arena.tree.get_parent(id);
+            while let Some(p) = parent {
+                related.insert(p);
+                // A spine above the group can use a guide on a sibling part.
+                if matches!(self.arena.get(p).map(|n| &n.kind), Some(NodeKind::Spine(_))) {
+                    related.extend(self.arena.tree.get_all_descendants(p));
+                }
+                parent = self.arena.tree.get_parent(p);
+            }
+        }
+        for b in &self.bindings {
+            let geometry = matches!(
+                b.target,
+                BindingTarget::Deform
+                    | BindingTarget::Scalar(
+                        ScalarTarget::Tx
+                            | ScalarTarget::Ty
+                            | ScalarTarget::Tz
+                            | ScalarTarget::Sx
+                            | ScalarTarget::Sy
+                            | ScalarTarget::Rx
+                            | ScalarTarget::Ry
+                            | ScalarTarget::Rz
+                    )
+            );
+            if geometry && related.contains(&b.node) {
+                self.mesh_group_inputs[b.x as usize] = true;
+                if let Some(y) = b.y {
+                    self.mesh_group_inputs[y as usize] = true;
+                }
+            }
+        }
+        for (&id, targets) in self.arena.spine_node_ids.iter().zip(&self.spine_targets) {
+            if related.contains(&id) {
+                for slot in targets.iter().flatten() {
+                    self.mesh_group_inputs[*slot as usize] = true;
+                }
+            }
+        }
+    }
+
+    fn bump_param_generation(&mut self, slot: u32) {
+        self.mesh_groups_dirty |= self
+            .mesh_group_inputs
+            .get(slot as usize)
+            .copied()
+            .unwrap_or(false);
         self.param_generation = self.param_generation.wrapping_add(1);
     }
 
@@ -1019,7 +1085,15 @@ impl Puppet {
     pub fn play_animation(&mut self, name: &str) -> bool {
         if let Some(index) = self.animations.iter().position(|a| a.name == name) {
             self.sampled_animation = None;
-            self.responses.reset();
+            let jumps: smallvec::SmallVec<[u32; 4]> = self.animations[index]
+                .lanes
+                .iter()
+                .filter_map(|lane| {
+                    let &slot = self.slot_of_param.get(&lane.param)?;
+                    (self.param_base(slot)? != lane.value_at(0.)).then_some(slot)
+                })
+                .collect();
+            self.responses.reset_changed_inputs(&jumps);
             self.play_state = Some(AnimationPlayState {
                 index,
                 time: 0.0,
@@ -1089,7 +1163,13 @@ impl Puppet {
             let (loop_begin, loop_end) = anim.loop_region();
             let frame = (state.time / anim.timestep).round() as i64;
             if state.looping && frame >= loop_end as i64 {
-                self.responses.reset();
+                let jumps: smallvec::SmallVec<[u32; 4]> = anim
+                    .lanes
+                    .iter()
+                    .filter(|lane| lane.jumps_at_wrap(loop_begin, loop_end))
+                    .filter_map(|lane| self.slot_of_param.get(&lane.param).copied())
+                    .collect();
+                self.responses.reset_changed_inputs(&jumps);
                 state.time = loop_begin as f32 * anim.timestep;
             }
             let frame = (state.time / anim.timestep).round() as i64;
@@ -1155,11 +1235,6 @@ impl Puppet {
         self.physics_enabled
     }
 
-    pub fn settle_physics(&mut self, model: &Model) {
-        let _span = tracing::trace_span!("settle_physics").entered();
-        self.reset_motion_responses(model);
-    }
-
     // ---- the tick ---------------------------------------------------------
 
     /// Evaluate the next frame: drivers step, the pose is folded through the
@@ -1202,7 +1277,7 @@ impl Puppet {
         // children sit where this frame's pose put them.
         self.arena.compute_transforms_with_root(out, root);
         // Spines before mesh groups: a group above a spine reads its
-        // children's current deform, so it warps art the spine has bent.
+        // children's current deform, so it deforms art the spine has bent.
         // Unconditional on having any spine, because `reset_frame` just
         // dropped every spine source and only this rebuilds it.
         if !self.arena.spine_node_ids.is_empty() {
@@ -1210,7 +1285,12 @@ impl Puppet {
             self.arena.propagate_spine_deforms(out);
         }
         if !self.arena.mesh_group_node_ids.is_empty() {
-            self.arena.propagate_mesh_group_deforms(out, root);
+            if self.mesh_groups_dirty {
+                self.arena.propagate_mesh_group_deforms(out, root);
+                self.mesh_groups_dirty = false;
+            } else {
+                self.arena.restore_mesh_group_deforms(out, root);
+            }
         }
         self.arena.apply_welds(out);
         self.arena.combine_deforms();
@@ -1294,6 +1374,63 @@ mod tests {
 
     /// One frame at 60 Hz.
     const DT: f32 = 1.0 / 60.0;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn unrelated_input_reuses_the_group_deforms_and_shifts_of_the_posed_model() {
+        let mut model = Model::from_clm_bytes(
+            &std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/models/lan.clm"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let control = ParamId::new("visibility").unwrap();
+        model
+            .add_param_with_id(
+                control.clone(),
+                crate::ModelParam::new(crate::Name::truncated("Visibility"), 0., 1., 1.),
+            )
+            .unwrap();
+        let part = model
+            .node_ids()
+            .find(|id| {
+                matches!(
+                    model.node(id).map(|n| &n.kind),
+                    Some(crate::ModelNodeKind::Part(_))
+                )
+            })
+            .unwrap()
+            .clone();
+        let opacity = crate::BindingKey::new(
+            control.clone(),
+            part.clone(),
+            BindingTarget::Scalar(ScalarTarget::Opacity),
+        );
+        model.set_binding_key(&opacity, [0, 0], 0.).unwrap();
+        let mut cached = Puppet::new(&model);
+        cached.set_physics_enabled(false);
+        cached.set_param_value(&ParamId::new("head_roll").unwrap(), 20.);
+        cached.tick(&model, 0.);
+        assert!(!cached.arena.mg_written_sources.is_empty());
+        cached.set_param_value(&control, 0.5);
+        assert!(!cached.mesh_groups_dirty);
+        let mut reference = cached.clone();
+        reference.invalidate_fold();
+        cached.tick(&model, 0.);
+        reference.tick(&model, 0.);
+        for &id in &cached.arena.deform_node_ids {
+            assert_eq!(cached.transforms.get(id), reference.transforms.get(id));
+            if let (Some(NodeKind::Part(a)), Some(NodeKind::Part(b))) = (
+                cached.get(id).map(|n| &n.kind),
+                reference.get(id).map(|n| &n.kind),
+            ) {
+                assert_eq!(a.deform_stack.combined(), b.deform_stack.combined());
+                assert_eq!(a.opacity, b.opacity);
+            }
+        }
+    }
 
     /// Two models that have not been edited since they were built sit at the
     /// same generation — every loader hands one back at 0 — so the generation

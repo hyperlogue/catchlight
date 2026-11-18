@@ -62,7 +62,7 @@
       "rect": [-500, -500, 1000, 1000],
       "scale": 0.512,
       "background": {"srgb": [1, 1, 1], "alpha": 1},
-      "physics": {"mode": "simulate", "initial": "fresh", "warmup_frames": 0},
+      "physics": {"mode": "simulate"},
       "animation": {"source": "spec", "name": "pulse"},
       "frames": {"count": 61, "every": 1},
       "trace_params": ["drive", "response"]

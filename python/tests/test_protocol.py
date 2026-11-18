@@ -27,9 +27,9 @@ from catchlight import (
     MeshAuto,
     MeshSet,
     MotionResponseSet,
-    MotionResponseInfo,
-    MotionInput,
-    MotionSourceParent,
+    MotionResponse,
+    ResponseInput,
+    ResponseSourceParent,
     NodeAdd,
     NodeKindArg,
     NodeSet,
@@ -203,8 +203,8 @@ def test_a_mesh_travels_as_lists_of_points() -> None:
 
 
 def test_a_response_carries_nested_sources() -> None:
-    response = MotionResponseInfo(
-        inputs=[MotionInput(source=MotionSourceParent(), gain=0.75)],
+    response = MotionResponse(
+        inputs=[ResponseInput(source=ResponseSourceParent(), gain=0.75)],
         period_s=0.5,
         damping_ratio=1.0,
         output_param="bend",

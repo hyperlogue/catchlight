@@ -15,6 +15,20 @@ use crate::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
 use crate::interpolate::InterpolateMode;
 
 impl ClmLane {
+    /// A loop can repeat its endpoint or omit the duplicate closing sample.
+    /// In the latter case allow an ordinary frame of travel across the seam.
+    pub(crate) fn jumps_at_wrap(&self, begin: i32, end: i32) -> bool {
+        let first = self.value_at(begin as f32);
+        if first == self.value_at(end as f32) {
+            return false;
+        }
+        let last = self.value_at((end - 1) as f32);
+        let delta = (first - last).abs();
+        let entering = (last - self.value_at((end - 2).max(begin) as f32)).abs();
+        let leaving = (self.value_at((begin + 1).min(end - 1) as f32) - first).abs();
+        delta > entering.max(leaving).next_up()
+    }
+
     /// Interpolated value at fractional frame `t`, clamped at both ends.
     pub fn value_at(&self, t: f32) -> f32 {
         value_at(&self.keyframes, self.interpolation, t)

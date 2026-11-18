@@ -223,9 +223,11 @@ fn empty_degenerate_excluded_and_nonfinite_bounds_have_explicit_meanings() {
     point_mesh.indices = ClmIndices::U16(vec![1, 1, 1]);
     let point = add_part(&mut model, &root, point_mesh, &mut ids);
     model
-        .update_node(&point, |node| {
-            node.enabled = false;
-            if let ModelNodeKind::Part(part) = &mut node.kind {
+        .update_node(&point, |node| node.enabled = false)
+        .unwrap();
+    model
+        .update_node_kind(&point, |kind| {
+            if let ModelNodeKind::Part(part) = kind {
                 part.opacity = 0.0;
             }
         })

@@ -186,7 +186,7 @@ export type Command =
     "cmd": "motion_response_set",
     session: SessionId,
     node: NodeId,
-    response: MotionResponseInfo,
+    response: MotionResponse,
   }
   | {
     "cmd": "node_delete",
@@ -1641,7 +1641,7 @@ export type NodeInfo = {
    */
   propagate_meshgroup?: boolean | null,
   mg_translate_children?: boolean | null,
-  motion_response?: MotionResponseInfo | null,
+  motion_response?: MotionResponse | null,
   /**
    * A spine's settings, absent on every other kind.
    */
@@ -1671,7 +1671,7 @@ export type MaskInfo = {
   mode: MaskMode,
 };
 
-export type MotionSource =
+export type ResponseSource =
   | {
     "kind": "pose_param",
     param: ParamId,
@@ -1687,16 +1687,13 @@ export type MotionSource =
     "kind": "parent"
   };
 
-export type MotionInput = {
-  source: MotionSource,
+export type ResponseInput = {
+  source: ResponseSource,
   gain: number,
 };
 
-/**
- * The complete authoring payload for a scalar response.
- */
-export type MotionResponseInfo = {
-  inputs: Array<MotionInput>,
+export type MotionResponse = {
+  inputs: Array<ResponseInput>,
   period_s: number,
   damping_ratio: number,
   output_param: ParamId | null,

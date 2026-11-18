@@ -11,6 +11,7 @@
 mod animation;
 mod json;
 
+pub use catchlight_core::ResponseClock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -193,7 +194,7 @@ pub struct Request {
     /// Straight sRGB color and alpha, each 0..1. Default opaque white.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub background: Setting<Background>,
-    /// Static default settled; animated default simulate/fresh/zero warm-up.
+    /// Static requests default to settled and animations to simulate.
     #[serde(default, skip_serializing_if = "Setting::is_inherit")]
     pub physics: Setting<Physics>,
     /// Fixed parameter overrides. Unspecified params take model defaults;
@@ -292,37 +293,15 @@ pub enum Physics {
     Off {},
     /// Static requests only.
     Settled {},
-    /// Animation requests only, holding frame-zero controls during warm-up.
+    /// Animation requests only.
     Simulate {
-        #[serde(default)]
-        initial: Initial,
         /// Time intervals used to advance motion responses between playback frames.
-        #[serde(default, skip_serializing_if = "ResponseClock::is_default")]
+        #[serde(default, skip_serializing_if = "default_response_clock")]
         response_clock: ResponseClock,
-        #[serde(default)]
-        #[schemars(range(max = 100000))]
-        warmup_frames: u32,
     },
 }
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ResponseClock {
-    #[default]
-    InputIntervals,
-    Fixed60,
-}
-impl ResponseClock {
-    fn is_default(&self) -> bool {
-        matches!(self, Self::InputIntervals)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Initial {
-    #[default]
-    Fresh,
-    Settled,
+fn default_response_clock(clock: &ResponseClock) -> bool {
+    *clock == ResponseClock::default()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -806,16 +785,12 @@ impl Document {
                 .animation
                 .as_ref()
                 .map_or(0, |a| u64::from(a.frames.count - 1));
-            let warmup = match request.physics {
-                Physics::Simulate { warmup_frames, .. } => u64::from(warmup_frames),
-                _ => 0,
-            };
-            out.simulation_updates += updates + warmup;
+            out.simulation_updates += updates;
             check_limit(
                 "simulation_updates",
                 out.simulation_updates,
                 MAX_UPDATES,
-                "reduce frames/warm-up or split the spec",
+                "reduce frames or split the spec",
             )?;
             out.output_pixels += captures
                 * u64::from(request.framing.size[0])
@@ -1082,16 +1057,18 @@ impl Document {
             if animation.is_some() {
                 Physics::Simulate {
                     response_clock: ResponseClock::default(),
-                    initial: Initial::Fresh,
-                    warmup_frames: 0,
                 }
             } else {
                 Physics::Settled {}
             }
         });
         match (&physics, animation.is_some()) {
-            (Physics::Simulate { .. }, false) => return Err(bad("physics simulate requires an animation")),
-            (Physics::Settled {}, true) => return Err(bad("animated requests use physics off or simulate; settled is a simulate initial setting")),
+            (Physics::Simulate { .. }, false) => {
+                return Err(bad("physics simulate requires an animation"))
+            }
+            (Physics::Settled {}, true) => {
+                return Err(bad("animated requests use physics off or simulate"))
+            }
             _ => {}
         }
         let trace_responses = request.trace_responses.value().unwrap_or_default();

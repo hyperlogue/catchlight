@@ -5,12 +5,12 @@
 //!   loaded (a mesh group is never drawn, so it has no colour for the binding
 //!   to fold into). [`Model::add_binding`] refuses to author one and the
 //!   `.clm` reader refuses a file carrying one, so the one way in is
-//!   [`Model::update_node`] swapping a bound node's whole kind.
+//!   [`Model::update_node_kind`] swapping a bound node's whole kind.
 //! - A **weld whose end is no longer a part**, or one **pairing a slot its
 //!   part no longer carries**, cannot be written at all:
 //!   [`Model::to_clm_file`] refuses the first and the reader refuses the
 //!   second. The slot and weld methods keep both out — but
-//!   [`Model::update_node`] can swap a welded part's whole kind, which takes
+//!   [`Model::update_node_kind`] can swap a welded part's whole kind, which takes
 //!   its slots with it.
 //! - A **weld with no pairs** saves and loads and joins nothing: it records
 //!   two parts and holds neither of them to the other.
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn check_flags_a_weld_whose_end_is_no_longer_a_part() {
         let (mut m, upper, _) = welded();
-        m.update_node(&upper, |n| n.kind = ModelNodeKind::Group)
+        m.update_node_kind(&upper, |kind| *kind = ModelNodeKind::Group)
             .unwrap();
 
         let w = m
@@ -428,8 +428,8 @@ mod tests {
             BindingTarget::Scalar(ScalarTarget::Opacity),
         ))
         .unwrap();
-        m.update_node(&part, |n| {
-            n.kind = ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()))
+        m.update_node_kind(&part, |kind| {
+            *kind = ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()))
         })
         .unwrap();
         assert!(

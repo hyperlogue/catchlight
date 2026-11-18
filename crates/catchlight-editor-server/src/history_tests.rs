@@ -550,7 +550,9 @@ fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
                 "Driver",
                 ModelNodeKind::MotionResponse(catchlight_core::MotionResponse {
                     inputs: vec![catchlight_core::ResponseInput {
-                        source: catchlight_core::ResponseSource::PoseParam(param.clone()),
+                        source: catchlight_core::ResponseSource::PoseParam {
+                            param: param.clone(),
+                        },
                         gain: 1.0,
                     }],
                     output_param: None,
@@ -583,7 +585,7 @@ fn navigation_keeps_preview_pose_but_restarts_scratch_and_physics() {
                 Some(&[Vec2::new(5.0, 6.0)][..])
             );
             puppet.set_physics_enabled(true);
-            puppet.settle_physics(model);
+            puppet.reset_motion_responses(model);
             puppet.set_param_value(&param, 0.5);
             puppet.tick(model, 0.016);
             assert!(puppet.response_trace(&driver).unwrap().lag.abs() > 0.0);

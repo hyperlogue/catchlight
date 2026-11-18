@@ -127,7 +127,7 @@ pub(crate) struct SpinePins {
     pub(crate) guide: Option<GuideBinding>,
 }
 
-/// The runtime half of a spine: the polyline as drawn, this frame's bends,
+/// A spine's rest polyline, current bends and baked vertex assignments.
 ///
 /// `bends` is written from the params every frame the fold runs, so nothing
 /// here needs resetting; `joints` and `pins` are rest data a rebake replaces.
@@ -602,6 +602,7 @@ fn pose_guide(
     }
 }
 
+/// Apply each spine’s posed bends to its meshed descendants.
 ///
 /// Runs in its own pre-order pass after the transforms are computed and before
 /// the mesh groups, and writes `DeformSource::Node(spine_id)` on each meshed

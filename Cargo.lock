@@ -1464,6 +1464,7 @@ dependencies = [
  "image",
  "indextree",
  "rayon",
+ "schemars",
  "serde",
  "serde_bytes",
  "serde_json",

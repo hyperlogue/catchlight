@@ -506,7 +506,7 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
         },
         mg_translate_children,
         motion_response: match &node.kind {
-            ModelNodeKind::MotionResponse(r) => Some(r.clone().into()),
+            ModelNodeKind::MotionResponse(r) => Some(r.clone()),
             _ => None,
         },
         spine: match &node.kind {

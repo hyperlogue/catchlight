@@ -69,7 +69,7 @@ const SCALARS: [ScalarTarget; 4] = [
 ];
 
 /// A random but well-formed model: a tree of every node kind, params, shared
-/// textures, masks, physics targets, one- and two-param bindings, welded slots
+/// textures, masks, motion response inputs, one- and two-param bindings, welded slots
 /// and an animation.
 fn random_model(rng: &mut Rng) -> Model {
     let mut hex = SeededHex::new(rng.bits());
@@ -147,7 +147,7 @@ fn random_model(rng: &mut Rng) -> Model {
                 &id,
                 catchlight_core::MotionResponse {
                     inputs: vec![catchlight_core::ResponseInput {
-                        source: catchlight_core::ResponseSource::PoseParam(x),
+                        source: catchlight_core::ResponseSource::PoseParam { param: x },
                         gain: 1.0,
                     }],
                     output_param: None,
@@ -559,7 +559,7 @@ fn a_puppet_of_a_fragment_holds_nothing() {
     assert!(puppet.param_ids().next().is_none());
     // And it is inert rather than broken: ticking it does nothing at all.
     puppet.set_param_value(&param, 0.5);
-    puppet.settle_physics(&addon);
+    puppet.reset_motion_responses(&addon);
     puppet.tick(&addon, 1.0 / 60.0);
     assert_eq!(puppet.len(), 1);
 }

@@ -17,7 +17,7 @@ use glam::Vec2;
 
 use crate::components::NodeKind;
 use crate::deform::DeformSource;
-use crate::interpolate::{bracket, cubic, frac, InterpolateMode};
+use crate::interpolate::{cubic, frac, InterpolateMode};
 use crate::model::{BindingTarget, DenseGrid, ScalarTarget};
 
 use super::bake::BakedBinding;
@@ -145,7 +145,11 @@ impl Puppet {
             .get(slot as usize)
             .copied()
             .unwrap_or(Located::REST);
-        let (lo, hi) = bracket(axis, input.normalized);
+        let (lo, hi) = crate::interpolate::binding_bracket(
+            axis,
+            input.normalized,
+            input.value == 0. && self.responses.owns(slot),
+        );
         Located {
             lo,
             hi,
@@ -211,6 +215,7 @@ impl Puppet {
         };
         let stack = match &mut node.kind {
             NodeKind::Part(p) => &mut p.deform_stack,
+            // Propagation samples this stack after all bindings have been folded.
             NodeKind::MeshGroup(mg) => &mut mg.deform_stack,
             _ => return,
         };

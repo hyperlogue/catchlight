@@ -227,6 +227,8 @@ pub enum ModelError {
     SelfMask,
     #[error("node is not a spine node")]
     NotSpine,
+    #[error("node is not a motion response")]
+    NotMotionResponse,
     #[error("a spine reads one param per link: {targets} targets for {joints} joints")]
     SpineTargetArity { targets: usize, joints: usize },
     #[error("a colour binding cannot target a mesh group, which is never drawn")]
@@ -473,12 +475,17 @@ pub struct ModelWeldPair {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModelNode {
+pub struct NodeProperties {
     pub name: Name,
     pub enabled: bool,
     pub z_order: f32,
     pub transform: ClmTransform,
     pub lock_to_root: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelNode {
+    properties: NodeProperties,
     pub kind: ModelNodeKind,
     parent: Option<NodeId>,
     // Like meshes, node-owned lists are shared across snapshots and edit rollback.
@@ -837,20 +844,34 @@ impl Deref for ModelBindingValues {
     }
 }
 
+impl Deref for ModelNode {
+    type Target = NodeProperties;
+    fn deref(&self) -> &NodeProperties {
+        &self.properties
+    }
+}
+impl std::ops::DerefMut for ModelNode {
+    fn deref_mut(&mut self) -> &mut NodeProperties {
+        &mut self.properties
+    }
+}
+
 impl ModelNode {
     /// A node at the identity transform (unit scale), enabled, z order 0. The
     /// label is truncated rather than rejected — a name is not a key.
     pub fn new(name: impl AsRef<str>, kind: ModelNodeKind) -> Self {
         Self {
-            name: Name::truncated(name),
-            enabled: true,
-            z_order: 0.0,
-            transform: ClmTransform {
-                translation: [0.0; 3],
-                rotation: [0.0; 3],
-                scale: [1.0, 1.0],
+            properties: NodeProperties {
+                name: Name::truncated(name),
+                enabled: true,
+                z_order: 0.0,
+                transform: ClmTransform {
+                    translation: [0.0; 3],
+                    rotation: [0.0; 3],
+                    scale: [1.0, 1.0],
+                },
+                lock_to_root: false,
             },
-            lock_to_root: false,
             kind,
             parent: None,
             children: Arc::default(),
@@ -879,6 +900,17 @@ impl ModelNode {
             ModelNodeKind::Part(p) => Some(&p.masks),
             ModelNodeKind::Composite(c) => Some(&c.masks),
             _ => None,
+        }
+    }
+
+    fn remove_masks(&mut self, removed: impl Fn(&NodeId) -> bool) {
+        if self
+            .masks()
+            .is_some_and(|masks| masks.iter().any(|m| removed(&m.source)))
+        {
+            if let Some(masks) = self.masks_mut() {
+                masks.retain(|m| !removed(&m.source));
+            }
         }
     }
 
@@ -973,7 +1005,6 @@ impl Model {
         // The binding index is derived from `bindings`, and this is the one
         // place every edit passes through.
         self.binding_index.take();
-        self.response_index.take();
     }
 
     // ---- tree ----
@@ -1048,21 +1079,28 @@ impl Model {
         self.nodes.keys()
     }
 
-    /// Edit one node's own properties: name, transform, z order, enabled,
-    /// lock-to-root and the plain values on its kind. Cross-references (the
-    /// albedo, masks, response references) and the mesh have their own methods,
-    /// because they have to be checked against the rest of the model.
+    /// Edit a node's common properties in place. They cannot change response ownership or inputs.
     pub fn update_node<R>(
         &mut self,
         id: &NodeId,
-        f: impl FnOnce(&mut ModelNode) -> R,
+        f: impl FnOnce(&mut NodeProperties) -> R,
     ) -> Result<R, ModelError> {
         let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
-        let previous = node.clone();
-        let out = f(node);
-        // Only the kind, its part slots and the response configuration can
-        // change the response graph. Ordinary property edits skip validation.
-        let response_changed = match (&previous.kind, &node.kind) {
+        let out = f(&mut node.properties);
+        self.bump();
+        Ok(out)
+    }
+
+    /// Edit or replace a kind, restoring it if its response references become invalid.
+    pub fn update_node_kind<R>(
+        &mut self,
+        id: &NodeId,
+        f: impl FnOnce(&mut ModelNodeKind) -> R,
+    ) -> Result<R, ModelError> {
+        let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
+        let previous = node.kind.clone();
+        let out = f(&mut node.kind);
+        let response_changed = match (&previous, &node.kind) {
             (ModelNodeKind::MotionResponse(a), ModelNodeKind::MotionResponse(b)) => a != b,
             (ModelNodeKind::MotionResponse(_), _) | (_, ModelNodeKind::MotionResponse(_)) => true,
             (ModelNodeKind::Part(a), ModelNodeKind::Part(b)) => {
@@ -1071,15 +1109,15 @@ impl Model {
             (ModelNodeKind::Part(_), _) | (_, ModelNodeKind::Part(_)) => true,
             _ => false,
         };
-        if response_changed || previous.parent != node.parent {
+        if response_changed {
             let previous_count = self.response_count;
             self.response_count = previous_count
-                - usize::from(matches!(previous.kind, ModelNodeKind::MotionResponse(_)))
+                - usize::from(matches!(previous, ModelNodeKind::MotionResponse(_)))
                 + usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
             self.response_index.take();
             if let Err(error) = self.validate_responses() {
                 self.response_count = previous_count;
-                self.nodes.insert(id.clone(), previous);
+                self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?.kind = previous;
                 self.response_index.take();
                 return Err(error);
             }
@@ -1148,13 +1186,19 @@ impl Model {
         node.children = Arc::default();
         let added = usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
         self.response_count += added;
-        self.response_index.take();
-        self.nodes.insert(id.clone(), node);
-        if let Err(error) = self.validate_responses() {
-            self.response_count -= added;
+        if added != 0 {
             self.response_index.take();
-            self.nodes.remove(&id);
-            return Err(error);
+        }
+        // In a fragment the new node can resolve a formerly external input.
+        let check = added != 0 || self.resolves_response_node(&id);
+        self.nodes.insert(id.clone(), node);
+        if check {
+            if let Err(error) = self.validate_responses() {
+                self.response_count -= added;
+                self.response_index.take();
+                self.nodes.remove(&id);
+                return Err(error);
+            }
         }
         self.attach_child(parent, id);
         self.bump();
@@ -1186,9 +1230,7 @@ impl Model {
             self.remove_counted_node(r);
         }
         for node in self.nodes.values_mut() {
-            if let Some(masks) = node.masks_mut() {
-                masks.retain(|m| !removed.contains(&m.source));
-            }
+            node.remove_masks(|id| removed.contains(id));
             if let ModelNodeKind::MotionResponse(r) = &mut node.kind {
                 r.inputs.retain(|t| !matches!(&t.source,crate::ResponseSource::PartSlot{part,..} if removed.contains(part)));
             }
@@ -1304,7 +1346,7 @@ impl Model {
             let kind = copy.kind.id_kind();
             let new_id = self.mint(
                 |h| NodeId::generate(&new_parent, kind, h),
-                |m, id| m.nodes.contains_key(id),
+                |m, id| m.nodes.contains_key(id) || m.resolves_response_node(id),
                 hex,
             )?;
             self.response_count +=
@@ -1382,6 +1424,7 @@ impl Model {
         if self.nodes.contains_key(&new) {
             return Err(ModelError::DuplicateId(new.to_string()));
         }
+        let rollback = self.resolves_response_node(&new).then(|| self.clone());
         let node = self.nodes.remove(old).ok_or(ModelError::UnknownNode)?;
         let parent = node.parent.clone();
         let children = node.children.clone();
@@ -1399,6 +1442,12 @@ impl Model {
             }
         }
         for node in self.nodes.values_mut() {
+            if !node
+                .masks()
+                .is_some_and(|masks| masks.iter().any(|m| &m.source == old))
+            {
+                continue;
+            }
             if let Some(masks) = node.masks_mut() {
                 for m in masks.iter_mut() {
                     if &m.source == old {
@@ -1436,6 +1485,14 @@ impl Model {
                 }
             }
         }
+        self.response_index.take();
+        self.response_index.take();
+        if let Some(before) = rollback {
+            if let Err(error) = self.validate_responses() {
+                *self = before;
+                return Err(error);
+            }
+        }
         self.bump();
         Ok(())
     }
@@ -1452,6 +1509,7 @@ impl Model {
         if self.params.contains_key(&new) {
             return Err(ModelError::DuplicateId(new.to_string()));
         }
+        let rollback = self.resolves_response_param(&new).then(|| self.clone());
         let param = self.params.remove(old).ok_or(ModelError::UnknownParam)?;
         self.params.insert(new.clone(), param);
         for p in &mut self.param_order {
@@ -1483,7 +1541,7 @@ impl Model {
         }
         for node in self.nodes.values_mut() {
             match &mut node.kind {
-                ModelNodeKind::Spine(spine) => {
+                ModelNodeKind::Spine(spine) if spine.reads(old) => {
                     for t in Arc::make_mut(&mut spine.targets) {
                         if t.as_ref() == Some(old) {
                             *t = Some(new.clone());
@@ -1495,7 +1553,7 @@ impl Model {
                         r.output_param = Some(new.clone());
                     }
                     for t in &mut r.inputs {
-                        if let crate::ResponseSource::PoseParam(p) = &mut t.source {
+                        if let crate::ResponseSource::PoseParam { param: p } = &mut t.source {
                             if p == old {
                                 *p = new.clone();
                             }
@@ -1503,6 +1561,13 @@ impl Model {
                     }
                 }
                 _ => {}
+            }
+        }
+        self.response_index.take();
+        if let Some(before) = rollback {
+            if let Err(error) = self.validate_responses() {
+                *self = before;
+                return Err(error);
             }
         }
         self.bump();
@@ -1996,6 +2061,12 @@ impl Model {
             return Err(ModelError::DuplicateId(id.to_string()));
         }
         self.params.insert(id.clone(), param);
+        if self.is_fragment() && self.response_owner(&id).is_some() {
+            if let Err(error) = self.validate_responses() {
+                self.params.remove(&id);
+                return Err(error);
+            }
+        }
         self.param_order.push(id);
         self.bump();
         Ok(())
@@ -2016,13 +2087,13 @@ impl Model {
             match &mut node.kind {
                 ModelNodeKind::MotionResponse(r) => {
                     r.inputs.retain(
-                        |t| !matches!(&t.source,crate::ResponseSource::PoseParam(p) if p==id),
+                        |t| !matches!(&t.source,crate::ResponseSource::PoseParam { param: p } if p==id),
                     );
                     if r.output_param.as_ref() == Some(id) {
                         r.output_param = None;
                     }
                 }
-                ModelNodeKind::Spine(spine) => {
+                ModelNodeKind::Spine(spine) if spine.reads(id) => {
                     for t in Arc::make_mut(&mut spine.targets) {
                         if t.as_ref() == Some(id) {
                             *t = None;
@@ -2032,6 +2103,7 @@ impl Model {
                 _ => {}
             }
         }
+        self.response_index.take();
         self.bump();
         Ok(())
     }
@@ -3018,7 +3090,9 @@ mod tests {
                             &r.response,
                             crate::MotionResponse {
                                 inputs: vec![crate::ResponseInput {
-                                    source: crate::ResponseSource::PoseParam(r.param.clone()),
+                                    source: crate::ResponseSource::PoseParam {
+                                        param: r.param.clone(),
+                                    },
                                     gain: 1.0,
                                 }],
                                 output_param: None,
@@ -3959,7 +4033,9 @@ mod tests {
                 &response,
                 crate::MotionResponse {
                     inputs: vec![crate::ResponseInput {
-                        source: crate::ResponseSource::PoseParam(param.clone()),
+                        source: crate::ResponseSource::PoseParam {
+                            param: param.clone(),
+                        },
                         gain: 1.0,
                     }],
                     output_param: None,
@@ -4377,7 +4453,7 @@ mod tests {
     fn response_input(m: &Model, node: &NodeId) -> Option<ParamId> {
         match &m.node(node)?.kind {
             ModelNodeKind::MotionResponse(r) => match &r.inputs.first()?.source {
-                crate::ResponseSource::PoseParam(p) => Some(p.clone()),
+                crate::ResponseSource::PoseParam { param: p } => Some(p.clone()),
                 _ => None,
             },
             _ => None,

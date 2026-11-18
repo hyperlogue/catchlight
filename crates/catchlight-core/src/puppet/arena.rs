@@ -16,7 +16,7 @@
 //! the whole reason it is a separate struct — [`crate::puppet`] carries the
 //! pose layers over one set of passes.
 
-use glam::Mat4;
+use glam::{Mat4, Vec2};
 
 use crate::components::{Node, NodeIdx};
 use crate::node::NodeTree;
@@ -101,6 +101,9 @@ pub(crate) struct Arena {
     // Cached pre-order of MeshGroup NodeIdxs. Invalidated on tree edits
     // (see insert_child). None = stale, recompute on next access.
     pub(crate) mg_pre_order_cache: Option<Vec<NodeIdx>>,
+    // The vertex buffers stay in their original deform stacks across a reset.
+    pub(crate) mg_written_sources: Vec<(NodeIdx, NodeIdx)>,
+    pub(crate) mg_shifts: Vec<(NodeIdx, Vec2)>,
     // base_transform.to_matrix() cached per slot. 60-100ns per node of
     // quat/mat ops saved in compute_transforms when the node has no
     // active transform delta this frame.
@@ -144,6 +147,8 @@ impl Arena {
             mg_cur_deform_scratch: Vec::new(),
             mg_deformed_vertices_scratch: Vec::new(),
             mg_pre_order_cache: None,
+            mg_written_sources: Vec::new(),
+            mg_shifts: Vec::new(),
             base_local_matrix: vec![Mat4::IDENTITY],
             node_transform_dirty: vec![false],
             deform_node_ids: Vec::new(),
@@ -196,7 +201,7 @@ impl Arena {
         }
     }
 
-    /// Rebuild the five kind registries from the current node kinds.
+    /// Rebuild the three kind registries from the current node kinds.
     pub(crate) fn rebuild_kind_registries(&mut self) {
         self.deform_node_ids.clear();
         self.spine_node_ids.clear();
@@ -407,8 +412,7 @@ impl Arena {
         if is_spine {
             self.spine_node_ids.push(id);
         }
-        // A new node changes the physics ancestor set and the mesh-group
-        // pre-order.
+        // Inserting a node invalidates the cached traversal orders.
         self.invalidate_structure_caches();
         id
     }

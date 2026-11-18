@@ -841,7 +841,7 @@ fn strand_response() -> (ClmStructure, Vec<ClmTexture>) {
     let mut parent = head;
     for (i, period_s) in [0.32, 0.42, 0.54].into_iter().enumerate() {
         let source = if i == 0 {
-            ResponseSource::PoseParam(pid(TURN))
+            ResponseSource::PoseParam { param: pid(TURN) }
         } else {
             ResponseSource::Parent
         };

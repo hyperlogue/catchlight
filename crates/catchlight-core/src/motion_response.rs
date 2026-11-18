@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{NodeId, ParamId, SlotId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MotionResponse {
     pub inputs: Vec<ResponseInput>,
     pub period_s: f32,
@@ -25,14 +26,19 @@ impl Default for MotionResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ResponseInput {
     pub source: ResponseSource,
     pub gain: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseSource {
-    PoseParam(ParamId),
+    PoseParam {
+        param: ParamId,
+    },
     PartSlot {
         part: NodeId,
         slot: SlotId,

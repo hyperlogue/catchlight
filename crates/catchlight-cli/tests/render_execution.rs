@@ -209,9 +209,9 @@ fn animation_decimation_reuses_native_clock_and_does_not_change_physics_or_image
             "Follow",
             ModelNodeKind::MotionResponse(catchlight_core::MotionResponse {
                 inputs: vec![catchlight_core::ResponseInput {
-                    source: catchlight_core::ResponseSource::PoseParam(
-                        ParamId::new("drive").unwrap(),
-                    ),
+                    source: catchlight_core::ResponseSource::PoseParam {
+                        param: ParamId::new("drive").unwrap(),
+                    },
                     gain: 1.0,
                 }],
                 output_param: Some(response.clone()),
@@ -234,8 +234,7 @@ fn animation_decimation_reuses_native_clock_and_does_not_change_physics_or_image
     full["requests"]["a"]["animation"] = json!({"source":"spec","name":"pulse"});
     full["requests"]["a"]["frames"] = json!({"count":10,"every":1});
     full["requests"]["a"]["trace_params"] = json!(["drive", "response"]);
-    full["requests"]["a"]["physics"] =
-        json!({"mode":"simulate","initial":"settled","warmup_frames":3});
+    full["requests"]["a"]["physics"] = json!({"mode":"simulate"});
     let first = invoke(&dir, &full, "full");
     let mut decimated = full.clone();
     decimated["requests"]["a"]["frames"]["every"] = json!(3);

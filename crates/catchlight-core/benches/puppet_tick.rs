@@ -186,7 +186,7 @@ fn main() {
 fn run(s: &Scenario) -> (f64, f64, f64) {
     let built = Built::new(s);
     let mut puppet = Puppet::new(&built.model);
-    puppet.settle_physics(&built.model);
+    puppet.reset_motion_responses(&built.model);
 
     let mut samples = Vec::with_capacity(TICKS);
     let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
@@ -349,7 +349,9 @@ impl Built {
                 let mut parent = head.clone();
                 for (link, bend) in strand.iter().enumerate() {
                     let source = if link == 0 {
-                        ResponseSource::PoseParam(turn.clone())
+                        ResponseSource::PoseParam {
+                            param: turn.clone(),
+                        }
                     } else {
                         ResponseSource::Parent
                     };
