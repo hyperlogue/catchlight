@@ -658,8 +658,8 @@ pub enum Command {
     /// key.
     ///
     /// **The spine goes between the part and its parent**, and the part keeps
-    /// the world placement it had. Re-fitting a part whose parent is already a
-    /// spine re-measures that spine instead of nesting another, retaining
+    /// the world placement it had. Re-fitting through any intervening motion responses
+    /// re-measures the existing spine, retaining
     /// the existing params for links that survive.
     SpineFit {
         session: SessionId,
@@ -2775,6 +2775,9 @@ pub struct NodeInfo {
     pub mg_translate_children: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion_response: Option<MotionResponse>,
+    /// The existing spine that fitting this mesh will remeasure, across any response chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fitted_spine: Option<NodeId>,
     /// A spine's settings, absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spine: Option<SpineInfo>,
@@ -3169,6 +3172,7 @@ mod tests {
             mg_translate_children: None,
             motion_response: None,
             spine: None,
+            fitted_spine: None,
             masks: Vec::new(),
         };
         let line = serde_json::to_string(&info).unwrap();
@@ -3231,6 +3235,7 @@ mod tests {
                 texture: None,
                 motion_response: None,
                 spine: None,
+                fitted_spine: None,
                 masks: Vec::new(),
                 vertex_count: Some(0),
                 triangle_count: Some(0),

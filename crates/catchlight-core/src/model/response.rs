@@ -14,6 +14,14 @@ pub(super) struct ResponseIndex {
     owners: HashMap<ParamId, NodeId>,
 }
 
+/// Before committing a rename, both IDs resolve to the old declaration.
+fn declaration_id<'a, I: Eq>(id: &'a I, rename: Option<(&'a I, &I)>) -> &'a I {
+    match rename {
+        Some((old, new)) if id == new => old,
+        _ => id,
+    }
+}
+
 impl Model {
     fn response_index(&self) -> &ResponseIndex {
         self.response_index.get_or_init(|| {
@@ -64,15 +72,6 @@ impl Model {
             })
     }
 
-    pub(super) fn resolves_response_param(&self, id: &ParamId) -> bool {
-        self.is_fragment()
-            && self.responses().any(|(_, r)| {
-                r.output_param.as_ref() == Some(id) || r.inputs.iter().any(|input| {
-                matches!(&input.source, ResponseSource::PoseParam { param } if param == id)
-            })
-            })
-    }
-
     pub(super) fn remove_counted_node(&mut self, id: &NodeId) {
         if self
             .nodes
@@ -109,10 +108,32 @@ impl Model {
     }
 
     pub(super) fn validate_responses(&self) -> Result<(), ModelError> {
+        self.validate_response_rename(None, None)
+    }
+
+    /// A fragment may already reference the destination ID. Check how those
+    /// references will resolve before mutating nodes, bindings or animation lanes.
+    pub(super) fn validate_response_rename(
+        &self,
+        node_rename: Option<(&NodeId, &NodeId)>,
+        param_rename: Option<(&ParamId, &ParamId)>,
+    ) -> Result<(), ModelError> {
         if self.response_count == 0 {
             return Ok(());
         }
         let index = self.response_index();
+        let declaration = |p: &ParamId| self.param(declaration_id(p, param_rename));
+        let owner = |p: &ParamId| {
+            if let Some((old, new)) = param_rename.filter(|(old, new)| p == *old || p == *new) {
+                return index
+                    .owners
+                    .get(old)
+                    .into_iter()
+                    .chain(index.owners.get(new))
+                    .min();
+            }
+            index.owners.get(p)
+        };
         let fragment = self.is_fragment();
         for id in &index.rows {
             let Some(node) = self.node(id) else { continue };
@@ -138,7 +159,9 @@ impl Model {
                 }
                 match &input.source {
                     ResponseSource::Parent => {
-                        let p = node.parent().and_then(|p| self.node(p));
+                        let p = node
+                            .parent()
+                            .and_then(|p| self.node(declaration_id(p, node_rename)));
                         if !(matches!(p.map(|n| &n.kind), Some(ModelNodeKind::MotionResponse(_)))
                             || (p.is_none() && fragment && node.parent().is_some()))
                         {
@@ -148,7 +171,7 @@ impl Model {
                         }
                     }
                     ResponseSource::PoseParam { param: p }
-                        if self.param(p).is_none() && !fragment =>
+                        if declaration(p).is_none() && !fragment =>
                     {
                         return Err(invalid(format!("unknown input param {p}")))
                     }
@@ -164,8 +187,9 @@ impl Model {
                         {
                             return Err(invalid("slot projection requires a finite angle and positive reference length".into()));
                         }
-                        if (self.node(part).is_some() || !fragment)
-                            && self.slot(part, slot).is_none()
+                        let declared = declaration_id(part, node_rename);
+                        if (self.node(declared).is_some() || !fragment)
+                            && self.slot(declared, slot).is_none()
                         {
                             return Err(invalid(format!("unknown part slot {part}/{slot}")));
                         }
@@ -174,10 +198,10 @@ impl Model {
                 }
             }
             if let Some(p) = &r.output_param {
-                if let Some(other) = self.response_owner(p).filter(|other| *other != id) {
+                if let Some(other) = owner(p).filter(|other| *other != id) {
                     return Err(invalid(format!("{p} is already driven by {other}")));
                 }
-                match self.param(p) {
+                match declaration(p) {
                     Some(param) if param.default == 0.0 && param.min <= 0.0 && param.max >= 0.0 => {
                     }
                     None if fragment => {}
@@ -190,7 +214,7 @@ impl Model {
             }
         }
         let check = |p: &ParamId, reason: &str| -> Result<(), ModelError> {
-            if let Some(id) = self.response_owner(p) {
+            if let Some(id) = owner(p) {
                 return Err(ModelError::InvalidResponse {
                     node: id.clone(),
                     reason: format!("{p} {reason}"),
@@ -206,13 +230,12 @@ impl Model {
             }
         }
         for binding in &self.bindings {
-            if binding
-                .key
-                .params
-                .iter()
-                .any(|p| self.response_owner(p).is_some())
-            {
-                self.validate_response_binding(binding)?;
+            if binding.key.params.iter().any(|p| owner(p).is_some()) {
+                Self::validate_response_binding_with(binding, |p| {
+                    owner(p)?;
+                    let param = declaration(p)?;
+                    Some(super::binding::normalized_zero(param.min, param.max))
+                })?;
             }
         }
         for lane in self.animations.iter().flat_map(|a| &a.lanes) {

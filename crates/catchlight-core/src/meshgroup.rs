@@ -355,13 +355,10 @@ fn find_triangle_strict_hint(
     None
 }
 
-/// Meshed descendants that receive this MG's vertex-level deform pins:
-/// recurse into Parts and Composites, collect Parts and nested MGs,
-/// and stop at each nested MG. The outer deform reaches an inner
-/// MG's children transitively through the pre-order propagation pass. Binding
-/// those children directly to the outer MG would apply its deform twice.
-/// Descendants without a mesh, under a `translateChildren=true` MG, receive a
-/// Node-level shift through `shift_translate_children` instead.
+/// Collect parts and nested mesh groups. Descend through parts, participating
+/// composites, spines and motion responses. A nested mesh group carries the
+/// deform to its own children. With `translateChildren`, a group carries its
+/// subtree through a single translation.
 fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec<NodeIdx> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeIdx> = tree.get_children(root);
@@ -382,8 +379,7 @@ fn descendant_meshed_nodes(tree: &NodeTree, root: NodeIdx, arena: &Arena) -> Vec
             Some(NodeKind::MeshGroup(_)) => {
                 out.push(id);
             }
-            // A spine carries no mesh and does not pass a group's deform on,
-            // so the walk goes through it rather than stopping at it.
+            // Both kinds pass the deform through to their meshed descendants.
             Some(NodeKind::Spine(_) | NodeKind::MotionResponse) => {
                 stack.extend(tree.get_children(id));
             }
@@ -519,9 +515,6 @@ fn translate_children_targets(tree: &NodeTree, mg_id: NodeIdx, arena: &Arena) ->
     let descends = |id: NodeIdx| match arena.get(id).map(|n| &n.kind) {
         Some(NodeKind::Part(_)) => true,
         Some(NodeKind::Composite(c)) => c.propagate_mesh_group,
-        // A spine's meshed descendants are reached by `descendant_meshed_nodes`
-        // and warped there, so the walk goes through it and the retain below
-        // drops the spine itself.
         Some(NodeKind::Spine(_) | NodeKind::MotionResponse) => true,
         _ => false,
     };

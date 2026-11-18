@@ -1438,11 +1438,14 @@ impl Model {
         if self.nodes.contains_key(&new) {
             return Err(ModelError::DuplicateId(new.to_string()));
         }
-        let rollback = self.resolves_response_node(&new).then(|| self.clone());
+        if self.resolves_response_node(&new) {
+            self.validate_response_rename(Some((old, &new)), None)?;
+        }
         let node = self.nodes.remove(old).ok_or(ModelError::UnknownNode)?;
         let parent = node.parent.clone();
         let children = node.children.clone();
         self.nodes.insert(new.clone(), node);
+        self.response_index.take();
         if let Some(p) = parent.and_then(|p| self.nodes.get_mut(&p)) {
             for c in Arc::make_mut(&mut p.children) {
                 if c == old {
@@ -1499,7 +1502,8 @@ impl Model {
                 }
             }
         }
-        self.finish_response_rename(rollback)
+        self.bump();
+        Ok(())
     }
 
     /// Give a param a different Id, rewriting the bindings it drives and any
@@ -1514,7 +1518,11 @@ impl Model {
         if self.params.contains_key(&new) {
             return Err(ModelError::DuplicateId(new.to_string()));
         }
-        let rollback = self.resolves_response_param(&new).then(|| self.clone());
+        if self.is_fragment()
+            && (self.response_owner(old).is_some() || self.response_owner(&new).is_some())
+        {
+            self.validate_response_rename(None, Some((old, &new)))?;
+        }
         let param = self.params.remove(old).ok_or(ModelError::UnknownParam)?;
         self.params.insert(new.clone(), param);
         for p in &mut self.param_order {
@@ -1568,17 +1576,7 @@ impl Model {
                 _ => {}
             }
         }
-        self.finish_response_rename(rollback)
-    }
-
-    fn finish_response_rename(&mut self, rollback: Option<Self>) -> Result<(), ModelError> {
         self.response_index.take();
-        if let Some(before) = rollback {
-            if let Err(error) = self.validate_responses() {
-                *self = before;
-                return Err(error);
-            }
-        }
         self.bump();
         Ok(())
     }

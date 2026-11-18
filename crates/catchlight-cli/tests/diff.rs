@@ -2,7 +2,7 @@
 //! operation rests on.
 //!
 //! Two properties are pinned here because everything else assumes them:
-//! encoding a current-format `.clm` twice gives the same bytes back, and
+//! encoding a `.clm` twice gives the same bytes back, and
 //! `diff` is empty exactly when two files are equal. Once those hold, `diff`
 //! is a trustworthy way to ask what a `patch` or a `merge` actually did.
 

@@ -85,7 +85,7 @@ fn every_fixture_carries_both_kinds_through_a_save() {
 
 /// A model with no extensions omits the field and section on save.
 #[test]
-fn a_model_without_extensions_keeps_its_bytes_after_version_migration() {
+fn saving_a_model_without_extensions_omits_the_extension_data() {
     for path in fixtures() {
         let committed = std::fs::read(&path).unwrap();
         let model = Model::from_clm_bytes(&committed).unwrap();
@@ -96,11 +96,7 @@ fn a_model_without_extensions_keeps_its_bytes_after_version_migration() {
         let structure: serde_json::Value =
             ciborium::from_reader(parsed.section(0).unwrap()).unwrap();
         assert!(structure.get("extensions").is_none());
-        let reopened = Model::from_clm_bytes(&encoded).unwrap();
-        assert!(
-            reopened.to_clm_bytes().unwrap() == encoded,
-            "save after migration is stable"
-        );
+        assert!(encoded == committed, "saving changed {}", path.display());
     }
 }
 

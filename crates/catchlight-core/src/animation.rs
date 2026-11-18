@@ -31,9 +31,52 @@ impl ClmLane {
         let adjacent = entering.max(leaving);
         // A smooth curve can travel fastest on the closing interval. Allow
         // half a neighbouring step of curvature before treating it as a cut.
-        !same_sample(first, self.value_at(end as f32), adjacent)
-            && delta > 1.5 * adjacent
-            && !same_sample(first, last, adjacent)
+        if same_sample(first, self.value_at(end as f32), adjacent)
+            || delta <= 1.5 * adjacent
+            || same_sample(first, last, adjacent)
+        {
+            return false;
+        }
+        // A coarse loop may cross its fastest stretch at the seam. Compare
+        // with the largest interior frame step before discarding velocity.
+        !self.keyframes.windows(2).enumerate().any(|(i, keys)| {
+            let (a, b) = (&keys[0], &keys[1]);
+            let lo = begin.max(a.frame);
+            let hi = (end - 1).min(b.frame);
+            if lo >= hi {
+                return false;
+            }
+            let span = f64::from(b.frame) - f64::from(a.frame);
+            // Linear segments have constant steps. A stepped or nearest
+            // segment switches at a key or its midpoint. For a cubic segment
+            // the one-frame difference is quadratic in the starting frame:
+            // its extremum straddles the inflection point of the cubic.
+            let middle = match self.interpolation {
+                InterpolateMode::Nearest => 0.5,
+                InterpolateMode::Cubic => {
+                    let before = self.keyframes[i.saturating_sub(1)].value;
+                    let after = self.keyframes[(i + 2).min(self.keyframes.len() - 1)].value;
+                    let d = f64::from(b.value) - f64::from(a.value);
+                    let m1 = (f64::from(b.value) - f64::from(before)) * 0.5;
+                    let m2 = (f64::from(after) - f64::from(a.value)) * 0.5;
+                    let cubic = m1 + m2 - 2. * d;
+                    if cubic == 0. {
+                        0.
+                    } else {
+                        (2. * m1 + m2 - 3. * d) / (3. * cubic)
+                    }
+                }
+                _ => 0.,
+            };
+            let start = (f64::from(a.frame) + span * middle - 0.5).floor() as i32;
+            [lo, hi - 1, start, start.saturating_add(1)]
+                .into_iter()
+                .filter(|&f| f >= lo && f < hi)
+                .any(|f| {
+                    let step = (self.value_at((f + 1) as f32) - self.value_at(f as f32)).abs();
+                    step >= delta || same_sample(step, delta, adjacent)
+                })
+        })
     }
 
     /// Interpolated value at fractional frame `t`, clamped at both ends.
@@ -134,6 +177,41 @@ mod tests {
                 .map(|(frame, value)| ClmKeyframe { frame, value })
                 .collect(),
             interpolation: mode,
+        }
+    }
+
+    #[test]
+    fn sparse_loop_cut_detection_agrees_with_scanning_every_frame() {
+        for mode in [
+            InterpolateMode::Linear,
+            InterpolateMode::Cubic,
+            InterpolateMode::Stepped,
+            InterpolateMode::Nearest,
+        ] {
+            let l = lane(
+                vec![(0, 0.), (3, 0.2), (11, -1.), (29, 1.), (34, 0.1)],
+                mode,
+            );
+            for begin in 0..32 {
+                for end in begin + 2..=35 {
+                    let sample = |f: i32| l.value_at(f as f32);
+                    let first = sample(begin);
+                    let last = sample(end - 1);
+                    let adjacent = (last - sample(end - 2))
+                        .abs()
+                        .max((sample(begin + 1) - first).abs());
+                    let delta = (first - last).abs();
+                    let biggest = (begin..end - 1)
+                        .map(|i| (sample(i + 1) - sample(i)).abs())
+                        .fold(0.0_f32, f32::max);
+                    let cut = !same_sample(first, sample(end), adjacent)
+                        && !same_sample(first, last, adjacent)
+                        && delta > 1.5 * adjacent
+                        && delta > biggest
+                        && !same_sample(delta, biggest, adjacent);
+                    assert_eq!(l.jumps_at_wrap(begin, end), cut, "{mode:?} {begin}..{end}");
+                }
+            }
         }
     }
 

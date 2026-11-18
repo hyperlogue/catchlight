@@ -88,7 +88,11 @@ pub(super) struct Responses {
     remainder: f64,
     points: Vec<(NodeIdx, Option<u32>)>,
     positions: Vec<Option<Vec2>>,
-    pose_slots: Vec<usize>,
+    /// Pose parameters that can move each sampled point, and their sorted union.
+    point_params: Vec<Vec<u32>>,
+    pose_slots: Vec<u32>,
+    geometry_nodes: HashSet<NodeIdx>,
+    geometry_welds: Vec<bool>,
     reserved: Vec<bool>,
     pub(super) sampler: Option<Box<Puppet>>,
 }
@@ -212,6 +216,7 @@ impl Responses {
             indices.insert(id.clone(), out.rows.len());
             out.rows.push(row);
         }
+        out.bake_point_dependencies(puppet);
         out.positions.resize(out.points.len(), None);
         out
     }
@@ -231,14 +236,12 @@ impl Responses {
         if jumps.is_empty() {
             return;
         }
-        let slot_pose_changed = self
-            .pose_slots
-            .iter()
-            .any(|&slot| jumps.contains(&(slot as u32)));
         for i in 0..self.rows.len() {
             let affected = self.rows[i].terms.iter().any(|t| match t.source {
                 Source::Pose(slot) => jumps.contains(&slot),
-                Source::Slot { .. } => slot_pose_changed,
+                Source::Slot { point, .. } => jumps
+                    .iter()
+                    .any(|p| self.point_params[point].binary_search(p).is_ok()),
                 Source::Parent(parent) => !self.rows[parent].sampled,
                 Source::Unavailable => false,
             });
@@ -252,6 +255,64 @@ impl Responses {
         self.reserved.get(slot as usize) == Some(&true)
     }
 
+    /// Trace each observed vertex backwards through sequential welds, then
+    /// through its pose geometry. A clip cut resets only rows reading a
+    /// point that depends on the jumping parameter.
+    fn bake_point_dependencies(&mut self, puppet: &Puppet) {
+        if self.points.is_empty() {
+            return;
+        }
+        self.geometry_welds.resize(puppet.arena.welds.len(), false);
+        let mut params_by_node: HashMap<_, Vec<u32>> = HashMap::new();
+        for (node, param) in puppet.geometry_inputs() {
+            if !self.owns(param) {
+                params_by_node.entry(node).or_default().push(param);
+            }
+        }
+        for &(part, vertex) in &self.points {
+            let mut inputs = Vec::new();
+            if let Some(vertex) = vertex {
+                let mut vertices = HashSet::from([(part, vertex)]);
+                for (index, weld) in puppet.arena.welds.iter().enumerate().rev() {
+                    // Pairs in a record all read the pose before that record.
+                    let additional: Vec<_> = weld
+                        .pairs
+                        .iter()
+                        .flat_map(|pair| {
+                            let a = (weld.a, pair.a_vert);
+                            let b = (weld.b, pair.b_vert);
+                            [
+                                (vertices.contains(&a) && pair.weight != 1.).then_some(b),
+                                (vertices.contains(&b) && pair.weight != 0.).then_some(a),
+                            ]
+                            .into_iter()
+                            .flatten()
+                        })
+                        .collect();
+                    if !additional.is_empty() {
+                        self.geometry_welds[index] = true;
+                        vertices.extend(additional);
+                    }
+                }
+                let nodes = puppet.geometry_ancestors(vertices.into_iter().map(|(id, _)| id));
+                inputs.extend(
+                    nodes
+                        .iter()
+                        .filter_map(|n| params_by_node.get(n))
+                        .flatten()
+                        .copied(),
+                );
+                inputs.sort_unstable();
+                inputs.dedup();
+                self.pose_slots.extend_from_slice(&inputs);
+                self.geometry_nodes.extend(nodes);
+            }
+            self.point_params.push(inputs);
+        }
+        self.pose_slots.sort_unstable();
+        self.pose_slots.dedup();
+    }
+
     fn bake_sampler(&mut self, puppet: &Puppet) {
         // Isolate the pose-only geometry from the render arena's last driver
         // claims and from a caller-supplied camera/world matrix. The sampler
@@ -260,28 +321,10 @@ impl Responses {
         pose.set_motion_responses_enabled(false);
         pose.responses.reserved.clone_from(&self.reserved);
         pose.stop_animation();
-        // Welds solve in sequence. Trace their inputs backwards so an
-        // earlier seam that moves a sampled endpoint is retained too.
-        let mut parts: HashSet<_> = self.points.iter().map(|&(part, _)| part).collect();
-        pose.arena.welds.reverse();
-        pose.arena.welds.retain(|weld| {
-            if parts.contains(&weld.a) || parts.contains(&weld.b) {
-                parts.extend([weld.a, weld.b]);
-                true
-            } else {
-                false
-            }
-        });
-        pose.arena.welds.reverse();
-        let needed = pose.geometry_ancestors(parts);
-        self.pose_slots = pose
-            .geometry_slots(&needed)
-            .filter(|&slot| !self.owns(slot))
-            .map(|slot| slot as usize)
-            .collect();
-        self.pose_slots.sort_unstable();
-        self.pose_slots.dedup();
-        pose.arena.retain_geometry(&needed, &self.points);
+        let needed = &self.geometry_nodes;
+        let mut welds = self.geometry_welds.iter();
+        pose.arena.welds.retain(|_| welds.next() == Some(&true));
+        pose.arena.retain_geometry(needed, &self.points);
         pose.spine_targets = pose
             .spine_targets
             .into_iter()
@@ -310,11 +353,12 @@ impl Responses {
         let Some(sample) = &mut self.sampler else {
             return;
         };
-        for &i in &self.pose_slots {
+        for &slot in &self.pose_slots {
+            let i = slot as usize;
             let value = puppet.param_values[i];
             if sample.param_values[i] != value {
                 sample.param_values[i] = value;
-                sample.bump_param_generation(i as u32);
+                sample.bump_param_generation(slot);
             }
         }
         if sample.scratch_transforms != puppet.scratch_transforms {
@@ -481,20 +525,6 @@ impl Responses {
 }
 
 impl Puppet {
-    pub(super) fn reset_changed_response_inputs(&mut self, jumps: &[u32]) {
-        if jumps.is_empty() || !self.motion_responses_enabled || self.responses.rows.is_empty() {
-            return;
-        }
-        let mut bank = std::mem::take(&mut self.responses);
-        // A rebake can retain a moving row while invalidating its slot sampler.
-        // Resolve the new pose dependencies before deciding which rows to reset.
-        if !bank.points.is_empty() && bank.sampler.is_none() {
-            bank.bake_sampler(self);
-        }
-        bank.reset_changed_inputs(jumps);
-        self.responses = bank;
-    }
-
     pub fn set_response_clock(&mut self, clock: ResponseClock) {
         if self.responses.clock != clock {
             self.responses.clock = clock;

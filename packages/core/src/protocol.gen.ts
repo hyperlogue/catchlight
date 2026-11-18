@@ -1641,6 +1641,10 @@ export type NodeInfo = {
   mg_translate_children?: boolean | null,
   motion_response?: MotionResponse | null,
   /**
+   * The existing spine that fitting this mesh will remeasure, across any response chain.
+   */
+  fitted_spine?: NodeId | null,
+  /**
    * A spine's settings, absent on every other kind.
    */
   spine?: SpineInfo | null,

@@ -332,12 +332,15 @@ export async function studio(
     assert(filled?.result === "slots" && filled.slots[0]?.vertex === 0);
     await selected("front-hair-lock-2");
     await disclosure("Fit a spine");
-    const lockSpine = (await read("front-hair-lock-2")).info!.parent!;
+    const lockInfo = (await read("front-hair-lock-2")).info!;
+    assert.equal(lockInfo.parent, "test-response");
+    const lockSpine = lockInfo.fitted_spine!;
     const lockTargets = (await read(lockSpine)).info!.spine!.targets;
     assert.equal(Number(await page.getByRole("spinbutton", { name: "Spine links" }).inputValue()), lockTargets.length);
     rev = (await read()).revision;
     await page.getByRole("button", { name: "Fit spine to artwork", exact: true }).click();
     await change(rev);
+    assert.equal((await read("front-hair-lock-2")).info!.fitted_spine, lockSpine);
     const refitted = (await read(lockSpine)).info!.spine!;
     assert.deepEqual(refitted.targets, lockTargets);
     const tip = "motion/back-hair-lock-19/tip";

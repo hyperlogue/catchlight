@@ -147,6 +147,10 @@ pub struct SpineData {
 }
 
 impl SpineData {
+    pub(crate) fn guide_part(&self) -> Option<NodeIdx> {
+        self.pins.guide.as_ref().map(|guide| guide.part)
+    }
+
     /// A spine over `joints`, unbent and carrying nothing.
     pub fn new(joints: Vec<Vec2>) -> Self {
         let bends = vec![0.0; joints.len()];
@@ -275,7 +279,7 @@ fn curve_transform(links: &[ComposedLink], bend: VertexBend) -> Affine2 {
         .perp_dot(posed_tangent)
         .atan2(rest_tangent.dot(posed_tangent));
     // Keep the attachment cross-section fixed, blending its orientation into
-    // the first link. The centre line still follows the simulated path.
+    // the first link. The centre line still follows the bent joint path.
     if bend.link == 0 && bend.ramp < 0.5 {
         let t = 2.0 * bend.ramp;
         angle *= t * t * (3.0 - 2.0 * t);

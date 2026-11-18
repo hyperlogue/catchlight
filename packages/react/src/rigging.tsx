@@ -32,8 +32,8 @@ export function MeshPanel({ session, info, onError }: AuthoringPanelProps) {
   const [margin, setMargin] = useState(4);
   const [cols, setCols] = useState(6);
   const [rows, setRows] = useState(8);
-  const fittedSpine = info.parent
-    ? session.nodeInfo(info.parent)?.spine
+  const fittedSpine = info.fitted_spine
+    ? session.nodeInfo(info.fitted_spine)?.spine
     : undefined;
   const [linkOverride, setLinks] = useState<number>();
   const links = linkOverride ?? fittedSpine?.joints.length ?? 3;

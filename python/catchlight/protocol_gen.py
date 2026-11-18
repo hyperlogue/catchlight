@@ -1351,8 +1351,8 @@ class SpineFit:
     key.
 
     **The spine goes between the part and its parent**, and the part keeps
-    the world placement it had. Re-fitting a part whose parent is already a
-    spine re-measures that spine instead of nesting another, retaining
+    the world placement it had. Re-fitting through any intervening motion responses
+    re-measures the existing spine, retaining
     the existing params for links that survive.
     """
 
@@ -3927,6 +3927,8 @@ class NodeInfo:
     propagate_meshgroup: bool | None = None
     mg_translate_children: bool | None = None
     motion_response: MotionResponse | None = None
+    # The existing spine that fitting this mesh will remeasure, across any response chain.
+    fitted_spine: NodeId | None = None
     # A spine's settings, absent on every other kind.
     spine: SpineInfo | None = None
     # Ordered clipping rules. Empty on nodes that do not draw.

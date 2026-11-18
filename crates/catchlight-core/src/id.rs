@@ -264,6 +264,7 @@ pub enum NodeIdKind {
     Composite,
     /// A node whose mesh deforms the geometry beneath it.
     MeshGroup,
+    /// A node whose spring follows posed inputs or a parent response.
     MotionResponse,
     /// A node whose joints turn the geometry beneath it.
     Spine,
@@ -687,6 +688,7 @@ mod tests {
             (NodeIdKind::Part, "part"),
             (NodeIdKind::Composite, "composite"),
             (NodeIdKind::MeshGroup, "mesh-group"),
+            (NodeIdKind::MotionResponse, "response"),
             (NodeIdKind::Spine, "spine"),
         ] {
             let id = NodeId::generate(&parent, kind, &mut hex);

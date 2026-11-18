@@ -48,7 +48,7 @@
 //!   proof is a test whose texture payload is not a decodable image at all
 //!   (`patching_a_file_whose_textures_are_not_images`): anything that decoded
 //!   would fail there.
-//! - **Nothing changed means the same current-format bytes.** Decoding and re-encoding a
+//! - **Nothing changed means the same bytes.** Decoding and re-encoding a
 //!   structure is byte-identical (`ciborium` writes fields in declaration
 //!   order, the container lays sections out in order), so setting a field to
 //!   the value it already has rewrites the file unchanged. Callers rest on

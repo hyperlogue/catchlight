@@ -324,6 +324,97 @@ fn rebaking_on_a_loop_cut_resets_slot_input_and_its_follower() {
 }
 
 #[test]
+fn a_cut_on_one_slot_preserves_an_independent_locks_velocity() {
+    let (mut m, slot) = slot_model();
+    let root = m.root().unwrap().clone();
+    let other = nid("other_art");
+    let mut art = m.node(&nid("art")).unwrap().clone();
+    art.name = Name::truncated("other");
+    m.add_node_with_id(other.clone(), &root, art).unwrap();
+    m.add_param_with_id(
+        pid("slide"),
+        ModelParam::new(Name::truncated("slide"), -1., 1., 0.),
+    )
+    .unwrap();
+    for (param, part) in [(pid("roll"), nid("art")), (pid("slide"), other.clone())] {
+        let key = BindingKey::new(param, part, BindingTarget::Scalar(ScalarTarget::Tx));
+        m.set_binding_key(&key, [0, 0], -100.).unwrap();
+        m.set_binding_key(&key, [1, 0], 100.).unwrap();
+    }
+    let second = nid("other_lock");
+    m.add_node_with_id(
+        second.clone(),
+        &root,
+        ModelNode::new(
+            "Other lock",
+            ModelNodeKind::MotionResponse(MotionResponse {
+                inputs: vec![ResponseInput {
+                    gain: 1.,
+                    source: ResponseSource::PartSlot {
+                        part: other,
+                        slot,
+                        angle_deg: 0.,
+                        reference_length: 100.,
+                    },
+                }],
+                ..Default::default()
+            }),
+        ),
+    )
+    .unwrap();
+    let mut playing = Puppet::new(&m);
+    let mut reference = Puppet::new(&m);
+    let clip = cut_clip();
+    let dt = clip.timestep;
+    playing.set_animations(vec![clip]);
+    playing.play_animation("turn");
+    for i in 0..=4 {
+        let step = if i == 0 { 0. } else { dt };
+        for p in [&mut playing, &mut reference] {
+            p.set_param_value(&pid("slide"), i as f32 / 5.);
+            p.tick(&m, step);
+        }
+    }
+    let expected = reference.response_trace(&second).unwrap();
+    assert!(expected.velocity.abs() > 0.01);
+    assert_eq!(
+        playing.response_trace(&second).unwrap().velocity,
+        expected.velocity
+    );
+    assert_eq!(playing.response_trace(&nid("upper")).unwrap().lag, 0.);
+}
+
+#[test]
+fn playback_started_after_an_edit_uses_the_new_slot_dependencies() {
+    let (mut m, _) = slot_model();
+    let mut p = Puppet::new(&m);
+    let clip = cut_clip();
+    let dt = clip.timestep;
+    p.set_animations(vec![clip]);
+    p.tick(&m, 0.);
+    let art = p.node_idx(&nid("art")).unwrap();
+    p.set_scratch_transform(
+        art,
+        catchlight_core::ScratchTransform {
+            translation: Some(catchlight_core::Vec3::new(50., 0., 0.)),
+            ..Default::default()
+        },
+    );
+    p.tick(&m, dt);
+    assert!(p.response_trace(&nid("upper")).unwrap().velocity.abs() > 0.01);
+
+    let key = BindingKey::new(
+        pid("roll"),
+        nid("art"),
+        BindingTarget::Scalar(ScalarTarget::Tx),
+    );
+    m.set_binding_key(&key, [0, 0], -100.).unwrap();
+    p.play_animation("turn");
+    p.tick(&m, 0.);
+    assert_eq!(p.response_trace(&nid("upper")).unwrap().lag, 0.);
+}
+
+#[test]
 fn arbitrary_projection_reads_this_poses_slot_and_rebinding_resets_the_branch() {
     let (mut m, slot) = slot_model();
     // A custom mesh refit is another binding writer. Reject a displaced
@@ -539,10 +630,15 @@ fn resolving_a_fragment_output_checks_its_range_before_the_edit_lands() {
 
 #[test]
 fn sampled_sine_carries_lag_across_its_fastest_step() {
+    for (count, fps) in [(32, 60.), (6, 12.)] {
+        check_sine(count, fps);
+    }
+}
+
+fn check_sine(count: i32, fps: f32) {
     use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane};
     let m = model(0.75);
-    let dt = 1. / 60.;
-    let count = 32;
+    let dt = 1. / fps;
     let value = |i: i32| ((i as f32 + 0.5) * std::f32::consts::TAU / count as f32).sin();
     let mut p = Puppet::new(&m);
     let mut reference = Puppet::new(&m);
@@ -600,4 +696,45 @@ fn proportional_output_range_edits_keep_the_authored_neutral_cell() {
     m.add_binding(&key).unwrap();
     m.set_param_range(&pid("bend"), -0.3, 0.6).unwrap();
     assert!(m.set_binding_key(&key, [1, 0], 1.).is_err());
+}
+
+#[test]
+fn renaming_a_fragment_node_checks_external_slots_before_rewriting_references() {
+    let (mut m, _) = slot_model();
+    m.add_node_with_id(
+        nid("spare"),
+        &nid("upper"),
+        ModelNode::new("Spare", ModelNodeKind::Group),
+    )
+    .unwrap();
+    let mut fragment = m.extract(&[nid("upper")]);
+    let before = fragment.to_clm_bytes().unwrap();
+    let generation = fragment.generation();
+    let error = fragment
+        .rename_node_id(&nid("spare"), nid("art"))
+        .unwrap_err();
+    assert!(error.to_string().contains("unknown part slot"), "{error}");
+    assert_eq!(fragment.generation(), generation);
+    assert_eq!(fragment.to_clm_bytes().unwrap(), before);
+    fragment
+        .rename_node_id(&nid("spare"), nid("spare2"))
+        .unwrap();
+}
+
+#[test]
+fn a_fragment_rename_cannot_merge_two_response_writers() {
+    let mut fragment = model(0.7).extract(&[nid("upper")]);
+    fragment
+        .add_param_with_id(
+            pid("broad"),
+            ModelParam::new(Name::truncated("Broad"), -1., 1., 0.),
+        )
+        .unwrap();
+    let before = fragment.to_clm_bytes().unwrap();
+    assert!(fragment
+        .rename_param_id(&pid("broad"), pid("bend"))
+        .unwrap_err()
+        .to_string()
+        .contains("already driven"));
+    assert_eq!(fragment.to_clm_bytes().unwrap(), before);
 }

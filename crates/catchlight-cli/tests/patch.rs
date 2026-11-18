@@ -88,12 +88,12 @@ fn every_advertised_field_can_be_set() {
 }
 
 /// A field that already holds the value it is being set to still rewrites the
-/// file — byte for byte its canonical current-format serialization.
+/// same bytes that were read from disk.
 #[test]
 fn setting_a_field_to_what_it_already_holds_rewrites_the_same_bytes() {
     let dir = tmp("patch-byte-stable");
     let file = copy_fixture("composite_masks", &dir);
-    let before = catchlight_cli::file::encode(&decode(&file), &file).unwrap();
+    let before = read(&file);
 
     let change = patch::run(&file, "node-1", "z_order", "-10", None, None).unwrap();
     assert!(!change.changed(), "{change}");

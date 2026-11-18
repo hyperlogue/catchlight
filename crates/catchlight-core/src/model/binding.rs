@@ -434,7 +434,7 @@ type AxisPositions<'a> = std::borrow::Cow<'a, [f32]>;
 
 const DEFAULT_POSITIONS: [f32; 2] = [0.0, 1.0];
 
-fn normalized_zero(min: f32, max: f32) -> f32 {
+pub(super) fn normalized_zero(min: f32, max: f32) -> f32 {
     if max - min > 1e-9 {
         -min / (max - min)
     } else {
@@ -470,13 +470,13 @@ impl Model {
     }
 
     fn zero_indices(
-        &self,
         key: &BindingKey,
         axes: &[Vec<f32>],
+        zero_for: impl Fn(&ParamId) -> Option<f32>,
     ) -> Result<[Option<usize>; 2], ModelError> {
         let mut result = [None, None];
         for (axis, p) in key.params.iter().enumerate() {
-            if let Some(z) = self.response_zero(p) {
+            if let Some(z) = zero_for(p) {
                 result[axis] = Some(crate::interpolate::neutral_key(&axes[axis], z).ok_or_else(
                     || ModelError::InvalidResponseBinding {
                         node: key.node.clone(),
@@ -491,7 +491,7 @@ impl Model {
 
     fn seed_response_identity(&self, binding: &mut ModelBinding) -> Result<(), ModelError> {
         let key = &binding.key;
-        let zero = self.zero_indices(key, &binding.key_positions)?;
+        let zero = Self::zero_indices(key, &binding.key_positions, |p| self.response_zero(p))?;
         let w = binding.key_positions[0].len();
         let h = binding.key_positions.get(1).map_or(1, Vec::len);
         if zero == [None, None] {
@@ -526,7 +526,14 @@ impl Model {
     }
 
     pub(super) fn validate_response_binding(&self, b: &ModelBinding) -> Result<(), ModelError> {
-        let zero = self.zero_indices(&b.key, &b.key_positions)?;
+        Self::validate_response_binding_with(b, |p| self.response_zero(p))
+    }
+
+    pub(super) fn validate_response_binding_with(
+        b: &ModelBinding,
+        zero_for: impl Fn(&ParamId) -> Option<f32>,
+    ) -> Result<(), ModelError> {
+        let zero = Self::zero_indices(&b.key, &b.key_positions, zero_for)?;
         // Fragment outputs may name base params. Installation knows their
         // ranges and validates the protected slice on the combined model.
         if zero == [None, None] {

@@ -213,7 +213,7 @@ gesture, preserving contributions from other bindings. Vertex offsets add to
 the selected deform key. The base model is never used as a fallback recording
 destination. Escape or focus loss cancels a drag; changing the selection,
 recording property group, parameter pose or undo state stops capture. Stop
-keeps completed edits. Motion responses pause in Mesh and Record and resumes in Arrange.
+keeps completed edits. Motion responses pause in Mesh and Record and resume in Arrange.
 
 ## Verification and local models
 

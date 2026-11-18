@@ -44,6 +44,12 @@ export async function prepareAuthoring(page: Page): Promise<void> {
     const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
     const id = Number(document.querySelector("[data-catchlight-session][data-current]")!.getAttribute("data-session"));
     const session = editor.session(id)!;
+    const lock = "front-hair-lock-2";
+    const spine = session.nodeInfo(lock)!.fitted_spine!;
+    await session.send({ cmd: "edit_apply", if_rev: session.getRevision(), edits: [
+      { op: "node_add", node: "test-response", parent: spine, kind: "motion_response", name: null },
+      { op: "node_reparent", node: lock, to: "test-response" },
+    ] });
     for (const [param, name] of [["test-drive", "Test drive"], ["test-pair", "Test pair"]] as const) {
       await session.send({ cmd: "param_add", param, name, min: -1, max: 1, default: 0 });
     }

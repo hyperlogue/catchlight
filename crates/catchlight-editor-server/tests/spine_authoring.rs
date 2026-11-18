@@ -552,7 +552,78 @@ fn a_refit_reuses_the_spine_and_its_params() {
     };
 
     let (first, first_params) = fit(30, 3);
+    let old_part = world(&ed, session, &part);
+    let old_frame = world(&ed, session, &first);
+    let old_joints = info(&ed, session, &first).spine.unwrap().joints;
+    assert_eq!(fit(32, 3), (first.clone(), first_params.clone()));
+    let mut parent = first.clone();
+    for name in ["upper", "tip"] {
+        let response = node(name);
+        body(
+            &ed,
+            40,
+            Command::NodeAdd {
+                session,
+                parent,
+                kind: catchlight_editor_protocol::NodeKindArg::MotionResponse,
+                name: None,
+                node: Some(response.clone()),
+            },
+        );
+        body(
+            &ed,
+            41,
+            Command::NodeSet {
+                session,
+                node: response.clone(),
+                patch: catchlight_editor_protocol::NodePatch {
+                    translate: Some([15., -4., 0.]),
+                    scale: Some([1.2, 0.85]),
+                    rotate: Some([0., 0., 0.2]),
+                    ..Default::default()
+                },
+            },
+        );
+        parent = response;
+    }
+    body(
+        &ed,
+        42,
+        Command::NodeReparent {
+            session,
+            node: part.clone(),
+            to: parent.clone(),
+        },
+    );
+    assert_eq!(
+        info(&ed, session, &part).fitted_spine.as_ref(),
+        Some(&first)
+    );
+    let expected_frame = world(&ed, session, &part) * old_part.inverse() * old_frame;
+    let before = vertex_world(&ed, session, &part);
     let (again, again_params) = fit(31, 3);
     assert_eq!(again, first, "a re-fit does not nest a second spine");
     assert_eq!(again_params, first_params, "and it keeps the params");
+    assert_eq!(info(&ed, session, &part).parent, Some(parent));
+    let actual_frame = world(&ed, session, &first);
+    let joints = info(&ed, session, &first).spine.unwrap().joints;
+    let points = |joints: Vec<[f32; 2]>| {
+        std::iter::once([0., 0.])
+            .chain(joints)
+            .map(|[x, y]| glam::Vec3::new(x, y, 0.))
+    };
+    for (old, new) in points(old_joints).zip(points(joints)) {
+        assert!(
+            expected_frame
+                .transform_point3(old)
+                .distance(actual_frame.transform_point3(new))
+                < 1e-4
+        );
+    }
+    for (a, b) in before.iter().zip(vertex_world(&ed, session, &part)) {
+        assert!(
+            a.distance(b) < 1e-4,
+            "refit moved a vertex from {a:?} to {b:?}"
+        );
+    }
 }

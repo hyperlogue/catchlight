@@ -133,7 +133,7 @@ enum Cmd {
     /// Compare two model files by id.
     Diff { a: PathBuf, b: PathBuf },
     /// Report encoded storage by section, texture, node and binding as JSON.
-    /// No images are decoded. Element sizes use current-format serialization;
+    /// No images are decoded. Element sizes use canonical serialization;
     /// canonical_matches_input says whether those bytes match the input exactly.
     Storage { file: PathBuf },
     /// Read or write the vendor annotations a file carries.

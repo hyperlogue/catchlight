@@ -289,6 +289,7 @@ pub struct Puppet {
     spine_targets: Vec<Vec<Option<u32>>>,
 
     animations: Vec<ClmAnimation>,
+    wrap_cuts: Vec<ParamId>,
     play_state: Option<AnimationPlayState>,
     sampled_animation: Option<(AnimationPlayState, f32)>,
 
@@ -340,6 +341,7 @@ impl Puppet {
             motion_responses_enabled: true,
             spine_targets: Vec::new(),
             animations: Vec::new(),
+            wrap_cuts: Vec::new(),
             play_state: None,
             sampled_animation: None,
             scratch_transforms: HashMap::new(),
@@ -1001,33 +1003,32 @@ impl Puppet {
     /// ancestor spine, including guides in a sibling branch.
     fn geometry_ancestors(&self, seeds: impl IntoIterator<Item = NodeIdx>) -> HashSet<NodeIdx> {
         let mut nodes = HashSet::new();
-        for seed in seeds {
-            let mut next = Some(seed);
-            while let Some(id) = next {
-                nodes.insert(id);
-                if matches!(self.get(id).map(|n| &n.kind), Some(NodeKind::Spine(_))) {
-                    nodes.extend(self.tree().get_all_descendants(id));
-                }
-                next = self.tree().get_parent(id);
+        let mut pending: Vec<_> = seeds.into_iter().collect();
+        while let Some(id) = pending.pop() {
+            if !nodes.insert(id) {
+                continue;
+            }
+            pending.extend(self.tree().get_parent(id));
+            if let Some(NodeKind::Spine(spine)) = self.get(id).map(|n| &n.kind) {
+                pending.extend(spine.guide_part());
             }
         }
         nodes
     }
 
-    fn geometry_slots<'a>(&'a self, nodes: &'a HashSet<NodeIdx>) -> impl Iterator<Item = u32> + 'a {
-        let binding_slots = self
+    fn geometry_inputs(&self) -> impl Iterator<Item = (NodeIdx, u32)> + '_ {
+        let bindings = self
             .bindings
             .iter()
-            .filter(|b| nodes.contains(&b.node) && b.target.moves_geometry())
-            .flat_map(|b| std::iter::once(b.x).chain(b.y));
+            .filter(|b| b.target.moves_geometry())
+            .flat_map(|b| std::iter::once(b.x).chain(b.y).map(move |p| (b.node, p)));
         let bends = self
             .arena
             .spine_node_ids
             .iter()
             .zip(&self.spine_targets)
-            .filter(|(id, _)| nodes.contains(id))
-            .flat_map(|(_, targets)| targets.iter().flatten().copied());
-        binding_slots.chain(bends)
+            .flat_map(|(&node, params)| params.iter().flatten().map(move |&p| (node, p)));
+        bindings.chain(bends)
     }
 
     fn bake_mesh_group_inputs(&mut self) {
@@ -1039,8 +1040,10 @@ impl Puppet {
             for &group in &self.arena.mesh_group_node_ids {
                 related.extend(self.tree().get_all_descendants(group));
             }
-            for slot in self.geometry_slots(&related) {
-                inputs[slot as usize] = true;
+            for (node, slot) in self.geometry_inputs() {
+                if related.contains(&node) {
+                    inputs[slot as usize] = true;
+                }
             }
         }
         self.mesh_group_inputs = inputs;
@@ -1082,22 +1085,20 @@ impl Puppet {
     /// animation has it.
     pub fn play_animation(&mut self, name: &str) -> bool {
         if let Some(index) = self.animations.iter().position(|a| a.name == name) {
+            // Loop continuity depends only on the chosen clip. Store IDs so
+            // a model rebake can assign new parameter slots during playback.
+            self.wrap_cuts.clear();
+            let clip = &self.animations[index];
+            if clip.length > 0 {
+                let (begin, end) = clip.loop_region();
+                self.wrap_cuts.extend(
+                    clip.lanes
+                        .iter()
+                        .filter(|lane| lane.jumps_at_wrap(begin, end))
+                        .map(|lane| lane.param.clone()),
+                );
+            }
             self.sampled_animation = None;
-            let jumps: smallvec::SmallVec<[u32; 4]> = self.animations[index]
-                .lanes
-                .iter()
-                .filter_map(|lane| {
-                    let &slot = self.slot_of_param.get(&lane.param)?;
-                    let p = self.params.get(slot as usize)?;
-                    (!crate::animation::same_sample(
-                        self.param_base(slot)?,
-                        lane.value_at(0.),
-                        p.min.abs().max(p.max.abs()),
-                    ))
-                    .then_some(slot)
-                })
-                .collect();
-            self.reset_changed_response_inputs(&jumps);
             self.play_state = Some(AnimationPlayState {
                 index,
                 time: 0.0,
@@ -1161,6 +1162,24 @@ impl Puppet {
             self.responses.reset();
         }
         let mut jumps = smallvec::SmallVec::<[u32; 4]>::new();
+        // Start after sync so a binding edit just before play uses the new
+        // slot dependencies. A restart at the current sample preserves velocity.
+        if self.sampled_animation.is_none() {
+            jumps = anim
+                .lanes
+                .iter()
+                .filter_map(|lane| {
+                    let &slot = self.slot_of_param.get(&lane.param)?;
+                    let p = self.params.get(slot as usize)?;
+                    (!crate::animation::same_sample(
+                        self.param_base(slot)?,
+                        lane.value_at(0.),
+                        p.min.abs().max(p.max.abs()),
+                    ))
+                    .then_some(slot)
+                })
+                .collect();
+        }
         state.time += dt;
         // A looping animation snaps back to the loop region's start (the
         // lead-in plays once), and playback always clamps to the last frame.
@@ -1168,12 +1187,11 @@ impl Puppet {
             let (loop_begin, loop_end) = anim.loop_region();
             let frame = (state.time / anim.timestep).round() as i64;
             if state.looping && frame >= loop_end as i64 {
-                jumps = anim
-                    .lanes
-                    .iter()
-                    .filter(|lane| lane.jumps_at_wrap(loop_begin, loop_end))
-                    .filter_map(|lane| self.slot_of_param.get(&lane.param).copied())
-                    .collect();
+                jumps.extend(
+                    self.wrap_cuts
+                        .iter()
+                        .filter_map(|p| self.slot_of_param.get(p).copied()),
+                );
                 state.time = loop_begin as f32 * anim.timestep;
             }
             let frame = (state.time / anim.timestep).round() as i64;
@@ -1186,7 +1204,7 @@ impl Puppet {
         } else {
             0.0
         };
-        self.reset_changed_response_inputs(&jumps);
+        self.responses.reset_changed_inputs(&jumps);
         self.sampled_animation = Some((state, frame));
         // Move the list out so the writes below can take `&mut self`; nothing
         // here can early-return before it is put back.

@@ -187,8 +187,8 @@ impl Puppet {
                         &mut c.screen_tint,
                         value,
                     ),
-                    // A mesh group has no colour of its own. Its z order still
-                    // contributes to the draw order of its descendants below.
+                    // Only drawables carry colour. Every node contributes its
+                    // z order to the draw order of its descendants.
                     _ => {}
                 }
                 if other == ScalarTarget::ZOrder {

@@ -109,7 +109,7 @@ pub fn replica_query(model: &Model, command: &Command) -> Result<ResponseBody, E
                 .node(node)
                 .ok_or_else(|| EditorError::NoNode(node.clone()))?;
             Ok(ResponseBody::NodeInfo {
-                node: Box::new(node_info(node, n)),
+                node: Box::new(node_info(model, node, n)),
             })
         }
         Command::Extensions { .. } => Ok(ResponseBody::Extensions {
@@ -433,7 +433,7 @@ pub(crate) fn build_tree(model: &Model, id: &NodeId) -> TreeNode {
 /// in [`NodeInfo::motion_response`] and [`NodeInfo::spine`], because no `node_set`
 /// writes them: the round-trip they answer is to `motion_response_set` and `spine_set`, whose
 /// field names they carry.
-fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
+fn node_info(model: &Model, id: &NodeId, node: &ModelNode) -> NodeInfo {
     // The colour a drawable carries. A group, mesh group or motion response is
     // never drawn, so it reports none rather than a default a patch would
     // then write back into it.
@@ -482,6 +482,7 @@ fn node_info(id: &NodeId, node: &ModelNode) -> NodeInfo {
         id: id.clone(),
         kind: NodeKind::of(&node.kind),
         parent: node.parent().cloned(),
+        fitted_spine: super::fitted_spine(model, node).cloned(),
         name: node.name.to_string(),
         translate: node.transform.translation,
         rotate: node.transform.rotation,

@@ -28,7 +28,7 @@ fn a_strand_turning_vertical_does_not_bulge_past_its_joint_path() {
     let f = Fixture::new(3, 100.0, 301);
     // A supported upper link leans with the scalp; the two lower links hang
     // vertically. The rendered centre line must not curl out and back while
-    // the simulated path has already become vertical.
+    // the joint path has already become vertical.
     let posed = f.bend(&[0.1, -0.1, 0.0]);
     let hanging_x = 100.0 * (0.1 * std::f32::consts::PI).sin();
     for row in 0..301 {
@@ -45,7 +45,7 @@ fn a_strand_turning_vertical_does_not_bulge_past_its_joint_path() {
 fn a_bent_strip_has_no_tangent_jump_at_a_joint() {
     let f = Fixture::new(2, 100.0, 2001);
     let posed = f.bend(&[0.08, -0.03]);
-    // Check the visible edges, not just the simulated centre-line joints.
+    // Check both visible edges where the links meet.
     // Their two one-sided tangents must approach the same direction.
     for row in [500, 1000, 1500] {
         for column in 0..2 {

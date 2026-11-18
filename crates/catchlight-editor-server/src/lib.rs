@@ -1940,20 +1940,50 @@ fn clm_transform_matrix(t: &catchlight_core::formats::clm::ClmTransform) -> Mat4
     catchlight_core::Transform::from(t).to_matrix()
 }
 
-/// Rig a strand of art to a spine: the spine between the part and its parent,
-/// and the bend params its links read.
-///
-/// **The part keeps the world placement it had.** The spine is inserted at the
-/// identity transform under the part's own parent and the part is reparented
-/// under it untouched, so nothing about where the art sits can change — not
-/// for a rotated part, not for a scaled one. The joints are then expressed in
-/// the spine's own space, which is why the fit's vertex-space polyline goes
-/// through the part's transform on the way in.
-///
-/// **A re-fit reuses the spine the part already hangs from.** Nesting a second
-/// one would compose two turns where the rigger asked for one, so a part whose
-/// parent is a spine has that spine re-measured, retaining existing bend params
-/// for the links that survive.
+/// The spine a fit will remeasure. A response chain can sit between the
+/// mesh and its spine without owning any geometry.
+fn fitted_spine<'a>(model: &'a Model, node: &'a ModelNode) -> Option<&'a NodeId> {
+    node.mesh()?;
+    let mut parent = node.parent()?;
+    loop {
+        let n = model.node(parent)?;
+        match n.kind {
+            ModelNodeKind::Spine(_) => return Some(parent),
+            ModelNodeKind::MotionResponse(_) => parent = n.parent()?,
+            _ => return None,
+        }
+    }
+}
+
+/// Compose rest transforms up to a chosen frame. A root-locked node ends
+/// inheritance, so its matrix is already in world space.
+fn rest_to_frame(model: &Model, id: &NodeId, frame: Option<&NodeId>) -> Result<Mat4, EditorError> {
+    let mut cursor = Some(id);
+    let mut matrix = Mat4::IDENTITY;
+    while cursor != frame {
+        let Some(id) = cursor else {
+            let Some(frame) = frame else { break };
+            let world = rest_to_frame(model, frame, None)?;
+            let inverse = catchlight_core::checked_affine_inverse(world).ok_or_else(|| {
+                EditorError::BadTarget(format!("cannot fit in the singular frame of {frame}"))
+            })?;
+            return Ok(inverse * matrix);
+        };
+        let node = model
+            .node(id)
+            .ok_or_else(|| EditorError::NoNode(id.clone()))?;
+        matrix = clm_transform_matrix(&node.transform) * matrix;
+        cursor = if node.lock_to_root {
+            None
+        } else {
+            node.parent()
+        };
+    }
+    Ok(matrix)
+}
+
+/// Measure joints in the spine's rest frame. Reuse a fitted spine and its
+/// bend params, or insert a new spine at the part's parent.
 fn spine_fit(
     s: &mut Session,
     part: &NodeId,
@@ -1968,49 +1998,27 @@ fn spine_fit(
         ));
     }
     // Everything read off the part before the model is touched.
-    let (fit, part_name, part_local, origin, parent) = {
-        let node = s
-            .model
-            .node(part)
-            .ok_or_else(|| EditorError::NoNode(part.clone()))?;
-        let mesh = node
-            .mesh()
-            .ok_or_else(|| EditorError::BadTarget(format!("node {part} holds no mesh to fit")))?;
-        let fit = fit_strand(mesh, links, axis)
-            .map_err(|e| EditorError::BadTarget(format!("cannot fit a spine to {part}: {e}")))?;
-        let parent = node.parent().cloned().ok_or_else(|| {
-            EditorError::BadTarget(format!(
-                "node {part} is the model's root, so a spine has nowhere to go above it"
-            ))
-        })?;
-        (
-            fit,
-            node.name.to_string(),
-            clm_transform_matrix(&node.transform),
-            mesh.origin,
-            parent,
-        )
-    };
-
-    // A re-fit when the part already hangs from one; a fresh spine otherwise.
-    let existing = matches!(
-        s.model.node(&parent).map(|n| &n.kind),
-        Some(ModelNodeKind::Spine(_))
-    )
-    .then(|| parent.clone());
-
-    // Where the strand's root sits in the frame the spine will live in, and
-    // the joints as offsets from it.
-    //
-    // The spine's own origin has to land on the strand's root, so the fit
-    // moves the spine there and takes the same vector back off the part. The
-    // two cancel — the spine carries only a translation — so every vertex
-    // draws exactly where it drew, which is what
-    // `a_fit_leaves_the_parts_world_placement_alone` measures.
+    let node = s
+        .model
+        .node(part)
+        .ok_or_else(|| EditorError::NoNode(part.clone()))?;
+    let mesh = node
+        .mesh()
+        .ok_or_else(|| EditorError::BadTarget(format!("node {part} holds no mesh to fit")))?;
+    let fit = fit_strand(mesh, links, axis)
+        .map_err(|e| EditorError::BadTarget(format!("cannot fit a spine to {part}: {e}")))?;
+    let parent = node.parent().cloned().ok_or_else(|| {
+        EditorError::BadTarget(format!(
+            "node {part} is the model's root, so a spine has nowhere to go above it"
+        ))
+    })?;
+    let part_name = node.name.to_string();
+    let existing = fitted_spine(&s.model, node).cloned();
+    let part_local = rest_to_frame(&s.model, part, Some(existing.as_ref().unwrap_or(&parent)))?;
     let root_offset = part_local.transform_point3(Vec3::new(
-        fit.root[0] - origin[0],
-        fit.root[1] - origin[1],
-        0.0,
+        fit.root[0] - mesh.origin[0],
+        fit.root[1] - mesh.origin[1],
+        0.,
     ));
     let count = links as usize;
     let mut travelled = 0.0f32;
@@ -2077,17 +2085,27 @@ fn spine_fit(
             spine
         }
     };
-    // Move the spine onto the strand's root and take the same vector off the
-    // part, in that order. Both are pure translations of the same size, so the
-    // composition is unchanged and nothing the part draws moves.
+    // Moving the pivot by d in spine space translates the spine by its
+    // linear transform times d in parent space. Countertranslate each
+    // inheriting child in spine space to preserve the artwork in every branch.
     s.model.update_node(&node, |n| {
-        n.transform.translation[0] += root_offset.x;
-        n.transform.translation[1] += root_offset.y;
+        let shift = clm_transform_matrix(&n.transform).transform_vector3(root_offset);
+        n.transform.translation = (Vec3::from(n.transform.translation) + shift).to_array();
     })?;
-    s.model.update_node(part, |n| {
-        n.transform.translation[0] -= root_offset.x;
-        n.transform.translation[1] -= root_offset.y;
-    })?;
+    let children = s
+        .model
+        .node(&node)
+        .ok_or_else(|| EditorError::NoNode(node.clone()))?
+        .children()
+        .to_vec();
+    for child in children {
+        s.model.update_node(&child, |n| {
+            if !n.lock_to_root {
+                n.transform.translation =
+                    (Vec3::from(n.transform.translation) - root_offset).to_array();
+            }
+        })?;
+    }
     s.model
         .set_spine_targets(&node, params.iter().cloned().map(Some).collect())?;
     Ok(ResponseBody::SpineFit { node, params })
