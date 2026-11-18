@@ -20,6 +20,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      rust_version: ${{ steps.verify.outputs.rust_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,7 +43,11 @@ jobs:
           PY
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       - name: Verify release packages
-        run: nix develop -c bash .github/scripts/publish-crates.sh dry-run
+        id: verify
+        shell: nix develop -c bash -euo pipefail {0}
+        run: |
+          bash .github/scripts/publish-crates.sh dry-run
+          rustc -V | awk '{print "rust_version=" $2}' >> "$GITHUB_OUTPUT"
 
   publish:
     if: ${{ !inputs.dry_run }}
@@ -56,11 +62,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-      - name: Select the verified Rust toolchain
+      - name: Install the verified Rust release
+        env:
+          RUST_VERSION: ${{ needs.verify.outputs.rust_version }}
         run: |
-          toolchain=$(nix build --no-link --print-out-paths --no-update-lock-file .#rust-toolchain)
-          echo "$toolchain/bin" >> "$GITHUB_PATH"
+          [[ $RUST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
       - name: Upload verified versions

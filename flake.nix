@@ -115,7 +115,6 @@
         packages =
           lib.genAttrs binaries binary
           // {
-            rust-toolchain = rustToolchain;
             catchlight-importer = craneLib.buildPackage (importerArgs
               // {
                 cargoArtifacts = craneLib.buildDepsOnly importerArgs;
