@@ -1,5 +1,7 @@
 //! Responses read posed inputs and the unclipped position of their immediate
-//! parent. The model tree supplies the step order. Sample external inputs once
+//! parent. Slot sampling holds response outputs at zero, even when those
+//! outputs move the rendered vertex. The parent input is the only edge
+//! between springs, so cuts propagate in tree order. Sample external inputs once
 //! per tick; on long intervals subdivide the entire cascade together, so a
 //! child sees both parent endpoints on the same substep.
 use std::collections::{HashMap, HashSet};

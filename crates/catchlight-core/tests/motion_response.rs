@@ -324,7 +324,7 @@ fn rebaking_on_a_loop_cut_resets_slot_input_and_its_follower() {
 }
 
 #[test]
-fn a_cut_on_one_slot_preserves_an_independent_locks_velocity() {
+fn a_cut_preserves_slot_velocity_when_another_response_moves_the_rendered_vertex() {
     let (mut m, slot) = slot_model();
     let root = m.root().unwrap().clone();
     let other = nid("other_art");
@@ -341,6 +341,14 @@ fn a_cut_on_one_slot_preserves_an_independent_locks_velocity() {
         m.set_binding_key(&key, [0, 0], -100.).unwrap();
         m.set_binding_key(&key, [1, 0], 100.).unwrap();
     }
+    let driven = BindingKey::new(
+        pid("broad"),
+        other.clone(),
+        BindingTarget::Scalar(ScalarTarget::Tx),
+    );
+    m.set_binding_key(&driven, [0, 0], -100.).unwrap();
+    m.set_binding_key(&driven, [2, 0], 100.).unwrap();
+    let vertex = m.slot(&other, &slot).unwrap().vertex().unwrap() as usize;
     let second = nid("other_lock");
     m.add_node_with_id(
         second.clone(),
@@ -351,7 +359,7 @@ fn a_cut_on_one_slot_preserves_an_independent_locks_velocity() {
                 inputs: vec![ResponseInput {
                     gain: 1.,
                     source: ResponseSource::PartSlot {
-                        part: other,
+                        part: other.clone(),
                         slot,
                         angle_deg: 0.,
                         reference_length: 100.,
@@ -362,26 +370,49 @@ fn a_cut_on_one_slot_preserves_an_independent_locks_velocity() {
         ),
     )
     .unwrap();
+    // The slot reader precedes the response that drives its rendered vertex.
+    m.reorder(&second, 0).unwrap();
+    let rendered_x = |p: &Puppet| {
+        catchlight_core::geometry::EvaluatedGeometry::new(&m, p)
+            .unwrap()
+            .mesh(&other)
+            .unwrap()
+            .vertex(vertex)
+            .unwrap()
+            .world
+            .x
+    };
     let mut playing = Puppet::new(&m);
     let mut reference = Puppet::new(&m);
     let clip = cut_clip();
     let dt = clip.timestep;
     playing.set_animations(vec![clip]);
     playing.play_animation("turn");
-    for i in 0..=4 {
+    for i in 0..=5 {
         let step = if i == 0 { 0. } else { dt };
         for p in [&mut playing, &mut reference] {
             p.set_param_value(&pid("slide"), i as f32 / 5.);
             p.tick(&m, step);
         }
+        assert_eq!(
+            playing.response_inputs(&second).unwrap()[0].position,
+            reference.response_inputs(&second).unwrap()[0].position,
+        );
+        let velocity = playing.response_trace(&second).unwrap().velocity;
+        assert_eq!(
+            velocity,
+            reference.response_trace(&second).unwrap().velocity
+        );
+        if i == 3 {
+            assert!((rendered_x(&playing) - rendered_x(&reference)).abs() > 1.);
+        }
+        if i == 4 {
+            assert_eq!(playing.animation_sample().unwrap().frame, 1.);
+            assert_eq!(playing.response_trace(&nid("upper")).unwrap().lag, 0.);
+            assert_eq!(rendered_x(&playing), rendered_x(&reference));
+            assert!(velocity.abs() > 0.01);
+        }
     }
-    let expected = reference.response_trace(&second).unwrap();
-    assert!(expected.velocity.abs() > 0.01);
-    assert_eq!(
-        playing.response_trace(&second).unwrap().velocity,
-        expected.velocity
-    );
-    assert_eq!(playing.response_trace(&nid("upper")).unwrap().lag, 0.);
 }
 
 #[test]
