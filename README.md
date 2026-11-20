@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="" width="140">
+  <img src="assets/title.jpg" alt="Catchlight — 2.5D character animation, featuring Lan" width="960">
 </p>
 
 # Catchlight
