@@ -66,6 +66,10 @@
           name = "catchlight-source";
           filter = path: type:
             lib.hasSuffix ".wgsl" path
+            # Public crate notice links resolve to these shared originals.
+            || lib.hasSuffix "/LICENSE-MIT" path
+            || lib.hasSuffix "/LICENSE-APACHE" path
+            || path == toString ./THIRD-PARTY-NOTICES.md
             || (lib.hasSuffix ".md" path && lib.hasPrefix "${toString ./crates}/" path)
             || path == toString ./crates/catchlight-cli/tests/fixtures/render-spec.json
             || path == toString ./crates/catchlight-importer/src/livliv/model-v4.json

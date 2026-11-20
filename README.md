@@ -78,6 +78,10 @@ publishing support to resolve unpublished dependencies together and publish in
 dependency order. The importer, browser WASM boundary, visual tests, and xtask
 are excluded.
 
+Public crates link their license files and third-party notices to the shared
+originals at the repository root. Cargo packages the links as regular files,
+so each published archive carries the full text without maintaining copies.
+
 1. Update `workspace.package.version` and the internal dependency versions in
    `Cargo.toml` together, update `Cargo.lock`, and merge after CI passes.
 2. Run **Publish Rust crates** on the release commit with `dry_run` enabled.
