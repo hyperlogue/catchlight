@@ -44,69 +44,6 @@ renderer. Editor tools and command-line applications remain separate crates.
 catchlight = "0.1.0"
 ```
 
-## Testing
-
-Lan (`tests/models/lan.clm`) and image baselines are stored in Git LFS. Fetch
-these once with `git lfs pull`. Both suites use the checked-in fixture.
-
-Run visual comparisons through the native headless renderer:
-
-```sh
-nix develop -c cargo test -p visual-tests --test regression lan_visual_regressions
-```
-
-Chromium E2E covers editor interactions, backend synchronization, graphics
-fallback and canvas presentation. On a fresh checkout:
-
-```sh
-nix develop -c bun install --frozen-lockfile
-nix develop -c cargo xtask build-wasm --debug
-nix develop -c env E2E_BUILD=1 bun run --filter catchlight-demo e2e
-```
-
-The browser runner starts its own services and copies Lan before editing it.
-Run `cargo test -p visual-tests` for the full native suite, including synthetic
-renderer cases. See `crates/visual-tests/src/lib.rs` for baseline review and
-update commands.
-
-## Rust releases
-
-The **Publish Rust crates** GitHub Actions workflow is manually dispatched and
-defaults to a dry run. It packages and builds the nine crates listed in
-[the release script](.github/scripts/publish-crates.sh), using Cargo's workspace
-publishing support to resolve unpublished dependencies together and publish in
-dependency order. The importer, browser WASM boundary, visual tests, and xtask
-are excluded.
-
-Public crates link their license files and third-party notices to the shared
-originals at the repository root. Cargo packages the links as regular files,
-so each published archive carries the full text without maintaining copies.
-
-1. Update `workspace.package.version` and the internal dependency versions in
-   `Cargo.toml` together, update `Cargo.lock`, and merge after CI passes.
-2. Run **Publish Rust crates** on the release commit with `dry_run` enabled.
-3. Configure the GitHub environment `crates-io` with required reviewers and
-   release-tag restrictions. In each crate's crates.io settings, add a trusted
-   publisher for this repository, workflow `crates-io.yml` and environment
-   `crates-io`. Crates.io requires the owner to publish a new crate's first
-   version before registering its trusted publisher.
-4. Tag the validated commit `v<workspace version>` and push the tag. Select
-   that tag when dispatching with `dry_run` disabled. Verification builds the
-   packages in a read-only job. After environment approval, a fresh runner
-   exchanges its GitHub identity for a short-lived token and uploads them.
-
-Re-dispatching the same tag resumes a partial release. Both jobs skip exact
-versions already on crates.io and stop on registry lookup errors.
-See the [crates.io trusted publishing guide](https://crates.io/docs/trusted-publishing).
-
-To verify a clean checkout locally, run the command below. When rechecking
-a changed crate at the same unpublished version, set `CARGO_TARGET_DIR` to
-a fresh directory so Cargo unpacks the new archive.
-
-```sh
-nix develop -c bash .github/scripts/publish-crates.sh dry-run
-```
-
 ## Acknowledgement
 
 Catchlight is heavily inspired by
