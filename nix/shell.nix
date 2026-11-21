@@ -39,7 +39,8 @@ in
         wasm-bindgen-cli
 
         uv
-        python3
+        # numpy is for the filming skill's compositing scripts.
+        (python3.withPackages (ps: [ps.numpy]))
 
         # `catchlight-cli render` pipes frames to ffmpeg for video output.
         ffmpeg-headless
