@@ -528,6 +528,41 @@ fn camera_moves_the_view_and_video_sits_beside_kept_frames() {
 }
 
 #[test]
+fn mkv_video_decodes_to_the_kept_frames_bit_for_bit() {
+    let dir = common::tmp("render-execution-mkv");
+    let mut s = spec();
+    s["animations"] = json!({"slide":{"name":"Slide","timestep":0.1,"length":3,
+        "lead_in":-1,"lead_out":-1,"lanes":[{"param":"drive","interpolation":"Linear",
+            "keyframes":[{"frame":0,"value":0},{"frame":2,"value":1}]}]}});
+    s["requests"]["a"]["animation"] = json!({"source":"spec","name":"slide"});
+    s["requests"]["a"]["video"] = json!({"format":"mkv","keep_frames":true});
+    // Half-transparent edges would expose any premultiply or chroma loss.
+    s["requests"]["a"]["scale"] = json!(0.7);
+    invoke(&dir, &s, "out");
+    let video = dir.join("out/a.mkv");
+    let probed = probe(&video);
+    assert!(
+        probed.starts_with("ffv1,") && probed.ends_with(",10/1,3"),
+        "{probed}"
+    );
+    let decoded = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&video)
+        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
+        .output()
+        .expect("ffmpeg from the dev shell");
+    assert!(decoded.status.success());
+    let frames: Vec<u8> = (0..3)
+        .flat_map(|i| rgba(&dir.join(format!("out/a--{i:06}.png"))).into_raw())
+        .collect();
+    assert!(frames.chunks(4).any(|p| p[3] != 0 && p[3] != 255));
+    assert!(
+        decoded.stdout == frames,
+        "decoded video differs from frames"
+    );
+}
+
+#[test]
 fn missing_ffmpeg_fails_before_rendering_with_an_honest_manifest() {
     let dir = common::tmp("render-execution-no-ffmpeg");
     write_model(&dir.join("model.clm"));

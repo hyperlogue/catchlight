@@ -233,8 +233,8 @@ pub struct RenderArgs {
     /// Expand settings and validate model references/work without GPU or writes.
     #[arg(long, conflicts_with_all = ["out", "out_dir"])]
     pub validate: bool,
-    /// Write one PNG atomically, or with --animation one .mp4/.webm/.gif
-    /// encoded by ffmpeg.
+    /// Write one PNG atomically, or with --animation one
+    /// .mp4/.webm/.mkv/.gif encoded by ffmpeg.
     #[arg(short, long, conflicts_with = "out_dir")]
     pub out: Option<PathBuf>,
     /// Write flat named artifacts and a run manifest.
@@ -295,7 +295,7 @@ impl RenderArgs {
                 }
                 (None, true) if self.out.is_some() => {
                     return Err(spec::bad(
-                        "--animation writes .mp4, .webm or .gif with --out, or frames with --out-dir",
+                        "--animation writes .mp4, .webm, .mkv or .gif with --out, or frames with --out-dir",
                     ));
                 }
                 _ => {}

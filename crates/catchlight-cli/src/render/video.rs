@@ -78,6 +78,11 @@ impl VideoSink {
                     .args(["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p"])
                     .args(["-b:v", "0", "-crf", "30", "-row-mt", "1", "-f", "webm"]);
             }
+            VideoFormat::Mkv => {
+                command
+                    .args(["-c:v", "ffv1", "-level", "3", "-slices", "16"])
+                    .args(["-pix_fmt", "bgra", "-f", "matroska"]);
+            }
             VideoFormat::Gif => {
                 command
                     .args([

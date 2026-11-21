@@ -398,6 +398,8 @@ pub enum VideoFormat {
     Mp4,
     /// VP9 yuva420p, keeping transparency.
     Webm,
+    /// FFV1 bgra in Matroska: lossless, keeping transparency.
+    Mkv,
     /// Palette GIF with 1-bit transparency; frame delays round to 10 ms.
     Gif,
 }
@@ -406,12 +408,13 @@ impl VideoFormat {
         match self {
             Self::Mp4 => "mp4",
             Self::Webm => "webm",
+            Self::Mkv => "mkv",
             Self::Gif => "gif",
         }
     }
     pub fn from_extension(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-        [Self::Mp4, Self::Webm, Self::Gif]
+        [Self::Mp4, Self::Webm, Self::Mkv, Self::Gif]
             .into_iter()
             .find(|f| f.extension() == ext)
     }
@@ -1040,7 +1043,7 @@ impl Document {
         let video = request.video.value();
         if video.as_ref().is_some_and(|v| v.format == VideoFormat::Mp4) && background.alpha != 1.0 {
             return Err(bad(
-                "mp4 cannot carry transparency; use an opaque background or webm",
+                "mp4 cannot carry transparency; use an opaque background, webm or mkv",
             ));
         }
         let motion_responses = request.motion_responses.value().unwrap_or_default();
