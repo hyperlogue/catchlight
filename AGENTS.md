@@ -35,8 +35,6 @@ a tier-1 runtime target; browser rendering supports WebGPU and WebGL2.
 - For model-file operations, use `cargo run -p catchlight-cli -- --help`.
   Workspace automation is documented in `crates/xtask/src/main.rs`; for
   Python session editing, use [python/README.md](python/README.md).
-- For filming a model into a video, use
-  [.claude/skills/filming/SKILL.md](.claude/skills/filming/SKILL.md).
 - For dependency or lint changes, the policy and rationale live in
   `Cargo.toml`, `clippy.toml`, and `deny.toml`.
 
