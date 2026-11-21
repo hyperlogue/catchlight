@@ -32,11 +32,11 @@
     },
     "packages/core": {
       "name": "@catchlight/core",
-      "version": "0.1.0",
+      "version": "0.1.1",
     },
     "packages/editor": {
       "name": "@catchlight/editor",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@catchlight/core": "workspace:*",
         "@catchlight/react": "workspace:*",
@@ -56,7 +56,7 @@
     },
     "packages/react": {
       "name": "@catchlight/react",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@catchlight/core": "workspace:*",
         "@happy-dom/global-registrator": "^20.0.0",

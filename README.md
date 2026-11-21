@@ -19,7 +19,8 @@ Catchlight is a software stack for 2.5D character animation. It simulates
 | **Catchlight libraries** | Embed animation or authoring in another application, or automate an editor. | Rust libraries, the `@catchlight/*` browser packages, and the [Python client](python/README.md). |
 
 `@catchlight/editor` is the embeddable React frontend with the default theme.
-The host chooses its backend and supplies the WASM module. It does not include
+The host chooses its backend and initializes the WASM module bundled in
+`@catchlight/core/wasm`. The editor package does not include
 the native editor-server executable or a local application launcher.
 `@catchlight/react` exposes the unstyled parts, and `@catchlight/core` supplies
 the web-platform glue.

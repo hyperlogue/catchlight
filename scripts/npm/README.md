@@ -1,8 +1,9 @@
 # npm releases
 
 Release `@catchlight/core`, `@catchlight/react`, and `@catchlight/editor` in that
-order. All start at 0.1.0. The host supplies WASM; the generated
-`@catchlight/wasm` package and demo remain private.
+order. Core bundles the release WASM runtime under `@catchlight/core/wasm`, with
+explicit initialization. The generated workspace `@catchlight/wasm` package and
+demo remain private; they are not additional npm dependencies.
 
 From the Nix development shell, on a clean checkout:
 
@@ -16,7 +17,9 @@ bun run npm:verify
 bun run npm:publish
 ```
 
-`npm:pack` creates JavaScript, declarations, the editor stylesheet and logo,
+`npm:pack` rebuilds WASM in release mode and creates an explicit-initialization
+web loader alongside its binary in core. It also creates JavaScript,
+declarations, the editor stylesheet and logo,
 READMEs, and full license/notice files under ignored `dist/npm/`. Workspace
 exports continue to use source files for development. Only the staged manifests
 point to emitted files; internal workspace peers become versioned npm ranges.
@@ -25,7 +28,11 @@ shipping the development manifests. Do not bypass it.
 
 `npm:verify` installs the tarballs in an isolated temporary consumer and checks
 Node ESM imports, TypeScript NodeNext declarations, assets, exports and notices.
-It needs registry access for React and its types. `npm:publish` defaults to an npm
+It also bundles a production browser consumer and verifies that importing the
+WASM subpath does not fetch its binary until initialization, then loads the
+emitted asset and creates an editor session. Chromium is required (provided by
+the Linux Nix shell, or set `CHROMIUM`). It needs registry access for React and
+its types. `npm:publish` defaults to an npm
 publish dry run. Both dry and live publication skip exact versions already on
 npm, fail on lookup errors, and check archive integrity before proceeding.
 

@@ -1,11 +1,15 @@
 // Build standalone npm artifacts without changing workspace source exports.
-// Only this explicit set is released; WASM stays host-supplied and private.
+// Only this explicit set is released. Core owns the optional, explicitly
+// initialized WASM subpath; importing its root never loads the binary.
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const root = resolve(import.meta.dirname, '../..');
 process.chdir(root);
+// Always rebuild from this checkout in release mode: a leftover debug binary
+// in packages/wasm must never silently become an npm release.
+execFileSync('cargo', ['xtask', 'build-wasm', '--release'], { stdio: 'inherit' });
 const output = resolve('dist/npm');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
@@ -42,6 +46,21 @@ for (const name of ['core', 'react', 'editor']) {
   pkg.exports = exports;
   pkg.files = ['dist', 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md'];
   pkg.sideEffects = name === 'editor' ? ['**/*.css'] : false;
+  if (name === 'core') {
+    const wasmDir = resolve(dest, 'dist/wasm');
+    execFileSync('wasm-bindgen', [
+      '--target', 'web', '--out-dir', wasmDir, '--out-name', 'catchlight',
+      'target/wasm32-unknown-unknown/release/catchlight_editor_wasm.wasm',
+    ], { stdio: 'inherit' });
+    pkg.exports['./wasm'] = {
+      types: './dist/wasm/catchlight.d.ts',
+      import: './dist/wasm/catchlight.js',
+      default: './dist/wasm/catchlight.js',
+    };
+    pkg.exports['./wasm/catchlight_bg.wasm'] = './dist/wasm/catchlight_bg.wasm';
+    // Keep any wasm-bindgen snippets whose top-level initialization matters.
+    pkg.sideEffects = ['dist/wasm/**/*.js'];
+  }
   for (const [peer, range] of Object.entries(pkg.peerDependencies ?? {})) {
     if (range === 'workspace:*') {
       const dependency = releases.find(p => p.name === peer);

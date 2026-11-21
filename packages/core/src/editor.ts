@@ -69,7 +69,7 @@ export class Editor {
    * [`attach`].
    *
    * The wasm module is passed in rather than imported so this package never
-   * forces 2 MiB of WebAssembly into a bundle that only wanted the types — and
+   * forces WebAssembly into a bundle that only wanted the types — and
    * so the whole thing is testable against a fake. The backend is built from
    * the same module when it is the in-tab one.
    *
