@@ -4,6 +4,8 @@
 
 # Catchlight
 
+[![crates.io](https://img.shields.io/crates/v/catchlight.svg)](https://crates.io/crates/catchlight)
+
 Catchlight is a software stack for 2.5D character animation. It simulates
 3D movement through deforming 2D parts.
 
