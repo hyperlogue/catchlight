@@ -17,7 +17,7 @@ case "${1:-}" in
   *) echo "Usage: $0 {dry-run|publish}" >&2; exit 2 ;;
 esac
 
-version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+version=$(python3 scripts/release/check.py)
 packages=()
 for crate in "${crates[@]}"; do
   status=$(curl --silent --show-error --retry 3 --max-time 30 \

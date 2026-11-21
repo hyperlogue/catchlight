@@ -27,6 +27,7 @@
         system,
         ...
       }: let
+        releaseVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
         # `wasm32-unknown-unknown` is not optional tooling here: the editor is
         # required to run on the web, so a plain `cargo check` of the editor
         # crates needs the target's `rust-std` present in the same toolchain.
@@ -93,7 +94,7 @@
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs
           // {
             pname = "catchlight-binaries";
-            version = "0.1.0";
+            version = releaseVersion;
             cargoExtraArgs = lib.concatMapStrings (p: " -p ${p}") binaries;
           });
 
@@ -102,7 +103,7 @@
             // {
               inherit cargoArtifacts;
               pname = name;
-              version = "0.1.0";
+              version = releaseVersion;
               cargoExtraArgs = "-p ${name}";
             });
         # The importer needs neither the editor's dependency build nor GPU
@@ -110,7 +111,7 @@
         importerArgs = {
           inherit src;
           pname = "catchlight-importer";
-          version = "0.1.0";
+          version = releaseVersion;
           cargoExtraArgs = "-p catchlight-importer --features cli";
           strictDeps = true;
           doCheck = false;

@@ -8,7 +8,8 @@ demo remain private; they are not additional npm dependencies.
 From the Nix development shell, on a clean checkout:
 
 ```sh
-cargo xtask build-wasm --debug
+python3 scripts/release/check.py
+cargo xtask build-wasm --release
 bun install --frozen-lockfile
 bun run typecheck
 bun test
@@ -58,8 +59,14 @@ allowed. Create the GitHub `npm` environment with release-tag restrictions and
 required reviewers. No stored npm publishing token is used by the workflow.
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
-Bump all three source package versions together and update `bun.lock`. Run CI,
-tag the validated commit `npm-v<version>`, then manually dispatch **Publish npm
+Use the shared version in `Cargo.toml` for all public Rust and npm packages.
+Update internal Rust dependency versions, `Cargo.lock`, and `bun.lock` together.
+`python3 scripts/release/check.py` rejects version drift before packaging or
+publishing. Run CI, tag the validated commit `v<version>`, then manually dispatch **Publish npm
 packages** from that tag. It defaults to dry-run; disable it for publication.
 The verification job builds and tests tarballs without OIDC permission. After
 environment approval, a fresh runner publishes those exact tarballs with OIDC.
+
+Dispatch **Publish Rust crates** from the same tag for the matching crates.io
+release. Registry uploads are not atomic: resume a partial release at the same
+version before starting another release.

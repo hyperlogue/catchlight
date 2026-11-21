@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 
 const root = resolve(import.meta.dirname, '../..');
 process.chdir(root);
+execFileSync('python3', ['scripts/release/check.py'], { stdio: 'inherit' });
 // Always rebuild from this checkout in release mode: a leftover debug binary
 // in packages/wasm must never silently become an npm release.
 execFileSync('cargo', ['xtask', 'build-wasm', '--release'], { stdio: 'inherit' });

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
+const version = execFileSync('python3', [resolve(import.meta.dirname, '../release/check.py')], { encoding: 'utf8' }).trim();
 const dir = resolve(import.meta.dirname, '../../dist/npm');
 const releases = JSON.parse(readFileSync(resolve(dir, 'releases.json'), 'utf8'));
 const expected = ['@catchlight/core', '@catchlight/react', '@catchlight/editor'];
@@ -11,6 +12,7 @@ if (JSON.stringify(releases.map(p => p.name)) !== JSON.stringify(expected)) thro
 const live = process.argv[2] === '--publish';
 if (process.argv.length > 2 && !live) throw new Error('Usage: node scripts/npm/publish.mjs [--publish]');
 for (const pkg of releases) {
+  if (pkg.version !== version) throw new Error(`Archive version must match the shared release ${version}`);
   if (pkg.filename !== `catchlight-${pkg.name.split('/')[1]}-${pkg.version}.tgz`) throw new Error('Unexpected archive name');
   const file = resolve(dir, pkg.filename);
   const integrity = `sha512-${createHash('sha512').update(readFileSync(file)).digest('base64')}`;

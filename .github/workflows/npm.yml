@@ -31,18 +31,15 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           python3 - <<'PY'
-          import json, os
-          versions = {json.load(open(f"packages/{name}/package.json"))["version"]
-                      for name in ("core", "react", "editor")}
-          if len(versions) != 1:
-              raise SystemExit("All three npm packages must have the same release version")
-          expected = f"refs/tags/npm-v{versions.pop()}"
+          import os, subprocess
+          version = subprocess.check_output(["python3", "scripts/release/check.py"], text=True).strip()
+          expected = f"refs/tags/v{version}"
           if os.environ["DRY_RUN"] != "true" and os.environ["RELEASE_REF"] != expected:
               raise SystemExit(f"Publishing requires selecting {expected}")
           PY
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       # The demo workspace references the generated private WASM package.
-      - run: nix develop -c cargo xtask build-wasm --debug
+      - run: nix develop -c cargo xtask build-wasm --release
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test

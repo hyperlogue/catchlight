@@ -13,6 +13,14 @@ env:
 # for local development. Linux only: catchlight-editor-cli talks over a Unix
 # socket, so there is nothing to gain from a Windows or macOS runner yet.
 jobs:
+  release-version:
+    name: shared release version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/release/check.py
+      - run: python3 -m unittest discover -s scripts/release
+
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
@@ -86,7 +94,7 @@ jobs:
         run: nix develop -c cargo test -p xtask -- --skip 'fixtures::'
       # The site imports `@catchlight/wasm`, so the generated package has to
       # exist before anything typechecks or builds against it.
-      - run: nix develop -c cargo xtask build-wasm --debug
+      - run: nix develop -c cargo xtask build-wasm --release
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test
