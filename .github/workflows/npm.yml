@@ -1,0 +1,82 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Verify tarballs without publishing to npm
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: true
+      - name: Check release versions and tag
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          versions = {json.load(open(f"packages/{name}/package.json"))["version"]
+                      for name in ("core", "react", "editor")}
+          if len(versions) != 1:
+              raise SystemExit("All three npm packages must have the same release version")
+          expected = f"refs/tags/npm-v{versions.pop()}"
+          if os.environ["DRY_RUN"] != "true" and os.environ["RELEASE_REF"] != expected:
+              raise SystemExit(f"Publishing requires selecting {expected}")
+          PY
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      # The demo workspace references the generated private WASM package.
+      - run: nix develop -c cargo xtask build-wasm --debug
+      - run: nix develop -c bun install --frozen-lockfile
+      - run: nix develop -c bun run typecheck
+      - run: nix develop -c bun test
+      - run: nix develop -c bun run npm:pack
+      - run: nix develop -c bun run npm:verify
+      - run: nix develop -c bun run npm:publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-release
+          path: |
+            dist/npm/*.tgz
+            dist/npm/releases.json
+          if-no-files-found: error
+
+  publish:
+    if: ${{ !inputs.dry_run }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-release
+          path: dist/npm
+      - run: node scripts/npm/publish.mjs --publish

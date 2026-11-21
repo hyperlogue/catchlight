@@ -9,6 +9,19 @@
     "./fakes": "./src/fakes.ts"
   },
   "scripts": {
-    "typecheck": "tsc --project tsconfig.json"
+    "typecheck": "tsc --project tsconfig.json",
+    "prepublishOnly": "node -e \"throw new Error('Publish the tarballs built by npm:pack; see scripts/npm/README.md')\""
+  },
+  "description": "Web-platform editor sessions, storage, and rendering glue for Catchlight",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyperlogue/catchlight.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/hyperlogue/catchlight#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   }
 }

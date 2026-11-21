@@ -10,7 +10,10 @@
     "dev": "bun run --filter catchlight-demo dev",
     "build-wasm": "cargo xtask build-wasm",
     "typecheck": "bun run --filter '*' typecheck",
-    "test": "bun test"
+    "test": "bun test",
+    "npm:pack": "node scripts/npm/build.mjs",
+    "npm:verify": "node scripts/npm/verify.mjs",
+    "npm:publish": "node scripts/npm/publish.mjs"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",

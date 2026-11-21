@@ -55,7 +55,7 @@ import { CommandPalette, Shortcuts } from "./dialogs.js";
 import { Notification } from "./notification.js";
 import type { PaletteAction } from "./dialogs.js";
 
-const logoUrl = new URL("../../../assets/logo-transparent.svg", import.meta.url)
+const logoUrl = new URL("./logo.svg", import.meta.url)
   .href;
 
 export interface CatchlightEditorProps {

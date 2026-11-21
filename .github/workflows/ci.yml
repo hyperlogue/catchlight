@@ -90,6 +90,10 @@ jobs:
       - run: nix develop -c bun install --frozen-lockfile
       - run: nix develop -c bun run typecheck
       - run: nix develop -c bun test
+      - name: npm package consumers
+        run: |
+          nix develop -c bun run npm:pack
+          nix develop -c bun run npm:verify
       - run: nix develop -c bun run --filter catchlight-demo build
       # Python integration tests launch the native editor server and CLI.
       - run: nix develop -c cargo build -p catchlight-editor-server -p catchlight-editor-cli

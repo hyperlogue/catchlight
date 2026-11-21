@@ -1,0 +1,58 @@
+# npm releases
+
+Release `@catchlight/core`, `@catchlight/react`, and `@catchlight/editor` in that
+order. All start at 0.1.0. The host supplies WASM; the generated
+`@catchlight/wasm` package and demo remain private.
+
+From the Nix development shell, on a clean checkout:
+
+```sh
+cargo xtask build-wasm --debug
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun run npm:pack
+bun run npm:verify
+bun run npm:publish
+```
+
+`npm:pack` creates JavaScript, declarations, the editor stylesheet and logo,
+READMEs, and full license/notice files under ignored `dist/npm/`. Workspace
+exports continue to use source files for development. Only the staged manifests
+point to emitted files; internal workspace peers become versioned npm ranges.
+Source-package publishing is blocked by `prepublishOnly` to prevent accidentally
+shipping the development manifests. Do not bypass it.
+
+`npm:verify` installs the tarballs in an isolated temporary consumer and checks
+Node ESM imports, TypeScript NodeNext declarations, assets, exports and notices.
+It needs registry access for React and its types. `npm:publish` defaults to an npm
+publish dry run. Both dry and live publication skip exact versions already on
+npm, fail on lookup errors, and check archive integrity before proceeding.
+
+## First publication
+
+Ensure you have publish rights to the `@catchlight` npm scope (create or join
+the organization first). Authenticate locally with `npm login` and, after the
+checks above pass, run:
+
+```sh
+node scripts/npm/publish.mjs --publish
+```
+
+Complete npm's authentication/2FA prompts as required by your account. Published
+versions cannot be overwritten; re-running resumes a partial release. Do not
+rebuild or edit the tarballs between verification and publishing.
+
+## Subsequent GitHub releases
+
+Configure each package's npm trusted publisher for owner `hyperlogue`, repository
+`catchlight`, workflow `npm.yml`, environment `npm`, with direct `npm publish`
+allowed. Create the GitHub `npm` environment with release-tag restrictions and
+required reviewers. No stored npm publishing token is used by the workflow.
+See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+Bump all three source package versions together and update `bun.lock`. Run CI,
+tag the validated commit `npm-v<version>`, then manually dispatch **Publish npm
+packages** from that tag. It defaults to dry-run; disable it for publication.
+The verification job builds and tests tarballs without OIDC permission. After
+environment approval, a fresh runner publishes those exact tarballs with OIDC.

@@ -9,7 +9,8 @@
     "./theme.css": "./src/theme.css"
   },
   "scripts": {
-    "typecheck": "tsc --project tsconfig.json"
+    "typecheck": "tsc --project tsconfig.json",
+    "prepublishOnly": "node -e \"throw new Error('Publish the tarballs built by npm:pack; see scripts/npm/README.md')\""
   },
   "peerDependencies": {
     "@catchlight/core": "workspace:*",
@@ -26,5 +27,17 @@
     "happy-dom": "^20.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
+  },
+  "description": "Embeddable Catchlight React editor with a default theme",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyperlogue/catchlight.git",
+    "directory": "packages/editor"
+  },
+  "homepage": "https://github.com/hyperlogue/catchlight#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   }
 }
