@@ -7,7 +7,8 @@
 # CATCHLIGHT_DOWNLOAD_URL a mirror holding the release assets (overrides both)
 #
 # The archive is checked against the release's SHA256SUMS before anything is
-# installed. The install directory is added to the user's PATH if missing.
+# installed. The install directory is added to the user's PATH if missing,
+# effective in this session and in terminals opened after it.
 $ErrorActionPreference = 'Stop'
 
 $repo = 'hyperlogue/catchlight'
@@ -54,6 +55,23 @@ $userPath = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::Do
 if (-not (($userPath -split ';') -contains $dir)) {
     $joined = if ($userPath) { "$userPath;$dir" } else { $dir }
     $key.SetValue('Path', $joined, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-    Write-Host "added $dir to your user PATH; open a new terminal to run catchlight-editor"
+    # A raw registry write tells no one; broadcast WM_SETTINGCHANGE so
+    # Explorer, and every terminal started from it, sees the new PATH without
+    # signing out.
+    if (-not ('CatchlightInstall.Environment' -as [type])) {
+        Add-Type -Namespace CatchlightInstall -Name Environment -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern IntPtr SendMessageTimeout(
+    IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+    }
+    $result = [UIntPtr]::Zero
+    # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG, 5 s.
+    [void][CatchlightInstall.Environment]::SendMessageTimeout(
+        [IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+    # This session too, so the command works right away.
+    $env:Path = "$env:Path;$dir"
+    Write-Host "added $dir to your user PATH"
 }
 $key.Close()
