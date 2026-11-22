@@ -445,6 +445,31 @@ pub struct ClmExtensionBlob {
     pub data: Vec<u8>,
 }
 
+/// The size of an extension's JSON value: its length as compact JSON text.
+///
+/// A JSON value has no size of its own — it is a tree in memory and CBOR in
+/// the file — so this is the one the format holds it to, chosen because any
+/// tool that authored the value can compute it without this crate.
+pub fn extension_json_len(value: &serde_json::Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    // A `Value` always serializes and this writer never fails; were either
+    // to stop being true, an unmeasurable value is one over every cap.
+    match serde_json::to_writer(&mut count, value) {
+        Ok(()) => count.0,
+        Err(_) => usize::MAX,
+    }
+}
+
 /// The content hash on a byte extension's marker: blake3, lowercase hex.
 pub fn extension_hash(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
@@ -780,10 +805,7 @@ pub fn decode_structure_with_budget(
     if file.section(SECTION_EXTENSIONS).is_some() {
         return Err(ClmError::NotAStructure);
     }
-    let structure = file
-        .section(SECTION_STRUCTURE)
-        .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = cbor_from_slice(structure)?;
+    let doc = decode_structure_section(&file, budget)?;
     let manifest = file
         .section(SECTION_TEXTURE_MANIFEST)
         .ok_or(ClmError::MissingSection("TextureManifest"))?;
@@ -819,10 +841,7 @@ pub fn decode_with_budget(
     if file.section(SECTION_TEXTURE_MANIFEST).is_some() {
         return Err(ClmError::StructureOnly);
     }
-    let structure = file
-        .section(SECTION_STRUCTURE)
-        .ok_or(ClmError::MissingSection("Structure"))?;
-    let doc = cbor_from_slice(structure)?;
+    let doc = decode_structure_section(&file, budget)?;
     let textures = match file.section(SECTION_TEXTURES) {
         Some(b) => cbor_from_slice(b)?,
         None => Vec::new(),
@@ -837,6 +856,28 @@ pub fn decode_with_budget(
         textures,
         extensions,
     })
+}
+
+/// Parse the `Structure` section, having charged its size first.
+///
+/// The order is the point. Every count the budget holds a structure to is
+/// read out of the decoded tree, which is after the tree was allocated; the
+/// section's own length is the one number available before, and a structure
+/// decodes to a bounded multiple of it. `encoded_bytes` cannot stand in: it
+/// is sized for a file full of textures. See
+/// [`LoadLimits::structure_bytes`](crate::load_budget::LoadLimits::structure_bytes).
+fn decode_structure_section(
+    file: &container::Container<'_>,
+    budget: &mut crate::load_budget::LoadBudget,
+) -> Result<ClmStructure, ClmError> {
+    let structure = file
+        .section(SECTION_STRUCTURE)
+        .ok_or(ClmError::MissingSection("Structure"))?;
+    budget.charge(
+        crate::load_budget::LoadResource::StructureBytes,
+        structure.len() as u64,
+    )?;
+    cbor_from_slice(structure)
 }
 
 fn read_container(bytes: &[u8]) -> Result<container::Container<'_>, ClmError> {

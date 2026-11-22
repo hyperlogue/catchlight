@@ -81,6 +81,7 @@ use crate::formats::clm::{
     ClmSpine, ClmStructure, ClmTexture, ClmTextureRef, ClmWeld,
 };
 use crate::id::SlotId;
+use crate::load_budget::charge_decoded_clm;
 use crate::{charge_clm_file, charge_clm_structure, charge_texture_payloads, LoadBudget};
 
 use super::*;
@@ -510,9 +511,26 @@ impl Model {
         Self::read(file, budget, Shape::Fragment)
     }
 
+    /// Read a `ClmFile` that arrived as one — built by hand or by an
+    /// importer — so nothing about it is on the budget yet.
     fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
         charge_clm_file(file, budget)?;
+        Self::assemble(file, shape)
+    }
 
+    /// Read `.clm` bytes. Decoding charged the input whole, payloads
+    /// included, so what is left is the texture count and the structure:
+    /// charging the payloads again here counted every texture byte twice and
+    /// refused files half the size `encoded_bytes` allows.
+    fn read_bytes(bytes: &[u8], budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
+        let file = clm::decode_with_budget(bytes, budget)?;
+        charge_decoded_clm(&file.doc, file.textures.len(), budget)?;
+        Self::assemble(&file, shape)
+    }
+
+    /// The reader past the budget. Charges nothing: its two callers charge
+    /// what they read, and they differ in what that is.
+    fn assemble(file: &ClmFile, shape: Shape) -> Result<Model, ModelError> {
         let mut textures = HashMap::with_capacity(file.textures.len());
         let mut texture_order = Vec::with_capacity(file.textures.len());
         for t in &file.textures {
@@ -913,8 +931,7 @@ impl Model {
         bytes: &[u8],
         budget: &mut LoadBudget,
     ) -> Result<Model, ModelError> {
-        let file = clm::decode_with_budget(bytes, budget)?;
-        Self::from_clm_file_with_budget(&file, budget)
+        Self::read_bytes(bytes, budget, Shape::Base)
     }
 
     /// Read an **addon fragment** from `.clm` bytes.
@@ -926,8 +943,7 @@ impl Model {
         bytes: &[u8],
         budget: &mut LoadBudget,
     ) -> Result<Model, ModelError> {
-        let file = clm::decode_with_budget(bytes, budget)?;
-        Self::from_clm_file_fragment_with_budget(&file, budget)
+        Self::read_bytes(bytes, budget, Shape::Fragment)
     }
 
     /// Rebuild this model from a **structure-only** container
