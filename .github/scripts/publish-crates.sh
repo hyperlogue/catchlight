@@ -3,10 +3,15 @@ set -euo pipefail
 
 # Cargo verifies unpublished workspace dependencies together, then uploads in
 # dependency order. On retry only the versions still absent are selected.
+# `catchlight-editor` packages its compiled-in page from
+# crates/catchlight-editor/ui, so run `cargo xtask bundle-ui` first; the
+# required flag below turns a missing page into a failure, not an empty build.
+export CATCHLIGHT_EDITOR_REQUIRE_UI=1
 crates=(
   catchlight
   catchlight-core catchlight-wgpu catchlight-bevy catchlight-cli
   catchlight-editor-core catchlight-editor-protocol catchlight-editor-server catchlight-editor-cli
+  catchlight-editor
 )
 case "${1:-}" in
   dry-run) flags=(--dry-run) ;;

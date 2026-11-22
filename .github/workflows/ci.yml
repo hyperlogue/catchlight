@@ -8,10 +8,11 @@ on:
 env:
   RUST_BACKTRACE: 1
 
-# Every job runs its cargo through `nix develop -c`, so the toolchain, the
-# linker and the runtime libraries are exactly the ones `nix/shell.nix` pins
-# for local development. Linux only: catchlight-editor-cli talks over a Unix
-# socket, so there is nothing to gain from a Windows or macOS runner yet.
+# Every Linux job runs its cargo through `nix develop -c`, so the toolchain,
+# the linker and the runtime libraries are exactly the ones `nix/shell.nix`
+# pins for local development. The editor tools also run on macOS and Windows,
+# where Nix is unavailable or unneeded; `editor-native` covers them there and
+# `editor-app.yml` builds the downloadable binaries.
 jobs:
   release-version:
     name: shared release version
@@ -120,6 +121,24 @@ jobs:
         run: nix develop -c cargo test -p visual-tests --test regression lan_visual_regressions -- --nocapture
       - name: browser E2E (Lan, both backends and graphics tiers)
         run: nix develop -c bun run --filter catchlight-demo e2e
+
+  editor-native:
+    name: editor tools (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --no-self-update
+      - uses: Swatinem/rust-cache@v2
+      # The launcher builds without its page here; the HTTP door, the
+      # connection file and the cli's transport are what differ per OS.
+      - run: cargo +stable test --locked -p catchlight-editor-cli -p catchlight-editor
+      # Previews need a GPU adapter, which these runners do not promise.
+      - run: cargo +stable test --locked -p catchlight-editor-server --bin catchlight-editor-server --test http_ws -- --skip payload
+      - run: cargo +stable test --locked -p catchlight-editor-server --lib connection
 
   packages:
     name: nix packages

@@ -1,0 +1,181 @@
+name: Editor app
+
+# The downloadable `catchlight-editor`: one binary per platform with the editor
+# page compiled in, archived for GitHub releases and packaged for npm.
+#
+# The page is built once, on Linux under Nix, and handed to every platform as
+# an artifact: it is the same bytes everywhere, and only Linux has the wasm
+# toolchain. The binaries are built with rustup on stock runners rather than
+# under Nix, whose glibc and loader paths a downloaded Linux binary cannot
+# carry; ubuntu-22.04 keeps the glibc floor at 2.35.
+#
+# Pull requests build and smoke-test every platform. `npm.yml` calls this
+# workflow for a release; with `dry_run` off it also attaches the archives,
+# install scripts and checksums to the `v<version>` GitHub release.
+on:
+  pull_request:
+    paths:
+      - crates/catchlight-editor/**
+      - crates/catchlight-editor-cli/**
+      - crates/catchlight-editor-server/**
+      - apps/local-editor/**
+      - scripts/release/editor_app.py
+      - scripts/npm/editor-app.mjs
+      - scripts/npm/editor-app/**
+      - scripts/install/**
+      - .github/workflows/editor-app.yml
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and verify without creating the GitHub release
+        type: boolean
+        default: true
+        required: true
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    name: editor page
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check release version and tag
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          version=$(python3 scripts/release/check.py)
+          [[ "$RELEASE_REF" == "refs/tags/v$version" ]] || {
+            echo "Publishing requires selecting refs/tags/v$version" >&2; exit 1; }
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - run: nix develop -c cargo xtask bundle-ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-ui
+          path: crates/catchlight-editor/ui
+          if-no-files-found: error
+
+  binary:
+    name: ${{ matrix.target }}
+    needs: ui
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, runner: macos-14 }
+          # Cross-built on Apple silicon and smoke-tested under Rosetta.
+          - { target: x86_64-apple-darwin, runner: macos-14 }
+          - { target: x86_64-pc-windows-msvc, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: editor-ui
+          path: crates/catchlight-editor/ui
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} --no-self-update
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        env:
+          CATCHLIGHT_EDITOR_REQUIRE_UI: '1'
+        run: cargo +stable build --release --locked -p catchlight-editor --target ${{ matrix.target }}
+      - name: Smoke test and package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          exe=target/$TARGET/release/catchlight-editor
+          if [[ $TARGET == *windows* ]]; then exe+=.exe; fi
+          python scripts/release/editor_app.py smoke "$exe"
+          python scripts/release/editor_app.py package "$TARGET" "$exe" dist/editor-app
+          mkdir -p "dist/binaries/$TARGET"
+          cp "$exe" "dist/binaries/$TARGET/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-${{ matrix.target }}
+          path: |
+            dist/editor-app
+            dist/binaries
+          if-no-files-found: error
+
+  assemble:
+    name: archives and npm packages
+    needs: binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: editor-*-*
+          path: dist
+          merge-multiple: true
+      - name: Release files
+        run: |
+          cp scripts/install/install.sh scripts/install/install.ps1 dist/editor-app/
+          (cd dist/editor-app && sha256sum -- * > SHA256SUMS)
+          cat dist/editor-app/SHA256SUMS
+      - name: npm packages
+        run: node scripts/npm/editor-app.mjs dist/binaries --verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-app
+          path: |
+            dist/editor-app
+            dist/npm-app/*.tgz
+            dist/npm-app/releases.json
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub release
+    if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+    needs: assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: editor-app
+          path: dist
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(python3 scripts/release/check.py)"
+          gh release view "$tag" >/dev/null 2>&1 ||
+            gh release create "$tag" --verify-tag --title "Catchlight $tag" --notes-from-tag
+          gh release upload "$tag" dist/editor-app/* --clobber

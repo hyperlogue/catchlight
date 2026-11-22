@@ -47,8 +47,16 @@ jobs:
         id: verify
         shell: nix develop -c bash -euo pipefail {0}
         run: |
+          cargo xtask bundle-ui
           bash .github/scripts/publish-crates.sh dry-run
           rustc -V | awk '{print "rust_version=" $2}' >> "$GITHUB_OUTPUT"
+      # The publish job packages `catchlight-editor` from its checkout, so it
+      # takes the verified page rather than building its own.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-ui
+          path: crates/catchlight-editor/ui
+          if-no-files-found: error
 
   publish:
     if: ${{ !inputs.dry_run }}
@@ -70,6 +78,10 @@ jobs:
           [[ $RUST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
           echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: editor-ui
+          path: crates/catchlight-editor/ui
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
       - name: Upload verified versions

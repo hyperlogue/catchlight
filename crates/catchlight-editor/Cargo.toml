@@ -30,5 +30,15 @@ anyhow = { workspace = true }
 # Ctrl-C removes the connection file instead of leaving it stale.
 ctrlc = "3"
 
+# `cargo binstall catchlight-editor` fetches the release archive instead of
+# building; the names are the ones `scripts/release/editor_app.py` writes.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [lints]
 workspace = true
