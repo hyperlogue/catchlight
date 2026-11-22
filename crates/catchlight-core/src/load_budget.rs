@@ -1,4 +1,14 @@
+//! The shared budget a load charges what it is about to allocate against.
+//!
+//! [`LoadLimits`] and [`LoadResource`] are `#[non_exhaustive]`: every new
+//! thing a file can make large gets a resource and a limit here, and that
+//! has to stay an additive change. A caller outside this crate starts from
+//! [`LoadLimits::default`] and assigns the fields it wants to move.
+
+/// One thing a load counts. Each has a limit of the same name in
+/// [`LoadLimits`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LoadResource {
     EncodedBytes,
     Textures,
@@ -37,7 +47,9 @@ impl LoadResource {
     }
 }
 
+/// The most of each [`LoadResource`] one load may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LoadLimits {
     pub encoded_bytes: u64,
     pub textures: u64,

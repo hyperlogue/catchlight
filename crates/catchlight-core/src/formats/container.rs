@@ -22,6 +22,7 @@ const MAX_SECTION_COUNT: u32 = 4096;
 const MAX_SECTION_LEN: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContainerError {
     #[error("unexpected magic bytes")]
     BadMagic,

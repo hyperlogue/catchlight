@@ -53,6 +53,7 @@ pub const MAX_NAME_BYTES: usize = 256;
 
 /// Why a string could not become an Id or a [`Name`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum IdError {
     /// An Id must have at least one byte.
     #[error("an id must not be empty")]

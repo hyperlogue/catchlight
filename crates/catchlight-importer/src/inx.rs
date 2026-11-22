@@ -377,10 +377,9 @@ mod tests {
             data.extend_from_slice(&0u32.to_be_bytes());
             data.push(0);
         }
-        let mut budget = LoadBudget::new(catchlight_core::load_budget::LoadLimits {
-            decoded_texture_bytes: 4,
-            ..catchlight_core::load_budget::LoadLimits::default()
-        });
+        let mut limits = catchlight_core::load_budget::LoadLimits::default();
+        limits.decoded_texture_bytes = 4;
+        let mut budget = LoadBudget::new(limits);
 
         let err = InxModel::parse_with_budget(Cursor::new(data), &mut budget).unwrap_err();
 

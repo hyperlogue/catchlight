@@ -286,6 +286,7 @@ const SECTION_TEXTURE_MANIFEST: u32 = 2;
 const SECTION_EXTENSIONS: u32 = 3;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ClmError {
     #[error("container framing: {0}")]
     Container(#[from] ContainerError),

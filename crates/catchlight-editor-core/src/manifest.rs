@@ -654,10 +654,9 @@ mod tests {
             ..Manifest::default()
         };
 
-        let mut budget = LoadBudget::new(catchlight_core::LoadLimits {
-            manifest_grid_cells: 7,
-            ..catchlight_core::LoadLimits::default()
-        });
+        let mut limits = catchlight_core::LoadLimits::default();
+        limits.manifest_grid_cells = 7;
+        let mut budget = LoadBudget::new(limits);
         let err = Model::from_manifest_with_budget(&manifest, &data("face", 16, 16), &mut budget)
             .unwrap_err();
 
