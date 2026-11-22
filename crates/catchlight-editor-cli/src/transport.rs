@@ -11,7 +11,9 @@
 //! Which door: `--server` (with `--token`, or the token the connection file
 //! records for that URL), then `--socket`, then the default socket if
 //! something answers on it, then the connection file a running editor wrote
-//! (see `catchlight_editor_protocol::default_connection_path`).
+//! (see `catchlight_editor_protocol::default_connection_path`). The launcher
+//! asks for the connection file before the socket, since its own editor is
+//! the one recorded there.
 //!
 //! Invariants this module enforces:
 //!
@@ -47,6 +49,9 @@ pub(super) struct Target {
     pub server: Option<String>,
     pub token: Option<String>,
     pub socket: Option<PathBuf>,
+    /// Try the connection file before the default socket: what the launcher
+    /// wants, whose own editor is the one in that file.
+    pub connection_first: bool,
 }
 
 pub(super) enum Transport {
@@ -74,13 +79,19 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
         };
         return Ok(Transport::Http(Http::new(url, token)?));
     }
+    if let Some(path) = &target.socket {
+        return connect_socket(path);
+    }
+    let recorded = if target.connection_first {
+        match from_connection_file() {
+            Some(Ok(transport)) => return Ok(transport),
+            other => other,
+        }
+    } else {
+        None
+    };
     #[cfg(unix)]
     {
-        if let Some(path) = &target.socket {
-            return UnixStream::connect(path)
-                .map(Transport::Socket)
-                .with_context(|| format!("cannot connect to the editor at {}", path.display()));
-        }
         let path = catchlight_editor_protocol::default_socket_path();
         match UnixStream::connect(&path) {
             Ok(stream) => return Ok(Transport::Socket(stream)),
@@ -95,15 +106,30 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
             }
         }
     }
-    #[cfg(not(unix))]
-    if target.socket.is_some() {
-        bail!("--socket is unix-only; pass --server <url> --token <token>");
-    }
-    let Some((path, connection)) = recorded() else {
-        bail!(
+    match recorded.or_else(from_connection_file) {
+        Some(transport) => transport,
+        None => bail!(
             "no editor is running: start `catchlight-editor`, or pass --server <url> --token <token>"
-        );
-    };
+        ),
+    }
+}
+
+#[cfg(unix)]
+fn connect_socket(path: &Path) -> Result<Transport> {
+    UnixStream::connect(path)
+        .map(Transport::Socket)
+        .with_context(|| format!("cannot connect to the editor at {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn connect_socket(_: &Path) -> Result<Transport> {
+    bail!("--socket is unix-only; pass --server <url> --token <token>")
+}
+
+/// The editor the connection file names: `None` without a file, an error when
+/// the file names an editor that no longer answers.
+fn from_connection_file() -> Option<Result<Transport>> {
+    let (path, connection) = recorded()?;
     if connection.version != env!("CARGO_PKG_VERSION") {
         eprintln!(
             "warning: the editor at {} is version {}, this cli is {}",
@@ -112,17 +138,20 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
             env!("CARGO_PKG_VERSION")
         );
     }
-    let http = Http::new(&connection.url, connection.token)?;
+    let http = match Http::new(&connection.url, connection.token) {
+        Ok(http) => http,
+        Err(err) => return Some(Err(err)),
+    };
     // Dial once now so a file left by a killed editor reads as stale rather
     // than as a failure of whatever command came first.
-    TcpStream::connect((http.host.as_str(), http.port)).with_context(|| {
+    let dialed = TcpStream::connect((http.host.as_str(), http.port)).with_context(|| {
         format!(
             "the editor recorded in {} ({}) is not answering; the file may be stale",
             path.display(),
             connection.url
         )
-    })?;
-    Ok(Transport::Http(http))
+    });
+    Some(dialed.map(|_| Transport::Http(http)))
 }
 
 fn recorded() -> Option<(PathBuf, Connection)> {

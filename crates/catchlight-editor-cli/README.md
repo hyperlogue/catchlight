@@ -1,7 +1,11 @@
 # Editor session CLI
 
-`catchlight-editor-cli` drives an existing editor session over its Unix socket.
-`catchlight-cli` is the separate tool for model files and offline rendering.
+`catchlight-editor-cli` drives an existing editor session over its Unix socket
+or its HTTP door. Without flags it tries the default socket, then the
+connection file a running `catchlight-editor` writes; `--server URL --token T`
+(or `CATCHLIGHT_EDITOR_URL` / `CATCHLIGHT_EDITOR_TOKEN`) names one explicitly.
+The same commands ship inside `catchlight-editor`. `catchlight-cli` is the
+separate tool for model files and offline rendering.
 
 ```sh
 catchlight-editor-cli session new --name Candidate
@@ -92,8 +96,9 @@ printf '%s\n' '{"cmd":"session_create","source":{"format":"manifest"}}' \
 ```
 
 Commands use the authoritative types in `catchlight-editor-protocol`; unknown
-commands and invalid field shapes are refused before sending. Paths in socket
-attachment fields are made absolute at runtime. The command JSON is limited to
+commands and invalid field shapes are refused before sending. Over the socket,
+attachment paths are made absolute for the server to read; over HTTP the cli
+reads them and uploads the bytes. The command JSON is limited to
 1 MiB, independently of attachment bytes. Larger independent work can be split
 into explicit batches; no oversized atomic batch is split implicitly.
 
