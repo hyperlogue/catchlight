@@ -32,7 +32,7 @@ An agent drives the open editor with the same binary, for example
 `catchlight-editor node tree`. Give your coding agent the skill:
 
 ```sh
-npx skills add hyperlogue/catchlight --skill edit-models-in-catchlight --global
+npx skills add hyperlogue/catchlight --skill edit-catchlight-model --global
 ```
 
 `@catchlight/editor-ui` is the embeddable React frontend with the default theme.

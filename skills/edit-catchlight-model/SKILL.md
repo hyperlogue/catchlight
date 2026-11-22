@@ -1,5 +1,5 @@
 ---
-name: edit-models-in-catchlight
+name: edit-catchlight-model
 description: Open, inspect, edit, rig or preview Catchlight `.clm` character models in the Catchlight editor, sharing the session with the user's browser tab. Use when the user mentions Catchlight, a `.clm` file, or asks you to work on a character in the editor.
 ---
 
