@@ -752,29 +752,31 @@ impl Model {
         }
     }
 
-    /// Take back exactly what one [`Self::install`] added.
+    /// Take back what one [`Self::install`] added.
     ///
     /// Total: anything the receipt names that has since been deleted is
     /// already gone, and a node moved elsewhere in the tree is still removed.
+    ///
+    /// **An installed node goes with its whole current subtree**, not only
+    /// with the nodes the receipt lists. A node added or moved under one
+    /// since the install has nowhere to live once its parent is gone, and
+    /// leaving it would leave a node no walk from the root reaches, still
+    /// carrying bindings, welds and textures. The removal is the one
+    /// [`Self::delete_node`] runs, so everything that named a removed node —
+    /// masks, response inputs, bindings, welds, textures only they drew — is
+    /// swept the same way.
     pub fn uninstall(&mut self, installed: &Installed) {
-        let removed: HashSet<&NodeId> = installed.nodes.iter().collect();
-        for r in &installed.roots {
-            let parent = self.nodes.get(r).and_then(|n| n.parent.clone());
-            match parent.and_then(|p| self.nodes.get_mut(&p)) {
-                Some(p) => Arc::make_mut(&mut p.children).retain(|c| c != r),
-                None => self.roots.retain(|x| x != r),
-            }
-        }
+        let mut removed: HashSet<NodeId> = HashSet::new();
         for id in &installed.nodes {
-            self.remove_counted_node(id);
-        }
-        self.roots.retain(|r| !removed.contains(r));
-        for node in self.nodes.values_mut() {
-            if node.children.iter().any(|c| removed.contains(c)) {
-                Arc::make_mut(&mut node.children).retain(|c| !removed.contains(c));
+            if self.nodes.contains_key(id) && !removed.contains(id) {
+                removed.extend(self.subtree(id));
             }
-            validate::drop_slot_inputs(&mut node.kind, |part, _| removed.contains(part));
-            node.remove_masks(|id| removed.contains(id));
+        }
+        self.remove_nodes(&removed);
+
+        // What the receipt names beyond its nodes. A base part re-pointed at
+        // an addon texture since the install goes back to drawing nothing.
+        for node in self.nodes.values_mut() {
             if let ModelNodeKind::Part(p) = &mut node.kind {
                 if p.albedo
                     .as_ref()
@@ -785,18 +787,15 @@ impl Model {
             }
         }
         self.bindings
-            .retain(|b| !removed.contains(&b.key.node) && !installed.bindings.contains(&b.key));
+            .retain(|b| !installed.bindings.contains(&b.key));
         for t in &installed.textures {
             self.textures.remove(t);
             self.texture_order.retain(|x| x != t);
         }
-        // The receipt names the textures the install added; an edit since
-        // then may have left a *base* texture with only addon parts drawing
-        // it, and removing them orphans it. Uninstall is total, so it sweeps.
+        // Un-pointing those parts may have left a *base* texture with nothing
+        // drawing it. Uninstall is total, so it sweeps again.
         self.gc_textures();
-        retain_less(&mut self.welds, &installed.welds, |w| {
-            !removed.contains(&w.a) && !removed.contains(&w.b)
-        });
+        retain_less(&mut self.welds, &installed.welds, |_| true);
         retain_less(&mut self.animations, &installed.animations, |_| true);
         self.bump();
     }
@@ -1570,6 +1569,59 @@ mod tests {
         assert_eq!(m.param_ids(), b.m.param_ids());
         assert_eq!(m.bindings().count(), b.m.bindings().count());
         assert_eq!(m.welds().len(), b.m.welds().len());
+        assert_eq!(m.to_clm_bytes().unwrap(), b.m.to_clm_bytes().unwrap());
+    }
+
+    /// Uninstall used to remove only the nodes the receipt listed. A node
+    /// added under an addon node since the install was left behind with a
+    /// parent that no longer existed: unreachable from the root, still
+    /// holding its binding, its weld, its texture and the mask it was the
+    /// source of.
+    #[test]
+    fn uninstall_takes_an_installed_nodes_later_children_with_it() {
+        let b = base();
+        let addon = hat_addon(&b);
+        let mut m = b.m.clone();
+        let mut hex = SeededHex::new(99);
+        let installed = m.install(&addon).unwrap();
+        let hat = named(&m, "Hat");
+
+        // Authored after the install, under an installed node, and reaching
+        // into the base every way a node can.
+        let feather = m
+            .add_node(
+                &hat,
+                ModelNode::new("Feather", ModelNodeKind::Part(ModelPart::new(quad()))),
+                &mut hex,
+            )
+            .unwrap();
+        let feather_tex = m.add_texture(&feather, texture(9), &mut hex).unwrap();
+        let key = BindingKey::new(b.param.clone(), feather.clone(), BindingTarget::Deform);
+        m.add_binding(&key).unwrap();
+        m.slot_add(&feather, slot_id("tip")).unwrap();
+        let mut welds = m.welds().to_vec();
+        welds.push(ModelWeld::new(
+            feather.clone(),
+            b.body.clone(),
+            vec![SlotPair {
+                a: slot_id("tip"),
+                b: slot_id("left"),
+                weight: 0.5,
+            }],
+        ));
+        m.set_welds(welds).unwrap();
+        m.mask_add(&b.body, &feather, MaskMode::Mask).unwrap();
+
+        m.uninstall(&installed);
+
+        assert!(m.node(&feather).is_none(), "the child went with its parent");
+        assert_eq!(
+            m.node_count(),
+            b.m.node_count(),
+            "no node is left that the root does not reach"
+        );
+        assert!(m.binding(&key).is_none());
+        assert!(m.texture(&feather_tex).is_none());
         assert_eq!(m.to_clm_bytes().unwrap(), b.m.to_clm_bytes().unwrap());
     }
 

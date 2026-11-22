@@ -1254,16 +1254,30 @@ impl Model {
             return Err(ModelError::UnknownNode);
         }
         let removed: HashSet<NodeId> = self.subtree(id).into_iter().collect();
-        if let Some(parent) = self.nodes.get(id).and_then(|n| n.parent.clone()) {
-            if let Some(p) = self.nodes.get_mut(&parent) {
-                Arc::make_mut(&mut p.children).retain(|c| c != id);
-            }
-        }
+        self.remove_nodes(&removed);
+        self.bump();
+        Ok(())
+    }
+
+    /// Take `removed` out of the model, along with everything that named a
+    /// node in it: the child entry in a surviving parent, masks, motion
+    /// response slot inputs, bindings, welds, and any texture only the
+    /// removed parts drew.
+    ///
+    /// `removed` has to be closed under descent — whole subtrees — or the
+    /// children of a removed node would be left naming a parent that is gone.
+    /// The one cleanup both [`Self::delete_node`] and [`Self::uninstall`] run,
+    /// so neither can leave behind what the other would have swept. Does not
+    /// bump the generation; the caller does, once, for its whole edit.
+    fn remove_nodes(&mut self, removed: &HashSet<NodeId>) {
         self.roots.retain(|r| !removed.contains(r));
-        for r in &removed {
-            self.remove_counted_node(r);
+        for id in removed {
+            self.remove_counted_node(id);
         }
         for node in self.nodes.values_mut() {
+            if node.children.iter().any(|c| removed.contains(c)) {
+                Arc::make_mut(&mut node.children).retain(|c| !removed.contains(c));
+            }
             node.remove_masks(|id| removed.contains(id));
             validate::drop_slot_inputs(&mut node.kind, |part, _| removed.contains(part));
         }
@@ -1271,8 +1285,6 @@ impl Model {
         self.welds
             .retain(|w| !removed.contains(&w.a) && !removed.contains(&w.b));
         self.gc_textures();
-        self.bump();
-        Ok(())
     }
 
     /// Move `id` (and its subtree) under `new_parent`. Rejects moving the root
