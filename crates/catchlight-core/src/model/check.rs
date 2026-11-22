@@ -368,10 +368,11 @@ mod tests {
         assert!(m.to_clm_bytes().is_ok(), "and it still saves");
     }
 
-    /// The editor refuses to author a colour binding on a mesh group and the
-    /// `.clm` reader refuses a file carrying one — but `update_node` can turn
-    /// a legitimately bound part *into* a mesh group, and the model then
-    /// cannot be saved at all, so `check` has to say so.
+    /// The editor refuses to author a colour binding on a mesh group, the
+    /// `.clm` reader refuses a file carrying one, and `update_node_kind`
+    /// refuses to turn a legitimately bound part *into* a mesh group. A model
+    /// that reached that state anyway could not be loaded again, so `check`
+    /// still has to say so.
     #[test]
     fn check_flags_a_color_binding_on_a_mesh_group() {
         let mut hex = SeededHex::new(9);

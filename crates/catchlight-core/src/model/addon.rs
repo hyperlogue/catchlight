@@ -128,7 +128,8 @@ impl fmt::Display for Required {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Requirement {
     pub id: Required,
-    /// `"parent"`, `"mask source"`, `"motion response param"`, `"binding param"`,
+    /// `"parent"`, `"mask source"`, `"motion response param"`,
+    /// `"motion response slot"`, `"spine target"`, `"binding param"`,
     /// `"binding node"`, `"weld end"` or `"animation lane"`. Never an
     /// albedo: an addon carries the textures its own parts draw.
     pub field: &'static str,
@@ -275,7 +276,8 @@ impl From<ModelError> for InstallError {
 }
 
 /// What one [`Model::install`] put into a base model, so [`Model::uninstall`]
-/// can take back exactly that and nothing else.
+/// can take it back: those nodes, with whatever has come to hang under them
+/// since, and the bindings, welds, textures and animations that came along.
 #[derive(Debug, Clone)]
 pub struct Installed {
     nodes: Vec<NodeId>,

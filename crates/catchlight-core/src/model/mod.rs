@@ -36,8 +36,9 @@
 //!   referenced it. Renaming rewrites instead — a node's new Id reaches its
 //!   weld ends like everything else. Cross-references (a part's albedo, a
 //!   mask's source, a response output, a weld's ends) are private and only
-//!   reachable through methods that check them, which is what makes
-//!   [`Model::to_clm_file`] total.
+//!   reachable through methods that check them — [`Model::update_node_kind`]
+//!   hands out the whole kind and refuses an edit that changed one — which
+//!   is what makes [`Model::to_clm_file`] total.
 //! - **Every texture has a user, and a part's albedo is the only user kind.**
 //!   There is no adding a texture and finding it a part later:
 //!   [`Model::add_texture`] takes the part it is for and sets its albedo in
@@ -54,8 +55,8 @@
 //!   generated Id is re-drawn until it is free, an author-chosen one is
 //!   refused if it is taken, and [`Model::rename_node_id`] and its two
 //!   siblings are the only way an Id ever changes — each rewrites every
-//!   reference to it. The root's Id starts out `root`; a model read from a
-//!   `.clm`, which stores no Ids, gets `node-<arena index>` for the rest.
+//!   reference to it. The root's Id starts out `root`; a `.clm` stores every
+//!   Id, so a model read from one has exactly the Ids it was written with.
 //!   A [`SlotId`] is scoped to its part rather than model-wide, so the same
 //!   rules apply within that scope: [`Model::slot_add_generated`] draws until
 //!   the Id is free on the part, and [`Model::rename_slot`] is the one way a
@@ -65,11 +66,15 @@
 //!   composite and refuses everything else — a mesh group is never drawn, and
 //!   a group or a motion response has nothing to draw. The `.clm` reader refuses
 //!   the same shapes.
-//! - **What the writer emits, the reader takes.** A param's range and a
-//!   mesh's shape are checked wherever they enter the model — a new param and
-//!   a new node as much as [`Model::set_param_range`] and
-//!   [`Model::set_node_mesh`] — so no sequence of edits builds a Model that
-//!   [`Model::to_clm_file`] writes and [`Model::from_clm_file`] then refuses.
+//! - **What the writer emits, the reader takes — and the other way round.**
+//!   A param's range and default, a mesh's shape, a spine's joints, a node's
+//!   placement, a weld and a binding's fit to its node are checked wherever
+//!   they enter the model — a new param and a new node as much as
+//!   [`Model::set_param_range`] and [`Model::set_node_mesh`] — so no sequence
+//!   of edits builds a Model that [`Model::to_clm_file`] writes and
+//!   [`Model::from_clm_file`] then refuses, and no file loads as a Model no
+//!   edit could have built. A rule with more than one way in is stated once,
+//!   in `model/validate.rs`, and every way in calls it.
 //! - **Nothing is addressed by name.** A [`Name`] is a label: free to change,
 //!   free to repeat, and never a key.
 //! - **Every param is a scalar.** Joint control over two params is a property
@@ -686,8 +691,11 @@ impl Default for ModelComposite {
 }
 
 /// One drawable's clipping rule: whose shape clips it, and whether what that
-/// shape covers is kept or cut away. Only [`Model::mask_add`] builds one, so a
-/// mask's source is always a live part.
+/// shape covers is kept or cut away. Only [`Model::mask_add`] and the `.clm`
+/// reader build one, and both hold it to the same rule, so a mask's source is
+/// always a drawable other than the node it clips — a part or a composite —
+/// that the model carries. In an addon fragment the source may instead be a
+/// node of the base, which [`Model::install`] checks is one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelMask {
     source: NodeId,
