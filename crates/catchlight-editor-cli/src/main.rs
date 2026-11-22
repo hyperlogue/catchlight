@@ -4,16 +4,17 @@
 //! model reads and one guarded atomic write through `compose`, then print the
 //! reply. `request` exposes every protocol command with local attachments.
 //! The "current session" is remembered in a small local file so most commands
-//! need no `--session`. Unix-only by design.
+//! need no `--session`. The editor is reached over its Unix socket or its
+//! HTTP door; `transport` says which and how.
 //!
 //! Nodes, params, textures and slots are named by their Id — the same
 //! string the `.clm` stores — so a command written against one session is
 //! replayable against another that opened the same file.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Read;
 
 mod compose;
-use std::os::unix::net::UnixStream;
+mod transport;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
@@ -46,6 +47,22 @@ struct Cli {
     /// Expected revision for guarded edits and composed read/write operations.
     #[arg(long, global = true)]
     if_rev: Option<u64>,
+    /// The editor's HTTP door, e.g. http://127.0.0.1:7323. Without it the
+    /// cli tries the default socket (Unix), then the connection file a
+    /// running editor writes.
+    #[arg(long, global = true, env = "CATCHLIGHT_EDITOR_URL")]
+    server: Option<String>,
+    /// Bearer token for --server; read from the connection file when omitted.
+    #[arg(
+        long,
+        global = true,
+        env = "CATCHLIGHT_EDITOR_TOKEN",
+        hide_env_values = true
+    )]
+    token: Option<String>,
+    /// A Unix socket to use instead of the default one.
+    #[arg(long, global = true)]
+    socket: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -745,8 +762,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut stream = connect()?;
-    let composed = match compose::execute(&cli, &mut stream)? {
+    let mut transport = transport::connect(&transport::Target {
+        server: cli.server.clone(),
+        token: cli.token.clone(),
+        socket: cli.socket.clone(),
+    })?;
+    let composed = match compose::execute(&cli, &mut transport)? {
         Some(compose::Output::Reply(reply)) => Some(reply),
         Some(compose::Output::Unfilled { revision, slots }) => {
             if cli.json {
@@ -771,8 +792,7 @@ fn main() -> Result<()> {
 
     let reply = match composed {
         Some(reply) => reply,
-        None => call(
-            &mut stream,
+        None => transport.call(
             Request {
                 id: 1,
                 command: build_command(&cli)?,
@@ -1367,16 +1387,6 @@ fn resolve_session(cli: &Cli) -> Result<SessionId> {
     })
 }
 
-fn connect() -> Result<UnixStream> {
-    let path = socket_path();
-    UnixStream::connect(&path).map_err(|e| {
-        anyhow!(
-            "cannot connect to the editor server at {}; start catchlight-editor-server first: {e}",
-            path.display()
-        )
-    })
-}
-
 /// The sibling keys this command's line carries beside the request.
 ///
 /// `files` names the bytes a command needs and `out` is where a payload goes.
@@ -1438,44 +1448,6 @@ fn encoding_of(path: &str) -> TextureEncoding {
         TextureEncoding::Tga
     } else {
         TextureEncoding::Png
-    }
-}
-
-/// One request per line, plus the sibling keys the socket carries beside it.
-fn call(
-    stream: &mut UnixStream,
-    req: Request,
-    siblings: serde_json::Map<String, serde_json::Value>,
-) -> Result<Reply> {
-    let want = req.id;
-    let mut line = match serde_json::to_value(&req)? {
-        serde_json::Value::Object(mut object) if !siblings.is_empty() => {
-            object.extend(siblings);
-            serde_json::to_string(&object)?
-        }
-        value => serde_json::to_string(&value)?,
-    };
-    line.push('\n');
-    if line.len() > MAX_COMMAND_BYTES {
-        bail!("request exceeds the 1 MiB command limit; split independent edits into explicit batches");
-    }
-    stream.write_all(line.as_bytes())?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    loop {
-        let mut buf = String::new();
-        if reader.read_line(&mut buf)? == 0 {
-            bail!("server closed the connection");
-        }
-        let buf = buf.trim();
-        if buf.is_empty() {
-            continue;
-        }
-        let reply: Reply = serde_json::from_str(buf)?;
-        match &reply {
-            Reply::Event(_) => continue,
-            Reply::Ok { id, .. } | Reply::Err { id, .. } if *id == want => return Ok(reply),
-            _ => continue,
-        }
     }
 }
 
@@ -1770,10 +1742,9 @@ fn print_tree(node: &TreeNode, depth: usize) {
     }
 }
 
-use catchlight_editor_protocol::default_socket_path as socket_path;
-
 fn current_path() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
+        .or_else(|| std::env::var_os("LOCALAPPDATA").filter(|_| cfg!(windows)))
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);

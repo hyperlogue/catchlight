@@ -11,7 +11,9 @@ catchlight-editor-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+# The multipart boundary over HTTP must not occur in the bytes it frames.
+getrandom = "0.3"
 
 [lints]
 workspace = true

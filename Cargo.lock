@@ -1490,6 +1490,7 @@ dependencies = [
  "anyhow",
  "catchlight-editor-protocol",
  "clap",
+ "getrandom 0.3.4",
  "serde",
  "serde_json",
 ]

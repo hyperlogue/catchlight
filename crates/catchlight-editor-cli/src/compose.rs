@@ -14,7 +14,7 @@ pub(super) enum Output {
     Unfilled { revision: u64, slots: Vec<SlotAddr> },
 }
 
-pub(super) fn execute(cli: &Cli, stream: &mut UnixStream) -> Result<Option<Output>> {
+pub(super) fn execute(cli: &Cli, stream: &mut transport::Transport) -> Result<Option<Output>> {
     let composed = matches!(
         &cli.cmd,
         Cmd::Edit { .. }
@@ -273,7 +273,7 @@ pub(super) fn execute(cli: &Cli, stream: &mut UnixStream) -> Result<Option<Outpu
 }
 
 struct CapturedClient<'a> {
-    stream: &'a mut UnixStream,
+    stream: &'a mut transport::Transport,
     session: SessionId,
     revision: Option<u64>,
     next_id: u64,
@@ -287,7 +287,7 @@ impl CapturedClient<'_> {
     ) -> Result<Reply> {
         let id = self.next_id;
         self.next_id += 1;
-        call(self.stream, Request { id, command }, siblings)
+        self.stream.call(Request { id, command }, siblings)
     }
 
     fn read(&mut self, command: Command) -> Result<ResponseBody> {
@@ -940,8 +940,10 @@ mod tests {
         assert_eq!(revision, Some(42));
     }
 
+    #[cfg(unix)]
     #[test]
     fn move_is_one_guarded_batch_after_one_captured_read() {
+        use std::io::{BufRead, BufReader, Write};
         let cli = Cli::try_parse_from([
             "cli",
             "--session",
@@ -955,7 +957,8 @@ mod tests {
             "2",
         ])
         .unwrap();
-        let (mut client, server) = UnixStream::pair().unwrap();
+        let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut client = transport::Transport::Socket(client);
         let handler = std::thread::spawn(move || {
             let mut reader = BufReader::new(server);
             let mut line = String::new();
