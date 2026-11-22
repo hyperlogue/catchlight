@@ -1,7 +1,7 @@
 /** Editor workflows against real wasm, GPU and protocol. Fixture setup adds
  * isolated controls; the interactions under test use the visible UI. */
 import assert from "node:assert/strict";
-import { openModel, selectNode, prepareAuthoring } from "./model.ts";
+import { AUTHORING_PART, openModel, selectNode, prepareAuthoring } from "./model.ts";
 import type { Editor } from "@catchlight/core";
 import type { Page } from "playwright-core";
 
@@ -105,7 +105,7 @@ export async function studio(
     const { revision, textureCount } = await read();
     assert(textureCount > 0, "Lan carries artwork");
     await search.fill("front hair");
-    assert(await page.locator('[data-catchlight-node][data-node="front-hair-lock-2"]').count());
+    assert(await page.locator('[data-catchlight-node][data-node="front-hair"]').count());
     await search.fill("no such node");
     await page.getByText("No matching nodes.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Clear search nodes", exact: true }).click();
@@ -226,7 +226,7 @@ export async function studio(
         ?.keys[0]?.[0],
       -0.25,
     );
-    const output = (await read("motion/back-hair-lock-19/tip")).info!.motion_response!.output_param!;
+    const output = (await read("motion/back_hair_chain_2_link_4")).info!.motion_response!.output_param!;
     const param = page.getByRole("combobox", { name: "Param", exact: true });
     await param.selectOption(output);
     const authorDeform = page.locator("[data-catchlight-bindings-panel] summary").filter({ hasText: "Author a mesh deform" });
@@ -330,9 +330,9 @@ export async function studio(
     await change(rev);
     const filled = (await read("face")).slots;
     assert(filled?.result === "slots" && filled.slots[0]?.vertex === 0);
-    await selected("front-hair-lock-2");
+    await selected(AUTHORING_PART);
     await disclosure("Fit a spine");
-    const lockInfo = (await read("front-hair-lock-2")).info!;
+    const lockInfo = (await read(AUTHORING_PART)).info!;
     assert.equal(lockInfo.parent, "test-response");
     const lockSpine = lockInfo.fitted_spine!;
     const lockTargets = (await read(lockSpine)).info!.spine!.targets;
@@ -340,11 +340,11 @@ export async function studio(
     rev = (await read()).revision;
     await page.getByRole("button", { name: "Fit spine to artwork", exact: true }).click();
     await change(rev);
-    assert.equal((await read("front-hair-lock-2")).info!.fitted_spine, lockSpine);
+    assert.equal((await read(AUTHORING_PART)).info!.fitted_spine, lockSpine);
     const refitted = (await read(lockSpine)).info!.spine!;
     assert.deepEqual(refitted.targets, lockTargets);
-    const tip = "motion/back-hair-lock-19/tip";
-    await selectNode(page, tip, "tip");
+    const tip = "motion/back_hair_chain_2_link_4";
+    await selectNode(page, tip, "back_hair_chain_2_link_4");
     await disclosure("Motion response");
     const original = (await read(tip)).info!.motion_response!;
     await field("Period", "0.75");
@@ -443,7 +443,7 @@ export async function studio(
         .locator("[data-catchlight-node]")
         .filter({ hasText: /^Studio badge$/ })
         .waitFor({ state: "hidden" });
-      await selected("back-hair-lock-19");
+      await selected("back-hair");
       await page
         .getByRole("button", { name: "Fit model (F)", exact: true })
         .click();
@@ -471,11 +471,12 @@ export async function studio(
     await page
       .getByRole("combobox", { name: "Search commands and nodes", exact: true })
       .press("Enter");
-    assert.equal(
-      await page
+    // Several Lan nodes carry "footwear"; Enter selects one of them.
+    assert.match(
+      (await page
         .locator("[data-catchlight-node][data-selected]")
-        .getAttribute("data-node"),
-      "footwear",
+        .getAttribute("data-node")) ?? "",
+      /^footwear-/,
     );
     const before = (await page
       .locator('[data-catchlight-panel="left"]')

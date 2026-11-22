@@ -38,13 +38,21 @@ export async function selectNode(page: Page, id: string, label = id.replaceAll("
   await search.fill("");
 }
 
+/**
+ * The part the authoring steps fit a spine to and hang a response over. A
+ * shallow one, so its row keeps a readable label two levels deeper.
+ */
+export const AUTHORING_PART = "handwear-l";
+
 /** Independent controls isolate authoring assertions from Lan's existing bindings. */
 export async function prepareAuthoring(page: Page): Promise<void> {
-  await page.evaluate(async () => {
+  await page.evaluate(async (lock) => {
     const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
     const id = Number(document.querySelector("[data-catchlight-session][data-current]")!.getAttribute("data-session"));
     const session = editor.session(id)!;
-    const lock = "front-hair-lock-2";
+    // Lan's parts hang from mesh groups, so give one a spine to refit. A
+    // slanted fit leaves the straight-down refit something to remeasure.
+    await session.send({ cmd: "spine_fit", part: lock, links: 3, axis: [1, -2], name: "handwear spine" });
     const spine = session.nodeInfo(lock)!.fitted_spine!;
     await session.send({ cmd: "edit_apply", if_rev: session.getRevision(), edits: [
       { op: "node_add", node: "test-response", parent: spine, kind: "motion_response", name: null },
@@ -57,5 +65,5 @@ export async function prepareAuthoring(page: Page): Promise<void> {
       { op: "binding_add", param: "test-drive", node: "mg-head", target: "rz", key_positions: [[0, 0.5, 1]] },
       { op: "binding_cells_set", param: "test-drive", node: "mg-head", target: "rz", cells: [-0.18, 0, 0.18].map((value, i) => ({ cell: [i, 0], value: { scalar: value } })) },
     ] });
-  });
+  }, AUTHORING_PART);
 }

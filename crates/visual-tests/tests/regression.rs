@@ -29,12 +29,22 @@ fn lan_visual_regressions_fringe_coverage() {
             ticks_after_pose: 0,
         };
         let pixels = render_one_to_rgba(&mut ctx, &mut model, &config).expect("render fringe");
-        let leaked = pixels
-            .as_chunks::<4>()
-            .0
+        let pixels_rgba = pixels.as_chunks::<4>().0;
+        let leaked = pixels_rgba
             .iter()
             .filter(|p| p[0] > 200 && p[1] > 125 && p[0].saturating_sub(p[1]) > 25)
             .count();
+        // The rectangle is placed by hand on this art; fail loudly if a new
+        // export moves the bangs away instead of passing on bare skin or sky.
+        let hair = pixels_rgba
+            .iter()
+            .filter(|p| p[3] > 200 && u16::from(p[0]) + u16::from(p[1]) + u16::from(p[2]) < 300)
+            .count();
+        assert!(
+            hair * 10 >= pixels_rgba.len() * 9,
+            "head_roll={roll}: the probe covers {hair} hair pixels of {}; move it onto the bangs",
+            pixels_rgba.len()
+        );
         if leaked > 2 {
             let out = visual_tests::failures_root(&root).join(&config.name);
             std::fs::create_dir_all(&out).expect("failure directory");

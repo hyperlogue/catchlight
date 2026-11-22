@@ -378,9 +378,9 @@ try {
       const tip = await page.evaluate(() => {
         const { editor } = (globalThis as unknown as { __catchlightProbe: { editor: import("@catchlight/core").Editor } }).__catchlightProbe;
         const id = Number(document.querySelector("[data-catchlight-session][data-current]")!.getAttribute("data-session"));
-        return editor.session(id)?.nodeInfo("motion/front-hair-lock-2/tip");
+        return editor.session(id)?.nodeInfo("motion/front_hair_chain_1_link_2");
       });
-      if (tip?.kind !== "motion_response" || tip.parent !== "motion/front-hair-lock-2")
+      if (tip?.kind !== "motion_response" || tip.parent !== "motion/front_hair_chain_1_link_1")
         throw new Error("expected the bundled Lan hair response at startup");
     });
   }
@@ -698,7 +698,7 @@ async function draws(): Promise<void> {
     before = await canvasFrame("back at the rest pose");
   });
   await step("select a node and drag it", async () => {
-    await selectNode(page, "front-hair-lock-2");
+    await selectNode(page, "front-hair");
     const box = (await page.locator("[data-catchlight-selection-box]").boundingBox())!;
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
     const b0 = await canvasFrame("before the drag");
