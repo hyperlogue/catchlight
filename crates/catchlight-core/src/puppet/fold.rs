@@ -29,7 +29,8 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 /// The bracket cell a `Stepped` binding holds: the lower one, except at the
 /// very top of an axis, where the bracket stops advancing and the last cell
-/// would otherwise be unreachable.
+/// would otherwise be unreachable. `crate::interpolate::bracket` opens a new
+/// bracket at each interior key, so the lower cell at a key is that key's own.
 fn stepped_cell(
     b: &BakedBinding,
     x: (usize, usize),

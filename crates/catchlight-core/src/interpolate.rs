@@ -12,23 +12,35 @@
 pub enum InterpolateMode {
     Nearest,
     Linear,
-    /// Hold the previous keyframe / axis-point value until the next one.
-    /// On a binding this holds the bracket's lower cell; on an animation
-    /// lane, the previous keyframe's value. The two are one rule read
-    /// over different axes.
+    /// Hold a key's value from its own position until the next key.
+    /// On a binding that is the bracket's lower cell; on an animation lane,
+    /// the last keyframe at or before the frame. The two are one rule read
+    /// over different axes: a pose sitting exactly on a key reads that key.
     Stepped,
     Cubic,
 }
 
 /// The pair of key-position indices that bracket `t`. Shared with
 /// `crate::model::eval` so a Model and a puppet locate a pose identically.
+///
+/// **Each interval is closed below and open above, except the last, which is
+/// closed at both ends.** A pose exactly on an interior key is therefore the
+/// *lower* end of its bracket at fraction 0, never the upper end of the one
+/// before it at fraction 1. Every mode but `Stepped` reads the same value
+/// either way; `Stepped` holds the lower cell, so this is what makes a key
+/// show its own value at its own position.
 pub(crate) fn bracket(axis: &[f32], t: f32) -> (usize, usize) {
     let last = axis.len().saturating_sub(1);
     if last == 0 {
         return (0, 0);
     }
     for i in 0..last {
-        if t >= axis[i] && t <= axis[i + 1] {
+        let below_next = if i + 1 == last {
+            t <= axis[i + 1]
+        } else {
+            t < axis[i + 1]
+        };
+        if t >= axis[i] && below_next {
             return (i, i + 1);
         }
     }
@@ -106,6 +118,16 @@ mod tests {
         assert_eq!(bracket(&axis, 0.75), (1, 2));
         assert_eq!(bracket(&axis, 0.0), (0, 1));
         assert_eq!(bracket(&axis, 1.0), (1, 2));
+    }
+
+    /// A pose exactly on an interior key opens the bracket above it, so a
+    /// mode that holds the lower cell reads that key's own value.
+    #[test]
+    fn an_interior_key_is_the_lower_end_of_its_bracket() {
+        let axis = [0.0, 0.25, 0.5, 1.0];
+        assert_eq!(bracket(&axis, 0.25), (1, 2));
+        assert_eq!(bracket(&axis, 0.5), (2, 3));
+        assert_eq!(frac(0.5, axis[2], axis[3]), 0.0);
     }
 
     #[test]

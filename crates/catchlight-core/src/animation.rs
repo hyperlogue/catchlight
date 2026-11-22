@@ -126,7 +126,15 @@ fn value_at(keyframes: &[ClmKeyframe], interpolation: InterpolateMode, t: f32) -
                         b.value
                     }
                 }
-                InterpolateMode::Stepped => a.value,
+                // A key holds from its own frame: `b` is the first key at or
+                // after `t`, so landing exactly on it reads `b`.
+                InterpolateMode::Stepped => {
+                    if frac >= 1.0 {
+                        b.value
+                    } else {
+                        a.value
+                    }
+                }
                 InterpolateMode::Linear => a.value + (b.value - a.value) * frac,
                 InterpolateMode::Cubic => {
                     let p0 = kfs[i.saturating_sub(2)].value;
@@ -276,9 +284,9 @@ mod tests {
         );
         assert_eq!(l.value_at(0.0), 1.0);
         assert_eq!(l.value_at(9.9), 1.0);
-        // Stepped holds: at the exact keyframe the previous
-        // value still holds; the switch happens just past it.
-        assert_eq!(l.value_at(10.0), 1.0);
+        // A key holds from its own frame, so the switch is at the keyframe
+        // and not just past it.
+        assert_eq!(l.value_at(10.0), 5.0);
         assert_eq!(l.value_at(10.1), 5.0);
         assert_eq!(l.value_at(19.0), 5.0);
         assert_eq!(l.value_at(25.0), 9.0);
@@ -288,8 +296,8 @@ mod tests {
     fn cubic_is_plain_catmull_rom() {
         // Keyframes (0,0) (1,1) (2,0) sampled mid-first-segment: the
         // neighbourhood is p=[0,0,1,0] at t=0.5, and uniform Catmull-Rom
-        // gives 0.5625 — same value `Param::apply` produces for the same
-        // cells, pinning that lanes and bindings share one spline.
+        // gives 0.5625 — the value a Cubic binding's fold produces for the
+        // same cells, pinning that lanes and bindings share one spline.
         let l = lane(vec![(0, 0.0), (1, 1.0), (2, 0.0)], InterpolateMode::Cubic);
         let mid = l.value_at(0.5);
         assert!(
