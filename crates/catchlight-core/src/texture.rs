@@ -334,6 +334,11 @@ pub fn alpha_bleed_inplace(rgba: &mut [u8], width: u32, height: u32) {
 /// boundary mip box: 16 = 2^4 covers mip levels 0..=4 ([`ALIGN`]), and
 /// anything the box reaches past it is the transparent `ClampToBorder` — the
 /// same transparent the source had beyond its opaque content.
+///
+/// The skirt is made of source texels and stops where the source does (see
+/// [`alpha_crop_rect`]): where opaque content runs within 16 texels of an
+/// edge the crop ends on that edge, as the uncropped texture did, and the
+/// border supplies the transparency the skirt would have.
 const MARGIN: i64 = 16;
 
 /// Crop origins and sizes are multiples of 2^4, so the box-filter footprints
@@ -345,9 +350,11 @@ const ALIGN: i64 = 16;
 struct Plan {
     src_w: u32,
     src_h: u32,
-    /// Aligned opaque-bbox crop in source-texel coords, or `None` when the
-    /// texture has no opaque texels (it becomes a 1x1 transparent stand-in so
-    /// the table stays index-aligned with the source).
+    /// Aligned opaque-bbox crop in source-texel coords, never starting
+    /// before the source and never ending past its size rounded up to
+    /// [`ALIGN`]. `None` when there is nothing to remap: the texture has no
+    /// opaque texels (it becomes a 1x1 transparent stand-in so the table
+    /// stays index-aligned with the source), or the crop is the whole image.
     crop: Option<(i64, i64, u32, u32)>,
 }
 
@@ -489,6 +496,16 @@ fn prep_one(
     let decoded = decode_halved(tex, texture_halvings)?;
     let (src_w, src_h) = (decoded.width, decoded.height);
     Ok(match alpha_crop_rect(&decoded) {
+        // Opaque out to every edge: the crop is the image, so there is
+        // nothing to copy and no remap to apply.
+        Some((0, 0, w, h)) if (w, h) == (src_w, src_h) => (
+            decoded,
+            Plan {
+                src_w,
+                src_h,
+                crop: None,
+            },
+        ),
         Some((x, y, w, h)) => (
             crop(&decoded, x, y, w, h),
             Plan {
@@ -536,16 +553,31 @@ fn alpha_crop_rect(tex: &DecodedTexture) -> Option<(i64, i64, u32, u32)> {
     if !any {
         return None;
     }
-    let x0 = align_down(minx as i64 - MARGIN);
-    let y0 = align_down(miny as i64 - MARGIN);
-    let x1 = align_up(maxx as i64 + 1 + MARGIN);
-    let y1 = align_up(maxy as i64 + 1 + MARGIN);
+    // Intersected with the source, rounded out to the alignment. The skirt
+    // is there to carry the source's transparent texels, and past the
+    // source's edge there are none to carry: texels the crop does not hold
+    // read as the transparent border, which is what a zero-filled skirt read
+    // as. A skirt invented outside the image only made the crop *larger*
+    // than what it was cut from — an opaque 8192-wide texture came back 8224
+    // wide and the device refused it.
+    //
+    // The near edge stops at 0, which is as aligned as any other origin. The
+    // far edge stops at the source size rounded *up* to [`ALIGN`], not at
+    // the size itself: an odd-sized crop has no exact box-filtered mip
+    // chain, so stopping on the edge of a source that is not a multiple of
+    // 16 wide would resample every level above 0. The cost is at most 15
+    // zero texels on that side.
+    let x0 = align_down(minx as i64 - MARGIN).max(0);
+    let y0 = align_down(miny as i64 - MARGIN).max(0);
+    let x1 = align_up(maxx as i64 + 1 + MARGIN).min(align_up(w as i64));
+    let y1 = align_up(maxy as i64 + 1 + MARGIN).min(align_up(h as i64));
     Some((x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
 }
 
-/// Copy crop `(x, y, w, h)` (source-texel coords, origin may be negative) of
-/// `tex` into a fresh `w x h` texture, out-of-source texels left at the
-/// transparent zero-fill — the ClampToBorder equivalent.
+/// Copy crop `(x, y, w, h)` (source-texel coords; the far edge may run up to
+/// 15 texels past the source) of `tex` into a fresh `w x h` texture,
+/// out-of-source texels left at the transparent zero-fill — the
+/// ClampToBorder equivalent.
 fn crop(tex: &DecodedTexture, x: i64, y: i64, w: u32, h: u32) -> DecodedTexture {
     let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
     blit(&mut rgba, w, tex, [0, 0], [x, y], [w, h]);
@@ -845,6 +877,77 @@ mod tests {
         // The opaque texel sits strictly inside the crop, away from the edge.
         assert!(x < 40 && (x + w as i64) > 40);
         assert!(y < 50 && (y + h as i64) > 50);
+    }
+
+    /// The crop does not invent a skirt outside the source. Opaque content
+    /// at an edge used to buy 16 texels beyond the image, so a fully opaque
+    /// texture came back 32 texels larger each way than it went in — and one
+    /// already at the device's size limit came back over it.
+    #[test]
+    fn the_crop_stops_at_the_source() {
+        // Opaque in two opposite corners of a source that is a multiple of
+        // 16 each way: the crop is the source.
+        let corners = tex(96, 64, &[(0, 0), (95, 63)]);
+        assert_eq!(alpha_crop_rect(&corners), Some((0, 0, 96, 64)));
+        let largest = crate::load_budget::MAX_TEXTURE_DIMENSION;
+        let wide = tex(largest, 1, &[(0, 0), (largest - 1, 0)]);
+        assert_eq!(alpha_crop_rect(&wide), Some((0, 0, largest, 16)));
+
+        // One edge only. The far side keeps its aligned skirt.
+        let left = tex(256, 256, &[(3, 120)]);
+        assert_eq!(alpha_crop_rect(&left), Some((0, 96, 32, 48)));
+
+        // A source that is not a multiple of 16 wide: the far edge rounds
+        // out to the alignment, so every mip level still halves exactly, and
+        // no further.
+        let odd = tex(250, 100, &[(249, 99)]);
+        let (x, y, w, h) = alpha_crop_rect(&odd).unwrap();
+        assert_eq!((x, y, w, h), (224, 80, 32, 32));
+        assert_eq!((x + w as i64, y + h as i64), (256, 112));
+        let cropped = crop(&odd, x, y, w, h);
+        let at = |cx: u32, cy: u32| {
+            let i = ((cy * w + cx) * 4) as usize;
+            [
+                cropped.rgba[i],
+                cropped.rgba[i + 1],
+                cropped.rgba[i + 2],
+                cropped.rgba[i + 3],
+            ]
+        };
+        assert_eq!(at(25, 19), [200, 100, 50, 255], "the opaque texel");
+        assert_eq!(at(26, 19), [0; 4], "past the source's right edge");
+        assert_eq!(at(25, 20), [0; 4], "past the source's bottom edge");
+    }
+
+    /// A texture that is opaque to every edge and already aligned is
+    /// prepared at its own size, with no remap: there is nothing to crop.
+    #[test]
+    fn a_fully_opaque_texture_is_prepared_at_its_own_size() {
+        let image = image::RgbaImage::from_pixel(48, 32, image::Rgba([9, 8, 7, 255]));
+        let mut data = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut data, image::ImageFormat::Png)
+            .unwrap();
+        let source = EncodedTexture {
+            format: TextureFormat::Png,
+            data: data.into_inner().into(),
+            premultiplied: false,
+        };
+
+        let prepped = prepare_textures(&[source], 0, &mut LoadBudget::default()).unwrap();
+
+        assert_eq!(
+            (prepped[0].texture.width, prepped[0].texture.height),
+            (48, 32)
+        );
+        assert_eq!(prepped[0].uv_crop, None);
+        assert!(prepped[0]
+            .texture
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|px| *px == [9, 8, 7, 255]));
     }
 
     #[test]
