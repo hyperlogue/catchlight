@@ -1,17 +1,20 @@
 //! Lints that surface model problems an editor (or an agent) can self-correct on.
-//! These are warnings, not errors, and most are cosmetic. Three are not:
+//! These are warnings, not errors, and most are cosmetic. Four are not. The
+//! first two describe states no edit and no file can produce any more; they
+//! are kept as a second line, so that a model which somehow reaches one says
+//! so here rather than only when a save fails.
 //!
-//! - A **colour binding on a mesh group** cannot be written and cannot be
-//!   loaded (a mesh group is never drawn, so it has no colour for the binding
-//!   to fold into). [`Model::add_binding`] refuses to author one and the
-//!   `.clm` reader refuses a file carrying one, so the one way in is
-//!   [`Model::update_node_kind`] swapping a bound node's whole kind.
+//! - A **colour binding on a mesh group** cannot be loaded (a mesh group is
+//!   never drawn, so it has no colour for the binding to fold into).
+//!   [`Model::add_binding`] refuses to author one, the `.clm` reader refuses
+//!   a file carrying one, and [`Model::update_node_kind`] refuses the kind
+//!   swap that used to turn a bound part into one.
 //! - A **weld whose end is no longer a part**, or one **pairing a slot its
 //!   part no longer carries**, cannot be written at all:
 //!   [`Model::to_clm_file`] refuses the first and the reader refuses the
-//!   second. The slot and weld methods keep both out — but
-//!   [`Model::update_node_kind`] can swap a welded part's whole kind, which takes
-//!   its slots with it.
+//!   second. The slot and weld methods keep both out, and
+//!   [`Model::update_node_kind`] refuses to swap a welded part's kind or
+//!   replace its slots.
 //! - A **weld with no pairs** saves and loads and joins nothing: it records
 //!   two parts and holds neither of them to the other.
 //! - A **weld over an unfilled slot** saves and loads; it just does not hold
@@ -320,13 +323,22 @@ mod tests {
         assert!(m.to_clm_bytes().is_ok(), "an unfilled slot still saves");
     }
 
-    /// Swapping a welded part's kind is the one edit that can strand a weld,
-    /// and a stranded weld stops the model from saving at all.
+    /// Swapping a welded part's kind was the one edit that could strand a
+    /// weld, and a stranded weld stops the model from saving at all. The swap
+    /// is refused now, so the state is built by hand: the lint and the writer
+    /// still have to say so if a model is ever in it.
     #[test]
     fn check_flags_a_weld_whose_end_is_no_longer_a_part() {
         let (mut m, upper, _) = welded();
-        m.update_node_kind(&upper, |kind| *kind = ModelNodeKind::Group)
-            .unwrap();
+        assert!(matches!(
+            m.update_node_kind(&upper, |kind| *kind = ModelNodeKind::Group),
+            Err(ModelError::KindEdit("a node's kind"))
+        ));
+        assert!(
+            m.to_clm_file().is_ok(),
+            "a refused swap leaves the weld sound"
+        );
+        m.nodes.get_mut(&upper).unwrap().kind = ModelNodeKind::Group;
 
         let w = m
             .check()
@@ -408,8 +420,9 @@ mod tests {
             Err(ModelError::ColorOnMeshGroup)
         ));
 
-        // ...so the way in is a part that legitimately carries one becoming a
-        // mesh group afterwards.
+        // ...and so does `update_node_kind`, which used to be the way in: a
+        // part that legitimately carries one becoming a mesh group
+        // afterwards. The state is built by hand to keep the lint honest.
         let part = m
             .add_node(
                 &root,
@@ -423,10 +436,14 @@ mod tests {
             BindingTarget::Scalar(ScalarTarget::Opacity),
         ))
         .unwrap();
-        m.update_node_kind(&part, |kind| {
-            *kind = ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()))
-        })
-        .unwrap();
+        assert!(matches!(
+            m.update_node_kind(&part, |kind| {
+                *kind = ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()))
+            }),
+            Err(ModelError::KindEdit("a node's kind"))
+        ));
+        m.nodes.get_mut(&part).unwrap().kind =
+            ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad()));
         assert!(
             m.to_clm_file().is_err() || Model::from_clm_bytes(&m.to_clm_bytes().unwrap()).is_err(),
             "a model in this state cannot make the round trip"

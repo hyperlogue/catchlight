@@ -8,9 +8,10 @@
 //! - **Writing is total and deterministic.** A Model's tree is always valid
 //!   and its cross-references are always live, so the only thing
 //!   [`Model::to_clm_file`] can refuse is a deform cell whose length its
-//!   node's mesh cannot take. (It also refuses a weld whose end is no longer
-//!   a part, which only [`Model::update_node_kind`] swapping a welded node's kind
-//!   can produce, so that a file this writes is always one this reader takes.)
+//!   node's mesh cannot take. (It also refuses a weld whose end is not a
+//!   part. No edit produces one — [`Model::update_node_kind`] refuses the kind
+//!   swap that used to — and the check stays so that a file this writes is
+//!   always one this reader takes.)
 //!   The orders it
 //!   writes — nodes pre-order from the root, params, textures and bindings in
 //!   the Model's own order — are the Model's, so the same Model always writes
@@ -317,9 +318,9 @@ impl Model {
         let fragment = self.is_fragment();
         let mut welds = Vec::with_capacity(self.welds.len());
         for weld in &self.welds {
-            // Unreachable through the Model's own methods, which refuse a weld
-            // whose end is not a part; reachable through `update_node`
-            // swapping a welded node's kind, and the reader refuses such a
+            // Unreachable through the Model's own methods: they refuse a weld
+            // whose end is not a part, and `update_node_kind` refuses to swap
+            // a welded node's kind. Kept because the reader refuses such a
             // file. A fragment's weld into a base part has one end this model
             // cannot see, and only the end it can see is checked.
             for end in [weld.a(), weld.b()] {

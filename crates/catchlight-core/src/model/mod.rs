@@ -200,6 +200,10 @@ pub enum ModelError {
     Fragment,
     #[error("the root node cannot be {0}")]
     Root(&'static str),
+    /// [`Model::update_node_kind`] was used to change something an in-place
+    /// kind edit may not: the kind itself, or a field another method owns.
+    #[error("an in-place kind edit cannot change {0}")]
+    KindEdit(&'static str),
     #[error("invalid binding key positions or cell coordinates")]
     CellOutOfRange,
     #[error("a param's range must be finite and increasing")]
@@ -684,7 +688,7 @@ impl Default for ModelComposite {
 /// One drawable's clipping rule: whose shape clips it, and whether what that
 /// shape covers is kept or cut away. Only [`Model::mask_add`] builds one, so a
 /// mask's source is always a live part.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelMask {
     source: NodeId,
     mode: MaskMode,
@@ -1120,7 +1124,29 @@ impl Model {
         Ok(out)
     }
 
-    /// Edit or replace a kind, restoring it if its response references become invalid.
+    /// Edit a node's kind in place: the fields a kind exposes — colour,
+    /// blend mode, thresholds, flags, a motion response's terms — and nothing
+    /// else.
+    ///
+    /// The closure is handed the whole kind, so it can reach further than it
+    /// may change. The edit is refused with [`ModelError::KindEdit`], and the
+    /// kind restored, if it:
+    ///
+    /// - **replaces the kind with another.** Everything that names a node
+    ///   names it as the kind it is: a weld names a part, a deform binding a
+    ///   mesh, a colour binding something drawn. A swap strands them all, and
+    ///   used to be the one way to build a model that could not be saved.
+    /// - **changes a mesh, an albedo, a mask list or a slot list.** Each has
+    ///   its own method that keeps what depends on it in step —
+    ///   [`Self::set_node_mesh`] refits deforms and empties slots,
+    ///   [`Self::set_part_albedo`] sweeps the texture left behind,
+    ///   [`Self::mask_add`] checks the source, [`Self::slot_delete`] drops the
+    ///   weld pairs — and writing the field directly skips all of it.
+    /// - **changes a spine**, whose joints and targets go through
+    ///   [`Self::set_spine_joints`] and [`Self::set_spine_targets`].
+    ///
+    /// A motion response may change freely; it is validated and restored if
+    /// its references no longer resolve.
     pub fn update_node_kind<R>(
         &mut self,
         id: &NodeId,
@@ -1129,23 +1155,19 @@ impl Model {
         let node = self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?;
         let previous = node.kind.clone();
         let out = f(&mut node.kind);
-        let response_changed = match (&previous, &node.kind) {
-            (ModelNodeKind::MotionResponse(a), ModelNodeKind::MotionResponse(b)) => a != b,
-            (ModelNodeKind::MotionResponse(_), _) | (_, ModelNodeKind::MotionResponse(_)) => true,
-            (ModelNodeKind::Part(a), ModelNodeKind::Part(b)) => {
-                !Arc::ptr_eq(&a.slots, &b.slots) && a.slots != b.slots
-            }
-            (ModelNodeKind::Part(_), _) | (_, ModelNodeKind::Part(_)) => true,
-            _ => false,
-        };
+        if let Some(what) = kind_edit_fault(&previous, &node.kind) {
+            node.kind = previous;
+            return Err(ModelError::KindEdit(what));
+        }
+        // The kind is the one it was, so the only thing left that the
+        // response graph can see is a response's own terms.
+        let response_changed = matches!(
+            (&previous, &node.kind),
+            (ModelNodeKind::MotionResponse(a), ModelNodeKind::MotionResponse(b)) if a != b
+        );
         if response_changed {
-            let previous_count = self.response_count;
-            self.response_count = previous_count
-                - usize::from(matches!(previous, ModelNodeKind::MotionResponse(_)))
-                + usize::from(matches!(node.kind, ModelNodeKind::MotionResponse(_)));
             self.response_index.take();
             if let Err(error) = self.validate_responses() {
-                self.response_count = previous_count;
                 self.nodes.get_mut(id).ok_or(ModelError::UnknownNode)?.kind = previous;
                 self.response_index.take();
                 return Err(error);
@@ -2679,6 +2701,42 @@ impl Model {
     }
 }
 
+/// What an in-place kind edit changed that it may not, named the way
+/// [`ModelError::KindEdit`] says it — or `None` if the edit stayed within the
+/// fields a kind exposes. The rule [`Model::update_node_kind`] documents.
+fn kind_edit_fault(before: &ModelNodeKind, after: &ModelNodeKind) -> Option<&'static str> {
+    use ModelNodeKind as Kind;
+    // An untouched list is still the same allocation, which is the usual
+    // case; only a replaced one is compared by value.
+    fn same<T: PartialEq>(a: &Arc<T>, b: &Arc<T>) -> bool {
+        Arc::ptr_eq(a, b) || a == b
+    }
+    match (before, after) {
+        (Kind::Group, Kind::Group) | (Kind::MotionResponse(_), Kind::MotionResponse(_)) => None,
+        (Kind::Part(a), Kind::Part(b)) => {
+            if !same(&a.mesh.0, &b.mesh.0) {
+                Some("a part's mesh")
+            } else if a.albedo != b.albedo {
+                Some("a part's albedo")
+            } else if !same(&a.masks, &b.masks) {
+                Some("a part's masks")
+            } else if !same(&a.slots, &b.slots) {
+                Some("a part's slots")
+            } else {
+                None
+            }
+        }
+        (Kind::Composite(a), Kind::Composite(b)) => {
+            (!same(&a.masks, &b.masks)).then_some("a composite's masks")
+        }
+        (Kind::MeshGroup(a), Kind::MeshGroup(b)) => {
+            (!same(&a.mesh.0, &b.mesh.0)).then_some("a mesh group's mesh")
+        }
+        (Kind::Spine(a), Kind::Spine(b)) => (a != b).then_some("a spine's joints or targets"),
+        _ => Some("a node's kind"),
+    }
+}
+
 /// Whether a node of this kind may be named as a mask source: the two kinds
 /// the renderer draws. One place, because [`Model::mask_add`], the model's own
 /// reference check and the `.clm` reader all have to agree.
@@ -3051,6 +3109,108 @@ mod tests {
             .set_spine_joints(&spine, vec![[0.0, -10.0]])
             .unwrap();
         Model::from_clm_bytes(&r.model.to_clm_bytes().unwrap()).unwrap();
+    }
+
+    /// `update_node_kind` hands its closure the whole kind and used to keep
+    /// whatever came back: another kind, an unvalidated mesh, an albedo with
+    /// no texture behind it, masks and slots dropped without the welds and
+    /// responses that named them. Each has a method that owns it; the closure
+    /// may only touch the fields a kind exposes.
+    #[test]
+    fn an_in_place_kind_edit_changes_only_the_fields_a_kind_exposes() {
+        let mut r = fixture();
+        let spine = r.spine();
+        let group = r.node(
+            "bend",
+            ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad())),
+        );
+        let (part, other, composite) = (r.part.clone(), r.other.clone(), r.composite.clone());
+        // `part` as it is before it gains a slot, and `other`, which draws a
+        // texture `part` does not.
+        let slotless = r.model.node(&part).unwrap().kind.clone();
+        let textured = r.model.node(&other).unwrap().kind.clone();
+        r.model.slot_add(&part, slot("s")).unwrap();
+        let mut moved = quad();
+        moved.verts[0] += 1.0;
+
+        let before = r.model.generation();
+        let bytes = r.model.to_clm_bytes().unwrap();
+        let swaps: Vec<(&NodeId, ModelNodeKind, &str)> = vec![
+            (&part, ModelNodeKind::Group, "a node's kind"),
+            (
+                &part,
+                ModelNodeKind::MeshGroup(ModelMeshGroup::new(quad())),
+                "a node's kind",
+            ),
+            (
+                &other,
+                ModelNodeKind::Part(ModelPart::new(moved.clone())),
+                "a part's mesh",
+            ),
+            (&part, textured, "a part's albedo"),
+            (&part, slotless, "a part's slots"),
+            (
+                &composite,
+                ModelNodeKind::Composite(ModelComposite::new()),
+                "a composite's masks",
+            ),
+            (
+                &group,
+                ModelNodeKind::MeshGroup(ModelMeshGroup::new(moved)),
+                "a mesh group's mesh",
+            ),
+            (
+                &spine,
+                ModelNodeKind::Spine(ModelSpine::new(vec![[0.0, 0.0]])),
+                "a spine's joints or targets",
+            ),
+        ];
+        for (id, replacement, what) in swaps {
+            let got = r.model.update_node_kind(id, |kind| *kind = replacement);
+            assert!(
+                matches!(got, Err(ModelError::KindEdit(named)) if named == what),
+                "expected a refusal naming {what}, got {got:?}"
+            );
+        }
+        assert_eq!(r.model.generation(), before, "a refused edit is no edit");
+        assert_eq!(
+            r.model.to_clm_bytes().unwrap(),
+            bytes,
+            "every refused edit put the kind back"
+        );
+
+        // The fields a kind exposes still edit, and the closure's value comes
+        // back out.
+        let was = r
+            .model
+            .update_node_kind(&part, |kind| match kind {
+                ModelNodeKind::Part(p) => std::mem::replace(&mut p.opacity, 0.25),
+                _ => f32::NAN,
+            })
+            .unwrap();
+        assert_eq!(was, 1.0);
+        r.model
+            .update_node_kind(&composite, |kind| {
+                if let ModelNodeKind::Composite(c) = kind {
+                    c.blend_mode = BlendMode::Multiply;
+                }
+            })
+            .unwrap();
+        r.model
+            .update_node_kind(&group, |kind| {
+                if let ModelNodeKind::MeshGroup(mg) = kind {
+                    mg.translate_children = false;
+                }
+            })
+            .unwrap();
+        assert_ne!(r.model.generation(), before);
+        match &r.model.node(&part).unwrap().kind {
+            ModelNodeKind::Part(p) => {
+                assert_eq!(p.opacity, 0.25);
+                assert_eq!(p.slots().len(), 1, "the slot is still there");
+            }
+            other => panic!("not a part: {other:?}"),
+        }
     }
 
     /// Undo snapshots a model by cloning it, and a puppet built against the
