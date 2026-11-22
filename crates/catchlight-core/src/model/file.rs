@@ -82,7 +82,11 @@ use super::*;
 /// Why a `.clm` could not be turned into a [`Model`]. Every variant names the
 /// Id that broke and the field that named it — a hostile or truncated file
 /// reports itself, it never panics and never loads half a model.
+///
+/// Non-exhaustive: every rule the reader starts holding a file to names
+/// itself with a variant of its own.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClmLoadError {
     #[error("two {kind}s share the id {id:?}")]
     DuplicateId { kind: &'static str, id: String },
@@ -95,7 +99,8 @@ pub enum ClmLoadError {
     #[error("node {node:?} names parent {parent:?}, which the file writes after it")]
     NotTopological { node: String, parent: String },
     #[error(
-        "node {node:?} has no parent, so this file is a complete model; a fragment's roots name          the base node they hang from"
+        "node {node:?} has no parent, so this file is a complete model; a fragment's roots name \
+         the base node they hang from"
     )]
     FragmentHasNoParent { node: String },
     #[error("node {node:?} names {field} {id:?}, which no node has")]

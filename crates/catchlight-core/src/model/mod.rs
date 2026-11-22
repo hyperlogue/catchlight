@@ -165,7 +165,12 @@ const ID_MINT_ATTEMPTS: usize = 64;
 /// Why an edit to a [`Model`] — or a read of a `.clm` file into one — could
 /// not be carried out. Every mutating method leaves the model untouched when
 /// it returns one of these.
+///
+/// Non-exhaustive: a rule the model starts enforcing gets a variant of its
+/// own rather than borrowing a neighbour's, and a caller that matches on this
+/// keeps compiling when one is added.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ModelError {
     #[error("invalid motion response {node}: {reason}")]
     InvalidResponse { node: NodeId, reason: String },
@@ -193,8 +198,16 @@ pub enum ModelError {
     Fragment,
     #[error("the root node cannot be {0}")]
     Root(&'static str),
-    #[error("invalid binding key positions, cell coordinates or value")]
+    #[error("invalid binding key positions or cell coordinates")]
     CellOutOfRange,
+    #[error("a param's range must be finite and increasing")]
+    InvalidParamRange,
+    /// A value that has to be a number was `NaN` or infinite. Names what the
+    /// value was, so the refusal reads the same wherever it is raised.
+    #[error("{0} must be finite")]
+    NonFinite(&'static str),
+    #[error("a deform holds {got} offsets, but the node's mesh takes {expected}")]
+    DeformLength { expected: usize, got: usize },
     #[error("no such binding")]
     UnknownBinding,
     #[error("node is not a part")]
@@ -2062,7 +2075,7 @@ impl Model {
     /// non-finite range has nothing to normalize onto.
     pub fn add_param_with_id(&mut self, id: ParamId, param: ModelParam) -> Result<(), ModelError> {
         if !param_range_is_valid(param.min, param.max) {
-            return Err(ModelError::CellOutOfRange);
+            return Err(ModelError::InvalidParamRange);
         }
         if self.params.contains_key(&id) {
             return Err(ModelError::DuplicateId(id.to_string()));
@@ -3796,7 +3809,7 @@ mod tests {
                 ParamId::new("flat").unwrap(),
                 ModelParam::new(Name::truncated("flat"), 1.0, 1.0, 0.0),
             ),
-            Err(ModelError::CellOutOfRange)
+            Err(ModelError::InvalidParamRange)
         ));
         assert_eq!(r.model.generation(), before, "neither edit landed");
         assert!(r.model.to_clm_bytes().is_ok());

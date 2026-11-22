@@ -231,7 +231,7 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
         for mask in masks {
             if !has_node(&mask.source) {
                 need(
-                    Required::Part(mask.source.clone()),
+                    Required::Drawable(mask.source.clone()),
                     "mask source",
                     owner.clone(),
                 );
@@ -300,19 +300,32 @@ pub fn scan(clm: &ClmFile) -> Vec<Requirement> {
 
 // ---- rendering ------------------------------------------------------------
 
+/// What a requirement is about, as the three columns both renderings share:
+/// its kind, the Id, and the slot when the kind is `slot`.
+///
+/// The kinds are `node` (any node), `drawable` (a part or a composite — what
+/// a mask source has to be), `part` (a part and nothing else — what a weld
+/// end has to be), `param` and `slot`.
+fn columns(id: &Required) -> (&'static str, String, Option<String>) {
+    match id {
+        Required::Node(id) => ("node", id.to_string(), None),
+        Required::Drawable(id) => ("drawable", id.to_string(), None),
+        Required::Part(id) => ("part", id.to_string(), None),
+        Required::Param(id) => ("param", id.to_string(), None),
+        Required::Slot(node, slot) => ("slot", node.to_string(), Some(slot.to_string())),
+    }
+}
+
 /// One requirement as five TAB-separated columns: `kind`, `id`, `slot`,
 /// `field`, `owner`. `slot` is empty for every kind but `slot`, so the column
 /// count never varies and `cut -f2` is always the Id.
 pub fn render_line(requirement: &Requirement) -> String {
-    let (kind, id, slot) = match &requirement.id {
-        Required::Node(id) => ("node", id.to_string(), String::new()),
-        Required::Part(id) => ("part", id.to_string(), String::new()),
-        Required::Param(id) => ("param", id.to_string(), String::new()),
-        Required::Slot(node, slot) => ("slot", node.to_string(), slot.to_string()),
-    };
+    let (kind, id, slot) = columns(&requirement.id);
     format!(
-        "{kind}\t{id}\t{slot}\t{}\t{}",
-        requirement.field, requirement.owner
+        "{kind}\t{id}\t{}\t{}\t{}",
+        slot.unwrap_or_default(),
+        requirement.field,
+        requirement.owner
     )
 }
 
@@ -322,12 +335,7 @@ pub fn render_json(requirements: &[Requirement]) -> String {
     let entries: Vec<serde_json::Value> = requirements
         .iter()
         .map(|r| {
-            let (kind, id, slot) = match &r.id {
-                Required::Node(id) => ("node", id.to_string(), None),
-                Required::Part(id) => ("part", id.to_string(), None),
-                Required::Param(id) => ("param", id.to_string(), None),
-                Required::Slot(node, slot) => ("slot", node.to_string(), Some(slot.to_string())),
-            };
+            let (kind, id, slot) = columns(&r.id);
             serde_json::json!({
                 "kind": kind,
                 "id": id,

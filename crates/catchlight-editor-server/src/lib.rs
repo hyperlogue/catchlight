@@ -306,43 +306,51 @@ impl EditorError {
             Self::Install(e) => match e {
                 InstallError::Collision { .. } => ErrorCode::DuplicateId,
                 InstallError::Missing { id, .. } => match id {
-                    Required::Node(_) | Required::Part(_) => ErrorCode::NoNode,
+                    Required::Node(_) | Required::Drawable(_) | Required::Part(_) => {
+                        ErrorCode::NoNode
+                    }
                     Required::Param(_) => ErrorCode::NoParam,
                     Required::Slot(..) => ErrorCode::UnknownSlot,
                 },
                 InstallError::WeldUnknownSlot { .. } => ErrorCode::WeldUnknownSlot,
                 InstallError::WeldSlotPairedTwice { .. } => ErrorCode::WeldSlotPairedTwice,
-                InstallError::InvalidResponse(_)
-                | InstallError::NotAnAddon { .. }
-                | InstallError::CarriesParam { .. }
-                | InstallError::CarriesExtension { .. }
-                | InstallError::BindsOffAddon { .. } => ErrorCode::Edit,
-            },
-            // The model refuses an edit for many reasons; the ones a client
-            // acts on differently get their own code, the rest are `Edit`.
-            Self::Edit(e) => match e {
-                ModelError::UnknownNode => ErrorCode::NoNode,
-                ModelError::UnknownParam => ErrorCode::NoParam,
-                ModelError::UnknownTexture => ErrorCode::NoTexture,
-                ModelError::UnknownSlot => ErrorCode::UnknownSlot,
-                ModelError::DuplicateId(_) => ErrorCode::DuplicateId,
-                ModelError::DuplicateSlot(_) => ErrorCode::DuplicateSlot,
-                ModelError::WeldUnknownSlot(_) => ErrorCode::WeldUnknownSlot,
-                ModelError::WeldSlotPairedTwice(_) => ErrorCode::WeldSlotPairedTwice,
-                ModelError::WeldSelfPaired | ModelError::WeldEndNotAPart => ErrorCode::BadWeldEnd,
-                ModelError::DuplicateWeld => ErrorCode::DuplicateWeld,
-                ModelError::WeldWeightOutOfRange => ErrorCode::WeldWeightOutOfRange,
-                ModelError::UnknownWeld => ErrorCode::UnknownWeld,
-                ModelError::Fragment => ErrorCode::Fragment,
-                ModelError::UnknownExtension(_) => ErrorCode::NoExtension,
-                ModelError::ReservedExtension(_) => ErrorCode::ReservedExtension,
-                ModelError::NotSpine | ModelError::NotMotionResponse => ErrorCode::BadTarget,
-                ModelError::SpineTargetArity { .. } => ErrorCode::BadTarget,
-                // The size cap has no code of its own: a client that hit it
-                // has nothing to branch on, only a value to shrink.
+                // The model's own refusal, carried whole: it answers with the
+                // code the same refusal gets from an edit.
+                InstallError::Model(e) => model_error_code(e),
+                // `InstallError` is non-exhaustive; a refusal with no code of
+                // its own is an ordinary one.
                 _ => ErrorCode::Edit,
             },
+            Self::Edit(e) => model_error_code(e),
         }
+    }
+}
+
+/// The wire code for one of the model's own refusals, whichever command it
+/// came back from. The model refuses an edit for many reasons; the ones a
+/// client acts on differently get their own code, the rest are `Edit`.
+fn model_error_code(e: &ModelError) -> ErrorCode {
+    match e {
+        ModelError::UnknownNode => ErrorCode::NoNode,
+        ModelError::UnknownParam => ErrorCode::NoParam,
+        ModelError::UnknownTexture => ErrorCode::NoTexture,
+        ModelError::UnknownSlot => ErrorCode::UnknownSlot,
+        ModelError::DuplicateId(_) => ErrorCode::DuplicateId,
+        ModelError::DuplicateSlot(_) => ErrorCode::DuplicateSlot,
+        ModelError::WeldUnknownSlot(_) => ErrorCode::WeldUnknownSlot,
+        ModelError::WeldSlotPairedTwice(_) => ErrorCode::WeldSlotPairedTwice,
+        ModelError::WeldSelfPaired | ModelError::WeldEndNotAPart => ErrorCode::BadWeldEnd,
+        ModelError::DuplicateWeld => ErrorCode::DuplicateWeld,
+        ModelError::WeldWeightOutOfRange => ErrorCode::WeldWeightOutOfRange,
+        ModelError::UnknownWeld => ErrorCode::UnknownWeld,
+        ModelError::Fragment => ErrorCode::Fragment,
+        ModelError::UnknownExtension(_) => ErrorCode::NoExtension,
+        ModelError::ReservedExtension(_) => ErrorCode::ReservedExtension,
+        ModelError::NotSpine | ModelError::NotMotionResponse => ErrorCode::BadTarget,
+        ModelError::SpineTargetArity { .. } => ErrorCode::BadTarget,
+        // The size cap has no code of its own: a client that hit it
+        // has nothing to branch on, only a value to shrink.
+        _ => ErrorCode::Edit,
     }
 }
 
@@ -1407,7 +1415,7 @@ impl Editor {
                 param: id,
             } => self.edit_session_captured(session, |s| {
                 if !catchlight_core::param_range_is_valid(min, max) {
-                    return Err(ModelError::CellOutOfRange.into());
+                    return Err(ModelError::InvalidParamRange.into());
                 }
                 let param = s.add_param(
                     id,

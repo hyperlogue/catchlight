@@ -203,7 +203,7 @@ fn the_requirements_are_exactly_the_cut_edges() {
                 owner: "node-9".to_string(),
             },
             Requirement {
-                id: Required::Part(NodeId::new("node-5").unwrap()),
+                id: Required::Drawable(NodeId::new("node-5").unwrap()),
                 field: "mask source",
                 owner: "node-9".to_string(),
             },
@@ -214,7 +214,7 @@ fn the_requirements_are_exactly_the_cut_edges() {
         lines,
         vec![
             "node\troot\t\tparent\tnode-9".to_string(),
-            "part\tnode-5\t\tmask source\tnode-9".to_string(),
+            "drawable\tnode-5\t\tmask source\tnode-9".to_string(),
         ]
     );
 }
@@ -255,7 +255,7 @@ fn a_shared_texture_is_copied_into_the_addon_and_never_required() {
             .collect::<Vec<_>>(),
         vec![
             "node\troot\t\tparent\tnode-9".to_string(),
-            "part\tnode-5\t\tmask source\tnode-9".to_string(),
+            "drawable\tnode-5\t\tmask source\tnode-9".to_string(),
         ],
         "the albedo is carried, not required"
     );
@@ -401,7 +401,7 @@ fn an_install_error_is_reported_verbatim() {
     assert_eq!(
         error.to_string(),
         InstallError::Missing {
-            id: Required::Part(NodeId::new("node-5").unwrap()),
+            id: Required::Drawable(NodeId::new("node-5").unwrap()),
             field: "mask source",
             owner: "node-9".to_string(),
         }
@@ -474,7 +474,7 @@ fn the_binary_extracts_merges_and_lists_requirements() {
         out.lines().collect::<Vec<_>>(),
         vec![
             "node\troot\t\tparent\tnode-9",
-            "part\tnode-5\t\tmask source\tnode-9",
+            "drawable\tnode-5\t\tmask source\tnode-9",
         ]
     );
 
@@ -484,7 +484,7 @@ fn the_binary_extracts_merges_and_lists_requirements() {
     assert_eq!(parsed[0]["kind"], "node");
     assert_eq!(parsed[0]["id"], "root");
     assert_eq!(parsed[0]["slot"], serde_json::Value::Null);
-    assert_eq!(parsed[1]["kind"], "part");
+    assert_eq!(parsed[1]["kind"], "drawable");
     assert_eq!(parsed[1]["field"], "mask source");
 
     let base = base_without(&["node-9"], &dir, "base");

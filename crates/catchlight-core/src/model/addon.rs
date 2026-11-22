@@ -88,8 +88,11 @@ pub enum Required {
     /// A node of any kind — what a fragment root's `parent` names.
     Node(NodeId),
     /// A node the renderer draws — a part or a composite — which is what a
-    /// mask's source names. Still called `Part` because it is what the CLI
-    /// prints as a requirement's kind; see [`Model::mask_add`] for the rule.
+    /// mask's source names; see [`Model::mask_add`] for the rule.
+    Drawable(NodeId),
+    /// A part and nothing else — what a weld's end names when the weld pairs
+    /// no slots. Kept apart from [`Self::Drawable`] because the two rules
+    /// differ: a composite can clip, but it has no slots and cannot be welded.
     Part(NodeId),
     Param(ParamId),
     /// A slot on a base part, which needs the part and the slot both — what
@@ -101,6 +104,7 @@ impl fmt::Display for Required {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Node(id) => write!(f, "node {:?}", id.as_str()),
+            Self::Drawable(id) => write!(f, "drawable {:?}", id.as_str()),
             Self::Part(id) => write!(f, "part {:?}", id.as_str()),
             Self::Param(id) => write!(f, "param {:?}", id.as_str()),
             Self::Slot(node, slot) => {
@@ -146,11 +150,15 @@ impl Requirements {
     }
 
     /// Every node Id required, sorted, once each — including the ones that
-    /// have to be parts and the ones a weld end reaches through.
+    /// have to be drawn, the ones that have to be parts and the ones a weld
+    /// end reaches through.
     pub fn nodes(&self) -> impl Iterator<Item = &NodeId> {
         sorted(self.entries.iter().filter_map(|r| match &r.id {
-            Required::Node(id) | Required::Part(id) | Required::Slot(id, _) => Some(id),
-            _ => None,
+            Required::Node(id)
+            | Required::Drawable(id)
+            | Required::Part(id)
+            | Required::Slot(id, _) => Some(id),
+            Required::Param(_) => None,
         }))
     }
 
@@ -190,10 +198,18 @@ fn sorted<T: Ord>(it: impl Iterator<Item = T>) -> impl Iterator<Item = T> {
 
 /// Why an addon could not be installed. Every variant names the Id that
 /// stopped it; the base model is untouched.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+///
+/// Non-exhaustive, like [`ModelError`]: install checks the merged model, so
+/// it grows a refusal whenever the model grows a rule.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum InstallError {
-    #[error("{0}")]
-    InvalidResponse(String),
+    /// The merged model broke a rule the model itself enforces — a motion
+    /// response whose references no longer resolve, say. Carried whole rather
+    /// than as its message, so a caller can branch on it exactly as it would
+    /// on the same refusal from an edit.
+    #[error(transparent)]
+    Model(Box<ModelError>),
     #[error(
         "the addon's root {node:?} names no parent, so it is a complete model and there is \
          nowhere in the base to attach it"
@@ -229,6 +245,12 @@ pub enum InstallError {
     WeldUnknownSlot { node: String, slot: String },
     #[error("the addon's weld between {a:?} and {b:?} pairs slot {slot:?} twice")]
     WeldSlotPairedTwice { a: String, b: String, slot: String },
+}
+
+impl From<ModelError> for InstallError {
+    fn from(error: ModelError) -> Self {
+        Self::Model(Box::new(error))
+    }
 }
 
 /// What one [`Model::install`] put into a base model, so [`Model::uninstall`]
@@ -330,7 +352,11 @@ impl Model {
             }
             for mask in node.masks().unwrap_or_default() {
                 if !self.nodes.contains_key(mask.source()) {
-                    need(Required::Part(mask.source().clone()), "mask source", &id);
+                    need(
+                        Required::Drawable(mask.source().clone()),
+                        "mask source",
+                        &id,
+                    );
                 }
             }
         }
@@ -449,7 +475,7 @@ impl Model {
             }
             self.response_count -= addon.response_count;
             self.response_index.take();
-            return Err(InstallError::InvalidResponse(e.to_string()));
+            return Err(e.into());
         }
         // Sibling order inside the addon rode along on the copied child lists;
         // only its roots need a place among the base's children, and they go
@@ -524,11 +550,18 @@ impl Model {
                 // A mask source has to be one the renderer draws, in the
                 // base exactly as in the addon: install is the one place a
                 // fragment's dangling mask source is finally kind-checked.
-                Required::Part(id) => self
+                Required::Drawable(id) => self
                     .nodes
                     .get(id)
                     .map(|n| &n.kind)
                     .is_some_and(is_mask_source),
+                // A weld end is a part and nothing else. A composite is
+                // drawn but carries no slots, and a base that welded one
+                // could not be written.
+                Required::Part(id) => matches!(
+                    self.nodes.get(id).map(|n| &n.kind),
+                    Some(ModelNodeKind::Part(_))
+                ),
                 Required::Param(id) => self.params.contains_key(id),
                 Required::Slot(node, slot) => self.slot(node, slot).is_some(),
             };
@@ -934,7 +967,7 @@ mod tests {
                     sway.to_string()
                 ),
                 (
-                    format!("part {:?}", b.body.as_str()),
+                    format!("drawable {:?}", b.body.as_str()),
                     "mask source",
                     hat.to_string()
                 ),
@@ -1041,12 +1074,13 @@ mod tests {
         stripped.slot_delete(&b.body, &slot_id("left")).unwrap();
 
         assert_eq!(
-            stripped.install(&addon).unwrap_err(),
+            stripped.install(&addon).unwrap_err().to_string(),
             InstallError::Missing {
                 id: Required::Slot(b.body.clone(), slot_id("left")),
                 field: "weld end",
                 owner: named(&addon, "Hat").to_string(),
             }
+            .to_string()
         );
     }
 
@@ -1066,13 +1100,66 @@ mod tests {
         stripped.delete_node(&b.body).unwrap();
 
         assert_eq!(
-            stripped.install(&addon).unwrap_err(),
+            stripped.install(&addon).unwrap_err().to_string(),
             InstallError::Missing {
                 id: Required::Part(b.body.clone()),
                 field: "weld end",
                 owner: hat.to_string(),
             }
+            .to_string()
         );
+    }
+
+    /// A mask source may be a composite; a weld end may not. While the two
+    /// shared one requirement kind, a pair-less weld into a base composite
+    /// installed, and the merged model could no longer be written.
+    #[test]
+    fn a_weld_end_has_to_be_a_part_where_a_mask_source_need_not() {
+        let b = base();
+        let mut addon = hat_addon(&b);
+        let hat = named(&addon, "Hat");
+        for slot in ["left", "right"] {
+            addon.slot_delete(&hat, &slot_id(slot)).unwrap();
+        }
+        assert!(addon.welds().iter().all(|w| w.pairs().is_empty()));
+
+        // The same Ids as `base()`, but `Body` is a composite: drawn, so the
+        // hat's mask is satisfied, and not a part, so its weld is not.
+        let mut composite = Model::new();
+        let root = composite.root().unwrap().clone();
+        composite
+            .add_node_with_id(
+                b.body.clone(),
+                &root,
+                ModelNode::new("Body", ModelNodeKind::Composite(ModelComposite::new())),
+            )
+            .unwrap();
+        composite
+            .add_node_with_id(
+                b.head.clone(),
+                &root,
+                ModelNode::new("Head", ModelNodeKind::Group),
+            )
+            .unwrap();
+        composite
+            .add_param_with_id(
+                b.param.clone(),
+                ModelParam::new(Name::truncated("Lean"), -1.0, 1.0, 0.0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            composite.install(&addon).unwrap_err().to_string(),
+            InstallError::Missing {
+                id: Required::Part(b.body.clone()),
+                field: "weld end",
+                owner: hat.to_string(),
+            }
+            .to_string()
+        );
+        composite
+            .to_clm_file()
+            .expect("a refused install leaves a model that still saves");
     }
 
     #[test]
@@ -1083,11 +1170,12 @@ mod tests {
         let before = b.m.node_count();
 
         assert_eq!(
-            b.m.install(&addon).unwrap_err(),
+            b.m.install(&addon).unwrap_err().to_string(),
             InstallError::Collision {
                 kind: "node",
                 id: named(&b.m, "Hat").to_string(),
             }
+            .to_string()
         );
         assert_eq!(
             b.m.node_count(),
@@ -1118,11 +1206,12 @@ mod tests {
         let mut m = b.m.clone();
         m.install(&boots).unwrap();
         assert_eq!(
-            m.install(&sandals).unwrap_err(),
+            m.install(&sandals).unwrap_err().to_string(),
             InstallError::Collision {
                 kind: "node",
                 id: "shoes".into(),
             }
+            .to_string()
         );
         assert_eq!(
             m.node(&NodeId::new("shoes").unwrap())
@@ -1154,11 +1243,12 @@ mod tests {
             .add_texture_with_id(b.tex.clone(), &hat, texture(3))
             .unwrap();
         assert_eq!(
-            b.m.clone().install(&addon).unwrap_err(),
+            b.m.clone().install(&addon).unwrap_err().to_string(),
             InstallError::Collision {
                 kind: "texture",
                 id: b.tex.to_string(),
             }
+            .to_string()
         );
     }
 
@@ -1174,10 +1264,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            b.m.clone().install(&addon).unwrap_err(),
+            b.m.clone().install(&addon).unwrap_err().to_string(),
             InstallError::CarriesParam {
                 param: mine.to_string()
             }
+            .to_string()
         );
     }
 
@@ -1210,11 +1301,12 @@ mod tests {
             dense: OnceLock::new(),
         });
         assert_eq!(
-            b.m.clone().install(&addon).unwrap_err(),
+            b.m.clone().install(&addon).unwrap_err().to_string(),
             InstallError::BindsOffAddon {
                 node: b.body.to_string(),
                 target: "deform",
             }
+            .to_string()
         );
     }
 
@@ -1227,11 +1319,53 @@ mod tests {
         let b = base();
         let other = base();
         assert_eq!(
-            b.m.clone().install(&other.m).unwrap_err(),
+            b.m.clone().install(&other.m).unwrap_err().to_string(),
             InstallError::NotAnAddon {
                 node: other.m.root().unwrap().to_string(),
             }
+            .to_string()
         );
+    }
+
+    /// Install's response check is the model's own, so the refusal is the
+    /// model's own error — something a caller can branch on — and not just
+    /// its message.
+    #[test]
+    fn a_refused_response_carries_the_models_own_error() {
+        let b = base();
+        let addon = author(&b, |m, hex| {
+            let sway = m
+                .add_node(
+                    &b.head,
+                    ModelNode::new(
+                        "Sway",
+                        ModelNodeKind::MotionResponse(crate::MotionResponse {
+                            output_param: Some(b.param.clone()),
+                            ..Default::default()
+                        }),
+                    ),
+                    hex,
+                )
+                .unwrap();
+            vec![sway]
+        });
+        // A response's output rests at zero; this base's param no longer does.
+        let mut moved = b.m.clone();
+        moved.set_param_default(&b.param, 0.5).unwrap();
+        let before = moved.generation();
+
+        let err = moved.install(&addon).unwrap_err();
+        let sway = named(&addon, "Sway");
+        assert!(
+            matches!(
+                &err,
+                InstallError::Model(e)
+                    if matches!(&**e, ModelError::InvalidResponse { node, .. } if *node == sway)
+            ),
+            "{err:?}"
+        );
+        assert_eq!(moved.generation(), before, "no half-install");
+        assert_eq!(moved.node_count(), b.m.node_count());
     }
 
     #[test]

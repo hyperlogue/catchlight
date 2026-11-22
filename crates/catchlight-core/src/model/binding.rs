@@ -781,7 +781,7 @@ impl Model {
     ) -> Result<(), ModelError> {
         key.target.scalar()?;
         if !value.is_finite() {
-            return Err(ModelError::CellOutOfRange);
+            return Err(ModelError::NonFinite("a binding value"));
         }
         // Validate before creating anything — a failed key write must not
         // leave a phantom binding behind.
@@ -1002,7 +1002,7 @@ impl Model {
             }
         })?;
         if vertices.start > vertices.end || vertices.end > mesh.vertex_count() {
-            return Err(ModelError::CellOutOfRange);
+            return Err(ModelError::IndexOutOfRange);
         }
         let flat = vertices.start * 2..vertices.end * 2;
         let identity = vec![0.0; flat.len()];
@@ -1078,12 +1078,18 @@ impl Model {
         if key.target != BindingTarget::Deform {
             return Err(ModelError::WrongTarget);
         }
-        let expected = self.deform_len(&key.node);
-        if self.node_mesh(&key.node).is_none() || offsets.len() != expected {
+        if self.node_mesh(&key.node).is_none() {
             return Err(ModelError::NotMeshed);
         }
+        let expected = self.deform_len(&key.node);
+        if offsets.len() != expected {
+            return Err(ModelError::DeformLength {
+                expected,
+                got: offsets.len(),
+            });
+        }
         if offsets.iter().any(|v| !v.is_finite()) {
-            return Err(ModelError::CellOutOfRange);
+            return Err(ModelError::NonFinite("a deform offset"));
         }
         self.check_cell(key, cell)?;
         self.edit_binding(key, BindingEdit::CreateIfMissing, |binding| {
@@ -1158,7 +1164,7 @@ impl Model {
         max: f32,
     ) -> Result<(), ModelError> {
         if !param_range_is_valid(min, max) {
-            return Err(ModelError::CellOutOfRange);
+            return Err(ModelError::InvalidParamRange);
         }
         if let Some(owner) = self.response_owner(param) {
             let range_error = |reason| ModelError::InvalidResponse {
@@ -1732,5 +1738,40 @@ mod tests {
         r.m.delete_param(&renamed).unwrap();
         assert_eq!(r.m.bindings().count(), 0, "the param took its bindings");
         index_agrees_with_the_vec(&r.m, "after deleting the param");
+    }
+
+    /// A refusal says what was wrong. A bad range, a value that is not a
+    /// number and a mis-sized deform used to answer as `CellOutOfRange` or
+    /// `NotMeshed`, which described none of them.
+    #[test]
+    fn a_refused_value_names_what_was_wrong_with_it() {
+        let mut r = fixture();
+        assert!(matches!(
+            r.m.set_param_range(&r.param, 1.0, 1.0),
+            Err(ModelError::InvalidParamRange)
+        ));
+        assert!(matches!(
+            r.m.set_binding_key(&r.tx(&r.part), [0, 0], f32::NAN),
+            Err(ModelError::NonFinite(_))
+        ));
+
+        let deform = r.deform(&r.part);
+        r.m.add_binding(&deform).unwrap();
+        assert!(matches!(
+            r.m.set_deform_vertices(&deform, [0, 0], vec![0.0; 6]),
+            Err(ModelError::DeformLength {
+                expected: 8,
+                got: 6
+            })
+        ));
+        assert!(matches!(
+            r.m.set_deform_vertices(&deform, [0, 0], vec![f32::INFINITY; 8]),
+            Err(ModelError::NonFinite(_))
+        ));
+        // A node with no mesh at all is still what `NotMeshed` says.
+        assert!(matches!(
+            r.m.set_deform_vertices(&r.deform(&r.group), [0, 0], Vec::new()),
+            Err(ModelError::NotMeshed)
+        ));
     }
 }
