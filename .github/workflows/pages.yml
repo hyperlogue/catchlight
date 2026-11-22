@@ -15,12 +15,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: build and deploy
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       # The bundled Lan model is a Git LFS object; fetch its actual bytes.
       - uses: actions/checkout@v7
@@ -37,12 +33,18 @@ jobs:
       - run: nix develop -c bun run --filter catchlight-demo build
         env:
           VITE_BASE: /${{ github.event.repository.name }}/
-      # Artifacts outlive a failed attempt, so a re-run needs its own name.
       - uses: actions/upload-pages-artifact@v5
         with:
-          name: github-pages-${{ github.run_attempt }}
           path: apps/site/dist
+
+  # Listing artifacts in the uploading job can miss the fresh upload. Re-run
+  # only this job after a failure; re-running the build duplicates the artifact.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
-        with:
-          artifact_name: github-pages-${{ github.run_attempt }}
