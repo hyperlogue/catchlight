@@ -36,8 +36,7 @@ pub use node::*;
 pub use puppet::*;
 pub use spine::SpineData;
 pub use texture::{
-    prepare_textures, EncodedTexture, PreppedTexture, TextureError, TextureFormat,
-    TexturePrepCache, UvCrop,
+    prepare_textures, EncodedTexture, PreppedTexture, TextureError, TextureFormat, UvCrop,
 };
 pub use weld::{Weld, WeldPair};
 

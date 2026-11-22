@@ -6,8 +6,8 @@
 //! textures and deform-atlas ranges resident under numbers nothing addresses.
 //!
 //! The counterweight is in the same tests: releasing must not cost the
-//! re-upload memo, which is the whole reason
-//! [`PrepareOptions::memoize_textures`] exists.
+//! textures the new build names again, which the cache keeps by Id and
+//! payload rather than decoding and uploading a second time.
 
 mod common;
 
@@ -35,13 +35,6 @@ const CLEAR: Option<wgpu::Color> = Some(wgpu::Color {
     b: 1.0,
     a: 1.0,
 });
-
-/// The memo is on: a shrink must keep it useful, and a test that leaves it off
-/// could not tell a preserved slot from a re-uploaded one.
-const MEMOIZED: PrepareOptions = PrepareOptions {
-    texture_halvings: 0,
-    memoize_textures: true,
-};
 
 async fn context() -> RenderContext {
     let (device, queue) = create_headless_context().await.expect(NO_ADAPTER);
@@ -121,7 +114,8 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
     pollster::block_on(async {
         let mut ctx = context().await;
         let (mut model, nodes, textures) = three_quad_model();
-        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, MEMOIZED).expect("prepare");
+        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
+            .expect("prepare");
         let mut puppet = Puppet::new(&model);
         ctx.renderer.update_camera(camera());
 
@@ -192,15 +186,15 @@ fn a_rebuild_releases_the_slots_the_smaller_model_no_longer_names() {
 
 /// Releasing is a sweep of what the new build will not name, not a wipe: a
 /// texture slot the rebuild fills with the same image again must keep its GPU
-/// texture. `upload_texture`'s memo is what makes
-/// [`PrepareOptions::memoize_textures`] pay for itself in an editor, which
+/// texture. That is what keeps a rebuild affordable in an editor, which
 /// rebuilds on every edit.
 #[test]
 fn a_rebuild_keeps_the_textures_it_names_again() {
     pollster::block_on(async {
         let mut ctx = context().await;
         let (mut model, nodes, textures) = three_quad_model();
-        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, MEMOIZED).expect("prepare");
+        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
+            .expect("prepare");
         let mut puppet = Puppet::new(&model);
         ctx.renderer.update_camera(camera());
 
@@ -271,7 +265,8 @@ fn a_failed_rebuild_leaves_the_previous_build_resident() {
     pollster::block_on(async {
         let mut ctx = context().await;
         let (mut model, _nodes, _textures) = three_quad_model();
-        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, MEMOIZED).expect("prepare");
+        let mut cache = RenderCache::prepare(&mut ctx.renderer, &model, PrepareOptions::default())
+            .expect("prepare");
         let mut puppet = Puppet::new(&model);
         ctx.renderer.update_camera(camera());
 

@@ -36,8 +36,7 @@
 //!   both are re-derived from zero — and every texture the new build does not
 //!   want is dropped, so a model that shrank does not strand GPU buffers under
 //!   slots nothing addresses. Surviving textures are kept rather than freed
-//!   and re-uploaded, which is what leaves
-//!   [`PrepareOptions::memoize_textures`] something to save. The
+//!   and re-uploaded. The
 //!   rebuild releases whole tables because a build renames every mesh slot
 //!   from zero, and there is exactly one cache per renderer to release for.
 //!   The deform atlas goes with them: every set's residency memo is dropped
@@ -60,7 +59,9 @@
 //!   work at all. Pointer equality, never a byte compare: a payload is never
 //!   rewritten in place, so the two answer the same question and only one is
 //!   free. [`RenderCache::stats`] counts what each build decoded and what it
-//!   kept.
+//!   kept. This is also the only decode reuse there is: a build hands
+//!   [`prepare_textures`](catchlight_core::prepare_textures) just the textures
+//!   it did not keep, so there is no decoded copy held back for a later hit.
 //! - **One cache, one renderer, N puppets.** The GPU state a cache's slots
 //!   name lives in the [`WgpuRenderer`] that prepared it, and two caches
 //!   sharing a renderer would overwrite each other's mesh and texture slots.
@@ -82,7 +83,7 @@ use catchlight_core::components::{NodeIdx, NodeKind};
 use catchlight_core::formats::clm::{ClmIndices, ClmMesh};
 use catchlight_core::{
     Mesh, MeshIndices, Model, ModelNodeKind, ModelTexture, Node, NodeId, NodeTree, Puppet, TexId,
-    TexturePrepCache, UvCrop, Vec2,
+    UvCrop, Vec2,
 };
 
 use crate::collect::{Collector, DrawSource, RenderList, NO_SLOT};
@@ -104,11 +105,6 @@ pub struct PrepareOptions {
     /// resolution). A budget knob, not a model property: two caches over one
     /// model may choose differently.
     pub texture_halvings: u32,
-    /// Keep a decode memo inside the cache, so rebuilding after a model edit
-    /// skips re-decoding the textures that edit did not touch. It costs one
-    /// decoded copy of every texture, so an editor wants it and a viewer that
-    /// never edits does not.
-    pub memoize_textures: bool,
 }
 
 /// What a cache's builds have cost, counted since it was prepared.
@@ -177,9 +173,6 @@ pub struct RenderCache {
     /// How many texture slots are filled. A `TexIdx` at or above this names
     /// nothing, which is how an unmapped part is culled.
     texture_count: u32,
-    /// The decode memo, when [`PrepareOptions::memoize_textures`] asked for
-    /// one.
-    texture_memo: Option<TexturePrepCache>,
     /// What the renderer holds for each of this build's textures, in slot
     /// order. Rebuilt on every build, and what the next one matches a model's
     /// textures against — by Id, so a texture that changed slots is found.
@@ -221,7 +214,6 @@ impl RenderCache {
             node_ids: Vec::new(),
             mesh_of_node: Vec::new(),
             texture_count: 0,
-            texture_memo: options.memoize_textures.then(TexturePrepCache::default),
             uploaded: Vec::new(),
             stats: CacheStats::default(),
             collector: Collector::default(),
@@ -485,12 +477,9 @@ impl RenderCache {
         // would strand this cache's tables — and the caller's last-good
         // render list — describing slots the renderer no longer holds, which
         // draws stale contents under new numbers.
-        let prepped = catchlight_core::prepare_textures(
-            fresh.as_slice(),
-            self.options.texture_halvings,
-            self.texture_memo.as_mut(),
-        )
-        .map_err(|error| RendererError::TexturePrep(error.to_string()))?;
+        let prepped =
+            catchlight_core::prepare_textures(fresh.as_slice(), self.options.texture_halvings)
+                .map_err(|error| RendererError::TexturePrep(error.to_string()))?;
         for prep in prepped.iter() {
             renderer.validate_texture_upload(&prep.texture)?;
         }

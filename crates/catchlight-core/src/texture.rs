@@ -22,7 +22,6 @@
 //! box-filtered levels 0..=4 match. Each crop is its own texture with its own
 //! mip chain, so no mip footprint can straddle into another crop's texels.
 
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::components::{srgb_encode_to_byte, DecodedTexture};
@@ -344,46 +343,6 @@ struct Plan {
     crop: Option<(i64, i64, u32, u32)>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct TexturePrepKey {
-    format: TextureFormat,
-    premultiplied: bool,
-    texture_halvings: u32,
-    content_hash: u64,
-    data: Arc<[u8]>,
-}
-
-impl Hash for TexturePrepKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.format.hash(state);
-        self.premultiplied.hash(state);
-        self.texture_halvings.hash(state);
-        self.content_hash.hash(state);
-    }
-}
-
-/// Memo for the pure per-texture half of [`prepare_textures`]. An editor
-/// rebuilding the puppet after every edit skips decode and crop work for
-/// unchanged textures. Keys retain the encoded bytes so hash collisions are
-/// verified by equality. Each rebuild discards entries that are not used by
-/// the current model, so revisions cannot accumulate stale texture data.
-#[derive(Default)]
-pub struct TexturePrepCache {
-    entries: std::collections::HashMap<TexturePrepKey, (DecodedTexture, Plan)>,
-}
-
-fn prep_key(tex: &EncodedTexture, texture_halvings: u32) -> TexturePrepKey {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    tex.data.hash(&mut h);
-    TexturePrepKey {
-        format: tex.format,
-        premultiplied: tex.premultiplied,
-        texture_halvings,
-        content_hash: h.finish(),
-        data: Arc::clone(&tex.data),
-    }
-}
-
 /// Where one texture's opaque crop sits inside the source image, as the UV
 /// remap a mesh authored against the uncropped texture needs.
 ///
@@ -429,15 +388,22 @@ pub struct PreppedTexture {
 /// unchanged; each entry carries the [`UvCrop`] its parts' mesh UVs must be
 /// remapped through before they are drawn. Whoever owns those meshes applies
 /// it; the render cache rewrites the UVs it uploads.
+///
+/// Nothing here remembers a decode. A caller that rebuilds after every edit
+/// passes only the textures whose payload changed — the render cache keeps
+/// the GPU texture of every other one by Id and payload `Arc` — so a memo in
+/// front of this would hold a decoded copy of every texture for a hit that
+/// never comes.
 pub fn prepare_textures(
     textures: &[EncodedTexture],
     texture_halvings: u32,
-    cache: Option<&mut TexturePrepCache>,
 ) -> Result<Vec<PreppedTexture>, TextureError> {
-    let (table, plans) = prep_all(textures, texture_halvings, cache)?;
-    Ok(table
+    let prepped = prep_textures(textures, texture_halvings)?;
+    // Albedo ids index this table positionally, so a dropped entry would
+    // silently repoint every later part at the wrong texture.
+    assert_eq!(prepped.len(), textures.len());
+    Ok(prepped
         .into_iter()
-        .zip(plans)
         .map(|(texture, plan)| PreppedTexture {
             texture,
             uv_crop: plan.crop.map(|(x, y, w, h)| UvCrop {
@@ -452,57 +418,7 @@ pub fn prepare_textures(
         .collect())
 }
 
-/// Probe the memo, decode and crop the misses, and return the table beside
-/// the crop plans.
-fn prep_all(
-    textures: &[EncodedTexture],
-    texture_halvings: u32,
-    mut cache: Option<&mut TexturePrepCache>,
-) -> Result<(Vec<DecodedTexture>, Vec<Plan>), TextureError> {
-    let keys: Vec<Option<TexturePrepKey>> = textures
-        .iter()
-        .map(|tex| cache.as_ref().map(|_| prep_key(tex, texture_halvings)))
-        .collect();
-    if let Some(cache) = cache.as_deref_mut() {
-        let active: std::collections::HashSet<_> = keys.iter().flatten().cloned().collect();
-        cache.entries.retain(|key, _| active.contains(key));
-    }
-
-    // Probe the cache first so the expensive half runs only for misses.
-    let mut prepped: Vec<Option<(DecodedTexture, Plan)>> = keys
-        .iter()
-        .map(|key| {
-            let (Some(cache), Some(key)) = (cache.as_deref(), key.as_ref()) else {
-                return None;
-            };
-            cache.entries.get(key).cloned()
-        })
-        .collect();
-
-    let misses: Vec<usize> = prepped
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.is_none())
-        .map(|(i, _)| i)
-        .collect();
-    let done = prep_textures(&misses, textures, texture_halvings)?;
-    for (i, entry) in misses.iter().zip(done) {
-        if let (Some(cache), Some(key)) = (cache.as_deref_mut(), keys[*i].clone()) {
-            cache.entries.insert(key, entry.clone());
-        }
-        prepped[*i] = Some(entry);
-    }
-
-    let (table, plans): (Vec<DecodedTexture>, Vec<Plan>) = prepped.into_iter().flatten().unzip();
-    // Albedo ids index this table positionally, so a dropped entry would
-    // silently repoint every later part at the wrong texture. Filling by
-    // index makes that impossible; this pins it, since the 1:1 property
-    // stopped being local once the decode was split out to fan out.
-    assert_eq!(table.len(), textures.len());
-    Ok((table, plans))
-}
-
-/// Decode and crop the textures at `indices`.
+/// Decode and crop every texture, in order.
 ///
 /// PNG decode dominates the cost of loading a model and is entropy decoding
 /// plus un-filtering — pure CPU work with no GPU analogue — but it is
@@ -510,23 +426,22 @@ fn prep_all(
 /// wasm stays sequential: the wgpu web backend is not thread-safe and
 /// rayon degrades to a serial iterator there in any case.
 fn prep_textures(
-    indices: &[usize],
     textures: &[EncodedTexture],
     texture_halvings: u32,
 ) -> Result<Vec<(DecodedTexture, Plan)>, TextureError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
-        indices
+        textures
             .par_iter()
-            .map(|&i| prep_one(&textures[i], texture_halvings))
+            .map(|tex| prep_one(tex, texture_halvings))
             .collect()
     }
     #[cfg(target_arch = "wasm32")]
     {
-        indices
+        textures
             .iter()
-            .map(|&i| prep_one(&textures[i], texture_halvings))
+            .map(|tex| prep_one(tex, texture_halvings))
             .collect()
     }
 }
@@ -750,16 +665,16 @@ mod tests {
         );
     }
 
+    /// The same bytes are a different image under the other alpha convention,
+    /// and bytes read under the wrong format are an error rather than a guess.
     #[test]
-    fn cache_key_distinguishes_alpha_and_format() {
+    fn alpha_convention_and_format_decide_the_decode() {
         let straight = encoded_png([64, 0, 0, 128], false);
-        let mut cache = TexturePrepCache::default();
-        let straight_result =
-            prepare_textures(std::slice::from_ref(&straight), 0, Some(&mut cache)).unwrap();
+        let straight_result = prepare_textures(std::slice::from_ref(&straight), 0).unwrap();
 
         let mut premultiplied = straight.clone();
         premultiplied.premultiplied = true;
-        let premultiplied_result = prepare_textures(&[premultiplied], 0, Some(&mut cache)).unwrap();
+        let premultiplied_result = prepare_textures(&[premultiplied], 0).unwrap();
         assert_ne!(
             straight_result[0].texture.rgba,
             premultiplied_result[0].texture.rgba
@@ -768,26 +683,9 @@ mod tests {
         let mut wrong_format = straight;
         wrong_format.format = TextureFormat::Tga;
         assert!(matches!(
-            prepare_textures(&[wrong_format], 0, Some(&mut cache)),
+            prepare_textures(&[wrong_format], 0),
             Err(TextureError::Decode(_))
         ));
-    }
-
-    #[test]
-    fn cache_discards_entries_outside_the_current_model() {
-        let first = encoded_png([255, 0, 0, 255], false);
-        let second = encoded_png([0, 255, 0, 255], false);
-        let first_key = prep_key(&first, 0);
-        let second_key = prep_key(&second, 0);
-        let mut cache = TexturePrepCache::default();
-
-        prepare_textures(&[first], 0, Some(&mut cache)).unwrap();
-        assert!(cache.entries.contains_key(&first_key));
-
-        prepare_textures(&[second], 0, Some(&mut cache)).unwrap();
-        assert!(!cache.entries.contains_key(&first_key));
-        assert!(cache.entries.contains_key(&second_key));
-        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]
@@ -859,7 +757,7 @@ mod tests {
             premultiplied: false,
         };
 
-        let prepped = prepare_textures(std::slice::from_ref(&source), 0, None).unwrap();
+        let prepped = prepare_textures(std::slice::from_ref(&source), 0).unwrap();
         assert_eq!(prepped.len(), 1);
         let crop = prepped[0].uv_crop.expect("an opaque texel means a crop");
         let (cx, cy, cw, ch) = alpha_crop_rect(&decode_halved(&source, 0).unwrap())

@@ -82,12 +82,7 @@ fn store(model: &Model) -> HashMap<TexId, ModelTexture> {
 /// one that changed a single texture must cost exactly that one.
 #[test]
 fn a_structure_push_only_pays_for_the_textures_that_changed() {
-    for memoize_textures in [false, true] {
-        pollster::block_on(replica_sync(PrepareOptions {
-            texture_halvings: 0,
-            memoize_textures,
-        }));
-    }
+    pollster::block_on(replica_sync(PrepareOptions::default()));
 }
 
 async fn replica_sync(options: PrepareOptions) {
@@ -228,9 +223,6 @@ fn an_in_tab_handoff_keeps_every_gpu_texture() {
 /// calls each of those a miss and re-decodes and re-uploads an image the GPU
 /// already holds; keyed by Id, nothing that survived the removal is touched
 /// and the GPU textures move to their new slots instead.
-///
-/// The memo is deliberately off here: what this counts is the render cache's
-/// own reuse, not the decode cache's.
 #[test]
 fn removing_the_first_texture_re_uploads_no_survivor() {
     pollster::block_on(async {

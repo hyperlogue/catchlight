@@ -12,7 +12,8 @@
 //! caches at once. The cache is therefore kept alongside the session it was
 //! prepared for and re-prepared when the previewed session changes, which is
 //! what the old per-render whole-puppet upload did unconditionally.
-//! Previewing one session repeatedly keeps its decode memo.
+//! Previewing one session repeatedly keeps its cache, and with it the GPU
+//! texture of every payload an edit did not change.
 
 use anyhow::{anyhow, Result};
 use catchlight_core::{Model, Pose, Puppet};
@@ -92,17 +93,9 @@ impl PreviewRenderer {
         let height = height.max(1);
 
         if !matches!(&self.cache, Some((held, _)) if *held == session) {
-            // The editor edits, so the decode memo earns its copy: a rebuild
-            // after a keystroke re-uploads without re-decoding.
-            let cache = RenderCache::prepare(
-                &mut self.ctx.renderer,
-                model,
-                PrepareOptions {
-                    texture_halvings: 0,
-                    memoize_textures: true,
-                },
-            )
-            .map_err(|e| anyhow!("prepare: {e}"))?;
+            let cache =
+                RenderCache::prepare(&mut self.ctx.renderer, model, PrepareOptions::default())
+                    .map_err(|e| anyhow!("prepare: {e}"))?;
             self.cache = Some((session, cache));
         }
         let Some((_, cache)) = self.cache.as_mut() else {

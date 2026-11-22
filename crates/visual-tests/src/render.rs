@@ -118,7 +118,6 @@ pub fn prepare_puppet(
             &cached.model,
             PrepareOptions {
                 texture_halvings: cached.texture_halvings,
-                memoize_textures: false,
             },
         )?);
     }
