@@ -782,9 +782,5 @@ fn turn_child(
         NodeKind::MeshGroup(mg) => &mut mg.deform_stack,
         _ => return,
     };
-    if scratch.len() == stack.vert_count {
-        stack
-            .source_buf_mut(DeformSource::Node(spine_id))
-            .copy_from_slice(scratch);
-    }
+    stack.write_source(DeformSource::Node(spine_id), scratch);
 }

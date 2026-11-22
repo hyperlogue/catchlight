@@ -1020,9 +1020,7 @@ fn propagate_to_child(
         _ => None,
     };
     if let Some(stack) = stack {
-        if scratch.len() == stack.vert_count {
-            let buf = stack.source_buf_mut(DeformSource::Node(mg_id));
-            buf.copy_from_slice(scratch);
+        if stack.write_source(DeformSource::Node(mg_id), scratch) {
             arena.mg_written_sources.push((child_id, mg_id));
         }
     }

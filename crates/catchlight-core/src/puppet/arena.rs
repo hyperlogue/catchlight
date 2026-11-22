@@ -126,6 +126,9 @@ pub(crate) struct Arena {
     // deform sum, read without disturbing the stack memos.
     pub(crate) weld_cur_a_scratch: Vec<glam::Vec2>,
     pub(crate) weld_cur_b_scratch: Vec<glam::Vec2>,
+    // What each welded part's Weld slot held when the pass began, one buffer
+    // per part touched, so the pass can tell whether its pulls moved.
+    pub(crate) weld_before_scratch: Vec<Vec<glam::Vec2>>,
     /// Spine nodes, in arena order. `Baked::spine_targets` is parallel to it.
     pub(crate) spine_node_ids: Vec<NodeIdx>,
     // Frame-persistent scratch for the spine pass, the same pair
@@ -163,6 +166,7 @@ impl Arena {
             welds: Arc::default(),
             weld_cur_a_scratch: Vec::new(),
             weld_cur_b_scratch: Vec::new(),
+            weld_before_scratch: Vec::new(),
             spine_node_ids: Vec::new(),
             spine_scratch: Vec::new(),
             spine_cur_deform_scratch: Vec::new(),

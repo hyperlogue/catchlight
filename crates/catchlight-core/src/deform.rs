@@ -209,6 +209,82 @@ impl DeformStack {
         Ok(())
     }
 
+    /// Set `source`'s offsets, marking the stack dirty only when that changes
+    /// what the source holds. `false` when `offsets` is not one per vertex,
+    /// and nothing is written.
+    ///
+    /// The passes downstream of the bindings — spines, mesh groups — re-derive
+    /// a child's offsets every time they run, and usually arrive at the
+    /// numbers they wrote last fold: a blink re-runs every group, and only the
+    /// eyes' children move. Through [`Self::source_buf_mut`] each of those
+    /// would mark its stack dirty regardless, and `combine` would hand the
+    /// renderer a new generation — an upload — for a deform that did not move.
+    pub(crate) fn write_source(&mut self, source: DeformSource, offsets: &[Vec2]) -> bool {
+        if offsets.len() != self.vert_count {
+            return false;
+        }
+        match self.sources.iter_mut().find(|s| s.source == source) {
+            Some(slot) => {
+                slot.active = true;
+                slot.last_val = None;
+                if slot.offsets.as_slice() != offsets {
+                    slot.offsets.clear();
+                    slot.offsets.extend_from_slice(offsets);
+                    self.dirty = true;
+                }
+            }
+            None => {
+                self.sources.push(SourceSlot {
+                    source,
+                    offsets: offsets.to_vec(),
+                    active: true,
+                    last_val: None,
+                });
+                self.dirty = true;
+            }
+        }
+        true
+    }
+
+    /// [`Self::source_buf_mut`] without the dirty mark, for a pass that
+    /// accumulates into the slot over several steps and cannot say whether
+    /// the contents moved until the last one. It owes the stack a
+    /// [`Self::settle_source`] before anything combines.
+    pub(crate) fn source_buf_unsettled(&mut self, source: DeformSource) -> &mut [Vec2] {
+        let vert_count = self.vert_count;
+        let idx = match self.sources.iter().position(|s| s.source == source) {
+            Some(i) => i,
+            None => {
+                self.dirty = true;
+                self.sources.push(SourceSlot {
+                    source,
+                    offsets: vec![Vec2::ZERO; vert_count],
+                    active: true,
+                    last_val: None,
+                });
+                self.sources.len() - 1
+            }
+        };
+        let slot = &mut self.sources[idx];
+        slot.active = true;
+        slot.last_val = None;
+        if slot.offsets.len() != vert_count {
+            slot.offsets.resize(vert_count, Vec2::ZERO);
+            self.dirty = true;
+        }
+        &mut slot.offsets
+    }
+
+    /// Close a [`Self::source_buf_unsettled`] write: mark the stack dirty if
+    /// `source` no longer holds `before`, what it held when the pass began.
+    pub(crate) fn settle_source(&mut self, source: DeformSource, before: &[Vec2]) {
+        if let Some(slot) = self.sources.iter().find(|s| s.source == source) {
+            if slot.offsets.as_slice() != before {
+                self.dirty = true;
+            }
+        }
+    }
+
     pub(crate) fn reactivate(&mut self, source: DeformSource) {
         if let Some(slot) = self.sources.iter_mut().find(|s| s.source == source) {
             slot.active = true;
@@ -600,5 +676,73 @@ mod tests {
             uploaded,
             "cloned stack's combine reused the original's generation"
         );
+    }
+
+    /// Writing a source the numbers it already holds is not a change: the
+    /// stack stays clean, so `combine` keeps the sum and its generation.
+    #[test]
+    fn write_source_marks_dirty_only_when_the_offsets_change() {
+        let mut s = DeformStack::new(2);
+        let offsets = [Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0)];
+        assert!(s.write_source(DeformSource::Node(NodeIdx(7)), &offsets));
+        s.combine();
+        let generation = s.generation();
+        assert_eq!(s.combined(), &offsets);
+
+        // A fold: reset, then the same pass writes the same numbers.
+        s.reset();
+        assert!(s.write_source(DeformSource::Node(NodeIdx(7)), &offsets));
+        s.combine();
+        assert_eq!(s.generation(), generation);
+
+        let moved = [Vec2::new(1.0, 2.0), Vec2::new(3.0, 5.0)];
+        s.reset();
+        assert!(s.write_source(DeformSource::Node(NodeIdx(7)), &moved));
+        s.combine();
+        assert_ne!(s.generation(), generation);
+        assert_eq!(s.combined(), &moved);
+
+        // A source that does not come back is a change too.
+        let generation = s.generation();
+        s.reset();
+        s.combine();
+        assert_ne!(s.generation(), generation);
+        assert_eq!(s.combined(), &[Vec2::ZERO; 2]);
+    }
+
+    #[test]
+    fn write_source_refuses_a_vertex_count_mismatch() {
+        let mut s = DeformStack::new(2);
+        assert!(!s.write_source(DeformSource::Node(NodeIdx(0)), &[Vec2::ONE]));
+        assert!(!s.is_active());
+    }
+
+    /// The accumulate-then-settle pair a multi-step pass uses: unchanged
+    /// contents settle clean, changed ones settle dirty.
+    #[test]
+    fn an_unsettled_write_is_dirty_only_if_it_moved() {
+        let mut s = DeformStack::new(1);
+        s.source_buf_unsettled(DeformSource::Weld)[0] = Vec2::new(2.0, 0.0);
+        s.settle_source(DeformSource::Weld, &[Vec2::ZERO]);
+        s.combine();
+        let generation = s.generation();
+
+        s.reset();
+        let buf = s.source_buf_unsettled(DeformSource::Weld);
+        let held = buf.to_vec();
+        buf[0] = Vec2::ZERO;
+        buf[0] += Vec2::new(2.0, 0.0);
+        s.settle_source(DeformSource::Weld, &held);
+        s.combine();
+        assert_eq!(s.generation(), generation);
+
+        s.reset();
+        let buf = s.source_buf_unsettled(DeformSource::Weld);
+        let held = buf.to_vec();
+        buf[0] = Vec2::new(5.0, 0.0);
+        s.settle_source(DeformSource::Weld, &held);
+        s.combine();
+        assert_ne!(s.generation(), generation);
+        assert_eq!(s.combined()[0], Vec2::new(5.0, 0.0));
     }
 }

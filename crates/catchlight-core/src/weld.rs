@@ -77,8 +77,10 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
     let mut cur_b = std::mem::take(&mut arena.weld_cur_b_scratch);
     // Parts whose Weld slot has been zeroed this frame. The slot buffer is
     // pooled across frames, so the first writer must clear last frame's
-    // contents before accumulating.
+    // contents before accumulating — after setting them aside in `before`,
+    // index for index with `touched`.
     let mut touched: SmallVec<[NodeIdx; 8]> = SmallVec::new();
+    let mut before = std::mem::take(&mut arena.weld_before_scratch);
 
     for weld in welds.iter() {
         apply_one(
@@ -88,8 +90,19 @@ pub(crate) fn apply_welds(arena: &mut Arena, transforms: &GlobalTransforms) {
             &mut cur_a,
             &mut cur_b,
             &mut touched,
+            &mut before,
         );
     }
+
+    // A seam that did not move pulls exactly as it did last fold. Only a
+    // part whose pulls changed is dirty; the rest keep their combined deform
+    // and its generation, so the renderer has nothing to upload for them.
+    for (&id, held) in touched.iter().zip(&before) {
+        if let Some(NodeKind::Part(part)) = arena.get_mut(id).map(|n| &mut n.kind) {
+            part.deform_stack.settle_source(DeformSource::Weld, held);
+        }
+    }
+    arena.weld_before_scratch = before;
 
     arena.weld_cur_a_scratch = cur_a;
     arena.weld_cur_b_scratch = cur_b;
@@ -102,6 +115,7 @@ fn apply_one(
     cur_a: &mut Vec<Vec2>,
     cur_b: &mut Vec<Vec2>,
     touched: &mut SmallVec<[NodeIdx; 8]>,
+    before: &mut Vec<Vec<Vec2>>,
 ) {
     let (Some(side_a), Some(side_b)) = (side(transforms, weld.a), side(transforms, weld.b)) else {
         return;
@@ -149,6 +163,7 @@ fn apply_one(
         weld.pairs.iter().map(|p| p.a_vert),
         &delta_a,
         touched,
+        before,
     );
     write_pulls(
         arena,
@@ -157,6 +172,7 @@ fn apply_one(
         weld.pairs.iter().map(|p| p.b_vert),
         &delta_b,
         touched,
+        before,
     );
 }
 
@@ -199,6 +215,7 @@ fn write_pulls(
     verts: impl Iterator<Item = u32>,
     world_deltas: &[Vec2],
     touched: &mut SmallVec<[NodeIdx; 8]>,
+    before: &mut Vec<Vec<Vec2>>,
 ) {
     let Some(node) = arena.get_mut(id) else {
         return;
@@ -206,9 +223,15 @@ fn write_pulls(
     let NodeKind::Part(part) = &mut node.kind else {
         return;
     };
-    let buf = part.deform_stack.source_buf_mut(DeformSource::Weld);
+    let buf = part.deform_stack.source_buf_unsettled(DeformSource::Weld);
     if !touched.contains(&id) {
+        let at = touched.len();
         touched.push(id);
+        if before.len() <= at {
+            before.push(Vec::new());
+        }
+        before[at].clear();
+        before[at].extend_from_slice(buf);
         buf.fill(Vec2::ZERO);
     }
     for (vert, &world_delta) in verts.zip(world_deltas.iter()) {
@@ -592,5 +615,42 @@ mod tests {
         }
         run(&mut arena);
         assert_eq!(weld_slot(&arena, a), first);
+    }
+
+    /// A seam that did not move pulls exactly as it did last fold, so the
+    /// welded parts keep their combined deform and its generation — what the
+    /// renderer keys an upload on. A seam that did move gets a new one.
+    #[test]
+    fn an_unmoved_seam_keeps_the_generation_and_a_moved_one_does_not() {
+        fn frame(arena: &mut Arena, a: NodeIdx, shift: f32) {
+            arena.reset_deforms();
+            if let Some(NodeKind::Part(p)) = arena.get_mut(a).map(|n| &mut n.kind) {
+                assert!(p
+                    .deform_stack
+                    .write_source(DeformSource::Test, &[Vec2::new(shift, 0.0); 3]));
+            }
+            run(arena);
+        }
+        fn generation(arena: &Arena, id: NodeIdx) -> u64 {
+            match &arena.get(id).unwrap().kind {
+                NodeKind::Part(p) => p.deform_stack.generation(),
+                _ => unreachable!("a part"),
+            }
+        }
+
+        let (mut arena, a, b) = two_part_arena(Vec2::ZERO);
+        arena.welds = vec![seam_weld(a, b, 0.5)].into();
+        frame(&mut arena, a, 8.0);
+        let first = (generation(&arena, a), generation(&arena, b));
+        let pulled = weld_slot(&arena, b);
+
+        frame(&mut arena, a, 8.0);
+        assert_eq!((generation(&arena, a), generation(&arena, b)), first);
+        assert_eq!(weld_slot(&arena, b), pulled);
+
+        frame(&mut arena, a, 6.0);
+        assert_ne!(generation(&arena, a), first.0);
+        assert_ne!(generation(&arena, b), first.1);
+        assert!((weld_slot(&arena, b)[0] - Vec2::new(3.0, 0.0)).length() < 1e-5);
     }
 }
