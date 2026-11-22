@@ -27,23 +27,30 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    including the `catchlight` facade. Refresh `Cargo.lock` with Cargo and
    `bun.lock` with Bun; private demo and generated npm package versions are
    outside the public release set. Run `python3 scripts/release/check.py`.
-4. Run relevant repository checks from `AGENTS.md` and the packaging checks in
-   [scripts/npm/README.md](../../../scripts/npm/README.md). `npm:pack` must build
-   WASM with `cargo xtask build-wasm --release`, then use that release binary for
-   core's explicit-init web loader. Run `npm:verify` against the resulting
-   tarballs: it exercises a production browser consumer outside the workspace.
-   Run `cargo xtask bundle-ui`, then `bash .github/scripts/publish-crates.sh
-   dry-run` for Rust; the `catchlight-editor` crate packages that built page.
-   Check the editor app's packaging with the local steps in the npm guide's
-   editor app section. Resolve failures before committing or tagging.
-5. Commit the approved release and create an annotated `vX.Y.Z` tag on that
-   commit, with subject `Catchlight vX.Y.Z`. Both registries use this one tag.
-   Leave pushing and publication to the user unless requested; changelog review
-   alone does not authorize registry uploads.
-6. Pushing the `vX.Y.Z` tag publishes: it starts `crates-io.yml` and `npm.yml`
-   live. Before that push, a manual run of either from the tag (dry-run by
-   default) checks it. Inspect the tag-triggered runs' actual results; rerun a
-   failed one manually from the tag with dry-run off.
+4. Commit the approved release as `release: catchlight X.Y.Z`. Fixes that the
+   checks below require land as separate commits after it; the tag goes last.
+5. Run every `run:` step of every job in
+   [ci.yml](../../../.github/workflows/ci.yml) locally under `nix develop -c`,
+   not only the checks the release touched: a release ships every crate, and
+   `cargo deny check` fails on advisories published since the last change.
+   Then the packaging checks in [scripts/npm/README.md](../../../scripts/npm/README.md):
+   `npm:pack` builds WASM with `cargo xtask build-wasm --release` for core's
+   explicit-init loader, and `npm:verify` exercises a production browser
+   consumer of those tarballs. Run `cargo xtask bundle-ui`, then
+   `bash .github/scripts/publish-crates.sh dry-run` (it requires a clean
+   tree), and the editor app's local packaging steps from the npm guide. Every
+   check passes before tagging. Only CI's macOS and Windows rows stay
+   unverified here; step 7 covers them.
+6. Create an annotated `vX.Y.Z` tag on the last commit, with subject
+   `Catchlight vX.Y.Z`. Both registries use this one tag. Leave pushing and
+   publication to the user unless requested; changelog review alone does not
+   authorize registry uploads.
+7. Pushing the tag publishes: it starts `crates-io.yml` and `npm.yml` live.
+   Give the user this order: push `main`; wait for CI on that commit to pass;
+   run `npm.yml` and `crates-io.yml` from `main` as dry runs (`npm.yml` is the
+   only main-branch run that builds and smoke-tests the editor app on all five
+   platforms); push the tag only after all pass. Inspect the tag-triggered
+   runs' actual results, and rerun a failed one from the tag with dry-run off.
    Preserve the workflow names and shared `release` environment: trusted
    publisher registrations depend on them. A live `npm.yml` run also builds the
    `catchlight-editor` binaries and attaches them, the install scripts and
@@ -56,7 +63,7 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    uploads use `.github/scripts/publish-crates.sh publish` with a token
    supplied through `CARGO_REGISTRY_TOKEN`; never put credentials in
    repository files.
-7. Verify every public package's exact version in both registries, and the
+8. Verify every public package's exact version in both registries, and the
    GitHub release's editor assets, before reporting completion. Uploads across
    registries are not atomic. On a partial failure, report what remains and
    retry the same version using the scripts' already-published skipping
