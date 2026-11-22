@@ -57,6 +57,9 @@ jobs:
           version=$(python3 scripts/release/check.py)
           [[ "$RELEASE_REF" == "refs/tags/v$version" ]] || {
             echo "Publishing requires selecting refs/tags/v$version" >&2; exit 1; }
+          # @catchlight/editor below 0.2.0 is the component library.
+          [[ "$version" != 0.0.* && "$version" != 0.1.* ]] || {
+            echo "Release the editor app as 0.2.0 or later, not $version" >&2; exit 1; }
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       - run: nix develop -c cargo xtask bundle-ui
       - uses: actions/upload-artifact@v4
@@ -177,5 +180,15 @@ jobs:
         run: |
           tag="v$(python3 scripts/release/check.py)"
           gh release view "$tag" >/dev/null 2>&1 ||
-            gh release create "$tag" --verify-tag --title "Catchlight $tag" --notes-from-tag
-          gh release upload "$tag" dist/editor-app/* --clobber
+            gh release create "$tag" --verify-tag --title "Catchlight $tag" \
+              --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/$tag/CHANGELOG.md)."
+          # Resume a partial upload without replacing assets already out: a
+          # rebuilt binary would differ from the one npm already published.
+          existing=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          for file in dist/editor-app/*; do
+            if grep -qxF "$(basename "$file")" <<<"$existing"; then
+              echo "Already attached: $(basename "$file")"
+            else
+              gh release upload "$tag" "$file"
+            fi
+          done

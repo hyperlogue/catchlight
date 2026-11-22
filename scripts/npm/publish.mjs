@@ -17,6 +17,13 @@ const live = flags.includes('--publish');
 const sets = [{ dir: resolve(import.meta.dirname, '../../dist/npm'),
   expected: ['@catchlight/core', '@catchlight/react', '@catchlight/editor-ui'] }];
 if (flags.includes('--with-app')) {
+  // Below 0.2.0 `@catchlight/editor` is the React component library; a
+  // launcher published on that line would replace consumers' imports under
+  // `^0.1.x` with a binary.
+  const [major, minor] = version.split('.').map(Number);
+  if (major === 0 && minor < 2) {
+    throw new Error(`@catchlight/editor ${version} would land on the component library's 0.1 line; release the app as 0.2.0 or later`);
+  }
   sets.push({ dir: resolve(import.meta.dirname, '../../dist/npm-app'),
     expected: ['linux-x64', 'linux-arm64', 'darwin-arm64', 'darwin-x64', 'win32-x64']
       .map(p => `@catchlight/editor-${p}`).concat('@catchlight/editor') });

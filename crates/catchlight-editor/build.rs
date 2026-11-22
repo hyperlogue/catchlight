@@ -19,7 +19,13 @@ fn main() {
     let dir = std::env::var_os("CATCHLIGHT_EDITOR_UI")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest.join("ui"));
-    println!("cargo::rerun-if-changed={}", dir.display());
+    // A directory that does not exist reads as changed on every build; watch
+    // the crate instead until the page is built into it.
+    if dir.exists() {
+        println!("cargo::rerun-if-changed={}", dir.display());
+    } else {
+        println!("cargo::rerun-if-changed={}", manifest.display());
+    }
 
     let mut files = Vec::new();
     if dir.join("index.html").is_file() {

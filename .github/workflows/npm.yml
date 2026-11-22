@@ -57,6 +57,8 @@ jobs:
   # The downloadable editor: platform binaries, the npm launcher and its
   # platform packages, and (when live) the GitHub release assets.
   app:
+    # After the libraries verify, so a failing run creates no GitHub release.
+    needs: verify
     uses: ./.github/workflows/editor-app.yml
     with:
       dry_run: ${{ inputs.dry_run }}

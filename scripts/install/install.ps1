@@ -11,8 +11,10 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = 'hyperlogue/catchlight'
-if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
-    throw "no prebuilt catchlight-editor for $($env:PROCESSOR_ARCHITECTURE); try: cargo install catchlight-editor"
+# 32-bit PowerShell on 64-bit Windows reports x86 and keeps the truth here.
+$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($arch -ne 'AMD64') {
+    throw "no prebuilt catchlight-editor for $arch; try: cargo install catchlight-editor"
 }
 $target = 'x86_64-pc-windows-msvc'
 $version = if ($env:CATCHLIGHT_VERSION) { $env:CATCHLIGHT_VERSION } else { 'latest' }
@@ -45,8 +47,13 @@ try {
 
 $exe = Join-Path $dir 'catchlight-editor.exe'
 Write-Host "installed $(& $exe --version) to $dir"
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+# Read and write the raw registry value so entries like %USERPROFILE%\bin stay
+# unexpanded, as the Environment API would not leave them.
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+$userPath = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 if (-not (($userPath -split ';') -contains $dir)) {
-    [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
+    $joined = if ($userPath) { "$userPath;$dir" } else { $dir }
+    $key.SetValue('Path', $joined, [Microsoft.Win32.RegistryValueKind]::ExpandString)
     Write-Host "added $dir to your user PATH; open a new terminal to run catchlight-editor"
 }
+$key.Close()
