@@ -421,8 +421,9 @@ impl Model {
     }
 
     /// Snapshot the model into a `.clm` structure plus its texture table. The
-    /// payloads are copied out of their `Arc`s here, which is what makes this
-    /// the *file* path and [`Self::to_structure_bytes`] the push path.
+    /// payloads are copied out of their `Arc`s here, so this is for a caller
+    /// that wants the file as a value to edit; one that only wants the bytes
+    /// uses [`Self::to_clm_bytes`], which copies each payload once.
     pub fn to_clm_file(&self) -> Result<ClmFile, ModelError> {
         let doc = self.to_clm_structure()?;
         let mut textures = Vec::with_capacity(self.texture_order.len());
@@ -456,10 +457,26 @@ impl Model {
             .collect()
     }
 
-    /// [`Self::to_clm_file`] then encode.
+    /// The bytes [`Self::to_clm_file`] then [`clm::encode`] would write,
+    /// without the `ClmFile` in between: the payloads are serialized from
+    /// where the model holds them, so each is copied once, into the result.
     pub fn to_clm_bytes(&self) -> Result<Vec<u8>, ModelError> {
-        let file = self.to_clm_file()?;
-        Ok(clm::encode(&file.doc, &file.textures, &file.extensions)?)
+        let doc = self.to_clm_structure()?;
+        let mut textures = Vec::with_capacity(self.texture_order.len());
+        for id in &self.texture_order {
+            let t = self.texture(id).ok_or(ModelError::UnknownTexture)?;
+            textures.push(clm::ClmTextureBytes {
+                id,
+                encoding: t.encoding,
+                alpha: t.alpha,
+                data: &t.data,
+            });
+        }
+        Ok(clm::encode_borrowed(
+            &doc,
+            &textures,
+            &self.extension_blobs(),
+        )?)
     }
 
     /// The structure alone, in a **structure-only** container: the same
@@ -515,52 +532,66 @@ impl Model {
     /// importer — so nothing about it is on the budget yet.
     fn read(file: &ClmFile, budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
         charge_clm_file(file, budget)?;
-        Self::assemble(file, shape)
+        let textures = file.textures.iter().map(|t| {
+            let texture = ModelTexture {
+                encoding: t.encoding,
+                alpha: t.alpha,
+                data: t.data.as_slice().into(),
+            };
+            (t.id.clone(), texture)
+        });
+        Self::assemble(&file.doc, textures, &file.extensions, shape)
     }
 
     /// Read `.clm` bytes. Decoding charged the input whole, payloads
     /// included, so what is left is the texture count and the structure:
     /// charging the payloads again here counted every texture byte twice and
     /// refused files half the size `encoded_bytes` allows.
+    ///
+    /// Each payload is copied once, out of `bytes` and into the `Arc` the
+    /// model keeps. Going through a [`ClmFile`] would copy it into a `Vec`
+    /// first and hold both until the model was built.
     fn read_bytes(bytes: &[u8], budget: &mut LoadBudget, shape: Shape) -> Result<Model, ModelError> {
-        let file = clm::decode_with_budget(bytes, budget)?;
+        let file = clm::decode_borrowed(bytes, budget)?;
         charge_decoded_clm(&file.doc, file.textures.len(), budget)?;
-        Self::assemble(&file, shape)
+        let textures = file.textures.into_iter().map(|t| {
+            let texture = ModelTexture {
+                encoding: t.encoding,
+                alpha: t.alpha,
+                data: Arc::from(&*t.data),
+            };
+            (t.id, texture)
+        });
+        Self::assemble(&file.doc, textures, &file.extensions, shape)
     }
 
     /// The reader past the budget. Charges nothing: its two callers charge
     /// what they read, and they differ in what that is.
-    fn assemble(file: &ClmFile, shape: Shape) -> Result<Model, ModelError> {
-        let mut textures = HashMap::with_capacity(file.textures.len());
-        let mut texture_order = Vec::with_capacity(file.textures.len());
-        for t in &file.textures {
-            if textures
-                .insert(
-                    t.id.clone(),
-                    ModelTexture {
-                        encoding: t.encoding,
-                        alpha: t.alpha,
-                        data: t.data.as_slice().into(),
-                    },
-                )
-                .is_some()
-            {
-                return Err(duplicate("texture", &t.id));
+    fn assemble(
+        doc: &ClmStructure,
+        table: impl ExactSizeIterator<Item = (TexId, ModelTexture)>,
+        blobs: &[ClmExtensionBlob],
+        shape: Shape,
+    ) -> Result<Model, ModelError> {
+        let mut textures = HashMap::with_capacity(table.len());
+        let mut texture_order = Vec::with_capacity(table.len());
+        for (id, texture) in table {
+            if textures.insert(id.clone(), texture).is_some() {
+                return Err(duplicate("texture", &id));
             }
-            texture_order.push(t.id.clone());
+            texture_order.push(id);
         }
 
         // Decoding already held the markers against the bytes, but a
         // `ClmFile` can also be built by hand and handed straight to
         // `from_clm_file`, so the pairing is checked here too.
-        clm::check_extensions(&file.doc, &file.extensions)?;
-        let blobs: HashMap<&ExtensionKey, &[u8]> = file
-            .extensions
+        clm::check_extensions(doc, blobs)?;
+        let blobs: HashMap<&ExtensionKey, &[u8]> = blobs
             .iter()
             .map(|blob| (&blob.key, blob.data.as_slice()))
             .collect();
-        let extensions = extensions_of(&file.doc, |key| blobs.get(key).map(|d| Arc::from(*d)))?;
-        Self::build(&file.doc, textures, texture_order, extensions, shape)
+        let extensions = extensions_of(doc, |key| blobs.get(key).map(|d| Arc::from(*d)))?;
+        Self::build(doc, textures, texture_order, extensions, shape)
     }
 
     /// Every check the reader runs, over a structure and a texture table that

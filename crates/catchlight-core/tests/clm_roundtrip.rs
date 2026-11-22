@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use catchlight_core::formats::clm::{ClmAnimation, ClmKeyframe, ClmLane, ClmMesh};
+use catchlight_core::formats::clm::{self, ClmAnimation, ClmKeyframe, ClmLane, ClmMesh};
 use catchlight_core::id::{Name, ParamId, SeededHex};
 use catchlight_core::interpolate::InterpolateMode;
 use catchlight_core::{
@@ -96,6 +96,39 @@ fn every_committed_fixture_round_trips_byte_for_byte() {
             "{} loses an Id or a Name on the way round",
             path.display()
         );
+    }
+}
+
+/// A model is read from bytes directly, or from a decoded `ClmFile`, and
+/// written the same two ways. The direct paths exist so a texture payload is
+/// copied once rather than three times; they must not be a second format.
+#[test]
+fn both_readers_and_both_writers_agree_on_every_fixture() {
+    for path in fixtures() {
+        let name = path.display();
+        let bytes = std::fs::read(&path).expect("read fixture");
+
+        let file = clm::decode(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            clm::encode(&file.doc, &file.textures, &file.extensions).unwrap(),
+            bytes,
+            "{name}: decode then encode"
+        );
+
+        let direct = Model::from_clm_bytes(&bytes).unwrap();
+        let through_file = Model::from_clm_file(&file).unwrap();
+        assert!(direct.authored_eq(&through_file).unwrap(), "{name}");
+        assert_eq!(identity(&direct), identity(&through_file), "{name}");
+        for id in direct.texture_ids() {
+            assert_eq!(
+                direct.texture(id).unwrap().data,
+                through_file.texture(id).unwrap().data,
+                "{name}: texture {id}"
+            );
+        }
+
+        assert_eq!(direct.to_clm_file().unwrap(), file, "{name}");
+        assert_eq!(through_file.to_clm_bytes().unwrap(), bytes, "{name}");
     }
 }
 

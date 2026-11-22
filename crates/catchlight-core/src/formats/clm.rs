@@ -95,7 +95,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::container::{self, ContainerError, Section};
+use super::container::{self, ContainerError};
 use crate::components::{BlendMode, MaskMode};
 use crate::id::{ExtensionKey, NodeId, ParamId, SlotId, TexId};
 use crate::interpolate::InterpolateMode;
@@ -597,6 +597,52 @@ pub struct ClmTexture {
     pub data: Vec<u8>,
 }
 
+/// [`ClmTexture`] with the payload borrowed, for writing.
+///
+/// A [`Model`](crate::Model) holds its payloads behind `Arc`s, and saving it
+/// through `ClmTexture` copied every byte of every texture into a `Vec` just
+/// to have something to serialize. This serializes field for field as
+/// `ClmTexture` does, so which of the two a writer was handed cannot be told
+/// from the file.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ClmTextureBytes<'a> {
+    pub id: &'a TexId,
+    pub encoding: TextureEncoding,
+    pub alpha: TextureAlpha,
+    #[serde(with = "serde_bytes")]
+    pub data: &'a [u8],
+}
+
+impl<'a> From<&'a ClmTexture> for ClmTextureBytes<'a> {
+    fn from(tex: &'a ClmTexture) -> Self {
+        Self {
+            id: &tex.id,
+            encoding: tex.encoding,
+            alpha: tex.alpha,
+            data: &tex.data,
+        }
+    }
+}
+
+/// One texture as [`decode_borrowed`] read it: the payload still inside the
+/// file's bytes wherever the reader could find it there.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClmTextureSpan<'a> {
+    pub id: TexId,
+    pub encoding: TextureEncoding,
+    pub alpha: TextureAlpha,
+    pub data: std::borrow::Cow<'a, [u8]>,
+}
+
+/// A decoded `.clm` whose texture payloads have not been copied out of the
+/// bytes it was read from. What [`decode`] returns, one copy earlier.
+#[derive(Debug)]
+pub(crate) struct ClmFileRef<'a> {
+    pub doc: ClmStructure,
+    pub textures: Vec<ClmTextureSpan<'a>>,
+    pub extensions: Vec<ClmExtensionBlob>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClmNode {
     pub id: NodeId,
@@ -757,19 +803,19 @@ pub struct ClmSlotPair {
     pub weight: f32,
 }
 
-fn cbor_to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>, ClmError> {
-    let mut out = Vec::new();
-    ciborium::into_writer(value, &mut out).map_err(|e| ClmError::Encode(e.to_string()))?;
-    Ok(out)
+/// Serialize `value` straight into the section being written, so a section
+/// is never built in a buffer of its own and then copied into the file.
+fn cbor_into<T: Serialize>(
+    value: &T,
+    out: &mut container::SectionWriter<'_>,
+) -> Result<(), ClmError> {
+    ciborium::into_writer(value, out).map_err(|e| ClmError::Encode(e.to_string()))
 }
 
 fn cbor_from_slice<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, ClmError> {
     ciborium::from_reader(bytes).map_err(|e| ClmError::Decode(e.to_string()))
 }
 
-/// Serialize to `.clm` bytes. Deterministic for a given input: ciborium writes
-/// struct fields in declaration order and the container lays sections out in
-/// order, so save→save is byte-stable.
 /// Hold a structure's extension markers against the bytes that came with
 /// them: every marker has its bytes, every blob is named, and each pair
 /// agrees on size and hash.
@@ -838,39 +884,59 @@ pub fn check_extensions(doc: &ClmStructure, blobs: &[ClmExtensionBlob]) -> Resul
     Ok(())
 }
 
+/// Serialize to `.clm` bytes. Deterministic for a given input: ciborium writes
+/// struct fields in declaration order and the container lays sections out in
+/// order, so save→save is byte-stable.
 pub fn encode(
     doc: &ClmStructure,
     textures: &[ClmTexture],
+    extensions: &[ClmExtensionBlob],
+) -> Result<Vec<u8>, ClmError> {
+    let payloads = textures.iter().map(|t| t.data.len() as u64).sum();
+    encode_sections(doc, textures, payloads, extensions)
+}
+
+/// [`encode`] over textures whose payloads are borrowed from wherever they
+/// already live. The bytes written are the ones [`encode`] writes.
+pub fn encode_borrowed(
+    doc: &ClmStructure,
+    textures: &[ClmTextureBytes<'_>],
+    extensions: &[ClmExtensionBlob],
+) -> Result<Vec<u8>, ClmError> {
+    let payloads = textures.iter().map(|t| t.data.len() as u64).sum();
+    encode_sections(doc, textures, payloads, extensions)
+}
+
+/// Write a complete `.clm`. `textures` is whatever serializes as the texture
+/// table; `payloads` is how many payload bytes it holds.
+///
+/// Every section is serialized into the file's own buffer, so a payload is
+/// copied once on the way out — from where the caller holds it into the
+/// file — rather than into a section buffer and from there into the file.
+fn encode_sections<T: Serialize>(
+    doc: &ClmStructure,
+    textures: &[T],
+    payloads: u64,
     extensions: &[ClmExtensionBlob],
 ) -> Result<Vec<u8>, ClmError> {
     check_extensions(doc, extensions)?;
     // The payloads alone are a lower bound on the section that holds them,
     // so a table the container would refuse is refused here, before it is
     // serialized only to be thrown away.
-    let payloads: u64 = textures.iter().map(|t| t.data.len() as u64).sum();
     container::check_section_len(SECTION_TEXTURES, payloads)?;
-    let structure = cbor_to_vec(doc)?;
-    let tex = cbor_to_vec(&textures)?;
-    let ext = cbor_to_vec(&extensions)?;
-    let mut sections = vec![
-        Section {
-            kind: SECTION_STRUCTURE,
-            data: &structure,
-        },
-        Section {
-            kind: SECTION_TEXTURES,
-            data: &tex,
-        },
-    ];
-    // Absent unless it holds something, so a file with no byte extension is
-    // byte-identical to one written before the section existed.
+
+    // `Extensions` is absent unless it holds something, so a file with no
+    // byte extension is byte-identical to one written before the section
+    // existed.
+    let sections = 2 + usize::from(!extensions.is_empty());
+    let mut file = container::Writer::new(&MAGIC, FORMAT_VERSION, sections)?;
+    file.section(SECTION_STRUCTURE, |out| cbor_into(doc, out))?;
+    file.reserve(usize::try_from(payloads).unwrap_or(0));
+    file.section(SECTION_TEXTURES, |out| cbor_into(&textures, out))?;
     if !extensions.is_empty() {
-        sections.push(Section {
-            kind: SECTION_EXTENSIONS,
-            data: &ext,
-        });
+        file.section(SECTION_EXTENSIONS, |out| cbor_into(&extensions, out))?;
     }
-    Ok(container::write(&MAGIC, FORMAT_VERSION, &sections)?)
+    Ok(file.finish())
 }
 
 /// Serialize the `Structure` half alone: the same CBOR value [`encode`]
@@ -884,19 +950,10 @@ pub fn encode_structure(
     doc: &ClmStructure,
     textures: &[ClmTextureRef],
 ) -> Result<Vec<u8>, ClmError> {
-    let structure = cbor_to_vec(doc)?;
-    let manifest = cbor_to_vec(&textures)?;
-    let sections = [
-        Section {
-            kind: SECTION_STRUCTURE,
-            data: &structure,
-        },
-        Section {
-            kind: SECTION_TEXTURE_MANIFEST,
-            data: &manifest,
-        },
-    ];
-    Ok(container::write(&MAGIC, FORMAT_VERSION, &sections)?)
+    let mut file = container::Writer::new(&MAGIC, FORMAT_VERSION, 2)?;
+    file.section(SECTION_STRUCTURE, |out| cbor_into(doc, out))?;
+    file.section(SECTION_TEXTURE_MANIFEST, |out| cbor_into(&textures, out))?;
+    Ok(file.finish())
 }
 
 pub fn decode(bytes: &[u8]) -> Result<ClmFile, ClmError> {
@@ -956,6 +1013,31 @@ pub fn decode_with_budget(
     bytes: &[u8],
     budget: &mut crate::load_budget::LoadBudget,
 ) -> Result<ClmFile, ClmError> {
+    let file = decode_borrowed(bytes, budget)?;
+    Ok(ClmFile {
+        doc: file.doc,
+        textures: file
+            .textures
+            .into_iter()
+            .map(|t| ClmTexture {
+                id: t.id,
+                encoding: t.encoding,
+                alpha: t.alpha,
+                data: t.data.into_owned(),
+            })
+            .collect(),
+        extensions: file.extensions,
+    })
+}
+
+/// [`decode_with_budget`], stopping short of copying the texture payloads
+/// out of `bytes`. Whoever wants them owned copies each one once, into the
+/// form it keeps: a `Vec` for a [`ClmFile`], an `Arc` for a
+/// [`Model`](crate::Model).
+pub(crate) fn decode_borrowed<'a>(
+    bytes: &'a [u8],
+    budget: &mut crate::load_budget::LoadBudget,
+) -> Result<ClmFileRef<'a>, ClmError> {
     budget.charge(
         crate::load_budget::LoadResource::EncodedBytes,
         bytes.len() as u64,
@@ -966,7 +1048,7 @@ pub fn decode_with_budget(
     }
     let doc = decode_structure_section(&file, budget)?;
     let textures = match file.section(SECTION_TEXTURES) {
-        Some(b) => cbor_from_slice(b)?,
+        Some(b) => decode_textures(b)?,
         None => Vec::new(),
     };
     let extensions: Vec<ClmExtensionBlob> = match file.section(SECTION_EXTENSIONS) {
@@ -974,11 +1056,130 @@ pub fn decode_with_budget(
         None => Vec::new(),
     };
     check_extensions(&doc, &extensions)?;
-    Ok(ClmFile {
+    Ok(ClmFileRef {
         doc,
         textures,
         extensions,
     })
+}
+
+/// Read a `Textures` section, leaving each payload where it lies.
+///
+/// A CBOR reader hands a byte string over as a buffer it filled, and
+/// ciborium fills that buffer through a 4 KiB scratch: every payload was
+/// copied twice inside the decoder before the caller made its own copy. But
+/// the section is in memory already and a payload is a contiguous run of it,
+/// so [`texture_spans`] finds the runs and nothing is copied here at all.
+///
+/// That walk only understands the table as this crate writes it. Anything
+/// else — an unknown field, an indefinite length, bytes spelled as an array
+/// — goes to the full decoder, which stays the definition of what a texture
+/// table is: the two agree wherever the walk answers, and where it does not
+/// the decoder's verdict, error included, is the one returned.
+fn decode_textures(section: &[u8]) -> Result<Vec<ClmTextureSpan<'_>>, ClmError> {
+    if let Some(spans) = texture_spans(section) {
+        return Ok(spans);
+    }
+    let owned: Vec<ClmTexture> = cbor_from_slice(section)?;
+    Ok(owned
+        .into_iter()
+        .map(|t| ClmTextureSpan {
+            id: t.id,
+            encoding: t.encoding,
+            alpha: t.alpha,
+            data: std::borrow::Cow::Owned(t.data),
+        })
+        .collect())
+}
+
+const CBOR_BYTES: u8 = 2;
+const CBOR_TEXT: u8 = 3;
+const CBOR_ARRAY: u8 = 4;
+const CBOR_MAP: u8 = 5;
+
+/// A CBOR head of the `major` type with a definite argument, at the front of
+/// `data`: the argument, and what follows the head.
+fn cbor_head(data: &[u8], major: u8) -> Option<(u64, &[u8])> {
+    let (&first, rest) = data.split_first()?;
+    if first >> 5 != major {
+        return None;
+    }
+    let (argument, used) = match first & 0x1f {
+        small @ 0..=23 => (u64::from(small), 0),
+        24 => (u64::from(*rest.first()?), 1),
+        25 => (
+            u64::from(u16::from_be_bytes(rest.get(..2)?.try_into().ok()?)),
+            2,
+        ),
+        26 => (
+            u64::from(u32::from_be_bytes(rest.get(..4)?.try_into().ok()?)),
+            4,
+        ),
+        27 => (u64::from_be_bytes(rest.get(..8)?.try_into().ok()?), 8),
+        // Indefinite length, or reserved.
+        _ => return None,
+    };
+    Some((argument, &rest[used..]))
+}
+
+/// A definite-length text or byte string at the front of `data`: its
+/// content, and what follows it.
+fn cbor_string(data: &[u8], major: u8) -> Option<(&[u8], &[u8])> {
+    let (len, rest) = cbor_head(data, major)?;
+    let len = usize::try_from(len).ok().filter(|len| *len <= rest.len())?;
+    Some(rest.split_at(len))
+}
+
+/// The texture table, if it is laid out the way [`encode`] lays it out: a
+/// definite-length array of definite-length maps, each with exactly the four
+/// fields of a [`ClmTexture`], the payload a definite-length byte string.
+/// `None` for anything else, which is not a verdict — see
+/// [`decode_textures`].
+///
+/// Only the framing is read by hand. Each field's value is handed to the
+/// same decoder as its raw CBOR item, so what an Id may contain or which
+/// encodings exist is decided in one place.
+fn texture_spans(section: &[u8]) -> Option<Vec<ClmTextureSpan<'_>>> {
+    let (count, mut rest) = cbor_head(section, CBOR_ARRAY)?;
+    // Not sized from `count`: it is the file's claim, and every entry below
+    // has to be paid for in section bytes before it is pushed.
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let (fields, after) = cbor_head(rest, CBOR_MAP)?;
+        rest = after;
+        let (mut id, mut encoding, mut alpha, mut data) = (None, None, None, None);
+        for _ in 0..fields {
+            let (key, value) = cbor_string(rest, CBOR_TEXT)?;
+            if key == b"data" {
+                let (payload, after) = cbor_string(value, CBOR_BYTES)?;
+                if data.replace(payload).is_some() {
+                    return None;
+                }
+                rest = after;
+                continue;
+            }
+            // Every other field is written as a text item.
+            let (_, after) = cbor_string(value, CBOR_TEXT)?;
+            let item = &value[..value.len() - after.len()];
+            let repeated = match key {
+                b"id" => id.replace(cbor_from_slice::<TexId>(item).ok()?).is_some(),
+                b"encoding" => encoding.replace(cbor_from_slice(item).ok()?).is_some(),
+                b"alpha" => alpha.replace(cbor_from_slice(item).ok()?).is_some(),
+                _ => return None,
+            };
+            if repeated {
+                return None;
+            }
+            rest = after;
+        }
+        out.push(ClmTextureSpan {
+            id: id?,
+            encoding: encoding?,
+            alpha: alpha?,
+            data: std::borrow::Cow::Borrowed(data?),
+        });
+    }
+    Some(out)
 }
 
 /// Parse the `Structure` section, having charged its size first.
@@ -1015,6 +1216,12 @@ fn read_container(bytes: &[u8]) -> Result<container::Container<'_>, ClmError> {
 mod tests {
     use super::*;
     use ciborium::value::Value;
+
+    fn cbor_to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>, ClmError> {
+        let mut out = Vec::new();
+        ciborium::into_writer(value, &mut out).map_err(|e| ClmError::Encode(e.to_string()))?;
+        Ok(out)
+    }
 
     fn sample() -> (ClmStructure, Vec<ClmTexture>) {
         let root = ClmNode {
@@ -1137,6 +1344,148 @@ mod tests {
             a, b,
             "encode must be deterministic for editor dirty-checking"
         );
+    }
+
+    /// Which form a writer was handed its payloads in cannot be told from
+    /// the file.
+    #[test]
+    fn borrowed_payloads_write_the_same_file() {
+        let (doc, textures) = sample();
+        let borrowed: Vec<ClmTextureBytes> = textures.iter().map(Into::into).collect();
+        assert_eq!(
+            encode_borrowed(&doc, &borrowed, &[]).unwrap(),
+            encode(&doc, &textures, &[]).unwrap()
+        );
+    }
+
+    /// The reader finds each payload where it lies in the file instead of
+    /// having the CBOR decoder copy it out — twice — before the caller makes
+    /// the copy it wanted.
+    #[test]
+    fn the_reader_leaves_payloads_in_the_file() {
+        let (doc, mut textures) = sample();
+        // Longer than every short-length CBOR head, and than the decoder's
+        // scratch buffer.
+        textures[0].data = (0..70_000u32).map(|i| i as u8).collect();
+        let bytes = encode(&doc, &textures, &[]).unwrap();
+
+        let file =
+            decode_borrowed(&bytes, &mut crate::load_budget::LoadBudget::default()).unwrap();
+
+        assert_eq!(file.textures.len(), 1);
+        let std::borrow::Cow::Borrowed(payload) = file.textures[0].data else {
+            panic!("the payload was copied out of the file");
+        };
+        assert_eq!(payload, &textures[0].data[..]);
+        let file_range = bytes.as_ptr_range();
+        assert!(
+            file_range.contains(&payload.as_ptr()),
+            "the payload is not a view into the file's bytes"
+        );
+        assert_eq!(decode(&bytes).unwrap().textures, textures);
+    }
+
+    fn texture_entry(fields: Vec<(&str, Value)>) -> Value {
+        Value::Map(
+            fields
+                .into_iter()
+                .map(|(key, value)| (Value::Text(key.into()), value))
+                .collect(),
+        )
+    }
+
+    fn written(data: &[u8]) -> Vec<(&'static str, Value)> {
+        vec![
+            ("id", Value::Text("tex-skin".into())),
+            ("encoding", Value::Text("Png".into())),
+            ("alpha", Value::Text("Straight".into())),
+            ("data", Value::Bytes(data.to_vec())),
+        ]
+    }
+
+    /// The in-place walk is a shortcut, never a second opinion: on every
+    /// table it answers for, the full decoder gives the same textures, and
+    /// on every table it declines, the full decoder's verdict is the one
+    /// that stands.
+    #[test]
+    fn the_in_place_texture_reader_agrees_with_the_decoder() {
+        let mut reordered = written(b"abc");
+        reordered.reverse();
+        let mut unknown_field = written(b"abc");
+        unknown_field.push(("mip_bias", Value::Integer(1.into())));
+        let mut repeated = written(b"abc");
+        repeated.push(("id", Value::Text("tex-other".into())));
+        let missing_data: Vec<_> = written(b"abc").into_iter().take(3).collect();
+        let mut bytes_as_array = written(b"");
+        bytes_as_array[3].1 = Value::Array(vec![Value::Integer(7.into()); 3]);
+        let mut unknown_encoding = written(b"abc");
+        unknown_encoding[1].1 = Value::Text("Webp".into());
+        let mut bad_id = written(b"abc");
+        bad_id[0].1 = Value::Text("has space".into());
+
+        let table = |entries: Vec<Vec<(&str, Value)>>| {
+            cbor_to_vec(&Value::Array(
+                entries.into_iter().map(texture_entry).collect(),
+            ))
+            .unwrap()
+        };
+        let plain = table(vec![written(b"abc"), written(&[9; 300])]);
+        let mut truncated = plain.clone();
+        truncated.truncate(plain.len() - 10);
+        let mut trailing = plain.clone();
+        trailing.extend_from_slice(&[0, 0, 0]);
+        // The same one-entry table with its array head and its payload head
+        // spelled in a longer form than they need, and as an
+        // indefinite-length array.
+        let one = table(vec![written(b"abc")]);
+        let mut long_heads = vec![0x98, 0x01];
+        long_heads.extend_from_slice(&one[1..one.len() - 4]);
+        long_heads.extend_from_slice(&[0x59, 0x00, 0x03, b'a', b'b', b'c']);
+        let mut indefinite = vec![0x9f];
+        indefinite.extend_from_slice(&one[1..]);
+        indefinite.push(0xff);
+
+        // `(name, section, whether the walk is expected to answer)`.
+        let cases: Vec<(&str, Vec<u8>, bool)> = vec![
+            ("as written", plain, true),
+            ("empty", table(vec![]), true),
+            ("fields in another order", table(vec![reordered]), true),
+            ("trailing bytes", trailing, true),
+            ("longer heads than needed", long_heads, true),
+            ("an unknown field", table(vec![unknown_field]), false),
+            ("a field twice", table(vec![repeated]), false),
+            ("no payload", table(vec![missing_data]), false),
+            ("payload as an array", table(vec![bytes_as_array]), false),
+            ("an unknown encoding", table(vec![unknown_encoding]), false),
+            ("an id off the charset", table(vec![bad_id]), false),
+            ("cut short", truncated, false),
+            ("indefinite length", indefinite, false),
+            ("not an array", cbor_to_vec(&Value::Integer(3.into())).unwrap(), false),
+        ];
+        for (name, section, walked) in cases {
+            assert_eq!(
+                texture_spans(&section).is_some(),
+                walked,
+                "{name}: whether the walk answers"
+            );
+            let decoder = cbor_from_slice::<Vec<ClmTexture>>(&section);
+            let reader = decode_textures(&section).map(|spans| {
+                spans
+                    .into_iter()
+                    .map(|t| ClmTexture {
+                        id: t.id,
+                        encoding: t.encoding,
+                        alpha: t.alpha,
+                        data: t.data.into_owned(),
+                    })
+                    .collect::<Vec<_>>()
+            });
+            match (decoder, reader) {
+                (Ok(expected), Ok(got)) => assert_eq!(got, expected, "{name}"),
+                (Err(_), Err(_)) => {}
+                (decoder, reader) => panic!("{name}: decoder {decoder:?}, reader {reader:?}"),
+            }
+        }
     }
 
     /// A texture table the reader would refuse is refused on save, not

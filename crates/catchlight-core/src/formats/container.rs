@@ -118,31 +118,120 @@ pub fn write(
     version: u16,
     sections: &[Section],
 ) -> Result<Vec<u8>, ContainerError> {
-    let count = check_section_count(sections.len())?;
-    let mut lens = Vec::with_capacity(sections.len());
     for s in sections {
-        lens.push(check_section_len(s.kind, s.data.len() as u64)?);
+        check_section_len(s.kind, s.data.len() as u64)?;
     }
-
-    let table_len = sections.len() * SECTION_ENTRY_LEN;
-    let payloads_len: usize = sections.iter().map(|s| s.data.len()).sum();
-    let mut out = Vec::with_capacity(HEADER_LEN + table_len + payloads_len);
-
-    out.extend_from_slice(magic);
-    out.extend_from_slice(&version.to_le_bytes());
-    out.extend_from_slice(&count.to_le_bytes());
-
-    let mut offset = (HEADER_LEN + table_len) as u64;
-    for (s, len) in sections.iter().zip(lens) {
-        out.extend_from_slice(&s.kind.to_le_bytes());
-        out.extend_from_slice(&offset.to_le_bytes());
-        out.extend_from_slice(&len.to_le_bytes());
-        offset += u64::from(len);
-    }
+    let mut file = Writer::new(magic, version, sections.len())?;
+    file.reserve(sections.iter().map(|s| s.data.len()).sum());
     for s in sections {
-        out.extend_from_slice(s.data);
+        file.section(s.kind, |out| {
+            out.extend_from_slice(s.data);
+            Ok::<(), ContainerError>(())
+        })?;
     }
-    Ok(out)
+    Ok(file.finish())
+}
+
+/// Builds a container in place: each section's payload is produced straight
+/// into the file's buffer, where [`write`] needs every section finished in a
+/// buffer of its own and then copies it in. For a section that is mostly
+/// texture payloads that copy is the size of the file.
+///
+/// The table is reserved up front, so the section count is fixed when the
+/// writer is made; each section's entry is filled in once its length is
+/// known. Holds to the same caps as [`write`].
+pub struct Writer {
+    out: Vec<u8>,
+    declared: usize,
+    written: usize,
+}
+
+impl Writer {
+    /// Start a container that will hold exactly `sections` sections.
+    pub fn new(magic: &[u8; 8], version: u16, sections: usize) -> Result<Self, ContainerError> {
+        let count = check_section_count(sections)?;
+        let mut out = Vec::with_capacity(HEADER_LEN + sections * SECTION_ENTRY_LEN);
+        out.extend_from_slice(magic);
+        out.extend_from_slice(&version.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.resize(HEADER_LEN + sections * SECTION_ENTRY_LEN, 0);
+        Ok(Self {
+            out,
+            declared: sections,
+            written: 0,
+        })
+    }
+
+    /// Make room for `bytes` more of payload, when the caller knows roughly
+    /// what is coming.
+    pub fn reserve(&mut self, bytes: usize) {
+        self.out.reserve(bytes);
+    }
+
+    /// Append the next section, its payload written by `fill`.
+    ///
+    /// A section over [`MAX_SECTION_LEN`] is refused once `fill` has
+    /// produced it; a caller that can tell beforehand should ask
+    /// [`check_section_len`] first and skip the work.
+    pub fn section<E: From<ContainerError>>(
+        &mut self,
+        kind: u32,
+        fill: impl FnOnce(&mut SectionWriter<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if self.written == self.declared {
+            let shown = u32::try_from(self.declared + 1).unwrap_or(u32::MAX);
+            return Err(ContainerError::TooManySections(shown).into());
+        }
+        let start = self.out.len();
+        fill(&mut SectionWriter(&mut self.out))?;
+        let len = check_section_len(kind, (self.out.len() - start) as u64)?;
+
+        let entry = HEADER_LEN + self.written * SECTION_ENTRY_LEN;
+        self.out[entry..entry + 4].copy_from_slice(&kind.to_le_bytes());
+        self.out[entry + 4..entry + 12].copy_from_slice(&(start as u64).to_le_bytes());
+        self.out[entry + 12..entry + 16].copy_from_slice(&len.to_le_bytes());
+        self.written += 1;
+        Ok(())
+    }
+
+    /// The finished file.
+    ///
+    /// Panics if fewer sections were written than declared: the table would
+    /// hold entries of zeros, and that is a bug in the caller, not an input
+    /// to report.
+    pub fn finish(self) -> Vec<u8> {
+        assert_eq!(
+            self.written, self.declared,
+            "a container writer declared more sections than it wrote"
+        );
+        self.out
+    }
+}
+
+/// The payload of the section a [`Writer`] is appending. Append-only, so a
+/// section cannot reach back into the header, the table or another section.
+pub struct SectionWriter<'a>(&'a mut Vec<u8>);
+
+impl SectionWriter<'_> {
+    pub fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+impl std::io::Write for SectionWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.0.extend_from_slice(buf);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Parse a container, checking `magic` and bounds-checking the table against
@@ -285,6 +374,55 @@ mod tests {
                 len: MAX_SECTION_LEN + 1,
             })
         );
+    }
+
+    /// The in-place writer lays a file out exactly as [`write`] does.
+    #[test]
+    fn the_in_place_writer_writes_the_same_file() {
+        let a = vec![1u8, 2, 3, 4, 5];
+        let b = vec![9u8; 100];
+        let expected = write(
+            MAGIC,
+            3,
+            &[
+                Section { kind: 7, data: &a },
+                Section { kind: 42, data: &[] },
+                Section { kind: 9, data: &b },
+            ],
+        )
+        .unwrap();
+
+        let mut file = Writer::new(MAGIC, 3, 3).unwrap();
+        let ok = Ok::<(), ContainerError>(());
+        file.section(7, |out| {
+            // In pieces, as a serializer writes.
+            out.extend_from_slice(&a[..2]);
+            std::io::Write::write_all(out, &a[2..]).unwrap();
+            ok
+        })
+        .unwrap();
+        file.section(42, |_| Ok::<(), ContainerError>(())).unwrap();
+        file.section(9, |out| {
+            out.extend_from_slice(&b);
+            Ok::<(), ContainerError>(())
+        })
+        .unwrap();
+
+        assert_eq!(file.finish(), expected);
+    }
+
+    #[test]
+    fn the_in_place_writer_refuses_a_section_it_did_not_declare() {
+        let mut file = Writer::new(MAGIC, 1, 1).unwrap();
+        file.section(0, |_| Ok::<(), ContainerError>(())).unwrap();
+        assert_eq!(
+            file.section(1, |_| Ok::<(), ContainerError>(())).err(),
+            Some(ContainerError::TooManySections(2))
+        );
+        assert!(matches!(
+            Writer::new(MAGIC, 1, MAX_SECTION_COUNT as usize + 1),
+            Err(ContainerError::TooManySections(_))
+        ));
     }
 
     #[test]
