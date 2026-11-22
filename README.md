@@ -29,7 +29,11 @@ cargo install catchlight-editor
 ```
 
 An agent drives the open editor with the same binary, for example
-`catchlight-editor node tree`; `catchlight-editor help` lists every command.
+`catchlight-editor node tree`. Give your coding agent the skill:
+
+```sh
+npx skills add hyperlogue/catchlight --skill edit-models-in-catchlight --global
+```
 
 `@catchlight/editor-ui` is the embeddable React frontend with the default theme.
 The host chooses its backend and initializes the WASM module bundled in
