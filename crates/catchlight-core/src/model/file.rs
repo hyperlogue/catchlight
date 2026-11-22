@@ -132,6 +132,11 @@ pub enum ClmLoadError {
         cell: [u32; 2],
         reason: &'static str,
     },
+    #[error(
+        "node {node:?} carries two {target} bindings over the same params; a binding is \
+         addressed by its params, node and target, so a model holds one of each"
+    )]
+    DuplicateBinding { node: String, target: &'static str },
     #[error("part {node:?} carries two slots named {slot:?}")]
     DuplicateSlot { node: String, slot: String },
     #[error("part {node:?} fills slot {slot:?} with vertex {vertex}, past the mesh's {vertices}")]
@@ -685,6 +690,7 @@ impl Model {
         }
 
         let mut bindings = Vec::with_capacity(doc.bindings.len());
+        let mut bound_keys: HashSet<BindingKey> = HashSet::with_capacity(doc.bindings.len());
         for b in &doc.bindings {
             let Some(bound) = nodes.get(&b.node) else {
                 return Err(ClmLoadError::DanglingBindingNode {
@@ -778,13 +784,26 @@ impl Model {
                     }
                 }
             }
+            let key = BindingKey {
+                params: key_params,
+                node: b.node.clone(),
+                target,
+            };
+            // A binding is addressed by its key, so a model holds one per
+            // key: `Model::add_binding` leaves an existing one alone rather
+            // than adding a second. Two in a file would both load, and every
+            // lookup and edit would reach only one of them while the puppet
+            // folded both.
+            if !bound_keys.insert(key.clone()) {
+                return Err(ClmLoadError::DuplicateBinding {
+                    node: b.node.to_string(),
+                    target: target.name(),
+                }
+                .into());
+            }
             bindings.push(ModelBinding {
                 key_positions: b.key_positions.clone(),
-                key: BindingKey {
-                    params: key_params,
-                    node: b.node.clone(),
-                    target,
-                },
+                key,
                 interpolate_mode: b.interpolate_mode,
                 values: b.values.clone().into(),
                 dense: OnceLock::new(),
@@ -2196,6 +2215,47 @@ mod tests {
             load_err(&file),
             ClmLoadError::BindingParamCount { got: 2, .. }
         ));
+    }
+
+    /// A binding is addressed by its key, and `Model::add_binding` never
+    /// makes a second under one. The reader used to: both loaded, the puppet
+    /// folded both, and every lookup and edit reached only the first.
+    #[test]
+    fn two_bindings_under_one_key_are_a_structured_error() {
+        let mut file = sample().to_clm_file().unwrap();
+        let twin = file.doc.bindings[0].clone();
+        let node = twin.node.to_string();
+        file.doc.bindings.push(twin);
+
+        assert_eq!(
+            load_err(&file),
+            ClmLoadError::DuplicateBinding {
+                node: node.clone(),
+                target: "deform",
+            }
+        );
+        // The fragment reader runs the same check.
+        let mut fragment = sample_fragment_file();
+        let twin = fragment.doc.bindings[0].clone();
+        fragment.doc.bindings.push(twin);
+        assert_eq!(
+            fragment_err(&fragment),
+            ClmLoadError::DuplicateBinding {
+                node,
+                target: "deform",
+            }
+        );
+
+        // The same node and target over other params is another binding.
+        let mut file = sample().to_clm_file().unwrap();
+        let mut other = file.doc.bindings[0].clone();
+        other.params.truncate(1);
+        other.key_positions.truncate(1);
+        if let ClmBindingValues::Deform(cells) = &mut other.values {
+            cells.cells.clear();
+        }
+        file.doc.bindings.push(other);
+        assert_eq!(Model::from_clm_file(&file).unwrap().bindings().count(), 2);
     }
 
     #[test]
