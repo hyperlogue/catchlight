@@ -45,17 +45,16 @@ description: Prepare or cut a Catchlight release with changelog review, a shared
    `Catchlight vX.Y.Z`. Both registries use this one tag. Leave pushing and
    publication to the user unless requested; changelog review alone does not
    authorize registry uploads.
-7. Pushing the tag publishes: it starts `crates-io.yml` and `npm.yml` live.
-   Give the user this order: push `main`; wait for CI on that commit to pass;
-   run `npm.yml` and `crates-io.yml` from `main` as dry runs (`npm.yml` is the
-   only main-branch run that builds and smoke-tests the editor app on all five
-   platforms); push the tag only after all pass. Inspect the tag-triggered
+7. Pushing the tag publishes: it starts `release.yml` live. Give the user this
+   order: push `main`; wait for CI on that commit to pass; run `release.yml`
+   from `main` as a dry run (the only main-branch run that builds and
+   smoke-tests the editor app on all five platforms); push the tag only after
+   both pass. Inspect the tag-triggered
    runs' actual results, and rerun a failed one from the tag with dry-run off.
-   Preserve the workflow names and shared `release` environment: trusted
-   publisher registrations depend on them. A live `npm.yml` run also builds the
-   `catchlight-editor` binaries and publishes the tag's GitHub release with
-   them, the install scripts and `SHA256SUMS`, its body the version's changelog
-   section. Releases are immutable once published; recover an incomplete one
+   Preserve the workflow name and `release` environment: trusted publisher
+   registrations depend on them. The live run publishes the tag's GitHub
+   release (editor binaries, install scripts, `SHA256SUMS`, and the version's
+   changelog section as its body), then npm, then crates.io. Releases are immutable once published; recover an incomplete one
    with a patch release. A crate or npm package publishing
    for the first time cannot use trusted publishing yet; publish it once locally
    per the npm guide, then register it. While any `@catchlight/editor` version

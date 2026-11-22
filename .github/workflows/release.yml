@@ -1,0 +1,164 @@
+name: Release
+
+# One release for crates.io, npm and the GitHub release, from the `v<version>`
+# tag. Pushing the tag publishes; a manual run defaults to a dry run, and a
+# live manual run from the tag resumes a partial release.
+#
+# Everything is verified before anything is published: the crates, the npm
+# tarballs, and the editor app built on every platform. One `publish` job
+# (one approval of the `release` environment) then publishes in order: the
+# GitHub release first, since it is immutable once published and the step most
+# likely to fail, then npm, then crates.io. Each step skips what a previous
+# attempt already published.
+#
+# Trusted publishing on npm and crates.io names this file and the `release`
+# environment; renaming either breaks publishing until they are re-registered
+# (scripts/npm/README.md).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Verify without publishing
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check versions, tag and notes
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          LIVE: ${{ inputs.dry_run != true }}
+        run: |
+          version=$(python3 scripts/release/check.py)
+          # The GitHub release body.
+          python3 scripts/release/check.py --notes > /dev/null
+          # @catchlight/editor below 0.2.0 is the component library.
+          [[ "$version" != 0.0.* && "$version" != 0.1.* ]] || {
+            echo "Release as 0.2.0 or later, not $version" >&2; exit 1; }
+          if [[ $LIVE == true && "$RELEASE_REF" != "refs/tags/v$version" ]]; then
+            echo "Publishing requires selecting refs/tags/v$version" >&2; exit 1
+          fi
+
+  crates:
+    name: verify crates
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      rust_version: ${{ steps.verify.outputs.rust_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Verify release packages
+        id: verify
+        shell: nix develop -c bash -euo pipefail {0}
+        run: |
+          cargo xtask bundle-ui
+          bash .github/scripts/publish-crates.sh dry-run
+          rustc -V | awk '{print "rust_version=" $2}' >> "$GITHUB_OUTPUT"
+
+  npm:
+    name: verify npm packages
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: true
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      # The demo workspace references the generated private WASM package.
+      - run: nix develop -c cargo xtask build-wasm --release
+      - run: nix develop -c bun install --frozen-lockfile
+      - run: nix develop -c bun run typecheck
+      - run: nix develop -c bun test
+      - run: nix develop -c bun run npm:pack
+      - run: nix develop -c bun run npm:verify
+      - run: nix develop -c bun run npm:publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-release
+          path: |
+            dist/npm/*.tgz
+            dist/npm/releases.json
+          if-no-files-found: error
+
+  # Platform binaries, their archives, and the npm launcher and platform packages.
+  app:
+    needs: check
+    uses: ./.github/workflows/editor-app.yml
+
+  publish:
+    name: publish
+    if: ${{ inputs.dry_run != true }}
+    needs: [crates, npm, app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: editor-app
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-release
+          path: dist/npm
+      # The page the app's binaries embed, which `catchlight-editor` packages.
+      - uses: actions/download-artifact@v4
+        with:
+          name: editor-ui
+          path: crates/catchlight-editor/ui
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/attach-release-assets.sh dist/editor-app
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: npm
+        run: node scripts/npm/publish.mjs --publish --with-app
+
+      - name: Install the verified Rust release
+        env:
+          RUST_VERSION: ${{ needs.crates.outputs.rust_version }}
+        run: |
+          [[ $RUST_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: auth
+      - name: crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: bash .github/scripts/publish-crates.sh publish

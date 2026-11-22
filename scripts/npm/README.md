@@ -44,7 +44,7 @@ npm, fail on lookup errors, and check archive integrity before proceeding.
 runs the `catchlight-editor` binary from one of five platform packages,
 `@catchlight/editor-{linux-x64,linux-arm64,darwin-arm64,darwin-x64,win32-x64}`,
 each restricted by `os`/`cpu`. The binaries come from `editor-app.yml`, which
-`npm.yml` calls; `scripts/npm/editor-app.mjs <binaries-dir> [--verify]` packs
+`release.yml` calls; `scripts/npm/editor-app.mjs <binaries-dir> [--verify]` packs
 them into `dist/npm-app/`. `publish.mjs --with-app` publishes the platform
 packages and then the launcher after the libraries. Until version 0.2.0 the
 name held the component library now published as `@catchlight/editor-ui`.
@@ -88,7 +88,7 @@ Configure GitHub Actions as a trusted publisher on every public package:
 | --- | --- | --- |
 | Repository owner | `hyperlogue` | `hyperlogue` |
 | Repository name | `catchlight` | `catchlight` |
-| Workflow filename | `crates-io.yml` | `npm.yml` |
+| Workflow filename | `release.yml` | `release.yml` |
 | Environment | `release` | `release` |
 
 On crates.io, open each crate's **Settings → Trusted Publishing → Add**, select
@@ -108,8 +108,8 @@ fields above, and enable direct `npm publish` in allowed actions. Save each
 registration. Workflow filenames are filenames only, without `.github/workflows/`.
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
-If you previously registered the `npm` or `crates-io` environment, replace that
-registration with `release`. Existing environment secrets are not needed by
+Registrations naming the retired `npm.yml` or `crates-io.yml` workflows, or
+the `npm` or `crates-io` environments, must be replaced with the fields above. Existing environment secrets are not needed by
 these workflows. Push the updated workflow commit before creating a release tag
 so both the default branch and the tagged commit contain the new configuration.
 
@@ -117,18 +117,17 @@ Use the shared version in `Cargo.toml` for all public Rust and npm packages.
 Update internal Rust dependency versions, `Cargo.lock`, and `bun.lock` together.
 `python3 scripts/release/check.py` rejects version drift before packaging or
 publishing. Run CI, tag the validated commit `v<version>` and push the tag:
-that starts **Publish npm packages** and **Publish Rust crates**. Run either by
-hand for a dry run (the default) or to resume a partial release from the tag.
-The verification job builds and tests tarballs without OIDC permission, and the
-`app` job builds the editor binaries on every platform. A live run attaches the
-binary archives, install scripts and `SHA256SUMS` to the `v<version>` GitHub
-release. After environment approval, a fresh runner publishes those exact
-tarballs with OIDC.
+that starts **Release** (`release.yml`). Run it by hand for a dry run (the
+default) or, from the tag, to resume a partial release. It verifies the crates,
+the npm tarballs and the editor binaries on every platform without OIDC
+permission; after environment approval, one job publishes the GitHub release
+(the binary archives, install scripts and `SHA256SUMS`, with the version's
+changelog section as notes), then those exact npm tarballs, then the crates.
 
-Registry uploads are not atomic: resume a partial release at the same version
+Uploads across the three are not atomic: resume a partial release at the same version
 before starting another release.
 
-Dry runs validate packages but skip the publishing jobs, so they do not test
+Dry runs validate packages but skip the publishing job, so they do not test
 OIDC authentication or environment approvals. The next authorized live release
 must succeed on both registries to verify the entire setup. If the scripts skip
 an already-published version, that is not proof of npm publishing access.
