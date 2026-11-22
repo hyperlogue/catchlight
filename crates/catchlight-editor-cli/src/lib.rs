@@ -31,11 +31,27 @@ what the .clm file stores, so it means the same thing in every session that
 opened that file, and `node tree` / `param list` / `texture list` print the ones
 a model carries.";
 
+/// How to work against an editor a person may be watching, for an agent
+/// reading `--help` cold.
+const AGENT_HELP: &str = "\
+Working with a running editor (a person may be watching the same session):
+  1. `session list` shows what is open, including models opened in the
+     browser; `session use <id>` picks the one later commands target.
+  2. Read before writing: `node tree`, `node info <id>`, `param list`, `check`.
+  3. Add --json for machine-readable replies. A reply that changes the model
+     carries the session's new `rev`; `--if-rev <rev>` refuses an edit if the
+     model changed since that read, including edits made in the browser.
+  4. `edit <file.json>` applies a JSON array of edits as one undo step;
+     `request -` sends any protocol command from stdin.
+  5. `preview --out view.png` renders the model as it is now; `undo` reverts.
+Edits appear in the browser as they land. The editor is found through the
+connection file it writes; --server/--token name one explicitly.";
+
 #[derive(Parser)]
 #[command(
     name = "catchlight-editor-cli",
     about = "Drive a catchlight editor session",
-    after_long_help = ID_HELP
+    after_long_help = format!("{ID_HELP}\n\n{AGENT_HELP}")
 )]
 struct Cli {
     /// Print the raw reply JSON instead of a friendly summary.
@@ -166,10 +182,10 @@ enum Cmd {
     },
     /// Render a preview to a PNG.
     ///
-    /// The PNG is the reply's payload; the server writes it to `--out`, which
-    /// this client and the server both name on the same filesystem.
+    /// The PNG is the reply's payload, written to `--out`: by the server over
+    /// the socket, by this client over HTTP.
     Preview {
-        /// Where the server writes the PNG.
+        /// Where the PNG is written.
         #[arg(long)]
         out: String,
         /// Pose a param: `--param <id>=0.5` (repeatable).
@@ -1412,9 +1428,10 @@ fn resolve_session(cli: &Cli) -> Result<SessionId> {
 /// The sibling keys this command's line carries beside the request.
 ///
 /// `files` names the bytes a command needs and `out` is where a payload goes.
-/// Both are the *client's* own files, and both are resolved against this
-/// process's directory before they are sent: the server shares this
-/// filesystem, not this working directory.
+/// Both are the *client's* own files, resolved against this process's
+/// directory: over the socket the server reads and writes them (it shares
+/// this filesystem, not this working directory); over HTTP the transport does
+/// it here.
 fn siblings(cli: &Cli) -> Result<serde_json::Map<String, serde_json::Value>> {
     let mut out = serde_json::Map::new();
     match &cli.cmd {
