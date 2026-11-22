@@ -90,8 +90,11 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
     } else {
         None
     };
+    // The default socket is a guess, not a request: any failure on it (absent,
+    // refused, a path too long, a directory another user owns) falls through
+    // to the connection file and is reported only if that finds nothing.
     #[cfg(unix)]
-    {
+    let socket_error = {
         let path = catchlight_editor_protocol::default_socket_path();
         match UnixStream::connect(&path) {
             Ok(stream) => return Ok(Transport::Socket(stream)),
@@ -99,16 +102,22 @@ pub(super) fn connect(target: &Target) -> Result<Transport> {
                 if matches!(
                     err.kind(),
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                ) => {}
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("cannot connect to the editor at {}", path.display()))
+                ) =>
+            {
+                None
             }
+            Err(err) => Some(anyhow::Error::new(err).context(format!(
+                "cannot connect to the editor at {}",
+                path.display()
+            ))),
         }
-    }
-    match recorded.or_else(from_connection_file) {
-        Some(transport) => transport,
-        None => bail!(
+    };
+    #[cfg(not(unix))]
+    let socket_error: Option<anyhow::Error> = None;
+    match (recorded.or_else(from_connection_file), socket_error) {
+        (Some(transport), _) => transport,
+        (None, Some(err)) => Err(err),
+        (None, None) => bail!(
             "no editor is running: start `catchlight-editor`, or pass --server <url> --token <token>"
         ),
     }
@@ -242,9 +251,14 @@ impl Http {
                 .map_err(|_| anyhow!("{url}: bad port {port:?}"))?,
             None => 80,
         };
-        if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
-            bail!("{url}: the editor is reachable on loopback only, not {host:?}");
-        }
+        // `localhost` is dialled as the address the editor binds: by name it
+        // may resolve to `::1` first, where some other process could be
+        // listening to receive the token.
+        let host = match host {
+            "127.0.0.1" | "localhost" => "127.0.0.1",
+            "::1" => "::1",
+            _ => bail!("{url}: the editor is reachable on loopback only, not {host:?}"),
+        };
         Ok(Self {
             host: host.to_owned(),
             port,
@@ -317,13 +331,20 @@ impl Http {
             self.token,
             body.len()
         );
-        stream.write_all(head.as_bytes())?;
-        stream.write_all(body)?;
-        stream.flush()?;
+        let sent = stream
+            .write_all(head.as_bytes())
+            .and_then(|()| stream.write_all(body))
+            .and_then(|()| stream.flush());
+        // The editor refuses on the head alone (a wrong token, an oversized
+        // body) and closes under the rest, so a failed send may still have an
+        // answer waiting that says why.
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .context("the editor went away mid-request")?;
+        let read = stream.read_to_end(&mut response);
+        if let Ok(parsed) = parse_response(&response) {
+            return Ok(parsed);
+        }
+        sent.context("the editor went away mid-request")?;
+        read.context("the editor went away mid-request")?;
         parse_response(&response)
     }
 }
@@ -415,6 +436,11 @@ mod tests {
             let http = Http::new(url, "t".into()).unwrap();
             assert_eq!(http.port, 9, "{url}");
         }
+        // By name, `localhost` may reach a `::1` listener the editor is not.
+        assert_eq!(
+            Http::new("http://localhost:9", "t".into()).unwrap().host,
+            "127.0.0.1"
+        );
         for url in [
             "http://example.com:9",
             "https://127.0.0.1:9",
